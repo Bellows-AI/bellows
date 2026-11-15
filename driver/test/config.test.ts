@@ -177,11 +177,12 @@ describe('the driver config: runner classes', () => {
         docker: false,
     };
     const SANDBOX = {
-        runtimeClassName: 'gvisor',
+        runtimeClassName: 'kata',
         nodeSelector: { pool: 'sandbox' },
+        resources: { limits: { cpu: '2', memory: '4Gi' } },
         docker: true,
         dockerStorage: '6Gi',
-        dockerResources: { requests: { cpu: '500m' }, limits: { memory: '8Gi' } },
+        dockerResources: { requests: { cpu: '500m' }, limits: { cpu: '2', memory: '8Gi' } },
     };
     const DOCKER_IMAGE = `docker:27-dind@sha256:${'0'.repeat(64)}`;
     const classesEnv = (
@@ -215,15 +216,15 @@ describe('the driver config: runner classes', () => {
             },
             sandbox: {
                 name: 'sandbox',
-                runtimeClassName: 'gvisor',
+                runtimeClassName: 'kata',
                 nodeSelector: { pool: 'sandbox' },
                 tolerations: null,
                 affinity: null,
-                runnerResources: UNSIZED,
-                gateResources: UNSIZED,
+                runnerResources: { cpuRequest: null, cpuLimit: '2', memoryRequest: null, memoryLimit: '4Gi' },
+                gateResources: { cpuRequest: null, cpuLimit: '2', memoryRequest: null, memoryLimit: '4Gi' },
                 docker: true,
                 dockerStorage: '6Gi',
-                dockerResources: { cpuRequest: '500m', cpuLimit: null, memoryRequest: null, memoryLimit: '8Gi' },
+                dockerResources: { cpuRequest: '500m', cpuLimit: '2', memoryRequest: null, memoryLimit: '8Gi' },
             },
         });
         expect(config.runnerDockerImage).toBe(DOCKER_IMAGE);
@@ -286,15 +287,50 @@ describe('the driver config: runner classes', () => {
         }
     });
 
+    // A docker class runs under a microVM (Kata) RuntimeClass, which sizes the VM by its containers'
+    // limits: a slot left unset is a VM that cannot hold what runs in it, refused at boot by name.
+    it('a docker class without limits refuses boot naming the field', () => {
+        for (const [fields, field] of [
+            [{ resources: undefined }, 'resources.limits.cpu'],
+            [{ resources: { limits: { memory: '4Gi' } } }, 'resources.limits.cpu'],
+            [{ resources: { requests: { cpu: '1' }, limits: { cpu: '2' } } }, 'resources.limits.memory'],
+            [{ dockerResources: { limits: { memory: '8Gi' } } }, 'dockerResources.limits.cpu'],
+            [
+                { dockerResources: { requests: { memory: '1Gi' }, limits: { cpu: '2' } } },
+                'dockerResources.limits.memory',
+            ],
+        ] as const) {
+            expect(
+                () => loadDriverConfig(classesEnv({ standard: STANDARD, sandbox: { ...SANDBOX, ...fields } })),
+                field
+            ).toThrow(new RegExp(`^RUNNER_CLASSES\\.sandbox\\.${field.replaceAll('.', '\\.')} is required: .*microVM`));
+        }
+        // A class without a daemon keeps every slot optional.
+        expect(() => loadDriverConfig(classesEnv({ standard: {} }))).not.toThrow();
+    });
+
+    // The data root is a memory-backed emptyDir inside the daemon's memory: unbounded, or larger than
+    // the daemon's own limit, it is an OOM kill of the daemon rather than a full disk.
+    it('dockerStorage unset or above the dockerd memory limit refuses boot', () => {
+        const withStorage = (dockerStorage: string | undefined) =>
+            loadDriverConfig(classesEnv({ standard: STANDARD, sandbox: { ...SANDBOX, dockerStorage } }));
+        expect(() => withStorage(undefined)).toThrow(/^RUNNER_CLASSES\.sandbox\.dockerStorage is required: /);
+        expect(() => withStorage('9Gi')).toThrow(
+            /^RUNNER_CLASSES\.sandbox\.dockerStorage \(9Gi\) exceeds RUNNER_CLASSES\.sandbox\.dockerResources\.limits\.memory \(8Gi\)/
+        );
+        expect(withStorage('8Gi').runnerClasses.sandbox!.dockerStorage).toBe('8Gi');
+        expect(withStorage('8192Mi').runnerClasses.sandbox!.dockerStorage).toBe('8192Mi');
+    });
+
     it('refuses at boot a non-DNS class name, an unknown key, an undeclared default and RUNNER_RUNTIME_CLASS set at all', () => {
         expect(() => loadDriverConfig(classesEnv({ Sandbox: SANDBOX }, 'Sandbox'))).toThrow(
             /RUNNER_CLASSES.*"Sandbox"/
         );
-        expect(() => loadDriverConfig(classesEnv({ standard: { ...STANDARD, runtime: 'gvisor' } }))).toThrow(
+        expect(() => loadDriverConfig(classesEnv({ standard: { ...STANDARD, runtime: 'kata' } }))).toThrow(
             /RUNNER_CLASSES\.standard.*"runtime"/
         );
         expect(() => loadDriverConfig(classesEnv(undefined, 'large'))).toThrow(/RUNNER_DEFAULT_CLASS.*"large"/);
-        expect(() => loadDriverConfig({ ...classesEnv(), RUNNER_RUNTIME_CLASS: 'gvisor' })).toThrow(
+        expect(() => loadDriverConfig({ ...classesEnv(), RUNNER_RUNTIME_CLASS: 'kata' })).toThrow(
             /RUNNER_RUNTIME_CLASS/
         );
         expect(() => loadDriverConfig({ RUNNER_RUNTIME_CLASS: '' })).toThrow(/RUNNER_RUNTIME_CLASS/);
@@ -367,7 +403,7 @@ describe('the driver config: runner classes', () => {
             loadDriverConfig({ EXECUTOR: 'kubernetes', ...oneClass(fields) });
         expect(() => loadDriverConfig({ RUNNER_CLASSES: 'not json' })).toThrow(/RUNNER_CLASSES must be JSON/);
         expect(() => loadDriverConfig({ RUNNER_CLASSES: '[]' })).toThrow(/RUNNER_CLASSES must be a JSON object/);
-        expect(() => loadDriverConfig({ RUNNER_CLASSES: '{"default":"gvisor"}' })).toThrow(/RUNNER_CLASSES\.default/);
+        expect(() => loadDriverConfig({ RUNNER_CLASSES: '{"default":"kata"}' })).toThrow(/RUNNER_CLASSES\.default/);
         expect(refused({ nodeSelector: [] })).toThrow(/RUNNER_CLASSES\.default\.nodeSelector/);
         expect(refused({ nodeSelector: { rack: 3 } })).toThrow(/RUNNER_CLASSES\.default\.nodeSelector/);
         expect(refused({ tolerations: {} })).toThrow(/RUNNER_CLASSES\.default\.tolerations/);
@@ -380,17 +416,17 @@ describe('the driver config: runner classes', () => {
         expect(refused({ resources: { limits: { gpu: '1' } } })).toThrow(/resources\.limits.*"gpu"/);
     });
 
-    // The RuntimeClass a class's pods run under (gvisor on GKE Sandbox). A name the API server would
+    // The RuntimeClass a class's pods run under (kata, a Kata microVM). A name the API server would
     // refuse fails at boot, never as a burned attempt.
     it('reads a class runtimeClassName as a RuntimeClass name, empty as none', () => {
         const runtimeOf = (runtimeClassName: unknown) =>
             loadDriverConfig({ EXECUTOR: 'kubernetes', ...oneClass({ runtimeClassName }) }).runnerClasses.default!
                 .runtimeClassName;
         expect(runtimeOf('')).toBeNull();
-        expect(runtimeOf('gvisor')).toBe('gvisor');
+        expect(runtimeOf('kata')).toBe('kata');
         expect(runtimeOf('kata.fc')).toBe('kata.fc');
-        expect(() => runtimeOf('gVisor')).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
-        expect(() => runtimeOf("gvisor' || true")).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
+        expect(() => runtimeOf('Kata')).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
+        expect(() => runtimeOf("kata' || true")).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
         expect(() => runtimeOf(5)).toThrow(/RUNNER_CLASSES\.default\.runtimeClassName/);
     });
 
@@ -398,7 +434,7 @@ describe('the driver config: runner classes', () => {
     // own, is refused at boot there, naming the stated limit — never silently run without it.
     it('refuses on docker a class that sets scheduling, a RuntimeClass or docker, naming the limit', () => {
         for (const fields of [
-            { runtimeClassName: 'gvisor' },
+            { runtimeClassName: 'kata' },
             { nodeSelector: { pool: 'sandbox' } },
             { tolerations: [{ key: 'pool' }] },
             { affinity: { nodeAffinity: {} } },

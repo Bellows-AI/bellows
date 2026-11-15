@@ -539,7 +539,12 @@ runner:
     # and inherits NONE of its fields; set `standard: null` to drop it (and move `defaultClass`).
     #   classes:
     #     sandbox:
-    #       runtimeClassName: gvisor          # GKE Sandbox: agent code never shares the node kernel
+    #       # A microVM (Kata) RuntimeClass: agent code runs on its own guest kernel, never the
+    #       # node's. Kata needs nodes with nested virtualization (a shape that supports it, not a
+    #       # shared-core one), and the RuntimeClass's `overhead.podFixed` (the VM's own cpu and
+    #       # memory, ~250m/130Mi) is added to every pod's requests. A docker class must name one:
+    #       # its dockerd runs privileged, and the driver refuses to boot unless the handler is Kata.
+    #       runtimeClassName: kata
     #       nodeSelector: { pool: sandbox }
     #       tolerations:
     #         - { key: pool, operator: Equal, value: sandbox, effect: NoSchedule }
@@ -590,16 +595,20 @@ runner:
                 requests:
                     cpu: '2'
                     memory: 2Gi
-            # Whether the class's groups get a Docker daemon. True requires a runtimeClassName (a
-            # sandbox), which the chart checks at render time: a `dockerd` sidecar of the task pod
-            # (runner.docker.image) the agent and the gate reach over a unix socket, which admission
-            # lets add NET_ADMIN, SYS_ADMIN and NET_RAW in that class's pods alone.
+            # Whether the class's groups get a Docker daemon. True requires a runtimeClassName, a
+            # microVM (Kata) one, which the chart checks is set at render time and the driver checks
+            # is Kata at boot (a ClusterRole `get` on that RuntimeClass): a `dockerd` sidecar of the
+            # task pod (runner.docker.image) the agent and the gate reach over a unix socket, which
+            # admission lets run privileged in that class's pods alone. Pod Security `baseline`
+            # refuses it: the runner namespace enforces `privileged` when a class sets this.
             docker: false
             # A docker class's daemon, beside `docker: true` (ignored without it):
             #   dockerStorage: 8Gi        # the memory-backed data root's sizeLimit (images, layers,
             #                             # containers), counted against the pod's memory; unset is
             #                             # unbounded but for the pod's own limit
-            #   dockerResources: { requests: { cpu: '1', memory: 2Gi }, limits: { memory: 10Gi } }
+            #   dockerResources: { requests: { cpu: '1', memory: 2Gi }, limits: { cpu: '2', memory: 10Gi } }
+            # A docker class also sets cpu and memory limits on `resources`: the microVM is sized by
+            # the sum of its containers' limits, so the chart and the driver refuse one unsized.
     # The image of a docker class's `dockerd` sidecar (RUNNER_DOCKER_IMAGE), handed to the driver
     # only when a class sets `docker: true`. Pinned by digest, which the driver requires: the daemon
     # never moves with a tag. The repository composes with global.imageRegistry like every image.

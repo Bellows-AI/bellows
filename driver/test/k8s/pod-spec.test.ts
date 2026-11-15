@@ -3,7 +3,9 @@ import type { BoardJob } from '../../src/board/board.js';
 import { loadDriverConfig } from '../../src/config.js';
 import {
     AGENT_CONTAINER,
+    EXPORTER_CONTAINER,
     GO_MARKER,
+    SUPERVISOR_CONTAINER,
     SUPERVISOR_STEPS_MS,
     SUPERVISOR_WINDDOWN_MS,
 } from '../../src/supervisor-contract.js';
@@ -13,7 +15,7 @@ import { POLL_MS } from '../../src/k8s/k8s-transport.js';
 import { GROUP_END_WAIT_MS } from '../../src/k8s/k8s-teardown.js';
 import { readVerdict } from '../../src/k8s/k8s-poll.js';
 import { takeoverBoundMs } from '../../src/supervisor-plan.js';
-import { runnerJobName, runnerJobSpec, secretName } from '../../src/k8s/k8s-podspec.js';
+import { readerJobSpec, runnerJobName, runnerJobSpec, secretName } from '../../src/k8s/k8s-podspec.js';
 import { jobPath } from '../../src/k8s/k8s-auxspec.js';
 import { GATE_GID } from '../../src/claim.js';
 import { TASK_MOUNT, TASK_VOLUME, taskVolumeName } from '../../src/task-volume.js';
@@ -785,10 +787,11 @@ describe('a docker class', () => {
         RUNNER_CLASSES: JSON.stringify({
             standard: {},
             sandbox: {
-                runtimeClassName: 'gvisor',
+                runtimeClassName: 'kata',
+                resources: { requests: { cpu: '1', memory: '2Gi' }, limits: { cpu: '4', memory: '8Gi' } },
                 docker: true,
                 dockerStorage: '6Gi',
-                dockerResources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { memory: '8Gi' } },
+                dockerResources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '8Gi' } },
             },
         }),
         RUNNER_DEFAULT_CLASS: 'standard',
@@ -835,7 +838,7 @@ describe('a docker class', () => {
         expect(named(pod, DOCKERD_CONTAINER).command).toEqual(dockerdStartArgv());
     });
 
-    it('adds the dockerd sidecar: restartable, before the gate, privileged only by its three caps', () => {
+    it('adds the dockerd sidecar: restartable, before the gate, privileged with no caps and no escalation field', () => {
         const pod = podOf('sandbox');
         const init = (pod.initContainers ?? []).map((c) => c.name);
         expect(init.indexOf(DOCKERD_CONTAINER)).toBe(0);
@@ -843,12 +846,14 @@ describe('a docker class', () => {
         const dockerd = named(pod, DOCKERD_CONTAINER);
         expect(dockerd.image).toBe(DOCKER_IMAGE);
         expect(dockerd.restartPolicy).toBe('Always');
-        expect(dockerd.securityContext).toEqual({
-            allowPrivilegeEscalation: false,
-            capabilities: { add: ['NET_ADMIN', 'SYS_ADMIN', 'NET_RAW'] },
-        });
+        // Privileged inside the class's microVM: the apiserver refuses `allowPrivilegeEscalation:
+        // false` beside `privileged: true`, and privileged holds every capability, so none is added.
+        expect(dockerd.securityContext).toEqual({ privileged: true });
         expect(dockerd.command).toEqual(dockerdStartArgv());
-        expect(dockerd.resources).toEqual({ requests: { cpu: '500m', memory: '1Gi' }, limits: { memory: '8Gi' } });
+        expect(dockerd.resources).toEqual({
+            requests: { cpu: '500m', memory: '1Gi' },
+            limits: { cpu: '2', memory: '8Gi' },
+        });
         // An exec startupProbe on the shared socket: the gate after it starts only once the daemon answers.
         expect(dockerd.startupProbe?.exec.command.join(' ')).toContain(`unix://${DOCKER_SOCKET}`);
         expect(dockerd.volumeMounts).toEqual(
@@ -868,6 +873,61 @@ describe('a docker class', () => {
                 { name: DOCKER_SOCK_VOLUME, emptyDir: {} },
             ])
         );
+    });
+
+    // The image's entrypoint generates TLS certificates and adds a TCP listener unless the cert dir
+    // is empty; the daemon listens on its two unix sockets alone.
+    it('dockerd carries DOCKER_TLS_CERTDIR empty', () => {
+        expect(envOf(named(podOf('sandbox'), DOCKERD_CONTAINER), 'DOCKER_TLS_CERTDIR')).toEqual([
+            { name: 'DOCKER_TLS_CERTDIR', value: '' },
+        ]);
+    });
+
+    // A microVM RuntimeClass sizes the VM by its containers' limits: a container without one is
+    // memory the VM never had. The class's own limits cover the agent, the gate, the services, the
+    // reviewer and the daemon. The supervisor and the two small helpers take fixed pairs: the VM is
+    // the SUM of the limits, so the supervisor never repeats the runner's.
+    it('every container and init container of a docker-class runner pod and its readout Job carries cpu and memory limits', () => {
+        const reviewing: BoardJob = {
+            ...gatedOf(job),
+            ...SUPERVISED,
+            runnerClass: 'sandbox',
+            reviewerProfiles: ['security'],
+            services: [{ name: 'cache', image: 'redis', environment: [] }],
+        };
+        const pod = runnerJobSpec(config, reviewing, { id: SESSION, resume: false }).spec.template.spec;
+        const all = [...pod.containers, ...(pod.initContainers ?? [])];
+        expect(all.map((c) => c.name).sort()).toEqual(
+            [
+                AGENT_CONTAINER,
+                DOCKERD_CONTAINER,
+                EXPORTER_CONTAINER,
+                SUPERVISOR_CONTAINER,
+                'gate',
+                'reviewer',
+                'svc-cache',
+                'task-init',
+            ].sort()
+        );
+        for (const container of all) {
+            expect(container.resources?.limits, container.name).toEqual({
+                cpu: expect.any(String),
+                memory: expect.any(String),
+            });
+        }
+        expect(named(pod, SUPERVISOR_CONTAINER).resources).toEqual({
+            requests: { cpu: '50m', memory: '64Mi' },
+            limits: { cpu: '1', memory: '1Gi' },
+        });
+        const reader = readerJobSpec(config, reviewing, 'reader', { argv: ['true'], env: {}, timeoutMs: 1000 });
+        const readerPod = reader.spec.template.spec;
+        for (const container of readerPod.containers) {
+            expect(container.resources?.limits, container.name).toEqual({ cpu: '4', memory: '8Gi' });
+        }
+        // A class without a daemon is unchanged: its helpers stay unsized.
+        const plain = podOf('standard');
+        expect(named(plain, SUPERVISOR_CONTAINER).resources).toBeUndefined();
+        expect(named(plain, EXPORTER_CONTAINER).resources).toBeUndefined();
     });
 
     it('points the agent and the gate at the socket and the shared temp dir, their hardening unchanged', () => {

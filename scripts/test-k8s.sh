@@ -227,6 +227,10 @@ cleanup() {
         kubectl delete networkpolicy "$RELEASE-origin-egress" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1
         kubectl delete pvc -l "factory.task-root,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
     fi
+    # The dind class's RuntimeClass: cluster-scoped, so the uninstall above never reaches it.
+    if [ "${runtimeclass_created:-}" = '1' ]; then
+        kubectl delete runtimeclass "$KATA_RC" --ignore-not-found --wait=false >/dev/null 2>&1
+    fi
     if [ "${state_installed:-}" = '1' ]; then
         helm uninstall "$STATE_RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
         kubectl delete pvc -l "app.kubernetes.io/instance=$STATE_RELEASE" -n "$NAMESPACE" --wait=false >/dev/null 2>&1
@@ -392,7 +396,9 @@ expect_contains     'the driver role reads the runner vitals' "$rbac" \
     "apiGroups: ['metrics.k8s.io']
       resources: ['pods']
       verbs: ['get']"
-expect_not_contains 'the driver role is never a ClusterRole' "$(cat "$work/rendered.yaml")" 'kind: ClusterRole'
+# The one cluster-scoped grant is a docker class's RuntimeClass read (below); without a docker class
+# the driver holds none.
+expect_not_contains 'the driver role is never a ClusterRole without a docker class' "$(cat "$work/rendered.yaml")" 'kind: ClusterRole'
 
 # The dashboard mounts no workspaces claim (it checks nothing out), and the app release creates none of
 # its own. The driver is told how to create a thread's task volume, not which claim to
@@ -1270,12 +1276,13 @@ expect_contains 'the driver forwards the pull secret'  "$pulled" 'value: "regcre
 # Two runner classes: each class's RuntimeClass and scheduling knobs reach the driver in the one
 # RUNNER_CLASSES env, which is how they reach every pod of a claim in that class. The admission
 # policy pins each pod's RuntimeClass to its class's, so the CEL map holds both classes.
-printf '%s\n' 'runner:' '    classes:' '        sandbox:' '            runtimeClassName: gvisor' \
+printf '%s\n' 'runner:' '    classes:' '        sandbox:' '            runtimeClassName: kata' \
     '            nodeSelector: {pool: sandbox}' \
     '            tolerations: [{key: pool, operator: Equal, value: sandbox, effect: NoSchedule}]' \
     '            affinity: {podAntiAffinity: {preferredDuringSchedulingIgnoredDuringExecution: [{weight: 1}]}}' \
+    '            resources: {limits: {cpu: "4", memory: 8Gi}}' \
     '            docker: true' '            dockerStorage: 8Gi' \
-    '            dockerResources: {requests: {cpu: "1", memory: 2Gi}, limits: {memory: 10Gi}}' >"$work/two-classes.yaml"
+    '            dockerResources: {requests: {cpu: "1", memory: 2Gi}, limits: {cpu: "2", memory: 10Gi}}' >"$work/two-classes.yaml"
 two_classes="$(gh_render -f "$work/two-classes.yaml")"
 two_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$two_classes")"
 [ "$(grep -c -- '- name: RUNNER_CLASSES$' <<<"$two_driver")" = 1 ] &&
@@ -1300,7 +1307,7 @@ dashboard_classes_json() { # dashboard_classes_json <render> — the RUNNER_CLAS
     bad 'the default dashboard is handed the default runner classes' \
         "dashboard: $(dashboard_classes_json "$(cat "$work/rendered.yaml")" | cut -c1-200)"
 expect_class 'the driver is handed both classes' "$two_classes" 'Object.keys(c)' '["sandbox","standard"]'
-expect_class 'the driver is handed the class RuntimeClass' "$two_classes" 'c.sandbox.runtimeClassName' '"gvisor"'
+expect_class 'the driver is handed the class RuntimeClass' "$two_classes" 'c.sandbox.runtimeClassName' '"kata"'
 expect_class 'the driver is handed the class node selector' "$two_classes" 'c.sandbox.nodeSelector' '{"pool":"sandbox"}'
 expect_class 'the driver is handed the class tolerations' "$two_classes" 'c.sandbox.tolerations' \
     '[{"effect":"NoSchedule","key":"pool","operator":"Equal","value":"sandbox"}]'
@@ -1314,7 +1321,7 @@ for removed in RUNNER_RUNTIME_CLASS RUNNER_NODE_SELECTOR RUNNER_TOLERATIONS RUNN
 done
 two_admission="$(awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/' <<<"$two_classes")"
 expect_contains 'the admission CEL maps both classes to their RuntimeClass' "$two_admission" \
-    'expression: "{\"sandbox\":\"gvisor\",\"standard\":\"\"}"'
+    'expression: "{\"sandbox\":\"kata\",\"standard\":\"\"}"'
 expect_contains 'the admission CEL maps the default class to no RuntimeClass' \
     "$(awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/' <<<"$gh")" \
     'expression: "{\"standard\":\"\"}"'
@@ -1327,7 +1334,7 @@ refuses 'a class name that is no DNS label is refused' 'runner.classes key "Big_
     "${GH_SETS[@]}" --set runner.classes.Big_Pool.docker=false
 refuses 'a class RuntimeClass that is no DNS name is refused' \
     'runner.classes.standard.runtimeClassName must be a RuntimeClass name' \
-    "${GH_SETS[@]}" --set "runner.classes.standard.runtimeClassName=gvisor' || true"
+    "${GH_SETS[@]}" --set "runner.classes.standard.runtimeClassName=kata' || true"
 refuses 'a docker class without a RuntimeClass is refused' \
     'runner.classes.standard.docker requires a runtimeClassName' \
     "${GH_SETS[@]}" --set runner.classes.standard.docker=true
@@ -1336,7 +1343,22 @@ refuses 'a docker class without a RuntimeClass is refused' \
 # to boot a docker class without it, and refuses an image no digest pins.
 expect_class 'the driver is handed the class daemon storage' "$two_classes" 'c.sandbox.dockerStorage' '"8Gi"'
 expect_class 'the driver is handed the class daemon resources' "$two_classes" 'c.sandbox.dockerResources' \
-    '{"limits":{"memory":"10Gi"},"requests":{"cpu":"1","memory":"2Gi"}}'
+    '{"limits":{"cpu":"2","memory":"10Gi"},"requests":{"cpu":"1","memory":"2Gi"}}'
+# A docker class runs under a microVM RuntimeClass, which sizes the VM by its containers' limits:
+# the chart refuses, as the driver does at boot, a missing limit or a data root outside the daemon's memory.
+for slot in resources.limits.cpu resources.limits.memory dockerResources.limits.cpu dockerResources.limits.memory dockerStorage; do
+    refuses "a docker class without $slot is refused" "runner.classes.sandbox.$slot is required" \
+        "${GH_SETS[@]}" -f "$work/two-classes.yaml" --set "runner.classes.sandbox.$slot=null"
+done
+refuses 'a docker class whose data root exceeds the daemon memory limit is refused' \
+    'runner.classes.sandbox.dockerStorage (11Gi) exceeds runner.classes.sandbox.dockerResources.limits.memory (10Gi)' \
+    "${GH_SETS[@]}" -f "$work/two-classes.yaml" --set runner.classes.sandbox.dockerStorage=11Gi
+refuses 'a docker class whose data root is no memory quantity is refused' \
+    'runner.classes.sandbox.dockerStorage must be a memory quantity' \
+    "${GH_SETS[@]}" -f "$work/two-classes.yaml" --set runner.classes.sandbox.dockerStorage=lots
+gh_render -f "$work/two-classes.yaml" --set runner.classes.sandbox.dockerStorage=10240Mi >/dev/null &&
+    ok 'a docker class whose data root equals the daemon memory limit renders' ||
+    bad 'a docker class whose data root equals the daemon memory limit renders' 'helm template failed'
 two_docker_image="$(grep -A1 -- '- name: RUNNER_DOCKER_IMAGE$' <<<"$two_driver" | sed -n 's/^ *value: //p' | tr -d '"')"
 [[ "$two_docker_image" =~ ^docker:27-dind@sha256:[0-9a-f]{64}$ ]] &&
     ok 'a docker class hands the driver the digest-pinned daemon image' ||
@@ -1366,9 +1388,42 @@ expect_contains 'the admission CEL lists the docker classes' "$two_admission" '-
 expect_contains 'the admission CEL lists no docker class by default' \
     "$(awk '/^# Source: factory\/templates\/driver-admission.yaml/,/^---/' <<<"$gh")" '- name: dockerClasses
           expression: "[]"'
+# A docker class's dockerd is privileged, which only a microVM makes a guest's root: the driver
+# reads each docker class's RuntimeClass at boot and refuses a handler that is not Kata. The one
+# cluster-scoped grant, rendered only beside a docker class: `get` on those RuntimeClasses by name.
+runtimeclass_rbac() { awk '/^# Source: factory\/templates\/driver-runtimeclass-rbac.yaml/{p=1} /^---/{p=0} p' <<<"$1"; }
+two_rc_rbac="$(runtimeclass_rbac "$two_classes")"
+[ "$(grep -c '^kind: ClusterRole$' <<<"$two_classes")" = 1 ] &&
+    [ "$(grep -c '^kind: ClusterRoleBinding$' <<<"$two_classes")" = 1 ] &&
+    ok 'a docker class renders exactly one ClusterRole and its binding' ||
+    bad 'a docker class renders exactly one ClusterRole and its binding' "$(grep -c '^kind: Cluster' <<<"$two_classes") cluster kinds"
+expect_contains 'the ClusterRole gets the docker class RuntimeClass by name alone' "$two_rc_rbac" \
+    "rules:
+    - apiGroups: ['node.k8s.io']
+      resources: ['runtimeclasses']
+      resourceNames: [\"kata\"]
+      verbs: ['get']"
+[ "$(grep -c 'apiGroups:' <<<"$two_rc_rbac")" = 1 ] &&
+    ok 'the ClusterRole holds that one rule' || bad 'the ClusterRole holds that one rule' "$two_rc_rbac"
+expect_contains 'the ClusterRole binds the driver ServiceAccount' "$two_rc_rbac" \
+    "subjects:
+    - kind: ServiceAccount
+      name: $RELEASE-factory-driver
+      namespace: $NAMESPACE"
+expect_not_contains 'no docker class renders no RuntimeClass grant' "$gh" 'runtimeclasses'
+expect_contains 'two docker classes on one RuntimeClass grant it once, beside the other' \
+    "$(runtimeclass_rbac "$(gh_render -f "$work/two-classes.yaml" --set runner.classes.more.docker=true \
+        --set runner.classes.more.runtimeClassName=kata-qemu --set-string runner.classes.more.resources.limits.cpu=1 \
+        --set runner.classes.more.resources.limits.memory=1Gi --set-string runner.classes.more.dockerResources.limits.cpu=1 \
+        --set runner.classes.more.dockerResources.limits.memory=1Gi --set runner.classes.more.dockerStorage=1Gi \
+        --set runner.classes.again.docker=true --set runner.classes.again.runtimeClassName=kata \
+        --set-string runner.classes.again.resources.limits.cpu=1 --set runner.classes.again.resources.limits.memory=1Gi \
+        --set-string runner.classes.again.dockerResources.limits.cpu=1 \
+        --set runner.classes.again.dockerResources.limits.memory=1Gi --set runner.classes.again.dockerStorage=1Gi)")" \
+    'resourceNames: ["kata","kata-qemu"]'
 # A retired driver-wide runner value is refused, never dropped: a kept runner.runtimeClassName would
 # otherwise render a default class without it and move agent code out of its sandbox and node pool.
-for retired in 'runtimeClassName=gvisor' 'nodeSelector.pool=sandbox' 'tolerations[0].key=pool' \
+for retired in 'runtimeClassName=kata' 'nodeSelector.pool=sandbox' 'tolerations[0].key=pool' \
     'affinity.podAntiAffinity.x=1' 'resources.requests.cpu=1' 'gateResources.requests.cpu=2'; do
     key="${retired%%[.=[]*}"
     refuses "a retired runner.$key is refused, naming its class twin" \
@@ -1475,6 +1530,31 @@ expect_contains 'the admission policy requires every capability dropped' "$admis
     "'ALL' in c.securityContext.capabilities.drop"
 expect_not_contains 'the admission policy exempts no container from the capability drop' "$admission" \
     'factory.unhardened'
+# A docker class's namespace enforces Pod Security `privileged`, which checks nothing, so the policy
+# holds the rest of the baseline itself, for every container (dockerd's waiver is privileged and
+# capabilities alone); driver/test/k8s-admission.test.ts evaluates each, the --cluster phase refuses each.
+expect_contains 'the admission policy refuses an unconfined AppArmor profile field' "$admission" \
+    "c.securityContext.appArmorProfile.type != 'Unconfined'"
+expect_contains 'the admission policy refuses the unconfined AppArmor annotation' "$admission" \
+    "!k.startsWith('container.apparmor.security.beta.kubernetes.io/')"
+expect_contains 'the admission policy words the AppArmor refusal' "$admission" \
+    "message: 'a driver-specced pod runs no container AppArmor unconfined'"
+expect_contains 'the admission policy refuses every sysctl' "$admission" \
+    'size(variables.spec.securityContext.sysctls) == 0'
+expect_contains 'the admission policy words the sysctl refusal' "$admission" \
+    "message: 'a driver-specced pod sets no sysctls'"
+expect_contains 'the admission policy admits only the container SELinux types' "$admission" \
+    "['', 'container_t', 'container_init_t', 'container_kvm_t', 'container_engine_t']"
+expect_contains 'the admission policy words the SELinux refusal' "$admission" \
+    "message: 'a driver-specced pod and its containers set no SELinux user or role, and an SELinux type only of a container'"
+expect_contains 'the admission policy keeps the default /proc mount' "$admission" \
+    "c.securityContext.procMount == 'Default'"
+expect_contains 'the admission policy words the /proc mount refusal' "$admission" \
+    "message: 'a driver-specced container keeps the default /proc mount'"
+expect_contains 'the admission policy refuses a Windows HostProcess container' "$admission" \
+    'c.securityContext.windowsOptions.hostProcess'
+expect_contains 'the admission policy words the HostProcess refusal' "$admission" \
+    "message: 'a driver-specced pod runs no Windows HostProcess container'"
 # Issue #773: the driver creates pods only through Jobs, no Service at all; a service is a `svc-`
 # sidecar of the task pod, named on its loopback by hostAliases.
 expect_not_contains 'the admission policy matches no bare pod create' "$admission" "operations: ['CREATE']
@@ -1501,9 +1581,9 @@ expect_contains 'the admission policy admits the launch pair on a runner Job age
     "request.kind.kind == 'Job' && c.name == 'agent' &&"
 expect_contains 'the admission policy admits no capability past the launch pair' "$admission" \
     "c.securityContext.capabilities.add.all(a, a in ['SETUID', 'SETGID'])"
-# The docker daemon's three, on `dockerd` alone, a restartable init container of a pod
-# whose class is a docker class under that class's own (non-empty) RuntimeClass; the same container
-# is the one drop-ALL waiver. Every other rule holds for it. The socket volume is the agent's, the
+# Privileged, on `dockerd` alone, a restartable init container of a pod whose class is a docker
+# class under that class's own (non-empty) RuntimeClass; the same container is the one drop-ALL and
+# no-escalation waiver. Every other rule holds for it. The socket volume is the agent's, the
 # gate's and dockerd's alone. The real apiserver's verdicts are the --cluster admission phase.
 expect_contains 'the admission policy reads the pod docker class' "$admission" \
     'variables.runnerClass in variables.dockerClasses &&'
@@ -1511,9 +1591,17 @@ expect_contains 'the admission policy requires the docker class own non-empty Ru
     "variables.runnerClasses[variables.runnerClass] != '' &&"
 expect_contains 'the admission policy admits dockerd only as a restartable init container' "$admission" \
     "variables.spec.initContainers.exists(c, c.name == 'dockerd' && has(c.restartPolicy) && c.restartPolicy == 'Always') &&"
-expect_contains 'the admission policy admits the daemon caps on dockerd of a docker class alone' "$admission" \
+# Privileged, with no added capability, on `dockerd` of a docker class alone; the one container the
+# no-escalation rule waives (the apiserver refuses `allowPrivilegeEscalation: false` beside it).
+expect_contains 'the admission policy admits privileged on dockerd of a docker class alone, adding nothing' "$admission" \
     "(c.name == 'dockerd' && variables.dockerd &&
-                    c.securityContext.capabilities.add.all(a, a in ['NET_ADMIN', 'SYS_ADMIN', 'NET_RAW']))"
+                  (!has(c.securityContext.capabilities) || !has(c.securityContext.capabilities.add) ||
+                    size(c.securityContext.capabilities.add) == 0)) ||
+                (!(has(c.securityContext.privileged) && c.securityContext.privileged) &&"
+expect_not_contains 'the admission policy admits no daemon capability' "$admission" "'NET_ADMIN'"
+expect_contains 'the admission policy waives no-escalation for dockerd of a docker class alone' "$admission" \
+    "variables.containers.all(c, (c.name == 'dockerd' && variables.dockerd) ||
+                (has(c.securityContext) && has(c.securityContext.allowPrivilegeEscalation) &&"
 expect_contains 'the admission policy waives drop ALL for dockerd of a docker class alone' "$admission" \
     "variables.containers.all(c, (c.name == 'dockerd' && variables.dockerd) ||"
 expect_contains 'the admission policy mounts the docker socket in agent, gate and dockerd alone' "$admission" \
@@ -2184,7 +2272,21 @@ S3
         --set "artifacts.credentialsExistingSecret=$RELEASE-s3")
 fi
 # The `dind` class is a docker class the admission phase dry-runs its dockerd probes against
-# (scripts/lanes/k8s/admission.sh); no task names it and kind has no sandbox RuntimeClass to run it.
+# (scripts/lanes/k8s/admission.sh); no task names it. Its RuntimeClass is a real object with a Kata
+# handler, because the driver reads it at boot and refuses a docker class whose handler is not
+# Kata; kind runs no Kata, and no pod ever resolves it.
+KATA_RC="$RELEASE-kata"
+kubectl apply -f - >/dev/null <<RC || {
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+    name: $KATA_RC
+handler: kata
+RC
+    echo 'test-k8s: could not create the probe RuntimeClass'
+    exit 1
+}
+runtimeclass_created=1
 helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" ${REPLICA_SETS[@]+"${REPLICA_SETS[@]}"} \
     --set "dashboard.image.repository=$DASH_REPO" --set-string "dashboard.image.tag=$RELEASE" \
     --set "driver.image.repository=$DRIVER_REPO" --set-string "driver.image.tag=$RELEASE" \
@@ -2198,7 +2300,10 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" ${RE
     --set-string driver.handoverMs=10000 \
     --set-string driver.orphanMinMs="$((LANE_ORPHAN_S * 1000))" --set-string driver.stepWaitMs="$LANE_STEP_WAIT_MS" \
     --set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))" \
-    --set runner.classes.dind.runtimeClassName=factory-probe-sandbox --set runner.classes.dind.docker=true \
+    --set "runner.classes.dind.runtimeClassName=$KATA_RC" --set runner.classes.dind.docker=true \
+    --set-string runner.classes.dind.resources.limits.cpu=1 --set runner.classes.dind.resources.limits.memory=1Gi \
+    --set-string runner.classes.dind.dockerResources.limits.cpu=1 \
+    --set runner.classes.dind.dockerResources.limits.memory=1Gi --set runner.classes.dind.dockerStorage=512Mi \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
     exit 1

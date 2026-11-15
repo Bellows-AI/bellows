@@ -276,8 +276,8 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     });
 
     // The suites that need more than `npm test`: each states its own budget, and test:db points at
-    // the declared `postgres` service, never at a server of its own. No test:jobs gate: the lane's
-    // compose networks do not resolve names in a docker class under gVisor (docs/kubernetes-limits.md).
+    // the declared `postgres` service, never at a server of its own. No test:jobs gate yet: the lane
+    // does not yet pass inside a docker class's Kata microVM.
     it('declares typecheck and test:db, each with a timeout, and no test:jobs gate', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const gates = new Map((parseBellows(text)?.gates ?? []).map((gate) => [gate.name, gate]));

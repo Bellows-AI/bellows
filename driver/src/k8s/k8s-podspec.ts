@@ -11,8 +11,11 @@ import {
 import { CLAUDE_CODE } from '../executors.js';
 import { defaultClassOf, jobClassOf, type RunnerClass } from '../runner-classes.js';
 import {
-    DOCKERD_CAPS,
+    DOCKER_CLASS_HELPER_RESOURCES,
+    DOCKER_CLASS_SUPERVISOR_RESOURCES,
+    DOCKERD_SECURITY_CONTEXT,
     DOCKERD_CONTAINER,
+    DOCKERD_ENV,
     dockerClientEnv,
     dockerClientMounts,
     dockerdMounts,
@@ -88,6 +91,7 @@ import {
     runnerVolumesField,
     schedulingField,
     type ContainerSecurityContext,
+    type PrivilegedSecurityContext,
     type PodResources,
     type PodSecurityContext,
     type RunnerMount,
@@ -124,8 +128,8 @@ export interface RunnerPodContainer {
     /** The `dockerd` sidecar's socket probe: the init containers after it start once it passes. */
     startupProbe?: { exec: { command: string[] }; periodSeconds: number; failureThreshold: number };
     resources?: PodResources;
-    /** The executor hardening — `containerHardeningField`, always present. */
-    securityContext: ContainerSecurityContext;
+    /** The executor hardening — `containerHardeningField`, always present; a docker class's `dockerd` alone is privileged. */
+    securityContext: ContainerSecurityContext | PrivilegedSecurityContext;
     env: EnvVar[];
     /** The supervisor and the exporter run a script by content; the agent runs its image's entrypoint. */
     command?: string[];
@@ -279,10 +283,14 @@ function supervisorContainer(
         services: readonly ServiceSpec[];
     }
 ): RunnerPodContainer {
+    const runnerClass = jobClassOf(config, job);
     return {
         name: SUPERVISOR_CONTAINER,
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
+        // In a docker class (a microVM sized by the sum of its containers' limits) a fixed pair,
+        // never the runner's limits again (DOCKER_CLASS_SUPERVISOR_RESOURCES); unsized elsewhere.
+        ...(runnerClass.docker ? fixedResourcesField(DOCKER_CLASS_SUPERVISOR_RESOURCES) : {}),
         ...containerHardeningField(),
         command: ['node', '-e', supervisorScript],
         env: [
@@ -396,10 +404,11 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string, docker:
 /**
  * A docker class's daemon: the digest-pinned dind image as a native sidecar, first of the init
  * containers so the gate after it starts only once its startupProbe answers on the shared socket.
- * Root in the sandbox with NET_ADMIN, SYS_ADMIN and NET_RAW over the runtime default set — `drop:
- * ALL` breaks it — and still no escalation, under the pod's RuntimeDefault seccomp profile. It mounts
- * the task volume and the shared temp dir at the clients' own paths, so their bind mounts resolve,
- * its memory-backed data root and the socket. Sized by the class's `dockerResources`.
+ * Privileged in the class's microVM, which is the boundary (`DOCKERD_SECURITY_CONTEXT`): no added
+ * capability, no `allowPrivilegeEscalation`, under the pod's RuntimeDefault seccomp profile. It
+ * mounts the task volume and the shared temp dir at the clients' own paths, so their bind mounts
+ * resolve, its memory-backed data root and the socket. Sized by the class's `dockerResources`, whose
+ * limits a docker class must set; an empty DOCKER_TLS_CERTDIR keeps the entrypoint off TCP.
  */
 function dockerdSidecar(config: DriverConfig, runnerClass: RunnerClass): RunnerPodContainer {
     if (!config.runnerDockerImage)
@@ -410,13 +419,15 @@ function dockerdSidecar(config: DriverConfig, runnerClass: RunnerClass): RunnerP
         imagePullPolicy: config.imagePullPolicy,
         restartPolicy: 'Always',
         ...resourcesField(runnerClass.dockerResources),
-        securityContext: { allowPrivilegeEscalation: false, capabilities: { add: [...DOCKERD_CAPS] } },
+        securityContext: { ...DOCKERD_SECURITY_CONTEXT },
         command: dockerdStartArgv(),
         // The registry mirrors, a parameter of the script it turns into `--registry-mirror` flags.
-        env:
-            config.runnerDockerMirrors.length > 0
+        env: [
+            ...DOCKERD_ENV,
+            ...(config.runnerDockerMirrors.length > 0
                 ? [{ name: 'DOCKERD_MIRRORS', value: config.runnerDockerMirrors.join(' ') }]
-                : [],
+                : []),
+        ],
         startupProbe: dockerdStartupProbe(),
         volumeMounts: [taskMount(), ...dockerdMounts()],
     };
@@ -461,6 +472,19 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
     };
 }
 
+/** A fixed requests/limits pair as a container's resources, copied so no spec shares the constant. */
+function fixedResourcesField(pair: {
+    requests: { cpu: string; memory: string };
+    limits: { cpu: string; memory: string };
+}): { resources: PodResources } {
+    return { resources: { requests: { ...pair.requests }, limits: { ...pair.limits } } };
+}
+
+/** A docker class's fixed pair for `task-init` and the exporter (`DOCKER_CLASS_HELPER_RESOURCES`); unsized elsewhere. */
+function dockerClassHelperResourcesField(config: DriverConfig, job: BoardJob): { resources?: PodResources } {
+    return jobClassOf(config, job).docker ? fixedResourcesField(DOCKER_CLASS_HELPER_RESOURCES) : {};
+}
+
 /**
  * The init container that makes the reviewer's home on a fresh task volume (`scripts/task-init.sh`)
  * before the reviewer's subPath mount names it: the kubelet would create it root-owned, which the
@@ -472,6 +496,7 @@ function taskInitContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
         name: 'task-init',
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
+        ...dockerClassHelperResourcesField(config, job),
         ...containerHardeningField(),
         env: [],
         command: ['sh', '-c', taskInitScript, 'init', REVIEWER_TREE_PATH],
@@ -492,6 +517,7 @@ function exporterContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
         name: EXPORTER_CONTAINER,
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
+        ...dockerClassHelperResourcesField(config, job),
         ...containerHardeningField(),
         command: ['node', '-e', claudeExportScript],
         env: exportEnv(config, job).map(([name, value]) => ({ name, value })),

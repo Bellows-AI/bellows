@@ -94,8 +94,6 @@ The filter is up to 256 printable characters on one line. It is set for that one
 
 A gate can run `docker`, `docker compose` and `docker build` when the task runs in a docker runner class: an organization [executor profile](/guides/executors#runner-class) picks it. The daemon belongs to the task and starts empty, so the gate builds the images it needs. The gate's image brings the docker CLI.
 
-Under a gVisor sandbox, containers the gate starts get the default bridge and host networks only. Compose service names do not resolve, and an image build that fetches packages needs `docker build --network host`. See [Runner class](/guides/executors#runner-class).
-
 Bellows' own repository runs its suites in its `dev-runner` image:
 
 ```yaml .bellows.yaml

@@ -282,17 +282,17 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
             name: 'sandboxed',
             type: 'claude-code',
             config: {},
-            runnerClass: 'gvisor',
+            runnerClass: 'kata',
             createdBy: ALICE,
         });
-        expect(created.runnerClass).toBe('gvisor');
-        expect((await store.listOrg())[0]?.runnerClass).toBe('gvisor');
-        expect((await store.listOrgWithConfigs())[0]?.runnerClass).toBe('gvisor');
+        expect(created.runnerClass).toBe('kata');
+        expect((await store.listOrg())[0]?.runnerClass).toBe('kata');
+        expect((await store.listOrgWithConfigs())[0]?.runnerClass).toBe('kata');
         // The claim-time read carries it, for any member selecting the org row.
-        expect((await store.configFor(BOB, 'sandboxed', 'org'))?.runnerClass).toBe('gvisor');
+        expect((await store.configFor(BOB, 'sandboxed', 'org'))?.runnerClass).toBe('kata');
 
         // An edit that does not name the class keeps it; an explicit null clears it.
-        expect((await store.updateOrg(created.id, { config: { model: 'm' } }))?.runnerClass).toBe('gvisor');
+        expect((await store.updateOrg(created.id, { config: { model: 'm' } }))?.runnerClass).toBe('kata');
         expect((await store.updateOrg(created.id, { runnerClass: null }))?.runnerClass).toBeNull();
         expect((await store.configFor(BOB, 'sandboxed', 'org'))?.runnerClass).toBeNull();
 
@@ -306,7 +306,7 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
             name: 'sandboxed',
             type: 'claude-code',
             config: {},
-            runnerClass: 'gvisor',
+            runnerClass: 'kata',
             createdBy: ALICE,
         });
         const demoted = await store.changeScope(created.id, 'user', ALICE);
@@ -317,7 +317,7 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
         await expect(
             sql`
                 insert into executor_profile (org_id, user_id, name, type, config, runner_class)
-                values (${ORG}, ${BOB}, 'personal', 'claude-code', '{}'::jsonb, 'gvisor')
+                values (${ORG}, ${BOB}, 'personal', 'claude-code', '{}'::jsonb, 'kata')
             `
         ).rejects.toThrow(/executor_profile_runner_class_ck/);
     });

@@ -201,11 +201,18 @@ export function podHardeningField(): { seccompProfile: { type: 'RuntimeDefault' 
  */
 export interface ContainerSecurityContext {
     allowPrivilegeEscalation: false;
-    /** `drop: ALL` on every container but a docker class's `dockerd`, which adds its three and drops none (`k8s-dockerd.ts`). */
+    /** `drop: ALL` on every container; a docker class's `dockerd` carries none of this, privileged instead (`k8s-dockerd.ts`). */
     capabilities: { drop?: string[]; add?: string[] };
     runAsNonRoot?: true;
     runAsUser?: number;
     runAsGroup?: number;
+}
+
+/** A docker class's `dockerd` alone: privileged, so neither escalation nor a capability field (`k8s-dockerd.ts`). */
+export interface PrivilegedSecurityContext {
+    privileged: true;
+    allowPrivilegeEscalation?: never;
+    capabilities?: never;
 }
 
 export function containerHardeningField(): { securityContext: ContainerSecurityContext } {

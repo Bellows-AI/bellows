@@ -21,7 +21,10 @@ export interface RunnerResources {
 /** One declared class, validated at boot; every scheduling field is null when the class sets none. */
 export interface RunnerClass {
     name: string;
-    /** The RuntimeClass its pods run under (`gvisor` on GKE Sandbox); null runs the node's default. */
+    /**
+     * The RuntimeClass its pods run under; null runs the node's default. A docker class's is a
+     * microVM (Kata) RuntimeClass, which sizes the VM by its containers' limits.
+     */
     runtimeClassName: string | null;
     nodeSelector: Record<string, string> | null;
     tolerations: Record<string, unknown>[] | null;
@@ -32,7 +35,7 @@ export interface RunnerClass {
     gateResources: RunnerResources;
     /** Whether the class's groups get a docker daemon (the `dockerd` sidecar, `k8s/k8s-dockerd.ts`). */
     docker: boolean;
-    /** The daemon's memory-backed data root size (`sizeLimit`); null leaves it unbounded but by the pod's memory. */
+    /** The daemon's memory-backed data root size (`sizeLimit`); a docker class must set it, null elsewhere. */
     dockerStorage: string | null;
     /** The daemon container's own resources. */
     dockerResources: RunnerResources;
@@ -362,6 +365,7 @@ export function loadRunnerClasses(env: NodeJS.ProcessEnv, executor: 'docker' | '
         );
     }
     if (executor === 'docker') Object.values(runnerClasses).forEach(assertDockerClass);
+    else Object.values(runnerClasses).forEach(assertDaemonClassSized);
     return {
         runnerClasses,
         defaultRunnerClass,
@@ -429,6 +433,35 @@ function dockerImage(env: NodeJS.ProcessEnv, runnerClasses: Record<string, Runne
         );
     }
     return image;
+}
+
+/**
+ * A docker class runs under a microVM (Kata) RuntimeClass, which sizes the VM by its containers'
+ * limits: its runner and daemon blocks each set a cpu and a memory limit, and its daemon's data root
+ * (memory-backed, inside the daemon's own memory) a size no larger than the daemon's memory limit.
+ * A missing or oversized value refuses boot, naming the field.
+ */
+function assertDaemonClassSized(declared: RunnerClass): void {
+    if (!declared.docker) return;
+    const label = `RUNNER_CLASSES.${declared.name}`;
+    const required = (field: string) =>
+        new Error(
+            `${label}.${field} is required: a docker class runs under a microVM RuntimeClass, sized by its limits`
+        );
+    for (const [block, resources] of [
+        ['resources', declared.runnerResources],
+        ['dockerResources', declared.dockerResources],
+    ] as const) {
+        if (resources.cpuLimit === null) throw required(`${block}.limits.cpu`);
+        if (resources.memoryLimit === null) throw required(`${block}.limits.memory`);
+    }
+    const daemonMemory = declared.dockerResources.memoryLimit as string;
+    if (declared.dockerStorage === null) throw required('dockerStorage');
+    if (Number(memoryQuantityToBytes(declared.dockerStorage)) > Number(memoryQuantityToBytes(daemonMemory))) {
+        throw new Error(
+            `${label}.dockerStorage (${declared.dockerStorage}) exceeds ${label}.dockerResources.limits.memory (${daemonMemory}): the data root is memory-backed, inside the daemon's own memory`
+        );
+    }
 }
 
 /** Under docker a class carries resources alone: scheduling, a RuntimeClass or a daemon is refused, naming the stated limit. */

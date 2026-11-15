@@ -61,25 +61,38 @@ describe('the docker class record', () => {
         expect(securityDocs).toContain('**A docker class gives task code root over the task volume**');
     });
 
-    // gVisor refuses Docker's MASQUERADE rule and has no nftables, so the sidecar runs with iptables off:
-    // a user-defined network gets no embedded DNS, and the test:jobs lane cannot run in the class.
-    it('states the networks a docker class under gVisor gives nested containers, for operators and users', () => {
-        expect(prose(kubernetesDocs)).toContain(
-            'in a docker class under gVisor, nested containers get the default bridge and host networks only'
+    // The microVM gives the daemon its own guest kernel and network stack: docker's own iptables, user
+    // networks and their DNS work, so no network caveat is left; what remains is what the VM needs.
+    it("states the node requirements of a docker class's microVM, for operators", () => {
+        const doc = prose(kubernetesDocs);
+        expect(doc).toContain('a docker class runs only under a microVM (Kata) RuntimeClass');
+        expect(doc).toContain('nested virtualization (a machine shape that supports it, not a shared-core family)');
+        expect(doc).toContain('`overhead.podFixed`');
+        expect(doc).toContain("the VM is sized from the sum of its containers' limits");
+        expect(doc).toContain('a plain emptyDir is virtiofs in the guest and overlay2 cannot use it');
+        expect(readFileSync(join(ROOT, 'driver/src/scripts/dockerd-start.sh'), 'utf8')).not.toContain(
+            '--iptables=false'
         );
-        expect(prose(kubernetesDocs)).toContain('compose service names do not resolve');
-        expect(prose(kubernetesDocs)).toContain('`docker build --network host`');
-        expect(readFileSync(join(ROOT, 'driver/src/scripts/dockerd-start.sh'), 'utf8')).toContain('--iptables=false');
         const site = (path: string) => prose(readFileSync(join(ROOT, 'site', path), 'utf8'));
-        for (const page of ['guides/executors.mdx', 'self-host/kubernetes.mdx']) {
-            expect(site(page), page).toContain('Compose service names do not resolve');
-            expect(site(page), page).toContain('`docker build --network host`');
+        expect(site('self-host/kubernetes.mdx')).toContain('nested virtualization');
+        for (const page of ['guides/executors.mdx', 'guides/gates.mdx', 'self-host/kubernetes.mdx']) {
+            expect(site(page), page).not.toContain('--network host');
         }
-        expect(prose(limitsDocs)).toContain('`make runners` took 93 s');
+        expect(prose(limitsDocs)).toContain('`make runners` took 86 s');
     });
 
-    it("states that admission trusts the class's RuntimeClass name, not its handler", () => {
-        expect(prose(kubernetesDocs)).toContain("admission trusts a docker class's RuntimeClass name, not its handler");
+    // Admission pins the pod to the RuntimeClass by name; the driver's boot read of its handler is the guard.
+    it("states that admission trusts the class's RuntimeClass name and the boot check guards it", () => {
+        const doc = prose(kubernetesDocs);
+        expect(doc).toContain("admission trusts a docker class's RuntimeClass name, not its handler");
+        expect(doc).toContain(
+            "the driver refuses to start unless each docker class's RuntimeClass handler is `kata` or `kata-<variant>`"
+        );
+        expect(doc).toContain('a missing, forbidden or unreadable RuntimeClass refuses too');
+        expect(prose(securityDocs)).toContain('a privileged container always runs seccomp Unconfined');
+        expect(prose(securityDocs)).toContain(
+            'A namespace hosting a docker class must enforce Pod Security `privileged`'
+        );
     });
 
     it('states the dockerd restart interruption, its per-phase granularity and the ad-hoc note', () => {
@@ -173,8 +186,10 @@ describe('the executor isolation record (#382)', () => {
     it('refuses to claim kernel or VM isolation from ordinary pod hardening', () => {
         expect(securityDocs).toContain('not kernel isolation and it is not VM isolation');
         expect(securityDocs).toContain('shares one host kernel');
+        // Scoped to non-docker classes: a docker class's boundary is its microVM.
+        expect(prose(securityDocs)).toContain('VM isolation for a non-docker class');
         // And it says what WOULD give one, so the limit is actionable rather than just a warning.
-        expect(securityDocs).toMatch(/gVisor|Kata|Firecracker/);
+        expect(securityDocs).toContain('microVM (Kata) RuntimeClass');
     });
 
     it('states the controls and that they are required, not merely set', () => {

@@ -23,6 +23,10 @@ CLASS_LABEL='factory.runner-class: standard'
 # The driver creates pods only through Jobs: the Role grants no pod create and the
 # policy matches Jobs alone, so each probe is a Job whose pod template carries the spec lines.
 probe_pod() { # probe_pod <name> <extra spec lines> [<extra labels>] [<pod securityContext>]
+    # TEMPLATE_ANNOTATIONS, when set, is the template's annotations (flow-mapping entries). Built
+    # here: a brace inside a `${…:+…}` word closes the expansion early.
+    local notes=''
+    [ -z "${TEMPLATE_ANNOTATIONS:-}" ] || notes=", annotations: {$TEMPLATE_ANNOTATIONS}"
     cat <<EOF
 apiVersion: batch/v1
 kind: Job
@@ -31,7 +35,7 @@ metadata:
     labels: {factory.job: admission-probe}
 spec:
     template:
-        metadata: {labels: {factory.job: admission-probe${CLASS_LABEL:+, $CLASS_LABEL}${3:+, $3}}}
+        metadata: {labels: {factory.job: admission-probe${CLASS_LABEL:+, $CLASS_LABEL}${3:+, $3}}$notes}
         spec:
             automountServiceAccountToken: false
             restartPolicy: Never
@@ -232,7 +236,7 @@ unknown_class="$(CLASS_LABEL='factory.runner-class: nope' probe_pod unknownclass
     "    containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
 expect_refused 'the policy refuses a pod naming an undeclared runner class' "$unknown_class" \
     'label of a declared runner class'
-mismatched="$(probe_pod mismatch "    runtimeClassName: gvisor
+mismatched="$(probe_pod mismatch "    runtimeClassName: kata
     containers: [{name: c, image: alpine, $HARD_C}]" | as_driver)"
 expect_refused 'the policy refuses a RuntimeClass its runner class does not name' "$mismatched" \
     'its runner class RuntimeClass'
@@ -258,11 +262,13 @@ expect_refused 'the policy refuses a restartable init container that is neither 
     'only as restartable init containers'
 
 # A docker class's `dockerd` sidecar. The install declares `dind`, a docker class under the
-# `factory-probe-sandbox` RuntimeClass (a Job's dry run never resolves it). There alone, a restartable
-# `dockerd` may add NET_ADMIN, SYS_ADMIN and NET_RAW and keep no drop ALL, as uid 0; every other
-# rule still holds for it, and the socket volume is the agent's, the gate's and dockerd's alone.
-DIND_RC='factory-probe-sandbox'
-DOCKERD_C='securityContext: {allowPrivilegeEscalation: false, runAsUser: 0, capabilities: {add: [NET_ADMIN, SYS_ADMIN, NET_RAW]}}'
+# `$KATA_RC` RuntimeClass (handler kata; a Job's dry run never resolves it). There alone, a
+# restartable `dockerd` may run privileged — the class's microVM is the boundary — adding no
+# capability, keeping no drop ALL and setting no allowPrivilegeEscalation (the apiserver refuses
+# `false` beside privileged). Every other rule still holds for it, every other container still
+# never escalates, and the socket volume is the agent's, the gate's and dockerd's alone.
+DIND_RC="$KATA_RC"
+DOCKERD_C='securityContext: {privileged: true, runAsUser: 0}'
 SOCK_VOL='volumes: [{name: docker-sock, emptyDir: {}}]'
 SOCK_MOUNT='volumeMounts: [{name: docker-sock, mountPath: /run/factory-docker}]'
 dind_pod() { # dind_pod <name> <extra spec lines> [<pod securityContext>] — a pod of the dind class, under its RuntimeClass
@@ -272,39 +278,33 @@ $2" '' "${3:-}"
 dockerd_ok="$(dind_pod dockerd "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C, $SOCK_MOUNT}, {name: gate, image: alpine, restartPolicy: Always, $HARD_C, $SOCK_MOUNT}]
     containers: [{name: agent, image: alpine, $HARD_C, $SOCK_MOUNT}]
     $SOCK_VOL" | as_driver)"
-expect_contains 'the policy admits the dockerd sidecar of a docker class under its RuntimeClass' "$dockerd_ok" \
+expect_contains 'the policy admits the privileged dockerd sidecar of a docker class under its RuntimeClass' "$dockerd_ok" \
     'created (server dry run)'
-dockerd_other="$(dind_pod dockerdother "    initContainers: [{name: proxy, image: docker, restartPolicy: Always, $DOCKERD_C}]
+dockerd_other="$(dind_pod dockerdother "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C}, {name: gate, image: alpine, restartPolicy: Always, securityContext: {privileged: true, capabilities: {drop: [ALL]}}}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
-expect_refused 'the policy refuses the daemon caps on any other container' "$dockerd_other" \
+expect_refused 'the policy refuses privileged on any other container of a docker class pod' "$dockerd_other" \
     'may not be privileged or add capabilities'
 dockerd_standard="$(probe_pod dockerdstandard "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
-expect_refused 'the policy refuses dockerd in a class that is no docker class' "$dockerd_standard" \
+expect_refused 'the policy refuses a privileged dockerd in a class that is no docker class' "$dockerd_standard" \
     'may not be privileged or add capabilities'
 dockerd_rc="$(CLASS_LABEL='factory.runner-class: dind' probe_pod dockerdrc "    runtimeClassName: other-sandbox
     initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
 # The class's own RuntimeClass rule answers first; the dockerd waiver reads the same pin again.
-expect_refused 'the policy refuses dockerd under a RuntimeClass its docker class does not name' "$dockerd_rc" \
+expect_refused 'the policy refuses a privileged dockerd under a RuntimeClass its docker class does not name' "$dockerd_rc" \
     'its runner class RuntimeClass'
 dockerd_main="$(dind_pod dockerdmain "    containers: [{name: dockerd, image: docker, $DOCKERD_C}]" | as_driver)"
-expect_refused 'the policy refuses dockerd as a main container' "$dockerd_main" \
+expect_refused 'the policy refuses a privileged dockerd as a main container' "$dockerd_main" \
     'may not be privileged or add capabilities'
-dockerd_more="$(dind_pod dockerdmore "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, securityContext: {allowPrivilegeEscalation: false, capabilities: {add: [NET_ADMIN, SYS_PTRACE]}}}]
+dockerd_caps="$(dind_pod dockerdcaps "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, securityContext: {privileged: true, capabilities: {add: [NET_ADMIN]}}}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
-expect_refused 'the policy refuses any capability past the daemon three on dockerd' "$dockerd_more" \
+expect_refused 'the policy refuses a capability added to the privileged dockerd' "$dockerd_caps" \
     'may not be privileged or add capabilities'
-dockerd_escalate="$(dind_pod dockerdescalate "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, securityContext: {allowPrivilegeEscalation: true, capabilities: {add: [NET_ADMIN]}}}]
+gate_escalate="$(dind_pod gateescalate "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C}, {name: gate, image: alpine, restartPolicy: Always, securityContext: {allowPrivilegeEscalation: true, capabilities: {drop: [ALL]}}}]
     containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
-expect_refused 'the policy still refuses an escalating dockerd' "$dockerd_escalate" 'allowPrivilegeEscalation: false'
-# The admitted dockerd made privileged. Field validation refuses `privileged: true` beside
-# `allowPrivilegeEscalation: false`, so the probe leaves escalation unset; the privileged rule
-# answers before the escalation one.
-dockerd_privileged="$(dind_pod dockerdpriv "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, securityContext: {privileged: true, runAsUser: 0, capabilities: {add: [NET_ADMIN, SYS_ADMIN, NET_RAW]}}}]
-    containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
-expect_refused 'the policy still refuses a privileged dockerd' "$dockerd_privileged" \
-    'may not be privileged or add capabilities'
+expect_refused 'the policy still requires no escalation of every other container in a docker class pod' "$gate_escalate" \
+    'allowPrivilegeEscalation: false'
 dockerd_seccomp="$(dind_pod dockerdseccomp "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C}]
     containers: [{name: agent, image: alpine, $HARD_C}]" '{}' | as_driver)"
 expect_refused 'the policy still requires the pod RuntimeDefault profile of a dockerd pod' "$dockerd_seccomp" \
@@ -318,6 +318,61 @@ sock_svc="$(dind_pod socksvc "    initContainers: [{name: svc-db, image: alpine,
     $SOCK_VOL" | as_driver)"
 expect_refused 'the policy refuses a svc- service mounting the docker socket volume' "$sock_svc" \
     'docker socket volume in the agent, the gate and dockerd alone'
+
+# Pod Security baseline, held by the policy: a docker class's namespace enforces `privileged`,
+# which checks nothing. Each probe is a dind pod, the privileged dockerd beside it, so a refusal
+# also proves dockerd's waiver reaches no further than privileged and capabilities.
+DIND_SPEC="    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C}]
+    containers: [{name: agent, image: alpine, $HARD_C}]"
+baseline_dockerd() { # baseline_dockerd <name> <extra dockerd securityContext fields> — dind pod, dockerd changed
+    dind_pod "$1" "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, securityContext: {privileged: true, runAsUser: 0, $2}}]
+    containers: [{name: agent, image: alpine, $HARD_C}]"
+}
+pod_ctx() { printf '{seccompProfile: {type: RuntimeDefault}, %s}' "$1"; }
+apparmor_pod="$(dind_pod apparmorpod "$DIND_SPEC" "$(pod_ctx 'appArmorProfile: {type: Unconfined}')" | as_driver)"
+expect_refused 'the policy refuses an unconfined AppArmor pod' "$apparmor_pod" 'no container AppArmor unconfined'
+apparmor_dockerd="$(baseline_dockerd apparmordockerd 'appArmorProfile: {type: Unconfined}' | as_driver)"
+expect_refused 'the policy refuses an unconfined AppArmor dockerd' "$apparmor_dockerd" 'no container AppArmor unconfined'
+apparmor_note="$(TEMPLATE_ANNOTATIONS='container.apparmor.security.beta.kubernetes.io/agent: unconfined' \
+    dind_pod apparmornote "$DIND_SPEC" | as_driver)"
+expect_refused 'the policy refuses the unconfined AppArmor annotation' "$apparmor_note" 'no container AppArmor unconfined'
+apparmor_default="$(TEMPLATE_ANNOTATIONS='container.apparmor.security.beta.kubernetes.io/agent: runtime/default' \
+    dind_pod apparmordefault "$DIND_SPEC" | as_driver)"
+expect_contains 'the policy admits the RuntimeDefault AppArmor annotation' "$apparmor_default" 'created (server dry run)'
+sysctl_safe="$(dind_pod sysctl "$DIND_SPEC" \
+    "$(pod_ctx 'sysctls: [{name: net.ipv4.ip_unprivileged_port_start, value: "0"}]')" | as_driver)"
+expect_refused 'the policy refuses even a safe sysctl' "$sysctl_safe" 'sets no sysctls'
+selinux_type="$(baseline_dockerd selinuxtype 'seLinuxOptions: {type: spc_t}' | as_driver)"
+expect_refused 'the policy refuses an SELinux type outside the container ones on dockerd' "$selinux_type" \
+    'set no SELinux user or role'
+selinux_user="$(dind_pod selinuxuser "$DIND_SPEC" "$(pod_ctx 'seLinuxOptions: {user: system_u}')" | as_driver)"
+expect_refused 'the policy refuses an SELinux user on the pod' "$selinux_user" 'set no SELinux user or role'
+selinux_ok="$(dind_pod selinuxok "$DIND_SPEC" "$(pod_ctx 'seLinuxOptions: {type: container_t, level: "s0:c1,c2"}')" | as_driver)"
+expect_contains 'the policy admits a container SELinux type and level' "$selinux_ok" 'created (server dry run)'
+# The apiserver admits an unmasked /proc only in a user namespace, which in turn forbids a
+# privileged container, so this probe is the agent's (dockerd's is driver/test/k8s-admission.test.ts).
+proc_mount="$(probe_pod procmount "    hostUsers: false
+    containers: [{name: agent, image: alpine, securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, procMount: Unmasked}}]" | as_driver)"
+expect_refused 'the policy refuses an unmasked /proc' "$proc_mount" 'keeps the default /proc mount'
+host_network="$(dind_pod hostnet "    hostNetwork: true
+$DIND_SPEC" | as_driver)"
+expect_refused 'the policy refuses the host network' "$host_network" 'may not share host namespaces'
+host_pid="$(dind_pod hostpid "    hostPID: true
+$DIND_SPEC" | as_driver)"
+expect_refused 'the policy refuses the host PID namespace' "$host_pid" 'may not share host namespaces'
+host_ipc="$(dind_pod hostipc "    hostIPC: true
+$DIND_SPEC" | as_driver)"
+expect_refused 'the policy refuses the host IPC namespace' "$host_ipc" 'may not share host namespaces'
+host_port="$(dind_pod hostport "    initContainers: [{name: dockerd, image: docker, restartPolicy: Always, $DOCKERD_C, ports: [{containerPort: 2375, hostPort: 2375}]}]
+    containers: [{name: agent, image: alpine, $HARD_C}]" | as_driver)"
+expect_refused 'the policy refuses a host port on dockerd' "$host_port" 'may not bind a host port'
+host_path="$(dind_pod hostpath "$DIND_SPEC
+    volumes: [{name: h, hostPath: {path: /}}]" | as_driver)"
+expect_refused 'the policy refuses a hostPath volume in a docker class pod' "$host_path" 'may mount only a task volume claim'
+# A HostProcess pod needs the host network, which the apiserver checks first and the policy refuses.
+host_process="$(dind_pod hostprocess "    hostNetwork: true
+$DIND_SPEC" "$(pod_ctx 'windowsOptions: {hostProcess: true}')" | as_driver)"
+expect_refused 'the policy refuses a Windows HostProcess pod' "$host_process" 'may not share host namespaces'
 
 # --- The agent's tool isolation, on the real kubelet ----------------------------------
 #

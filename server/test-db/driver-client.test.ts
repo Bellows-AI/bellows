@@ -160,12 +160,12 @@ describe.skipIf(!enabled)('the driver board client against the real store', () =
     it('the driver parses runnerClass off a real claim', async () => {
         const executors = createUserExecutorStore({ sql: db.sql, orgId, ...testSecretDeps(db.sql) });
         const main = (await executors.listOrg()).find((row) => row.name === 'main')!;
-        await executors.updateOrg(main.id, { runnerClass: 'gvisor' });
+        await executors.updateOrg(main.id, { runnerClass: 'kata' });
         const id = await enqueue();
 
         const job = await board.claim('wire-driver');
 
         expect(job?.id).toBe(id);
-        expect(job?.runnerClass).toBe('gvisor');
+        expect(job?.runnerClass).toBe('kata');
     });
 });

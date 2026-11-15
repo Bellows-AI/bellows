@@ -28,7 +28,7 @@ import {
     fakeSteps,
     runner,
 } from '../fixtures/k8s-suite.js';
-import { oneClass } from '../fixtures/runner-classes.js';
+import { DOCKER_CLASS_SIZING, oneClass } from '../fixtures/runner-classes.js';
 
 describe('the block-helper transport (issue #207)', () => {
     const NOOP_DESCRIPTOR = lookupHelper('noop')!;
@@ -220,12 +220,14 @@ describe('RUNNER_IMAGE_PULL_SECRETS', () => {
 // run lands and what it is sized at is that class's, and the pod says which class it is.
 describe('RUNNER_CLASSES', () => {
     const SANDBOX = {
-        runtimeClassName: 'gvisor',
+        runtimeClassName: 'kata',
         nodeSelector: { pool: 'sandbox' },
         tolerations: [{ key: 'pool', operator: 'Equal', value: 'sandbox', effect: 'NoSchedule' }],
         resources: { requests: { cpu: '1', memory: '2Gi' }, limits: { cpu: '4', memory: '8Gi' } },
         gateResources: { requests: { cpu: '3', memory: '4Gi' } },
         docker: true,
+        dockerStorage: DOCKER_CLASS_SIZING.dockerStorage,
+        dockerResources: DOCKER_CLASS_SIZING.dockerResources,
     };
     const classes = loadDriverConfig({
         EXECUTOR: 'kubernetes',
@@ -242,7 +244,7 @@ describe('RUNNER_CLASSES', () => {
     it('a job naming the sandbox class runs under its RuntimeClass and node pool; one naming none runs in the default', () => {
         const sandbox = podOf('sandbox');
         expect(sandbox.metadata.labels['factory.runner-class']).toBe('sandbox');
-        expect(sandbox.spec.runtimeClassName).toBe('gvisor');
+        expect(sandbox.spec.runtimeClassName).toBe('kata');
         expect(sandbox.spec.nodeSelector).toEqual({ pool: 'sandbox' });
         expect(sandbox.spec.tolerations).toEqual(SANDBOX.tolerations);
         expect(sandbox.spec.containers.find((c) => c.name === AGENT_CONTAINER)?.resources).toEqual(SANDBOX.resources);
@@ -274,7 +276,7 @@ describe('RUNNER_CLASSES', () => {
 // every pod the driver specs runs under its class's RuntimeClass, or none of them names one.
 describe('a runner class runtimeClassName', () => {
     it.each(POD_NAMES)('runs %s under the configured RuntimeClass', (name) => {
-        expect(everyPodSpec(oneClass({ runtimeClassName: 'gvisor' }))[name]().pod.runtimeClassName).toBe('gvisor');
+        expect(everyPodSpec(oneClass({ runtimeClassName: 'kata' }))[name]().pod.runtimeClassName).toBe('kata');
     });
 
     it.each(POD_NAMES)('leaves runtimeClassName off %s when unset', (name) => {
