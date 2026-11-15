@@ -64,7 +64,12 @@ export const RULES = [
     [/^driver\/src\/(claim|config|index|strip-secret-store-env|runner|runner-plan|executors|docker\/docker|docker\/docker-runner|docker\/docker-runner-support|docker\/docker-create-runner|loop\/loop|loop\/loop-run|loop\/loop-types|loop\/loop-helpers|helpers|http|container-scripts|exec-codes|labels|json-parse|timestamps|runner-classes|quantities)\.ts$/, FULL, 'driver core every phase runs through'],
     [/^server\/src\/(mcp\/|auth\/oauth|routes\/oauth)/, ['mcp'], 'MCP server and its OAuth authorization server'],
     [/^scripts\/mcp-phase-client\.mjs$/, ['mcp'], 'the mcp phase client'],
-    [/^server\/src\/auth\//, ['auth', 'board'], 'authentication'],
+    // The auth plugin, its worker, session and route-class checks and the auth store judge every request, the claim's included.
+    [/^server\/src\/auth\/(plugin|request-limits|route-class|session|store|worker-auth|driver-credentials|access-token|bridge-binding|membership-guard|membership-store|membership|admin-promotion|member-removal|org-key)\.ts$/, FULL, 'authentication every request passes'],
+    [/^server\/src\/auth\/github\.ts$/, ['auth', 'capacity', 'mcp', 'pinned-skills'], 'GitHub sign-in, built only by the AUTH_MODE=github boards'],
+    [/^server\/src\/auth\/driver-credential-(cli|command)\.ts$/, NONE, 'the driver credential command line, not called by any jobs phase'],
+    // Asked before every sync, publish and gate (driver/src/board/board.ts), and installed in every task.
+    [/^driver\/src\/(github-credential-call\.ts|loop\/loop-github\.ts|scripts\/credential-helper\.sh)$/, FULL, 'the GitHub token ask every task makes'],
 
     // --- the board (server/src, core/src, server/migrations) ----------------------------------------
     // Derived from what the lane calls: the routes in scripts/test-jobs.sh, scripts/lanes/jobs/*.sh and the helpers they
@@ -106,8 +111,6 @@ export const RULES = [
     [/^driver\/src\/(services|loop\/loop-services|service-restart)\.ts$/, ['services', 'node-disruption'], 'service containers'],
     [/^driver\/src\/scripts\/service-generation-(bump|probe)\.sh$/, ['services'], 'service generation'],
     [/^driver\/src\/(reaper|reaper-export|docker\/docker-reaper|docker\/docker-volume-export)\.ts$/, ['orphan-reaper', 'driver-kill', 'capacity'], 'container reaper'],
-    [/^driver\/src\/(github-credential-call|loop\/loop-github)\.ts$/, ['github-credential'], 'GitHub credential'],
-    [/^driver\/src\/scripts\/credential-helper\.sh$/, ['github-credential'], 'GitHub credential'],
     [/^driver\/src\/(review\/review|review\/review-[a-z-]+|loop\/loop-review)\.ts$/, ['review'], 'reviewer'],
     [/^driver\/src\/scripts\/(review-[a-z-]+\.(cjs|sh)|git-review-snapshot\.cjs)$/, ['review'], 'reviewer'],
     [/^driver\/src\/(connection-control|loop\/loop-connection)\.ts$/, ['driver', 'cooperative-stop'], 'runtime connection requirement'],

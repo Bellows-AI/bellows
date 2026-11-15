@@ -198,10 +198,43 @@ describe('test-jobs --changed path-to-phase map', () => {
         ]);
     });
 
-    it('maps an MCP server or OAuth change to the mcp phase alone, ahead of the broad auth rule', () => {
+    it('maps an MCP server or OAuth change to the mcp phase alone, ahead of the auth rules', () => {
         expect(classify(['server/src/mcp/tools/task-wait.ts']).selected).toEqual(['mcp']);
         expect(classify(['server/src/auth/oauth-store.ts']).selected).toEqual(['mcp']);
-        expect(classify(['server/src/auth/session.ts']).selected).toEqual(['board', 'auth']);
+    });
+
+    // Every request, the claim's included, passes the auth plugin, its worker and session checks and the auth store.
+    it('runs the full lane for the auth files every request passes through', () => {
+        for (const file of [
+            'plugin',
+            'request-limits',
+            'route-class',
+            'session',
+            'store',
+            'worker-auth',
+            'driver-credentials',
+            'access-token',
+            'bridge-binding',
+            'membership-guard',
+        ]) {
+            expect(classify([`server/src/auth/${file}.ts`]).selected, file).toBe('full');
+        }
+    });
+
+    it('maps GitHub sign-in to the phases that boot an AUTH_MODE=github board, and the credential CLI to nothing', () => {
+        expect(classify(['server/src/auth/github.ts']).selected).toEqual(['capacity', 'auth', 'pinned-skills', 'mcp']);
+        expect(classify(['server/src/auth/driver-credential-cli.ts']).selected).toEqual([]);
+    });
+
+    // The driver asks the board for a GitHub token before every sync, publish and gate (driver/src/board/board.ts).
+    it('runs the full lane for the driver GitHub token ask every task makes', () => {
+        for (const file of [
+            'driver/src/github-credential-call.ts',
+            'driver/src/loop/loop-github.ts',
+            'driver/src/scripts/credential-helper.sh',
+        ]) {
+            expect(classify([file]).selected, file).toBe('full');
+        }
     });
 
     it('maps every file outside the lane inputs that a phase executes to that phase', () => {
