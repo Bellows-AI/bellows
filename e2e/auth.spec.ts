@@ -1,7 +1,9 @@
+import { randomInt } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
+import { IDP_PORT } from '../playwright.config.js';
 import { appearance, chooseAppearance, expectAppearanceOptions } from './appearance.js';
-import { throughSignIn } from './signin.js';
+import { finishSignIn, throughSignIn } from './signin.js';
 
 /**
  * The sign-in flow, in a real browser, against a stub identity provider.
@@ -27,6 +29,10 @@ const analyticsAnchor = (page: Page) => page.locator('.usage-summary, .usage-emp
 const gate = (page: Page) => page.locator('.login-gate');
 const signIn = (page: Page) => page.getByRole('link', { name: 'Sign in with GitHub' });
 const screen = (page: Page) => page.locator('.onboarding');
+/** The setup walk's stepper and one page's h1 in it. */
+const progress = (page: Page) => page.getByRole('list', { name: 'Setup progress' });
+const title = (page: Page, name: string) => page.getByRole('heading', { level: 1, name });
+const IDP = `http://127.0.0.1:${IDP_PORT}`;
 
 /** One installation as the pending report lists it: the org name the screen renders, and its id. */
 interface ReportedInstallation {
@@ -106,8 +112,8 @@ test('the selection screen tracks only the chosen organizations (issue 125)', as
     // still-checked org was materialized — the choice, nothing else from the report.
     const kept = reported[0]!;
     await orgs.filter({ hasText: reported[1]!.account }).getByRole('checkbox').uncheck();
-    await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
+    // Continue, then past the setup steps when this membership has not answered them yet.
+    await finishSignIn(page);
 
     const me = await page.request.get('/api/auth/me');
     expect(me.status()).toBe(200);
@@ -160,4 +166,76 @@ test('signing out returns to the gate, and the next sign-in reuses the stored ch
     await signIn(page).click();
     await analyticsAnchor(page).waitFor({ timeout: 60_000 });
     await expect(screen(page)).toHaveCount(0);
+});
+
+test('first sign-in walks Repositories → Model → Tools → Ready → app; reload resumes', async ({ page }) => {
+    // A fresh account, so its memberships carry no setup answer whatever other tests recorded.
+    const newcomer = { login: `newcomer-${randomInt(1e6)}`, id: 600_000_000 + randomInt(1e6) };
+    await page.request.post(`${IDP}/_control/identity`, { data: newcomer });
+    try {
+        await page.goto('/tasks');
+        await signIn(page).click();
+        await title(page, 'Choose organizations and repositories').waitFor({ timeout: 60_000 });
+        await expect(progress(page).locator('[aria-current="step"]')).toContainText('Repositories');
+        await page.getByRole('button', { name: 'Continue' }).click();
+
+        // The app route the sign-in returned to sends the unfinished member to the first step.
+        await expect(page).toHaveURL(/\/onboarding\/model\?returnTo=%2Ftasks$/, { timeout: 60_000 });
+        await expect(title(page, 'Connect a model')).toBeVisible();
+        await expect(page.locator('.public-context')).toHaveText('Setup · Step 2 of 3');
+        await expect(progress(page).locator('[aria-current="step"]')).toContainText('Model');
+        await page.getByRole('button', { name: 'Skip for now' }).click();
+
+        await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2Ftasks$/);
+        await expect(title(page, 'Connect your issue tracker')).toBeVisible();
+        await expect(progress(page).getByRole('listitem').filter({ hasText: 'Model' })).toContainText('–');
+
+        // Reload resumes at the step: the answers are the server's, and an app route leads back to it.
+        await page.reload();
+        await expect(title(page, 'Connect your issue tracker')).toBeVisible({ timeout: 60_000 });
+        await page.goto('/');
+        await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2F$/, { timeout: 60_000 });
+        await page.getByRole('button', { name: 'Skip for now' }).click();
+
+        await expect(page).toHaveURL(/\/onboarding\/ready\?returnTo=%2F$/);
+        await expect(page.locator('.public-context')).toHaveText('Ready');
+        await page.getByRole('button', { name: 'Go to the dashboard' }).click();
+        await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
+
+        // Complete: an app route stays put from now on.
+        await page.goto('/tasks');
+        await expect(page.locator('.sidenav')).toBeVisible({ timeout: 60_000 });
+        await expect(page).toHaveURL(/\/tasks$/);
+        await expect(screen(page)).toHaveCount(0);
+    } finally {
+        await page.request.post(`${IDP}/_control/identity`, { data: {} });
+    }
+});
+
+test("Back to Repositories after sign-in lands in the reselect round trip and returns to the step, never 'That sign-in expired'", async ({
+    page,
+}) => {
+    await throughSignIn(page);
+
+    // Back from Model: the reselect round trip reopens the selection screen with a live pending sign-in.
+    await page.goto('/onboarding/model?returnTo=%2Ftasks');
+    await page.getByRole('link', { name: 'Back' }).click();
+    // The expired state keeps the h1 but has no Continue: the button is the live screen's proof.
+    await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText('That sign-in expired')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(page).toHaveURL(/\/onboarding\/model\?returnTo=%2Ftasks$/, { timeout: 60_000 });
+    await expect(title(page, 'Connect a model')).toBeVisible();
+
+    // The stepper's Repositories step from Tools takes the same round trip back to Tools.
+    await page.goto('/onboarding/tools?returnTo=%2Ftasks');
+    await progress(page)
+        .getByRole('link', { name: /Repositories/ })
+        .click();
+    // The expired state keeps the h1 but has no Continue: the button is the live screen's proof.
+    await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText('That sign-in expired')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2Ftasks$/, { timeout: 60_000 });
+    await expect(title(page, 'Connect your issue tracker')).toBeVisible();
 });

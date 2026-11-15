@@ -21,9 +21,11 @@ import {
 import { Icon } from '../components/Icon.js';
 import { OnboardingOrganization } from '../components/OnboardingOrganization.js';
 import { PublicPageHeader } from '../components/PublicPageHeader.js';
+import { SetupStepper } from '../components/SetupStepper.js';
 import { StateNote } from '../components/StateNote.js';
 import { ThemeSelector } from '../components/ThemeSelector.js';
 import { PRODUCT_NAME } from '../brand.js';
+import { setupContext } from '../onboarding/steps.js';
 import { ERROR_CODES, JSON_HEADERS } from '@factory-ai/core';
 
 /** The board's session-expired status — the same recovery (Start again) as everywhere on this
@@ -158,8 +160,9 @@ async function handleSubmitFailure(
 function OnboardingShell({ children }: { children: ReactNode }) {
     return (
         <>
-            <PublicPageHeader context="Setup · One step" actions={<ThemeSelector />} />
+            <PublicPageHeader context={setupContext('repositories')} actions={<ThemeSelector />} />
             <main className="onboarding">
+                <SetupStepper current="repositories" />
                 <h1>Choose organizations and repositories</h1>
                 <p className="onboarding-purpose">
                     Track agent activity, start work, and keep repository setup visible in one place.
