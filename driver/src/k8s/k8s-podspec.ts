@@ -19,7 +19,6 @@ import {
     REVIEWER_HOME,
     REVIEWER_TREE_DIR,
     REVIEWER_TREE_PATH,
-    REVIEWER_UID,
     CREDENTIAL_CACHE_DIR,
     CREDENTIAL_CACHE_SIZE,
     opencodeDbPath,
@@ -34,7 +33,7 @@ import {
     claudeExportScript,
     gateLoopArgv,
     opencodeReadoutScript,
-    reviewLoopArgv,
+    reviewerLaunchArgv,
     serviceProbeArgv,
     supervisorScript,
 } from '../container-scripts.js';
@@ -382,15 +381,16 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string): Runner
 /**
  * The reviewer container: the executor image as a native sidecar, dormant beside the
  * supervisor for the whole group, running the review loop over the review mailbox only the two of
- * them mount (`scripts/review-loop.sh`). It runs as REVIEWER_UID — not the CLI's, the tool's or the
- * gate's — so none of them can signal a review, and it holds nothing a publication needs: no
+ * them mount (`scripts/review-loop.sh`). It starts as the agent does — root with the launch pair —
+ * through factory-launch --reviewer, which starts the tool broker and drops to REVIEWER_UID — not the
+ * CLI's, the tool's or the gate's — so none of them can signal a review, and a review's tool commands
+ * run as the tool uid with no attempt lease and no telemetry credential. It holds nothing a publication needs: no
  * publish token, no credential helper, no claim env and no Secret reference but the model credentials Secret the agent also reads — of the attempt Secret it mounts the telemetry-config key alone, which names no credential. Each request carries the
  * review's own environment and is gone before the review starts. Its tree is the task volume,
  * read-only (the shared clone and the review's worktree are in it), but for its HOME, a fixed
  * directory of that tree it mounts read-write (`REVIEWER_TREE_DIR`). Sized idle (`reviewerResourcesField`) and resized in place for a review.
  */
 function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContainer {
-    const hardened = containerHardeningField().securityContext;
     // The agent's own telemetry-config mount (one key of the pod's telemetry volume): the image's
     // baked file names the compose collector and outranks a review's env. It names no credential;
     // each review's own rides that review's env (review-step.ts).
@@ -403,8 +403,8 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
         imagePullPolicy: config.imagePullPolicy,
         restartPolicy: 'Always',
         ...reviewerResourcesField(config),
-        securityContext: { ...hardened, runAsUser: REVIEWER_UID, runAsGroup: GATE_GID },
-        command: reviewLoopArgv(),
+        ...agentLaunchHardeningField(),
+        command: reviewerLaunchArgv(),
         workingDir: MAILBOXES.review.path,
         env: [{ name: 'HOME', value: REVIEWER_HOME }, ...credentialsSecretEnv(config)],
         volumeMounts: [

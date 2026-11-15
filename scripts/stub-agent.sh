@@ -13,7 +13,10 @@
 # runs them (scripts/stub-runner.Dockerfile). A scripted reviewer: it names who ran it, tries to
 # write into the shared clone it was given read-only and reports whether that failed, optionally
 # holds first (a `STUB-REVIEW-HOLD-<seconds>` marker in the instructions, once per reviewer home, so
-# a re-run after a lost pod answers at once), and ends on the verdict line the board parses.
+# a re-run after a lost pod answers at once), runs one tool call through its shell — the tool broker's,
+# in the images — reporting the tool's uid and whether the attempt lease and the OTLP headers reached
+# it, beside the same two read on its own side as the control, and ends on the verdict line the board
+# parses. The probes print set or unset, never a value: the output is kept on the board.
 if [ "${1:-}" = review ]; then
     executor=${2:-unknown}
     shift 2
@@ -32,6 +35,11 @@ if [ "${1:-}" = review ]; then
     fi
     printf 'review-stub executor=%s uid=%s\n' "$executor" "$(id -u)"
     printf 'tree-write=%s\n' "$written"
+    seen() { if [ -n "$1" ]; then echo set; else echo unset; fi; }
+    printf 'cli-lease=%s cli-otlp=%s\n' "$(seen "${RUNNER_LEASE_TOKEN:-}")" "$(seen "${OTEL_EXPORTER_OTLP_HEADERS:-}")"
+    "${SHELL:-/bin/sh}" -c 'seen() { if [ -n "$1" ]; then echo set; else echo unset; fi; }
+        printf "tool-uid=%s tool-lease=%s tool-otlp=%s\n" "$(id -u)" \
+            "$(seen "${RUNNER_LEASE_TOKEN:-}")" "$(seen "${OTEL_EXPORTER_OTLP_HEADERS:-}")"'
     echo 'VERDICT: CLEAN'
     exit 0
 fi

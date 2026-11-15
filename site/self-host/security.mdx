@@ -40,9 +40,9 @@ On Kubernetes, the admission policy requires these on every pod the driver creat
 | Limited Secret reads | Only the pod's own per-attempt Secrets and the runner credentials |
 | Sandbox runtime | `runtimeClassName` equal to `runner.runtimeClassName`, when it is set |
 
-One exception exists. The `agent` container starts as root with only `SETUID` and `SETGID` added, so it can start commands as another user. A declared service or a gate image has no such exception. If a service needs root at boot, it declares a numeric `user: "uid:gid"` that is not 0.
+One exception exists, for two containers. The `agent` container and the `reviewer` sidecar start as root with only `SETUID` and `SETGID` added, so they can start commands as another user. Each then drops to its own user before the agent program or the review runs. Admission requires the reviewer to start through the launcher that makes that drop. A declared service or a gate image has no such exception. If a service needs root at boot, it declares a numeric `user: "uid:gid"` that is not 0.
 
-Pod Security `restricted` cannot admit the agent container. `baseline` can.
+Pod Security `restricted` cannot admit the agent or the reviewer container. `baseline` can.
 
 Under gVisor (GKE Sandbox) the policy keeps every rule above. GKE admits and starts these pods, but seccomp and No New Privileges have no effect inside the sandbox: a runner reads `Seccomp: 0`. The gVisor kernel is the boundary there. The rules stay so that one policy fits installs with and without a RuntimeClass.
 
@@ -53,8 +53,9 @@ Under gVisor (GKE Sandbox) the policy keeps every rule above. GKE admits and sta
 | CLI (the agent program) | 1000 |
 | Tool commands the agent runs | 1001, started through a root broker |
 | Reviewer sidecar | 1002 |
+| Tool commands a review runs | 1001, started through a root broker |
 
-Commands the agent runs execute as the tool user. The CLI's configuration, credentials and mailboxes stay closed to that user. The control channel to the supervisor is reached only through a proxy in the CLI's user. No tool environment holds a control token.
+Commands the agent runs execute as the tool user. The CLI's configuration, credentials and mailboxes stay closed to that user. A review's commands also run as the tool user. They do not see the review's attempt lease or its telemetry credential, and nothing they start outlives the review. The control channel to the supervisor is reached only through a proxy in the CLI's user. No tool environment holds a control token.
 
 <Warning>
 The tool user protects the CLI against accidents, not against a hostile tool. A tool can still write files the CLI later reads (`.git/config`, `.claude`, `.mcp.json`) and can exhaust memory, CPU or process slots. Hooks and MCP servers run as the CLI's user. Treat what an agent can do inside its container as unconstrained.

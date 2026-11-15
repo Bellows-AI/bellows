@@ -66,6 +66,77 @@ iso_check 'a tool reaches the run-control proxy, which forwards to the superviso
         sleep 1; FACTORY_CTL_OUT=/tmp/relay node /usr/local/bin/control-proxy.cjs &
         sleep 1; '"$TOOL_SHELL"' -c "$T"'
 
+# reviewer [docker args...] -- <command...>: the command as the review sidecar's uid, behind
+# factory-launch --reviewer, with the HOME the driver gives it.
+reviewer() {
+    local args=()
+    while [ "$1" != -- ]; do args+=("$1"); shift; done
+    shift
+    docker run --rm "${AGENT_FLAGS[@]}" --tmpfs /home/reviewer:uid=1002,gid=1000,mode=2775 -e HOME=/home/reviewer \
+        "${args[@]}" --entrypoint /usr/local/bin/factory-launch "$IMAGE" --reviewer "$@"
+}
+
+iso_check 'the reviewer runs as 1002 in node'"'"'s group and the broker'"'"'s, with no capability' \
+    "uid=1002 gid=1000(node) groups=1000(node),1002(factory-agent) $CAPS_NONE" \
+    reviewer -e T="$ID" -- sh -c 'eval "$T"'
+# The review's CLI holds the attempt lease and the telemetry credential; its tools hold neither.
+iso_check 'a reviewer tool runs as the tool uid and sees no lease token and no OTLP header' \
+    'cli set set set 1001 unset unset unset' \
+    reviewer -e RUNNER_LEASE_TOKEN=probe -e OTEL_EXPORTER_OTLP_HEADERS=x-factory-ingest-token=probe \
+    -e OTEL_EXPORTER_OTLP_LOGS_HEADERS=x=y \
+    -e T='printf "%s " "$(id -u)"
+        echo "${RUNNER_LEASE_TOKEN-unset}" "${OTEL_EXPORTER_OTLP_HEADERS-unset}" "${OTEL_EXPORTER_OTLP_LOGS_HEADERS-unset}"' -- \
+    sh -c 'echo cli ${RUNNER_LEASE_TOKEN:+set} ${OTEL_EXPORTER_OTLP_HEADERS:+set} ${OTEL_EXPORTER_OTLP_LOGS_HEADERS:+set}
+        '"$TOOL_SHELL"' -c "$T"'
+iso_check 'a reviewer tool reaches neither the reviewer'"'"'s private config nor its environment' 'closed closed' \
+    reviewer -e T='ls "/home/reviewer/.private" >/dev/null 2>&1 || echo closed
+        cat "/proc/$R/environ" >/dev/null 2>&1 || echo closed' -- \
+    sh -c 'mkdir -m 700 "$HOME/.private" && R=$$ '"$TOOL_SHELL"' -c "$T"'
+# What a review's tool left past its own group — a setsid child — the sweep after the review ends; the
+# reviewer, another uid, is untouched. A killed child the container's pid 1 never reaped reads Z.
+iso_check 'the sweep ends what a reviewer tool left behind, and leaves the reviewer running' 'left swept reviewer-alive' \
+    reviewer -e T='setsid sleep 60 </dev/null >/dev/null 2>&1 & echo $! > "$TMPDIR/left"' -- \
+    sh -c "$TOOL_SHELL"' -c "$T"; pid=$(cat /tmp/factory-tmp/left)
+        state() { sed -n "s/^State:[[:space:]]*\(.\).*/\1/p" "/proc/$pid/status" 2>/dev/null; }
+        [ "$(state)" = S ] && echo left
+        /usr/local/bin/node /usr/local/lib/factory-tool/factory-tool.cjs sweep
+        case "$(state)" in "" | Z) echo swept ;; esac
+        echo reviewer-alive'
+
+# A review's request env is member-settable: one naming SHELL or CLAUDE_CODE_SHELL must not route
+# the review's tools around the broker. The real loop (driver/src/scripts/review-loop.sh) serves one
+# request carrying both, the lease and the OTLP header; the review runs a tool through each shell.
+# The loop's `kill -1` reaches its own uid, so the request is staged and read by `docker exec`.
+REVIEW_LOOP="$(cat "$(dirname "${BASH_SOURCE[0]}")/../driver/src/scripts/review-loop.sh")"
+review_request_env() {
+    local cid
+    cid="$(docker run -d "${AGENT_FLAGS[@]}" --tmpfs /home/reviewer:uid=1002,gid=1000,mode=2775 \
+        -e HOME=/home/reviewer -e FACTORY_REVIEW_DIR=/tmp/review \
+        --entrypoint /usr/local/bin/factory-launch "$IMAGE" --reviewer sh -c "$REVIEW_LOOP" review-loop)"
+    docker exec -i -u 1002:1000 "$cid" sh -s <<'SETUP'
+cat > /tmp/probe.sh <<'PROBE'
+exec "$1" -c 'printf "%s %s %s " "$(id -u)" "${RUNNER_LEASE_TOKEN-unset}" "${OTEL_EXPORTER_OTLP_HEADERS-unset}"
+    ls /home/reviewer/.private >/dev/null 2>&1 && echo open || echo closed'
+PROBE
+mkdir -p /tmp/stage/r1
+printf '%s\n' SHELL=/bin/bash CLAUDE_CODE_SHELL=/bin/bash RUNNER_LEASE_TOKEN=probe \
+    OTEL_EXPORTER_OTLP_HEADERS=x-factory-ingest-token=probe > /tmp/stage/r1/env
+echo / > /tmp/stage/r1/cwd
+echo 'mkdir -m 700 /home/reviewer/.private; sh /tmp/probe.sh "$SHELL"; sh /tmp/probe.sh "$CLAUDE_CODE_SHELL"' \
+    > /tmp/stage/r1/command
+until [ -d /tmp/review/requests ]; do sleep 0.2; done
+mv /tmp/stage/r1 /tmp/review/requests/r1
+SETUP
+    for _ in $(seq 1 150); do
+        docker exec -u 1002:1000 "$cid" test -e /tmp/review/done/r1/exit 2>/dev/null && break
+        sleep 0.2
+    done
+    docker exec -u 1002:1000 "$cid" cat /tmp/review/done/r1/output 2>&1
+    docker rm -f "$cid" >/dev/null 2>&1
+}
+iso_check 'a review'"'"'s request env naming its own shells still runs its tools through the broker' \
+    '1001 unset unset closed 1001 unset unset closed' review_request_env
+
 # The broker is root with two capabilities: it starts under an empty environment, so a run's own
 # variables never reach it. Read from outside, as root, since no uid inside may read its environ.
 broker_env() {

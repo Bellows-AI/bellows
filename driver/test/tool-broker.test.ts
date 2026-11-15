@@ -40,10 +40,12 @@ interface BrokerDeps {
     mailbox: string;
     sharedTmp: string;
     identity: { uid: number; gid: number } | null;
+    /** A reviewer's broker: its tools see no attempt lease either. */
+    reviewer?: boolean;
 }
 const broker = createRequire(import.meta.url)(BROKER) as {
     serve: (deps: BrokerDeps) => Promise<Server>;
-    toolEnv: (env: Record<string, string>, sharedTmp?: string) => Record<string, string>;
+    toolEnv: (env: Record<string, string>, sharedTmp?: string, mode?: { reviewer?: boolean }) => Record<string, string>;
     TOOL: { uid: number; gid: number };
     TOOL_HOME: string;
     SHARED_TMP: string;
@@ -60,6 +62,8 @@ const broker = createRequire(import.meta.url)(BROKER) as {
             stderr: unknown;
         }
     ) => Promise<Status>;
+    sweep: (deps: { socket: string; deadlineMs: number }) => Promise<number>;
+    SWEEP_CLIENT_DEADLINE_MS: number;
     frame: (type: string, payload?: string | Buffer) => Buffer;
     frames: (onFrame: (type: string, payload: Buffer) => void) => (chunk: Buffer) => boolean;
 };
@@ -146,14 +150,17 @@ async function startBroker(options: Partial<BrokerDeps> = {}) {
 }
 
 /** The real client, as a process of its own, against `socket`. */
-function client(socket: string, argv: string[], cwd = process.cwd()): ChildProcess {
+function client(socket: string, argv: string[], cwd = process.cwd(), env: Record<string, string> = {}): ChildProcess {
     const script = `require(${JSON.stringify(BROKER)}).run(${JSON.stringify(argv)}, {
         socket: ${JSON.stringify(socket)}, cwd: ${JSON.stringify(cwd)}, env: (({ TMPDIR, ...rest }) => rest)(process.env),
         stdin: process.stdin, stdout: process.stdout, stderr: process.stderr,
     }).then((status) => {
         process.stdout.write('', () => status.signal ? process.kill(process.pid, status.signal) : process.exit(status.code));
     })`;
-    const child = spawn(process.execPath, ['-e', script], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['-e', script], {
+        env: { ...process.env, ...env },
+        stdio: ['pipe', 'pipe', 'pipe'],
+    });
     children.push(child);
     return track(child);
 }
@@ -249,6 +256,123 @@ describe('the tool broker', () => {
         expect(Object.keys(env).filter((name) => name.includes('HEADERS'))).toEqual([]);
         expect(JSON.stringify(env)).not.toContain('x-factory-ingest-token');
         expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe('http://collector:4318');
+    });
+
+    it('withholds the attempt lease and every OTLP header from a reviewer’s tool', () => {
+        const env = {
+            PATH: '/usr/bin',
+            RUNNER_LEASE_TOKEN: 'lease',
+            OTEL_EXPORTER_OTLP_HEADERS: 'x-factory-ingest-token=t',
+            OTEL_EXPORTER_OTLP_LOGS_HEADERS: 'x-factory-ingest-token=t',
+        };
+        const reviewer = broker.toolEnv(env, broker.SHARED_TMP, { reviewer: true });
+        expect(reviewer.RUNNER_LEASE_TOKEN).toBeUndefined();
+        expect(Object.keys(reviewer).filter((name) => name.includes('HEADERS'))).toEqual([]);
+        // A task's tools keep the lease: its git and Jira helpers present the attempt pair.
+        expect(broker.toolEnv(env).RUNNER_LEASE_TOKEN).toBe('lease');
+    });
+
+    describe('a reviewer’s broker', () => {
+        const PROBE = [
+            '-c',
+            'for v in RUNNER_LEASE_TOKEN OTEL_EXPORTER_OTLP_HEADERS; do printenv "$v" || echo unset; done',
+        ];
+        const CLI_ENV = { RUNNER_LEASE_TOKEN: 'probe', OTEL_EXPORTER_OTLP_HEADERS: 'x-factory-ingest-token=probe' };
+
+        it('a reviewer’s tool command sees no lease token and no OTLP header', async () => {
+            const { socket } = await startBroker({ reviewer: true });
+            const ran = await settled(client(socket, PROBE, process.cwd(), CLI_ENV));
+            expect(ran.stdout.toString()).toBe('unset\nunset\n');
+        });
+
+        // Passes before the fix too: it guards the task counterpart, whose tools keep the lease.
+        it('a broker not in reviewer mode still passes the lease', async () => {
+            const { socket } = await startBroker();
+            const ran = await settled(client(socket, PROBE, process.cwd(), CLI_ENV));
+            expect(ran.stdout.toString()).toBe('probe\nunset\n');
+        });
+    });
+
+    describe('the sweep', () => {
+        /**
+         * Never the real script: `kill -KILL -1` as this test's uid would take the runner with it.
+         * Each script the broker asks for is recorded and stood in for — `true` for the startup one, a
+         * `sleep` the test ends (or expires, as spawn's timer would) for the sweep.
+         */
+        function standInHelper() {
+            const calls: { file: string; args: string[]; options: Record<string, unknown> }[] = [];
+            const sweeps: ChildProcess[] = [];
+            let wake: (() => void) | null = null;
+            const helper = ((file: string, args: string[], options: Record<string, unknown>) => {
+                calls.push({ file, args, options });
+                const sweeping = args[1]?.includes('kill -KILL -1');
+                const child = track(spawn(sweeping ? 'sleep' : 'true', sweeping ? ['30'] : [], { stdio: 'ignore' }));
+                if (sweeping) {
+                    children.push(child);
+                    sweeps.push(child);
+                    wake?.();
+                }
+                return child;
+            }) as unknown as typeof spawn;
+            const sweep = async () => {
+                while (sweeps.length === 0) await new Promise<void>((resolve) => (wake = resolve));
+                return sweeps[0]!;
+            };
+            return { helper, calls, sweep };
+        }
+
+        it('a sweep runs kill -1 as the tool identity and answers once it ends', async () => {
+            const stand = standInHelper();
+            const { socket } = await startBroker({ helper: stand.helper, identity: broker.TOOL });
+            let answered = false;
+            const swept = broker.sweep({ socket, deadlineMs: broker.SWEEP_CLIENT_DEADLINE_MS }).then((code) => {
+                answered = true;
+                return code;
+            });
+            const sleeper = await stand.sweep();
+            expect(stand.calls.at(-1)).toMatchObject({
+                file: '/bin/sh',
+                args: ['-c', expect.stringMatching(/^kill -KILL -1\b/), 'factory-tool'],
+                options: { uid: TOOL_UID, gid: 1000, timeout: SWEEP_TIMEOUT_MS },
+            });
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            expect(answered).toBe(false);
+            sleeper.kill('SIGKILL');
+            await swept;
+            expect(answered).toBe(true);
+        });
+
+        it('a sweep whose script hangs is answered at the broker’s bound', async () => {
+            const stand = standInHelper();
+            const { socket } = await startBroker({ helper: stand.helper });
+            const swept = broker.sweep({ socket, deadlineMs: broker.SWEEP_CLIENT_DEADLINE_MS });
+            // What spawn's own timer does at SWEEP_TIMEOUT_MS.
+            (await stand.sweep()).kill('SIGTERM');
+            expect(await swept).not.toBe(0);
+        });
+
+        it('the sweep client ends at its own deadline against a broker that never answers', async () => {
+            const socket = join(scratch(), 'mute.sock');
+            const held: Socket[] = [];
+            const server = createServer((conn) => {
+                held.push(conn);
+                conn.on('error', () => undefined);
+            });
+            await new Promise<void>((resolve) => server.listen(socket, resolve));
+            servers.push(server);
+            expect(broker.SWEEP_CLIENT_DEADLINE_MS).toBe(10_000);
+            const started = Date.now();
+            try {
+                expect(await broker.sweep({ socket, deadlineMs: 200 })).toBe(1);
+                expect(Date.now() - started).toBeLessThan(5000);
+            } finally {
+                for (const conn of held) conn.destroy();
+            }
+        });
+
+        it('the sweep client exits 1 when no broker listens', async () => {
+            expect(await broker.sweep({ socket: join(scratch(), 'absent.sock'), deadlineMs: 200 })).toBe(1);
+        });
     });
 
     it('streams stdout, stderr and the exit code back byte for byte', async () => {

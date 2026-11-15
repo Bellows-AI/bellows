@@ -8,13 +8,12 @@ import {
     REVIEWER_CONTAINER,
     SUPERVISOR_CONTAINER,
 } from '../../src/supervisor-contract.js';
-import { gateLoopArgv, reviewLoopArgv, supervisorScript } from '../../src/container-scripts.js';
+import { gateLoopArgv, reviewerLaunchArgv, supervisorScript } from '../../src/container-scripts.js';
 import { ARTIFACT_LIMIT } from '../../src/runner.js';
 import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { LOG_TAIL_LINES } from '../../src/k8s/k8s-transport.js';
 import { jobsPath, runnerJobName, runnerJobSpec, secretName } from '../../src/k8s/k8s-podspec.js';
 import {
-    GATE_GID,
     GATE_UID,
     CREDENTIAL_CACHE_DIR,
     REVIEWER_HOME,
@@ -23,7 +22,7 @@ import {
     REVIEWER_UID,
     TOOL_UID,
 } from '../../src/claim.js';
-import { reviewerRequests } from '../../src/k8s/k8s-podfields.js';
+import { agentLaunchHardeningField, reviewerRequests } from '../../src/k8s/k8s-podfields.js';
 import { TASK_MOUNT, TASK_VOLUME, taskInitScript } from '../../src/task-volume.js';
 import {
     SUPERVISED,
@@ -241,7 +240,7 @@ describe('the reviewer sidecar (issue #774)', () => {
         const reviewer = reviewerOf();
         expect(reviewer.restartPolicy).toBe('Always');
         expect(reviewer.image).toBe(podOf(reviewing).containers.find((c) => c.name === 'agent')!.image);
-        expect(reviewer.command).toEqual(reviewLoopArgv());
+        expect(reviewer.command).toEqual(reviewerLaunchArgv());
         expect(reviewer.workingDir).toBe(MAILBOXES.review.path);
         expect(podOf(reviewing).initContainers?.map((container) => container.name)).toEqual([
             'gate',
@@ -259,11 +258,14 @@ describe('the reviewer sidecar (issue #774)', () => {
         }
     });
 
-    it('the reviewer runs as REVIEWER_UID ≠ TOOL_UID, mounts only its read-only tree, its mailbox, its home and its telemetry config', () => {
+    // It starts as the agent does — root with the launch pair — so its tools run through the broker as
+    // the tool uid; factory-launch --reviewer drops it to REVIEWER_UID (executor-images.test.ts).
+    it('the reviewer launches through factory-launch --reviewer, mounts only its read-only tree, its mailbox, its home and its telemetry config', () => {
         const reviewer = reviewerOf();
         expect(REVIEWER_UID).not.toBe(TOOL_UID);
         expect(REVIEWER_UID).not.toBe(GATE_UID);
-        expect(reviewer.securityContext).toMatchObject({ runAsUser: REVIEWER_UID, runAsGroup: GATE_GID });
+        expect(reviewer.securityContext).toEqual(agentLaunchHardeningField().securityContext);
+        expect(reviewer.command?.slice(0, 2)).toEqual(['/usr/local/bin/factory-launch', '--reviewer']);
         expect(reviewer.volumeMounts).toEqual([
             { name: TASK_VOLUME, mountPath: TASK_MOUNT, readOnly: true },
             { name: MAILBOXES.review.name, mountPath: MAILBOXES.review.path },

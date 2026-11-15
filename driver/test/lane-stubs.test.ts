@@ -289,6 +289,32 @@ describe('scripts/stub-agent.sh, run locally under /bin/sh', () => {
         },
         CASE_TIMEOUT_MS
     );
+    // The lanes read a reviewer's tool identity from the review's output, which the board keeps: the
+    // probe prints set or unset, never a credential's value. Here the shell is a plain one, so the tool
+    // side sees what the CLI side does; the images' broker is what makes them differ.
+    it(
+        'review mode probes the tool shell and the CLI side, set or unset only',
+        async () => {
+            const box = sandbox();
+            const uid = String(process.getuid?.());
+            const held = run(box.wrapper, ['review', 'claude-executor', 'instructions'], {
+                HOME: box.inDir,
+                SHELL: '/bin/sh',
+                RUNNER_LEASE_TOKEN: 'lease-value',
+                OTEL_EXPORTER_OTLP_HEADERS: 'x-factory-ingest-token=otlp-value',
+            });
+            expect(await held.exited).toBe(0);
+            expect(held.stdout()).toContain(`tool-uid=${uid} tool-lease=set tool-otlp=set\n`);
+            expect(held.stdout()).toContain('cli-lease=set cli-otlp=set\n');
+            expect(held.stdout()).not.toMatch(/lease-value|otlp-value/);
+            expect(held.stdout().trimEnd().split('\n').at(-1)).toBe('VERDICT: CLEAN');
+            const bare = run(box.wrapper, ['review', 'claude-executor', 'instructions'], { HOME: box.inDir });
+            expect(await bare.exited).toBe(0);
+            expect(bare.stdout()).toContain(`tool-uid=${uid} tool-lease=unset tool-otlp=unset\n`);
+            expect(bare.stdout()).toContain('cli-lease=unset cli-otlp=unset\n');
+        },
+        CASE_TIMEOUT_MS
+    );
 });
 
 describe('the kind recovery stub barrier', () => {
