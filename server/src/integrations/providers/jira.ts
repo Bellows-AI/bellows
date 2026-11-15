@@ -1,6 +1,7 @@
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, jiraApiBase, jiraScopesFor } from '@factory-ai/core';
-import type { DiscoveredIdentity, ExchangeResult, IssuedTokens, OAuthProviderHooks } from '../oauth-provider.js';
+import type { DiscoveredIdentity, ExchangeResult, OAuthProviderHooks } from '../oauth-provider.js';
 import { combineRegistrations, type ProviderRegistration, type ProviderRegistry } from '../provider-registry.js';
+import { answerOf, isRecord, readCapped, sortedScopes } from './oauth-http.js';
 
 /** Atlassian 3LO hooks for the outbound OAuth runtime (docs/connections.md). Client credentials come from config only. */
 export interface JiraHooksConfig {
@@ -13,14 +14,7 @@ export interface JiraHooksConfig {
 
 type FetchFn = typeof fetch;
 
-const MAX_BODY_BYTES = 65_536;
-const MS_PER_SECOND = 1000;
 const SITE_LIMIT = 255;
-const REFUSALS = new Set(['invalid_grant', 'invalid_request', 'unauthorized_client', 'access_denied']);
-const HTTP_BAD_REQUEST = 400;
-const HTTP_UNAUTHORIZED = 401;
-const HTTP_FORBIDDEN = 403;
-const REFUSAL_STATUSES = new Set([HTTP_BAD_REQUEST, HTTP_UNAUTHORIZED, HTTP_FORBIDDEN]);
 const SITE_HOST = /^[a-z0-9][a-z0-9-]*\.atlassian\.net$/i;
 
 /** A Jira Cloud site host from a bare host or an https URL, or null when it is neither. */
@@ -33,49 +27,9 @@ export function jiraSiteHost(raw: unknown): string | null {
     return SITE_HOST.test(host) ? host.toLowerCase() : null;
 }
 
-class BodyTooLarge extends Error {}
-
-/** Reads at most 64 KiB; rejects on a transport error, an abort or a premature close. */
-async function readCapped(res: Response): Promise<string> {
-    if (!res.body) return '';
-    const reader = res.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    try {
-        for (;;) {
-            const next = await reader.read();
-            if (next.done) break;
-            total += next.value.byteLength;
-            if (total > MAX_BODY_BYTES) throw new BodyTooLarge();
-            chunks.push(next.value);
-        }
-    } catch (error) {
-        await reader.cancel().catch(() => undefined);
-        throw error;
-    }
-    return Buffer.concat(chunks).toString('utf8');
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-    typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const sortedScopes = (scopes: Iterable<string>): string[] => [...new Set(scopes)].sort();
-
-/** A token answer, or null when it is not one: the provider may have spent the code, so null is never definitive. */
-function tokensFrom(json: unknown): IssuedTokens | null {
-    if (!isRecord(json)) return null;
-    const { access_token: accessToken, expires_in: expiresIn, refresh_token: refreshToken, scope } = json;
-    if (typeof accessToken !== 'string' || accessToken === '') return null;
-    if (typeof expiresIn !== 'number' || !Number.isFinite(expiresIn) || expiresIn <= 0) return null;
-    if (refreshToken !== undefined && typeof refreshToken !== 'string') return null;
-    if (scope !== undefined && typeof scope !== 'string') return null;
-    return {
-        accessToken,
-        expiresAt: Date.now() + expiresIn * MS_PER_SECOND,
-        refreshToken: refreshToken || null,
-        ...(scope === undefined ? {} : { authority: { scopes: sortedScopes(scope.split(' ').filter(Boolean)) } }),
-    };
-}
+/** Atlassian answers its scopes space-separated; any other shape is not a token answer. */
+const jiraScopes = (scope: unknown): string[] | null =>
+    typeof scope === 'string' ? scope.split(' ').filter(Boolean) : null;
 
 function resourceFrom(entry: unknown): { id: string; label: string; scopes: string[] } | null {
     if (!isRecord(entry)) return null;
@@ -152,23 +106,6 @@ export function jiraProvider(cfg: JiraHooksConfig | null, callbackOrigin: string
 export const jiraRegistration = (cfg: JiraHooksConfig | null, callbackOrigin: string | null): ProviderRegistry =>
     combineRegistrations([jiraProvider(cfg, callbackOrigin)]);
 
-/** A token endpoint answer: tokens, a refusal the provider meant, or unconfirmed. */
-function answerOf(res: Response, text: string): ExchangeResult {
-    let json: unknown = null;
-    try {
-        json = JSON.parse(text);
-    } catch {
-        json = null;
-    }
-    if (res.ok) {
-        const tokens = tokensFrom(json);
-        return tokens ? { ok: true, tokens } : { ok: false, failure: 'ambiguous' };
-    }
-    const error = isRecord(json) ? json.error : undefined;
-    const refused = REFUSAL_STATUSES.has(res.status) && typeof error === 'string' && REFUSALS.has(error);
-    return { ok: false, failure: refused ? 'definitive' : 'ambiguous' };
-}
-
 export function createJiraHooks(cfg: JiraHooksConfig, fetchFn: FetchFn = fetch): OAuthProviderHooks {
     async function tokenCall(grant: Record<string, string>, signal: AbortSignal): Promise<ExchangeResult> {
         if (signal.aborted) return { ok: false, failure: 'not-sent' };
@@ -186,7 +123,7 @@ export function createJiraHooks(cfg: JiraHooksConfig, fetchFn: FetchFn = fetch):
         } catch {
             return { ok: false, failure: 'ambiguous' };
         }
-        return answerOf(res, text);
+        return answerOf(res, text, jiraScopes);
     }
 
     return {

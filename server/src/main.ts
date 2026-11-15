@@ -38,6 +38,7 @@ import {
 } from './integrations/integration-recovery.js';
 import { combineRegistrations, type ProviderRegistry } from './integrations/provider-registry.js';
 import { jiraProvider } from './integrations/providers/jira.js';
+import { linearProvider } from './integrations/providers/linear.js';
 import { startTempSweep } from './artifacts/fs-store.js';
 import { startAttachmentSweep } from './attachments/attachment-collector.js';
 import { startSkillSweep } from './skills/skill-collector.js';
@@ -255,6 +256,10 @@ interface StartOptions {
     githubRevoke?: GithubRevoke;
 }
 
+/** Every outbound OAuth provider: Jira by ATLASSIAN_CLIENT_ID/SECRET, Linear by LINEAR_CLIENT_ID/SECRET. */
+const providerRegistry = ({ callbackOrigin, jira, linear }: AppConfig['integrations']): ProviderRegistry =>
+    combineRegistrations([jiraProvider(jira, callbackOrigin), linearProvider(linear, callbackOrigin)]);
+
 /**
  * The whole wiring, from config to `listen`. Every entry is this function plus one decision about
  * GitHub: `index.ts` reads the environment, which can only ever produce the App; `offline.ts`
@@ -380,8 +385,8 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     }
 
     // The outbound OAuth runtime over every provider registration; with none configured it serves only the recovery
-    // of rows and the destroy of a revoked grant's secret. Jira is configured by ATLASSIAN_CLIENT_ID/SECRET.
-    const registry = combineRegistrations([jiraProvider(config.integrations.jira, config.integrations.callbackOrigin)]);
+    // of rows and the destroy of a revoked grant's secret.
+    const registry = providerRegistry(config.integrations);
     const { configured, ids, notConfiguredOf } = registry;
     const integrations = createIntegrationRuntime({
         sql,

@@ -53,3 +53,44 @@ describe('integrations.jira', () => {
         }
     });
 });
+
+describe('integrations.linear', () => {
+    it('LINEAR_CLIENT_ID and SECRET configure Linear with the default Linear URLs', () => {
+        expect(load({ LINEAR_CLIENT_ID: 'lid', LINEAR_CLIENT_SECRET: 'lsecret' }).integrations.linear).toEqual({
+            clientId: 'lid',
+            clientSecret: 'lsecret',
+            authorizeUrl: 'https://linear.app/oauth/authorize',
+            apiOrigin: 'https://api.linear.app',
+        });
+    });
+
+    it('is both or neither, naming the missing half', () => {
+        expect(() => load({ LINEAR_CLIENT_ID: 'lid' })).toThrow(/LINEAR_CLIENT_SECRET is not set/);
+        expect(() => load({ LINEAR_CLIENT_SECRET: 'lsecret' })).toThrow(/LINEAR_CLIENT_ID is not set/);
+    });
+
+    it('is null when unset, whatever Jira is', () => {
+        expect(load({}).integrations.linear).toBeNull();
+        expect(load({ ATLASSIAN_CLIENT_ID: 'cid', ATLASSIAN_CLIENT_SECRET: 'cs' }).integrations.linear).toBeNull();
+    });
+
+    it('an override URL warns once and must be absolute http(s)', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const env = { LINEAR_CLIENT_ID: 'lid', LINEAR_CLIENT_SECRET: 'lsecret' };
+        expect(load(env).integrations.linear).not.toBeNull();
+        expect(warn).not.toHaveBeenCalled();
+        const config = load({
+            ...env,
+            LINEAR_API_URL: 'http://127.0.0.1:9999/linear/',
+            LINEAR_AUTHORIZE_URL: 'http://127.0.0.1:9999/linear/authorize',
+        });
+        expect(config.integrations.linear?.apiOrigin).toBe('http://127.0.0.1:9999/linear');
+        expect(config.integrations.linear?.authorizeUrl).toBe('http://127.0.0.1:9999/linear/authorize');
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(String(warn.mock.calls[0]?.[0])).toContain('Linear');
+        for (const name of ['LINEAR_AUTHORIZE_URL', 'LINEAR_API_URL']) {
+            expect(() => load({ ...env, [name]: 'not a url' })).toThrow(new RegExp(name));
+            expect(() => load({ ...env, [name]: 'ftp://example.test/x' })).toThrow(new RegExp(name));
+        }
+    });
+});
