@@ -68,7 +68,9 @@ describe('OnboardingPage', () => {
         expect(html).toContain('public-brand');
         expect(html).toContain('Bellows');
         expect(html).not.toContain('Factory');
-        expect(html).toContain('Setup · One step');
+        expect(html).toContain('Setup · Step 1 of 3');
+        // The stepper rides the screen at step 1: Repositories is the current step.
+        expect(html).toContain('<ol class="setup-steps" aria-label="Setup progress">');
         // Exactly one h1 in the loaded state, and it is the pinned one.
         expect(html.match(/<h1/g)?.length).toBe(1);
         expect(html).toContain('Choose organizations and repositories');

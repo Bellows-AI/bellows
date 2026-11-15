@@ -10,7 +10,11 @@ import { DashboardPage } from './pages/DashboardPage.js';
 import { UPLOAD_PAGE_ROUTE } from './upload-route.js';
 import { AttachmentUploadPage } from './pages/AttachmentUploadPage.js';
 import { OAuthConsentPage } from './pages/OAuthConsentPage.js';
+import { OnboardingModelPage } from './pages/OnboardingModelPage.js';
 import { OnboardingPage } from './pages/OnboardingPage.js';
+import { OnboardingReadyPage } from './pages/OnboardingReadyPage.js';
+import { OnboardingToolsPage } from './pages/OnboardingToolsPage.js';
+import { SetupRedirect } from './onboarding/SetupRedirect.js';
 import { SettingsSkillsPage } from './pages/SettingsSkillsPage.js';
 import { SettingsExecutorsPage } from './pages/SettingsExecutorsPage.js';
 import { SettingsIntegrationsCatalogPage } from './pages/SettingsIntegrationsCatalogPage.js';
@@ -53,13 +57,26 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
             yet — the pending cookie, not a session cookie, is what the page stands on — so the
             sidenav and the stats poll have nothing to stand on either. */}
         <Route path="onboarding" element={<OnboardingPage />} />
+        {/* The setup steps after sign-in: signed in (the gate holds them), outside the
+            shell like the selection screen they continue. */}
+        <Route path="onboarding/model" element={<OnboardingModelPage />} />
+        <Route path="onboarding/tools" element={<OnboardingToolsPage />} />
+        <Route path="onboarding/ready" element={<OnboardingReadyPage />} />
         {/* The MCP consent screen: signed-in only (the gate holds it), and outside the shell,
             which would start polls for a page that exists to answer one question. */}
         <Route path="oauth/consent" element={<OAuthConsentPage />} />
         {/* The MCP attachment handoff: signed out is fine, the single-use link in the fragment is
             the credential (LoginGate steps past it), and like the consent screen it sits outside the shell. */}
         <Route path={UPLOAD_PAGE_ROUTE.slice(1)} element={<AttachmentUploadPage />} />
-        <Route element={<AppShell />}>
+        {/* An unfinished member's app routes go to the first open setup step; only the
+            shell is wrapped, so nothing above this line is ever redirected. */}
+        <Route
+            element={
+                <SetupRedirect>
+                    <AppShell />
+                </SetupRedirect>
+            }
+        >
             <Route index element={<DashboardPage />} />
             {/* The organization's settings tree (issues 150 and 180): one sidenav item — an
                 overview index, then four sections. */}
