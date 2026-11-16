@@ -6,7 +6,7 @@ import { useConnections } from '../api/useConnections.js';
 import type { UseModelSetup } from '../api/useModelSetup.js';
 import { trackedRepos, type UseRepos, useRepos } from '../api/useRepos.js';
 import { useSession } from '../api/useSession.js';
-import { useWorkspace } from '../api/useWorkspace.js';
+import type { UseWorkspace } from '../api/useWorkspace.js';
 import { ComposerDraftProvider, useComposerDraftStore } from '../composer-draft.js';
 import { Icon } from '../components/Icon.js';
 import { StateNote } from '../components/StateNote.js';
@@ -103,8 +103,7 @@ function useStartedTask() {
 }
 
 /** The inline composer with its own held draft: the first tracked repository preselected, the starters under it. */
-function FirstTaskComposer({ repos }: { repos: UseRepos }) {
-    const workspace = useWorkspace();
+function FirstTaskComposer({ repos, workspace }: { repos: UseRepos; workspace: UseWorkspace }) {
     const draftStore = useComposerDraftStore();
     const first = useFirstTask();
     // A starter writes the held draft and remounts the composer, which reads the draft once at mount.
@@ -158,14 +157,22 @@ function FirstTaskComposer({ repos }: { repos: UseRepos }) {
  * the warning back to the model step and an `aria-disabled` Start — and "Go to the dashboard instead",
  * which completes setup and returns to `returnTo`.
  */
-export function ReadyStep({ setup }: { setup: UseModelSetup }) {
+export function ReadyStep({
+    setup,
+    workspace,
+    noModel,
+}: {
+    setup: UseModelSetup;
+    workspace: UseWorkspace;
+    /** `showNoModel`'s answer: a task could not run, so Start stays dark. */
+    noModel: boolean;
+}) {
     const walk = useSetupWalk();
     const { session, loading: sessionLoading } = useSession();
     const repos = useRepos(true);
     const connections = useConnections();
     const { pathname, search } = useLocation();
     const started = useStartedTask();
-    const noModel = setup.error === null && setup.data?.effective === null;
 
     let task: ReactNode;
     if (started.started !== null) {
@@ -187,7 +194,7 @@ export function ReadyStep({ setup }: { setup: UseModelSetup }) {
     } else {
         task = (
             <ComposerDraftProvider session={session}>
-                {sessionLoading ? <TaskComposerSkeleton /> : <FirstTaskComposer repos={repos} />}
+                {sessionLoading ? <TaskComposerSkeleton /> : <FirstTaskComposer repos={repos} workspace={workspace} />}
             </ComposerDraftProvider>
         );
     }
@@ -198,6 +205,8 @@ export function ReadyStep({ setup }: { setup: UseModelSetup }) {
                 session={session}
                 repos={repos}
                 setup={setup}
+                noModel={noModel}
+                workspace={workspace}
                 connections={connections}
                 returnTo={walk.returnTo}
                 here={`${pathname}${search}`}

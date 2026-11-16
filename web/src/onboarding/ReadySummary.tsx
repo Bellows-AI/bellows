@@ -4,6 +4,7 @@ import type { ConnectionsRead } from '../api/useConnections.js';
 import type { UseModelSetup } from '../api/useModelSetup.js';
 import type { UseRepos } from '../api/useRepos.js';
 import type { Session } from '../api/useSession.js';
+import type { UseWorkspace } from '../api/useWorkspace.js';
 import { PROVIDER_META } from '../model-setup/providers.js';
 import { connectionState } from '../settings/integration-providers.js';
 import { EXECUTOR_TYPE_META } from '../workspace/executors.js';
@@ -40,12 +41,26 @@ function reposRow(read: UseRepos): Pick<Row, 'detail' | 'lamp'> {
     return { detail: joined([installation?.account, scope]), lamp: repos.length > 0 ? 'ok' : 'wait' };
 }
 
-/** "Not connected" only on a confirmed `effective: null`; a failed read says so instead. */
-function modelRow(setup: UseModelSetup, organization: string | null): Pick<Row, 'detail' | 'lamp'> {
+/** With no key the board can see, what a task would run on instead: the agent default, else the default profile. */
+function withoutKeyRow(workspace: UseWorkspace): Pick<Row, 'detail' | 'lamp'> {
+    if (workspace.data === null)
+        return workspace.error === null ? CHECKING : { detail: 'Could not check the model.', lamp: 'idle' };
+    const { agentDefault, defaultExecutor } = workspace.data;
+    if (agentDefault) return { detail: joined([agentLabel(agentDefault.agentType), agentDefault.model]), lamp: 'ok' };
+    return { detail: joined(['Executor profile', defaultExecutor?.name]), lamp: 'ok' };
+}
+
+/** "Not connected" only when `showNoModel` says a task could not run; a failed read says so instead. */
+function modelRow(
+    setup: UseModelSetup,
+    noModel: boolean,
+    workspace: UseWorkspace,
+    organization: string | null
+): Pick<Row, 'detail' | 'lamp'> {
     if (setup.error !== null) return { detail: 'Could not check the model.', lamp: 'idle' };
     const view = setup.data;
     if (view === null) return CHECKING;
-    if (view.effective === null) return { detail: 'Not connected', lamp: 'wait' };
+    if (view.effective === null) return noModel ? { detail: 'Not connected', lamp: 'wait' } : withoutKeyRow(workspace);
     if (view.effective === 'platform') {
         const choice = view.personal ?? view.org;
         return {
@@ -79,6 +94,8 @@ export function ReadySummary({
     session,
     repos,
     setup,
+    noModel,
+    workspace,
     connections,
     returnTo,
     here,
@@ -86,6 +103,8 @@ export function ReadySummary({
     session: Session | null;
     repos: UseRepos;
     setup: UseModelSetup;
+    noModel: boolean;
+    workspace: UseWorkspace;
     connections: ConnectionsRead;
     returnTo: string;
     here: string;
@@ -95,7 +114,7 @@ export function ReadySummary({
         { name: 'Repositories', ...reposRow(repos), change: { href: reselectHref(here) } },
         {
             name: 'Model',
-            ...modelRow(setup, session?.organization.name ?? null),
+            ...modelRow(setup, noModel, workspace, session?.organization.name ?? null),
             change: { to: setupPath('model', returnTo) },
         },
         { name: 'Issue tracker', ...trackerRow(connections), change: { to: setupPath('tools', returnTo) } },

@@ -54,16 +54,25 @@ interface Replies {
     connections?: ConnectionView[];
     launch?: (call: FetchCall) => FetchReply;
     complete?: FetchReply;
+    mode?: Session['deploymentMode'];
+    space?: WorkspacePayload;
 }
 
 /** Ready's board: an unfinished member with both steps answered, the summary's reads and the two writes. */
-function board({ model = personalModel, connections = [], launch, complete }: Replies = {}) {
+function board({
+    model = personalModel,
+    connections = [],
+    launch,
+    complete,
+    mode = 'self-hosted',
+    space = workspace,
+}: Replies = {}) {
     const setup: Session['setup'] = { completed: false, done: ['model'], skipped: ['tools'] };
     const calls = stubFetch((call: FetchCall) => {
         const { method, url } = call;
-        if (url === '/api/auth/me') return memberSession({ setup: { ...setup } });
+        if (url === '/api/auth/me') return memberSession({ setup: { ...setup }, deploymentMode: mode });
         if (url === '/api/model-setup') return model;
-        if (url === '/api/workspace') return workspace;
+        if (url === '/api/workspace') return space;
         if (url === '/api/repos') {
             return {
                 repos: [repo('web'), repo('api')],
@@ -228,26 +237,43 @@ describe('the Ready step', () => {
         expect(calls.some((c) => c.method === 'POST' && c.url === '/api/jobs')).toBe(false);
     });
 
-    it('with no model, says Almost set, and Start is aria-disabled behind a warning that links to the model step', async () => {
-        const user = userEvent.setup();
-        const calls = board({ model: { platform: false, org: null, personal: null, effective: null } });
-        renderApp('/onboarding/ready');
+    const NO_KEY: ModelSetupView = { platform: false, org: null, personal: null, effective: null };
+    const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null, agentDefault: null };
 
-        expect(await screen.findByRole('heading', { level: 1, name: 'Almost set' })).toBeTruthy();
-        const model = await row('Model');
-        expect(model.getByText('Not connected')).toBeTruthy();
-        const warning = document.querySelector('.ready-no-model')!;
-        expect(warning.textContent).toContain('No model yet — tasks will wait until one is connected');
-        expect(
-            within(warning as HTMLElement)
-                .getByRole('link', { name: 'Connect a model' })
-                .getAttribute('href')
-        ).toMatch(/^\/onboarding\/model\b/);
-        const start = startButton();
-        expect(start.getAttribute('aria-disabled')).toBe('true');
-        expect(start.getAttribute('aria-describedby')).toBe(warning.id);
-        await user.click(start);
-        expect(calls.some((c) => c.method === 'POST' && c.url === '/api/jobs')).toBe(false);
-        expect(document.querySelectorAll('button.primary')).toHaveLength(1);
+    it("self-hosted with no key but an agent default: You're set, the default in the Model row, Start live", async () => {
+        board({ model: NO_KEY });
+        renderApp('/onboarding/ready');
+        expect(await screen.findByRole('heading', { level: 1, name: "You're set" })).toBeTruthy();
+        expect(await (await row('Model')).findByText('Claude Code · claude-test-model')).toBeTruthy();
+        expect(await prompt()).toBeTruthy();
+        expect(document.querySelector('.ready-no-model')).toBeNull();
     });
+
+    for (const [where, mode, space] of [
+        ['cloud, even with an agent default', 'cloud', workspace],
+        ['self-hosted with nothing to run on', 'self-hosted', BARE],
+    ] as const) {
+        it(`with no model (${where}), says Almost set, and Start is aria-disabled behind a warning that links to the model step`, async () => {
+            const user = userEvent.setup();
+            const calls = board({ model: NO_KEY, mode, space });
+            renderApp('/onboarding/ready');
+
+            expect(await screen.findByRole('heading', { level: 1, name: 'Almost set' })).toBeTruthy();
+            const model = await row('Model');
+            expect(model.getByText('Not connected')).toBeTruthy();
+            const warning = document.querySelector('.ready-no-model')!;
+            expect(warning.textContent).toContain('No model yet — tasks will wait until one is connected');
+            expect(
+                within(warning as HTMLElement)
+                    .getByRole('link', { name: 'Connect a model' })
+                    .getAttribute('href')
+            ).toMatch(/^\/onboarding\/model\b/);
+            const start = startButton();
+            expect(start.getAttribute('aria-disabled')).toBe('true');
+            expect(start.getAttribute('aria-describedby')).toBe(warning.id);
+            await user.click(start);
+            expect(calls.some((c) => c.method === 'POST' && c.url === '/api/jobs')).toBe(false);
+            expect(document.querySelectorAll('button.primary')).toHaveLength(1);
+        });
+    }
 });

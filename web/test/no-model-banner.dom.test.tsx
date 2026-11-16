@@ -1,13 +1,16 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { DeploymentMode } from '@factory-ai/core';
 import type { ModelSetupView } from '../src/api/useModelSetup.js';
+import type { WorkspacePayload } from '../src/api/useWorkspace.js';
 import { useModelSetup } from '../src/api/useModelSetup.js';
 import { NoModelBanner } from '../src/components/NoModelBanner.js';
 import { type FetchCall, renderApp, renderAt, stubFetch } from './dom.js';
 import { memberSession } from './fixtures.js';
 
 /**
- * The shell's "No model yet" banner: shown only on a confirmed `effective: null`, gone after a save
+ * The shell's "No model yet" banner: shown only on a confirmed `effective: null` where a task could not
+ * run (cloud; self-hosted with no profile or agent default either), gone after a save
  * anywhere without a reload, never on a failed read, and re-read when the window regains focus —
  * never on a timer.
  */
@@ -26,10 +29,18 @@ const SAVED: ModelSetupView = {
 };
 const TEXT = 'No model yet — tasks will wait until one is connected';
 
-function board(first: ModelSetupView | { status: number }) {
+const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null, agentDefault: null };
+const PROFILE: WorkspacePayload = { ...BARE, defaultExecutor: { scope: 'user', name: 'mine' } };
+
+/** The banner's board: self-hosted with nothing to run on, unless told otherwise. */
+function board(
+    first: ModelSetupView | { status: number },
+    { mode = 'self-hosted', workspace = BARE }: { mode?: DeploymentMode; workspace?: WorkspacePayload } = {}
+) {
     const state: { view: ModelSetupView | { status: number } } = { view: first };
     const calls = stubFetch((call: FetchCall) => {
-        if (call.url === '/api/auth/me') return memberSession();
+        if (call.url === '/api/auth/me') return memberSession({ deploymentMode: mode });
+        if (call.url === '/api/workspace') return workspace;
         if (call.url === '/api/model-setup' && call.method === 'GET') return state.view;
         if (call.url === '/api/model-setup' && call.method === 'PUT') {
             state.view = SAVED;
@@ -70,6 +81,23 @@ describe('the No model yet banner', () => {
         expect(await screen.findByText(new RegExp(TEXT))).toBeTruthy();
         expect(screen.getByRole('link', { name: 'Connect a model' }).getAttribute('href')).toBe('/settings/model');
         expect(banner()?.querySelector('.icon')).toBeTruthy();
+    });
+
+    it('self-hosted with an executor profile: no banner, the runners may hold the key', async () => {
+        const { reads } = board(NONE, { workspace: PROFILE });
+        renderAt(<NoModelBanner />);
+        await waitFor(() => expect(reads()).toBe(1));
+        // Every read has landed — the session, the setup and the workspace — and still nothing is said.
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        });
+        expect(banner()).toBeNull();
+    });
+
+    it('cloud with an executor profile and no key: the banner', async () => {
+        board(NONE, { mode: 'cloud', workspace: PROFILE });
+        renderAt(<NoModelBanner />);
+        expect(await screen.findByText(new RegExp(TEXT))).toBeTruthy();
     });
 
     it('disappears after a save elsewhere, without a reload', async () => {
