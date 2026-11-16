@@ -213,6 +213,9 @@ export async function interruptJob(
                 finished_at      = case when ${release} and cancel_requested_at is not null then now() else finished_at end,
                 wall_clock_ms    = case when ${release} then ${wallTick} else wall_clock_ms end,
                 started_at       = case when ${release} then null else started_at end,
+                -- A hand-back remembers the lease it clears (160): the runner may still present it.
+                superseded_lease_tokens = case when ${release} then superseded_lease_tokens || lease_token
+                                               else superseded_lease_tokens end,
                 lease_token      = case when ${release} then null else lease_token end,
                 lease_expires_at = case when ${release} then now() else lease_expires_at end,
                 claim_deferred_until = case when ${release && blocked}

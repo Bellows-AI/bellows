@@ -71,6 +71,20 @@ async function running(store: JobStore = jobs, org: string = ORG): Promise<{ id:
     return { id: ref.id, claim };
 }
 
+/** A drained driver hands the attempt back: the row is queued again and its lease token cleared. */
+async function handBack(id: string, leaseToken: string, store: JobStore = jobs): Promise<void> {
+    expect(
+        await store.interrupt(id, leaseToken, { reason: 'the driver was drained', release: true, nodeLoss: true })
+    ).toMatchObject({ result: 'ok', status: 'queued' });
+}
+
+/** The next claim of `id`, which must be the row it picks. */
+async function reclaim(id: string, worker: string, store: JobStore = jobs): Promise<Claim> {
+    const claim = (await store.claim(worker, LEASE_SECONDS)) as Claim;
+    expect(claim.id).toBe(id);
+    return claim;
+}
+
 describe.skipIf(!enabled)('github credential of lease — the per-call check', () => {
     it("resolves a live attempt to its org and the task's repo", async () => {
         const { id, claim } = await running();
@@ -120,44 +134,98 @@ describe.skipIf(!enabled)('github credential of lease — the per-call check', (
         expect((await check(second.id, second.leaseToken)).ok).toBe(true);
     });
 
-    // Shape-only RED before the fix (no `pending` key): behaviourally a pin, the refusal was already terminal.
-    it('refuses the pair two claims back', async () => {
+    // RED before the fix: the release-interrupt forgot the token it cleared, and the queued row failed `standing`.
+    it('answers pending for the pair a drained driver handed back, before the next claim', async () => {
+        const attempt = await running();
+        await handBack(attempt.id, attempt.claim.leaseToken);
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual(PENDING);
+    });
+
+    // RED before the fix: a claim of the queued row read a null lease, so the handed-back pair matched nothing.
+    it('answers pending for the handed-back pair once the queued row is re-claimed, and live for the new pair', async () => {
+        const attempt = await running();
+        await handBack(attempt.id, attempt.claim.leaseToken);
+        const next = await reclaim(attempt.id, 'w2');
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual(PENDING);
+        expect((await check(attempt.id, next.leaseToken)).ok).toBe(true);
+    });
+
+    // RED before the fix for the first pair: only one claim back was kept.
+    it('answers pending for every pair the task held across two takeovers', async () => {
         const first = await running();
         await expireLease(sql, first.id);
-        const second = (await jobs.claim('w2', LEASE_SECONDS)) as Claim;
+        const second = await reclaim(first.id, 'w2');
         await expireLease(sql, first.id);
-        const third = (await jobs.claim('w3', LEASE_SECONDS)) as Claim;
-        expect(third.id).toBe(first.id);
-        expect(await check(first.id, first.claim.leaseToken)).toEqual(REFUSED);
+        const third = await reclaim(first.id, 'w3');
+        expect(await check(first.id, first.claim.leaseToken)).toEqual(PENDING);
         expect(await check(first.id, second.leaseToken)).toEqual(PENDING);
         expect((await check(first.id, third.leaseToken)).ok).toBe(true);
     });
 
-    // Shape-only RED before the fix: the no-leak pin, a token the task never held is never pending.
-    it('never answers pending to a token the task never held', async () => {
+    // Pin, green before the fix: a stopped task, handed back or re-claimed, refuses every pair it held.
+    it('refuses a held pair once the handed-back task is stopped', async () => {
+        const queued = await running();
+        await handBack(queued.id, queued.claim.leaseToken);
+        await sql`update job set status = 'stopped', finished_at = now() where id = ${queued.id}`;
+        expect(await check(queued.id, queued.claim.leaseToken)).toEqual(REFUSED);
+
+        const again = await running();
+        await handBack(again.id, again.claim.leaseToken);
+        const next = await reclaim(again.id, 'w2');
+        await sql`update job set cancel_requested_at = now() where id = ${again.id}`;
+        expect(await check(again.id, again.claim.leaseToken)).toEqual(REFUSED);
+        expect(await check(again.id, next.leaseToken)).toEqual(REFUSED);
+    });
+
+    // Pin, green before the fix: a held token is matched on its own row only.
+    it('never answers pending to a pair another task held', async () => {
+        const mine = await running();
+        const theirs = await running();
+        await handBack(mine.id, mine.claim.leaseToken);
+        expect(await check(theirs.id, mine.claim.leaseToken)).toEqual(REFUSED);
+        await handBack(theirs.id, theirs.claim.leaseToken);
+        expect(await check(mine.id, theirs.claim.leaseToken)).toEqual(REFUSED);
+    });
+
+    // Pin, green before the fix: the no-leak rule, a token the task never held is never pending.
+    it('never answers pending to a token the task never held, handed back or not', async () => {
         const attempt = await running();
+        await handBack(attempt.id, attempt.claim.leaseToken);
+        expect(await check(attempt.id, crypto.randomUUID())).toEqual(REFUSED);
+        await reclaim(attempt.id, 'w2');
+        expect(await check(attempt.id, crypto.randomUUID())).toEqual(REFUSED);
         await expireLease(sql, attempt.id);
         expect(await check(attempt.id, crypto.randomUUID())).toEqual(REFUSED);
     });
 
-    // Pin: a claim of a requeued row clears the prior lease, so a pair of a run that already ended is no pending.
-    it('clears the prior lease when a queued row is claimed', async () => {
+    // Pin, green before the fix: a settled task is over, so no pair it held is a takeover window.
+    it('refuses a held pair once the task settles', async () => {
+        const attempt = await running();
+        await handBack(attempt.id, attempt.claim.leaseToken);
+        const next = await reclaim(attempt.id, 'w2');
+        await sql`update job set status = 'succeeded', finished_at = now() where id = ${attempt.id}`;
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual(REFUSED);
+        expect(await check(attempt.id, next.leaseToken)).toEqual(REFUSED);
+    });
+
+    it('pairMatches: a handed-back pair and a pair two claims back are pending, another task’s is refused', async () => {
+        const handed = await running();
+        await handBack(handed.id, handed.claim.leaseToken);
+        // RED before the fix: the hand-back forgot the token.
+        expect(await pairMatches(handed.id, handed.claim.leaseToken)).toEqual(PENDING);
+        const next = await reclaim(handed.id, 'w2');
+        expect(await pairMatches(handed.id, handed.claim.leaseToken)).toEqual(PENDING);
+        expect(await pairMatches(handed.id, next.leaseToken)).toEqual({ ok: true, orgId: ORG });
+
         const first = await running();
         await expireLease(sql, first.id);
-        await jobs.claim('w2', LEASE_SECONDS);
-        const [held] = await sql<
-            { prior: string | null }[]
-        >`select prior_lease_token as prior from job where id = ${first.id}`;
-        expect(held?.prior).toBe(first.claim.leaseToken);
-        await sql`update job set status = 'queued', claimed_by = null where id = ${first.id}`;
+        await reclaim(first.id, 'w3');
         await expireLease(sql, first.id);
-        const again = (await jobs.claim('w3', LEASE_SECONDS)) as Claim;
-        expect(again.id).toBe(first.id);
-        const [cleared] = await sql<
-            { prior: string | null }[]
-        >`select prior_lease_token as prior from job where id = ${first.id}`;
-        expect(cleared?.prior).toBeNull();
-        expect(await check(first.id, first.claim.leaseToken)).toEqual(REFUSED);
+        await reclaim(first.id, 'w4');
+        // RED before the fix: only one claim back was kept.
+        expect(await pairMatches(first.id, first.claim.leaseToken)).toEqual(PENDING);
+        // Pin: a token another task held matches nothing here.
+        expect(await pairMatches(first.id, handed.claim.leaseToken)).toEqual(REFUSED);
     });
 
     it.each<{ name: string; settle: (id: string) => Promise<unknown> }>([
@@ -369,6 +437,65 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
         expect(old.statusCode).toBe(HTTP_UNAVAILABLE);
         expect(old.json().code).toBe('LEASE_PENDING');
         expect((await ask(instance, second.id, second.leaseToken)).statusCode).toBe(HTTP_OK);
+    });
+
+    /** A route over a mint that records every org it mints for. */
+    async function minting(): Promise<{ instance: FastifyInstance; minted: string[] }> {
+        const minted: string[] = [];
+        const { app: instance } = await boot(async (orgId) => {
+            minted.push(orgId);
+            return { token: 'ghs_db_handback_secret', expiresAt: '2026-10-16T13:00:00.000Z', ...CEILING };
+        });
+        return { instance, minted };
+    }
+
+    const expectPending = (res: Awaited<ReturnType<typeof ask>>) => {
+        expect(res.statusCode).toBe(HTTP_UNAVAILABLE);
+        expect(res.json()).toMatchObject({ code: 'LEASE_PENDING', retryable: true });
+        expect(res.body).not.toContain('ghs_db_handback_secret');
+    };
+
+    // RED before the fix: the handed-back pair was a terminal 403.
+    it('answers 503 LEASE_PENDING to the pair a drained driver handed back, and 200 to the re-claimed pair', async () => {
+        const { instance, minted } = await minting();
+        const attempt = await running();
+        await handBack(attempt.id, attempt.claim.leaseToken);
+        const next = await reclaim(attempt.id, 'w2');
+        expectPending(await ask(instance, attempt.id, attempt.claim.leaseToken));
+        expect((await ask(instance, attempt.id, next.leaseToken)).statusCode).toBe(HTTP_OK);
+        expect(minted).toEqual([ORG]);
+    });
+
+    // RED before the fix: the queued row in the gap failed `standing`.
+    it('answers 503 LEASE_PENDING to the handed-back pair before the next claim, and mints nothing', async () => {
+        const { instance, minted } = await minting();
+        const attempt = await running();
+        await handBack(attempt.id, attempt.claim.leaseToken);
+        expectPending(await ask(instance, attempt.id, attempt.claim.leaseToken));
+        expect(minted).toEqual([]);
+    });
+
+    // RED before the fix: only one claim back was kept.
+    it('answers 503 LEASE_PENDING to the pair two claims back', async () => {
+        const { instance, minted } = await minting();
+        const first = await running();
+        await expireLease(sql, first.id);
+        await reclaim(first.id, 'w2');
+        await expireLease(sql, first.id);
+        await reclaim(first.id, 'w3');
+        expectPending(await ask(instance, first.id, first.claim.leaseToken));
+        expect(minted).toEqual([]);
+    });
+
+    // Pin, green before the fix: a stopped task's held pair stays the terminal 403.
+    it('keeps 403 for a handed-back pair once its task is stopped', async () => {
+        const { instance, minted } = await minting();
+        const attempt = await running();
+        await handBack(attempt.id, attempt.claim.leaseToken);
+        await sql`update job set status = 'stopped', finished_at = now() where id = ${attempt.id}`;
+        const res = await ask(instance, attempt.id, attempt.claim.leaseToken);
+        expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(minted).toEqual([]);
     });
 
     it('withholds the token as pending when the lease lapses during the GitHub exchange', async () => {
