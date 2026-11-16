@@ -42,6 +42,7 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
   the claim, skips the reaper round and never frees the fence. `driver/src/k8s/k8s-transport.ts` (`listOnly`), `driver/test/k8s-read-faults.test.ts`.
 - **Credentials go by reference, never by value**, **runner pods hold no ServiceAccount token**
   (`automountServiceAccountToken: false`; pinned in `driver/test/k8s/`), and **the driver never reads a Secret back**: the Role grants no `get`/`list`.
+  A credentials-Secret name the claim also carries is not referenced: the per-attempt Secret's value, empty included, wins (`credentialsSecretEnv`; `driver/test/k8s/pod-spec.test.ts`).
 - **Every driver-owned object carries `factory.job`**, every Secret follows `factory-job-…-env`, every
   task volume mount is whole or at the reviewer's home (`REVIEWER_TREE_DIR`), `hostAliases` map only to
   `127.0.0.1` and only the `gate`, `reviewer` and `svc-` sidecars restart — or admission refuses it. `driver/test/k8s-admission.test.ts`.

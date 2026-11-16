@@ -26,7 +26,7 @@ const REVIEWER: ReviewerSpec = { name: 'sec', instructions: 'Look.', timeoutMinu
 
 let sql: Sql;
 
-function stores(orgId: string, deploymentMode: DeploymentMode) {
+function stores(orgId: string, deploymentMode: DeploymentMode, reviewer: ReviewerSpec = REVIEWER) {
     const executors = createUserExecutorStore({ sql, orgId, ...testSecretDeps(sql) });
     const env = createEnvVarStore({ sql, orgId, secrets: testSecretStore(sql), secretLog: () => {} });
     const jobs = createJobStore({
@@ -37,7 +37,7 @@ function stores(orgId: string, deploymentMode: DeploymentMode) {
         executorConfig: executors,
         githubApp: true,
         plan: {
-            readFor: async () => ({ config: null, error: null, services: [], revision: null, reviewers: [REVIEWER] }),
+            readFor: async () => ({ config: null, error: null, services: [], revision: null, reviewers: [reviewer] }),
         },
     });
     return { executors, env, jobs };
@@ -116,5 +116,38 @@ describe.skipIf(!enabled)('self-hosted mode: the stored OAuth token still travel
         const claim = await jobs.claim('w1', LEASE_SECONDS);
         expect(claim?.executorRefusal).toBeNull();
         expect(JSON.parse(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual({ env: { [TOKEN]: VALUE } });
+    });
+});
+
+describe.skipIf(!enabled)('a reviewer granted only an OpenRouter key', () => {
+    const OPENROUTER_KEY = 'sk-or-v1-member-owned';
+    const OPENROUTER_REVIEWER: ReviewerSpec = { ...REVIEWER, connections: ['OPENROUTER_API_KEY'] };
+
+    it('is wired from the env that travels, not from the author env it was granted out of', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud', OPENROUTER_REVIEWER);
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceOrg('env-admin', [
+            { name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true },
+            { name: 'ANTHROPIC_API_KEY', value: 'sk-ant-author-only', isSecret: true },
+        ]);
+        await mustCreate(jobs.create('ship it', ALICE, { repo: 'acme/api', executor: 'main', executorScope: 'user' }));
+        const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
+        expect(caller.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+
+        const review = await jobs.requestReview(caller.id, caller.leaseToken, {
+            key: 'sec-1',
+            profile: 'sec',
+            revision: 'h:1',
+            ref: reviewRefOf(caller.id, 'sec-1'),
+        });
+        const claim = 'claim' in review ? review.claim : undefined;
+        expect(claim?.executorRefusal).toBeNull();
+        expect(claim?.env).toMatchObject({
+            OPENROUTER_API_KEY: OPENROUTER_KEY,
+            ANTHROPIC_BASE_URL: 'https://openrouter.ai/api',
+            ANTHROPIC_AUTH_TOKEN: OPENROUTER_KEY,
+            ANTHROPIC_API_KEY: '',
+        });
+        expect(JSON.stringify(claim)).not.toContain('sk-ant-author-only');
     });
 });

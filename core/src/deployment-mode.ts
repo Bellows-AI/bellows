@@ -49,12 +49,12 @@ export function isCredentialKey(key: string): boolean {
 export const STORED_CREDENTIAL_PREFIX = 'stored-credential:';
 
 /**
- * Each env name that redirects where a provider credential is sent, mapped to the member key that
- * replaces the platform's own (the driver's passthrough; a claim's name wins over it).
+ * Each env name that redirects where a provider credential is sent, mapped to the member keys any one
+ * of which replaces the platform's own (the driver's passthrough; a claim's name wins over it).
  */
-export const CREDENTIAL_REDIRECTS: Readonly<Record<string, string>> = {
-    ANTHROPIC_BASE_URL: 'ANTHROPIC_API_KEY',
-    OPENAI_BASE_URL: 'OPENAI_API_KEY',
+export const CREDENTIAL_REDIRECTS: Readonly<Record<string, readonly string[]>> = {
+    ANTHROPIC_BASE_URL: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'],
+    OPENAI_BASE_URL: ['OPENAI_API_KEY'],
 };
 
 /** opencode's per-provider redirect, answered only by a literal `apiKey` beside it. */
@@ -67,8 +67,8 @@ const REDIRECT_PHRASE = 'would send the deployment model credential to another h
 
 /** The refusal for a redirect with no member key: names keys only, never a value. */
 export function credentialRedirectMessage(key: string): string {
-    const memberKey = CREDENTIAL_REDIRECTS[key] ?? PROVIDER_API_KEY;
-    return `${key} ${REDIRECT_PHRASE}: set your own ${memberKey} with it, or remove it.`;
+    const memberKeys = CREDENTIAL_REDIRECTS[key] ?? [PROVIDER_API_KEY];
+    return `${key} ${REDIRECT_PHRASE}: set your own ${memberKeys.join(' or ')} with it, or remove it.`;
 }
 
 export function isCredentialRedirectMessage(message: string): boolean {
@@ -103,8 +103,8 @@ export function redirectsPlatformCredential(
 ): string | null {
     const configEnv = type === CLAUDE_CODE && isObject(config) && isObject(config.env) ? config.env : {};
     const effective: Record<string, unknown> = { ...env, ...configEnv };
-    for (const [redirect, memberKey] of Object.entries(CREDENTIAL_REDIRECTS)) {
-        if (nonEmpty(effective[redirect]) && !nonEmpty(effective[memberKey])) return redirect;
+    for (const [redirect, memberKeys] of Object.entries(CREDENTIAL_REDIRECTS)) {
+        if (nonEmpty(effective[redirect]) && !memberKeys.some((key) => nonEmpty(effective[key]))) return redirect;
     }
     return providerRedirectIn(config) ? PROVIDER_BASE_URL : null;
 }

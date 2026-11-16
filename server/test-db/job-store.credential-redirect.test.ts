@@ -142,6 +142,45 @@ describe.skipIf(!enabled)('cloud mode: a member key anywhere in the merged env l
     });
 });
 
+describe.skipIf(!enabled)('cloud mode: an OpenRouter key wired for Claude Code', () => {
+    const OPENROUTER_KEY = 'sk-or-v1-member-owned';
+
+    it('travels: the wiring carries the member key, so the redirect check accepts it', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud');
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true }]);
+        await task(jobs);
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBeNull();
+        expect(claim?.env).toMatchObject({
+            [BASE_URL]: 'https://openrouter.ai/api',
+            ANTHROPIC_AUTH_TOKEN: OPENROUTER_KEY,
+            ANTHROPIC_API_KEY: '',
+        });
+    });
+
+    it('a member ANTHROPIC_AUTH_TOKEN answers a member base URL; a base URL with neither key is still refused', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud');
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceWorkspace(ALICE, [
+            { name: BASE_URL, value: URL, isSecret: false },
+            { name: 'ANTHROPIC_AUTH_TOKEN', value: KEY, isSecret: true },
+        ]);
+        await task(jobs);
+        const bearer = await jobs.claim('w1', LEASE_SECONDS);
+        expect(bearer?.executorRefusal).toBeNull();
+        expect(bearer?.env).toMatchObject({ [BASE_URL]: URL, ANTHROPIC_AUTH_TOKEN: KEY });
+
+        await env.replaceWorkspace(ALICE, [
+            { name: BASE_URL, value: URL, isSecret: false },
+            { name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true },
+        ]);
+        await task(jobs);
+        expectRefused(await jobs.claim('w2', LEASE_SECONDS), BASE_URL);
+    });
+});
+
 describe.skipIf(!enabled)('a stored credential the claim cannot confirm', () => {
     it('rolls the claim back and leaves the task queued, never sending the profile without its key', async () => {
         const store = testSecretStore(sql);

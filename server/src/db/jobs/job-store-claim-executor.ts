@@ -19,6 +19,7 @@ import {
     type ExecutorScope,
     type ExecutorType,
     OPENCODE,
+    openRouterClaudeWiring,
     redirectsPlatformCredential,
     RUNNER_MANAGED_KEYS,
 } from '@factory-ai/core';
@@ -140,6 +141,7 @@ export async function resolveClaimExecutor(
         claimEnv = mergeExecutorConfigEnv(claimEnv, agent);
         profileConfig = agent.config;
     }
+    claimEnv = withOpenRouterWiring(claimEnv, profileConfig, executorType);
     // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
     // token, or a redirect of the deployment's model credential with no member key, saved before
     // cloud mode or split across scopes and profile, never travels. The driver fails the task with the
@@ -173,6 +175,25 @@ function frozenAgentOf(row: ClaimExecutorRow): { type: ExecutorType; config: Rec
     if (!EXECUTOR_TYPES.includes(row.agent_type as ExecutorType)) return null;
     return { type: row.agent_type as ExecutorType, config: row.agent_model === null ? {} : { model: row.agent_model } };
 }
+
+/**
+ * Claude Code on a member's OpenRouter key alone: the claim gains the Anthropic names Claude Code reads,
+ * judged on the env that TRAVELS (after a reviewer's grant) with a claude-code config's `env` applied last,
+ * as `redirectsPlatformCredential` reads it. Recomputed on every claim; nothing is stored.
+ */
+function withOpenRouterWiring(
+    claimEnv: Record<string, string> | undefined,
+    config: unknown,
+    type: ExecutorType | null
+): Record<string, string> | undefined {
+    if (claimEnv === undefined || type === null) return claimEnv;
+    const configEnv = isRecord(config) && isRecord(config.env) ? config.env : {};
+    const wiring = openRouterClaudeWiring({ ...claimEnv, ...configEnv }, type);
+    return wiring === null ? claimEnv : { ...claimEnv, ...wiring };
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** The sentence cloud mode refuses an effective env with, or null. Names keys only, never a value. */
 function cloudRefusal(env: Record<string, string> | undefined, config: unknown, type: ExecutorType | null) {

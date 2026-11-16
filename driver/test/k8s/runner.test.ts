@@ -180,6 +180,17 @@ describe('the kubernetes runner', () => {
         expect(reaped()).toBe(true);
     });
 
+    it('keeps an empty claim value as a key of the per-attempt Secret', async () => {
+        const { request, calls } = fakeRequest();
+        const envJob: BoardJob = { ...job, env: { ANTHROPIC_AUTH_TOKEN: 'member', ANTHROPIC_API_KEY: '' } };
+        await runner(request).run(envJob, { id: SESSION, resume: false });
+        const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
+        const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
+        const stringData = (secretPost?.body as { stringData?: Record<string, string> })?.stringData ?? {};
+        expect(Object.hasOwn(stringData, 'ANTHROPIC_API_KEY')).toBe(true);
+        expect(stringData.ANTHROPIC_API_KEY).toBe('');
+    });
+
     // The parity pin for docs/connections.md: the runner pod gets the attempt pair and the board
     // URL, which is all the Jira helper needs to ask the broker — and never a Jira credential or a
     // JIRA_API of the board's making.

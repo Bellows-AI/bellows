@@ -99,6 +99,26 @@ describe('redirectsPlatformCredential', () => {
         ).toBeNull();
     });
 
+    it('passes an Anthropic redirect answered by a member ANTHROPIC_AUTH_TOKEN, never by an empty one', () => {
+        expect(redirectsPlatformCredential({ ANTHROPIC_BASE_URL: URL, ANTHROPIC_AUTH_TOKEN: VALUE })).toBeNull();
+        expect(
+            redirectsPlatformCredential(
+                { ANTHROPIC_BASE_URL: URL },
+                { env: { ANTHROPIC_AUTH_TOKEN: VALUE } },
+                'claude-code'
+            )
+        ).toBeNull();
+        expect(redirectsPlatformCredential({ ANTHROPIC_BASE_URL: URL, ANTHROPIC_AUTH_TOKEN: '' })).toBe(
+            'ANTHROPIC_BASE_URL'
+        );
+        expect(redirectsPlatformCredential({ OPENAI_BASE_URL: URL, ANTHROPIC_AUTH_TOKEN: VALUE })).toBe(
+            'OPENAI_BASE_URL'
+        );
+        const message = credentialRedirectMessage('ANTHROPIC_BASE_URL');
+        expect(message).toContain('ANTHROPIC_API_KEY');
+        expect(message).toContain('ANTHROPIC_AUTH_TOKEN');
+    });
+
     it('applies the config last: an empty config key does not count as the member key', () => {
         expect(
             redirectsPlatformCredential(

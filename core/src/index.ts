@@ -239,7 +239,12 @@ export {
 export type { ErrorCode } from './error-codes.js';
 export { ERROR_CODES } from './error-codes.js';
 export type { ModelProvider } from './model-providers.js';
-export { isModelProvider, MODEL_PROVIDERS } from './model-providers.js';
+export {
+    isModelProvider,
+    MODEL_PROVIDERS,
+    OPENROUTER_ANTHROPIC_BASE_URL,
+    openRouterClaudeWiring,
+} from './model-providers.js';
 export type { JobMode } from './job-mode.js';
 export { JOB_MODES, OBJECTIVE_MODE, WORKFLOW_MODE } from './job-mode.js';
 export type { ExecutorScope, ExecutorType } from './executors.js';
