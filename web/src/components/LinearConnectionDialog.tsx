@@ -1,13 +1,13 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 import type { StartAuthorizationInput } from '../api/connections.js';
-import { ALLOW_COMMENTS_LABEL } from './JiraConnectionDialog.js';
+import { ALLOW_COMMENTS_LABEL, commentsHelp } from './WriteConsentDialog.js';
 
 export const LINEAR_DIALOG_TITLE = 'Connect Linear';
 export const LINEAR_SUBMIT_LABEL = 'Continue to Linear';
 export const LINEAR_WORKSPACE_HELP =
     'Linear asks which workspace to connect on its own consent screen, every time, so there is nothing to name here.';
-export const LINEAR_COMMENTS_HELP = 'Without it tasks can only look Linear up; with it they can also add comments.';
+export const LINEAR_COMMENTS_HELP = commentsHelp('Linear');
 
 /**
  * Connect Linear: the comment-access checkbox in the executor dialog's field layout and no site field — Linear's

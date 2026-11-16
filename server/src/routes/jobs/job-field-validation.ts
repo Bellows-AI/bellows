@@ -44,6 +44,7 @@ import {
 } from './job-limits.js';
 import { repoReason } from '../helpers.js';
 import { MS_PER_SECOND } from '../auth-shared.js';
+import { MAX_AGENT_MODEL_LENGTH } from '../agent-default.js';
 
 /**
  * Field-by-field body/query validation for the job routes — everything that turns an untrusted
@@ -109,6 +110,19 @@ export function validateExecutorField(
     const reason = executorReason(raw);
     if (reason) return { ok: false, message: reason };
     return { ok: true, value: raw };
+}
+
+/**
+ * The model a create or a follow-up chooses: absent or null means none (the profile's or the agent default's model
+ * runs), otherwise a name of 1 to `MAX_AGENT_MODEL_LENGTH` characters after trimming — the agent default's own bound.
+ */
+export function validateModelField(raw: unknown): { ok: true; value: string | null } | { ok: false; message: string } {
+    if (raw === undefined || raw === null) return { ok: true, value: null };
+    const model = typeof raw === 'string' ? raw.trim() : '';
+    if (!model || model.length > MAX_AGENT_MODEL_LENGTH) {
+        return { ok: false, message: `model must be a name of 1 to ${MAX_AGENT_MODEL_LENGTH} characters` };
+    }
+    return { ok: true, value: model };
 }
 
 /**

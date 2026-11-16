@@ -34,12 +34,14 @@ describe('the route classes (what a scoped caller may do)', () => {
 
     // The whole admin surface, pinned: a state-changing org route reachable by a plain member is the class this
     // guards against, so a new org-wide write must be added here on purpose, never by default.
-    it('admin is exactly the org-wide administration: tokens, org env, members, executors, skills, subscriptions', () => {
+    it('admin is exactly the org-wide administration: tokens, org env, members, executors, agent default, skills, subscriptions', () => {
         const admin = ROUTE_CLASSES.filter((row) => row[3] === 'admin').map(
             ([method, pattern]) => `${method} ${pattern}`
         );
         expect(admin.sort()).toEqual(
             [
+                'DELETE /api/agent-default/org',
+                'PUT /api/agent-default/org',
                 'DELETE /api/org/executors/:id',
                 'DELETE /api/org/notification-subscriptions/:id',
                 'DELETE /api/org/skills/:id',
@@ -60,7 +62,10 @@ describe('the route classes (what a scoped caller may do)', () => {
                 'POST /api/org/skills/:id/versions',
                 'POST /api/tokens/org',
                 'POST /api/tokens/org/:id/revoke',
+                'DELETE /api/env/org/vars/:name',
                 'PUT /api/env/org',
+                'PUT /api/env/org/vars',
+                'PUT /api/env/org/vars/:name',
                 'PUT /api/env/repo',
                 'PUT /api/org/executors/:id',
                 'PUT /api/org/members/:userId/role',
@@ -69,6 +74,14 @@ describe('the route classes (what a scoped caller may do)', () => {
                 'PUT /api/org/skills/builtin/:name/enabled',
             ].sort()
         );
+    });
+
+    // The model setup names its scope in the body: the class admits a member, the handler refuses a member's org save.
+    it('the model setup reads as a member and saves as a browser act', () => {
+        expect(classOf('GET', '/api/model-setup')).toBe('read');
+        expect(roleOf('GET', '/api/model-setup')).toBe('member');
+        expect(classOf('PUT', '/api/model-setup')).toBe('none');
+        expect(roleOf('PUT', '/api/model-setup')).toBe('member');
     });
 
     // The operator spans every organization: its rows are pinned the same way, and none is reachable by a scoped grant.

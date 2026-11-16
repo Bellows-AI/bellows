@@ -46,8 +46,12 @@ export const ROUTE_CLASSES: readonly (readonly [
     // The role is who may call it at all, whatever the credential: `admin` for what administers the whole
     // organization (org tokens, org-wide env, the roster, org executors, skills and subscriptions), `member` for the
     // caller's own surfaces and the board, where a row-dependent rule (author or admin) stays in the handler.
+    ['DELETE', '/api/agent-default/org', 'none', ADMIN_ROLE],
+    ['DELETE', '/api/agent-default/personal', 'none', MEMBER_ROLE],
     ['DELETE', '/api/attachments/:id', 'write', MEMBER_ROLE],
     ['DELETE', '/api/connections/:id', 'none', MEMBER_ROLE],
+    ['DELETE', '/api/env/org/vars/:name', 'none', ADMIN_ROLE],
+    ['DELETE', '/api/env/workspace/vars/:name', 'none', MEMBER_ROLE],
     ['DELETE', '/api/org/executors/:id', 'none', ADMIN_ROLE],
     ['DELETE', '/api/org/skills/:id', 'none', ADMIN_ROLE],
     ['DELETE', '/api/org/members/:userId', 'none', ADMIN_ROLE],
@@ -57,6 +61,7 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['DELETE', '/api/workspace/executors/:id', 'none', MEMBER_ROLE],
     ['DELETE', '/api/workspace/skills/:id', 'none', MEMBER_ROLE],
     ['DELETE', '/api/workspace/notification-subscriptions/:id', 'none', MEMBER_ROLE],
+    ['GET', '/api/agent-default', 'read', MEMBER_ROLE],
     ['GET', '/api/attachments/:id', 'read', MEMBER_ROLE],
     ['GET', '/api/attachments/:id/content', 'read', MEMBER_ROLE],
     ['GET', '/api/attachments/limits', 'read', MEMBER_ROLE],
@@ -89,6 +94,7 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['GET', '/api/jobs/:id/artifacts', 'read', MEMBER_ROLE],
     ['GET', '/api/jobs/:id/artifacts/read', 'read', MEMBER_ROLE],
     ['GET', '/api/jobs/:id/thread', 'read', MEMBER_ROLE],
+    ['GET', '/api/model-setup', 'read', MEMBER_ROLE],
     ['GET', '/api/oauth/consent/:id', 'none', MEMBER_ROLE],
     ['GET', '/api/oauth/grants', 'none', MEMBER_ROLE],
     // The whole organization's data, every member's included: an admin read, never reachable by a scoped grant.
@@ -146,6 +152,11 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['POST', '/api/jobs/:id/wait/cancel', 'write', MEMBER_ROLE],
     ['POST', '/api/jobs/:id/wait/poke', 'write', MEMBER_ROLE],
     ['POST', '/api/jobs/preflight', 'read', MEMBER_ROLE],
+    // Checking a provider key before it is saved: a browser act, never a scoped grant's.
+    ['POST', '/api/model-setup/verify', 'none', MEMBER_ROLE],
+    // The member's own onboarding progress: a browser act, never a scoped grant's.
+    ['POST', '/api/onboarding/setup', 'none', MEMBER_ROLE],
+    ['POST', '/api/onboarding/setup/complete', 'none', MEMBER_ROLE],
     ['POST', '/api/org/executors', 'none', ADMIN_ROLE],
     ['POST', '/api/org/executors/:id/scope', 'none', ADMIN_ROLE],
     ['POST', '/api/org/executors/:id/suspension', 'none', ADMIN_ROLE],
@@ -164,11 +175,20 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['POST', '/api/workspace/skills/:id/versions', 'none', MEMBER_ROLE],
     ['POST', '/api/workspace/notification-subscriptions', 'none', MEMBER_ROLE],
     ['POST', '/api/workspace/notification-subscriptions/:id/test', 'none', MEMBER_ROLE],
+    ['PUT', '/api/agent-default/org', 'none', ADMIN_ROLE],
+    ['PUT', '/api/agent-default/personal', 'none', MEMBER_ROLE],
     ['PUT', '/api/batches/:id', 'write', MEMBER_ROLE],
     ['PUT', '/api/env/org', 'none', ADMIN_ROLE],
+    ['PUT', '/api/env/org/vars', 'none', ADMIN_ROLE],
+    ['PUT', '/api/env/org/vars/:name', 'none', ADMIN_ROLE],
     ['PUT', '/api/env/repo', 'none', ADMIN_ROLE],
     ['PUT', '/api/env/workspace', 'none', MEMBER_ROLE],
+    ['PUT', '/api/env/workspace/vars', 'none', MEMBER_ROLE],
+    ['PUT', '/api/env/workspace/vars/:name', 'none', MEMBER_ROLE],
     ['PUT', '/api/jobs/:id/title', 'write', MEMBER_ROLE],
+    // Saving a key and the agent default: a browser act. The scope is in the body, so the org scope's admin check is
+    // the handler's.
+    ['PUT', '/api/model-setup', 'none', MEMBER_ROLE],
     ['PUT', '/api/org/executors/:id', 'none', ADMIN_ROLE],
     ['PUT', '/api/org/skills/:id/enabled', 'none', ADMIN_ROLE],
     ['PUT', '/api/org/skills/builtin/:name/enabled', 'none', ADMIN_ROLE],

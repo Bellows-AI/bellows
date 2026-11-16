@@ -17,7 +17,7 @@ import type { UseWorkspace } from '../api/useWorkspace.js';
  *   separate line), so a later poll failure never replaces the last true answer with an outage —
  *   only a failure with NO data reads as "unavailable".
  *
- * Zero rows are neutral, not errors: no personal executors is "the deployment default", no custom
+ * Zero rows are neutral, not errors: no personal executors is "No executor profile", no custom
  * environment values is "None set".
  */
 
@@ -206,8 +206,12 @@ function executorsItem(workspace: ReadinessInput['workspace']): ReadinessItem {
         return {
             id: 'executors',
             heading: 'Executors',
-            status: 'Using the deployment default',
-            facts: [{ text: 'No personal executor rows are required; new tasks run on the deployment default.' }],
+            status: 'No executor profile',
+            facts: [
+                {
+                    text: "No personal executor rows are required: new tasks run on your agent default or the organization's. With neither set, a task needs an executor profile.",
+                },
+            ],
             tone: 'info',
             action: MANAGE_EXECUTORS,
         };

@@ -1,8 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ALLOW_COMMENTS_LABEL } from '../src/components/JiraConnectionDialog.js';
-import { WRITE_CONSENT_TITLE } from '../src/components/WriteConsentDialog.js';
+import { ALLOW_COMMENTS_LABEL, WRITE_CONSENT_TITLE } from '../src/components/WriteConsentDialog.js';
 import { commitDate } from '../src/format.js';
 import { renderApp, stubFetch, type FetchHandler } from './dom.js';
 import { boardHandler, connection, settingsBoard } from './settings-board.js';

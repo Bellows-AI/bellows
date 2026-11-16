@@ -16,6 +16,8 @@ export interface Session {
     };
     role: Role;
     membership: { invitedAt: string | null; claimedAt: string | null };
+    /** Where the member stands in onboarding; always `completed` under AUTH_MODE=none. */
+    setup: { completed: boolean; done: ('model' | 'tools')[]; skipped: ('model' | 'tools')[] };
     account: { createdAt: string | null; lastLoginAt: string | null };
     organization: { id: string; name: string };
     /** Every org the account could switch to — the installations GitHub reported at sign-in. */
@@ -28,6 +30,8 @@ export interface Session {
     batches: boolean;
     /** Where this board runs (`DEPLOYMENT_MODE`); cloud refuses a Claude subscription OAuth token in settings. */
     deploymentMode: DeploymentMode;
+    /** Whether the operator supplies the model (`PLATFORM_MODEL_PROVIDED`): a member may run on it without a key. */
+    platformModel: boolean;
 }
 
 /** The role as the settings pages print it. */

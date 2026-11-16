@@ -159,7 +159,7 @@ export interface UseTasks {
     /** The task mutations, named as a group so the pages read `tasks.actions.queue(...)`. */
     actions: {
         queue: (input: QueueTaskInput) => Promise<QueueResult>;
-        followUp: (id: string, command: string, files?: SubmittedFiles) => Promise<QueueResult>;
+        followUp: (id: string, command: string, files?: SubmittedFiles, model?: string) => Promise<QueueResult>;
         markDone: (id: string) => Promise<string | null>;
         stop: (id: string) => Promise<string | null>;
         remove: (id: string) => Promise<string | null>;
@@ -425,8 +425,8 @@ function useTaskActions(start: () => void): UseTasks['actions'] {
                 if (result.error === null) start();
                 return result;
             },
-            async followUp(id: string, command: string, files?: SubmittedFiles): Promise<QueueResult> {
-                const result = await followUpOnTask(id, command, files);
+            async followUp(id: string, command: string, files?: SubmittedFiles, model?: string): Promise<QueueResult> {
+                const result = await followUpOnTask(id, command, files, model);
                 if (result.error === null) start();
                 return result;
             },

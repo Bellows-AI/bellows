@@ -7,6 +7,7 @@ import {
     forbiddenCredentialIn,
     isCredentialKey,
     isCredentialRedirectMessage,
+    platformCredentialBlanks,
     redirectsPlatformCredential,
 } from '../src/deployment-mode.js';
 
@@ -99,6 +100,26 @@ describe('redirectsPlatformCredential', () => {
         ).toBeNull();
     });
 
+    it('passes an Anthropic redirect answered by a member ANTHROPIC_AUTH_TOKEN, never by an empty one', () => {
+        expect(redirectsPlatformCredential({ ANTHROPIC_BASE_URL: URL, ANTHROPIC_AUTH_TOKEN: VALUE })).toBeNull();
+        expect(
+            redirectsPlatformCredential(
+                { ANTHROPIC_BASE_URL: URL },
+                { env: { ANTHROPIC_AUTH_TOKEN: VALUE } },
+                'claude-code'
+            )
+        ).toBeNull();
+        expect(redirectsPlatformCredential({ ANTHROPIC_BASE_URL: URL, ANTHROPIC_AUTH_TOKEN: '' })).toBe(
+            'ANTHROPIC_BASE_URL'
+        );
+        expect(redirectsPlatformCredential({ OPENAI_BASE_URL: URL, ANTHROPIC_AUTH_TOKEN: VALUE })).toBe(
+            'OPENAI_BASE_URL'
+        );
+        const message = credentialRedirectMessage('ANTHROPIC_BASE_URL');
+        expect(message).toContain('ANTHROPIC_API_KEY');
+        expect(message).toContain('ANTHROPIC_AUTH_TOKEN');
+    });
+
     it('applies the config last: an empty config key does not count as the member key', () => {
         expect(
             redirectsPlatformCredential(
@@ -125,5 +146,27 @@ describe('redirectsPlatformCredential', () => {
         expect(message).toContain('ANTHROPIC_API_KEY');
         expect(isCredentialRedirectMessage(message)).toBe(true);
         expect(isCredentialRedirectMessage(CLOUD_CREDENTIAL_MESSAGE)).toBe(false);
+    });
+});
+
+describe('platformCredentialBlanks', () => {
+    const URL = 'https://gateway.example.test';
+
+    it('blanks the platform key beside a member redirect that carries no member key of that name', () => {
+        expect(platformCredentialBlanks({ ANTHROPIC_BASE_URL: URL, ANTHROPIC_AUTH_TOKEN: VALUE })).toEqual({
+            ANTHROPIC_API_KEY: '',
+        });
+        expect(platformCredentialBlanks({ ANTHROPIC_BASE_URL: URL })).toEqual({ ANTHROPIC_API_KEY: '' });
+        expect(platformCredentialBlanks({ ANTHROPIC_BASE_URL: URL, ANTHROPIC_API_KEY: '' })).toEqual({
+            ANTHROPIC_API_KEY: '',
+        });
+        expect(platformCredentialBlanks({ OPENAI_BASE_URL: URL })).toEqual({ OPENAI_API_KEY: '' });
+    });
+
+    it('blanks nothing when the member key is there or nothing redirects', () => {
+        expect(platformCredentialBlanks({ ANTHROPIC_BASE_URL: URL, ANTHROPIC_API_KEY: VALUE })).toEqual({});
+        expect(platformCredentialBlanks({ OPENAI_BASE_URL: URL, OPENAI_API_KEY: VALUE })).toEqual({});
+        expect(platformCredentialBlanks({ ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: VALUE })).toEqual({});
+        expect(platformCredentialBlanks({})).toEqual({});
     });
 });

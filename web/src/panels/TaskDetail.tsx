@@ -11,6 +11,7 @@ import { useStickToBottom } from '../use-stick-to-bottom.js';
 import { AttachmentDropZone } from './AttachmentDropZone.js';
 import { attachmentHandlers } from './AttachmentPicker.js';
 import { ChatInput } from './ChatInput.js';
+import { ModelCombobox, useKnownModels } from '../components/ModelCombobox.js';
 import { FOLLOW_UP_INPUT_ID, notAuthorMessage } from './TaskHeader.js';
 import { TaskActivity } from './TaskActivity.js';
 import { TaskOutcome } from './TaskOutcome.js';
@@ -73,9 +74,15 @@ function FollowUpComposer({
     sending,
     onFollowUp,
     adder,
+    current,
+    agent,
 }: {
     /** The thread's root run: the key of this thread's draft in the shell's store. */
     rootId: string;
+    /** The thread's model now: the one requested, else the one the latest run got; null when neither is known. */
+    current: string | null;
+    /** The thread's agent, which a follow-up never changes: the models offered are its own; null when unknown. */
+    agent: string | null;
     draftStore: ComposerDraftStore;
     error: string | null;
     sending: boolean;
@@ -107,9 +114,13 @@ function FollowUpComposer({
         };
     }, [adder, limits, add]);
     const blocked = !draft.trim() || frozen || files.blocker !== null;
+    const models = useKnownModels(agent).filter((model) => model !== current);
+    // '' is the thread's own model: sent only when the member picked another.
+    const picked = held?.model?.trim() ?? '';
+    const model = picked === '' || picked === current ? undefined : picked;
     const send = async () => {
         if (blocked) return;
-        // No executor choice here: the adjustment is bound to the executor that ran the task.
+        // No executor choice here: the adjustment is bound to the executor that ran the task, only its model may change.
         const ids = files.readyIds();
         const key = ids.length === 0 ? null : files.submissionKey();
         const submitted = key === null ? undefined : { attachments: ids, idempotencyKey: key };
@@ -118,7 +129,7 @@ function FollowUpComposer({
         draftStore.beginSubmit(threadScope(rootId), key);
         let sent = false;
         try {
-            sent = (await onFollowUp(draft, submitted)) === null;
+            sent = (await onFollowUp(draft, submitted, model)) === null;
         } finally {
             draftStore.finishSubmit(threadScope(rootId), sent);
         }
@@ -147,6 +158,25 @@ function FollowUpComposer({
                 }}
                 files={files}
                 limits={limits}
+                controls={
+                    <div className="composer-context">
+                        <div className="composer-context-item">
+                            <ModelCombobox
+                                value={held?.model ?? ''}
+                                defaultLabel={current ?? 'Default'}
+                                models={models}
+                                disabled={frozen}
+                                onChange={(next) =>
+                                    draftStore.updateFollowUp(rootId, (prev) => ({
+                                        ...prev,
+                                        model: next === '' ? undefined : next,
+                                        submissionKey: null,
+                                    }))
+                                }
+                            />
+                        </div>
+                    </div>
+                }
                 send={{
                     label: frozen ? 'Sending…' : 'Send follow-up',
                     disabled: blocked,
@@ -167,8 +197,8 @@ function FollowUpComposer({
     );
 }
 
-/** What the follow-up composer hands up: the words, and the uploaded files when it carries any. */
-type OnFollowUp = (command: string, files?: SubmittedFiles) => Promise<string | null>;
+/** What the follow-up composer hands up: the words, the uploaded files when it carries any, a changed model. */
+type OnFollowUp = (command: string, files?: SubmittedFiles, model?: string) => Promise<string | null>;
 
 /** The fallback notice (issue 226): the run ended on a question and nothing could ask it in place. */
 const ENDED_ON_QUESTION_REPLY = 'Claude ended with a question. Reply below to continue the same conversation.';
@@ -188,6 +218,7 @@ function FollowUp({
     sending,
     onFollowUp,
     adder,
+    agent,
 }: {
     latest: Job;
     rootId: string;
@@ -197,6 +228,7 @@ function FollowUp({
     sending: boolean;
     onFollowUp: OnFollowUp;
     adder: MutableRefObject<((files: File[]) => void) | null>;
+    agent: string | null;
 }) {
     const eligibility = followUpEligibility(latest, viewer);
     const asked = endedOnQuestion(latest);
@@ -207,6 +239,8 @@ function FollowUp({
                 {asked ? <StateNote state="empty">{ENDED_ON_QUESTION_REPLY}</StateNote> : null}
                 <FollowUpComposer
                     rootId={rootId}
+                    current={latest.agentModel ?? latest.resolvedModel}
+                    agent={agent}
                     draftStore={draftStore}
                     error={error}
                     sending={sending}
@@ -297,6 +331,7 @@ export function TaskDetail({
     onAnswer,
     onConnectionChange,
     activity = NO_ACTIVITY,
+    agent = null,
 }: {
     /** The page's head: title, id line, batch backlink. Rendered whatever the poll holds. */
     header: ReactNode;
@@ -327,6 +362,8 @@ export function TaskDetail({
      * what it is handed, and a run with no answer yet is "loading", never a zero.
      */
     activity?: ThreadActivity;
+    /** The thread's agent (its frozen agent default, else its profile's type); null when unknown. */
+    agent?: string | null;
 }) {
     const followUpAdd = useRef<((files: File[]) => void) | null>(null);
 
@@ -418,6 +455,7 @@ export function TaskDetail({
                     sending={sending}
                     onFollowUp={onFollowUp}
                     adder={followUpAdd}
+                    agent={agent}
                 />
             </AttachmentDropZone>
         </div>

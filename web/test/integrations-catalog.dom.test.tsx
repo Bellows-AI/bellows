@@ -1,8 +1,9 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ALLOW_COMMENTS_LABEL, SITE_HELP } from '../src/components/JiraConnectionDialog.js';
+import { SITE_HELP } from '../src/components/JiraConnectionDialog.js';
 import { LINEAR_WORKSPACE_HELP } from '../src/components/LinearConnectionDialog.js';
+import { ALLOW_COMMENTS_LABEL } from '../src/components/WriteConsentDialog.js';
 import { SettingsIntegrationsCatalogPage } from '../src/pages/SettingsIntegrationsCatalogPage.js';
 import { renderApp, renderAt, stubFetch, type FetchHandler } from './dom.js';
 import { boardHandler, connection, settingsBoard } from './settings-board.js';

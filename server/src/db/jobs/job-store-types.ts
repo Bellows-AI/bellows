@@ -277,6 +277,21 @@ export interface Job {
      */
     executorScope: ExecutorScope;
     /**
+     * The agent default frozen on a task naming no profile: the agent the claim runs. Null on a profile task. Copied
+     * wherever `executor` is, and never re-resolved after create.
+     */
+    agentType: ExecutorType | null;
+    /**
+     * The model requested for the task: one chosen at create or on a follow-up (on a profile task too, where it
+     * overrides the profile's), else the agent default's. Null when none was requested. Copied like `agentType`.
+     */
+    agentModel: string | null;
+    /**
+     * The model the latest claim of this run handed the runner (`run_model`): the requested model, else the profile's
+     * `config.model`. Null before a claim, and when the profile sets no model.
+     */
+    resolvedModel: string | null;
+    /**
      * The finished task this job asks for adjustments on, when it is a follow-up. The tasks chat's
      * conversation thread; null on every job queued before the mechanic and on every first task.
      * A follow-up carries a copy of the parent's session ids from insert, which is what makes the
@@ -1075,6 +1090,8 @@ export interface CreateJobStoreDeps {
     batches?: boolean;
     /** `config.deploymentMode`, default self-hosted. Cloud refuses a claim whose effective env or profile carries a Claude subscription OAuth token. */
     deploymentMode?: DeploymentMode;
+    /** `config.platformModelProvided`, default false. Cloud without it refuses a claim with no model credential. */
+    platformModelProvided?: boolean;
     ready?: Promise<unknown>;
     /**
      * The env-var store's resolver, when the deployment stores runner environment. Present in
@@ -1086,7 +1103,9 @@ export interface CreateJobStoreDeps {
     env?: {
         resolveFor(
             target: { userId: string | null; repo: string | null },
-            exec: Sql | TransactionSql
+            exec: Sql | TransactionSql,
+            /** The run's agent: Claude Code takes its model names from one scope (`stackClaudeCodeEnv`). */
+            options?: { agentType?: string | null }
         ): Promise<Record<string, string>>;
     };
     /**
@@ -1233,6 +1252,8 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     batches: boolean;
     /** `CreateJobStoreDeps.deploymentMode`, defaulted. */
     deploymentMode: DeploymentMode;
+    /** `CreateJobStoreDeps.platformModelProvided`, defaulted. */
+    platformModelProvided: boolean;
     env: CreateJobStoreDeps['env'];
     githubApp: boolean;
     planReader: CreateJobStoreDeps['plan'];

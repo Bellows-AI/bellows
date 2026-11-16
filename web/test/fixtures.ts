@@ -29,6 +29,7 @@ export function memberSession(
         },
         role: 'member',
         membership: { invitedAt: null, claimedAt: null },
+        setup: { completed: true, done: [], skipped: [] },
         account: { createdAt: null, lastLoginAt: null },
         organization: BELLOWS,
         organizations: [BELLOWS],
@@ -36,6 +37,7 @@ export function memberSession(
         mcp: false,
         batches: false,
         deploymentMode: 'self-hosted',
+        platformModel: false,
         ...rest,
     };
 }

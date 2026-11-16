@@ -59,6 +59,8 @@ function executionPairs(jobs: Job[]): [string, ReactNode][] {
         ['Repository', latest.repo],
         ['Base branch', latest.baseBranch ?? 'Default'],
         ['Executor', latest.executor ?? 'No executor selected'],
+        // What the latest claim handed the runner, never the request: null means the profile chose.
+        ['Model', latest.resolvedModel ?? 'profile default'],
         // The running attempt's sampled container vitals. A finished run's last sample would lie
         // about a run no longer going, and an unread number is no row rather than a zero.
         ['CPU', live && vitals?.cpuPercent != null ? `${Math.round(vitals.cpuPercent)}%` : null],

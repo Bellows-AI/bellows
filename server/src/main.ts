@@ -9,6 +9,7 @@ import { bootstrappedDriverCredentials } from './auth/driver-credentials.js';
 import { orgKeyDeriver } from './auth/org-key.js';
 import { createAuthStore } from './auth/store.js';
 import { type AppConfig, resolveConfig, type GitHubConfig } from './config.js';
+import { createProviderKeys } from './provider-keys/verify.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
 import { createAttemptOfLease, createPairMatches } from './db/attempt-of-lease.js';
 import { liveOAuthConnectionsOf } from './db/connection-bindings.js';
@@ -426,6 +427,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
+        providerKeys: createProviderKeys({ deploymentMode: config.deploymentMode }),
         metrics,
         logger: true,
     });

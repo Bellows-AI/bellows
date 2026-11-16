@@ -94,7 +94,23 @@ Bellows Cloud does not accept a Claude subscription OAuth token. A configuration
 
 In the **New task** composer, the **Executor** chip next to **Repository** lists every profile you can use. Suspended profiles are not listed.
 
-If you don't pick one, the task uses your default. If you have no usable profile, Bellows refuses the task and links to **Add an executor in Settings**.
+If you don't pick one, Bellows uses the first of these that exists:
+
+1. Your default profile, while it is usable.
+2. Your agent default: an agent and a model, with no profile. Set it under **Settings → Model**, or in the **Connect a model** setup step.
+3. Your organization's agent default, which an admin sets.
+4. Your first usable personal profile.
+5. Your organization's first usable profile.
+
+With none of these, Bellows refuses the task and links to **Add an executor in Settings**. A task on an agent default keeps that agent and model: changing the default later doesn't change a queued task, its retry or its follow-up.
+
+### Choosing the model for one task
+
+You can pick the model when you start a task, and again on a follow-up. It replaces the model of the profile or the agent default for that task only; the agent stays the same. Leave it empty to use the default. A follow-up without a model keeps the one the task last ran with, and so do a retry and a run that resumes after an interruption. Each run records the model it actually got.
+
+In the composer, the **Model** chip sits next to the executor. It reads **Default**, or **Default (model)** when your agent default runs the task; leave it there to send no model. Open it to pick one of your provider's models, or type any model name and press Enter. The follow-up composer has the same chip, starting at the model the task is using; change it only to switch. The task page's **Execution** facts show the **Model** the latest run got, or **profile default** when the profile chose it.
+
+From the CLI, pass `--model <name>` to `bellows job create` or `bellows job follow-up`. From an assistant, pass `model` to `create_task` or `follow_up_task`. A model name is 1 to 200 characters.
 
 ## Defaults and suspending
 

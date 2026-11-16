@@ -109,6 +109,46 @@ describe('cloud mode: env scopes refuse a redirect with no member key', () => {
         };
         expect((await send('PUT', '/api/env/org', kept)).statusCode).toBe(HTTP_OK);
     });
+
+    it('accepts an Anthropic base URL beside a member ANTHROPIC_AUTH_TOKEN, in env and in executor settings', async () => {
+        const { send } = await boot('cloud');
+        const bearer = vars(['ANTHROPIC_BASE_URL', URL], ['ANTHROPIC_AUTH_TOKEN', KEY]);
+        expect((await send('PUT', '/api/env/workspace', bearer)).statusCode).toBe(HTTP_OK);
+        const config = { env: { ANTHROPIC_BASE_URL: URL, ANTHROPIC_AUTH_TOKEN: KEY } };
+        expect((await send('PUT', '/api/workspace/executors', personal(config))).statusCode).toBe(HTTP_OK);
+    });
+});
+
+describe('cloud mode: a single-name or multi-name env write is judged on the scope it leaves', () => {
+    const one = (value: string, secret = false) => ({ value, secret });
+
+    it('refuses the base URL written alone, storing nothing', async () => {
+        const { send, envVars } = await boot('cloud');
+        expectRefused(await send('PUT', '/api/env/org/vars/ANTHROPIC_BASE_URL', one(URL)), 'ANTHROPIC_BASE_URL');
+        expectRefused(await send('PUT', '/api/env/workspace/vars/OPENAI_BASE_URL', one(URL)), 'OPENAI_BASE_URL');
+        expect(envVars.rows()).toEqual([]);
+    });
+
+    it('accepts the base URL beside the member key in one multi-name call', async () => {
+        const { send, envVars } = await boot('cloud');
+        const entries = [
+            { name: 'ANTHROPIC_BASE_URL', value: URL, secret: false },
+            { name: 'ANTHROPIC_API_KEY', value: KEY, secret: true },
+        ];
+        expect((await send('PUT', '/api/env/workspace/vars', { entries })).statusCode).toBe(HTTP_OK);
+        expect(
+            envVars
+                .rows()
+                .map((r) => r.name)
+                .sort()
+        ).toEqual(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL']);
+    });
+
+    it('accepts the base URL written alone when the scope already holds the key', async () => {
+        const { send } = await boot('cloud');
+        expect((await send('PUT', '/api/env/org/vars/ANTHROPIC_API_KEY', one(KEY, true))).statusCode).toBe(HTTP_OK);
+        expect((await send('PUT', '/api/env/org/vars/ANTHROPIC_BASE_URL', one(URL))).statusCode).toBe(HTTP_OK);
+    });
 });
 
 describe('self-hosted mode keeps accepting a redirect', () => {

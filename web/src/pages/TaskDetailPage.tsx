@@ -1,9 +1,10 @@
-import { ADMIN_ROLE } from '@factory-ai/core';
+import { ADMIN_ROLE, ORG_SCOPE } from '@factory-ai/core';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { NavigateFunction } from 'react-router-dom';
 import { useThread } from '../api/useJobs.js';
 import type { Job } from '../api/useJobs.js';
+import type { WorkspacePayload } from '../api/useWorkspace.js';
 import { useThreadActivity } from '../api/useJobActivity.js';
 import type { SubmittedFiles } from '../api/taskWrites.js';
 import type { UseTasks } from '../api/useTasks.js';
@@ -51,7 +52,7 @@ function useTaskConversationActions(
         };
     }, [id]);
 
-    const followUp = async (command: string, files?: SubmittedFiles): Promise<string | null> => {
+    const followUp = async (command: string, files?: SubmittedFiles, model?: string): Promise<string | null> => {
         if (latest === null) return 'No task to follow up on';
         const atStart = generation.current;
         setFollowUpError(null);
@@ -59,8 +60,8 @@ function useTaskConversationActions(
         try {
             // The adjustment continues the NEWEST run — it is the one that is finished and
             // carries the session the child inherits. No executor on the body: the board binds
-            // the follow-up to the executor that ran the task.
-            const result = await tasks.actions.followUp(latest.id, command, files);
+            // the follow-up to the executor that ran the task; only its model may change.
+            const result = await tasks.actions.followUp(latest.id, command, files, model);
             if (generation.current !== atStart) return result.error;
             if (result.error !== null) {
                 // Said inside the composer, beside the draft it refused — a 403 FORBIDDEN too.
@@ -258,8 +259,19 @@ function useTaskRename(id: string | null, tasks: UseTasks, root: Job | null, ref
  * only one that is finished and not yet closed — so the page reads it off the polled chain
  * rather than off the URL.
  */
+/**
+ * The agent a thread runs, which a follow-up never changes: its frozen agent default, else its profile's type off the
+ * workspace poll (suspended rows too); null while unknown.
+ */
+function threadAgentOf(latest: Job | null, workspace: WorkspacePayload | null): string | null {
+    if (latest === null) return null;
+    if (latest.agentType !== null) return latest.agentType;
+    const rows = latest.executorScope === ORG_SCOPE ? workspace?.orgExecutors : workspace?.executors;
+    return rows?.find((row) => row.name === latest.executor)?.type ?? null;
+}
+
 export function TaskDetailPage() {
-    const { tasks, session, sessionLoading } = useTasksPage();
+    const { tasks, session, sessionLoading, workspace } = useTasksPage();
     const navigate = useNavigate();
     const params = useParams();
     const id = params.id ?? null;
@@ -333,6 +345,7 @@ export function TaskDetailPage() {
                 onAnswer={answerQuestion}
                 onConnectionChange={detail.refresh}
                 activity={activity}
+                agent={threadAgentOf(latest, workspace.data)}
             />
             {detail.jobs !== null && detail.jobs.length > 0 ? (
                 <TaskRemoveDialog

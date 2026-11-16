@@ -248,11 +248,13 @@ export function queuedTask(
     return {
         command: state.draft,
         repo: state.repo === '' ? null : state.repo,
-        executor: state.executor,
-        executorScope: state.executorScope,
+        // No executor chosen runs the member's agent default, which the board stamps itself.
+        ...(state.executor === '' ? {} : { executor: state.executor, executorScope: state.executorScope }),
         workflow: state.workflow === '' ? null : state.workflow,
         workflowParams: chosenParams,
         baseBranch: state.baseBranch === '' ? null : state.baseBranch,
+        // Default sends nothing: the executor's own model runs.
+        ...(state.model.trim() === '' ? {} : { model: state.model.trim() }),
         ...(builtinSkills.length > 0 ? { skills: [...builtinSkills] } : {}),
     };
 }
@@ -267,6 +269,8 @@ export function useComposerDraft(input: {
      * in on — null when nothing is selectable.
      */
     defaultExecutor: ExecutorChoice | null;
+    /** Whether an agent default runs a task naming no executor: then no selection is still launchable. */
+    agentDefault: boolean;
     workflows: Workflows;
     onRepoChange: ((repo: string | null) => void) | undefined;
     sending: boolean;
@@ -281,6 +285,7 @@ export function useComposerDraft(input: {
         executors,
         executorsLoaded,
         defaultExecutor,
+        agentDefault,
         workflows,
         onRepoChange,
         sending,
@@ -374,7 +379,7 @@ export function useComposerDraft(input: {
             sending ||
             workflowPending ||
             !paramsReady ||
-            executor === ''
+            (executor === '' && !agentDefault)
         ) {
             return;
         }

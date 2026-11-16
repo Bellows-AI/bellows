@@ -1,6 +1,7 @@
 import type { GitHubIdentity } from '../src/auth/github.js';
 import type { Role } from '@factory-ai/core';
 import type { AccessTokenKind, AccessTokenView, AuthStore, Caller, InstallationRef } from '../src/auth/store.js';
+import type { MembershipSetup } from '../src/auth/setup-store.js';
 
 /**
  * An in-memory AuthStore: it keeps the offline suite a no-database suite while still exercising
@@ -98,6 +99,8 @@ interface Member {
     role: Role;
     invitedAt: string;
     claimedAt: string;
+    /** Absent until a setup write: a fresh membership, as a row born after 156 reads. */
+    setup?: MembershipSetup;
 }
 
 export interface AccessTokenRow {
@@ -187,7 +190,11 @@ function callerFor(state: AuthState, user: User, member: Member): Caller {
             lastLoginAt: user.lastLoginAt,
         },
         org: { id: member.orgId, name: orgNameOf(state, member.orgId) },
-        membership: { invitedAt: member.invitedAt, claimedAt: member.claimedAt },
+        membership: {
+            invitedAt: member.invitedAt,
+            claimedAt: member.claimedAt,
+            setup: member.setup ?? { completedAt: null, done: [], skipped: [] },
+        },
         role: member.role,
         scopes: 'all',
     };
@@ -244,6 +251,8 @@ export function membershipMethods(
     | 'findOrg'
     | 'membershipsOf'
     | 'localCaller'
+    | 'recordSetupStep'
+    | 'completeSetup'
 > {
     return {
         seedMember(orgId, login, role = 'member') {
@@ -374,6 +383,25 @@ export function membershipMethods(
         async localCaller(orgId) {
             const user = state.users.find((u) => u.githubUserId === 0);
             return user ? memberOf(state, user.id, orgId) : null;
+        },
+
+        async recordSetupStep(orgId, userId, step, action) {
+            const member = state.members.find((m) => m.orgId === orgId && m.userId === userId);
+            if (!member) return;
+            const setup = member.setup ?? { completedAt: null, done: [], skipped: [] };
+            const into = action === 'done' ? setup.done : setup.skipped;
+            const out = action === 'done' ? setup.skipped : setup.done;
+            const kept = out.filter((s) => s !== step);
+            const added = into.includes(step) ? into : [...into, step];
+            member.setup =
+                action === 'done' ? { ...setup, done: added, skipped: kept } : { ...setup, done: kept, skipped: added };
+        },
+
+        async completeSetup(orgId, userId) {
+            const member = state.members.find((m) => m.orgId === orgId && m.userId === userId);
+            if (!member) return;
+            const setup = member.setup ?? { completedAt: null, done: [], skipped: [] };
+            member.setup = { ...setup, completedAt: setup.completedAt ?? nowIso() };
         },
     };
 }

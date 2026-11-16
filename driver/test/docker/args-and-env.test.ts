@@ -270,6 +270,25 @@ describe("the board's environment", () => {
         expect(line).toEqual(expect.arrayContaining(['--env-file', '/tmp/env-file']));
     });
 
+    it('lets a claim name with an EMPTY value win over the driver’s forwarded one', () => {
+        // A claim that points Claude Code at another host blanks ANTHROPIC_API_KEY so the
+        // deployment's own key from RUNNER_ENV can never follow it there.
+        const configured = loadDriverConfig({ RUNNER_ENV: 'ANTHROPIC_API_KEY' });
+        const blanked: BoardJob = { ...job, env: { ANTHROPIC_AUTH_TOKEN: 'member', ANTHROPIC_API_KEY: '' } };
+        const line = dockerArgs(configured, blanked, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' });
+        expect(line).not.toContain('ANTHROPIC_API_KEY');
+        expect(envFileBody(blanked, configured).split('\n')).toContain('ANTHROPIC_API_KEY=');
+    });
+
+    it('lets the model a claim pins win over an ANTHROPIC_MODEL the driver forwards, not only a credential', () => {
+        const configured = loadDriverConfig({ RUNNER_ENV: 'ANTHROPIC_API_KEY,ANTHROPIC_MODEL' });
+        const pinned: BoardJob = { ...job, env: { ANTHROPIC_MODEL: 'P' } };
+        const line = dockerArgs(configured, pinned, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' });
+        expect(line).not.toContain('ANTHROPIC_MODEL');
+        expect(line).toContain('ANTHROPIC_API_KEY');
+        expect(envFileBody(pinned, configured).split('\n')).toContain('ANTHROPIC_MODEL=P');
+    });
+
     // Issue #244: the collision check must read the SAME env the file is actually written from
     // (`runnerClaimEnv`), or an operator who names OPENCODE_CONFIG_CONTENT in RUNNER_ENV could
     // have `-e` (driver-process value, almost always unset) win over the reserved-agent merge —

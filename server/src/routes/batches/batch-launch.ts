@@ -13,7 +13,7 @@ import type { BatchRecord } from '../../db/batches/batch-store-types.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from '../helpers.js';
 import { HTTP_CONFLICT } from '../jobs/job-limits.js';
-import { defaultExecutorOf, refusedAsUnusable } from '../jobs/executor-usable.js';
+import { defaultExecutorOf, executorTypeOf, refusedAsNoModel, refusedAsUnusable } from '../jobs/executor-usable.js';
 import { validateExecutorField } from '../jobs/job-field-validation.js';
 
 /**
@@ -171,12 +171,44 @@ export async function launchChecks(
     }
     const stamped = await withDefaultExecutor(ctx, request, reply, resolved);
     if (!stamped) return null;
-    return (await executorsUsable(ctx, request, reply, stamped)) ? stamped : null;
+    if (!(await executorsUsable(ctx, request, reply, stamped))) return null;
+    return (await modelKeysPresent(ctx, request, reply, stamped)) ? stamped : null;
 }
 
 /**
- * A task naming no executor runs on the starter's default, stamped into the plan the start freezes: the claim resolves
- * only the stamped label. Null once a refusal is on `reply` (409 `NO_EXECUTOR` when the starter has no usable profile).
+ * In cloud, each task's agent must have a model credential for its repository (`refusedAsNoModel`), judged once per
+ * repository × executor or agent: 409 `NO_MODEL`, or 503 when the env cannot be read. False once a refusal is sent.
+ */
+async function modelKeysPresent(ctx: Context, request: FastifyRequest, reply: FastifyReply, plan: ResolvedBatchPlan) {
+    if (!ctx.runtime.modelRequired) return true;
+    const repoOf = new Map(plan.targets.map((target) => [target.key, target.repo]));
+    const seen = new Set<string>();
+    for (const task of plan.stages.flatMap((stage) => stage.tasks)) {
+        const repo = repoOf.get(task.target) ?? null;
+        const key = JSON.stringify([repo, task.executor, task.executorScope, task.agentType ?? null]);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const profile =
+            task.agentType !== undefined
+                ? { type: executorTypeOf(task.agentType), config: null }
+                : await refusedAsUnusable(request, reply, {
+                      executors: ctx.runtime.userExecutors,
+                      createdBy: ctx.createdBy,
+                      executor: task.executor,
+                      scope: task.executorScope,
+                  });
+        if (profile === 'refused') return false;
+        if (await refusedAsNoModel(request, reply, ctx.runtime, { userId: ctx.createdBy, repo, ...profile })) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * A task naming no executor runs on the starter's default, stamped into the plan the start freezes: a profile as the
+ * label, an agent default as the task's agent and model. The claim reads only what was stamped. Null once a
+ * refusal is on `reply` (409 `NO_EXECUTOR` when nothing resolves for the starter).
  */
 async function withDefaultExecutor(
     ctx: Context,
@@ -192,13 +224,15 @@ async function withDefaultExecutor(
     });
     if (fallback === 'refused') return null;
     if (fallback === null) return plan;
+    const stamp =
+        fallback.kind === 'agent'
+            ? { agentType: fallback.agentType, agentModel: fallback.model }
+            : { executor: fallback.name, executorScope: fallback.scope };
     return {
         ...plan,
         stages: plan.stages.map((stage) => ({
             ...stage,
-            tasks: stage.tasks.map((task) =>
-                task.executor === null ? { ...task, executor: fallback.name, executorScope: fallback.scope } : task
-            ),
+            tasks: stage.tasks.map((task) => (task.executor === null ? { ...task, ...stamp } : task)),
         })),
     };
 }
