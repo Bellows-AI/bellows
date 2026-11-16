@@ -9,7 +9,7 @@ This page is for a security reviewer. It states what each control does and what 
 
 - An agent runs code you did not write, next to credentials. Bellows confines it with hardened containers, separate user ids, a network policy, and an admission policy. It holds no long-lived credential.
 - The agent gets a short-lived GitHub token for one repository, fetched on demand. The token is not in its environment.
-- By default this is **not** kernel or VM isolation: every runner shares the node's kernel with other pods. Set a runner class's `runtimeClassName` (for example `kata`, a Kata Containers microVM) to run that class's runner pods on their own guest kernel. A Docker class must use one.
+- By default this is **not** kernel or VM isolation: every runner shares the node's kernel with other pods. Set a runner class's `runtimeClassName` (for example `kata`, a Kata Containers microVM) to run that class's runner pods on their own guest kernel. A Docker class must use one. When agents run code you do not trust, give every class one, the default class included.
 - Membership is not a sandbox. Anyone in an organization can queue a command that an agent runs on any tracked repository.
 
 ## Trust boundaries
@@ -169,7 +169,7 @@ Attachment type is decided from the file's bytes, not its declared type. SVG, HT
 
 ## Known limits
 
-- Kernel isolation needs a RuntimeClass. A runner class without `runtimeClassName` shares the node kernel. With it, the admission policy refuses any pod of that class outside that RuntimeClass, even from a compromised driver; a pod without the label of a declared class is refused too. The chart does not provision the runtime: install Kata Containers on the runner nodes, or use your cloud's managed microVM node pool.
+- Kernel isolation needs a RuntimeClass. A runner class without `runtimeClassName` shares the node kernel. With it, the admission policy refuses any pod of that class outside that RuntimeClass, even from a compromised driver; a pod without the label of a declared class is refused too. The chart does not provision the runtime: install Kata Containers on the runner nodes, or use your cloud's managed microVM node pool. One class left without a RuntimeClass, often the default, runs its runners on the node kernel beside every other pod there, so set it on every class.
 - A Docker class gives task code root over the task volume. Its daemon runs privileged with the task volume mounted, and the tool user can reach its socket, so the separate tool user does not hold in that class. The class's microVM is the boundary there.
 - The admission policy trusts a Docker class's RuntimeClass by name, not by what it runs. The driver's startup check reads the RuntimeClass's handler name, not what the node runs for it: a handler named `kata` that runs plain containers would give the daemon root of the node.
 - The network controls do nothing without an enforcing CNI.

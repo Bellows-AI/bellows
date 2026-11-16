@@ -49,7 +49,7 @@ There is **no opt-out for a declared service or a GATE image**: one needing root
 
 ## Stated limits
 
-- **This is not kernel isolation and it is not VM isolation for a non-docker class.** Every runner, gate, helper and service of such a class shares one host kernel; a kernel boundary means a microVM (Kata) RuntimeClass on a node group the chart does not provision.
+- **This is not kernel isolation and it is not VM isolation for a non-docker class.** Every runner, gate, helper and service of such a class shares one host kernel; a kernel boundary means a microVM (Kata) RuntimeClass on a node group the chart does not provision. For untrusted code, every class sets one, the default class included (`charts/factory/values.yaml` `runner.classes`).
 - **The network controls are inert without an enforcing CNI** ([kubernetes-limits.md](kubernetes-limits.md)), and a NetworkPolicy cannot restrict HTTP routes.
 - **The tool uid guards the CLI against accidents, not a hostile tool**: it still writes config the CLI later executes (`.git/config`, `.claude`, `.mcp.json`) and can exhaust memory, CPU or pids; hooks and MCP servers run as the CLI's uid.
 - **A docker class gives task code root over the task volume**, and through the privileged `dockerd` over the guest kernel, never the node's: the class's microVM is the boundary, so tool-uid isolation does not hold there. The pod's `RuntimeDefault` does not filter `dockerd`: a privileged container always runs seccomp Unconfined. A runc RuntimeClass passed off as Kata would give it root of the node; the driver's boot check of the handler is the guard (`driver/src/k8s/k8s-runtime-class.ts`, [kubernetes-limits.md](kubernetes-limits.md)).

@@ -225,6 +225,19 @@ runner:
         limits: { cpu: '2', memory: 10Gi }
 ```
 
+To run every task in a microVM, give the default class the Kata RuntimeClass too, and drop any class that has none:
+
+```yaml values.yaml
+runner:
+  defaultClass: standard
+  classes:
+    standard:
+      runtimeClassName: kata
+      nodeSelector: { pool: sandbox }
+      tolerations:
+        - { key: pool, operator: Equal, value: sandbox, effect: NoSchedule }
+```
+
 A Docker class runs its daemon privileged with the task volume mounted, so task code in it has root over that volume and the microVM's guest kernel. The microVM is the boundary, so a Docker class runs only under a Kata RuntimeClass, and the driver refuses to start otherwise. Its namespace must enforce Pod Security `privileged`; the admission policy holds the `baseline` controls instead. See [Security model](/self-host/security).
 
 A Kata node pool needs:
