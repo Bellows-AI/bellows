@@ -2,7 +2,7 @@ import { INTEGRATION_CATALOG, MODEL_PROVIDERS, type ExecutorType } from '@factor
 import { Link } from 'react-router-dom';
 import type { ConnectionsRead } from '../api/useConnections.js';
 import type { UseModelSetup } from '../api/useModelSetup.js';
-import type { UseRepos } from '../api/useRepos.js';
+import { trackedRepos, type UseRepos } from '../api/useRepos.js';
 import type { Session } from '../api/useSession.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
 import { PROVIDER_META } from '../model-setup/providers.js';
@@ -19,7 +19,11 @@ interface Row {
     lamp: Lamp;
     /** A full-page address (the reselect round trip) or an in-app path. */
     change?: { href: string } | { to: string };
+    /** Set when the row's read did not answer: says nothing about the setup, asks again. */
+    retry?: () => void;
 }
+
+type RowState = Pick<Row, 'detail' | 'lamp' | 'retry'>;
 
 const CHECKING = { detail: 'Checking…', lamp: 'idle' } as const;
 const joined = (parts: readonly (string | null | undefined)[]) => parts.filter(Boolean).join(' · ');
@@ -30,9 +34,13 @@ function providerLabel(provider: string | null | undefined): string | null {
     return known ? PROVIDER_META[known].label : null;
 }
 
-function reposRow(read: UseRepos): Pick<Row, 'detail' | 'lamp'> {
-    if (read.data === null)
-        return read.error === null ? CHECKING : { detail: 'Could not check the repositories.', lamp: 'idle' };
+/** An empty listing that came with GitHub's error is unknown, never "0 selected" (the composer's own reading). */
+function reposRow(read: UseRepos): RowState {
+    const tracked = trackedRepos(read);
+    if (tracked.repos === null || read.data === null) {
+        if (read.data === null && read.error === null) return CHECKING;
+        return { detail: "Couldn't load repositories", lamp: 'idle', retry: read.refresh };
+    }
     const { repos, installation } = read.data;
     const scope =
         installation?.repositorySelection === 'all'
@@ -42,9 +50,11 @@ function reposRow(read: UseRepos): Pick<Row, 'detail' | 'lamp'> {
 }
 
 /** With no key the board can see, what a task would run on instead: the agent default, else the default profile. */
-function withoutKeyRow(workspace: UseWorkspace): Pick<Row, 'detail' | 'lamp'> {
-    if (workspace.data === null)
-        return workspace.error === null ? CHECKING : { detail: 'Could not check the model.', lamp: 'idle' };
+function withoutKeyRow(workspace: UseWorkspace): RowState {
+    if (workspace.data === null) {
+        if (workspace.error === null) return CHECKING;
+        return { detail: 'Could not check the model.', lamp: 'idle', retry: workspace.refresh };
+    }
     const { agentDefault, defaultExecutor } = workspace.data;
     if (agentDefault) return { detail: joined([agentLabel(agentDefault.agentType), agentDefault.model]), lamp: 'ok' };
     return { detail: joined(['Executor profile', defaultExecutor?.name]), lamp: 'ok' };
@@ -56,8 +66,8 @@ function modelRow(
     noModel: boolean,
     workspace: UseWorkspace,
     organization: string | null
-): Pick<Row, 'detail' | 'lamp'> {
-    if (setup.error !== null) return { detail: 'Could not check the model.', lamp: 'idle' };
+): RowState {
+    if (setup.error !== null) return { detail: 'Could not check the model.', lamp: 'idle', retry: setup.refresh };
     const view = setup.data;
     if (view === null) return CHECKING;
     if (view.effective === null) return noModel ? { detail: 'Not connected', lamp: 'wait' } : withoutKeyRow(workspace);
@@ -76,9 +86,11 @@ function modelRow(
     };
 }
 
-function trackerRow(read: ConnectionsRead): Pick<Row, 'detail' | 'lamp'> {
+function trackerRow(read: ConnectionsRead): RowState {
     if (read.state === 'loading') return CHECKING;
-    if (read.state === 'error') return { detail: 'Could not check the issue trackers.', lamp: 'idle' };
+    if (read.state === 'error') {
+        return { detail: 'Could not check the issue trackers.', lamp: 'idle', retry: () => void read.reload() };
+    }
     const live = read.connections.filter((row) => connectionState(row) === 'connected');
     if (live.length === 0) return { detail: 'Not connected — optional', lamp: 'wait' };
     const label = (id: string) => INTEGRATION_CATALOG.find((entry) => entry.id === id)?.label ?? id;
@@ -128,6 +140,16 @@ export function ReadySummary({
                         <span className="ready-row-name">{row.name}</span>
                         <span className="ready-row-detail">{row.detail}</span>
                     </span>
+                    {row.retry ? (
+                        <button
+                            type="button"
+                            className="tertiary"
+                            aria-label={`Retry ${row.name.toLowerCase()}`}
+                            onClick={row.retry}
+                        >
+                            Retry
+                        </button>
+                    ) : null}
                     {row.change === undefined ? null : 'href' in row.change ? (
                         <a href={row.change.href} aria-label={`Change ${row.name.toLowerCase()}`}>
                             Change

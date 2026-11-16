@@ -23,6 +23,9 @@ Gate, onboarding, account page. `web/src/styles/regions/entry.css`; shared syste
 - Continue is `aria-disabled`, never `disabled`, so its reason stays focusable and `aria-describedby`-wired.
 - Only an explicit `setup.completed === false` in the GitHub mode redirects into the setup walk; a step
   navigates only after its write and the `/api/auth/me` re-read both land.
+- Ready's draft is kept in `sessionStorage` per member (`web/src/onboarding/ready-draft.ts`; files are not), so a
+  Change or the reselect round trip keeps it; a created task drops it. A summary row whose read did not answer —
+  an empty repository listing with GitHub's error included — says so with Retry, never a verdict.
 - Ready's Start creates the task under an Idempotency-Key, then completes setup and re-reads `/api/auth/me`
   before opening the task; a task whose `complete` failed is finished on the next Ready load, never created again.
 - The model step never shows the empty form over a failed setup read, never shows a key check's answer for

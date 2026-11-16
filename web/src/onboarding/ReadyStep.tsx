@@ -7,12 +7,13 @@ import type { UseModelSetup } from '../api/useModelSetup.js';
 import { trackedRepos, type UseRepos, useRepos } from '../api/useRepos.js';
 import { useSession } from '../api/useSession.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
-import { ComposerDraftProvider, useComposerDraftStore } from '../composer-draft.js';
+import { ComposerDraftProvider, draftOwner, useComposerDraftStore } from '../composer-draft.js';
 import { Icon } from '../components/Icon.js';
 import { StateNote } from '../components/StateNote.js';
 import { TaskComposer, TaskComposerSkeleton } from '../panels/TaskComposer.js';
 import { initialComposerState } from '../task-composer.js';
 import { composerExecutorOptions } from '../workspace/executors.js';
+import { readReadyDraft, writeReadyDraft } from './ready-draft.js';
 import { ReadySummary } from './ReadySummary.js';
 import { setupPath } from './steps.js';
 import { useSetupWalk } from './useSetupWalk.js';
@@ -46,7 +47,7 @@ async function completeSetup(): Promise<boolean> {
  * so a retry never creates twice), then complete setup and open the task — even when `complete` fails,
  * since the task exists; the id is held so the next Ready load completes setup and opens it.
  */
-function useFirstTask() {
+function useFirstTask(owner: string | null) {
     const navigate = useNavigate();
     const [sending, setSending] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -70,6 +71,8 @@ function useFirstTask() {
                 return message;
             }
             attempt.current = null;
+            // The task exists: its draft is done, whatever `complete` answers.
+            writeReadyDraft(owner, null);
             window.sessionStorage.setItem(STARTED_KEY, id);
             if (await completeSetup()) window.sessionStorage.removeItem(STARTED_KEY);
             await navigate(`/tasks/${id}`);
@@ -103,9 +106,29 @@ function useStartedTask() {
 }
 
 /** The inline composer with its own held draft: the first tracked repository preselected, the starters under it. */
-function FirstTaskComposer({ repos, workspace }: { repos: UseRepos; workspace: UseWorkspace }) {
+function FirstTaskComposer({
+    repos,
+    workspace,
+    owner,
+}: {
+    repos: UseRepos;
+    workspace: UseWorkspace;
+    owner: string | null;
+}) {
     const draftStore = useComposerDraftStore();
-    const first = useFirstTask();
+    const first = useFirstTask(owner);
+    // The stored draft goes into the store before the composer mounts: it reads the store once, at mount.
+    const [seeded, setSeeded] = useState(() => readReadyDraft(owner) === null);
+    useEffect(() => {
+        if (seeded) return;
+        const held = readReadyDraft(owner);
+        if (held !== null) draftStore.save(held);
+        setSeeded(true);
+    }, [seeded, owner, draftStore]);
+    // Every change the composer writes to the store is mirrored to storage; a cleared draft drops it.
+    useEffect(() => {
+        if (seeded) writeReadyDraft(owner, draftStore.state);
+    }, [seeded, owner, draftStore.state]);
     // A starter writes the held draft and remounts the composer, which reads the draft once at mount.
     const [generation, setGeneration] = useState(0);
     const tracked = trackedRepos(repos);
@@ -122,6 +145,7 @@ function FirstTaskComposer({ repos, workspace }: { repos: UseRepos; workspace: U
         setGeneration((count) => count + 1);
     };
 
+    if (!seeded) return <TaskComposerSkeleton />;
     return (
         <>
             <TaskComposer
@@ -194,7 +218,11 @@ export function ReadyStep({
     } else {
         task = (
             <ComposerDraftProvider session={session}>
-                {sessionLoading ? <TaskComposerSkeleton /> : <FirstTaskComposer repos={repos} workspace={workspace} />}
+                {sessionLoading ? (
+                    <TaskComposerSkeleton />
+                ) : (
+                    <FirstTaskComposer repos={repos} workspace={workspace} owner={draftOwner(session)} />
+                )}
             </ComposerDraftProvider>
         );
     }

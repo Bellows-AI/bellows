@@ -56,6 +56,9 @@ interface Replies {
     complete?: FetchReply;
     mode?: Session['deploymentMode'];
     space?: WorkspacePayload;
+    /** `/api/repos`, answered afresh on each read. */
+    repos?: () => FetchReply;
+    connectionsReply?: () => FetchReply;
 }
 
 /** Ready's board: an unfinished member with both steps answered, the summary's reads and the two writes. */
@@ -66,6 +69,8 @@ function board({
     complete,
     mode = 'self-hosted',
     space = workspace,
+    repos,
+    connectionsReply,
 }: Replies = {}) {
     const setup: Session['setup'] = { completed: false, done: ['model'], skipped: ['tools'] };
     const calls = stubFetch((call: FetchCall) => {
@@ -74,13 +79,14 @@ function board({
         if (url === '/api/model-setup') return model;
         if (url === '/api/workspace') return space;
         if (url === '/api/repos') {
+            if (repos) return repos();
             return {
                 repos: [repo('web'), repo('api')],
                 installation: { id: '1', account: 'acme', repositorySelection: 'all' },
                 meta: { fetchedAt: CREATED, error: null },
             };
         }
-        if (url === '/api/connections') return { connections };
+        if (url === '/api/connections') return connectionsReply ? connectionsReply() : { connections };
         if (method === 'POST' && url === '/api/jobs')
             return launch ? launch(call) : { status: 201, body: { id: TASK_ID } };
         if (method === 'POST' && url === '/api/onboarding/setup/complete') {
@@ -276,4 +282,97 @@ describe('the Ready step', () => {
             expect(document.querySelectorAll('button.primary')).toHaveLength(1);
         });
     }
+});
+
+describe('the Ready summary on a read it could not confirm', () => {
+    const listing = (names: string[], error: string | null) => ({
+        repos: names.map(repo),
+        installation: { id: '1', account: 'acme', repositorySelection: 'selected' },
+        meta: { fetchedAt: CREATED, error },
+    });
+
+    it('an empty listing that came with an error is not "0 selected": it says so, and Retry re-reads', async () => {
+        const user = userEvent.setup();
+        let answer = listing([], 'GitHub is unreachable');
+        const calls = board({ repos: () => answer });
+        renderApp('/onboarding/ready');
+        const repos = await row('Repositories');
+        expect(await repos.findByText("Couldn't load repositories")).toBeTruthy();
+        expect(repos.queryByText(/0 selected/)).toBeNull();
+        expect(document.querySelector('[aria-label="Repositories"] .ready-lamp')?.getAttribute('data-state')).toBe(
+            'idle'
+        );
+
+        answer = listing(['web'], null);
+        await user.click(repos.getByRole('button', { name: 'Retry repositories' }));
+        expect(await repos.findByText('acme · 1 selected')).toBeTruthy();
+        expect(calls.filter((c) => c.url === '/api/repos').length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('a failed model or tracker read offers Retry, never a verdict', async () => {
+        const user = userEvent.setup();
+        let connectionsFail = true;
+        board({
+            model: { status: 500 },
+            connectionsReply: () => (connectionsFail ? { status: 503 } : { connections: [] }),
+        });
+        renderApp('/onboarding/ready');
+        const model = await row('Model');
+        expect(await model.findByText('Could not check the model.')).toBeTruthy();
+        expect(model.getByRole('button', { name: 'Retry model' })).toBeTruthy();
+        const tracker = await row('Issue tracker');
+        expect(await tracker.findByText('Could not check the issue trackers.')).toBeTruthy();
+        expect(tracker.queryByText(/Not connected/)).toBeNull();
+        connectionsFail = false;
+        await user.click(tracker.getByRole('button', { name: 'Retry issue tracker' }));
+        expect(await tracker.findByText('Not connected — optional')).toBeTruthy();
+    });
+});
+
+describe("the Ready composer's draft", () => {
+    const typeDraft = async (user: ReturnType<typeof userEvent.setup>) => {
+        await user.type(await prompt(), 'fix the login crash');
+        await user.click(await screen.findByRole('button', { name: 'Repository: acme/web' }));
+        await user.click(await screen.findByRole('option', { name: 'acme/api' }));
+        expect(await screen.findByRole('button', { name: 'Repository: acme/api' })).toBeTruthy();
+    };
+    const expectDraft = async () => {
+        await waitFor(async () => expect(((await prompt()) as HTMLTextAreaElement).value).toBe('fix the login crash'));
+        expect(await screen.findByRole('button', { name: 'Repository: acme/api' })).toBeTruthy();
+    };
+
+    it('survives a Change to the model step and back', async () => {
+        const user = userEvent.setup();
+        board();
+        const { router } = renderApp('/onboarding/ready');
+        await typeDraft(user);
+        await user.click((await row('Model')).getByRole('link', { name: /Change/ }));
+        await waitFor(() => expect(router.state.location.pathname).toBe('/onboarding/model'));
+        await router.navigate('/onboarding/ready');
+        await expectDraft();
+    });
+
+    it('survives a reload (the reselect round trip is a full page load)', async () => {
+        const user = userEvent.setup();
+        board();
+        const first = renderApp('/onboarding/ready');
+        await typeDraft(user);
+        first.unmount();
+        renderApp('/onboarding/ready');
+        await expectDraft();
+    });
+
+    it('is gone after a successful Start', async () => {
+        const user = userEvent.setup();
+        board();
+        const first = renderApp('/onboarding/ready');
+        await typeDraft(user);
+        await waitFor(() => expect((startButton() as HTMLButtonElement).disabled).toBe(false));
+        await user.click(startButton());
+        await waitFor(() => expect(first.router.state.location.pathname).toBe(`/tasks/${TASK_ID}`));
+        first.unmount();
+        renderApp('/onboarding/ready');
+        expect(await screen.findByRole('button', { name: 'Repository: acme/web' })).toBeTruthy();
+        expect(((await prompt()) as HTMLTextAreaElement).value).toBe('');
+    });
 });
