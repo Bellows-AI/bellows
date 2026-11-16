@@ -158,11 +158,12 @@ describe('the follow-up Model control', () => {
         stubObjectUrls();
     });
 
-    function thread(over: Partial<ThreadJob>) {
+    function thread(over: Partial<ThreadJob>, answers: { setup?: ModelSetupView; workspace?: WorkspacePayload } = {}) {
         const jobs = authoredBy(missingSummaryThread, LOCAL_AUTHOR).map((j) => ({ ...j, ...over }));
         const calls = stubFetch((call: FetchCall) => {
             if (call.url === '/api/auth/me') return OPEN_BOARD_SESSION;
-            if (call.url === '/api/model-setup') return setup;
+            if (call.url === '/api/model-setup') return answers.setup ?? setup;
+            if (call.url === '/api/workspace' && answers.workspace) return answers.workspace;
             if (call.method === 'POST' && /\/follow-up$/.test(call.url)) return { status: 201, body: { id: SENT_ID } };
             const match = /\/api\/jobs\/([^/]+)\/(thread|activity)/.exec(call.url);
             if (match && jobs.some((j) => j.id === match[1]))
@@ -199,5 +200,47 @@ describe('the follow-up Model control', () => {
         await send(user);
         await waitFor(() => expect(sent()).toHaveLength(1));
         expect((sent()[0] as { model?: string }).model).toBe('claude-opus-5-5');
+    });
+
+    /** An OpenRouter key: Claude Code runs its Anthropic models only, OpenCode any. */
+    const openRouter: ModelSetupView = {
+        ...setup,
+        personal: {
+            provider: 'openrouter',
+            agentType: 'claude-code',
+            model: 'anthropic/claude-sonnet-5.5',
+            keyNames: [],
+        },
+    };
+    const offered = async (user: ReturnType<typeof userEvent.setup>) => {
+        await screen.findByLabelText('Ask for a follow-up');
+        await user.click(modelPicker());
+        const options = within(await screen.findByRole('listbox')).getAllByRole('option');
+        return options.map((option) => option.textContent);
+    };
+
+    it("offers only the thread's agent's models: a Claude Code agent default on OpenRouter", async () => {
+        const user = userEvent.setup();
+        thread(
+            { executor: null, agentType: 'claude-code', agentModel: 'anthropic/claude-sonnet-5.5' },
+            { setup: openRouter }
+        );
+        const models = await offered(user);
+        expect(models).toContain('anthropic/claude-opus-5.5');
+        expect(models).not.toContain('openai/gpt-5.1');
+    });
+
+    it("offers only the profile's agent's models on a profile thread", async () => {
+        const user = userEvent.setup();
+        thread(
+            { executor: 'e2e-executor', executorScope: 'user', agentType: null, agentModel: null },
+            { setup: openRouter, workspace: profileWorkspace }
+        );
+        await screen.findByLabelText('Ask for a follow-up');
+        await user.click(modelPicker());
+        const list = await screen.findByRole('listbox');
+        await within(list).findByRole('option', { name: 'anthropic/claude-opus-5.5' });
+        // The profile's type lands with the workspace poll; the open list follows it.
+        await waitFor(() => expect(within(list).queryByRole('option', { name: 'openai/gpt-5.1' })).toBeNull());
     });
 });

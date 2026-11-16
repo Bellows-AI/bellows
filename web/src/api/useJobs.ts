@@ -1,4 +1,4 @@
-import type { AttachmentMeta, JobMode, TaskTitleOrigin } from '@factory-ai/core';
+import type { AttachmentMeta, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
 import { usePoll } from './usePoll.js';
 
 /**
@@ -179,6 +179,10 @@ export interface Job {
     repo: string | null;
     /** The member's executor name the task was stamped with, or null. Display metadata. */
     executor: string | null;
+    /** Whose profile `executor` names: the author's own or the organization's. */
+    executorScope: ExecutorScope;
+    /** The agent default frozen on a task naming no profile; null on a profile task (its profile's type is the agent). */
+    agentType: ExecutorType | null;
     /** The model requested for the run (a chosen one, else the agent default's); null when none was. */
     agentModel: string | null;
     /** The model the latest claim handed the runner; null before a claim or when the profile sets none. */

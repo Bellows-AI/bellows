@@ -35,6 +35,8 @@ const job = (over: Partial<Job> = {}): Job => ({
     runtime: null,
     repo: 'Bellows-AI/bellows',
     executor: null,
+    executorScope: 'user',
+    agentType: null,
     agentModel: null,
     resolvedModel: null,
     workflowNode: null,

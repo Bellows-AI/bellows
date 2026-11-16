@@ -75,11 +75,14 @@ function FollowUpComposer({
     onFollowUp,
     adder,
     current,
+    agent,
 }: {
     /** The thread's root run: the key of this thread's draft in the shell's store. */
     rootId: string;
     /** The thread's model now: the one requested, else the one the latest run got; null when neither is known. */
     current: string | null;
+    /** The thread's agent, which a follow-up never changes: the models offered are its own; null when unknown. */
+    agent: string | null;
     draftStore: ComposerDraftStore;
     error: string | null;
     sending: boolean;
@@ -111,7 +114,7 @@ function FollowUpComposer({
         };
     }, [adder, limits, add]);
     const blocked = !draft.trim() || frozen || files.blocker !== null;
-    const models = useKnownModels(null).filter((model) => model !== current);
+    const models = useKnownModels(agent).filter((model) => model !== current);
     // '' is the thread's own model: sent only when the member picked another.
     const picked = held?.model?.trim() ?? '';
     const model = picked === '' || picked === current ? undefined : picked;
@@ -215,6 +218,7 @@ function FollowUp({
     sending,
     onFollowUp,
     adder,
+    agent,
 }: {
     latest: Job;
     rootId: string;
@@ -224,6 +228,7 @@ function FollowUp({
     sending: boolean;
     onFollowUp: OnFollowUp;
     adder: MutableRefObject<((files: File[]) => void) | null>;
+    agent: string | null;
 }) {
     const eligibility = followUpEligibility(latest, viewer);
     const asked = endedOnQuestion(latest);
@@ -235,6 +240,7 @@ function FollowUp({
                 <FollowUpComposer
                     rootId={rootId}
                     current={latest.agentModel ?? latest.resolvedModel}
+                    agent={agent}
                     draftStore={draftStore}
                     error={error}
                     sending={sending}
@@ -325,6 +331,7 @@ export function TaskDetail({
     onAnswer,
     onConnectionChange,
     activity = NO_ACTIVITY,
+    agent = null,
 }: {
     /** The page's head: title, id line, batch backlink. Rendered whatever the poll holds. */
     header: ReactNode;
@@ -355,6 +362,8 @@ export function TaskDetail({
      * what it is handed, and a run with no answer yet is "loading", never a zero.
      */
     activity?: ThreadActivity;
+    /** The thread's agent (its frozen agent default, else its profile's type); null when unknown. */
+    agent?: string | null;
 }) {
     const followUpAdd = useRef<((files: File[]) => void) | null>(null);
 
@@ -446,6 +455,7 @@ export function TaskDetail({
                     sending={sending}
                     onFollowUp={onFollowUp}
                     adder={followUpAdd}
+                    agent={agent}
                 />
             </AttachmentDropZone>
         </div>

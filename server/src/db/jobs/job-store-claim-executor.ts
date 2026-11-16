@@ -26,6 +26,9 @@ import {
 import type { TransactionSql } from 'postgres';
 import type { CreateJobStoreDeps } from './job-store-types.js';
 
+/** The env name Claude Code reads its model from, over its settings' `model`; OpenCode reads none. */
+const CLAUDE_MODEL_ENV = 'ANTHROPIC_MODEL';
+
 export interface ResolvedClaimExecutor {
     claimEnv: Record<string, string> | undefined;
     executorType: ExecutorType | null;
@@ -115,20 +118,41 @@ export async function resolveClaimExecutor(
     if (source !== null) claimEnv = mergeExecutorConfigEnv(claimEnv, source);
     const profileConfig: unknown = source?.config;
     claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType, deploymentMode);
+    // Claude Code takes `$ANTHROPIC_MODEL` over its settings' `model`: a chosen model rides under that name too, so no
+    // member or operator value outranks it (the claim env wins over the driver's RUNNER_ENV).
+    if (executorType === CLAUDE_CODE && row.agent_model !== null) {
+        claimEnv = { ...claimEnv, [CLAUDE_MODEL_ENV]: row.agent_model };
+    }
     // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
     // token, or a redirect of the deployment's model credential with no member key, saved before
     // cloud mode or split across scopes and profile, never travels. The driver fails the task with the
     // sentence before anything spawns; a throw here would roll the claim back and re-claim it forever.
     const refusal = deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType) : null;
     if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal, runModel: null };
-    return { claimEnv, executorType, executorRefusal, runModel: runModelOf(source, executorType) };
+    return { claimEnv, executorType, executorRefusal, runModel: runModelOf(source, executorType, claimEnv) };
 }
 
-/** The model a merged config hands its runner: only a known agent's config travels (`mergeExecutorConfigEnv`). */
-function runModelOf(source: { config: Record<string, unknown> } | null, type: ExecutorType | null): string | null {
+/**
+ * The model the runner runs: only a known agent's config travels (`mergeExecutorConfigEnv`). Claude Code's is
+ * `$ANTHROPIC_MODEL` when the env it gets sets one — its settings' `env` applied over the claim env — else the
+ * config's `model`; OpenCode's is the config's `model` alone.
+ */
+function runModelOf(
+    source: { config: Record<string, unknown> } | null,
+    type: ExecutorType | null,
+    claimEnv: Record<string, string> | undefined
+): string | null {
+    if (type === null) return null;
     const config: unknown = source?.config;
     const model = isRecord(config) ? config.model : undefined;
-    return type !== null && typeof model === 'string' ? model : null;
+    const fromEnv = type === CLAUDE_CODE ? claudeEnvOf(config, claimEnv)[CLAUDE_MODEL_ENV] : undefined;
+    if (typeof fromEnv === 'string' && fromEnv !== '') return fromEnv;
+    return typeof model === 'string' ? model : null;
+}
+
+/** The env a Claude Code run gets: the claim env with the settings' own `env` over it. */
+function claudeEnvOf(config: unknown, claimEnv: Record<string, string> | undefined): Record<string, unknown> {
+    return { ...claimEnv, ...(isRecord(config) && isRecord(config.env) ? config.env : {}) };
 }
 
 /**
@@ -183,11 +207,18 @@ async function claimExecutorOf(
 
 /**
  * The profile's config with the task's chosen model over its own (`agent_model` on a profile task). `model` is not a
- * runner-fenced key, so it travels like the rest of the config; every other key stays the profile's.
+ * runner-fenced key, so it travels like the rest of the config; every other key stays the profile's — except a Claude
+ * Code `env.ANTHROPIC_MODEL`, which the CLI would run over `model` and so takes the chosen model too.
  */
-function withChosenModel<T extends { config: Record<string, unknown> }>(configured: T | null, model: string | null) {
+function withChosenModel<T extends { type: string; config: Record<string, unknown> }>(
+    configured: T | null,
+    model: string | null
+) {
     if (configured === null || model === null) return configured;
-    return { ...configured, config: { ...configured.config, model } };
+    const { env } = configured.config;
+    const pinsEnv = configured.type === CLAUDE_CODE && isRecord(env) && CLAUDE_MODEL_ENV in env;
+    const config = { ...configured.config, model, ...(pinsEnv ? { env: { ...env, [CLAUDE_MODEL_ENV]: model } } : {}) };
+    return { ...configured, config };
 }
 
 /** The agent default frozen on a job row. */

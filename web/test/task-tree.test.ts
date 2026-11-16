@@ -194,6 +194,8 @@ describe('taskSummary', () => {
         output: null,
         repo: null,
         executor: null,
+        executorScope: 'user',
+        agentType: null,
         agentModel: null,
         resolvedModel: null,
         workflowNode: null,
