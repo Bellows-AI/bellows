@@ -21,7 +21,7 @@ import {
     runningThread,
     sessionAuthor,
 } from './fixtures/threads.js';
-import { FORBIDDEN, watchConsole } from './page-health.js';
+import { FORBIDDEN, shellSettled, watchConsole } from './page-health.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -514,12 +514,25 @@ test.describe('the task detail page', () => {
     test('the detail renders at every target width without overflow', async ({ page }) => {
         test.setTimeout(60_000);
         await routeThread(page, authoredBy(publishedThread, await sessionAuthor(page)));
+        // The layout under test is the connected one: a confirmed key keeps the "No model yet"
+        // banner out, so the rail starts at the app bar rather than below the banner.
+        await page.route('**/api/model-setup', (route) =>
+            route.fulfill({
+                json: {
+                    platform: false,
+                    org: null,
+                    personal: { provider: 'anthropic', agentType: 'claude-code', model: 'm', keyNames: ['K'] },
+                    effective: 'personal',
+                },
+            })
+        );
 
         for (const width of [360, 768, 1024, 1440]) {
             await page.setViewportSize({ width, height: 1000 });
             await page.goto(`/tasks/${publishedThread[0]!.id}`);
             await expect(page.locator('.task-controls')).toBeVisible();
-            // One read, so a banner that lands between separate reads cannot shift one box and not another.
+            // The shell's banner has decided, so no box moves under the measurement below.
+            await shellSettled(page);
             const { overflow, rail, controls, conversation, head, appBar } = await page.evaluate(() => {
                 const box = (selector: string) => {
                     const rect = document.querySelector(selector)?.getBoundingClientRect();
@@ -798,6 +811,7 @@ test.describe('the task title', () => {
         }));
         expect(metrics.height, 'at most two lines').toBeLessThanOrEqual(2 * metrics.lineHeight + 1);
         expect(metrics.title, 'the full display title rides title=').toBe(metrics.text);
+        await shellSettled(page);
         const overflow = await page.evaluate(
             () => document.documentElement.scrollWidth - document.documentElement.clientWidth
         );

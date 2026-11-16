@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { appearance, chooseAppearance, expectAppearanceOptions } from './appearance.js';
+import { shellSettled } from './page-health.js';
 import { seededTaskId } from './routes.js';
 import { noHorizontalOverflow } from './viewport.js';
 
@@ -40,8 +41,14 @@ const MATRIX_ROUTES: ReadonlyArray<string> = PAGES.map(([path]) => path);
 
 /** Waits for the route's data anchor, so a measurement reads the settled layout and not the
     shell the SPA paints first. Each mapped route waits for content that only exists once its
-    data (or its terminal error/empty state) has landed — never the loading skeleton. */
+    data (or its terminal error/empty state) has landed — never the loading skeleton — and for the
+    shell's "No model yet" decision, which can land above any of them. */
 async function settle(page: Page, path: string): Promise<void> {
+    await routeAnchor(page, path);
+    await shellSettled(page);
+}
+
+async function routeAnchor(page: Page, path: string): Promise<void> {
     if (path === '/') {
         // The dashboard answers 202 while the first read runs (dashboard.spec.ts's open()).
         await page.locator('.usage-summary, .usage-empty').first().waitFor({ timeout: 60_000 });
