@@ -26,6 +26,8 @@ export interface QueueTaskInput {
     workflowParams: Record<string, string> | null;
     /** The branch the task works from; null is the repository's default branch. */
     baseBranch?: string | null;
+    /** The model chosen for the task; absent is Default (the executor's own). */
+    model?: string;
     /** Built-in skills the prompt names with a `/name` token; absent when it names none. */
     skills?: string[];
     /** Completed upload ids; absent for a text-only task, so that body is unchanged. */
@@ -54,11 +56,23 @@ export async function queueTask(input: QueueTaskInput): Promise<QueueResult> {
     return result.ok ? { id: result.value.id, error: null } : { id: null, error: result.error };
 }
 
-/** Queues a follow-up on an existing thread — the same wire shape as `queueTask`, one thread id. */
-export async function followUpOnTask(id: string, command: string, files?: SubmittedFiles): Promise<QueueResult> {
+/**
+ * Queues a follow-up on an existing thread — the same wire shape as `queueTask`, one thread id. No `model` keeps the
+ * thread's own.
+ */
+export async function followUpOnTask(
+    id: string,
+    command: string,
+    files?: SubmittedFiles,
+    model?: string
+): Promise<QueueResult> {
     const result = await request<{ id: string }>(`/api/jobs/${id}/follow-up`, {
         method: 'POST',
-        body: files === undefined ? { command } : { command, attachments: files.attachments },
+        body: {
+            command,
+            ...(files === undefined ? {} : { attachments: files.attachments }),
+            ...(model === undefined ? {} : { model }),
+        },
         ...(files === undefined ? {} : { headers: { [IDEMPOTENCY_KEY_HEADER]: files.idempotencyKey } }),
         verb: 'Could not queue the follow-up',
     });

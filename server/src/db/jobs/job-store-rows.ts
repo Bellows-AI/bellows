@@ -74,6 +74,8 @@ export interface JobRow {
     executor_scope: string | null;
     agent_type: string | null;
     agent_model: string | null;
+    /** 159: the model the latest claim handed the runner; absent from a select that does not read it. */
+    run_model?: string | null;
     parent_job_id: string | null;
     root_job_id: string;
     /** The row's graph position (027); null on workflow-less rows and user follow-ups. */
@@ -205,6 +207,9 @@ const titleOf = (row: JobRow) => ({
 
 const baseBranchOf = (row: JobRow): string | null => row.base_branch ?? null;
 
+/** The model the latest claim handed the runner; null before a claim, or from a read that does not select it. */
+const resolvedModelOf = (row: JobRow): string | null => row.run_model ?? null;
+
 /** The detail reads' hidden skills, name and reason only; absent from a read that does not select them. */
 const hiddenSkillsOf = (row: JobRow) =>
     row.skill_hidden ? { hiddenSkills: row.skill_hidden.map(({ name, reason }) => ({ name, reason })) } : {};
@@ -236,6 +241,7 @@ export function toJob(orgId: string, row: JobRow): Job {
         executorScope: (row.executor_scope ?? USER_SCOPE) as ExecutorScope,
         agentType: row.agent_type as ExecutorType | null,
         agentModel: row.agent_model,
+        resolvedModel: resolvedModelOf(row),
         followUpTo: row.parent_job_id,
         rootJobId: row.root_job_id,
         workflowNode: row.workflow_node ?? null,

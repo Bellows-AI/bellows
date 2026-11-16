@@ -11,6 +11,7 @@ import { type ComposerDraftInput, type ComposerDraftStore, TASK_SCOPE } from '..
 import { withDraftReturn } from '../components/DraftReturnBanner.js';
 import { BranchCombobox } from '../components/BranchCombobox.js';
 import { Icon } from '../components/Icon.js';
+import { ModelCombobox, useKnownModels } from '../components/ModelCombobox.js';
 import { SlashSkillMenu, useSlashMenu } from '../components/SlashSkillMenu.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
@@ -72,6 +73,37 @@ function executorLabelOf(executor: string, agentDefault: AgentDefaultChoice | nu
     if (executor !== '') return executor;
     if (agentDefault === null) return 'No executor configured';
     return `Default — ${EXECUTOR_TYPE_META[agentDefault.agentType].label} · ${agentDefault.model}`;
+}
+
+/**
+ * The Model chip beside the executor: Default is the executor's own model — the agent default's, named, when that
+ * runs — and sends nothing. The agent never changes here; the offered models are its provider's.
+ */
+function ComposerModelChip({
+    executors,
+    agentDefault,
+    state,
+    update,
+}: {
+    executors: readonly ComposerExecutorOption[];
+    agentDefault: AgentDefaultChoice | null;
+    state: ComposerDraftInput;
+    update: Update;
+}) {
+    const { executor, executorScope } = state;
+    const profile = executors.find((option) => option.name === executor && option.scope === executorScope);
+    const runsDefault = executor === '' && agentDefault !== null;
+    const models = useKnownModels(runsDefault ? agentDefault.agentType : (profile?.type ?? null));
+    return (
+        <div className="composer-context-item">
+            <ModelCombobox
+                value={state.model}
+                defaultLabel={runsDefault ? `Default (${agentDefault.model})` : 'Default'}
+                models={models}
+                onChange={(model) => update({ model })}
+            />
+        </div>
+    );
 }
 
 /**
@@ -181,6 +213,7 @@ function ComposerContextRow({
                     </ListboxOptions>
                 </Listbox>
             </div>
+            <ComposerModelChip executors={executors} agentDefault={agentDefault} state={state} update={update} />
             <ComposerWorkflowTrigger workflows={workflows} workflow={state.workflow} update={update} />
         </div>
     );

@@ -347,6 +347,7 @@ describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
         repoTouched: false,
         workflowRepo: 'acme/web',
         baseBranch: '',
+        model: '',
         ...freshWorkflowDraft(),
     };
 
@@ -446,6 +447,7 @@ describe('the composer draft — its fresh shape, a restore, and the dirty check
         repoTouched: true,
         workflowRepo: 'acme/api',
         baseBranch: '',
+        model: '',
         workflow: 'fix-issue',
         storedParams: { workflowId: 'wf-1', values: { issue: '#12' } },
         paramTouched: { issue: true },
@@ -460,6 +462,7 @@ describe('the composer draft — its fresh shape, a restore, and the dirty check
             repoTouched: false,
             workflowRepo: 'acme/web',
             baseBranch: '',
+            model: '',
             ...freshWorkflowDraft(),
         });
         // No resolved default (no preference, no rows at all): the fresh composer holds nothing,
@@ -500,6 +503,7 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
         repoTouched: false,
         workflowRepo: 'acme/web',
         baseBranch: '',
+        model: '',
         workflow: 'fix-issue',
         storedParams: { workflowId: 'wf-1', values: { issue: '#12' } },
         paramTouched: {},

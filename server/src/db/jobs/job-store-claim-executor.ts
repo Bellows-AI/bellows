@@ -26,10 +26,15 @@ import {
 import type { TransactionSql } from 'postgres';
 import type { CreateJobStoreDeps } from './job-store-types.js';
 
+/** The env name Claude Code reads its model from, over its settings' `model`; OpenCode reads none. */
+const CLAUDE_MODEL_ENV = 'ANTHROPIC_MODEL';
+
 export interface ResolvedClaimExecutor {
     claimEnv: Record<string, string> | undefined;
     executorType: ExecutorType | null;
     executorRefusal: string | null;
+    /** The model the runner is handed (the merged config's `model`), recorded as `job.run_model`; null when none travels. */
+    runModel: string | null;
 }
 
 /**
@@ -113,13 +118,53 @@ export async function resolveClaimExecutor(
     if (source !== null) claimEnv = mergeExecutorConfigEnv(claimEnv, source);
     const profileConfig: unknown = source?.config;
     claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType, deploymentMode);
+    // Claude Code takes `$ANTHROPIC_MODEL` over its settings' `model`: a chosen model rides under that name too, so no
+    // member value outranks it.
+    if (executorType === CLAUDE_CODE && row.agent_model !== null) {
+        claimEnv = { ...claimEnv, [CLAUDE_MODEL_ENV]: row.agent_model };
+    }
     // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
     // token, or a redirect of the deployment's model credential with no member key, saved before
     // cloud mode or split across scopes and profile, never travels. The driver fails the task with the
     // sentence before anything spawns; a throw here would roll the claim back and re-claim it forever.
     const refusal = deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType) : null;
-    if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal };
-    return { claimEnv, executorType, executorRefusal };
+    if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal, runModel: null };
+    const runModel = runModelOf(source, executorType, claimEnv);
+    // And whatever resolved is pinned there, so the model recorded is the one the CLI runs: the claim env wins over an
+    // `ANTHROPIC_MODEL` the driver forwards (RUNNER_ENV), which the board cannot see. Nothing resolved sends nothing.
+    if (executorType === CLAUDE_CODE && runModel !== null) claimEnv = { ...claimEnv, [CLAUDE_MODEL_ENV]: runModel };
+    return { claimEnv, executorType, executorRefusal, runModel };
+}
+
+/**
+ * The model the runner runs: only a known agent's config travels (`mergeExecutorConfigEnv`). Claude Code's is
+ * `$ANTHROPIC_MODEL` when the env it gets sets one — its settings' `env` applied over the claim env — else the
+ * config's `model`; OpenCode's is the config's `model` alone.
+ */
+function runModelOf(
+    source: { config: Record<string, unknown> } | null,
+    type: ExecutorType | null,
+    claimEnv: Record<string, string> | undefined
+): string | null {
+    if (type === null) return null;
+    const config: unknown = source?.config;
+    const model = isRecord(config) ? config.model : undefined;
+    const fromEnv = type === CLAUDE_CODE ? claudeEnvOf(config, claimEnv)[CLAUDE_MODEL_ENV] : undefined;
+    if (typeof fromEnv === 'string' && fromEnv !== '') return fromEnv;
+    return typeof model === 'string' ? model : null;
+}
+
+/** The env a Claude Code run gets: the claim env with the settings' own `env` over it. */
+function claudeEnvOf(config: unknown, claimEnv: Record<string, string> | undefined): Record<string, unknown> {
+    return { ...claimEnv, ...(isRecord(config) && isRecord(config.env) ? config.env : {}) };
+}
+
+/**
+ * Records on the claimed row what its runner got (`job.run_model`), inside the claim transaction so it rolls back with
+ * the claim. Every claim writes it — a retry, a takeover and a follow-up each re-record their own.
+ */
+export async function recordRunModel(tx: TransactionSql, orgId: string, jobId: string, runModel: string | null) {
+    await tx`update job set run_model = ${runModel} where org_id = ${orgId} and id = ${jobId}`;
 }
 
 /**
@@ -160,8 +205,24 @@ async function claimExecutorOf(
     return {
         executorType: known ? (configured.type as ExecutorType) : null,
         executorRefusal: null,
-        source: configured,
+        source: withChosenModel(configured, row.agent_model),
     };
+}
+
+/**
+ * The profile's config with the task's chosen model over its own (`agent_model` on a profile task). `model` is not a
+ * runner-fenced key, so it travels like the rest of the config; every other key stays the profile's — except a Claude
+ * Code `env.ANTHROPIC_MODEL`, which the CLI would run over `model` and so takes the chosen model too.
+ */
+function withChosenModel<T extends { type: string; config: Record<string, unknown> }>(
+    configured: T | null,
+    model: string | null
+) {
+    if (configured === null || model === null) return configured;
+    const { env } = configured.config;
+    const pinsEnv = configured.type === CLAUDE_CODE && isRecord(env) && CLAUDE_MODEL_ENV in env;
+    const config = { ...configured.config, model, ...(pinsEnv ? { env: { ...env, [CLAUDE_MODEL_ENV]: model } } : {}) };
+    return { ...configured, config };
 }
 
 /** The agent default frozen on a job row. */
@@ -179,8 +240,9 @@ export interface ClaimExecutorRow extends FrozenAgentColumns {
 }
 
 /**
- * The agent default frozen on a task naming no profile: its agent is the runner type and its model the whole
- * config, merged exactly as a profile's would be. Read off the row only — the agent default as it reads now is never
+ * The agent default frozen on a task naming no profile: its agent is the runner type and its model (the chosen one when
+ * the task picked one, which create and a follow-up write over the default's) the whole config, merged exactly as a
+ * profile's would be. Read off the row only — the agent default as it reads now is never
  * consulted, so a retry, a follow-up or a takeover runs what the task was created with. Null for a profile task.
  */
 function frozenAgentOf(row: ClaimExecutorRow): { type: ExecutorType; config: Record<string, unknown> } | null {

@@ -22,7 +22,7 @@ import {
     orgAdmission,
     repoRoom,
 } from './job-store-admission.js';
-import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
+import { type ResolvedClaimExecutor, recordRunModel, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf, threadBaseBranchFragment, workspacePathFor } from './job-store-rows.js';
 import { commitStagedConclusions } from './job-store-conclusions.js';
@@ -587,6 +587,7 @@ async function assembleClaim(
     const { rootJobId } = prepared;
     const { connections } = prepared;
     const executor = await resolveClaimExecutor(tx, { env, executorConfig, deploymentMode }, row);
+    await recordRunModel(tx, orgId, row.id, executor.runModel);
     const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.run_as) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);

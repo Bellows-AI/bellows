@@ -23,6 +23,7 @@ import {
     validateCommandField,
     validateExecutorField,
     validateExecutorScopeField,
+    validateModelField,
     validateRepoField,
     validateTitleField,
     validateSkillsField,
@@ -208,8 +209,8 @@ async function refusedAsUnknownSkill(
 }
 
 /**
- * The create's shape-checked simple fields (title, repo, executor and its scope), each refused with its own
- * code; null once a 400 has landed on `reply`. The title is null when none was given.
+ * The create's shape-checked simple fields (title, repo, executor and its scope, the chosen model), each refused
+ * with its own code; null once a 400 has landed on `reply`. The title and the model are null when none was given.
  */
 function checkedFields(reply: FastifyReply, fields: Record<string, unknown>) {
     const title = validateTitleField(fields.title);
@@ -220,7 +221,15 @@ function checkedFields(reply: FastifyReply, fields: Record<string, unknown>) {
     if (!executor.ok) return void bad(reply, ERROR_CODES.BAD_EXECUTOR, executor.message);
     const scope = validateExecutorScopeField(fields.executorScope);
     if (!scope.ok) return void bad(reply, ERROR_CODES.BAD_EXECUTOR_SCOPE, scope.message);
-    return { title: title.value, repo: repo.value, executor: executor.value, executorScope: scope.value };
+    const model = validateModelField(fields.model);
+    if (!model.ok) return void bad(reply, ERROR_CODES.BAD_BODY, model.message);
+    return {
+        title: title.value,
+        repo: repo.value,
+        executor: executor.value,
+        executorScope: scope.value,
+        model: model.value,
+    };
 }
 
 export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
@@ -296,8 +305,10 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 repo,
                 executor,
                 executorScope,
-                // The agent default that won, frozen on the task: the claim runs it, never a later default.
-                ...(agent ? { agentType: agent.agentType, agentModel: agent.model } : {}),
+                // The agent default that won, frozen on the task: the claim runs it, never a later default. A chosen
+                // model wins over the default's, and rides a profile task alone (it overrides the profile's model).
+                ...(agent ? { agentType: agent.agentType, agentModel: simple.model ?? agent.model } : {}),
+                ...(!agent && simple.model !== null ? { agentModel: simple.model } : {}),
                 skills,
                 baseBranch,
                 title,

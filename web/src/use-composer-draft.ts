@@ -253,6 +253,8 @@ export function queuedTask(
         workflow: state.workflow === '' ? null : state.workflow,
         workflowParams: chosenParams,
         baseBranch: state.baseBranch === '' ? null : state.baseBranch,
+        // Default sends nothing: the executor's own model runs.
+        ...(state.model.trim() === '' ? {} : { model: state.model.trim() }),
         ...(builtinSkills.length > 0 ? { skills: [...builtinSkills] } : {}),
     };
 }

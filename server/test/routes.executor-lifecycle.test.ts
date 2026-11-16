@@ -365,12 +365,12 @@ describe('POST /api/jobs against a suspended profile', () => {
 });
 
 describe('POST /api/jobs naming no executor', () => {
-    const queueBare = (b: Booted, cookie: string) =>
+    const queueBare = (b: Booted, cookie: string, extra: Record<string, unknown> = {}) =>
         b.instance.inject({
             method: 'POST',
             url: '/api/jobs',
             headers: { cookie },
-            payload: { command: 'echo hi', repo: `${READY_REPO.owner}/${READY_REPO.name}` },
+            payload: { command: 'echo hi', repo: `${READY_REPO.owner}/${READY_REPO.name}`, ...extra },
         });
 
     it("stamps the caller's resolved default, so the claim has a profile to run", async () => {
@@ -406,6 +406,26 @@ describe('POST /api/jobs naming no executor', () => {
         expect(response.statusCode).toBe(HTTP_CREATED);
         expect(b.queued).toEqual([
             { command: 'echo hi', executor: null, scope: 'user', agentType: 'opencode', agentModel: 'mine-model' },
+        ]);
+    });
+
+    it("a chosen model wins over the agent default's model and keeps its agent", async () => {
+        const b = await boot();
+        expect((await putAgentDefault(b, b.memberCookie, 'personal', 'mine-model')).statusCode).toBe(200);
+
+        expect((await queueBare(b, b.memberCookie, { model: 'picked' })).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toEqual([
+            { command: 'echo hi', executor: null, scope: 'user', agentType: 'opencode', agentModel: 'picked' },
+        ]);
+    });
+
+    it('a chosen model rides a profile task alone: the profile stays, no agent is frozen', async () => {
+        const b = await boot();
+        await createOrg(b, 'Main');
+
+        expect((await queueBare(b, b.memberCookie, { model: 'picked' })).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toStrictEqual([
+            { command: 'echo hi', executor: 'Main', scope: 'org', agentType: undefined, agentModel: 'picked' },
         ]);
     });
 

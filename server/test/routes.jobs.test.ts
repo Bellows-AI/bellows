@@ -86,6 +86,7 @@ interface StoreStub extends JobStore {
         repo: string | null;
         executor: string | null;
         executorScope: string | null;
+        agentModel?: string | null;
     }[];
     /** The skills each create was handed, parallel to `created`. */
     skillSelections: (readonly string[] | undefined)[];
@@ -128,7 +129,7 @@ interface StoreStub extends JobStore {
             nodeLoss?: boolean;
         };
     }[];
-    followUps: { parentId: string; command: string; createdBy: string | null }[];
+    followUps: { parentId: string; command: string; createdBy: string | null; model?: string | null }[];
     retries: { id: string; createdBy: string | null }[];
     /** The idempotency input each create, follow-up and retry was handed, in call order. */
     idempotencies: (IdempotencyInput | undefined)[];
@@ -303,6 +304,7 @@ function stubStore(
                 repo: target?.repo ?? null,
                 executor: target?.executor ?? null,
                 executorScope: target?.executorScope ?? null,
+                ...(target?.agentModel !== undefined ? { agentModel: target.agentModel } : {}),
             });
             stub.skillSelections.push(target?.skills);
             if (target?.workflow) stub.workflowTargets.push(target.workflow);
@@ -312,10 +314,10 @@ function stubStore(
             return { id: ID, ...(options.replayed ? { replayed: true } : {}) };
         },
         // The rest tuple keeps the interface's six parameters (the params ceiling is for hand-written signatures).
-        async createFollowUp(...[parentId, command, createdBy, idempotency, , admin]) {
+        async createFollowUp(...[parentId, command, createdBy, idempotency, , admin, , model]) {
             boom();
             stub.adminFlags.push({ verb: 'follow-up', admin });
-            stub.followUps.push({ parentId, command, createdBy: createdBy ?? null });
+            stub.followUps.push({ parentId, command, createdBy: createdBy ?? null, ...(model ? { model } : {}) });
             stub.idempotencies.push(idempotency);
             reuse();
             return options.followUp ?? { id: FOLLOW_UP_ID, ...(options.replayed ? { replayed: true } : {}) };
@@ -847,6 +849,28 @@ describe('POST /api/jobs', () => {
         });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_EXECUTOR_SCOPE');
+    });
+
+    it.each([
+        ['an empty model', ''],
+        ['a whitespace-only model', '   '],
+        ['a model over 200 characters', 'm'.repeat(201)],
+        ['a non-string model', 7],
+    ])('refuses %s with 400 and queues nothing', async (_label, model) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', model });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_BODY');
+        expect(store.created).toEqual([]);
+    });
+
+    it('hands a chosen model to the store as the task model', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', model: 'm-200' });
+        expect(response.statusCode).toBe(201);
+        expect(store.created[0]?.agentModel).toBe('m-200');
     });
 
     it.each([
@@ -2891,6 +2915,33 @@ describe('POST /api/jobs/:id/follow-up', () => {
         expect(store.followUps).toEqual([{ parentId: ID, command: 'again', createdBy: null }]);
     });
 
+    // The agent never changes in a thread: a follow-up may pick a model, never an agent or a profile.
+    it('hands a chosen model to the store and ignores an agent or executor beside it', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, {
+            command: 'again',
+            model: 'm-next',
+            agentType: 'opencode',
+            executor: 'other',
+        });
+        expect(response.statusCode).toBe(201);
+        expect(store.followUps).toEqual([{ parentId: ID, command: 'again', createdBy: null, model: 'm-next' }]);
+    });
+
+    it.each([
+        ['an empty model', ''],
+        ['a model over 200 characters', 'm'.repeat(201)],
+        ['a non-string model', 7],
+    ])('refuses %s on a follow-up with 400', async (_label, model) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again', model });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_BODY');
+        expect(store.followUps).toEqual([]);
+    });
+
     // Create checks the tracked list; a follow-up inherits the root's repo and is not re-checked.
     it('queues a follow-up on a thread whose repo has left the tracked list (201)', async () => {
         const store = stubStore();
@@ -3350,6 +3401,7 @@ describe('GET /api/jobs', () => {
         executorScope: USER_SCOPE,
         agentType: null,
         agentModel: null,
+        resolvedModel: null,
         workflowNode: null,
         setupMs: null,
         interruptions: [],
@@ -3539,6 +3591,7 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         executorScope: USER_SCOPE,
         agentType: null,
         agentModel: null,
+        resolvedModel: null,
         setupMs: null,
         interruptions: [],
         publication: null,
@@ -3767,6 +3820,7 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         executorScope: USER_SCOPE,
         agentType: null,
         agentModel: null,
+        resolvedModel: null,
         setupMs: null,
         interruptions: [],
         waitReason: null,
@@ -4392,6 +4446,19 @@ describe('Idempotency-Key on create, follow-up and retry (#589)', () => {
         await keyed(instance, `/api/jobs/${other}/retry`, {});
         const [a, b] = store.idempotencies.map((idem) => idem?.fingerprint);
         expect(a).not.toBe(b);
+    });
+
+    // The same key with a different model is a different request: the store refuses it rather than replaying.
+    it('fingerprints the model a create and a follow-up choose', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+        await keyed(instance, '/api/jobs', { command: 'echo hi', repo: 'owner/name', model: 'a' });
+        await keyed(instance, '/api/jobs', { command: 'echo hi', repo: 'owner/name', model: 'b' });
+        await keyed(instance, `/api/jobs/${ID}/follow-up`, { command: 'again', model: 'a' });
+        await keyed(instance, `/api/jobs/${ID}/follow-up`, { command: 'again', model: 'b' });
+        const [a, b, c, d] = store.idempotencies.map((idem) => idem?.fingerprint);
+        expect(a).not.toBe(b);
+        expect(c).not.toBe(d);
     });
 });
 

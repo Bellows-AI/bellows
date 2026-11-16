@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
+import { USAGE } from '../src/usage.js';
 import { recordingBoard, ENV, json, NO_SETTINGS } from './harness.js';
 
 const job = (overrides: Record<string, unknown> = {}) => ({
@@ -132,6 +133,21 @@ describe('bellows job create', () => {
 
         expect(code).toBe(0);
         expect(calls[0]!.body).toEqual({ command: 'npm test', title: '  Fix   the login  ' });
+    });
+
+    it('job create --model sends model, and omitted sends none', async () => {
+        const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
+
+        expect(await run(['job', 'create', '--model', 'claude-opus-4-1', '--', 'npm test'], io)).toBe(0);
+        expect(await run(['job', 'create', '--', 'npm test'], io)).toBe(0);
+
+        expect(calls[0]!.body).toEqual({ command: 'npm test', model: 'claude-opus-4-1' });
+        expect(calls[1]!.body).toEqual({ command: 'npm test' });
+    });
+
+    it('usage names --model on create and on follow-up', () => {
+        expect(USAGE).toMatch(/bellows job create [^\n]*\n[^\n]*\[--model <name>\]/);
+        expect(USAGE).toMatch(/bellows job follow-up <id> [^\n]*\[--model <name>\]/);
     });
 
     it('omitted --title sends no title', async () => {
@@ -466,6 +482,14 @@ describe('bellows job follow-up', () => {
         expect(out.join('')).toContain('job-2');
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/follow-up');
         expect(calls[0]!.body).toEqual({ command: 'now add a test' });
+    });
+
+    it('--model sends the model beside the command, never an agent', async () => {
+        const { calls, io } = harness(ENV, () => json({ id: 'job-2', status: 'queued' }, 201));
+
+        expect(await run(['job', 'follow-up', 'job-1', '--model', 'm-next', '--', 'again'], io)).toBe(0);
+
+        expect(calls[0]!.body).toEqual({ command: 'again', model: 'm-next' });
     });
 });
 

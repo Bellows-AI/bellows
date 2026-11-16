@@ -1,6 +1,6 @@
 /** The CLI's whole help text: `bellows help` prints it, and every usage error ends with it. */
 export const USAGE = `usage: bellows job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
-                          [--base-branch <branch>] [--title <text>] [--skill name]... [--connection <id>]... [--attach <path>]... [--idempotency-key <key>] [--json]
+                          [--base-branch <branch>] [--title <text>] [--model <name>] [--skill name]... [--connection <id>]... [--attach <path>]... [--idempotency-key <key>] [--json]
        bellows job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        bellows task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
                          [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
@@ -10,7 +10,7 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
        bellows job read <id> [--stream <name>] [--attempt <n>] [--session <id>] [--executor <name>]
                         [--cursor <cursor>] [--limit <bytes>] [--all] [--json]
        bellows job wait <id> [--timeout <seconds>] [--json]
-       bellows job follow-up <id> (<command...> | --file <path> | --stdin) [--attach <path>]... [--idempotency-key <key>] [--json]
+       bellows job follow-up <id> (<command...> | --file <path> | --stdin) [--model <name>] [--attach <path>]... [--idempotency-key <key>] [--json]
        bellows job retry <id> [--idempotency-key <key>] [--json]
        bellows job edit <id> (<command...> | --file <path> | --stdin) [--json]
        bellows job questions <id> [--json]

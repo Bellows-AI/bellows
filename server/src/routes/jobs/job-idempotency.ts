@@ -66,6 +66,7 @@ export function createIdempotencyOf(request: FastifyRequest, reply: FastifyReply
         attachments,
         baseBranch,
         title,
+        model,
     } = fields;
     return idempotencyOf(request, reply, 'create', {
         command,
@@ -79,6 +80,7 @@ export function createIdempotencyOf(request: FastifyRequest, reply: FastifyReply
         attachments,
         baseBranch,
         title,
+        model,
     });
 }
 

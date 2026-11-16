@@ -282,6 +282,7 @@ describe('the task write tools', () => {
             skills: ['factory-gates'],
             connections: [CONNECTION],
             attachmentIds: [ATTACHMENT],
+            model: 'm-1',
             idempotencyKey: 'key-0123456789',
         });
         expect(made.isError).toBeFalsy();
@@ -298,6 +299,7 @@ describe('the task write tools', () => {
             skills: ['factory-gates'],
             connectionIds: [CONNECTION],
             attachmentIds: [ATTACHMENT],
+            agentModel: 'm-1',
             idempotency: { key: 'key-0123456789' },
         });
     });
@@ -339,6 +341,7 @@ describe('the task write tools', () => {
             jobId: JOB,
             command: 'more\nplease',
             attachmentIds: [ATTACHMENT],
+            model: 'm-2',
             idempotencyKey: 'follow-0123456',
         });
         expect(followed.data).toMatchObject({ id: NEW_JOB, status: 'queued' });
@@ -350,6 +353,7 @@ describe('the task write tools', () => {
         expect(follow?.args.slice(0, 2)).toEqual([JOB, 'more\nplease']);
         expect(follow?.args[3]).toMatchObject({ key: 'follow-0123456' });
         expect(follow?.args[6]).toEqual([ATTACHMENT]);
+        expect(follow?.args[7]).toBe('m-2');
         expect(retry?.args[0]).toBe(JOB);
         expect(retry?.args[2]).toMatchObject({ key: 'retry-01234567' });
     });

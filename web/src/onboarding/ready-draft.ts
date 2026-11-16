@@ -4,7 +4,7 @@ import type { ComposerDraftInput, ComposerDraftState } from '../composer-draft.j
  * Ready's draft in `sessionStorage`, per member (`draftOwner`: org and user). The shell's draft store
  * is in memory and Ready sits outside the shell, so a Change to another step — or the Repositories
  * reselect round trip, a full page load — would otherwise drop it. Holds the request and the chosen
- * repository, executor, base branch and workflow fields; attached files are not kept (the store holds
+ * repository, executor, base branch, model and workflow fields; attached files are not kept (the store holds
  * them as in-memory `File`s). Storage that refuses (private mode, quota) keeps nothing, silently.
  */
 const keyOf = (owner: string) => `ready-draft:${owner}`;
@@ -15,7 +15,9 @@ export function readReadyDraft(owner: string | null): ComposerDraftInput | null 
         const raw = window.sessionStorage.getItem(keyOf(owner));
         if (raw === null) return null;
         const held = JSON.parse(raw) as Partial<ComposerDraftInput> | null;
-        return typeof held?.draft === 'string' && typeof held.repo === 'string' ? (held as ComposerDraftInput) : null;
+        if (typeof held?.draft !== 'string' || typeof held.repo !== 'string') return null;
+        // A draft stored before the Model control reads Default.
+        return { ...(held as ComposerDraftInput), model: typeof held.model === 'string' ? held.model : '' };
     } catch {
         return null;
     }

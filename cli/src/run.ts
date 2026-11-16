@@ -12,7 +12,7 @@ import type { CommandResult, ErrorDetail } from './outcome.js';
 import { authStatusCommand, preflightCommand } from './diagnose.js';
 import { configSummary } from './diagnostics.js';
 import { executorDiscovery, repoDiscovery } from './discovery.js';
-import { INPUT_OPTIONS, noArguments, parseOrUsage, resolveCommandInput, UsageError } from './input.js';
+import { INPUT_OPTIONS, MODEL_OPTION, noArguments, parseOrUsage, resolveCommandInput, UsageError } from './input.js';
 import type { InputIo } from './input.js';
 import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } from './transport.js';
 import type { BoardClock } from './transport.js';
@@ -159,6 +159,7 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
                 ...IDEMPOTENCY_KEY_OPTION,
                 ...ATTACH_OPTION,
                 title: { type: 'string' },
+                ...MODEL_OPTION,
             },
         })
     );
@@ -173,6 +174,7 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
                 ...selection,
                 command,
                 title: parsed.values.title,
+                model: parsed.values.model,
                 idempotencyKey: key,
                 attachments,
             }),
@@ -317,7 +319,7 @@ async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandR
         parseArgs({
             args: [...args],
             allowPositionals: true,
-            options: { ...JSON_OPTION, ...INPUT_OPTIONS, ...IDEMPOTENCY_KEY_OPTION, ...ATTACH_OPTION },
+            options: { ...JSON_OPTION, ...INPUT_OPTIONS, ...IDEMPOTENCY_KEY_OPTION, ...ATTACH_OPTION, ...MODEL_OPTION },
         })
     );
     const [id, ...rest] = parsed.positionals;
@@ -325,12 +327,12 @@ async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandR
         throw new UsageError('a follow-up needs a job id\n\n' + USAGE);
     }
     const command = await commandOf(rest, parsed.values, io);
-    // Only the command travels: the repo, the executor and the session come from the parent.
+    // Only the command and a chosen model travel: the repo, the executor, the agent and the session come from the parent.
     const key = parsed.values['idempotency-key'];
     const paths = parsed.values.attach ?? [];
     const attachments = await attachedIds(paths, key, boardFor(io), io.stderr);
     const created = await recoverable(
-        () => boardFor(io).followUp(id, command, key, attachments),
+        () => boardFor(io).followUp(id, command, key, { attachments, model: parsed.values.model }),
         key,
         paths.length > 0
     );

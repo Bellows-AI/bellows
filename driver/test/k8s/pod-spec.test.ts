@@ -289,6 +289,23 @@ describe('the runner job spec', () => {
         });
     });
 
+    it('references a forwarded ANTHROPIC_MODEL the claim pins only from the per-attempt Secret', () => {
+        const envJob: BoardJob = { ...job, env: { ANTHROPIC_MODEL: 'P' } };
+        const configured = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            RUNNER_CREDENTIALS_SECRET: 'claude-credentials',
+            RUNNER_ENV: 'ANTHROPIC_API_KEY,ANTHROPIC_MODEL',
+        });
+        const env = runnerJobSpec(configured, envJob, { id: SESSION, resume: false }).spec.template.spec.containers[0]!
+            .env;
+        expect(env.filter((entry) => entry.name === 'ANTHROPIC_MODEL')).toEqual([
+            {
+                name: 'ANTHROPIC_MODEL',
+                valueFrom: { secretKeyRef: { name: secretName(envJob), key: 'ANTHROPIC_MODEL' } },
+            },
+        ]);
+    });
+
     // Where a runner's telemetry goes. A literal value like WORKDIR — an OTLP endpoint is a path,
     // not a credential — but unlike the compose world there is no network for a pod to join that
     // would make the image's baked `collector:4318` resolve, so this process has to name the
