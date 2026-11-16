@@ -42,8 +42,8 @@ Classes defined here: `chat-input`, `chat-input-field`, `chat-input-box`, `chat-
 `composer-skill-menu`, `composer-skill-list`, `composer-skill-option`, `composer-skill-name`, `composer-skill-match`,
 `composer-skill-source`, `composer-skill-tip`, `composer-trigger-missing`,
 `composer-notices-body`, `composer-notices-dismiss`, `composer-skeleton-block`,
-`composer-skeleton-line`, `task-compose`, `task-compose-body`, `attachment-add`, `attachment-list`, `attachment-chip`,
-`attachment-tile`, `attachment-spinner`,
+`composer-skeleton-line`, `task-compose`, `task-compose-body`, `task-compose-inline`, `attachment-add`,
+`attachment-list`, `attachment-chip`, `attachment-tile`, `attachment-spinner`,
 `attachment-media`, `attachment-thumb`, `attachment-body`, `attachment-name`, `attachment-meta`, `attachment-state`,
 `attachment-action`, `attachment-retry`, `attachment-remove`, `attachment-download`,
 `attachment-list-history`, `drop-zone`, `is-dragging`, `drop-overlay`.

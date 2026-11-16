@@ -25,68 +25,81 @@ async function stubKeyCheck(page: Page): Promise<void> {
     );
 }
 
+// Back to the default account after every test, in a hook with its own budget: a test that times out
+// cannot leave later files signed in as its newcomer.
+test.afterEach(async ({ request }) => {
+    await request.post(`${IDP}/_control/identity`, { data: {} });
+});
+
 test('a first sign-in connects a model, starts its first task from Ready and lands on it', async ({ page }) => {
     // A fresh account, so its membership carries no setup answer whatever other tests recorded.
     const newcomer = { login: `first-task-${randomInt(1e6)}`, id: 610_000_000 + randomInt(1e6) };
     await page.request.post(`${IDP}/_control/identity`, { data: newcomer });
-    try {
-        await stubKeyCheck(page);
-        const launches = countLaunches(page);
+    await stubKeyCheck(page);
+    const launches = countLaunches(page);
 
-        await page.goto('/');
-        await page.getByRole('link', { name: 'Sign in with GitHub' }).click();
-        await title(page, 'Choose organizations and repositories').waitFor({ timeout: 60_000 });
-        await page.getByRole('button', { name: 'Continue' }).click();
+    await page.goto('/');
+    await page.getByRole('link', { name: 'Sign in with GitHub' }).click();
+    await title(page, 'Choose organizations and repositories').waitFor({ timeout: 60_000 });
+    await page.getByRole('button', { name: 'Continue' }).click();
 
-        await expect(page).toHaveURL(/\/onboarding\/model\?returnTo=%2F$/, { timeout: 60_000 });
-        await page.getByRole('radio', { name: /^Anthropic/ }).check();
-        await page.getByLabel('API key').fill('sk-ant-api03-e2e-stub-key');
-        await expect(page.getByRole('status', { name: 'Key check' })).toContainText('✓', { timeout: 10_000 });
-        const agent = await page.getByLabel('Agent', { exact: true }).inputValue();
-        const model = await page.getByLabel('Model', { exact: true }).inputValue();
-        await page.getByRole('button', { name: /^(Save and continue|Continue)$/ }).click();
+    await expect(page).toHaveURL(/\/onboarding\/model\?returnTo=%2F$/, { timeout: 60_000 });
+    await page.getByRole('radio', { name: /^Anthropic/ }).check();
+    await page.getByLabel('API key').fill('sk-ant-api03-e2e-stub-key');
+    await expect(page.getByRole('status', { name: 'Key check' })).toContainText('✓', { timeout: 10_000 });
+    const agent = await page.getByLabel('Agent', { exact: true }).inputValue();
+    const model = await page.getByLabel('Model', { exact: true }).inputValue();
+    await page.getByRole('button', { name: /^(Save and continue|Continue)$/ }).click();
 
-        await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2F$/, { timeout: 60_000 });
-        await page.getByRole('button', { name: 'Skip for now' }).click();
+    await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2F$/, { timeout: 60_000 });
+    await page.getByRole('button', { name: 'Skip for now' }).click();
 
-        await expect(page).toHaveURL(/\/onboarding\/ready\?returnTo=%2F$/, { timeout: 60_000 });
-        await expect(title(page, "You're set")).toBeVisible();
-        await expect(page.getByRole('listitem', { name: 'Model' })).toContainText(`Claude Code · Anthropic · ${model}`);
-        await page.screenshot({ path: 'artifacts/ui/onboarding-ready.png', fullPage: true });
+    await expect(page).toHaveURL(/\/onboarding\/ready\?returnTo=%2F$/, { timeout: 60_000 });
+    await expect(title(page, "You're set")).toBeVisible();
+    await expect(page.getByRole('listitem', { name: 'Model' })).toContainText(`Claude Code · Anthropic · ${model}`);
+    // The composer asks for a task in the preselected repository, its chips on one row in the wide column.
+    await expect(page.getByLabel('What should the agent do?')).toHaveAttribute(
+        'placeholder',
+        /^Describe a task for [\w.-]+\/[\w.-]+…$/,
+        { timeout: 60_000 }
+    );
+    await page.screenshot({ path: 'artifacts/ui/onboarding-ready.png', fullPage: true });
+    const repoChip = await page.getByRole('button', { name: /^Repository: / }).boundingBox();
+    const modelChip = await page.getByRole('combobox', { name: /^Model: / }).boundingBox();
+    expect(Math.abs(repoChip!.y + repoChip!.height / 2 - (modelChip!.y + modelChip!.height / 2))).toBeLessThan(4);
 
-        // Repositories' Change: the reselect round trip, back to Ready — never "That sign-in expired".
-        await page
-            .getByRole('listitem', { name: 'Repositories' })
-            .getByRole('link', { name: /Change/ })
-            .click();
-        await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible({ timeout: 60_000 });
-        await expect(page.getByText('That sign-in expired')).toHaveCount(0);
-        await page.getByRole('button', { name: 'Continue' }).click();
-        await expect(page).toHaveURL(/\/onboarding\/ready/, { timeout: 60_000 });
-        await expect(title(page, "You're set")).toBeVisible();
+    // Repositories' Change: the reselect round trip, back to Ready — never "That sign-in expired".
+    await page
+        .getByRole('listitem', { name: 'Repositories' })
+        .getByRole('link', { name: /Change/ })
+        .click();
+    await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByText('That sign-in expired')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Continue' }).click();
+    await expect(page).toHaveURL(/\/onboarding\/ready/, { timeout: 60_000 });
+    await expect(title(page, "You're set")).toBeVisible();
 
-        // Start: the starter fills the request, the task is created on the agent default and opened.
-        await page.getByRole('button', { name: 'Write CONTRIBUTING.md' }).click();
-        await expect(page.getByLabel('What should the agent do?')).toHaveValue(/CONTRIBUTING\.md/);
-        await page.getByRole('button', { name: 'Start task' }).click();
-        await expect(page).toHaveURL(/\/tasks\/[\w-]+$/, { timeout: 60_000 });
-        expect(launches.bodies).toHaveLength(1);
-        expect(launches.bodies[0]).not.toHaveProperty('executor');
-        // The board stored the task on the onboarding choice: the agent default, frozen on the job.
-        const id = new URL(page.url()).pathname.split('/').pop();
-        const job = (await (await page.request.get(`/api/jobs/${id}`)).json()) as {
-            agentType: string | null;
-            agentModel: string | null;
-        };
-        expect(job.agentType).toBe(agent);
-        expect(job.agentModel).toBe(model);
+    // Start: the starter fills the request, the task is created on the agent default and opened.
+    await page.getByRole('button', { name: 'Write CONTRIBUTING.md' }).click();
+    await expect(page.getByLabel('What should the agent do?')).toHaveValue(/CONTRIBUTING\.md/);
+    // The desktop composer has no send button: Enter sends.
+    await expect(page.locator('.chat-input-hint')).toContainText('Enter to send');
+    await page.getByLabel('What should the agent do?').press('Enter');
+    await expect(page).toHaveURL(/\/tasks\/[\w-]+$/, { timeout: 60_000 });
+    expect(launches.bodies).toHaveLength(1);
+    expect(launches.bodies[0]).not.toHaveProperty('executor');
+    // The board stored the task on the onboarding choice: the agent default, frozen on the job.
+    const id = new URL(page.url()).pathname.split('/').pop();
+    const job = (await (await page.request.get(`/api/jobs/${id}`)).json()) as {
+        agentType: string | null;
+        agentModel: string | null;
+    };
+    expect(job.agentType).toBe(agent);
+    expect(job.agentModel).toBe(model);
 
-        // Setup is complete: an app route stays put, with no "No model yet" banner.
-        await page.goto('/tasks');
-        await expect(page.locator('.sidenav')).toBeVisible({ timeout: 60_000 });
-        await expect(page).toHaveURL(/\/tasks$/);
-        await expect(page.locator('.no-model-banner')).toHaveCount(0);
-    } finally {
-        await page.request.post(`${IDP}/_control/identity`, { data: {} });
-    }
+    // Setup is complete: an app route stays put, with no "No model yet" banner.
+    await page.goto('/tasks');
+    await expect(page.locator('.sidenav')).toBeVisible({ timeout: 60_000 });
+    await expect(page).toHaveURL(/\/tasks$/);
+    await expect(page.locator('.no-model-banner')).toHaveCount(0);
 });

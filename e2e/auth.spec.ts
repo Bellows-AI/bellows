@@ -34,6 +34,12 @@ const progress = (page: Page) => page.getByRole('list', { name: 'Setup progress'
 const title = (page: Page, name: string) => page.getByRole('heading', { level: 1, name });
 const IDP = `http://127.0.0.1:${IDP_PORT}`;
 
+// Back to the default account after every test, in a hook with its own budget: a test that times out
+// cannot leave later files signed in as its newcomer.
+test.afterEach(async ({ request }) => {
+    await request.post(`${IDP}/_control/identity`, { data: {} });
+});
+
 /** One installation as the pending report lists it: the org name the screen renders, and its id. */
 interface ReportedInstallation {
     id: string;
@@ -172,44 +178,40 @@ test('first sign-in walks Repositories → Model → Tools → Ready → app; re
     // A fresh account, so its memberships carry no setup answer whatever other tests recorded.
     const newcomer = { login: `newcomer-${randomInt(1e6)}`, id: 600_000_000 + randomInt(1e6) };
     await page.request.post(`${IDP}/_control/identity`, { data: newcomer });
-    try {
-        await page.goto('/tasks');
-        await signIn(page).click();
-        await title(page, 'Choose organizations and repositories').waitFor({ timeout: 60_000 });
-        await expect(progress(page).locator('[aria-current="step"]')).toContainText('Repositories');
-        await page.getByRole('button', { name: 'Continue' }).click();
+    await page.goto('/tasks');
+    await signIn(page).click();
+    await title(page, 'Choose organizations and repositories').waitFor({ timeout: 60_000 });
+    await expect(progress(page).locator('[aria-current="step"]')).toContainText('Repositories');
+    await page.getByRole('button', { name: 'Continue' }).click();
 
-        // The app route the sign-in returned to sends the unfinished member to the first step.
-        await expect(page).toHaveURL(/\/onboarding\/model\?returnTo=%2Ftasks$/, { timeout: 60_000 });
-        await expect(title(page, 'Connect a model')).toBeVisible();
-        await expect(page.locator('.public-context')).toHaveText('Setup · Step 2 of 3');
-        await expect(progress(page).locator('[aria-current="step"]')).toContainText('Model');
-        await page.getByRole('button', { name: 'Skip for now' }).click();
+    // The app route the sign-in returned to sends the unfinished member to the first step.
+    await expect(page).toHaveURL(/\/onboarding\/model\?returnTo=%2Ftasks$/, { timeout: 60_000 });
+    await expect(title(page, 'Connect a model')).toBeVisible();
+    await expect(page.locator('.public-context')).toHaveText('Setup · Step 2 of 3');
+    await expect(progress(page).locator('[aria-current="step"]')).toContainText('Model');
+    await page.getByRole('button', { name: 'Skip for now' }).click();
 
-        await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2Ftasks$/);
-        await expect(title(page, 'Connect your issue tracker')).toBeVisible();
-        await expect(progress(page).getByRole('listitem').filter({ hasText: 'Model' })).toContainText('–');
+    await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2Ftasks$/);
+    await expect(title(page, 'Connect your issue tracker')).toBeVisible();
+    await expect(progress(page).getByRole('listitem').filter({ hasText: 'Model' })).toContainText('–');
 
-        // Reload resumes at the step: the answers are the server's, and an app route leads back to it.
-        await page.reload();
-        await expect(title(page, 'Connect your issue tracker')).toBeVisible({ timeout: 60_000 });
-        await page.goto('/');
-        await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2F$/, { timeout: 60_000 });
-        await page.getByRole('button', { name: 'Skip for now' }).click();
+    // Reload resumes at the step: the answers are the server's, and an app route leads back to it.
+    await page.reload();
+    await expect(title(page, 'Connect your issue tracker')).toBeVisible({ timeout: 60_000 });
+    await page.goto('/');
+    await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2F$/, { timeout: 60_000 });
+    await page.getByRole('button', { name: 'Skip for now' }).click();
 
-        await expect(page).toHaveURL(/\/onboarding\/ready\?returnTo=%2F$/);
-        await expect(page.locator('.public-context')).toHaveText('Ready');
-        await page.getByRole('button', { name: 'Go to the dashboard' }).click();
-        await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
+    await expect(page).toHaveURL(/\/onboarding\/ready\?returnTo=%2F$/);
+    await expect(page.locator('.public-context')).toHaveText('Ready');
+    await page.getByRole('button', { name: 'Go to the dashboard' }).click();
+    await expect(analyticsAnchor(page)).toBeVisible({ timeout: 60_000 });
 
-        // Complete: an app route stays put from now on.
-        await page.goto('/tasks');
-        await expect(page.locator('.sidenav')).toBeVisible({ timeout: 60_000 });
-        await expect(page).toHaveURL(/\/tasks$/);
-        await expect(screen(page)).toHaveCount(0);
-    } finally {
-        await page.request.post(`${IDP}/_control/identity`, { data: {} });
-    }
+    // Complete: an app route stays put from now on.
+    await page.goto('/tasks');
+    await expect(page.locator('.sidenav')).toBeVisible({ timeout: 60_000 });
+    await expect(page).toHaveURL(/\/tasks$/);
+    await expect(screen(page)).toHaveCount(0);
 });
 
 test("Back to Repositories after sign-in lands in the reselect round trip and returns to the step, never 'That sign-in expired'", async ({

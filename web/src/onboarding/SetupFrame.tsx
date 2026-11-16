@@ -28,7 +28,8 @@ export function SetupFrame({
     return (
         <>
             <PublicPageHeader context={setupContext(place)} actions={<ThemeSelector />} />
-            <main className="onboarding">
+            {/* Ready holds the task composer and its control bar, so it takes the wide measure. */}
+            <main className={place === 'ready' ? 'onboarding onboarding-wide' : 'onboarding'}>
                 {place === 'ready' ? null : (
                     <SetupStepper current={place} setup={session?.setup} here={`${pathname}${search}`} />
                 )}

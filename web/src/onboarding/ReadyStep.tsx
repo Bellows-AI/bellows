@@ -25,6 +25,9 @@ const STARTERS: readonly { label: string; prompt: string }[] = [
     { label: 'Upgrade a dependency', prompt: 'Upgrade one outdated dependency and make the build pass.' },
 ];
 
+/** The Ready prompt's placeholder: a task for the chosen repository. */
+const taskPlaceholder = (repo: string): string => (repo === '' ? 'Describe a task…' : `Describe a task for ${repo}…`);
+
 /** A task created whose setup `complete` has not landed yet: the next Ready load finishes it, never creating again. */
 const STARTED_KEY = 'setup-first-task';
 const NO_MODEL_ID = 'ready-no-model';
@@ -105,7 +108,7 @@ function useStartedTask() {
     return { started, failed, retry: () => void finish() };
 }
 
-/** The inline composer with its own held draft: the first tracked repository preselected, the starters under it. */
+/** The inline composer with its own held draft: the first tracked repository preselected, the starters under the prompt. */
 function FirstTaskComposer({
     repos,
     workspace,
@@ -147,32 +150,34 @@ function FirstTaskComposer({
 
     if (!seeded) return <TaskComposerSkeleton />;
     return (
-        <>
-            <TaskComposer
-                key={generation}
-                repos={tracked.repos}
-                reposError={tracked.error}
-                onRetryRepos={repos.refresh}
-                workspaceLoaded={workspace.data !== null}
-                workspaceError={workspace.error}
-                onRetryWorkspace={workspace.refresh}
-                executors={executors}
-                defaultExecutor={defaultExecutor}
-                agentDefault={workspace.data?.agentDefault ?? null}
-                workflows={null}
-                actionError={first.error}
-                sending={first.sending}
-                onSend={first.send}
-                draftStore={draftStore}
-            />
-            <div className="ready-starters">
-                {STARTERS.map((starter) => (
-                    <button key={starter.label} type="button" onClick={() => fill(starter.prompt)}>
-                        {starter.label}
-                    </button>
-                ))}
-            </div>
-        </>
+        <TaskComposer
+            key={generation}
+            repos={tracked.repos}
+            reposError={tracked.error}
+            onRetryRepos={repos.refresh}
+            workspaceLoaded={workspace.data !== null}
+            workspaceError={workspace.error}
+            onRetryWorkspace={workspace.refresh}
+            executors={executors}
+            defaultExecutor={defaultExecutor}
+            agentDefault={workspace.data?.agentDefault ?? null}
+            workflows={null}
+            actionError={first.error}
+            sending={first.sending}
+            onSend={first.send}
+            draftStore={draftStore}
+            inline
+            placeholderFor={taskPlaceholder}
+            starters={
+                <div className="ready-starters">
+                    {STARTERS.map((starter) => (
+                        <button key={starter.label} type="button" onClick={() => fill(starter.prompt)}>
+                            {starter.label}
+                        </button>
+                    ))}
+                </div>
+            }
+        />
     );
 }
 

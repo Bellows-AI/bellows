@@ -17,6 +17,12 @@ const SHOTS = 'artifacts/ui';
 const IDP = `http://127.0.0.1:${IDP_PORT}`;
 const INVITEE = { login: `invitee-${randomInt(1e6)}`, id: 500_000_000 + randomInt(1e6) };
 
+// The helper's `finally` hands the test back to the default account mid-test; this hook, with its own
+// budget, also covers a test that timed out inside the helper, so later files are not signed in as the invitee.
+test.afterEach(async ({ request }) => {
+    await request.post(`${IDP}/_control/identity`, { data: {} });
+});
+
 const roster = (page: Page) => page.getByRole('region', { name: 'Organization members' });
 const removedList = (page: Page) => page.getByRole('region', { name: 'Removed members' });
 
