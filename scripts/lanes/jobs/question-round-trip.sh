@@ -89,16 +89,27 @@ ask_roundtrip_lane() {
     stop_driver
 }
 
-# the runtime connection requirement, end to end. The real claude-executor runs the Jira helper
-# (a scripted Bash step) for a task that has no Jira connection: the helper asks on the control socket, the
-# driver relays it to the board, the board holds the task queued behind an open requirement, and the driver
-# ends the run as a hand-back (not failed). Binding a connection through the API releases the claim: the next
-# run resumes the SAME session and the scripted model ends it. The connection is seeded only after the task
-# waits: a user with a lone Jira connection would have it bound by default.
-connection_roundtrip_lane() {
-    local image=claude-executor ask_pid ask_port id body_json waited org user conn rev i
+# the runtime connection requirement, end to end, for each tracker helper. The real claude-executor runs the
+# provider's helper (a scripted Bash step) for a task that has no such connection: the helper asks on the control
+# socket, the driver relays it to the board, the board holds the task queued behind an open requirement, and the
+# driver ends the run as a hand-back (not failed). Binding a connection through the API releases the claim: the
+# next run resumes the SAME session and the scripted model ends it. The connection is seeded only after the task
+# waits: a user with a lone connection of that provider would have it bound by default.
+connection_roundtrip_lane() { # connection_roundtrip_lane <jira|linear>
+    local provider="$1" image=claude-executor ask_pid ask_port id body_json waited org user conn rev i
+    local helper title scopes resource
+    case "$provider" in
+    jira)
+        helper=/usr/local/share/factory-skills/factory-jira/jira.cjs title='Lane Jira subject'
+        scopes='["read:jira-work"]' resource='{ id: "lane-cloud", label: "example.atlassian.net" }'
+        ;;
+    linear)
+        helper=/usr/local/share/factory-skills/factory-linear/linear.cjs title='Lane Linear subject'
+        scopes='["read"]' resource='{ id: "lane-org", label: "lane-workspace" }'
+        ;;
+    esac
     if ! docker image inspect "$image" >/dev/null 2>&1; then
-        bad 'a runtime connection requirement holds the task' "the $image image is missing — run make runners"
+        bad "$provider: a runtime connection requirement holds the task" "the $image image is missing — run make runners"
         return
     fi
     stop_driver
@@ -106,20 +117,20 @@ connection_roundtrip_lane() {
     # The helper reaches the board from inside the container, where the driver's loopback URL is not the host's.
     RUNNER_SKIP_PERMISSIONS=1 RUNNER_STATS_URL="http://host.docker.internal:$PORT" start_driver "$image"
 
-    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node /usr/local/share/factory-skills/factory-jira/jira.cjs issue ABC-1 && node /usr/local/share/factory-skills/factory-task-title/task-title.cjs \"Lane Jira subject\"; echo helper-exit=$?"}}]' >"$work/fake-connect.port" &
-    # the image's Jira skill carries the title hook (the scripted model cannot read prose, so the
+    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node '"$helper"' issue ABC-1 && node /usr/local/share/factory-skills/factory-task-title/task-title.cjs \"'"$title"'\"; echo helper-exit=$?"}}]' >"$work/fake-connect-$provider.port" &
+    # the image's skill carries the title hook (the scripted model cannot read prose, so the
     # chained command below stands for an agent that follows it: the title call runs only after a read exit 0).
-    docker run --rm --entrypoint cat "$image" /usr/local/share/factory-skills/factory-jira/SKILL.md 2>/dev/null | grep 'Naming the task after a ticket' >/dev/null &&
-        ok 'the image ships the Jira skill title hook' || bad 'the image ships the Jira skill title hook' 'SKILL.md in the image lacks the section; make runners'
+    docker run --rm --entrypoint cat "$image" "$(dirname "$helper")/SKILL.md" 2>/dev/null | grep 'Naming the task after a ticket' >/dev/null &&
+        ok "$provider: the image ships the skill title hook" || bad "$provider: the image ships the skill title hook" 'SKILL.md in the image lacks the section; make runners'
     ask_pid=$!
     lane_endpoint_started "$ask_pid"
     for _ in $(seq 1 20); do
-        [ -s "$work/fake-connect.port" ] && break
+        [ -s "$work/fake-connect-$provider.port" ] && break
         sleep 0.25
     done
-    ask_port="$(cat "$work/fake-connect.port")"
+    ask_port="$(cat "$work/fake-connect-$provider.port")"
     point_runners_at "$ask_port"
-    id="$(create_job 'use jira, which this task has no connection for')"
+    id="$(create_job "use $provider, which this task has no connection for")"
 
     waited=''
     for i in $(seq 1 150); do
@@ -133,15 +144,16 @@ connection_roundtrip_lane() {
         fi
         sleep 1
     done
-    [ -n "$waited" ] && ok 'the asking task is queued behind one open requirement, not failed' ||
-        bad 'the asking task is queued behind one open requirement, not failed' \
+    [ -n "$waited" ] && ok "$provider: the asking task is queued behind one open requirement, not failed" ||
+        bad "$provider: the asking task is queued behind one open requirement, not failed" \
             "$(field "$body_json" status); the helper's result: $(curl -s --max-time 5 "http://127.0.0.1:$ask_port/steps" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).results[0].text).replace(/\n/g,"|").slice(-330))}catch{}})'); driver: $(grep -F "job $id" "$work/driver.log" | grep -i 'connect\|requirement' | tail -4 | cut -c1-300); board: $(grep -E 'requirements|credentials/connections|/attempt' "$work/server.log" | tail -6 | cut -c1-300)"
-    expect_field 'the hand-back refunds the attempt' "$body_json" attempts 0
+    expect_field "$provider: the hand-back refunds the attempt" "$body_json" attempts 0
+    expect_field "$provider: the requirement names the provider" "$(node -e 'try { process.stdout.write(JSON.stringify({ provider: JSON.parse(process.argv[1]).integrationRequirements[0].provider })); } catch { process.stdout.write("{}"); }' "$body_json")" provider "$provider"
     # The failed read ended the chain before the title helper: no fabricated subject reached the board.
-    expect_field 'a failed issue read leaves the title off the agent subject' "$(node -e 'const j = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify({ named: j.title === "Lane Jira subject" || j.titleOrigin === "agent" }))' "$body_json")" named false
+    expect_field "$provider: a failed issue read leaves the title off the agent subject" "$(node -e 'const j = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify({ named: j.title === process.argv[2] || j.titleOrigin === "agent" }))' "$body_json" "$title")" named false
     local session
     session="$(field "$body_json" sessionId)"
-    [ -n "$session" ] && ok 'the waiting task kept its session' || bad 'the waiting task kept its session' "$body_json"
+    [ -n "$session" ] && ok "$provider: the waiting task kept its session" || bad "$provider: the waiting task kept its session" "$body_json"
 
     org="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -c "select org_id from job where id = '$id'" | tr -d '\r')"
     user="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -c "select id from app_user where github_login = '__local__'" | tr -d '\r')"
@@ -151,30 +163,32 @@ import { createConnectionGrants } from "./server/dist/db/connection-grants.js";
 const sql = postgres(process.env.DATABASE_URL, { max: 1 });
 const made = await createConnectionGrants({ sql, orgId: process.env.LANE_ORG }).attachGrantConnection({
     principal: { kind: "user", userId: process.env.LANE_USER },
-    provider: "jira",
+    provider: "'"$provider"'",
     externalAccountId: "lane-account",
-    authority: { scopes: ["read:jira-work"] },
-    resource: { id: "lane-cloud", label: "example.atlassian.net" },
+    authority: { scopes: '"$scopes"' },
+    resource: '"$resource"',
     access: "read",
 });
 await sql.end();
 process.stdout.write(made.ok ? made.connectionId : "");
 ')"
-    [ -n "$conn" ] && ok 'a Jira connection is seeded for the task owner' || bad 'a Jira connection is seeded for the task owner' "org=$org user=$user"
+    [ -n "$conn" ] && ok "$provider: a connection is seeded for the task owner" || bad "$provider: a connection is seeded for the task owner" "org=$org user=$user"
     rev="$(field "$body_json" bindingRevision)"
-    expect_status 'the owner binds the connection to the waiting task' 200 POST "/api/jobs/$id/connections" "{\"connectionId\":\"$conn\",\"bindingRevision\":${rev:-0}}"
+    expect_status "$provider: the owner binds the connection to the waiting task" 200 POST "/api/jobs/$id/connections" "{\"connectionId\":\"$conn\",\"bindingRevision\":${rev:-0}}"
 
-    expect_contains 'the released task runs again and succeeds' "$(await_settled "$id" 180)" succeeded
+    expect_contains "$provider: the released task runs again and succeeds" "$(await_settled "$id" 180)" succeeded
     body_json="$(body "$(api GET "/api/jobs/$id")")"
-    expect_field 'the resumed run is the same session' "$body_json" sessionId "$session"
-    expect_field 'the requirement is closed' "$(node -e 'process.stdout.write(JSON.stringify({ open: JSON.parse(process.argv[1]).integrationRequirements.length }))' "$body_json")" open 0
-    # The stub site has no issue to return, so the resumed read fails too and the chain stops again.
-    expect_field 'a read the stub site cannot answer still leaves the title unset by the agent' "$(node -e 'const j = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify({ named: j.title === "Lane Jira subject" || j.titleOrigin === "agent" }))' "$body_json")" named false
+    expect_field "$provider: the resumed run is the same session" "$body_json" sessionId "$session"
+    expect_field "$provider: the requirement is closed" "$(node -e 'process.stdout.write(JSON.stringify({ open: JSON.parse(process.argv[1]).integrationRequirements.length }))' "$body_json")" open 0
+    # The lane has no tracker to answer, so the resumed read fails too and the chain stops again.
+    expect_field "$provider: a read the lane cannot answer still leaves the title unset by the agent" "$(node -e 'const j = JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify({ named: j.title === process.argv[2] || j.titleOrigin === "agent" }))' "$body_json" "$title")" named false
     lane_endpoint_stop "$ask_pid"
     stop_driver
 }
 
-connection_roundtrip_lane
+connection_roundtrip_lane jira
+
+connection_roundtrip_lane linear
 
 # The agent names its task, end to end for both CLIs. The real executor image runs the task-title
 # helper (a scripted shell step) on the attempt pair its pod/container holds: the helper reaches the board's

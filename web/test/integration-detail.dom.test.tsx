@@ -267,3 +267,61 @@ describe('an integration page: the Jira lifecycle', () => {
         expect(screen.queryByRole('region', { name: /Jira/ })).toBeNull();
     });
 });
+
+const linearRow = connection('acme', { provider: 'linear', account: 'dev@acme-example.test', access: 'read' });
+const LINEAR_START = '/api/integrations/linear/authorizations';
+const LINEAR_DETAIL = `/settings/integrations/linear/${linearRow.id}`;
+const LINEAR_MENU = 'Actions for acme for dev@acme-example.test';
+
+describe('an integration page: the Linear lifecycle', () => {
+    const linearBoard = (): FetchHandler =>
+        boardHandler(settingsBoard({ connections: [linearRow] }), ({ method, url }) => {
+            if (method === 'POST' && url === LINEAR_START) {
+                return { status: 201, body: { authorizeUrl: CONSENT_URL } } as never;
+            }
+        });
+
+    it('mounts allow adding comments, reconnect and disconnect on a read row, in Linear words', async () => {
+        const calls = stubFetch(linearBoard());
+        const assign = spyNavigation();
+        const user = userEvent.setup();
+        renderApp(LINEAR_DETAIL);
+
+        expect(await screen.findByRole('heading', { level: 1, name: /Linear/ })).toBeTruthy();
+        expect(screen.getByRole('region', { name: 'Linear connection' })).toBeTruthy();
+        expect(screen.getByText('Tasks can look Linear up.')).toBeTruthy();
+
+        await user.click(screen.getByRole('button', { name: LINEAR_MENU }));
+        const menu = within(await screen.findByRole('menu'));
+        expect(menu.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Reconnect', 'Disconnect']);
+        await user.keyboard('{Escape}');
+
+        await user.click(screen.getByRole('button', { name: ALLOW_COMMENTS_LABEL }));
+        const dialog = await screen.findByRole('dialog', { name: WRITE_CONSENT_TITLE });
+        expect(dialog.textContent).toContain('Linear will ask dev@acme-example.test to approve adding comments.');
+        expect(dialog.textContent).not.toContain('Atlassian');
+        await user.click(within(dialog).getByRole('button', { name: 'Continue to Linear' }));
+
+        await waitFor(() => expect(assign).toHaveBeenCalledWith(CONSENT_URL));
+        expect(calls.find((call) => call.url === LINEAR_START)?.body).toEqual({
+            connectionId: linearRow.id,
+            access: 'write',
+            returnTo: LINEAR_DETAIL,
+        });
+    });
+
+    it('Disconnect asks first, then returns to the overview naming the workspace', async () => {
+        const calls = stubFetch(linearBoard());
+        const user = userEvent.setup();
+        const { router } = renderApp(LINEAR_DETAIL);
+
+        await user.click(await screen.findByRole('button', { name: LINEAR_MENU }));
+        await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Disconnect' }));
+        const dialog = await screen.findByRole('dialog', { name: /Disconnect acme/ });
+        expect(calls.some((call) => call.method === 'DELETE')).toBe(false);
+        await user.click(within(dialog).getByRole('button', { name: 'Disconnect' }));
+
+        expect(await screen.findByText('Disconnected acme.')).toBeTruthy();
+        expect(router.state.location.pathname).toBe('/settings/integrations');
+    });
+});

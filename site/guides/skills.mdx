@@ -7,7 +7,7 @@ A skill is a folder with a `SKILL.md` file: instructions the agent can load when
 
 ## Call a skill from a task
 
-In the **New task** composer, type `/` at the start of the prompt or after a space. A **Skills** menu opens. Keep typing to filter by name, use the arrow keys, and press Enter to insert the name. Press Escape to close the menu.
+In the **New task** composer, type `/` at the start of the prompt or after a space. A **Skills** menu opens. Keep typing to filter by name, use the arrow keys, and press Enter or Tab to insert the name. Press Escape to close the menu. While the menu is open, Enter inserts a skill instead of sending the task.
 
 ```text Prompt
 /factory-fix PROJ-123: the notes list returns 500 when a note has no title
@@ -27,11 +27,12 @@ All built-in names start with `factory-`.
 | `factory-gates` | Runs the repository's gates from `.bellows.yaml` and reads their output. See [Gates](/guides/gates). |
 | `factory-github` | Works with GitHub through `gh`: PR reviews, line comments, CI status, issues, replies. |
 | `factory-jira` | Reads, searches and comments on Jira work items using the task's Jira connection. |
+| `factory-linear` | Reads, searches and comments on Linear issues using the task's Linear connection. |
 | `factory-pr-land` | Takes a pushed PR to landable: waits for CI, fixes red checks, answers review feedback. |
 | `factory-review` | Asks an independent reviewer to review the work in a separate run. |
 | `factory-task-title` | Sets a short title for the task in the task list. |
 
-Some skills need a tool or a connection. `factory-github` and `factory-pr-land` need a GitHub connection. `factory-jira` needs a Jira connection. Add them under **Settings → Integrations**.
+Some skills need a tool or a connection. `factory-github` and `factory-pr-land` need a GitHub connection. `factory-jira` needs a Jira connection, and `factory-linear` a Linear connection. Add them under **Settings → Integrations**.
 
 A task doesn't offer the agent a skill whose connection it doesn't hold, unless you selected that skill in the prompt. Bellows decides this once, when the task or its follow-up is created, so a connection you add later shows up from the next follow-up. `GET /api/jobs/:id` lists the hidden skills and why under `hiddenSkills`.
 

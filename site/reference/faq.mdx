@@ -30,8 +30,8 @@ description: "Quick answers to common questions, and a symptom-to-fix guide for 
   <Accordion title="How do I stop a run?">
     Click **Stop** on the task, run `bellows job stop <id>`, or call the `stop_task` MCP tool. The task shows <span className="status status-stopping">Stopping</span>, then **Stopped · Needs review**. See [Task lifecycle](/guides/task-lifecycle).
   </Accordion>
-  <Accordion title="Can the agent read my Jira tickets?">
-    Yes, once you connect Jira under **Settings → Integrations**. Mention the ticket key in the task. Comments need **Allow adding comments**. See [Connections](/guides/connections#jira).
+  <Accordion title="Can the agent read my Jira or Linear issues?">
+    Yes, once you connect Jira or Linear under **Settings → Integrations**. Mention the issue key in the task. Comments need **Allow adding comments**. See [Connections](/guides/connections#jira) and [Linear](/guides/connections#linear).
   </Accordion>
   <Accordion title="Can my tests use a database?">
     Yes. Declare a service such as Postgres in `.bellows.yaml` and it starts next to the agent. See [Services](/guides/services).
@@ -73,10 +73,9 @@ Each entry reads symptom, cause, fix. For every failure badge, see [Task lifecyc
   <Accordion title="Bellows Cloud refuses a task with “NO_MODEL”">
     **Cause.** In Bellows Cloud, a task needs a model key its agent can use, and none was found. Claude Code runs on `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`. OpenCode runs on `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`. The key can sit in your variables, the organization's or the repository's, or in the executor profile. The task is refused before it starts, and a key removed after you start it fails the task the same way. Preflight shows it as the `model` check. A self-hosted server does not check this.
     **Fix.** Connect a model in **Settings → Model**, or ask an admin to connect one for the organization. Then start the task again. See [Variables and secrets](/guides/env-and-secrets).
-  </Accordion>
-  <Accordion title="The task says it needs a Jira connection">
-    **Cause.** The task mentions a ticket, but you have not connected Jira, or the connection needs reconnecting.
-    **Fix.** Choose **Connect Jira**, **Use selected connection** or **Continue without it** on the task page. If you turned on comments after the task started, start a new task. See [Connections](/guides/connections#using-jira-on-a-task).
+  <Accordion title="The task says it needs a Jira or Linear connection">
+    **Cause.** The task mentions a ticket, but you have not connected Jira or Linear, or the connection needs reconnecting.
+    **Fix.** Choose **Connect Jira** (or **Connect Linear**), **Use selected connection** or **Continue without it** on the task page. If you turned on comments after the task started, start a new task. See [Connections](/guides/connections#using-jira-on-a-task).
   </Accordion>
   <Accordion title="MCP returns 401 or 404">
     **Cause.** `401` means the client has no valid token, or you disconnected it. `404` on `/api/mcp` means MCP is switched off on that self-hosted server. Old HTTP+SSE clients and plain `http` are refused.

@@ -412,6 +412,26 @@ describe('the task group of one attempt', () => {
         expect(api.created.deletedJobs).toEqual([runnerJobName(job)]);
     });
 
+    // A class removed while a run survived: the group a follow-on step needs is never specced in another
+    // class, and the attempt is handed back as a transient refusal (an interruption the next claim
+    // redoes once the class is declared again), never a failure of recoverable work.
+    it('refuses a group whose runner class is no longer declared as transient, creating nothing', async () => {
+        const api = cluster();
+        const s = steps(() => ok('{"ok":true,"reason":null}'));
+        const k8s = runner(api.request, s.sink);
+
+        const refused = k8s.syncCheckout({ ...job, runnerClass: 'retired' }, undefined, SESSION);
+
+        await expect(refused).rejects.toBeInstanceOf(StartupRefused);
+        await expect(refused).rejects.toMatchObject({
+            startupCause: 'transient',
+            message: 'the runner class "retired" is not declared on this driver',
+        });
+        expect(s.submitted).toEqual([]);
+        expect(api.created.jobs).toEqual([]);
+        expect(api.created.secrets).toEqual([]);
+    });
+
     // #924: a pod lost before the supervisor's first contact ends the attempt at once, not at the bound.
     describe('a task pod lost before its supervisor made contact', () => {
         const starting = { metadata: { name: 'pod-1' }, status: { phase: 'Pending' } };
@@ -462,6 +482,40 @@ describe('the task group of one attempt', () => {
                 message: expect.stringContaining('never came up'),
             });
             expect(reads).toBeGreaterThan(100);
+        });
+
+        // A daemon sidecar that never starts holds the main containers: the refusal at the bound names it.
+        it('names a sidecar crash-looping through the whole wait, a transient refusal and no node loss', async () => {
+            const looping = {
+                metadata: { name: 'pod-1' },
+                status: {
+                    phase: 'Pending',
+                    initContainerStatuses: [
+                        {
+                            name: 'dockerd',
+                            image: 'docker:27-dind',
+                            restartCount: 5,
+                            state: {
+                                waiting: {
+                                    reason: 'CrashLoopBackOff',
+                                    message: 'back-off 5m0s restarting failed container=dockerd',
+                                },
+                            },
+                        },
+                    ],
+                },
+            };
+
+            const { thrown } = await lostSync(() => [looping]);
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).toMatchObject({
+                startupCause: 'transient',
+                message: expect.stringMatching(
+                    /never came up.*the dockerd container is crash-looping.*CrashLoopBackOff/
+                ),
+            });
+            expect(thrown).not.toHaveProperty('nodeLoss');
         });
 
         it('counts no unconfirmed read: a list that did not answer is not a pod gone', async () => {

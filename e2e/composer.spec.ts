@@ -59,9 +59,10 @@ async function detourToSettings(page: Page) {
 }
 
 test.describe('the guided task composer', () => {
+    const prompt = (page: Page) => page.getByLabel('What should the agent do?');
     test.beforeEach(({ page }) => withExecutor(page));
 
-    test('at 1440×900 the prompt, the chosen repository and executor, and Start show without scrolling', async ({
+    test('at 1440×900 the prompt, the chosen repository and executor, and how to send show without scrolling', async ({
         page,
     }) => {
         const problems = watchConsole(page);
@@ -74,7 +75,9 @@ test.describe('the guided task composer', () => {
         for (const label of ['Repository', 'Executor'] as const) {
             await expect(contextChip(page, label)).toBeInViewport({ ratio: 1 });
         }
-        await expect(page.getByRole('button', { name: 'Start task' })).toBeInViewport({ ratio: 1 });
+        // A desktop screen has no arrow: Enter sends, and the hint says so.
+        await expect(page.getByRole('button', { name: 'Start task' })).toBeHidden();
+        await expect(page.locator('.chat-input-hint')).toBeInViewport({ ratio: 1 });
         expect(await page.evaluate(() => window.scrollY)).toBe(0);
 
         // On a wide screen the context chips share one row: same top, left to right.
@@ -88,7 +91,7 @@ test.describe('the guided task composer', () => {
         expect(boxes[0]!.x).toBeLessThan(boxes[1]!.x);
 
         // The prompt opens compact and grows with the request, up to half the viewport. Last,
-        // because the growth moves Start below the fold.
+        // because the growth moves the send hint below the fold.
         const prompt = page.getByLabel('What should the agent do?');
         const before = (await prompt.boundingBox())!.height;
         await prompt.fill(Array.from({ length: 15 }, (_, i) => `line ${i + 1}`).join('\n'));
@@ -102,7 +105,17 @@ test.describe('the guided task composer', () => {
     test('at 390px the surface does not overflow the page and Start stays reachable', async ({ page }) => {
         await page.setViewportSize({ width: 390, height: 800 });
         await page.goto('/tasks/new');
-        await expect(page.getByRole('button', { name: 'Start task' })).toBeVisible();
+        const start = page.getByRole('button', { name: 'Start task' });
+        await expect(start).toBeVisible();
+        // A true circle in a 44px target; return in the field is a new line, not a send.
+        const box = (await start.boundingBox())!;
+        expect(box.width).toBe(box.height);
+        expect(box.height).toBeGreaterThanOrEqual(44);
+        await expect(page.locator('.chat-input-hint')).toBeHidden();
+        await prompt(page).fill('one');
+        await prompt(page).press('Enter');
+        await expect(prompt(page)).toHaveValue('one\n');
+        await expect(page).toHaveURL(/\/tasks\/new/);
         await expect(page.locator('.chat-input')).toBeVisible();
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         await page.screenshot({ path: `${SHOTS}/composer-390.png`, fullPage: true });
@@ -112,6 +125,7 @@ test.describe('the guided task composer', () => {
         await trackRepos(page, []);
         await page.goto('/tasks/new');
         await page.getByLabel('What should the agent do?').fill('tidy the changelog');
+        await page.getByLabel('What should the agent do?').press('Enter');
 
         const banner = page.locator('.composer .banner-bad');
         await expect(banner).toContainText('No repositories tracked');
@@ -120,7 +134,12 @@ test.describe('the guided task composer', () => {
             'href',
             /^\/settings\/repos\?return=/
         );
-        await expect(page.getByRole('button', { name: 'Start task' })).toBeDisabled();
+        // Enter went nowhere, and the field names the banner as the reason.
+        await expect(page).toHaveURL(/\/tasks\/new/);
+        await expect(page.getByLabel('What should the agent do?')).toHaveAttribute(
+            'aria-describedby',
+            'composer-readiness'
+        );
     });
 
     test('a failed repository read says so and Retry loads the list', async ({ page }) => {
@@ -144,10 +163,10 @@ test.describe('the guided task composer', () => {
         await page.goto('/tasks/new');
 
         const composer = page.locator('.composer');
-        const start = page.getByRole('button', { name: 'Start task' });
+        const field = prompt(page);
         await expect(composer.locator('.composer-counter')).toHaveCount(0);
         await expect(composer.locator('.banner-bad')).toHaveCount(0);
-        await expect(start).toHaveAttribute('aria-describedby', 'composer-blocker');
+        await expect(field).toHaveAttribute('aria-describedby', 'composer-blocker');
 
         // The removed example and discard buttons stay gone; each chip explains itself in its open listbox.
         await expect(composer.getByRole('button', { name: 'Try an example' })).toHaveCount(0);
@@ -161,13 +180,13 @@ test.describe('the guided task composer', () => {
         await contextChip(page, 'Executor').click();
         await expect(page.getByText('The configured agent environment')).toBeVisible();
         await page.keyboard.press('Escape');
-        await expect(start).toBeDisabled();
 
-        await page.getByLabel('What should the agent do?').fill('x'.repeat(16_385));
+        await field.fill('x'.repeat(16_385));
         await expect(composer.locator('.composer-counter.is-over')).toHaveText('16,385 / 16,384');
         await expect(composer.locator('.banner-bad')).toContainText('Request too long');
-        await expect(start).toBeDisabled();
-        await expect(start).toHaveAttribute('aria-describedby', 'composer-readiness');
+        await expect(field).toHaveAttribute('aria-describedby', 'composer-prompt-count composer-readiness');
+        await field.press('Enter');
+        await expect(page).toHaveURL(/\/tasks\/new/);
         await page.screenshot({ path: `${SHOTS}/composer-too-long.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
     });
@@ -250,7 +269,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         // Nothing launches on its own: the return only restores.
         expect(launches.bodies).toHaveLength(0);
 
-        await page.getByRole('button', { name: 'Start task' }).click();
+        await prompt(page).press('Enter');
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
         expect(launches.bodies).toHaveLength(1);
         expect(launches.bodies[0]).toMatchObject({
@@ -475,12 +494,14 @@ test.describe('attachments in the composer', () => {
         await expect(chips(page).getByText('pasted.txt')).toBeVisible();
 
         await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('flaky.txt'));
-        const start = page.getByRole('button', { name: 'Start task' });
+        const blocker = page.locator('#composer-blocker');
         await expect(chips(page).getByText('Failed: Storage is busy, try again')).toBeVisible();
-        await expect(start).toBeDisabled();
+        await expect(blocker).toHaveText('Remove or retry the failed files to continue.');
+        await expect(page.locator('.chat-input-hint')).toBeHidden();
         await page.getByRole('button', { name: 'Retry flaky.txt' }).click();
         await expect(chips(page).getByText('Ready')).toHaveCount(4);
-        await expect(start).toBeEnabled();
+        await expect(blocker).toHaveText('');
+        await expect(page.locator('.chat-input-hint')).toBeVisible();
         expect(board.uploads.filter((name) => name === 'flaky.txt')).toHaveLength(2);
         await page.screenshot({ path: `${SHOTS}/composer-attachments.png`, fullPage: true });
         // The one 503 is the failure this test injects; anything else is a problem.
@@ -573,7 +594,7 @@ test.describe('attachments in the composer', () => {
         await expect(chips(page).getByText('one.txt')).toBeVisible();
         await expect(chips(page).getByText('Ready')).toHaveCount(2);
 
-        await page.getByRole('button', { name: 'Start task' }).click();
+        await prompt(page).press('Enter');
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
         expect(launches.bodies).toHaveLength(1);
         expect(launches.bodies[0]).toMatchObject({
@@ -640,7 +661,7 @@ test.describe('the base branch and the skill menu', () => {
         await page.screenshot({ path: `${SHOTS}/composer-branch-picked.png` });
 
         await prompt(page).fill('ship it');
-        await page.getByRole('button', { name: 'Start task' }).click();
+        await prompt(page).press('Enter');
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
         expect(launches.bodies).toHaveLength(1);
         expect(launches.bodies[0]).toMatchObject({ command: 'ship it', baseBranch: 'release/1.0' });
@@ -683,7 +704,7 @@ test.describe('the base branch and the skill menu', () => {
         await page.getByRole('option', { name: /^\/review/ }).click();
         await expect(prompt(page)).toHaveValue('please /release-notes and /review ');
 
-        await page.getByRole('button', { name: 'Start task' }).click();
+        await prompt(page).press('Enter');
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
         expect(launches.bodies[0]).toMatchObject({
             command: 'please /release-notes and /review ',

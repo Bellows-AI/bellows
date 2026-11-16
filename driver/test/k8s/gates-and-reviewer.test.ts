@@ -23,6 +23,7 @@ import {
     TOOL_UID,
 } from '../../src/claim.js';
 import { agentLaunchHardeningField, reviewerRequests } from '../../src/k8s/k8s-podfields.js';
+import { sized } from '../fixtures/runner-classes.js';
 import { TASK_MOUNT, TASK_VOLUME, taskInitScript } from '../../src/task-volume.js';
 import {
     SUPERVISED,
@@ -164,6 +165,15 @@ describe('the gate sidecar', () => {
         expect(JSON.stringify(gateOf({ ...gated, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } }).env)).toBe(
             JSON.stringify([{ name: 'HOME', value: '/tmp' }])
         );
+    });
+
+    // The docker executor's counterpart (docker-group.test.ts): the gate compares against the claim's base.
+    it('names the claim’s base branch, and drops a malformed one', () => {
+        expect(gateOf({ ...gated, baseBranch: 'release/2' }).env).toContainEqual({
+            name: 'BELLOWS_BASE_BRANCH',
+            value: 'release/2',
+        });
+        expect(JSON.stringify(gateOf({ ...gated, baseBranch: 'bad..name' }).env)).not.toContain('BELLOWS_BASE_BRANCH');
     });
 
     // Issue #734: the gate and the agent name the same cache path, inside the one member mount.
@@ -346,8 +356,9 @@ describe('the reviewer sidecar (issue #774)', () => {
 
     it('sizes the reviewer idle-low at creation, with the runner’s limits', () => {
         const { resources } = reviewerOf();
-        expect(resources?.requests).toEqual(reviewerRequests(gatedConfig, 'idle'));
-        expect(reviewerRequests(gatedConfig, 'idle')).toEqual({ cpu: '50m', memory: '64Mi' });
+        const runnerClass = gatedConfig.runnerClasses.default!;
+        expect(resources?.requests).toEqual(reviewerRequests(runnerClass, 'idle'));
+        expect(reviewerRequests(runnerClass, 'idle')).toEqual({ cpu: '50m', memory: '64Mi' });
     });
 
     /** fakeRequest, with every pod resize answered 200 and recorded. */
@@ -366,7 +377,7 @@ describe('the reviewer sidecar (issue #774)', () => {
 
     it('resizes the reviewer alone, by a strategic merge patch naming its container', async () => {
         const api = resizing();
-        const k8s = runner(api.request, { RUNNER_CPU_REQUEST: '2', RUNNER_MEMORY_REQUEST: '4Gi' });
+        const k8s = runner(api.request, sized({ requests: { cpu: '2', memory: '4Gi' } }));
         expect(await k8s.resizeReviewer(reviewing, 'run')).toBe(true);
         expect(api.patches).toEqual([
             {
@@ -468,7 +479,7 @@ describe('the kubernetes runner and the gates', () => {
     // merges by container name, so only the gate's requests change.
     it('resizes for verify with a strategic merge patch naming the gate container alone', async () => {
         const api = resizing();
-        const k8s = runner(api.request, { GATE_CPU_REQUEST: '2', GATE_MEMORY_REQUEST: '2Gi' });
+        const k8s = runner(api.request, sized({}, { requests: { cpu: '2', memory: '2Gi' } }));
         expect(await k8s.resizeGate(gated, 'verify')).toBe(true);
         expect(api.patches).toEqual([
             {

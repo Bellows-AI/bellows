@@ -1,4 +1,3 @@
-import { jiraApiBase } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
@@ -9,7 +8,7 @@ import { membershipGuardFor } from './auth/membership-guard.js';
 import { bootstrappedDriverCredentials } from './auth/driver-credentials.js';
 import { orgKeyDeriver } from './auth/org-key.js';
 import { createAuthStore } from './auth/store.js';
-import { type AppConfig, resolveConfig, type GitHubConfig, type JiraOAuthConfig } from './config.js';
+import { type AppConfig, resolveConfig, type GitHubConfig } from './config.js';
 import { createProviderKeys } from './provider-keys/verify.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
 import { createAttemptOfLease, createPairMatches } from './db/attempt-of-lease.js';
@@ -38,7 +37,9 @@ import {
     recoverIntegrations,
     startIntegrationRecovery,
 } from './integrations/integration-recovery.js';
-import { jiraRegistration } from './integrations/providers/jira.js';
+import { combineRegistrations, type ProviderRegistry } from './integrations/provider-registry.js';
+import { jiraProvider } from './integrations/providers/jira.js';
+import { linearProvider } from './integrations/providers/linear.js';
 import { startTempSweep } from './artifacts/fs-store.js';
 import { startAttachmentSweep } from './attachments/attachment-collector.js';
 import { startSkillSweep } from './skills/skill-collector.js';
@@ -232,20 +233,19 @@ const runnerCredentialDeps = (
     db: { sql: Sql; ready: Promise<unknown> },
     crossOrg: { sql: Sql; ready: Promise<unknown> },
     options: StartOptions,
-    jira: JiraOAuthConfig | null
+    apiBaseOf: ProviderRegistry['apiBaseOf']
 ) => ({
     attemptOfLease: createAttemptOfLease(crossOrg),
     pairMatches: createPairMatches(crossOrg),
     operationReceipts: createOperationReceipts(db),
     agentTitle: createAgentTitle(db),
-    // The runner helper's connection list: Jira only, and only while the provider is configured.
+    // The runner helper's connection list: a registered provider's connections, only while it is configured.
     connectionListing: {
         connectionsOf: async (orgId: string, rootJobId: string) => {
             await db.ready;
             return liveOAuthConnectionsOf(orgSql(db.sql, orgId), orgId, rootJobId);
         },
-        apiBaseOf: (provider: string, resource: string) =>
-            provider === 'jira' && jira ? jiraApiBase(jira.apiOrigin, resource) : null,
+        apiBaseOf,
     },
     githubMint: options.githubMint,
     githubRevoke: options.githubRevoke,
@@ -256,6 +256,10 @@ interface StartOptions {
     githubMint?: GithubMint;
     githubRevoke?: GithubRevoke;
 }
+
+/** Every outbound OAuth provider: Jira by ATLASSIAN_CLIENT_ID/SECRET, Linear by LINEAR_CLIENT_ID/SECRET. */
+const providerRegistry = ({ callbackOrigin, jira, linear }: AppConfig['integrations']): ProviderRegistry =>
+    combineRegistrations([jiraProvider(jira, callbackOrigin), linearProvider(linear, callbackOrigin)]);
 
 /**
  * The whole wiring, from config to `listen`. Every entry is this function plus one decision about
@@ -381,15 +385,16 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         );
     }
 
-    // The outbound OAuth runtime. Jira registers when ATLASSIAN_CLIENT_ID/SECRET are set; unset, no provider is
-    // configured and the runtime serves only the recovery of rows and the destroy of a revoked grant's secret.
-    const jira = jiraRegistration(config.integrations.jira, config.integrations.callbackOrigin);
+    // The outbound OAuth runtime over every provider registration; with none configured it serves only the recovery
+    // of rows and the destroy of a revoked grant's secret.
+    const registry = providerRegistry(config.integrations);
+    const { configured, ids, notConfiguredOf } = registry;
     const integrations = createIntegrationRuntime({
         sql,
         crossOrgSql: crossOrg.sql,
         secrets,
-        providers: jira.providers,
-        clients: jira.clients,
+        providers: registry.providers,
+        clients: registry.clients,
         callbackOrigin: config.integrations.callbackOrigin,
         log: (d) => console.log(`[integrations] ${JSON.stringify(d)}`),
     });
@@ -403,7 +408,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         notificationConnectors: connectors,
         store,
         secrets,
-        integrations: { ...integrations, configured: jira.configured },
+        integrations: { ...integrations, configured, ids, notConfiguredOf },
         auth: membership.store,
         githubRoster: membership.roster,
         ...mcp,
@@ -418,7 +423,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         orgOfJob: createOrgOfJob(crossOrg),
         orgOfReclaim: createOrgOfReclaim(crossOrg),
         driverCredentials,
-        ...runnerCredentialDeps({ sql, ready }, crossOrg, options, config.integrations.jira),
+        ...runnerCredentialDeps({ sql, ready }, crossOrg, options, registry.apiBaseOf),
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,

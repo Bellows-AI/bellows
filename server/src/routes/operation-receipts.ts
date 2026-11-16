@@ -33,7 +33,8 @@ const BODY_LIMIT = 4096;
 const KEY = /^[A-Za-z0-9._:-]{1,128}$/;
 const FINGERPRINT = /^[0-9a-f]{64}$/;
 const NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
-const COMMENT_ID = /^\d{1,20}$/;
+// Jira's comment id is digits; Linear's is the receipt id itself (a UUID), widening 099's `<digits>` note.
+const COMMENT_ID = /^(?:\d{1,20}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 const BEGIN_KEYS = ['connectionId', 'provider', 'operation', 'key', 'fingerprint'] as const;
 const MOVE_KEYS = ['from', 'to', 'result'] as const;
 

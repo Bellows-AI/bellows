@@ -78,6 +78,48 @@ describe('the catalog card for Jira, by state', () => {
     });
 });
 
+const linearRow = (over: Parameters<typeof connection>[1] = {}) => connection('acme', { provider: 'linear', ...over });
+
+const linearStates: Array<[string, Reads, Claims]> = [
+    ['supported and unconnected', {}, { ...NO_CLAIMS, connect: true }],
+    ['connected', { board: { connections: [linearRow()] } }, { connected: true, manage: true, connect: true }],
+    [
+        'needing reconnect',
+        { board: { connections: [linearRow({ needsReconnect: true })] } },
+        { connected: false, manage: true, connect: true },
+    ],
+    [
+        'unconnected beside a connected Jira',
+        { board: { connections: [connection('acme-example.atlassian.net')] } },
+        { ...NO_CLAIMS, connect: true },
+    ],
+    ['not configured', { board: { linearConfigured: false } }, NO_CLAIMS],
+    [
+        'missing from the configuration answer',
+        { config: { integrations: [{ provider: 'jira', configured: true }] } },
+        NO_CLAIMS,
+    ],
+    ['config read failed', { config: { status: 500, body: { error: 'db down' } } }, NO_CLAIMS],
+    ['config read pending', { config: never }, NO_CLAIMS],
+    ['list pending', { connections: never }, { ...NO_CLAIMS, connect: true }],
+    ['list failed', { connections: { status: 500, body: { error: 'db down' } } }, { ...NO_CLAIMS, connect: true }],
+];
+
+describe('the catalog card for Linear, by state', () => {
+    it.each(linearStates)('%s', async (_name, reads, expected) => {
+        stubFetch(handler(reads));
+        renderApp(PATH);
+
+        const linear = await card('Linear');
+        await waitFor(() => {
+            const text = linear.getByText((_, el) => el?.className === 'catalog-card-state' && el.textContent !== '');
+            expect(text).toBeTruthy();
+        });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(claimsOf(linear)).toEqual(expected);
+    });
+});
+
 describe('the catalog cards that are not connectable', () => {
     it('GitHub claims neither Connected nor Connect', async () => {
         stubFetch(handler({ board: { connections: [connection('acme-example.atlassian.net')] } }));

@@ -45,6 +45,17 @@ const RESULT_NOTICE: Record<string, (label: string) => IntegrationNotice> = {
     }),
 };
 
+/** A provider's own sentence where the catalog name cannot say it: a Linear grant reaches a workspace, not a site. */
+const PROVIDER_NOTICE: Readonly<Record<string, Readonly<Record<string, IntegrationNotice>>>> = {
+    linear: {
+        'site-mismatch': {
+            message:
+                'That Linear account cannot reach that workspace, so nothing was connected. Reconnect choosing the original workspace, or connect it as a new connection.',
+            tone: 'bad',
+        },
+    },
+};
+
 /**
  * The notice for the `?integration=…&result=…` the callback redirected back with, or null when there is none to show:
  * only an `oauth` provider of the catalog has a callback.
@@ -56,6 +67,8 @@ export const integrationNotice = (
 ): IntegrationNotice | null => {
     const provider = catalog.find((entry) => entry.id === integration);
     if (!provider || !canConnect(provider) || !result) return null;
+    const own = PROVIDER_NOTICE[provider.id]?.[result];
+    if (own) return own;
     const notice = RESULT_NOTICE[result];
     return notice
         ? notice(provider.label)

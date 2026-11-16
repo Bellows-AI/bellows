@@ -35,6 +35,8 @@ export interface OAuthProviderHooks {
     /** True when a refresh answer carries a new refresh token and spends the old one. */
     rotatesRefreshToken: boolean;
     revokeScope: 'token' | 'grant' | 'none';
+    /** The provider's form of a site a start names, or null when it is not one; absent, a named site is refused. */
+    siteOf?(raw: unknown): string | null;
     authorizeUrl(input: {
         clientId: string;
         redirectUri: string;

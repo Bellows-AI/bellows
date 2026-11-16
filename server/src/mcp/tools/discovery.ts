@@ -61,7 +61,12 @@ export const listRepos = defineTool({
     },
 });
 
-const ExecutorRow = z.object({ name: z.string(), type: z.string(), suspended: z.boolean().optional() });
+const ExecutorRow = z.object({
+    name: z.string(),
+    type: z.string(),
+    runnerClass: z.string().nullable().optional(),
+    suspended: z.boolean().optional(),
+});
 const WorkspaceSchema = z.object({
     executors: z.array(ExecutorRow),
     orgExecutors: z.array(ExecutorRow),
@@ -84,6 +89,10 @@ export const listExecutors = defineTool({
                 scope: z.enum(['user', 'org']),
                 name: z.string(),
                 type: z.string(),
+                runnerClass: z
+                    .string()
+                    .nullable()
+                    .describe('The runner class its tasks run on; null is the default. Only an org profile names one.'),
                 suspended: z.boolean(),
                 default: z.boolean(),
             })
@@ -100,6 +109,7 @@ export const listExecutors = defineTool({
             scope,
             name: profile.name,
             type: profile.type,
+            runnerClass: profile.runnerClass ?? null,
             suspended: profile.suspended === true,
             default: defaultExecutor?.scope === scope && defaultExecutor.name === profile.name,
         });

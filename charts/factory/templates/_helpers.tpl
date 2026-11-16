@@ -88,6 +88,56 @@ out of every `kubectl get pods -o yaml` — so only this name is wired through.
 {{- end -}}
 
 {{/*
+The runner classes (runner.classes), whole, as the one JSON the driver reads (RUNNER_CLASSES) and
+validates at boot.
+*/}}
+{{- define "factory.runnerClasses" -}}
+{{- toJson .Values.runner.classes -}}
+{{- end -}}
+
+{{/*
+Each runner class's RuntimeClass by name, '' for none: the CEL map the admission policy pins a pod's
+RuntimeClass against, keyed by the pod template's `factory.runner-class` label.
+*/}}
+{{- define "factory.runnerRuntimeClasses" -}}
+{{- $runtimeClasses := dict }}
+{{- range $name, $class := .Values.runner.classes }}
+{{- $_ := set $runtimeClasses $name (dig "runtimeClassName" "" ($class | default dict)) }}
+{{- end }}
+{{- toJson $runtimeClasses -}}
+{{- end -}}
+
+{{/*
+The runner classes whose groups get a Docker daemon (runner.classes.<name>.docker), as a JSON list:
+the CEL list admission allows the `dockerd` sidecar's capabilities in, and what decides whether the
+driver is handed the daemon image (RUNNER_DOCKER_IMAGE).
+*/}}
+{{- define "factory.runnerDockerClasses" -}}
+{{- $docker := list }}
+{{- range $name, $class := .Values.runner.classes }}
+{{- if dig "docker" false ($class | default dict) }}
+{{- $docker = append $docker $name }}
+{{- end }}
+{{- end }}
+{{- toJson $docker -}}
+{{- end -}}
+
+{{/*
+The RuntimeClass names of the docker classes, sorted and once each, as a JSON list: the names the
+driver's one ClusterRole may `get` (driver-runtimeclass-rbac.yaml), so it reads each one's handler
+at boot. Empty without a docker class.
+*/}}
+{{- define "factory.runnerDockerRuntimeClasses" -}}
+{{- $names := list }}
+{{- range $name, $class := .Values.runner.classes }}
+{{- if dig "docker" false ($class | default dict) }}
+{{- $names = append $names (dig "runtimeClassName" "" $class) }}
+{{- end }}
+{{- end }}
+{{- toJson ($names | uniq | sortAlpha) -}}
+{{- end -}}
+
+{{/*
 A rolling restart whenever the chart-created Secret changes: env read by secretKeyRef is resolved
 once, at container start, so without this a rotated credential waits for the next unrelated roll.
 */}}

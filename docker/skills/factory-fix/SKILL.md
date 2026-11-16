@@ -72,7 +72,8 @@ skill, the repo wins** — say so and follow the repo.
 
 ## Step 1 — Get the ticket
 
-Use the **factory-jira** skill. In short: find the in-progress ticket assigned to the current user, or take
+Use the **factory-jira** skill, or the **factory-linear** skill for a Linear issue (a `linear.app` URL, or a bare
+key when only Linear is bound). In short: find the in-progress ticket assigned to the current user, or take
 the key the user gave. One match, use it; several, list them and ask; none, ask for a key.
 
 Read the description **and the comments** — clarifications and reversals live in comments. If it is

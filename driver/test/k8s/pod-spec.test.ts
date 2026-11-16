@@ -3,7 +3,9 @@ import type { BoardJob } from '../../src/board/board.js';
 import { loadDriverConfig } from '../../src/config.js';
 import {
     AGENT_CONTAINER,
+    EXPORTER_CONTAINER,
     GO_MARKER,
+    SUPERVISOR_CONTAINER,
     SUPERVISOR_STEPS_MS,
     SUPERVISOR_WINDDOWN_MS,
 } from '../../src/supervisor-contract.js';
@@ -13,7 +15,7 @@ import { POLL_MS } from '../../src/k8s/k8s-transport.js';
 import { GROUP_END_WAIT_MS } from '../../src/k8s/k8s-teardown.js';
 import { readVerdict } from '../../src/k8s/k8s-poll.js';
 import { takeoverBoundMs } from '../../src/supervisor-plan.js';
-import { runnerJobName, runnerJobSpec, secretName } from '../../src/k8s/k8s-podspec.js';
+import { readerJobSpec, runnerJobName, runnerJobSpec, secretName } from '../../src/k8s/k8s-podspec.js';
 import { jobPath } from '../../src/k8s/k8s-auxspec.js';
 import { GATE_GID } from '../../src/claim.js';
 import { TASK_MOUNT, TASK_VOLUME, taskVolumeName } from '../../src/task-volume.js';
@@ -29,7 +31,22 @@ import {
     gateView,
     everyPodSpec,
     namespace,
+    gatedOf,
+    SUPERVISED,
 } from '../fixtures/k8s-suite.js';
+import { sized } from '../fixtures/runner-classes.js';
+import { dockerdStartArgv } from '../../src/container-scripts.js';
+import { classClaimOf } from '../../src/runner-classes.js';
+import {
+    DOCKER_DATA_ROOT,
+    DOCKER_DATA_VOLUME,
+    DOCKER_SOCK_DIR,
+    DOCKER_SOCK_VOLUME,
+    DOCKER_SOCKET,
+    DOCKER_TMP_DIR,
+    DOCKER_TMP_VOLUME,
+    DOCKERD_CONTAINER,
+} from '../../src/k8s/k8s-dockerd.js';
 
 /** The Job's backstop beyond the agent's budget: the drain and the report, then the hours the group serves steps. */
 const WINDDOWN_S =
@@ -577,12 +594,8 @@ describe('the runner job spec', () => {
      */
     it('renders the configured requests and limits, so the pod is Burstable and the autoscaler can size for it', () => {
         expect(
-            spec({
-                RUNNER_CPU_REQUEST: '500m',
-                RUNNER_MEMORY_REQUEST: '1Gi',
-                RUNNER_CPU_LIMIT: '2',
-                RUNNER_MEMORY_LIMIT: '4Gi',
-            }).spec.template.spec.containers[0]!.resources
+            spec(sized({ requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } })).spec.template
+                .spec.containers[0]!.resources
         ).toEqual({
             requests: { cpu: '500m', memory: '1Gi' },
             limits: { cpu: '2', memory: '4Gi' },
@@ -592,8 +605,7 @@ describe('the runner job spec', () => {
     // Limits off by default, the dashboard pod's own posture: a request only reserves, while a
     // memory limit on an agent run turns a big build into an OOM kill mid-work.
     it('renders requests only when limits are unset — the dashboard posture', () => {
-        const container = spec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' }).spec.template.spec
-            .containers[0]!;
+        const container = spec(sized({ requests: { cpu: '500m', memory: '1Gi' } })).spec.template.spec.containers[0]!;
         expect(container.resources).toEqual({ requests: { cpu: '500m', memory: '1Gi' } });
         expect(container.resources?.limits).toBeUndefined();
     });
@@ -629,7 +641,7 @@ describe('no pod but the task pod mounts the task volume', () => {
 describe('resources on every pod the driver specs', () => {
     // Issue #360: the autoscaler sizes the whole runner fleet, not just the runner pod — an
     // unschedulable sync or gate on a right-sized node strands the run. One config, every
-    // builder: the requests render on each container from the same four variables. The one Pod
+    // builder: the requests render on each container from the same class's four slots. The one Pod
     // (not Job) in the fleet, a declared service under the attempt's headless Service, is sized
     // like everything else, or it lands wherever a pod slot is free.
     const REQUESTS = { requests: { cpu: '500m', memory: '1Gi' } };
@@ -638,31 +650,30 @@ describe('resources on every pod the driver specs', () => {
     // The runner's pod is sized by its agent: the supervisor and the exporter beside it are small
     // scripts, and a request on each would multiply the pod's reservation by three.
     const SIDECARS: readonly PodName[] = ['the task supervisor', 'the transcript exporter'];
-    // The gate sidecar is sized by GATE_* and resized in place: its own pins below.
+    // The gate sidecar is sized by the class's gateResources and resized in place: its own pins below.
     const SIZED_POD_NAMES = POD_NAMES.filter((name) => !SIDECARS.includes(name) && name !== 'the gate sidecar');
 
     it.each(SIDECARS)('leaves %s unsized: the pod is sized by its agent', (name) => {
-        const { pod } = everyPodSpec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' })[name]();
+        const { pod } = everyPodSpec(sized(REQUESTS))[name]();
         expect(pod.containers[0]!.resources).toBeUndefined();
     });
 
     it.each(SIZED_POD_NAMES)('carries the same requests on %s', (name) => {
-        const { pod } = everyPodSpec({ RUNNER_CPU_REQUEST: '500m', RUNNER_MEMORY_REQUEST: '1Gi' })[name]();
+        const { pod } = everyPodSpec(sized(REQUESTS))[name]();
         expect(pod.containers[0]!.resources).toEqual(REQUESTS);
     });
 
-    // Issue #507 and #773 (D6): a gate runs the whole suite, so it is limited by GATE_* from the
-    // start, and requests the idle loop's figures while the agent runs — resized up for verify, so
-    // no memory limit is ever lowered under a running suite. An unset GATE_ slot is the runner's.
-    it('sizes the gate sidecar idle under the GATE_* limits while the agent keeps the runner resources', () => {
+    // Issue #507 and #773 (D6): a gate runs the whole suite, so it is limited by its class's
+    // gateResources from the start, and requests the idle loop's figures while the agent runs — resized
+    // up for verify, so no memory limit is ever lowered under a running suite. An unset gate slot is the runner's.
+    it('sizes the gate sidecar idle under the gate limits while the agent keeps the runner resources', () => {
         const config = loadDriverConfig({
             EXECUTOR: 'kubernetes',
             K8S_NAMESPACE: namespace,
-            RUNNER_CPU_REQUEST: '500m',
-            RUNNER_MEMORY_REQUEST: '1Gi',
-            RUNNER_CPU_LIMIT: '4',
-            GATE_CPU_REQUEST: '2',
-            GATE_MEMORY_REQUEST: '2Gi',
+            ...sized(
+                { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '4' } },
+                { requests: { cpu: '2', memory: '2Gi' } }
+            ),
         });
         expect(gateView(config, job).pod.containers[0]!.resources).toEqual({
             requests: { cpu: '100m', memory: '128Mi' },
@@ -685,8 +696,7 @@ describe('resources on every pod the driver specs', () => {
         const config = loadDriverConfig({
             EXECUTOR: 'kubernetes',
             K8S_NAMESPACE: namespace,
-            GATE_CPU_LIMIT: '50m',
-            GATE_MEMORY_LIMIT: '64Mi',
+            ...sized({}, { limits: { cpu: '50m', memory: '64Mi' } }),
         });
         expect(gateView(config, job).pod.containers[0]!.resources).toEqual({
             requests: { cpu: '50m', memory: '64Mi' },
@@ -806,6 +816,213 @@ describe('the pod hardening on every pod the driver specs (#382)', () => {
             runAsUser: 1000,
             runAsGroup: 1000,
         });
+    });
+});
+
+// A docker class's group gets a daemon of its own: a `dockerd` native sidecar, up before the gate,
+// reached over a unix socket only the agent, the gate and the daemon mount. Everything else about
+// the pod — the agent's and the gate's hardening, the services' isolation — is as in any class.
+describe('a docker class', () => {
+    const DOCKER_IMAGE = `docker:27-dind@sha256:${'a'.repeat(64)}`;
+    const classesEnv = {
+        EXECUTOR: 'kubernetes',
+        K8S_NAMESPACE: namespace,
+        RUNNER_CLASSES: JSON.stringify({
+            standard: {},
+            sandbox: {
+                runtimeClassName: 'kata',
+                resources: { requests: { cpu: '1', memory: '2Gi' }, limits: { cpu: '4', memory: '8Gi' } },
+                docker: true,
+                dockerStorage: '6Gi',
+                dockerResources: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '8Gi' } },
+            },
+        }),
+        RUNNER_DEFAULT_CLASS: 'standard',
+        RUNNER_DOCKER_IMAGE: DOCKER_IMAGE,
+    };
+    const config = { ...loadDriverConfig(classesEnv), servicesEnabled: true };
+    const podOf = (runnerClass: string, of: BoardJob = job) =>
+        runnerJobSpec(
+            config,
+            {
+                ...gatedOf(of),
+                ...SUPERVISED,
+                runnerClass,
+                services: [{ name: 'cache', image: 'redis', environment: [] }],
+            },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+    const named = (pod: ReturnType<typeof podOf>, name: string) => {
+        const found = [...pod.containers, ...(pod.initContainers ?? [])].find((c) => c.name === name);
+        if (!found) throw new Error(`the pod has no ${name} container`);
+        return found;
+    };
+    const envOf = (container: { env: { name: string; value?: string }[] }, name: string) =>
+        container.env.filter((entry) => entry.name === name);
+
+    it('hands the daemon its registry mirrors as env, and none when unset', () => {
+        expect(envOf(named(podOf('sandbox'), DOCKERD_CONTAINER), 'DOCKERD_MIRRORS')).toEqual([]);
+        const mirrored = {
+            ...loadDriverConfig({
+                ...classesEnv,
+                RUNNER_DOCKER_MIRRORS: '["https://mirror.example","https://registry.example/hub"]',
+            }),
+            servicesEnabled: true,
+        };
+        const pod = runnerJobSpec(
+            mirrored,
+            { ...gatedOf(job), ...SUPERVISED, runnerClass: 'sandbox' },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+        expect(envOf(named(pod, DOCKERD_CONTAINER), 'DOCKERD_MIRRORS')).toEqual([
+            { name: 'DOCKERD_MIRRORS', value: 'https://mirror.example https://registry.example/hub' },
+        ]);
+        // The start script is unchanged: the mirrors are a parameter, never spliced into it.
+        expect(named(pod, DOCKERD_CONTAINER).command).toEqual(dockerdStartArgv());
+    });
+
+    it('adds the dockerd sidecar: restartable, before the gate, privileged with no caps and no escalation field', () => {
+        const pod = podOf('sandbox');
+        const init = (pod.initContainers ?? []).map((c) => c.name);
+        expect(init.indexOf(DOCKERD_CONTAINER)).toBe(0);
+        expect(init.indexOf(DOCKERD_CONTAINER)).toBeLessThan(init.indexOf('gate'));
+        const dockerd = named(pod, DOCKERD_CONTAINER);
+        expect(dockerd.image).toBe(DOCKER_IMAGE);
+        expect(dockerd.restartPolicy).toBe('Always');
+        // Privileged inside the class's microVM: the apiserver refuses `allowPrivilegeEscalation:
+        // false` beside `privileged: true`, and privileged holds every capability, so none is added.
+        expect(dockerd.securityContext).toEqual({ privileged: true });
+        expect(dockerd.command).toEqual(dockerdStartArgv());
+        expect(dockerd.resources).toEqual({
+            requests: { cpu: '500m', memory: '1Gi' },
+            limits: { cpu: '2', memory: '8Gi' },
+        });
+        // An exec startupProbe on the shared socket: the gate after it starts only once the daemon answers.
+        expect(dockerd.startupProbe?.exec.command.join(' ')).toContain(`unix://${DOCKER_SOCKET}`);
+        expect(dockerd.volumeMounts).toEqual(
+            expect.arrayContaining([
+                { name: DOCKER_DATA_VOLUME, mountPath: DOCKER_DATA_ROOT },
+                { name: DOCKER_TMP_VOLUME, mountPath: DOCKER_TMP_DIR },
+                { name: DOCKER_SOCK_VOLUME, mountPath: DOCKER_SOCK_DIR },
+                expect.objectContaining({ name: TASK_VOLUME, mountPath: TASK_MOUNT }),
+            ])
+        );
+        expect(DOCKER_DATA_ROOT).toBe('/var/lib/docker');
+        expect(DOCKER_SOCK_DIR).toBe('/run/factory-docker');
+        expect(pod.volumes).toEqual(
+            expect.arrayContaining([
+                { name: DOCKER_DATA_VOLUME, emptyDir: { medium: 'Memory', sizeLimit: '6Gi' } },
+                { name: DOCKER_TMP_VOLUME, emptyDir: {} },
+                { name: DOCKER_SOCK_VOLUME, emptyDir: {} },
+            ])
+        );
+    });
+
+    // The image's entrypoint generates TLS certificates and adds a TCP listener unless the cert dir
+    // is empty; the daemon listens on its two unix sockets alone.
+    it('dockerd carries DOCKER_TLS_CERTDIR empty', () => {
+        expect(envOf(named(podOf('sandbox'), DOCKERD_CONTAINER), 'DOCKER_TLS_CERTDIR')).toEqual([
+            { name: 'DOCKER_TLS_CERTDIR', value: '' },
+        ]);
+    });
+
+    // A microVM RuntimeClass sizes the VM by its containers' limits: a container without one is
+    // memory the VM never had. The class's own limits cover the agent, the gate, the services, the
+    // reviewer and the daemon. The supervisor and the two small helpers take fixed pairs: the VM is
+    // the SUM of the limits, so the supervisor never repeats the runner's.
+    it('every container and init container of a docker-class runner pod and its readout Job carries cpu and memory limits', () => {
+        const reviewing: BoardJob = {
+            ...gatedOf(job),
+            ...SUPERVISED,
+            runnerClass: 'sandbox',
+            reviewerProfiles: ['security'],
+            services: [{ name: 'cache', image: 'redis', environment: [] }],
+        };
+        const pod = runnerJobSpec(config, reviewing, { id: SESSION, resume: false }).spec.template.spec;
+        const all = [...pod.containers, ...(pod.initContainers ?? [])];
+        expect(all.map((c) => c.name).sort()).toEqual(
+            [
+                AGENT_CONTAINER,
+                DOCKERD_CONTAINER,
+                EXPORTER_CONTAINER,
+                SUPERVISOR_CONTAINER,
+                'gate',
+                'reviewer',
+                'svc-cache',
+                'task-init',
+            ].sort()
+        );
+        for (const container of all) {
+            expect(container.resources?.limits, container.name).toEqual({
+                cpu: expect.any(String),
+                memory: expect.any(String),
+            });
+        }
+        expect(named(pod, SUPERVISOR_CONTAINER).resources).toEqual({
+            requests: { cpu: '50m', memory: '64Mi' },
+            limits: { cpu: '1', memory: '1Gi' },
+        });
+        const reader = readerJobSpec(config, reviewing, 'reader', { argv: ['true'], env: {}, timeoutMs: 1000 });
+        const readerPod = reader.spec.template.spec;
+        for (const container of readerPod.containers) {
+            expect(container.resources?.limits, container.name).toEqual({ cpu: '4', memory: '8Gi' });
+        }
+        // A class without a daemon is unchanged: its helpers stay unsized.
+        const plain = podOf('standard');
+        expect(named(plain, SUPERVISOR_CONTAINER).resources).toBeUndefined();
+        expect(named(plain, EXPORTER_CONTAINER).resources).toBeUndefined();
+    });
+
+    it('points the agent and the gate at the socket and the shared temp dir, their hardening unchanged', () => {
+        const pod = podOf('sandbox');
+        const plain = podOf('standard');
+        for (const name of [AGENT_CONTAINER, 'gate']) {
+            const container = named(pod, name);
+            expect(envOf(container, 'DOCKER_HOST'), name).toEqual([
+                { name: 'DOCKER_HOST', value: `unix://${DOCKER_SOCKET}` },
+            ]);
+            expect(envOf(container, 'TMPDIR'), name).toEqual([{ name: 'TMPDIR', value: DOCKER_TMP_DIR }]);
+            expect(container.volumeMounts, name).toEqual(
+                expect.arrayContaining([
+                    { name: DOCKER_SOCK_VOLUME, mountPath: DOCKER_SOCK_DIR },
+                    { name: DOCKER_TMP_VOLUME, mountPath: DOCKER_TMP_DIR },
+                ])
+            );
+            expect(container.securityContext, name).toEqual(named(plain, name).securityContext);
+        }
+        expect(named(pod, 'gate').securityContext).toMatchObject({ runAsUser: 1000, capabilities: { drop: ['ALL'] } });
+        expect(DOCKER_SOCKET).toBe('/run/factory-docker/docker.sock');
+    });
+
+    it('mounts the socket in the agent, the gate and dockerd alone: no svc-* member, no other container', () => {
+        const pod = podOf('sandbox');
+        const mounting = [...pod.containers, ...(pod.initContainers ?? [])]
+            .filter((c) => c.volumeMounts.some((mount) => mount.name === DOCKER_SOCK_VOLUME))
+            .map((c) => c.name)
+            .sort();
+        expect(mounting).toEqual([AGENT_CONTAINER, DOCKERD_CONTAINER, 'gate'].sort());
+        expect(named(pod, 'svc-cache').volumeMounts.map((mount) => mount.name)).not.toContain(DOCKER_SOCK_VOLUME);
+    });
+
+    it('lets the platform DOCKER_HOST win over a claim value in a docker class only', () => {
+        const claimed: BoardJob = { ...job, env: { DOCKER_HOST: 'tcp://10.0.0.1:2375', KEEP: '1' } };
+        const sandbox = classClaimOf(config, { ...claimed, runnerClass: 'sandbox' });
+        expect(sandbox.env).toEqual({ KEEP: '1' });
+        const standard = classClaimOf(config, { ...claimed, runnerClass: 'standard' });
+        expect(standard.env).toEqual(claimed.env);
+        const agent = named(podOf('sandbox', sandbox), AGENT_CONTAINER);
+        expect(envOf(agent, 'DOCKER_HOST')).toEqual([{ name: 'DOCKER_HOST', value: `unix://${DOCKER_SOCKET}` }]);
+    });
+
+    it('a non-docker class has no dockerd, no docker-sock volume, no DOCKER_HOST', () => {
+        const pod = podOf('standard');
+        const all = [...pod.containers, ...(pod.initContainers ?? [])];
+        expect(all.map((c) => c.name)).not.toContain(DOCKERD_CONTAINER);
+        expect(pod.volumes.filter((volume) => volume.name.startsWith('docker-'))).toEqual([]);
+        for (const container of all) {
+            expect(envOf(container, 'DOCKER_HOST'), container.name).toEqual([]);
+            expect(container.volumeMounts.map((mount) => mount.name)).not.toContain(DOCKER_SOCK_VOLUME);
+        }
     });
 });
 

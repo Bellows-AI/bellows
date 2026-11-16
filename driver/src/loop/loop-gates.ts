@@ -20,6 +20,7 @@ import { attachConnection } from './loop-connection.js';
 import { attachCheckpoint, attachTranscriptExport } from './loop-export.js';
 import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
 import { checkoutKey } from '../publish/publish.js';
+import { gatesUnderDaemon, readDaemon } from '../dockerd-loss.js';
 
 /** The report must fit the board's 128 KiB body: the raw per-gate tail budget, and its floor. */
 const GATES_REPORT_BUDGET_BYTES = 16384;
@@ -160,6 +161,8 @@ export async function beginGates(
             onInfraLoss: (reason) => {
                 state.gateLoss ??= reason;
             },
+            // A docker class's daemon restarting under an ad-hoc run is a note in its answer, never a loss.
+            dockerdRestarts: (signal) => readDaemon(rt.runner, job, signal),
         });
         // The agent's `POST /gate/run` reaches this claim through the control channel, whichever driver holds the run.
         const controlToken = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
@@ -473,6 +476,10 @@ export async function probeTreeNow(ctx: AttemptCtx): Promise<string | null> {
 const STALE_REUSE = Symbol('stale-reuse');
 /** One gate that ran and passed, in a walk that goes on. */
 const GATE_PASSED = Symbol('gate-passed');
+
+/** `runDeclaredGates` between two reads of a docker class's daemon: a failure it restarted under throws `DaemonLost`. */
+export const runVerdictGates = (rt: LoopRuntime, job: BoardJob, gateSession: GateSession, pass: GatesPass) =>
+    gatesUnderDaemon(rt.runner, job, pass.state.signal, () => runDeclaredGates(rt, job, gateSession, pass));
 
 /**
  * Runs every declared gate in order, reporting each state change to the board as it happens.

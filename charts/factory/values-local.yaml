@@ -61,7 +61,9 @@ runner:
     # One node: every task's runner, services and gate share its CPUs. Two concurrent tasks'
     # services and runners left the chart's 2-CPU gate request unschedulable, and a gate still
     # Pending at gateTimeoutMs is killed and counted as an environment failure.
-    gateResources:
-        requests:
-            cpu: '1'
-            memory: 1Gi
+    classes:
+        standard:
+            gateResources:
+                requests:
+                    cpu: '1'
+                    memory: 1Gi

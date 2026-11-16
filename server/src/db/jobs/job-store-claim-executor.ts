@@ -38,6 +38,8 @@ export interface ResolvedClaimExecutor {
     executorRefusal: string | null;
     /** The model the runner is handed (the merged config's `model`), recorded as `job.run_model`; null when none travels. */
     runModel: string | null;
+    /** The stamped profile's runner class; null for the driver's default, a suspended or a missing profile. */
+    runnerClass: string | null;
 }
 
 /**
@@ -114,7 +116,7 @@ export async function resolveClaimExecutor(
     row: ClaimExecutorRow
 ): Promise<ResolvedClaimExecutor> {
     const { env, executorConfig, deploymentMode, platformModelProvided = false, grant } = deps;
-    const { executorType, executorRefusal, source } = await claimExecutorOf(tx, executorConfig, row);
+    const { executorType, executorRefusal, source, runnerClass } = await claimExecutorOf(tx, executorConfig, row);
     // Read once the agent is known: a Claude Code run takes its model names from one scope (`stackClaudeCodeEnv`).
     const resolvedEnv = withoutGithubToken(
         env ? await env.resolveFor({ userId: row.run_as, repo: row.repo }, tx, { agentType: executorType }) : undefined
@@ -138,12 +140,13 @@ export async function resolveClaimExecutor(
         (modelKeyRequired(deploymentMode, platformModelProvided)
             ? noModelRefusal(claimEnv, profileConfig, executorType)
             : null);
-    if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal, runModel: null };
+    if (refusal !== null)
+        return { claimEnv: undefined, executorType, executorRefusal: refusal, runModel: null, runnerClass };
     const runModel = runModelOf(source, executorType, claimEnv);
     // And whatever resolved is pinned there, so the model recorded is the one the CLI runs: the claim env wins over an
     // `ANTHROPIC_MODEL` the driver forwards (RUNNER_ENV), which the board cannot see. Nothing resolved sends nothing.
     if (executorType === CLAUDE_CODE && runModel !== null) claimEnv = { ...claimEnv, [CLAUDE_MODEL_ENV]: runModel };
-    return { claimEnv, executorType, executorRefusal, runModel };
+    return { claimEnv, executorType, executorRefusal, runModel, runnerClass };
 }
 
 /**
@@ -197,11 +200,12 @@ async function claimExecutorOf(
     executorType: ExecutorType | null;
     executorRefusal: string | null;
     source: { type: string; config: Record<string, unknown> } | null;
+    runnerClass: string | null;
 }> {
     const agent = frozenAgentOf(row);
-    if (agent !== null) return { executorType: agent.type, executorRefusal: null, source: agent };
+    if (agent !== null) return { executorType: agent.type, executorRefusal: null, source: agent, runnerClass: null };
     if (!executorConfig || row.executor === null || row.run_as === null) {
-        return { executorType: null, executorRefusal: null, source: null };
+        return { executorType: null, executorRefusal: null, source: null, runnerClass: null };
     }
     const scope = (row.executor_scope ?? USER_SCOPE) as ExecutorScope;
     const configured = await executorConfig.claimConfigFor(row.run_as, row.executor, scope, tx);
@@ -209,13 +213,17 @@ async function claimExecutorOf(
         // A suspended profile (issue 440) launches nothing and its config never reaches the
         // claim: the driver fails the task with this sentence before any runner starts, for a
         // fresh task, a retry and a follow-up alike — they all claim through here.
-        return { executorType: null, executorRefusal: executorSuspendedMessage(scope, row.executor), source: null };
+        const executorRefusal = executorSuspendedMessage(scope, row.executor);
+        return { executorType: null, executorRefusal, source: null, runnerClass: null };
     }
     const known = configured && EXECUTOR_TYPES.includes(configured.type as ExecutorType);
     return {
         executorType: known ? (configured.type as ExecutorType) : null,
         executorRefusal: null,
         source: withChosenModel(configured, row.agent_model),
+        // Resolved here, at claim, like the type: an admin's edit reaches every later claim. The
+        // driver is the authority on the name, and fails the task when it declares no such class.
+        runnerClass: configured?.runnerClass ?? null,
     };
 }
 

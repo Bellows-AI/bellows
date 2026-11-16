@@ -3,7 +3,7 @@ import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/re
 
 /**
  * The shell of the confirmation dialogs (`TaskRemoveDialog`, `OrgExecutorConfirmDialog`,
- * `JiraWriteConsentDialog`): the shared `dialog` panel at the remove dialog's width, `initialFocus`
+ * `WriteConsentDialog`): the shared `dialog` panel at the remove dialog's width, `initialFocus`
  * on Cancel so the consequential answer is never the first thing a keypress reaches, and no
  * dismissal mid-request (`busy` also disables both buttons). `children` is everything between the
  * title and the buttons — the caller owns the body element, so its accessible description stays

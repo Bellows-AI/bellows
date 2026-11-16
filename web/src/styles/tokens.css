@@ -71,6 +71,7 @@
     /* Provider marks (ProviderMark): each brand's own color, lightened where it would fall under 3:1 on the
        tile surface (--surface-sunken). GitHub and MCP carry no brand hue; they follow the ink. */
     --brand-jira: oklch(0.685 0.168 256);
+    --brand-linear: oklch(0.567 0.159 275);
     --brand-slack: oklch(0.725 0.164 324);
     --brand-discord: oklch(0.713 0.151 277);
     --brand-github: oklch(0.970 0.010 248);
@@ -149,6 +150,7 @@
     --shadow-float: color-mix(in oklab, var(--ink) 14%, transparent);
 
     --brand-jira: oklch(0.480 0.201 260);
+    --brand-linear: oklch(0.567 0.159 275);
     --brand-slack: oklch(0.374 0.136 323);
     --brand-discord: oklch(0.577 0.209 274);
     --brand-github: oklch(0.254 0.011 254);

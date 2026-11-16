@@ -190,11 +190,45 @@ const forbidden = async (run: Run, res: FetchResponseLike, credential: Credentia
     return refuse({ outcome: 'forbidden', reason: 'provider-denied' });
 };
 
+/** The definition's verdict on an answer: null leaves it to the status. A classifier that throws is a malformed answer. */
+/** Whether the operation's shape check (when it has one) accepts the answer; a throwing check accepts nothing. */
+const shaped = (run: Run, json: unknown, request: OperationRequest): boolean => {
+    try {
+        return run.op.accepts?.(json, request) ?? true;
+    } catch {
+        return false;
+    }
+};
+
+const classified = (run: Run, json: unknown, status: number): Fail | null => {
+    try {
+        const outcome = run.def.classifyAnswer?.(json, run.op, status) ?? null;
+        return outcome === null ? null : refuse(outcome);
+    } catch {
+        return afterDispatch(run, 'malformed-response');
+    }
+};
+
+/** A 4xx the definition names from its body (a GraphQL error document); its status outcome otherwise. */
+const namedRefusal = async (run: Run, res: FetchResponseLike): Promise<Fail> => {
+    let json: unknown = null;
+    try {
+        json = parseJson(await readBody(res, run.cap, run.aborted));
+    } catch {
+        json = null;
+    }
+    return classified(run, json, res.status) ?? unavailable('unexpected-status');
+};
+
 /** A non-2xx answer as its closed outcome; null for a 2xx. */
 const refusalFor = async (run: Run, res: FetchResponseLike, credential: Credential): Promise<Fail | null> => {
     const { status } = res;
     if (status >= STATUS.ok && status < STATUS.redirect) return null;
     if (status === STATUS.forbidden) return forbidden(run, res, credential);
+    const answered = status >= STATUS.badRequest && status < STATUS.server;
+    if (answered && status !== STATUS.unauthorized && status !== STATUS.tooMany && run.def.classifyAnswer) {
+        return namedRefusal(run, res);
+    }
     await dropBody(res);
     if (status === STATUS.tooMany) {
         const wait = retryAfterMs(res.headers.get('retry-after'));
@@ -237,7 +271,7 @@ const fetchPage = async (
     run: Run,
     credential: Credential,
     request: OperationRequest
-): Promise<{ json: unknown } | Fail> => {
+): Promise<{ json: unknown; status: number } | Fail> => {
     const url = destination(run.def, run.ctx.handle, request.path);
     if (!url) return refuse({ outcome: 'forbidden', reason: 'destination-refused' });
     let res: FetchResponseLike;
@@ -246,33 +280,37 @@ const fetchPage = async (
     } catch {
         return afterDispatch(run, stopReason(run));
     }
-    return (await refusalFor(run, res, credential)) ?? readJson(run, res);
+    const refused = await refusalFor(run, res, credential);
+    if (refused) return refused;
+    const read = await readJson(run, res);
+    return 'json' in read ? { json: read.json, status: res.status } : read;
 };
 
-/** Fold one page into the collected items; the next page's path, or null when collection is done. */
+/** Fold one page into the collected items; the next page's request, or null when collection is done. */
 const collect = (
     pagination: Pagination,
     collected: unknown[],
-    read: { json: unknown; page: number; path: string }
-): string | null => {
+    read: { json: unknown; page: number; request: OperationRequest }
+): OperationRequest | null => {
     collected.push(...pagination.items(read.json).slice(0, pagination.maxItems - collected.length));
     return collected.length >= pagination.maxItems || read.page >= pagination.maxPages
         ? null
-        : pagination.next(read.json, read.path);
+        : pagination.next(read.json, read.request);
 };
 
 const execute = async <R>(run: Run, credential: Credential, input: never): Promise<OperationResult<R>> => {
-    const request = run.op.request(input, run.ctx.handle.resource);
     const pagination = run.op.paginate;
     const collected: unknown[] = [];
-    let path: string | null = request.path;
-    for (let page = 1; path !== null; page += 1) {
-        // A body rides the first request only; later pages are plain reads of the provider's next link.
-        const got = await fetchPage(run, credential, page === 1 ? request : { method: request.method, path });
+    let request: OperationRequest | null = run.op.request(input, run.ctx.handle.resource);
+    for (let page = 1; request !== null; page += 1) {
+        const got = await fetchPage(run, credential, request);
         if ('ok' in got) return got;
+        const refused = classified(run, got.json, got.status);
+        if (refused) return refused;
+        if (!shaped(run, got.json, request)) return afterDispatch(run, 'malformed-response');
         if (!pagination) return { ok: true, value: got.json as R };
         try {
-            path = collect(pagination, collected, { json: got.json, page, path });
+            request = collect(pagination, collected, { json: got.json, page, request });
         } catch {
             return afterDispatch(run, 'malformed-response');
         }

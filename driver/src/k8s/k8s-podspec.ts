@@ -3,11 +3,25 @@ import {
     COMMAND_MARK,
     JOB_LABEL,
     LEASE_LABEL,
+    RUNNER_CLASS_LABEL,
     SESSION_MARK,
     VOLUME_EXPORT_LABEL,
     VOLUME_EXPORT_RUN_LABEL,
 } from '../labels.js';
 import { CLAUDE_CODE } from '../executors.js';
+import { defaultClassOf, jobClassOf, type RunnerClass } from '../runner-classes.js';
+import {
+    DOCKER_CLASS_HELPER_RESOURCES,
+    DOCKER_CLASS_SUPERVISOR_RESOURCES,
+    DOCKERD_SECURITY_CONTEXT,
+    DOCKERD_CONTAINER,
+    DOCKERD_ENV,
+    dockerClientEnv,
+    dockerClientMounts,
+    dockerdMounts,
+    dockerdStartupProbe,
+    dockerVolumes,
+} from './k8s-dockerd.js';
 import { OTLP_HEADERS_ENV, TELEMETRY_CONFIG_VOLUME } from '../telemetry-config.js';
 import { createHash } from 'node:crypto';
 import type { BoardJob } from '../board/board.js';
@@ -31,6 +45,7 @@ import { TASK_MOUNT, TASK_VOLUME, taskInitScript, taskPodVolume } from '../task-
 import {
     claudeTurnsScript,
     claudeExportScript,
+    dockerdStartArgv,
     gateLoopArgv,
     opencodeReadoutScript,
     reviewerLaunchArgv,
@@ -75,6 +90,7 @@ import {
     runnerVolumesField,
     schedulingField,
     type ContainerSecurityContext,
+    type PrivilegedSecurityContext,
     type PodResources,
     type PodSecurityContext,
     type RunnerMount,
@@ -108,9 +124,11 @@ export interface RunnerPodContainer {
     restartPolicy?: 'Always';
     /** A service sidecar's generation probe: what the kubelet restarts it on. */
     livenessProbe?: { exec: { command: string[] }; periodSeconds: number; failureThreshold: number };
+    /** The `dockerd` sidecar's socket probe: the init containers after it start once it passes. */
+    startupProbe?: { exec: { command: string[] }; periodSeconds: number; failureThreshold: number };
     resources?: PodResources;
-    /** The executor hardening — `containerHardeningField`, always present. */
-    securityContext: ContainerSecurityContext;
+    /** The executor hardening — `containerHardeningField`, always present; a docker class's `dockerd` alone is privileged. */
+    securityContext: ContainerSecurityContext | PrivilegedSecurityContext;
     env: EnvVar[];
     /** The supervisor and the exporter run a script by content; the agent runs its image's entrypoint. */
     command?: string[];
@@ -265,10 +283,14 @@ function supervisorContainer(
         services: readonly ServiceSpec[];
     }
 ): RunnerPodContainer {
+    const runnerClass = jobClassOf(config, job);
     return {
         name: SUPERVISOR_CONTAINER,
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
+        // In a docker class (a microVM sized by the sum of its containers' limits) a fixed pair,
+        // never the runner's limits again (DOCKER_CLASS_SUPERVISOR_RESOURCES); unsized elsewhere.
+        ...(runnerClass.docker ? fixedResourcesField(DOCKER_CLASS_SUPERVISOR_RESOURCES) : {}),
         ...containerHardeningField(),
         command: ['node', '-e', supervisorScript],
         env: [
@@ -319,7 +341,7 @@ function serviceSidecar(config: DriverConfig, job: BoardJob, spec: ServiceSpec):
         image: spec.image,
         imagePullPolicy: config.imagePullPolicy,
         restartPolicy: 'Always',
-        ...resourcesField(config),
+        ...resourcesField(jobClassOf(config, job).runnerResources),
         securityContext: {
             ...hardened,
             ...(spec.user ? { runAsNonRoot: true as const, runAsUser: spec.user.uid, runAsGroup: spec.user.gid } : {}),
@@ -361,21 +383,53 @@ function servicesPodFields(services: readonly ServiceSpec[]): {
  * HOME that uid can write; the declared image's own default (root, usually) would leave files the
  * uid-1000 reclaim can never remove. Its env is the gate env's own literals: the claim env and the
  * GitHub token ride each request, never this spec. It is sized idle (`gateResourcesField`) and
- * resized in place for verify.
+ * resized in place for verify. In a docker class it is a daemon client: DOCKER_HOST, TMPDIR and their mounts.
  */
-function gateSidecar(config: DriverConfig, job: BoardJob, image: string): RunnerPodContainer {
+function gateSidecar(config: DriverConfig, job: BoardJob, image: string, docker: boolean): RunnerPodContainer {
     const hardened = containerHardeningField().securityContext;
     return {
         name: GATE_CONTAINER,
         image,
         imagePullPolicy: config.imagePullPolicy,
         restartPolicy: 'Always',
-        ...gateResourcesField(config),
+        ...gateResourcesField(jobClassOf(config, job)),
         securityContext: { ...hardened, runAsUser: GATE_UID, runAsGroup: GATE_GID },
         command: gateLoopArgv(),
         workingDir: MAILBOXES.gate.path,
-        env: gateEnv(job).map(([name, value]) => ({ name, value })),
-        volumeMounts: [taskMount(), mailboxMount(MAILBOXES.gate, 'rw')],
+        env: [...gateEnv(job), ...(docker ? dockerClientEnv() : [])].map(([name, value]) => ({ name, value })),
+        volumeMounts: [taskMount(), mailboxMount(MAILBOXES.gate, 'rw'), ...(docker ? dockerClientMounts() : [])],
+    };
+}
+
+/**
+ * A docker class's daemon: the digest-pinned dind image as a native sidecar, first of the init
+ * containers so the gate after it starts only once its startupProbe answers on the shared socket.
+ * Privileged in the class's microVM, which is the boundary (`DOCKERD_SECURITY_CONTEXT`): no added
+ * capability, no `allowPrivilegeEscalation`, under the pod's RuntimeDefault seccomp profile. It
+ * mounts the task volume and the shared temp dir at the clients' own paths, so their bind mounts
+ * resolve, its memory-backed data root and the socket. Sized by the class's `dockerResources`, whose
+ * limits a docker class must set; an empty DOCKER_TLS_CERTDIR keeps the entrypoint off TCP.
+ */
+function dockerdSidecar(config: DriverConfig, runnerClass: RunnerClass): RunnerPodContainer {
+    if (!config.runnerDockerImage)
+        throw new Error(`RUNNER_DOCKER_IMAGE is required by the docker class ${runnerClass.name}`);
+    return {
+        name: DOCKERD_CONTAINER,
+        image: config.runnerDockerImage,
+        imagePullPolicy: config.imagePullPolicy,
+        restartPolicy: 'Always',
+        ...resourcesField(runnerClass.dockerResources),
+        securityContext: { ...DOCKERD_SECURITY_CONTEXT },
+        command: dockerdStartArgv(),
+        // The registry mirrors, a parameter of the script it turns into `--registry-mirror` flags.
+        env: [
+            ...DOCKERD_ENV,
+            ...(config.runnerDockerMirrors.length > 0
+                ? [{ name: 'DOCKERD_MIRRORS', value: config.runnerDockerMirrors.join(' ') }]
+                : []),
+        ],
+        startupProbe: dockerdStartupProbe(),
+        volumeMounts: [taskMount(), ...dockerdMounts()],
     };
 }
 
@@ -403,7 +457,7 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
         restartPolicy: 'Always',
-        ...reviewerResourcesField(config),
+        ...reviewerResourcesField(jobClassOf(config, job)),
         ...agentLaunchHardeningField(),
         command: reviewerLaunchArgv(),
         workingDir: MAILBOXES.review.path,
@@ -419,6 +473,19 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
     };
 }
 
+/** A fixed requests/limits pair as a container's resources, copied so no spec shares the constant. */
+function fixedResourcesField(pair: {
+    requests: { cpu: string; memory: string };
+    limits: { cpu: string; memory: string };
+}): { resources: PodResources } {
+    return { resources: { requests: { ...pair.requests }, limits: { ...pair.limits } } };
+}
+
+/** A docker class's fixed pair for `task-init` and the exporter (`DOCKER_CLASS_HELPER_RESOURCES`); unsized elsewhere. */
+function dockerClassHelperResourcesField(config: DriverConfig, job: BoardJob): { resources?: PodResources } {
+    return jobClassOf(config, job).docker ? fixedResourcesField(DOCKER_CLASS_HELPER_RESOURCES) : {};
+}
+
 /**
  * The init container that makes the reviewer's home on a fresh task volume (`scripts/task-init.sh`)
  * before the reviewer's subPath mount names it: the kubelet would create it root-owned, which the
@@ -430,6 +497,7 @@ function taskInitContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
         name: 'task-init',
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
+        ...dockerClassHelperResourcesField(config, job),
         ...containerHardeningField(),
         env: [],
         command: ['sh', '-c', taskInitScript, 'init', REVIEWER_TREE_PATH],
@@ -450,6 +518,7 @@ function exporterContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
         name: EXPORTER_CONTAINER,
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
+        ...dockerClassHelperResourcesField(config, job),
         ...containerHardeningField(),
         command: ['node', '-e', claudeExportScript],
         env: exportEnv(config, job).map(([name, value]) => ({ name, value })),
@@ -477,6 +546,8 @@ function agentPart(
 ): { container: RunnerPodContainer; volumes: RunnerVolume[] } {
     const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(job) }, ...runnerCredentialEnv(config, job)];
     const { mounts, volumes } = runnerVolumesField(config, job, secretName(job));
+    // A docker class's daemon client: the platform endpoint wins over any claim value (`classClaimOf`).
+    const docker = jobClassOf(config, job).docker;
 
     // The argv each CLI speaks, and the executor-specific env beside it (opencode's session
     // database path, or claude-code's transcript store and session id) — decided once, for both
@@ -490,6 +561,7 @@ function agentPart(
     // credential rides this container's env (runnerCredentialEnv never reads `supervisorEnv`), and
     // no publish token either — a publication's credential is the supervisor's step env alone.
     env.push(...agentMailboxEnv().map(([name, value]) => ({ name, value })));
+    if (docker) env.push(...dockerClientEnv().map(([name, value]) => ({ name, value })));
     return {
         // The GitHub helper's token cache, in memory and the agent's own (docs/connections.md):
         // mounted in this container alone, never on the task volume, gone with the pod.
@@ -508,7 +580,7 @@ function agentPart(
             // would reach for a registry, past the image the node already holds — which is how the
             // docker runner finds it.
             imagePullPolicy: config.imagePullPolicy,
-            ...resourcesField(config),
+            ...resourcesField(jobClassOf(config, job).runnerResources),
             ...agentLaunchHardeningField(),
             env,
             args: plan.cliArgs,
@@ -522,6 +594,7 @@ function agentPart(
                 mailboxMount(MAILBOXES.in, 'ro'),
                 mailboxMount(MAILBOXES.out, 'rw'),
                 { name: CREDENTIAL_CACHE_VOLUME, mountPath: CREDENTIAL_CACHE_DIR },
+                ...(docker ? dockerClientMounts() : []),
             ],
         },
     };
@@ -552,6 +625,9 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     // scrape by this exact string — a scope key that drifted from the runner's would answer
     // nothing. Asserted from the same line dockerArgs asserts it from.
     assertWorktreeResolvable(job);
+    // The claim's class decides where the group lands and what it is sized at; an undeclared one is
+    // refused here as it is before the launch (`runnerClassRefusal`), never run in the default.
+    const runnerClass = jobClassOf(config, job);
     // A node that launches no agent still gets its group — the sync, the gates' tree
     // probe and the publish are the supervisor's — but no agent container, and so no member env.
     const agentless = job.agent === false;
@@ -564,9 +640,12 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
     const services = groupServices(config, job);
     const servicesFields = servicesPodFields(services);
     // Every init container starts, in order, before the main containers, so no order spares the
-    // supervisor a sidecar that never starts: the gate leads, the services follow as declared.
+    // supervisor a sidecar that never starts: a docker class's daemon leads (the gate after it waits
+    // on its startupProbe), then the gate, then the services as declared.
+    const docker = runnerClass.docker;
     const sidecars = [
-        ...(gateImage ? [gateSidecar(config, job, gateImage)] : []),
+        ...(docker ? [dockerdSidecar(config, runnerClass)] : []),
+        ...(gateImage ? [gateSidecar(config, job, gateImage, docker)] : []),
         ...(reviewing ? [taskInitContainer(config, job), reviewerSidecar(config, job)] : []),
         ...services.map((service) => serviceSidecar(config, job, service)),
     ];
@@ -613,7 +692,12 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
                 metadata: {
-                    labels: { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken, ...releaseLabel(config) },
+                    labels: {
+                        [JOB_LABEL]: job.id,
+                        [LEASE_LABEL]: job.leaseToken,
+                        ...releaseLabel(config),
+                        [RUNNER_CLASS_LABEL]: runnerClass.name,
+                    },
                     ...doNotDisruptField(config),
                 },
                 spec: {
@@ -631,7 +715,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                         fsGroupChangePolicy: 'OnRootMismatch',
                     },
                     ...pullSecretsField(config),
-                    ...schedulingField(config),
+                    ...schedulingField(runnerClass),
                     ...(servicesFields.hostAliases ? { hostAliases: servicesFields.hostAliases } : {}),
                     ...(sidecars.length > 0 ? { initContainers: sidecars } : {}),
                     containers: [
@@ -650,6 +734,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                         ...mailboxVolumes(reviewing),
                         bindingVolume(secretName(job)),
                         ...servicesFields.volumes,
+                        ...(docker ? dockerVolumes(runnerClass) : []),
                     ],
                 },
             },
@@ -668,6 +753,7 @@ export function readerJobSpec(
     name: string,
     readout: { argv: string[]; env: Record<string, string>; timeoutMs: number }
 ) {
+    const runnerClass = jobClassOf(config, job);
     const labels = { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken, ...releaseLabel(config) };
     return {
         apiVersion: 'batch/v1',
@@ -680,7 +766,10 @@ export function readerJobSpec(
             activeDeadlineSeconds: Math.max(1, Math.ceil(readout.timeoutMs / MS_PER_SECOND)),
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
-                metadata: { labels, ...doNotDisruptField(config) },
+                metadata: {
+                    labels: { ...labels, [RUNNER_CLASS_LABEL]: runnerClass.name },
+                    ...doNotDisruptField(config),
+                },
                 spec: {
                     restartPolicy: 'Never',
                     automountServiceAccountToken: false,
@@ -690,7 +779,7 @@ export function readerJobSpec(
                         fsGroupChangePolicy: 'OnRootMismatch',
                     },
                     ...pullSecretsField(config),
-                    ...schedulingField(config),
+                    ...schedulingField(runnerClass),
                     containers: [
                         {
                             name: 'readout',
@@ -705,7 +794,7 @@ export function readerJobSpec(
                                 ...Object.entries(readout.env).map(([key, value]) => ({ name: key, value })),
                             ],
                             volumeMounts: [taskMount()],
-                            ...resourcesField(config),
+                            ...resourcesField(runnerClass.runnerResources),
                         },
                     ],
                     volumes: [taskPodVolume(job)],
@@ -734,6 +823,9 @@ export function volumeExportJobSpec(
         [VOLUME_EXPORT_RUN_LABEL]: target.run,
         ...releaseLabel(config),
     };
+    // No claim names this pod's class: the export runs in the default one, whose node pools must
+    // reach the task volume's zone like every class's.
+    const runnerClass = defaultClassOf(config);
     return {
         apiVersion: 'batch/v1',
         kind: 'Job',
@@ -745,7 +837,10 @@ export function volumeExportJobSpec(
             activeDeadlineSeconds: deadlineSeconds,
             ttlSecondsAfterFinished: TTL_SECONDS,
             template: {
-                metadata: { labels, ...doNotDisruptField(config) },
+                metadata: {
+                    labels: { ...labels, [RUNNER_CLASS_LABEL]: runnerClass.name },
+                    ...doNotDisruptField(config),
+                },
                 spec: {
                     restartPolicy: 'Never',
                     automountServiceAccountToken: false,
@@ -755,7 +850,7 @@ export function volumeExportJobSpec(
                         fsGroupChangePolicy: 'OnRootMismatch',
                     },
                     ...pullSecretsField(config),
-                    ...schedulingField(config),
+                    ...schedulingField(runnerClass),
                     containers: [
                         {
                             name: 'exporter',
@@ -775,7 +870,7 @@ export function volumeExportJobSpec(
                                     : { name, value }
                             ),
                             volumeMounts: [taskMount()],
-                            ...resourcesField(config),
+                            ...resourcesField(runnerClass.runnerResources),
                         },
                     ],
                     volumes: [

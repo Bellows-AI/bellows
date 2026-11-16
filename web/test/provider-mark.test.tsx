@@ -17,6 +17,7 @@ describe('ProviderMark', () => {
 
     it.each([
         ['jira', '0 0 24 24'],
+        ['linear', '0 0 24 24'],
         ['slack', '0 0 127 127'],
         ['discord', '0 0 24 24'],
         ['github', '0 0 24 24'],

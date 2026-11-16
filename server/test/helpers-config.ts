@@ -58,8 +58,9 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
             attachmentDraftTtlHours: 24,
         },
         admission: {},
+        runnerClasses: [],
         planDefaults: {},
-        integrations: { callbackOrigin: null, jira: null },
+        integrations: { callbackOrigin: null, jira: null, linear: null },
         commerce: { enabled: false },
         mcp: { enabled: false },
         // The production default: a batch test opts in, so a forgotten opt-in fails loudly.

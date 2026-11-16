@@ -89,13 +89,13 @@
         line-height: 20px;
         max-height: 50vh;
         min-height: 0;
-        padding: 6px 38px 6px 10px;
+        padding: 6px 10px;
         resize: none;
         width: 100%;
     }
 
-    /* The paperclip and the arrow sit on the field's last line, inside its border; the field's
-       side padding keeps the text clear of them. */
+    /* The paperclip (and, on the compact shell, the arrow) sit on the field's last line, inside its
+       border; the field's side padding keeps the text clear of them. */
     .chat-input-box {
         position: relative;
     }
@@ -158,21 +158,20 @@
         margin-left: auto;
     }
 
-    /* Send: a small round arrow, the input's one filled control. */
+    /* Send: no arrow on a desktop screen — Enter sends there. The compact shell shows it below. */
     .chat-input-send {
-        align-items: center;
-        border-radius: 50%;
-        display: inline-flex;
-        height: 24px;
-        justify-content: center;
-        min-height: 0;
-        padding: 0;
-        width: 24px;
+        display: none;
     }
 
-    .chat-input-send svg {
-        height: 14px;
-        width: 14px;
+    /* How to send, beside the status; it gives way while the status says why sending is blocked. */
+    .chat-input-hint {
+        color: var(--ink-muted);
+        font-size: var(--text-xs);
+        white-space: nowrap;
+    }
+
+    .chat-input-end:has(> .composer-blocker:not(:empty)) > .chat-input-hint {
+        display: none;
     }
 
     /* The request against the board's limit: shown only close to it, the stop lamp once over. */
@@ -671,6 +670,29 @@
             display: inline-flex;
             min-height: var(--touch);
             min-width: var(--touch);
+        }
+
+        /* The arrow: a true circle, 36px drawn inside its 44px target. The (0,2,0) selector outranks
+           `button.primary`'s side padding, which used to stretch it into a pill; the fill is
+           clipped to the content box, so the 4px padding is target, not paint. */
+        .chat-input-box > .chat-input-send {
+            background-clip: content-box;
+            border: 0;
+            border-radius: 50%;
+            bottom: 6px;
+            justify-content: center;
+            padding: var(--space-1);
+            right: 6px;
+            width: var(--touch);
+        }
+
+        .chat-input-send svg {
+            height: 18px;
+            width: 18px;
+        }
+
+        .chat-input-hint {
+            display: none;
         }
 
         /* The field grows to hold the two 44px targets on its line. */

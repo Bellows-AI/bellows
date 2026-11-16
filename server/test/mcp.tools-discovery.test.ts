@@ -141,6 +141,7 @@ async function boot(scenario: Scenario = {}) {
         name: 'shared',
         type: 'claude-code',
         config: { token: 'ORG-SECRET' },
+        runnerClass: 'builds',
         createdBy: people.alice.user.id,
     });
     if (scenario.opencodeExecutor) {
@@ -316,8 +317,8 @@ describe('list_executors', () => {
     it('lists personal then organization profiles with scope and default, and never a configuration', async () => {
         const result = await call(await boot(), 'alice', 'list_executors');
         expect(result.data.executors).toMatchObject([
-            { scope: 'user', name: 'mine', type: 'claude-code', suspended: false },
-            { scope: 'org', name: 'shared', type: 'claude-code', suspended: false },
+            { scope: 'user', name: 'mine', type: 'claude-code', runnerClass: null, suspended: false },
+            { scope: 'org', name: 'shared', type: 'claude-code', runnerClass: 'builds', suspended: false },
         ]);
         expect(result.data.executors.filter((e: { default: boolean }) => e.default)).toHaveLength(1);
         expect(JSON.stringify(result)).not.toContain('SECRET');
@@ -458,6 +459,15 @@ describe('list_available_integrations', () => {
             state: 'connectable',
             connect: { path: '/settings/integrations/available' },
         });
+        expect(by('linear')).toMatchObject({ name: 'Linear', state: 'unavailable', reason: 'not_configured' });
+        const both = await call(await boot({ configured: ['jira', 'linear'] }), 'alice', 'list_available_integrations');
+        expect(both.data.providers.find((p: { provider: string }) => p.provider === 'linear')).toMatchObject({
+            name: 'Linear',
+            category: 'Issue tracking',
+            state: 'connectable',
+            connect: { path: '/settings/integrations/available' },
+            capabilities: { read: ['read'], write: ['write'] },
+        });
         expect(by('slack')).toMatchObject({ state: 'planned' });
         expect(by('slack').connect).toBeUndefined();
         expect(by('github')).toMatchObject({ state: 'unavailable', reason: 'organization_managed' });
@@ -481,7 +491,7 @@ describe('list_available_integrations', () => {
         expect(first.data.providers).toHaveLength(4);
         const second = await call(url, 'alice', 'list_available_integrations', { limit: 4, cursor: first.data.cursor });
         expect(second.data).toMatchObject({ cursor: null });
-        expect(second.data.providers).toHaveLength(2);
+        expect(second.data.providers).toHaveLength(3);
         const filtered = await call(url, 'alice', 'list_available_integrations', { category: 'Communication' });
         expect(filtered.data.providers.map((p: { provider: string }) => p.provider)).toEqual(['discord', 'slack']);
         const bad = await call(url, 'alice', 'list_available_integrations', { category: 'Nope' });

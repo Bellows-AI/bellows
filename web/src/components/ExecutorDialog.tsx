@@ -25,7 +25,9 @@ import {
     ModelField,
     modelBlockedNote,
     NameField,
+    RunnerClassField,
 } from './executor-dialog-parts.js';
+import type { RunnerClassOption } from '../api/useWorkspace.js';
 import { UnsavedChangesDialog } from './UnsavedChangesDialog.js';
 
 /**
@@ -71,6 +73,12 @@ export interface ExecutorDialogProps {
     /** Told the success sentence just before the dialog closes. */
     onSaved: (message: string) => void;
     saving: boolean;
+    /**
+     * The board's declared runner classes, given for an organization profile only: a personal
+     * profile runs in the default class, so its dialog renders no class select. An org dialog with
+     * nothing to offer — no declared class, and none on the row — renders none either.
+     */
+    runnerClasses?: readonly RunnerClassOption[];
     /** Bellows Cloud: the credentials note adds that an OAuth token is refused. */
     cloud?: boolean;
 }
@@ -86,6 +94,7 @@ export function ExecutorDialog({
     onSave,
     onSaved,
     saving,
+    runnerClasses,
     cloud = false,
 }: ExecutorDialogProps) {
     const [baseline, setBaseline] = useState<ExecutorDraft>(() => initialExecutorDraft(undefined));
@@ -195,6 +204,12 @@ export function ExecutorDialog({
                         onDefault={() => writeModel(null, false)}
                         onCustom={() => setConfig(draft.configs[type], true)}
                         onModel={(value) => writeModel(value.trim() || null, true)}
+                    />
+                    <RunnerClassField
+                        ids={ids}
+                        value={draft.runnerClass}
+                        declared={runnerClasses}
+                        onChange={(runnerClass) => setDraft({ ...draft, runnerClass })}
                     />
                     <CredentialsNote href={envHref} onFollow={followEnvLink} cloud={cloud} />
 

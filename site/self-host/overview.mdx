@@ -20,6 +20,7 @@ Bellows is open source. You can run the whole platform on your own machine or cl
 | **Object store** | Holds task artifacts and uploaded attachments. S3-compatible, or a local directory on a single replica. | Yes (defaults to the filesystem) |
 | **Telemetry collector** | An OpenTelemetry collector. Receives metrics from runners and forwards them to the board. | Recommended |
 | **Jira app** | An Atlassian OAuth app that powers **Connect Jira**. | Optional |
+| **Linear app** | A Linear OAuth application that powers **Connect Linear**. | Optional |
 
 ## How a task flows
 
@@ -92,6 +93,9 @@ flowchart LR
   </Card>
   <Card title="Jira app" icon="link" href="/self-host/jira-app">
     Turn on Connect Jira with an Atlassian OAuth app.
+  </Card>
+  <Card title="Linear app" icon="link" href="/self-host/linear-app">
+    Turn on Connect Linear with a Linear OAuth application.
   </Card>
   <Card title="Configuration" icon="sliders" href="/self-host/configuration">
     Every server and driver environment variable.

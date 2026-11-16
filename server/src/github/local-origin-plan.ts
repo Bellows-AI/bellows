@@ -28,10 +28,14 @@ interface GitCtx {
 /** Above `MAX_FILE_BYTES`, so an oversized file overflows (rejects) instead of being truncated. */
 const GIT_MAX_BUFFER = MAX_FILE_BYTES * 2;
 
-/** A finished `git`: its exit status (null when killed) and stdout. */
+/** The stderr bytes a read keeps: enough for git's closing `fatal:` line, never the whole stream. */
+const STDERR_TAIL_BYTES = 300;
+
+/** A finished `git`: its exit status (null when killed), stdout and the last non-empty stderr line. */
 interface GitExit {
     readonly code: number | null;
     readonly stdout: string;
+    readonly stderrLine: string;
 }
 
 /**
@@ -68,7 +72,11 @@ function runGroup(ctx: GitCtx, args: string[]): Promise<GitExit> {
             if (size > GIT_MAX_BUFFER) killGroup(new Error('stdout exceeded the read cap'));
             else chunks.push(chunk);
         });
-        child.stderr.resume();
+        let stderrTail = Buffer.alloc(0);
+        child.stderr.on('data', (chunk: Buffer) => {
+            const joined = Buffer.concat([stderrTail, chunk]);
+            stderrTail = joined.subarray(Math.max(0, joined.length - STDERR_TAIL_BYTES));
+        });
         child.on('error', (e) => {
             ctx.signal.removeEventListener('abort', onAbort);
             reject(failure ?? e);
@@ -76,7 +84,16 @@ function runGroup(ctx: GitCtx, args: string[]): Promise<GitExit> {
         child.on('close', (code) => {
             ctx.signal.removeEventListener('abort', onAbort);
             if (failure) reject(failure);
-            else resolve({ code, stdout: Buffer.concat(chunks).toString('utf8') });
+            else {
+                const stderrLine =
+                    stderrTail
+                        .toString('utf8')
+                        .split('\n')
+                        .map((line) => line.trim())
+                        .filter(Boolean)
+                        .pop() ?? '';
+                resolve({ code, stdout: Buffer.concat(chunks).toString('utf8'), stderrLine });
+            }
         });
     });
 }
@@ -96,7 +113,8 @@ async function git(ctx: GitCtx, args: string[], absentCodes: readonly number[] =
     }
     if (exit.code === 0) return exit.stdout;
     if (exit.code !== null && absentCodes.includes(exit.code)) return null;
-    throw new GitHubReadError(`git ${verb}: exited ${exit.code ?? 'by signal'}`, READ_TRANSPORT);
+    const said = exit.stderrLine ? `: ${exit.stderrLine}` : '';
+    throw new GitHubReadError(`git ${verb}: exited ${exit.code ?? 'by signal'}${said}`, READ_TRANSPORT);
 }
 
 /** The commit at the tip of `ref` in the bare repository `gitDir` — an exact ref, never a revision expression. */
