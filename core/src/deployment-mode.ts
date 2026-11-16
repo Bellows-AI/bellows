@@ -91,6 +91,23 @@ function providerRedirectIn(value: unknown): boolean {
 }
 
 /**
+ * The platform keys a claim must carry EMPTY: for each redirect set in the effective env, its first
+ * member key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) when the member did not set it. The driver forwards
+ * its own key under that name unless the claim names it, and the claim's name wins even when empty, so
+ * the deployment's key never follows a member's redirect — answered by another member key or, on a
+ * self-hosted board, by none.
+ */
+export function platformCredentialBlanks(env: Readonly<Record<string, unknown>>): Record<string, string> {
+    const blanks: Record<string, string> = {};
+    for (const [redirect, [platformKey]] of Object.entries(CREDENTIAL_REDIRECTS)) {
+        if (platformKey !== undefined && nonEmpty(env[redirect]) && !nonEmpty(env[platformKey])) {
+            blanks[platformKey] = '';
+        }
+    }
+    return blanks;
+}
+
+/**
  * The redirect key that would send the platform credential to another host, or null. Decided on the
  * EFFECTIVE env — member env with a claude-code config's `env` applied last, as the claim merges them
  * — so a key saved in one place and its redirect in another are judged together. One predicate for the

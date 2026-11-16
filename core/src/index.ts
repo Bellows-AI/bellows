@@ -232,6 +232,7 @@ export {
     forbiddenCredentialIn,
     isCredentialKey,
     isCredentialRedirectMessage,
+    platformCredentialBlanks,
     redirectsPlatformCredential,
     SELF_HOSTED,
     STORED_CREDENTIAL_PREFIX,
@@ -240,6 +241,7 @@ export type { ErrorCode } from './error-codes.js';
 export { ERROR_CODES } from './error-codes.js';
 export type { ModelProvider } from './model-providers.js';
 export {
+    claimCredentialEnv,
     isModelProvider,
     MODEL_PROVIDERS,
     OPENROUTER_ANTHROPIC_BASE_URL,

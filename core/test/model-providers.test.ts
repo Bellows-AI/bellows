@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CLAUDE_CODE, OPENCODE } from '../src/executors.js';
 import {
+    claimCredentialEnv,
     isModelProvider,
     MODEL_PROVIDERS,
     OPENROUTER_ANTHROPIC_BASE_URL,
@@ -42,5 +43,18 @@ describe('openRouterClaudeWiring', () => {
         ]) {
             expect(openRouterClaudeWiring({ OPENROUTER_API_KEY: KEY, [name]: 'member-value' }, CLAUDE_CODE)).toBeNull();
         }
+    });
+});
+
+describe('claimCredentialEnv', () => {
+    it('is the OpenRouter wiring when it applies, and the platform-key blank for any other member redirect', () => {
+        expect(claimCredentialEnv({ OPENROUTER_API_KEY: 'k' }, CLAUDE_CODE)).toEqual(
+            openRouterClaudeWiring({ OPENROUTER_API_KEY: 'k' }, CLAUDE_CODE)
+        );
+        const bearer = { ANTHROPIC_BASE_URL: 'https://gateway.example.test', ANTHROPIC_AUTH_TOKEN: 't' };
+        expect(claimCredentialEnv(bearer, CLAUDE_CODE)).toEqual({ ANTHROPIC_API_KEY: '' });
+        expect(claimCredentialEnv(bearer, OPENCODE)).toEqual({ ANTHROPIC_API_KEY: '' });
+        expect(claimCredentialEnv({ ...bearer, ANTHROPIC_API_KEY: 'member' }, CLAUDE_CODE)).toEqual({});
+        expect(claimCredentialEnv({ OPENROUTER_API_KEY: 'k' }, OPENCODE)).toEqual({});
     });
 });

@@ -1,4 +1,4 @@
-import { CLAUDE_CODE_OAUTH_TOKEN } from './deployment-mode.js';
+import { CLAUDE_CODE_OAUTH_TOKEN, platformCredentialBlanks } from './deployment-mode.js';
 import { CLAUDE_CODE } from './executors.js';
 
 /**
@@ -19,6 +19,24 @@ const ANTHROPIC_CHOICE = ['ANTHROPIC_API_KEY', CLAUDE_CODE_OAUTH_TOKEN, 'ANTHROP
 
 const nonEmpty = (value: unknown): value is string => typeof value === 'string' && value !== '';
 
+/** Claude Code's route to OpenRouter on the member's key alone, before the platform-key blank. */
+function openRouterRoute(env: Readonly<Record<string, unknown>>, agentType: string): Record<string, string> | null {
+    const key = env.OPENROUTER_API_KEY;
+    if (agentType !== CLAUDE_CODE || !nonEmpty(key)) return null;
+    if (ANTHROPIC_CHOICE.some((name) => nonEmpty(env[name]))) return null;
+    return { ANTHROPIC_BASE_URL: OPENROUTER_ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN: key };
+}
+
+/**
+ * What a claim adds over the member's effective env: the OpenRouter route when it applies, then the
+ * platform-key blank for every member redirect (`platformCredentialBlanks`) — one rule for both, so the
+ * OpenRouter wiring's empty `ANTHROPIC_API_KEY` is that blank, not a copy of it.
+ */
+export function claimCredentialEnv(env: Readonly<Record<string, unknown>>, agentType: string): Record<string, string> {
+    const route = openRouterRoute(env, agentType) ?? {};
+    return { ...route, ...platformCredentialBlanks({ ...env, ...route }) };
+}
+
 /**
  * The env a Claude Code claim gains when the member brought only an OpenRouter key: the base URL, the
  * key as the bearer token, and an empty `ANTHROPIC_API_KEY` so the platform's own key cannot follow it
@@ -29,8 +47,5 @@ export function openRouterClaudeWiring(
     env: Readonly<Record<string, unknown>>,
     agentType: string
 ): Record<string, string> | null {
-    const key = env.OPENROUTER_API_KEY;
-    if (agentType !== CLAUDE_CODE || !nonEmpty(key)) return null;
-    if (ANTHROPIC_CHOICE.some((name) => nonEmpty(env[name]))) return null;
-    return { ANTHROPIC_BASE_URL: OPENROUTER_ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN: key, ANTHROPIC_API_KEY: '' };
+    return openRouterRoute(env, agentType) === null ? null : claimCredentialEnv(env, agentType);
 }

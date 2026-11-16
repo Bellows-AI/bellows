@@ -150,4 +150,31 @@ describe.skipIf(!enabled)('a reviewer granted only an OpenRouter key', () => {
         });
         expect(JSON.stringify(claim)).not.toContain('sk-ant-author-only');
     });
+
+    it('a granted bearer redirect without the granted Anthropic key claims the platform key blank', async () => {
+        const bearerReviewer: ReviewerSpec = {
+            ...REVIEWER,
+            connections: ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'],
+        };
+        const { executors, env, jobs } = stores(ORG, 'cloud', bearerReviewer);
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceOrg('env-admin', [
+            { name: 'ANTHROPIC_BASE_URL', value: 'https://gateway.example.test', isSecret: false },
+            { name: 'ANTHROPIC_AUTH_TOKEN', value: 'member-bearer', isSecret: true },
+            { name: 'ANTHROPIC_API_KEY', value: 'sk-ant-author-only', isSecret: true },
+        ]);
+        await mustCreate(jobs.create('ship it', ALICE, { repo: 'acme/api', executor: 'main', executorScope: 'user' }));
+        const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
+        expect(caller.env?.ANTHROPIC_API_KEY).toBe('sk-ant-author-only');
+
+        const review = await jobs.requestReview(caller.id, caller.leaseToken, {
+            key: 'sec-1',
+            profile: 'sec',
+            revision: 'h:1',
+            ref: reviewRefOf(caller.id, 'sec-1'),
+        });
+        const claim = 'claim' in review ? review.claim : undefined;
+        expect(claim?.executorRefusal).toBeNull();
+        expect(claim?.env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'member-bearer', ANTHROPIC_API_KEY: '' });
+    });
 });

@@ -7,6 +7,7 @@
 
 import {
     CLAUDE_CODE,
+    claimCredentialEnv,
     CLOUD,
     CLOUD_CREDENTIAL_MESSAGE,
     credentialRedirectMessage,
@@ -19,7 +20,6 @@ import {
     type ExecutorScope,
     type ExecutorType,
     OPENCODE,
-    openRouterClaudeWiring,
     redirectsPlatformCredential,
     RUNNER_MANAGED_KEYS,
 } from '@factory-ai/core';
@@ -141,7 +141,7 @@ export async function resolveClaimExecutor(
         claimEnv = mergeExecutorConfigEnv(claimEnv, agent);
         profileConfig = agent.config;
     }
-    claimEnv = withOpenRouterWiring(claimEnv, profileConfig, executorType);
+    claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType);
     // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
     // token, or a redirect of the deployment's model credential with no member key, saved before
     // cloud mode or split across scopes and profile, never travels. The driver fails the task with the
@@ -177,19 +177,21 @@ function frozenAgentOf(row: ClaimExecutorRow): { type: ExecutorType; config: Rec
 }
 
 /**
- * Claude Code on a member's OpenRouter key alone: the claim gains the Anthropic names Claude Code reads,
- * judged on the env that TRAVELS (after a reviewer's grant) with a claude-code config's `env` applied last,
- * as `redirectsPlatformCredential` reads it. Recomputed on every claim; nothing is stored.
+ * What the claim adds over the member's env (`claimCredentialEnv`): Claude Code's OpenRouter route on
+ * a member's OpenRouter key alone, and an empty platform key beside any member redirect without its
+ * member key, so the driver's own key never follows it. Judged on the env that TRAVELS (after a
+ * reviewer's grant) with a claude-code config's `env` applied last, as `redirectsPlatformCredential`
+ * reads it. Recomputed on every claim; nothing is stored.
  */
-function withOpenRouterWiring(
+function withClaimCredentials(
     claimEnv: Record<string, string> | undefined,
     config: unknown,
     type: ExecutorType | null
 ): Record<string, string> | undefined {
-    if (claimEnv === undefined || type === null) return claimEnv;
-    const configEnv = isRecord(config) && isRecord(config.env) ? config.env : {};
-    const wiring = openRouterClaudeWiring({ ...claimEnv, ...configEnv }, type);
-    return wiring === null ? claimEnv : { ...claimEnv, ...wiring };
+    if (type === null) return claimEnv;
+    const configEnv = type === CLAUDE_CODE && isRecord(config) && isRecord(config.env) ? config.env : {};
+    const added = claimCredentialEnv({ ...claimEnv, ...configEnv }, type);
+    return Object.keys(added).length === 0 ? claimEnv : { ...claimEnv, ...added };
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

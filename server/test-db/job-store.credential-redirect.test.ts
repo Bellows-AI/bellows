@@ -181,6 +181,53 @@ describe.skipIf(!enabled)('cloud mode: an OpenRouter key wired for Claude Code',
     });
 });
 
+/**
+ * The driver forwards its own ANTHROPIC_API_KEY (RUNNER_ENV) unless the claim names it, and the claim's
+ * name wins even when empty. So beside a member's base URL with no member ANTHROPIC_API_KEY the claim
+ * carries it blank: the deployment's key never follows a member's redirect, in either mode.
+ */
+describe.skipIf(!enabled)('a member redirect never carries the platform Anthropic key', () => {
+    for (const mode of ['cloud', 'self-hosted'] as const) {
+        it(`${mode}: a bearer redirect in member env claims ANTHROPIC_API_KEY blank`, async () => {
+            const { executors, env, jobs } = stores(ORG, mode);
+            await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+            await env.replaceWorkspace(ALICE, [
+                { name: BASE_URL, value: URL, isSecret: false },
+                { name: 'ANTHROPIC_AUTH_TOKEN', value: KEY, isSecret: true },
+            ]);
+            await task(jobs);
+
+            const claim = await jobs.claim('w1', LEASE_SECONDS);
+            expect(claim?.executorRefusal).toBeNull();
+            expect(claim?.env).toMatchObject({ [BASE_URL]: URL, ANTHROPIC_AUTH_TOKEN: KEY, ANTHROPIC_API_KEY: '' });
+        });
+
+        it(`${mode}: a bearer redirect in a claude-code profile's env claims ANTHROPIC_API_KEY blank`, async () => {
+            const { executors, jobs } = stores(ORG, mode);
+            const config = { env: { [BASE_URL]: URL, ANTHROPIC_AUTH_TOKEN: KEY } };
+            await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config }]);
+            await task(jobs);
+
+            const claim = await jobs.claim('w1', LEASE_SECONDS);
+            expect(claim?.executorRefusal).toBeNull();
+            expect(claim?.env?.ANTHROPIC_API_KEY).toBe('');
+            expect(JSON.parse(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual(config);
+        });
+    }
+
+    it('a member ANTHROPIC_API_KEY beside the redirect travels as is', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud');
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceWorkspace(ALICE, [
+            { name: BASE_URL, value: URL, isSecret: false },
+            { name: 'ANTHROPIC_API_KEY', value: KEY, isSecret: true },
+        ]);
+        await task(jobs);
+
+        expect((await jobs.claim('w1', LEASE_SECONDS))?.env?.ANTHROPIC_API_KEY).toBe(KEY);
+    });
+});
+
 describe.skipIf(!enabled)('a stored credential the claim cannot confirm', () => {
     it('rolls the claim back and leaves the task queued, never sending the profile without its key', async () => {
         const store = testSecretStore(sql);
