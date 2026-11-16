@@ -122,6 +122,20 @@ describe('the follow-up composer drafts', () => {
         expect(second!.headers['idempotency-key']).toBe(first!.headers['idempotency-key']);
     });
 
+    it('send on Enter on a desktop screen; Shift+Enter is a new line, not a send', async () => {
+        const user = userEvent.setup();
+        const { sent } = board();
+        renderApp(`/tasks/${A[0]!.id}`);
+        const text = await box();
+        await user.type(text, 'first line{Shift>}{Enter}{/Shift}second line');
+        expect(text.value).toBe('first line\nsecond line');
+        expect(sent()).toHaveLength(0);
+
+        await user.keyboard('{Enter}');
+        await waitFor(() => expect(sent()).toHaveLength(1));
+        expect(sent()[0]!.body).toEqual({ command: 'first line\nsecond line' });
+    });
+
     it('keep a text-only follow-up as it was: only the command', async () => {
         const user = userEvent.setup();
         const { sent } = board();
