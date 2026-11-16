@@ -3,9 +3,10 @@ import type { TransactionSql } from 'postgres';
 import { effectiveAttachments } from './job-store-attachments.js';
 import type { HiddenSkill, PinnedSkill } from './job-store-skill-pin.js';
 import type { Claim } from './job-store-types.js';
+import type { FrozenAgentColumns } from './job-store-claim-executor.js';
 
 /** The claimed row as the acquisition's RETURNING reads it (`job-store-claim.ts`): what `buildClaimResult` turns into a `Claim`. */
-export interface ClaimCandidateRow {
+export interface ClaimCandidateRow extends FrozenAgentColumns {
     id: string;
     command: string;
     attempts: number;

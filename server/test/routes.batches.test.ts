@@ -535,7 +535,7 @@ describe('launch checks: validate and start', () => {
                     : null;
             },
             async resolvedDefault() {
-                return { scope: 'org', name: 'Main' };
+                return { kind: 'profile', scope: 'org', name: 'Main' };
             },
         } as unknown as UserExecutorStore;
         const { call, create } = await setup({ userExecutors });
@@ -547,6 +547,30 @@ describe('launch checks: validate and start', () => {
         expect(tasksOf(validated.json())).toEqual(['org:Main', 'org:Main', 'org:Main']);
         expect((await call('POST', `/api/batches/${id}/start`, { version: 1 })).statusCode).toBe(HTTP_OK);
         expect(tasksOf((await call('GET', `/api/batches/${id}`)).json())).toEqual(['org:Main', 'org:Main', 'org:Main']);
+    });
+
+    it("freezes the starter's agent default on every task that names no executor, on validate and on start", async () => {
+        const userExecutors = {
+            async configFor() {
+                return null;
+            },
+            async resolvedDefault() {
+                return { kind: 'agent', agentType: 'opencode', model: 'team-model', from: 'org' };
+            },
+        } as unknown as UserExecutorStore;
+        const { call, create } = await setup({ userExecutors });
+        const { id } = await create(plan());
+        type Tasks = {
+            plan: { stages: { tasks: { executor: string | null; agentType?: string; agentModel?: string }[] }[] };
+        };
+        const tasksOf = (body: Tasks) =>
+            body.plan.stages.flatMap((stage) => stage.tasks).map((t) => `${t.executor}:${t.agentType}:${t.agentModel}`);
+        const validated = await call('POST', `/api/batches/${id}/validate`, {});
+        expect(validated.statusCode).toBe(HTTP_OK);
+        const frozen = ['null:opencode:team-model', 'null:opencode:team-model', 'null:opencode:team-model'];
+        expect(tasksOf(validated.json())).toEqual(frozen);
+        expect((await call('POST', `/api/batches/${id}/start`, { version: 1 })).statusCode).toBe(HTTP_OK);
+        expect(tasksOf((await call('GET', `/api/batches/${id}`)).json())).toEqual(frozen);
     });
 
     it('refuses a plan that names no executor with 409 NO_EXECUTOR when the starter has no usable profile', async () => {

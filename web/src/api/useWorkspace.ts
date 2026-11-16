@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ExecutorScope } from '@factory-ai/core';
+import type { ExecutorScope, ExecutorType } from '@factory-ai/core';
 import { usePersonalExecutorWrites } from './usePersonalExecutorWrites.js';
 import { request } from './request.js';
 
@@ -43,6 +43,13 @@ export interface WorkspaceExecutorFull extends WorkspaceExecutor {
     config: object;
 }
 
+/** The agent default that wins for the member when no profile preference does: a task naming no executor runs it. */
+export interface AgentDefaultChoice {
+    agentType: ExecutorType;
+    model: string;
+    from: 'personal' | 'org';
+}
+
 export interface WorkspacePayload {
     executors: WorkspaceExecutor[];
     /** The organization's profiles, selection metadata only (issue 391). */
@@ -52,6 +59,8 @@ export interface WorkspacePayload {
      * server's deterministic fallback. Null when nothing is selectable.
      */
     defaultExecutor: DefaultExecutor | null;
+    /** The agent default that wins instead of a profile (`defaultExecutor` is then null); null or absent when none does. */
+    agentDefault?: AgentDefaultChoice | null;
 }
 
 export interface UseWorkspace {

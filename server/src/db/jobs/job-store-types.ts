@@ -272,6 +272,12 @@ export interface Job {
      */
     executorScope: ExecutorScope;
     /**
+     * The agent default frozen on a task naming no profile: the agent the claim runs and its model. Null on a
+     * profile task. Copied wherever `executor` is, and never re-resolved after create.
+     */
+    agentType: ExecutorType | null;
+    agentModel: string | null;
+    /**
      * The finished task this job asks for adjustments on, when it is a follow-up. The tasks chat's
      * conversation thread; null on every job queued before the mechanic and on every first task.
      * A follow-up carries a copy of the parent's session ids from insert, which is what makes the

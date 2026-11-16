@@ -229,6 +229,27 @@ describe('POST /api/jobs/preflight executor', () => {
         expect(check?.detail).toBe(noExecutorMessage);
     });
 
+    it.each([
+        { owner: 'personal', detail: 'your agent default' },
+        { owner: 'org', detail: "the organization's agent default" },
+    ] as const)(
+        'is ok when nothing is selected and the $owner agent default wins, naming it',
+        async ({ owner, detail }) => {
+            const booted = await boot();
+            const userId = booted.member.user.id;
+            // The agent default comes before the member's first profile, which they never chose.
+            await booted.executors.setAgentDefault(owner === 'org' ? null : userId, {
+                agentType: 'opencode',
+                model: 'anthropic/claude-sonnet-4-5',
+            });
+            const { check } = await verdict(booted, { repo: 'acme/web' }, 'executor');
+            expect(check).toMatchObject({ name: null, status: 'ok' });
+            expect(check?.detail).toContain(detail);
+            expect(check?.detail).toContain('opencode');
+            expect(check?.detail).toContain('anthropic/claude-sonnet-4-5');
+        }
+    );
+
     it('is blocked when the profile is suspended', async () => {
         const booted = await boot();
         const [row] = booted.executors.rows();

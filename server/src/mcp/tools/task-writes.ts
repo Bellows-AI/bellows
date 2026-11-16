@@ -59,7 +59,7 @@ export const createTask = defineTool({
             .max(MAX_NAME_CHARS)
             .optional()
             .describe(
-                'An executor profile name (list_executors). Omit to run on your default (marked `default` there); with no usable profile the board refuses NO_EXECUTOR: tell the person to add one in Settings → Executors.'
+                'An executor profile name (list_executors). Omit to run on your default: your stored preference (marked `default` there), else your agent default, else the organization agent default, else your first usable profile. With none of those the board refuses NO_EXECUTOR: tell the person to add a profile in Settings → Executors or set an agent default.'
             ),
         executorScope: z.enum(['user', 'org']).optional().describe('Which profile list `executor` names.'),
         skills: z

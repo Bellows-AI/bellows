@@ -52,10 +52,23 @@ async function boot(repoSkills?: RepoSkills) {
     // A task needs a tracked repository: the board tracks one, so these tests keep exercising the
     // executor refusal rather than the repository's.
     const repos = staticRepoSource([READY_REPO]);
-    const queued: { command: string; executor: string | null; scope: string | undefined }[] = [];
+    const queued: {
+        command: string;
+        executor: string | null;
+        scope: string | undefined;
+        agentType?: string | null | undefined;
+        agentModel?: string | null | undefined;
+    }[] = [];
     const jobs = jobStoreSlice<JobActionStore>({
-        async create(command: string, _by: string | null, target?: { executor?: string; executorScope?: string }) {
-            queued.push({ command, executor: target?.executor ?? null, scope: target?.executorScope });
+        async create(command: string, _by: string | null, target: Parameters<JobActionStore['create']>[2]) {
+            const { agentType, agentModel } = target;
+            queued.push({
+                command,
+                executor: target.executor ?? null,
+                scope: target.executorScope,
+                // Recorded only when create stamps an agent default, so the profile cases keep their exact shape.
+                ...(agentType || agentModel ? { agentType, agentModel } : {}),
+            });
             return { id: '11111111-1111-4111-8111-111111111111' };
         },
     });
@@ -374,6 +387,37 @@ describe('POST /api/jobs naming no executor', () => {
         await putPersonal(b, b.memberCookie, [entry('mine')]);
         expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
         expect(b.queued).toEqual([{ command: 'echo hi', executor: 'mine', scope: 'user' }]);
+    });
+
+    const putAgentDefault = (b: Booted, cookie: string, owner: 'personal' | 'org', model: string) =>
+        b.instance.inject({
+            method: 'PUT',
+            url: `/api/agent-default/${owner}`,
+            headers: { cookie },
+            payload: { agentType: 'opencode', model },
+        });
+
+    it("freezes the caller's agent default on the task when no profile exists: no executor, the agent and its model", async () => {
+        const b = await boot();
+        expect((await putAgentDefault(b, b.memberCookie, 'personal', 'mine-model')).statusCode).toBe(200);
+
+        const response = await queueBare(b, b.memberCookie);
+
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toEqual([
+            { command: 'echo hi', executor: null, scope: 'user', agentType: 'opencode', agentModel: 'mine-model' },
+        ]);
+    });
+
+    it("the organization's agent default outranks a profile, as the resolution order says", async () => {
+        const b = await boot();
+        await createOrg(b, 'Main');
+        expect((await putAgentDefault(b, b.adminCookie, 'org', 'team-model')).statusCode).toBe(200);
+
+        expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toEqual([
+            { command: 'echo hi', executor: null, scope: 'user', agentType: 'opencode', agentModel: 'team-model' },
+        ]);
     });
 
     it('refuses with 409 NO_EXECUTOR, naming where to configure one, when the caller has no usable profile', async () => {

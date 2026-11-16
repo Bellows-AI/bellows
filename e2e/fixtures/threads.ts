@@ -106,6 +106,9 @@ export interface ThreadJob {
     executor: string | null;
     /** Which list the executor label was chosen from (issue 391); `user` on every fixture here. */
     executorScope: 'user' | 'org';
+    /** The agent default frozen on a task naming no profile, and its model; null on every fixture here. */
+    agentType: 'claude-code' | 'opencode' | null;
+    agentModel: string | null;
     followUpTo: string | null;
     rootJobId: string;
     workflowNode: string | null;
@@ -248,6 +251,8 @@ function run(fields: RunFields): ThreadJob {
         repo: null,
         executor: 'main',
         executorScope: 'user',
+        agentType: null,
+        agentModel: null,
         followUpTo: null,
         rootJobId: fields.id,
         workflowNode: null,

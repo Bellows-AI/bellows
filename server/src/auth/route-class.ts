@@ -46,6 +46,8 @@ export const ROUTE_CLASSES: readonly (readonly [
     // The role is who may call it at all, whatever the credential: `admin` for what administers the whole
     // organization (org tokens, org-wide env, the roster, org executors, skills and subscriptions), `member` for the
     // caller's own surfaces and the board, where a row-dependent rule (author or admin) stays in the handler.
+    ['DELETE', '/api/agent-default/org', 'none', ADMIN_ROLE],
+    ['DELETE', '/api/agent-default/personal', 'none', MEMBER_ROLE],
     ['DELETE', '/api/attachments/:id', 'write', MEMBER_ROLE],
     ['DELETE', '/api/connections/:id', 'none', MEMBER_ROLE],
     ['DELETE', '/api/env/org/vars/:name', 'none', ADMIN_ROLE],
@@ -59,6 +61,7 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['DELETE', '/api/workspace/executors/:id', 'none', MEMBER_ROLE],
     ['DELETE', '/api/workspace/skills/:id', 'none', MEMBER_ROLE],
     ['DELETE', '/api/workspace/notification-subscriptions/:id', 'none', MEMBER_ROLE],
+    ['GET', '/api/agent-default', 'read', MEMBER_ROLE],
     ['GET', '/api/attachments/:id', 'read', MEMBER_ROLE],
     ['GET', '/api/attachments/:id/content', 'read', MEMBER_ROLE],
     ['GET', '/api/attachments/limits', 'read', MEMBER_ROLE],
@@ -171,6 +174,8 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['POST', '/api/workspace/skills/:id/versions', 'none', MEMBER_ROLE],
     ['POST', '/api/workspace/notification-subscriptions', 'none', MEMBER_ROLE],
     ['POST', '/api/workspace/notification-subscriptions/:id/test', 'none', MEMBER_ROLE],
+    ['PUT', '/api/agent-default/org', 'none', ADMIN_ROLE],
+    ['PUT', '/api/agent-default/personal', 'none', MEMBER_ROLE],
     ['PUT', '/api/batches/:id', 'write', MEMBER_ROLE],
     ['PUT', '/api/env/org', 'none', ADMIN_ROLE],
     ['PUT', '/api/env/org/vars', 'none', ADMIN_ROLE],

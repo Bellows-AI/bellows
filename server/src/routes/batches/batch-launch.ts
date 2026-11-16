@@ -175,8 +175,9 @@ export async function launchChecks(
 }
 
 /**
- * A task naming no executor runs on the starter's default, stamped into the plan the start freezes: the claim resolves
- * only the stamped label. Null once a refusal is on `reply` (409 `NO_EXECUTOR` when the starter has no usable profile).
+ * A task naming no executor runs on the starter's default, stamped into the plan the start freezes: a profile as the
+ * label, an agent default as the task's agent and model. The claim reads only what was stamped. Null once a
+ * refusal is on `reply` (409 `NO_EXECUTOR` when nothing resolves for the starter).
  */
 async function withDefaultExecutor(
     ctx: Context,
@@ -192,13 +193,15 @@ async function withDefaultExecutor(
     });
     if (fallback === 'refused') return null;
     if (fallback === null) return plan;
+    const stamp =
+        fallback.kind === 'agent'
+            ? { agentType: fallback.agentType, agentModel: fallback.model }
+            : { executor: fallback.name, executorScope: fallback.scope };
     return {
         ...plan,
         stages: plan.stages.map((stage) => ({
             ...stage,
-            tasks: stage.tasks.map((task) =>
-                task.executor === null ? { ...task, executor: fallback.name, executorScope: fallback.scope } : task
-            ),
+            tasks: stage.tasks.map((task) => (task.executor === null ? { ...task, ...stamp } : task)),
         })),
     };
 }
