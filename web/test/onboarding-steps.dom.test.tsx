@@ -192,7 +192,7 @@ describe('the placeholder steps', () => {
         });
         const user = userEvent.setup();
         const { router } = renderApp('/onboarding/ready?returnTo=%2Ftasks');
-        await user.click(await screen.findByRole('button', { name: 'Go to the dashboard' }));
+        await user.click(await screen.findByRole('button', { name: 'Go to the dashboard instead' }));
         await waitFor(() => expect(calls.some((c) => c.url === '/api/onboarding/setup/complete')).toBe(true));
         await settle();
         expect(at(router)).toBe('/onboarding/ready?returnTo=%2Ftasks');
@@ -215,7 +215,7 @@ describe('the placeholder steps', () => {
             });
             const user = userEvent.setup();
             const { router } = renderApp(`/onboarding/ready?returnTo=${encodeURIComponent(unsafe)}`);
-            await user.click(await screen.findByRole('button', { name: 'Go to the dashboard' }));
+            await user.click(await screen.findByRole('button', { name: 'Go to the dashboard instead' }));
             await waitFor(() => expect(at(router)).toBe('/'));
         });
     }

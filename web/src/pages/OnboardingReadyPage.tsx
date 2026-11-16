@@ -1,13 +1,18 @@
-import { SetupActions } from '../onboarding/SetupActions.js';
+import { useModelSetup } from '../api/useModelSetup.js';
+import { ReadyStep } from '../onboarding/ReadyStep.js';
 import { SetupFrame } from '../onboarding/SetupFrame.js';
-import { useSetupWalk } from '../onboarding/useSetupWalk.js';
 
-/** The walk's closing page: a placeholder that marks setup complete, then returns to the carried path. */
+/** The walk's closing page: "Almost set" only once the model read confirms there is none. */
 export function OnboardingReadyPage() {
-    const walk = useSetupWalk();
+    const setup = useModelSetup();
+    const noModel = setup.error === null && setup.data?.effective === null;
     return (
-        <SetupFrame place="ready" title="You're set" purpose="Describe a change and an agent opens a pull request.">
-            <SetupActions primary="Go to the dashboard" busy={walk.busy} error={walk.error} onPrimary={walk.complete} />
+        <SetupFrame
+            place="ready"
+            title={noModel ? 'Almost set' : "You're set"}
+            purpose="Describe a change and an agent opens a pull request."
+        >
+            <ReadyStep setup={setup} />
         </SetupFrame>
     );
 }

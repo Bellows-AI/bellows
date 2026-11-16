@@ -23,7 +23,7 @@ never utilities, and every color it renders resolves through a token.
 | Page content widths: `--page-dense` (`.page`), `--page-standard` (settings), `--page-form` (composer); `--measure-wide`, `--measure-narrow` (task stats, onboarding) | `web/src/styles/tokens.css`, `web/src/styles/primitives.css` | `web/test/styles.test.ts` |
 | One-`h1` page heading contract | `web/src/components/PageHeader.tsx` | `web/test/page-header.test.tsx` |
 | Table sorting, row actions, ≤640px card reflow | `web/src/components/DataTable.tsx`, `RowActions.tsx` | `web/test/data-table.test.tsx`, `web/test/dashboard.dom.test.tsx`, `web/test/row-actions.render.test.tsx` |
-| Shell, sidenav, drawer | `web/src/components/AppShell.tsx`, `SideNav.tsx`, `MobileNavDialog.tsx` | `web/test/shell.test.tsx`, `web/test/navigation.dom.test.tsx`, `web/test/sidenav.test.tsx`, `e2e/navigation.spec.ts` |
+| Shell, sidenav, drawer; the shell's "No model yet" `banner-warn` above the page, only on a confirmed `effective: null`, re-read on focus or a save | `web/src/components/AppShell.tsx`, `SideNav.tsx`, `MobileNavDialog.tsx`, `NoModelBanner.tsx` | `web/test/shell.test.tsx`, `web/test/navigation.dom.test.tsx`, `web/test/sidenav.test.tsx`, `web/test/no-model-banner.dom.test.tsx`, `e2e/navigation.spec.ts` |
 | Component interaction under jsdom + Testing Library (the `dom` project) | `web/test/dom.tsx`, `vitest.config.ts` | `web/test/*.dom.test.tsx` |
 | Primitive-state reference sheet | `e2e/specimen/main.tsx`, `e2e/specimen/specimen.css` | `e2e/specimen.spec.ts` (`npm run verify:ui:nightly`) |
 | Specimen sections (Surfaces, Type, Icons, Actions, Data, Forms, States, Tokens), one icon per `ICON_NAMES`, token explorer over `tokens.css` | `e2e/specimen/main.tsx`, `e2e/specimen/tokens.tsx`, `e2e/specimen/matrix.ts` (`GROUPS`, `SECTIONS`) | `e2e/specimen.spec.ts` (`specimen documentation`) |
@@ -88,7 +88,7 @@ Scrollable table or log wells: `ScrollRegion.tsx` (focusable, named); `web/test/
 ## Shared UI units
 
 `AppBar.tsx`, `AppShell.tsx`, `Avatar.tsx`, `ConfirmDialog.tsx`, `DraftReturnBanner.tsx`, `Icon.tsx`, `KeyValues.tsx`,
-`MobileNavDialog.tsx`, `NavItems.tsx`, `OrgSelector.tsx`, `PageHeader.tsx`, `RelativeTime.tsx`, `RouteError.tsx`,
+`MobileNavDialog.tsx`, `NavItems.tsx`, `NoModelBanner.tsx`, `OrgSelector.tsx`, `PageHeader.tsx`, `RelativeTime.tsx`, `RouteError.tsx`,
 `ScrollRegion.tsx`, `SideNav.tsx`, `StateNote.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx` (all `web/src/components/`);
 `SettingsLayout.tsx`, `TasksLayout.tsx` (`web/src/pages/`).
 

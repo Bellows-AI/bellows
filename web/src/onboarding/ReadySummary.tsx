@@ -1,0 +1,125 @@
+import { INTEGRATION_CATALOG, MODEL_PROVIDERS, type ExecutorType } from '@factory-ai/core';
+import { Link } from 'react-router-dom';
+import type { ConnectionsRead } from '../api/useConnections.js';
+import type { UseModelSetup } from '../api/useModelSetup.js';
+import type { UseRepos } from '../api/useRepos.js';
+import type { Session } from '../api/useSession.js';
+import { PROVIDER_META } from '../model-setup/providers.js';
+import { connectionState } from '../settings/integration-providers.js';
+import { EXECUTOR_TYPE_META } from '../workspace/executors.js';
+import { reselectHref, setupPath } from './steps.js';
+
+/** A row's lamp: ok (set up), wait (left for later) or idle (not yet known). */
+type Lamp = 'ok' | 'wait' | 'idle';
+
+interface Row {
+    name: string;
+    detail: string;
+    lamp: Lamp;
+    /** A full-page address (the reselect round trip) or an in-app path. */
+    change?: { href: string } | { to: string };
+}
+
+const CHECKING = { detail: 'Checking…', lamp: 'idle' } as const;
+const joined = (parts: readonly (string | null | undefined)[]) => parts.filter(Boolean).join(' · ');
+const agentLabel = (type: ExecutorType | null | undefined) => (type ? EXECUTOR_TYPE_META[type].label : null);
+/** A scope's provider is a model provider, or `platform`/`existing`, which name no provider. */
+function providerLabel(provider: string | null | undefined): string | null {
+    const known = MODEL_PROVIDERS.find((entry) => entry === provider);
+    return known ? PROVIDER_META[known].label : null;
+}
+
+function reposRow(read: UseRepos): Pick<Row, 'detail' | 'lamp'> {
+    if (read.data === null)
+        return read.error === null ? CHECKING : { detail: 'Could not check the repositories.', lamp: 'idle' };
+    const { repos, installation } = read.data;
+    const scope =
+        installation?.repositorySelection === 'all'
+            ? `all ${repos.length}, including future ones`
+            : `${repos.length} selected`;
+    return { detail: joined([installation?.account, scope]), lamp: repos.length > 0 ? 'ok' : 'wait' };
+}
+
+/** "Not connected" only on a confirmed `effective: null`; a failed read says so instead. */
+function modelRow(setup: UseModelSetup, organization: string | null): Pick<Row, 'detail' | 'lamp'> {
+    if (setup.error !== null) return { detail: 'Could not check the model.', lamp: 'idle' };
+    const view = setup.data;
+    if (view === null) return CHECKING;
+    if (view.effective === null) return { detail: 'Not connected', lamp: 'wait' };
+    if (view.effective === 'platform') {
+        const choice = view.personal ?? view.org;
+        return {
+            detail: joined([agentLabel(choice?.agentType), choice?.model, 'provided by this deployment']),
+            lamp: 'ok',
+        };
+    }
+    const scope = view[view.effective];
+    const who = view.effective === 'org' ? `everyone in ${organization ?? 'the organization'}` : 'only you';
+    return {
+        detail: joined([agentLabel(scope?.agentType), providerLabel(scope?.provider), scope?.model, who]),
+        lamp: 'ok',
+    };
+}
+
+function trackerRow(read: ConnectionsRead): Pick<Row, 'detail' | 'lamp'> {
+    if (read.state === 'loading') return CHECKING;
+    if (read.state === 'error') return { detail: 'Could not check the issue trackers.', lamp: 'idle' };
+    const live = read.connections.filter((row) => connectionState(row) === 'connected');
+    if (live.length === 0) return { detail: 'Not connected — optional', lamp: 'wait' };
+    const label = (id: string) => INTEGRATION_CATALOG.find((entry) => entry.id === id)?.label ?? id;
+    return { detail: live.map((row) => joined([label(row.provider), row.site])).join(' · '), lamp: 'ok' };
+}
+
+/**
+ * Ready's summary: one row per part of the setup with its lamp and a Change back to the step that sets
+ * it. Repositories' Change is the reselect round trip back to this page — bare `/onboarding` has no
+ * pending sign-in behind it.
+ */
+export function ReadySummary({
+    session,
+    repos,
+    setup,
+    connections,
+    returnTo,
+    here,
+}: {
+    session: Session | null;
+    repos: UseRepos;
+    setup: UseModelSetup;
+    connections: ConnectionsRead;
+    returnTo: string;
+    here: string;
+}) {
+    const rows: Row[] = [
+        { name: 'GitHub', detail: session ? `Signed in as ${session.user.login}` : 'Signed in', lamp: 'ok' },
+        { name: 'Repositories', ...reposRow(repos), change: { href: reselectHref(here) } },
+        {
+            name: 'Model',
+            ...modelRow(setup, session?.organization.name ?? null),
+            change: { to: setupPath('model', returnTo) },
+        },
+        { name: 'Issue tracker', ...trackerRow(connections), change: { to: setupPath('tools', returnTo) } },
+    ];
+    return (
+        <ul className="ready-summary" aria-label="Setup summary">
+            {rows.map((row) => (
+                <li key={row.name} className="ready-row" aria-label={row.name}>
+                    <span className="ready-lamp" data-state={row.lamp} aria-hidden="true" />
+                    <span className="ready-row-body">
+                        <span className="ready-row-name">{row.name}</span>
+                        <span className="ready-row-detail">{row.detail}</span>
+                    </span>
+                    {row.change === undefined ? null : 'href' in row.change ? (
+                        <a href={row.change.href} aria-label={`Change ${row.name.toLowerCase()}`}>
+                            Change
+                        </a>
+                    ) : (
+                        <Link to={row.change.to} aria-label={`Change ${row.name.toLowerCase()}`}>
+                            Change
+                        </Link>
+                    )}
+                </li>
+            ))}
+        </ul>
+    );
+}

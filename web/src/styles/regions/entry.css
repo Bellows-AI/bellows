@@ -547,6 +547,69 @@
         gap: var(--space-3);
     }
 
+    /* Ready: one soft panel of summary rows (lamp, name over detail, Change at the end), then the inline
+       composer as it is everywhere, and the starter prompts under it as plain buttons. */
+    .ready-summary {
+        background: var(--surface-soft);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        list-style: none;
+        margin: 0;
+        padding: 0 var(--space-4);
+    }
+
+    .ready-row {
+        align-items: center;
+        display: flex;
+        gap: var(--space-3);
+        padding: var(--space-3) 0;
+    }
+
+    .ready-row + .ready-row {
+        border-top: 1px solid var(--line);
+    }
+
+    .ready-lamp {
+        background: currentColor;
+        border: 1px solid currentColor;
+        border-radius: 50%;
+        color: var(--line-strong);
+        flex: none;
+        height: var(--space-2);
+        width: var(--space-2);
+    }
+
+    .ready-lamp[data-state='ok'] {
+        color: var(--lamp-run);
+    }
+
+    .ready-lamp[data-state='wait'] {
+        color: var(--lamp-wait);
+    }
+
+    .ready-row-body {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        min-width: 0;
+    }
+
+    .ready-row-name {
+        font-weight: 600;
+    }
+
+    .ready-row-detail {
+        color: var(--ink-muted);
+        font-size: var(--text-sm);
+        overflow-wrap: anywhere;
+    }
+
+    .ready-starters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-2);
+    }
+
     /* The model step and Settings → Model (`web/src/model-setup/`): soft provider cards in a radiogroup (the
        checked one takes the accent edge), the key with its Show toggle, the live check line in its lamp color, the
        agent and model side by side, and the primary with its reason under it. */
