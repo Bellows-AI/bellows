@@ -584,8 +584,7 @@ async function assembleClaim(
     prepared: { rootJobId: string; gates: ResolvedClaimGates; connections: ClaimConnections }
 ): Promise<Omit<Claim, 'attachments'>> {
     const { orgId, githubApp, prs } = ctx;
-    const { rootJobId } = prepared;
-    const { connections } = prepared;
+    const { rootJobId, connections } = prepared;
     const executor = await resolveClaimExecutor(tx, ctx, row);
     await recordRunModel(tx, orgId, row.id, executor.runModel);
     const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.run_as) };
