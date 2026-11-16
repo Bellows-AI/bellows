@@ -11,12 +11,13 @@ import {
     normalizeModelId,
     PLATFORM_PROVIDER,
     PROVIDER_AGENTS,
+    PROVIDER_BASE_URL_ENV,
     providerAvailable,
 } from '@factory-ai/core';
 import type { FastifyError, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { AppConfig } from '../config.js';
-import { EnvScopeRefusal, type EnvVarStore } from '../db/env-var-store.js';
+import { EnvScopeRefusal, type EnvVarEntry, type EnvVarStore } from '../db/env-var-store.js';
 import type { AgentDefault, UserExecutorStore } from '../db/user-executor-store.js';
 import type { OrgRegistry } from '../orgs.js';
 import { MAX_AGENT_MODEL_LENGTH } from './agent-default.js';
@@ -47,7 +48,7 @@ const HTTP_CONFLICT = 409;
 const HTTP_UNAVAILABLE = 503;
 /** The agent-only save on a key the scope's view already holds, when the deployment supplies no model. */
 const EXISTING = 'existing';
-const FIELDS = new Set(['scope', 'provider', 'key', 'baseUrl', 'agentType', 'model']);
+const FIELDS = new Set(['scope', 'provider', 'key', 'baseUrl', 'keepBaseUrl', 'agentType', 'model']);
 const HTTP_FIRST_SERVER_ERROR = 500;
 
 /** A body the parser refused (malformed, too large) answers fixed text: the parser's message may quote the key. */
@@ -62,7 +63,12 @@ interface Common {
     readonly model: string;
 }
 type Parsed =
-    | (Common & { readonly provider: ModelProvider; readonly key: string; readonly baseUrl?: string })
+    | (Common & {
+          readonly provider: ModelProvider;
+          readonly key: string;
+          readonly baseUrl?: string;
+          readonly keepBaseUrl?: true;
+      })
     | (Common & { readonly provider: typeof PLATFORM_PROVIDER | typeof EXISTING });
 type Refusal = { readonly error: string; readonly code: string };
 
@@ -93,7 +99,14 @@ function parseKeyed(common: Common, provider: ModelProvider, fields: Record<stri
         );
     }
     if (!validKey(fields.key)) return refusal('key must be a provider key: printable characters, no spaces');
-    const { baseUrl } = fields;
+    const { baseUrl, keepBaseUrl } = fields;
+    if (keepBaseUrl !== undefined) {
+        // Keeps the base URL the scope holds (stored as a secret, so the member cannot send it back): hosted providers.
+        if (keepBaseUrl !== true || baseUrl !== undefined || provider === 'litellm' || provider === 'subscription') {
+            return refusal('keepBaseUrl is true or absent, never beside a baseUrl, and only for a hosted provider');
+        }
+        return { ...common, provider, key: fields.key, keepBaseUrl: true as const };
+    }
     if (baseUrl === undefined) {
         return provider === 'litellm' ? refusal('LiteLLM needs a baseUrl') : { ...common, provider, key: fields.key };
     }
@@ -127,21 +140,39 @@ interface ScopeView {
     agentType: ExecutorType | null;
     model: string | null;
     keyNames: string[];
+    /** The provider's base URL when the scope holds it as a plain variable; never a secret's value. */
+    baseUrl?: string;
+    /** The scope holds the provider's base URL as a secret: set, value withheld. */
+    baseUrlSet?: true;
+}
+
+/** The scope's base URL for its provider: the plain value, or only that a secret one is set. */
+function baseOf(
+    rows: readonly EnvVarEntry[],
+    provider: AgentProvider | null
+): Pick<ScopeView, 'baseUrl' | 'baseUrlSet'> {
+    const name = isModelProvider(provider) ? PROVIDER_BASE_URL_ENV[provider] : null;
+    const row = name === null ? undefined : rows.find((entry) => entry.name === name);
+    if (!row) return {};
+    return !row.isSecret && row.value !== null ? { baseUrl: row.value } : { baseUrlSet: true };
 }
 
 /**
  * One scope's setup: the provider its names hold now (`currentProvider`; the platform when it holds none and its
  * agent default runs on it), its agent default, its key names; null when it has none.
  */
-function viewOf(names: string[], agent: AgentDefault | null): ScopeView | null {
+function viewOf(rows: readonly EnvVarEntry[], agent: AgentDefault | null): ScopeView | null {
+    const names = rows.map((row) => row.name);
     const keyNames = keyNamesOf(names);
     if (agent === null && keyNames.length === 0) return null;
     const platform = agent?.provider === PLATFORM_PROVIDER ? PLATFORM_PROVIDER : null;
+    const provider = currentProvider(names, agent?.provider) ?? platform;
     return {
-        provider: currentProvider(names, agent?.provider) ?? platform,
+        provider,
         agentType: agent?.agentType ?? null,
         model: agent?.model ?? null,
         keyNames,
+        ...baseOf(rows, provider),
     };
 }
 
@@ -195,11 +226,9 @@ async function handleGet(config: AppConfig, orgs: OrgRegistry, request: FastifyR
     );
     if (!read.ok) return reply;
     const [orgRows, personalRows, defaults] = read.value;
-    const orgNames = orgRows.map((row) => row.name);
-    const personalNames = personalRows.map((row) => row.name);
     const platform = config.platformModelProvided;
-    const org = viewOf(orgNames, defaults.org);
-    const personal = viewOf(personalNames, defaults.personal);
+    const org = viewOf(orgRows, defaults.org);
+    const personal = viewOf(personalRows, defaults.personal);
     return reply.code(HTTP_OK).send({ platform, org, personal, effective: effectiveOf(org, personal, platform) });
 }
 

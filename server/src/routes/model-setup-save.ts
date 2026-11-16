@@ -34,6 +34,8 @@ export interface KeySave {
     readonly provider: ModelProvider;
     readonly key: string;
     readonly baseUrl?: string | undefined;
+    /** Keep the base URL the scope holds instead of removing it (a secret one the member cannot send back). */
+    readonly keepBaseUrl?: true | undefined;
     readonly agentType: ExecutorType;
     readonly model: string;
 }
@@ -86,7 +88,7 @@ export async function providerInView(
 }
 
 /**
- * Writes the key, its base URL (removed when none is given) and the agent default in one transaction under the scope
+ * Writes the key, its base URL (removed when none is given, unless `keepBaseUrl`) and the agent default in one transaction under the scope
  * lock. The names removed are the current provider's key and base URL (`currentProvider`), decided on the names the
  * scope holds under the lock; any other name, an unrelated key included, stays. The recorded provider that decision
  * reads is re-read under the lock: when a concurrent save moved it, this save rolls back and runs again. A refusal
@@ -101,7 +103,8 @@ export async function saveModelKey(stores: ModelSetupStores, input: KeySave): Pr
     if (input.baseUrl !== undefined && baseName !== null) {
         upsert.push({ name: baseName, value: input.baseUrl, isSecret: false });
     }
-    const written = new Set(upsert.map((entry) => entry.name));
+    const kept = input.keepBaseUrl && baseName !== null ? [baseName] : [];
+    const written = new Set([...upsert.map((entry) => entry.name), ...kept]);
     const value = {
         agentType: input.agentType,
         model: normalizeModelId(input.provider, input.agentType, input.model),

@@ -19,7 +19,7 @@ import { agentOnlyBody, agentOnlyProvider, keyBody } from '../src/model-setup/sa
  */
 
 const ROUTE = fileURLToPath(new URL('../../server/src/routes/model-setup.ts', import.meta.url));
-const FIELDS = ['scope', 'provider', 'key', 'baseUrl', 'agentType', 'model'];
+const FIELDS = ['scope', 'provider', 'key', 'baseUrl', 'keepBaseUrl', 'agentType', 'model'];
 const KEY_SHAPE = /^[\x21-\x7e]+$/;
 
 const validBase = (raw: unknown) => {
@@ -43,10 +43,15 @@ function routeAccepts(body: Record<string, unknown>, platform: boolean, mode: De
         if (!providerAvailable(provider, mode)) return false;
         if (!(PROVIDER_AGENTS[provider] as readonly unknown[]).includes(body.agentType)) return false;
         if (typeof body.key !== 'string' || !KEY_SHAPE.test(body.key)) return false;
+        if (body.keepBaseUrl !== undefined) {
+            const hosted = provider !== 'litellm' && provider !== 'subscription';
+            return body.keepBaseUrl === true && body.baseUrl === undefined && hosted;
+        }
         if (body.baseUrl === undefined) return provider !== 'litellm';
         return provider !== 'subscription' && validBase(body.baseUrl);
     }
-    return provider === (platform ? 'platform' : 'existing') && body.key === undefined && body.baseUrl === undefined;
+    const keyless = body.key === undefined && body.baseUrl === undefined && body.keepBaseUrl === undefined;
+    return provider === (platform ? 'platform' : 'existing') && keyless;
 }
 
 describe('the route rule this file mirrors', () => {
@@ -77,16 +82,22 @@ describe('the bodies the model setup sends', () => {
         }
     });
 
-    it('every key body is accepted, with and without a base URL', () => {
+    it('every key body is accepted: with a base URL, without one, and keeping a secret one', () => {
         for (const provider of MODEL_PROVIDERS) {
             for (const agentType of PROVIDER_AGENTS[provider]) {
-                for (const baseUrl of ['', ' https://gateway.example.test ']) {
+                for (const [baseUrl, keepBase] of [
+                    ['', false],
+                    ['', true],
+                    [' https://gateway.example.test ', false],
+                    [' https://gateway.example.test ', true],
+                ] as const) {
                     if (provider === 'litellm' && !baseUrl) continue; // Save waits for the proxy URL.
                     const body = keyBody({
                         scope: 'personal',
                         provider,
                         key: ' sk-x ',
                         baseUrl,
+                        keepBase,
                         agentType,
                         model: 'm',
                     });
@@ -94,6 +105,22 @@ describe('the bodies the model setup sends', () => {
                 }
             }
         }
+    });
+
+    it('keeps a secret base URL only when the field is untouched and the provider is hosted', () => {
+        const common = {
+            scope: 'personal',
+            key: 'k',
+            baseUrl: '',
+            keepBase: true,
+            agentType: 'opencode',
+            model: 'm',
+        } as const;
+        expect(keyBody({ ...common, provider: 'openai' })).toMatchObject({ keepBaseUrl: true });
+        expect(keyBody({ ...common, provider: 'openai', baseUrl: 'https://g.example.test' })).not.toHaveProperty(
+            'keepBaseUrl'
+        );
+        expect(keyBody({ ...common, provider: 'litellm', agentType: 'claude-code' })).not.toHaveProperty('keepBaseUrl');
     });
 
     it('stores an OpenCode id the way core does, even on the platform variant that keeps ids as given', () => {

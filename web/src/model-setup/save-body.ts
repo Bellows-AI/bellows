@@ -33,16 +33,22 @@ export function agentOnlyBody(input: {
     };
 }
 
-/** A key with its agent default; a base URL only where one is given and the provider takes one. */
+/**
+ * A key with its agent default; a base URL only where one is given and the provider takes one, or `keepBaseUrl` for a
+ * hosted provider whose base URL is a secret the form could not show.
+ */
 export function keyBody(input: {
     scope: SetupScope;
     provider: ModelProvider;
     key: string;
     baseUrl: string;
+    keepBase?: boolean;
     agentType: ExecutorType;
     model: string;
 }): ModelSetupSave {
     const { scope, provider, agentType, model } = input;
     const baseUrl = provider === 'subscription' ? '' : input.baseUrl.trim();
-    return { scope, provider, key: input.key.trim(), ...(baseUrl ? { baseUrl } : {}), agentType, model };
+    const hosted = provider !== 'litellm' && provider !== 'subscription';
+    const base = baseUrl ? { baseUrl } : input.keepBase && hosted ? { keepBaseUrl: true as const } : {};
+    return { scope, provider, key: input.key.trim(), ...base, agentType, model };
 }

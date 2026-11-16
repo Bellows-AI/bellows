@@ -10,6 +10,10 @@ export interface ModelScopeView {
     agentType: ExecutorType | null;
     model: string | null;
     keyNames: string[];
+    /** The provider's base URL when the scope holds it as a plain variable. */
+    baseUrl?: string;
+    /** The scope holds the provider's base URL as a secret: set, its value withheld. */
+    baseUrlSet?: true;
 }
 
 export interface ModelSetupView {
@@ -24,7 +28,7 @@ export type SetupScope = 'org' | 'personal';
 
 /** `PUT /api/model-setup`: a key with its agent default, or the agent default alone on the platform or a held key. */
 export type ModelSetupSave = { scope: SetupScope; agentType: ExecutorType; model: string } & (
-    | { provider: ModelProvider; key: string; baseUrl?: string }
+    | { provider: ModelProvider; key: string; baseUrl?: string; keepBaseUrl?: true }
     | { provider: 'platform' | 'existing' }
 );
 

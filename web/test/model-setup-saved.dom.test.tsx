@@ -23,6 +23,7 @@ function board(setup: Setup) {
         if (call.url === '/api/model-setup' && call.method === 'GET') return setup;
         if (call.url === '/api/model-setup' && call.method === 'PUT') return { saved: true };
         if (call.url === '/api/onboarding/setup') return { status: 204 };
+        if (call.url === '/api/model-setup/verify') return { ok: true };
     });
 }
 
@@ -143,5 +144,66 @@ describe('the agent-only save with the platform model on and an org key', () => 
         await screen.findByText('Bellows AI already has a model.');
         fireEvent.click(screen.getByRole('button', { name: 'Save' }));
         await waitFor(() => expect(putBody(calls)).toEqual(expected));
+    });
+});
+
+describe('a saved base or proxy URL', () => {
+    /** Pastes a key, waits for the check, saves unchanged; answers the PUT body and the check's body. */
+    async function pasteAndSave(calls: FetchCall[], onSaved: ReturnType<typeof vi.fn>, label: string, key: string) {
+        fireEvent.change(await screen.findByLabelText(label), { target: { value: key } });
+        const save = screen.getByRole('button', { name: 'Save' });
+        await waitFor(() => expect(save.getAttribute('aria-disabled')).toBeNull());
+        fireEvent.click(save);
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        return { put: putBody(calls), verify: calls.find((c) => c.url === '/api/model-setup/verify')?.body };
+    }
+
+    it('prefills the Advanced base URL and sends it back on a Save that leaves it', async () => {
+        const personal = { ...scopeView('anthropic', 'claude-code', 'claude-opus-5-5', ['ANTHROPIC_API_KEY']) };
+        const calls = board({
+            platform: false,
+            org: null,
+            personal: { ...personal, baseUrl: 'https://gw.example.test' },
+        });
+        const onSaved = mount();
+        expect(((await screen.findByLabelText(/^Base URL/)) as HTMLInputElement).value).toBe('https://gw.example.test');
+        const sent = await pasteAndSave(calls, onSaved, 'API key', 'sk-ant-api03-new');
+        expect(sent.verify).toMatchObject({ baseUrl: 'https://gw.example.test' });
+        expect(sent.put).toEqual({
+            scope: 'personal',
+            provider: 'anthropic',
+            key: 'sk-ant-api03-new',
+            baseUrl: 'https://gw.example.test',
+            agentType: 'claude-code',
+            model: 'claude-opus-5-5',
+        });
+    });
+
+    it("prefills LiteLLM's proxy URL and sends it back with the saved model", async () => {
+        const personal = scopeView('litellm', 'claude-code', 'proxy-model', ['ANTHROPIC_API_KEY']);
+        const calls = board({
+            platform: false,
+            org: null,
+            personal: { ...personal, baseUrl: 'https://llm.example.test' },
+        });
+        const onSaved = mount();
+        expect(((await screen.findByLabelText('Proxy URL')) as HTMLInputElement).value).toBe(
+            'https://llm.example.test'
+        );
+        const sent = await pasteAndSave(calls, onSaved, 'Virtual key', 'sk-virtual');
+        expect(sent.put).toMatchObject({
+            provider: 'litellm',
+            baseUrl: 'https://llm.example.test',
+            model: 'proxy-model',
+        });
+    });
+
+    it('keeps a base URL saved as a secret: the Save asks to keep it, sending no value', async () => {
+        const personal = scopeView('openai', 'opencode', 'openai/gpt-5.1', ['OPENAI_API_KEY']);
+        const calls = board({ platform: false, org: null, personal: { ...personal, baseUrlSet: true } });
+        const onSaved = mount();
+        const sent = await pasteAndSave(calls, onSaved, 'API key', 'sk-proj-new');
+        expect(sent.put).toMatchObject({ provider: 'openai', keepBaseUrl: true });
+        expect(sent.put).not.toHaveProperty('baseUrl');
     });
 });

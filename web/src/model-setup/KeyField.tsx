@@ -6,8 +6,21 @@ import type { KeyCheck } from './useKeyCheck.js';
 
 const MARK: Partial<Record<KeyCheck['kind'], string>> = { ok: '✓ ', warn: '▲ ', bad: '✕ ' };
 
-/** LiteLLM's proxy URL: required, and checked from the board — which proves nothing about the runners' reach. */
-export function ProxyField({ ids, value, onChange }: { ids: string; value: string; onChange: (v: string) => void }) {
+/**
+ * LiteLLM's proxy URL: required, and checked from the board — which proves nothing about the runners' reach. `hidden`:
+ * the saved one is a secret, so it must be entered again for the check.
+ */
+export function ProxyField({
+    ids,
+    value,
+    hidden,
+    onChange,
+}: {
+    ids: string;
+    value: string;
+    hidden: boolean;
+    onChange: (v: string) => void;
+}) {
     return (
         <div className="picker-field">
             <label htmlFor={`${ids}-proxy`}>Proxy URL</label>
@@ -23,6 +36,7 @@ export function ProxyField({ ids, value, onChange }: { ids: string; value: strin
             <p className="picker-help" id={`${ids}-proxy-help`}>
                 Checked from the Bellows server, which reads models from its <span className="mono">/v1/models</span>.
                 Runners must reach it too — a green check here does not prove they can.
+                {hidden ? ' The saved proxy URL is stored as a secret: enter it again to check the key.' : null}
             </p>
         </div>
     );
@@ -108,11 +122,14 @@ export function AdvancedBase({
     ids,
     provider,
     value,
+    hidden,
     onChange,
 }: {
     ids: string;
     provider: ModelProvider;
     value: string;
+    /** A base URL is saved as a secret: it stays unless the member enters another. */
+    hidden: boolean;
     onChange: (v: string) => void;
 }) {
     const name = secretNames(provider, true)[1];
@@ -126,12 +143,13 @@ export function AdvancedBase({
                     className="field"
                     type="url"
                     value={value}
+                    placeholder={hidden ? 'Saved (hidden)' : undefined}
                     aria-describedby={`${ids}-base-help`}
                     onChange={(event) => onChange(event.target.value)}
                 />
                 <p className="picker-help" id={`${ids}-base-help`}>
-                    Only for a gateway you run. Saved as <span className="mono">{name}</span> beside your key; left
-                    empty, a base URL saved earlier in this scope is removed.
+                    Only for a gateway you run. Saved as <span className="mono">{name}</span> beside your key.
+                    {hidden ? ' One is saved as a secret and stays unless you enter another.' : null}
                 </p>
             </div>
         </details>

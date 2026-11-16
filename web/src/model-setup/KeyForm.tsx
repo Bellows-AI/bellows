@@ -26,10 +26,32 @@ const savedProvider = (scopeView: ModelScopeView | null | undefined, choices: re
 };
 
 /**
+ * The proxy and base URLs the form shows: the member's edit, else the URL the scope holds for this provider. A base URL
+ * stored as a secret has no value to show, so it is kept (`keepBase`) until the member types one; a secret LiteLLM proxy
+ * must be entered again, since the key check needs it (`hiddenProxy`).
+ */
+function urlsOf(
+    scopeView: ModelScopeView | null | undefined,
+    provider: ModelProvider,
+    proxyEdit: string | null,
+    baseEdit: string | null
+) {
+    const saved = scopeView?.provider === provider ? scopeView : null;
+    const hosted = provider !== 'litellm' && provider !== 'subscription';
+    return {
+        proxy: proxyEdit ?? (provider === 'litellm' ? saved?.baseUrl : undefined) ?? '',
+        base: baseEdit ?? (hosted ? saved?.baseUrl : undefined) ?? '',
+        keepBase: hosted && baseEdit === null && saved?.baseUrlSet === true,
+        hiddenProxy: provider === 'litellm' && proxyEdit === null && saved?.baseUrlSet === true,
+    };
+}
+
+/**
  * The key form's state: provider (moved by a pasted key's prefix), key and its live check, base URLs, agent and model,
  * and scope. Until the member picks, each starts from what is saved: the scope holding the member's own key (else an
  * admin's organization), that scope's provider, and its agent default while the provider is the saved one — an
- * unlisted saved model included — so a save never swaps a saved value for a preselection the member did not see.
+ * unlisted saved model included — and its proxy or base URL (`urlsOf`), so a save never swaps a saved value for a
+ * preselection the member did not see.
  */
 export function useKeyForm(session: Session | null, setup: UseModelSetup, onSaved: () => void | Promise<void>) {
     const mode = session?.deploymentMode ?? SELF_HOSTED;
@@ -42,8 +64,9 @@ export function useKeyForm(session: Session | null, setup: UseModelSetup, onSave
     const [providerPick, setProviderPick] = useState<ModelProvider | null>(null);
     const provider = providerPick ?? savedProvider(scopeView, choices) ?? 'anthropic';
     const [key, setKey] = useState('');
-    const [proxy, setProxy] = useState('');
-    const [base, setBase] = useState('');
+    const [proxyEdit, setProxy] = useState<string | null>(null);
+    const [baseEdit, setBase] = useState<string | null>(null);
+    const { proxy, base, keepBase, hiddenProxy } = urlsOf(scopeView, provider, proxyEdit, baseEdit);
     const baseUrl = baseFor(provider, proxy, base).trim();
     const check = useKeyCheck({ provider, key, baseUrl, mode });
     const saved =
@@ -69,8 +92,10 @@ export function useKeyForm(session: Session | null, setup: UseModelSetup, onSave
         },
         proxy,
         setProxy,
+        hiddenProxy,
         base,
         setBase,
+        keepBase,
         scope,
         setScope: setScopePick,
         check,
@@ -78,7 +103,9 @@ export function useKeyForm(session: Session | null, setup: UseModelSetup, onSave
         save,
         reason: saveReason({ provider, key, baseUrl, model: choice.model, check: check.kind }),
         press: () =>
-            void save.run(keyBody({ scope, provider, key, baseUrl, agentType: choice.agent, model: choice.model })),
+            void save.run(
+                keyBody({ scope, provider, key, baseUrl, keepBase, agentType: choice.agent, model: choice.model })
+            ),
     };
 }
 
@@ -91,7 +118,9 @@ export function KeyFormView({ ids, form, orgName }: { ids: string; form: KeyForm
     return (
         <>
             <ProviderCards ids={ids} choices={form.choices} value={provider} onChange={form.choose} />
-            {provider === 'litellm' ? <ProxyField ids={ids} value={form.proxy} onChange={form.setProxy} /> : null}
+            {provider === 'litellm' ? (
+                <ProxyField ids={ids} value={form.proxy} hidden={form.hiddenProxy} onChange={form.setProxy} />
+            ) : null}
             <KeyField ids={ids} provider={provider} value={form.key} check={form.check} onChange={form.onKey} />
             <AgentModelFields
                 ids={ids}
@@ -108,8 +137,20 @@ export function KeyFormView({ ids, form, orgName }: { ids: string; form: KeyForm
                 value={form.scope}
                 onChange={form.setScope}
             />
-            {hosted ? <AdvancedBase ids={ids} provider={provider} value={form.base} onChange={form.setBase} /> : null}
-            <SecretNote provider={provider} scope={form.scope} withBase={hosted && form.base.trim() !== ''} />
+            {hosted ? (
+                <AdvancedBase
+                    ids={ids}
+                    provider={provider}
+                    value={form.base}
+                    hidden={form.keepBase}
+                    onChange={form.setBase}
+                />
+            ) : null}
+            <SecretNote
+                provider={provider}
+                scope={form.scope}
+                withBase={hosted && (form.keepBase || form.base.trim() !== '')}
+            />
             {form.save.error ? <StateNote state="error">{form.save.error}</StateNote> : null}
         </>
     );
