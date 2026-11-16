@@ -169,12 +169,13 @@ export interface RunnerJobSpec {
 
 /**
  * The model credentials by reference: each `passEnv` name read from the bring-your-own credentials
- * Secret. The agent container and the reviewer sidecar carry this and no other Secret.
+ * Secret. The agent container and the reviewer sidecar carry this and no other Secret. A name in
+ * `claimed` is skipped: the claim's own value (empty included) wins, as docker drops it from `-e`.
  */
-export function credentialsSecretEnv(config: DriverConfig): EnvVar[] {
+export function credentialsSecretEnv(config: DriverConfig, claimed: Readonly<Record<string, string>> = {}): EnvVar[] {
     const env: EnvVar[] = [];
     if (config.credentialsSecret) {
-        for (const name of config.passEnv) {
+        for (const name of config.passEnv.filter((n) => !Object.hasOwn(claimed, n))) {
             env.push({
                 name,
                 valueFrom: {
@@ -203,7 +204,6 @@ export function credentialsSecretEnv(config: DriverConfig): EnvVar[] {
  * value, the same rule the whole file is pinned on.
  */
 function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
-    const env: EnvVar[] = credentialsSecretEnv(config);
     // The board's stacked environment, same discipline: names in the pod spec, values in the
     // per-attempt Secret (created before the Job — see create()). claimEnv has already dropped the
     // reserved names; the gate registration key (`job.gateEnv`) is the driver's and is no agent env.
@@ -211,6 +211,7 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
     // this attempt's own lease token, so a missing key is a bug and must fail loud
     // (CreateContainerConfigError) rather than start the pod silently without its env.
     const secretEnv = runnerClaimEnv(job);
+    const env: EnvVar[] = credentialsSecretEnv(config, secretEnv);
     for (const name of Object.keys(secretEnv)) {
         env.push({ name, valueFrom: { secretKeyRef: { name: secretName(job), key: name } } });
     }

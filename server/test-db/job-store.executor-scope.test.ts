@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore, ReviewerSpec } from '../src/db/jobs/job-store-types.js';
 import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
@@ -358,5 +359,71 @@ describe.skipIf(!enabled)('a task frozen with an agent default', () => {
 
         expect(review.result).toBe('created');
         expectFrozen('claim' in review ? review.claim : null, 'claude-code', 'frozen');
+    });
+});
+
+describe.skipIf(!enabled)('Claude Code on an OpenRouter key alone', () => {
+    const OPENROUTER_KEY = 'sk-or-v1-member-owned';
+    const WIRED = {
+        ANTHROPIC_BASE_URL: 'https://openrouter.ai/api',
+        ANTHROPIC_AUTH_TOKEN: OPENROUTER_KEY,
+        ANTHROPIC_API_KEY: '',
+    };
+    const withEnv = () => {
+        const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
+        const env = createEnvVarStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
+        return { executors, env, jobs: createJobStore({ sql, orgId: ORG, env, executorConfig: executors }) };
+    };
+    const saveEnv = (env: ReturnType<typeof withEnv>['env'], vars: Record<string, string>) =>
+        env.replaceWorkspace(
+            ALICE,
+            Object.entries(vars).map(([name, value]) => ({ name, value, isSecret: true }))
+        );
+
+    it('a task frozen with Claude Code claims the key wired as an Anthropic bearer to OpenRouter', async () => {
+        const { env, jobs } = withEnv();
+        await saveEnv(env, { OPENROUTER_API_KEY: OPENROUTER_KEY });
+        await mustCreate(
+            jobs.create('echo hi', ALICE, {
+                repo: null,
+                executor: null,
+                agentType: 'claude-code',
+                agentModel: 'anthropic/claude-sonnet-4',
+            })
+        );
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+
+        expect(claim?.executorRefusal).toBeNull();
+        expect(claim?.env).toMatchObject({ ...WIRED, OPENROUTER_API_KEY: OPENROUTER_KEY });
+    });
+
+    it('a Claude Code profile task is wired the same way', async () => {
+        const { executors, env, jobs } = withEnv();
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await saveEnv(env, { OPENROUTER_API_KEY: OPENROUTER_KEY });
+        await mustCreate(jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' }));
+
+        expect((await jobs.claim('w1', LEASE_SECONDS))?.env).toMatchObject(WIRED);
+    });
+
+    it('an opencode task, or a member Anthropic key beside it, claims the env unchanged', async () => {
+        const { env, jobs } = withEnv();
+        await saveEnv(env, { OPENROUTER_API_KEY: OPENROUTER_KEY });
+        await mustCreate(
+            jobs.create('echo hi', ALICE, { repo: null, executor: null, agentType: 'opencode', agentModel: 'm' })
+        );
+        const opencode = await jobs.claim('w1', LEASE_SECONDS);
+        expect(opencode?.env?.OPENROUTER_API_KEY).toBe(OPENROUTER_KEY);
+        for (const name of Object.keys(WIRED)) expect(opencode?.env).not.toHaveProperty(name);
+
+        await saveEnv(env, { OPENROUTER_API_KEY: OPENROUTER_KEY, ANTHROPIC_API_KEY: 'sk-ant-member' });
+        await mustCreate(
+            jobs.create('echo hi', ALICE, { repo: null, executor: null, agentType: 'claude-code', agentModel: 'm' })
+        );
+        const keyed = await jobs.claim('w2', LEASE_SECONDS);
+        expect(keyed?.env?.ANTHROPIC_API_KEY).toBe('sk-ant-member');
+        expect(keyed?.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+        expect(keyed?.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
     });
 });

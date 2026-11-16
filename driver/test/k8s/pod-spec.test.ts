@@ -263,6 +263,32 @@ describe('the runner job spec', () => {
         ]);
     });
 
+    // The k8s form of docker's rule that a claim name wins over a forwarded one: a credentials-Secret
+    // name the claim also carries is not referenced, so the container states it once, from the
+    // per-attempt Secret — an empty claim value included, which is how a claim blanks the
+    // deployment's own key.
+    it('references a credentials name the claim carries only from the per-attempt Secret', () => {
+        const envJob: BoardJob = { ...job, env: { ANTHROPIC_AUTH_TOKEN: 'member', ANTHROPIC_API_KEY: '' } };
+        const configured = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            RUNNER_CREDENTIALS_SECRET: 'claude-credentials',
+        });
+        const env = runnerJobSpec(configured, envJob, { id: SESSION, resume: false }).spec.template.spec.containers[0]!
+            .env;
+        expect(env.filter((entry) => entry.name === 'ANTHROPIC_API_KEY')).toEqual([
+            {
+                name: 'ANTHROPIC_API_KEY',
+                valueFrom: { secretKeyRef: { name: secretName(envJob), key: 'ANTHROPIC_API_KEY' } },
+            },
+        ]);
+        expect(env).toContainEqual({
+            name: 'CLAUDE_CODE_OAUTH_TOKEN',
+            valueFrom: {
+                secretKeyRef: { name: 'claude-credentials', key: 'CLAUDE_CODE_OAUTH_TOKEN', optional: true },
+            },
+        });
+    });
+
     // Where a runner's telemetry goes. A literal value like WORKDIR — an OTLP endpoint is a path,
     // not a credential — but unlike the compose world there is no network for a pod to join that
     // would make the image's baked `collector:4318` resolve, so this process has to name the

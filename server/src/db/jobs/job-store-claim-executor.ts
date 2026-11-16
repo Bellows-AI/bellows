@@ -7,6 +7,7 @@
 
 import {
     CLAUDE_CODE,
+    claimCredentialEnv,
     CLOUD,
     CLOUD_CREDENTIAL_MESSAGE,
     credentialRedirectMessage,
@@ -140,6 +141,7 @@ export async function resolveClaimExecutor(
         claimEnv = mergeExecutorConfigEnv(claimEnv, agent);
         profileConfig = agent.config;
     }
+    claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType, deploymentMode);
     // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
     // token, or a redirect of the deployment's model credential with no member key, saved before
     // cloud mode or split across scopes and profile, never travels. The driver fails the task with the
@@ -173,6 +175,28 @@ function frozenAgentOf(row: ClaimExecutorRow): { type: ExecutorType; config: Rec
     if (!EXECUTOR_TYPES.includes(row.agent_type as ExecutorType)) return null;
     return { type: row.agent_type as ExecutorType, config: row.agent_model === null ? {} : { model: row.agent_model } };
 }
+
+/**
+ * What the claim adds over the member's env (`claimCredentialEnv`): Claude Code's OpenRouter route on
+ * a member's OpenRouter key alone (both modes), and in cloud mode an empty platform key beside any
+ * member redirect without its member key, so the driver's own key never follows it. Judged on the env that TRAVELS (after a
+ * reviewer's grant) with a claude-code config's `env` applied last, as `redirectsPlatformCredential`
+ * reads it. Recomputed on every claim; nothing is stored.
+ */
+function withClaimCredentials(
+    claimEnv: Record<string, string> | undefined,
+    config: unknown,
+    type: ExecutorType | null,
+    mode: DeploymentMode
+): Record<string, string> | undefined {
+    if (type === null) return claimEnv;
+    const configEnv = type === CLAUDE_CODE && isRecord(config) && isRecord(config.env) ? config.env : {};
+    const added = claimCredentialEnv({ ...claimEnv, ...configEnv }, type, mode);
+    return Object.keys(added).length === 0 ? claimEnv : { ...claimEnv, ...added };
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** The sentence cloud mode refuses an effective env with, or null. Names keys only, never a value. */
 function cloudRefusal(env: Record<string, string> | undefined, config: unknown, type: ExecutorType | null) {

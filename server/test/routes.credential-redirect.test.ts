@@ -109,6 +109,14 @@ describe('cloud mode: env scopes refuse a redirect with no member key', () => {
         };
         expect((await send('PUT', '/api/env/org', kept)).statusCode).toBe(HTTP_OK);
     });
+
+    it('accepts an Anthropic base URL beside a member ANTHROPIC_AUTH_TOKEN, in env and in executor settings', async () => {
+        const { send } = await boot('cloud');
+        const bearer = vars(['ANTHROPIC_BASE_URL', URL], ['ANTHROPIC_AUTH_TOKEN', KEY]);
+        expect((await send('PUT', '/api/env/workspace', bearer)).statusCode).toBe(HTTP_OK);
+        const config = { env: { ANTHROPIC_BASE_URL: URL, ANTHROPIC_AUTH_TOKEN: KEY } };
+        expect((await send('PUT', '/api/workspace/executors', personal(config))).statusCode).toBe(HTTP_OK);
+    });
 });
 
 describe('cloud mode: a single-name or multi-name env write is judged on the scope it leaves', () => {

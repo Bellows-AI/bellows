@@ -322,6 +322,47 @@ skill_env=()
 rm -rf "$task_vol"
 rm -rf "$skill_ws"
 
+# A claim wired for an OpenRouter key: ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN, and ANTHROPIC_API_KEY
+# blanked so the deployment's own key cannot follow. The CLI must send the token as a bearer and no
+# x-api-key. The fake endpoint runs with a recorder of each model request's auth headers.
+bearer_log="$(mktemp)"
+bearer_out="$(mktemp)"
+node --input-type=module -e '
+import http from "node:http";
+import { appendFileSync } from "node:fs";
+const emit = http.Server.prototype.emit;
+http.Server.prototype.emit = function (event, req, ...rest) {
+    if (event === "request" && req.url.startsWith("/v1/messages")) {
+        appendFileSync(process.argv[1], JSON.stringify({ auth: req.headers.authorization ?? null, key: req.headers["x-api-key"] ?? null }) + "\n");
+    }
+    return emit.call(this, event, req, ...rest);
+};
+// The log path goes first: the module runs its own CLI when argv[1] names it.
+const { createFakeModelEndpoint } = await import(process.argv[2]);
+process.stdout.write(`${await createFakeModelEndpoint().listen()}\n`);
+' "$bearer_log" "$REPO/scripts/fake-model-endpoint.mjs" >"$bearer_out" &
+bearer_pid=$!
+for _ in $(seq 1 40); do [ -s "$bearer_out" ] && break; sleep 0.25; done
+bearer_port="$(cat "$bearer_out")"
+env -u CLAUDE_CODE_OAUTH_TOKEN timeout 120 docker run --rm --add-host host.docker.internal:host-gateway -v "$REPO:/workspace" \
+    -e "ANTHROPIC_BASE_URL=http://host.docker.internal:$bearer_port" -e ANTHROPIC_AUTH_TOKEN=sk-or-wired-probe \
+    -e ANTHROPIC_API_KEY= \
+    "$IMAGE" --dangerously-skip-permissions --model fake-model -p probe >/dev/null 2>&1
+kill "$bearer_pid" 2>/dev/null
+got="$(node -e '
+const lines = require("node:fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+const ok = lines.length > 0 && lines.every((l) => l.auth === "Bearer sk-or-wired-probe" && l.key === null);
+console.log(ok ? "ok" : `requests: ${JSON.stringify(lines)}`);
+' "$bearer_log")"
+if [ "$got" = ok ]; then
+    printf 'ok   %s\n' 'a wired OpenRouter claim sends the token as a bearer and no x-api-key'
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n     got: %s\n' 'a wired OpenRouter claim sends the token as a bearer and no x-api-key' "$got"
+    fail=$((fail + 1))
+fi
+rm -f "$bearer_log" "$bearer_out"
+
 # The agent's tool isolation, the same checks in both images.
 # shellcheck source=../tool-isolation-checks.sh
 . "$HERE/../tool-isolation-checks.sh"
