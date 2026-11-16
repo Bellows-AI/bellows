@@ -250,7 +250,7 @@ async function applyLocked(
     }
 
     // The seed and the reaps write and delete org rows of every org: as the cross-org role, so the org policies
-    // (151_row_level_security.sql, forced by 154_force_row_level_security.sql) read nothing as absent when the owner
+    // (151_row_level_security.sql, forced by 156_force_row_level_security.sql) read nothing as absent when the owner
     // itself does not bypass RLS. A directory without that migration (a test's own) granted the role nothing and
     // stays the owner.
     const [role] = await sql<{ exists: boolean }[]>`

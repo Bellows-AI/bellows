@@ -105,7 +105,7 @@ describe.skipIf(!enabled)('orgSql', () => {
 });
 
 /**
- * The owner is bound by the forced policies (154) and runs only the migrations: the board's request and secrets pools
+ * The owner is bound by the forced policies (156) and runs only the migrations: the board's request and secrets pools
  * take the request role, the cross-org pool its own, and only the migration connection is the owner.
  */
 describe.skipIf(!enabled)("the board's pools", () => {

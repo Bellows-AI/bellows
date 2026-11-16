@@ -100,7 +100,7 @@ const now = new Date();
 const data = generate({ repo, now });
 
 // The migrations run as the owner; every write after them as the cross-org role, because the forced policies
-// (154_force_row_level_security.sql) bind an owner without BYPASSRLS, as on a managed database. The role's pool
+// (156_force_row_level_security.sql) bind an owner without BYPASSRLS, as on a managed database. The role's pool
 // connects lazily, so it opens only once the migrations have created the role.
 const owner = postgres(config.databaseUrl, { max: 1 });
 const sql = postgres(config.databaseUrl, { max: 4, connection: { role: CROSS_ORG_ROLE } });
