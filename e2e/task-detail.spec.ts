@@ -30,9 +30,9 @@ const SHOTS = 'artifacts/ui';
 /** Queue a task through the real composer and land on its detail page. */
 async function queueTask(page: Page, command: string): Promise<string> {
     await page.goto('/tasks/new');
-    // The guided composer: the prompt is a labelled field, the action is Start task.
+    // The guided composer: the prompt is a labelled field; on a desktop screen Enter starts it.
     await page.getByLabel('What should the agent do?').fill(command);
-    await page.getByRole('button', { name: 'Start task' }).click();
+    await page.getByLabel('What should the agent do?').press('Enter');
     await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
     return /\/tasks\/([0-9a-f-]{36})$/.exec(page.url())![1]!;
 }
@@ -603,7 +603,7 @@ test.describe('the task detail page', () => {
         // Typed, not filled: the keystrokes land only if the caret really is in the composer.
         await page.keyboard.type(followUp.command);
         await expect(box).toHaveValue(followUp.command);
-        await page.getByRole('button', { name: 'Send follow-up' }).click();
+        await page.keyboard.press('Enter');
 
         await expect(page.locator('.task-conversation')).toContainText(followUp.command, { timeout: 10_000 });
         await expect(page.locator('.task-conversation article').last()).toContainText(followUp.command);
@@ -656,7 +656,7 @@ test.describe('the follow-up composer attachments', () => {
         await expect(chips.getByText('Ready')).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/task-detail-follow-up-attachments.png`, fullPage: true });
 
-        await page.getByRole('button', { name: 'Send follow-up' }).click();
+        await box.press('Enter');
         await expect.poll(() => sent.length).toBe(1);
         expect(sent[0]!.body).toEqual({ command: 'also check the export', attachments: [board.ids.get('notes.txt')] });
         expect(sent[0]!.key).toMatch(/^[0-9a-f]{32}$/);
@@ -868,7 +868,7 @@ test.describe('the task title', () => {
         await page.goto('/tasks/new');
         await expect(page.getByLabel('Title (optional)')).toHaveCount(0);
         await page.getByLabel('What should the agent do?').fill('Fix the login crash');
-        await page.getByRole('button', { name: 'Start task' }).click();
+        await page.getByLabel('What should the agent do?').press('Enter');
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
         const id = /\/tasks\/([0-9a-f-]{36})$/.exec(page.url())![1]!;
         await expect(page.locator('.page-header-leading h1')).toHaveText('Fix the login crash');
