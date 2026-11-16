@@ -88,6 +88,13 @@ export function claudeManagedSettings(endpoint: string): string {
                 'Bash(npm i *)',
                 'Bash(npm ci)',
                 'Bash(npm ci *)',
+                // Checkout git commands the classifier judged differently run to run (a reset to the
+                // remote branch, a stash-the-fix red proof); the pod is single-task, so this is /task.
+                'Bash(git reset *)',
+                'Bash(git stash)',
+                'Bash(git stash *)',
+                'Bash(git checkout *)',
+                'Bash(git restore *)',
                 // The skills' gate-server and run-control commands: fixed destinations, never a curl.
                 'Bash(factory-gate *)',
                 'Bash(factory-control *)',
@@ -108,6 +115,8 @@ export function claudeManagedSettings(endpoint: string): string {
                 "Task Dependency Changes: Adding, upgrading or removing a package with npm, yarn or pnpm in the task worktree, from the project's configured registry, when the task calls for that dependency change — the lockfile update and the package's install scripts included. Registry overrides and packages from git URLs or tarballs are not covered.",
                 "Credential Presence Checks: Listing the NAMES of environment variables with their values removed or masked, and calling a task-provided credential's own service (its whoami, myself or current-user endpoint) to test that it authenticates — as long as the value itself is never printed or written anywhere.",
                 'Project Subagents: Launching a subagent the task worktree or the runner defines (its .claude/agents) with the Agent tool, to do part of the task.',
+                "Task Checkout Git Operations: Resetting (including `git reset --hard` to a remote branch), stashing, checking out, restoring, cleaning, rebasing or merging in the task checkout under /task, discarding the task's own uncommitted changes included — the checkout is this task's ephemeral copy and the remote keeps every pushed commit.",
+                "Test-First Red Proof: Temporarily stashing, reverting or removing the task's own uncommitted fix to show that a new or changed test fails without it, then restoring the fix — as long as the tests and checks themselves are not altered to change their verdict.",
             ],
         },
     };

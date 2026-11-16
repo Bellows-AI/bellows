@@ -1021,6 +1021,10 @@ describe('the claude-executor managed settings', () => {
     // classifier. Limit: sed's own `e`/`w` commands can run and write. npm installs are
     // allowed outright because the classifier denied a task's own dependency bump despite the
     // "Task Dependency Changes" autoMode rule; that includes registry flags and install scripts.
+    // Checkout git commands (reset, stash, checkout, restore) are allowed outright for the same
+    // reason: the classifier denied `git reset --hard origin/<branch>` as irreversible destruction
+    // and a stash-the-fix red proof as undermining oversight in production runs, while letting the
+    // same commands through in others. The pod is single-task, so the rule reaches only /task.
     it('allow the routine commands a headless run cannot be asked about', () => {
         const settings = JSON.parse(read('docker/claude-executor/managed-settings.json'));
         expect(settings.permissions).toEqual({
@@ -1036,14 +1040,23 @@ describe('the claude-executor managed settings', () => {
                 'Bash(npm i *)',
                 'Bash(npm ci)',
                 'Bash(npm ci *)',
+                'Bash(git reset *)',
+                'Bash(git stash)',
+                'Bash(git stash *)',
+                'Bash(git checkout *)',
+                'Bash(git restore *)',
                 'Bash(factory-gate *)',
                 'Bash(factory-control *)',
                 'Edit(//tmp/**)',
                 'Write(//tmp/**)',
             ],
         });
-        expect(settings.autoMode.allow).toContain(
-            'Project Subagents: Launching a subagent the task worktree or the runner defines (its .claude/agents) with the Agent tool, to do part of the task.'
+        expect(settings.autoMode.allow).toEqual(
+            expect.arrayContaining([
+                'Project Subagents: Launching a subagent the task worktree or the runner defines (its .claude/agents) with the Agent tool, to do part of the task.',
+                expect.stringMatching(/^Task Checkout Git Operations: /),
+                expect.stringMatching(/^Test-First Red Proof: /),
+            ])
         );
         expect(JSON.parse(read('docker/claude-executor/claude-home/settings.json'))).not.toHaveProperty('permissions');
     });
@@ -1076,7 +1089,8 @@ describe('the skills and the allowlist agree on the gate and control commands (i
 
     it('allows the two wrappers and nothing broader', () => {
         expect(allowed).toEqual(expect.arrayContaining(['factory-gate', 'factory-control']));
-        expect(allowed.filter((prefix) => /curl|node|sh|bash/.test(prefix))).toEqual([]);
+        // Whole words: `git stash` is not a shell, `sh -c` is.
+        expect(allowed.filter((prefix) => /\b(?:curl|wget|node|sh|bash|dash|zsh)\b/.test(prefix))).toEqual([]);
     });
 
     it('has the gates, github, review and pr-land skills call a wrapper', () => {
