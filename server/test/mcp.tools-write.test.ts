@@ -1,7 +1,9 @@
 import { createServer } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
+import { NO_MODEL_MESSAGE } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
+import type { EnvVarStore } from '../src/db/env-var-store.js';
 import type { McpCaller, OAuthStore } from '../src/auth/oauth-store.js';
 import { hashToken } from '../src/auth/session.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
@@ -9,6 +11,7 @@ import {
     githubAuth,
     jobStoreSlice,
     memoryAuthStore,
+    memoryEnvVarStore,
     staticRegistry,
     stubTelemetryClient,
     telemetryStoreStub,
@@ -126,7 +129,8 @@ const storeOf = (board: Board) => {
     });
 };
 
-async function boot(board: Board) {
+/** `cloudEnv`: Bellows Cloud, the task's model credential judged on this env store. */
+async function boot(board: Board, cloudEnv?: EnvVarStore) {
     const port = await freePort();
     const publicUrl = `http://${LOCALHOST}:${port}`;
     const resource = `${publicUrl}/api/mcp`;
@@ -155,9 +159,11 @@ async function boot(board: Board) {
         port,
         mcp: { enabled: true, resource, trustedOrigins: [] },
         batches: { enabled: true },
+        ...(cloudEnv ? { deploymentMode: 'cloud' as const } : {}),
     });
     const orgs = staticRegistry({
         config,
+        ...(cloudEnv ? { envVars: cloudEnv } : {}),
         telemetry: stubTelemetryClient(),
         repos: staticRepoSource([{ owner: 'acme', name: 'web' }]),
         jobs: storeOf(board),
@@ -302,6 +308,16 @@ describe('the task write tools', () => {
             agentModel: 'm-1',
             idempotency: { key: 'key-0123456789' },
         });
+    });
+
+    it('surfaces NO_MODEL with its fix in cloud when the task has no model credential, before any store call', async () => {
+        const board: Board = { calls: [] };
+        const { url } = await boot(board, memoryEnvVarStore());
+        const refused = await call(url, 'writer', 'create_task', { command: 'do it', repo: 'acme/web' });
+        expect(refused.isError).toBe(true);
+        expect(refused.data).toMatchObject({ outcome: 'refused', code: 'NO_MODEL', status: 409 });
+        expect(JSON.stringify(refused.content)).toContain(NO_MODEL_MESSAGE);
+        expect(board.calls).toEqual([]);
     });
 
     it('surfaces the board verdict on command text verbatim: empty and over-long are refused, the exact limit is not', async () => {

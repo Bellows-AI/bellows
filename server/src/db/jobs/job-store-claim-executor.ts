@@ -15,6 +15,9 @@ import {
     EXECUTOR_TYPES,
     forbiddenCredentialIn,
     GITHUB_ENV_NAMES,
+    hasModelKey,
+    modelKeyRequired,
+    NO_MODEL_MESSAGE,
     executorSuspendedMessage,
     USER_SCOPE,
     type ExecutorScope,
@@ -99,6 +102,8 @@ export async function resolveClaimExecutor(
         env: CreateJobStoreDeps['env'];
         executorConfig: CreateJobStoreDeps['executorConfig'];
         deploymentMode: DeploymentMode;
+        /** The operator supplies the model: cloud claims need no member model credential. */
+        platformModelProvided?: boolean;
         /**
          * Set for a reviewer's claim: ONLY these member env names reach it. The
          * executor config (the agent's own runtime settings) still travels — a reviewer needs to
@@ -108,7 +113,7 @@ export async function resolveClaimExecutor(
     },
     row: ClaimExecutorRow
 ): Promise<ResolvedClaimExecutor> {
-    const { env, executorConfig, deploymentMode, grant } = deps;
+    const { env, executorConfig, deploymentMode, platformModelProvided = false, grant } = deps;
     const { executorType, executorRefusal, source } = await claimExecutorOf(tx, executorConfig, row);
     // Read once the agent is known: a Claude Code run takes its model names from one scope (`stackClaudeCodeEnv`).
     const resolvedEnv = withoutGithubToken(
@@ -125,9 +130,14 @@ export async function resolveClaimExecutor(
     }
     // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
     // token, or a redirect of the deployment's model credential with no member key, saved before
-    // cloud mode or split across scopes and profile, never travels. The driver fails the task with the
+    // cloud mode or split across scopes and profile, never travels; nor does a run with no model key
+    // (`NO_MODEL`, unless the operator supplies the model). The driver fails the task with the
     // sentence before anything spawns; a throw here would roll the claim back and re-claim it forever.
-    const refusal = deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType) : null;
+    const refusal =
+        (deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType) : null) ??
+        (modelKeyRequired(deploymentMode, platformModelProvided)
+            ? noModelRefusal(claimEnv, profileConfig, executorType)
+            : null);
     if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal, runModel: null };
     const runModel = runModelOf(source, executorType, claimEnv);
     // And whatever resolved is pinned there, so the model recorded is the one the CLI runs: the claim env wins over an
@@ -272,6 +282,17 @@ function withClaimCredentials(
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * `NO_MODEL_MESSAGE` when the env that travels (a reviewer's grant and the claim's wiring applied) holds no non-empty
+ * model key for the agent and its profile config none either; null otherwise. An agent the claim does not know is not
+ * judged: the driver fails it on its own. The create's verdict is never trusted here: the env is read at claim.
+ */
+function noModelRefusal(env: Record<string, string> | undefined, config: unknown, type: ExecutorType | null) {
+    if (type === null) return null;
+    const names = Object.entries(env ?? {}).flatMap(([name, value]) => (value === '' ? [] : [name]));
+    return hasModelKey(names, config, type) ? null : NO_MODEL_MESSAGE;
+}
 
 /** The sentence cloud mode refuses an effective env with, or null. Names keys only, never a value. */
 function cloudRefusal(env: Record<string, string> | undefined, config: unknown, type: ExecutorType | null) {

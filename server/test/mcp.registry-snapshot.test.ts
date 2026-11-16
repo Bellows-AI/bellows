@@ -69,7 +69,7 @@ const EXPECTED: string[] = [
     'list_skills | factory:read | TFTF | d3e0132a38ab | 9e46eb968431',
     'list_tasks | factory:read | TFTF | e5a4de69c262 | 044beba5aea8',
     'mark_task_done | factory:write | FFFF | 8d0cb9539b48 | b6edbc0315b3',
-    'preflight_task | factory:read | TFTF | ba132642f57c | e074f939b084',
+    'preflight_task | factory:read | TFTF | ba132642f57c | d237f96f1fc7',
     'read_job_log | factory:read | TFTF | 00a2dd52cc96 | 5f0391c1a14d',
     'remove_task | factory:write | FTFF | 8d0cb9539b48 | 6ce8b45da5b4',
     'reopen_task | factory:write | FFTF | 8d0cb9539b48 | 8a4d3e663f7b',

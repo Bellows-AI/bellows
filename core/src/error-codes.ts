@@ -140,6 +140,8 @@ export const ERROR_CODES = {
     NAME_TAKEN: 'NAME_TAKEN',
     NO_CREDIT: 'NO_CREDIT',
     NO_EXECUTOR: 'NO_EXECUTOR',
+    /** Cloud: the task's agent has no model credential in its env or executor profile. */
+    NO_MODEL: 'NO_MODEL',
     NO_OPEN_REQUIREMENT: 'NO_OPEN_REQUIREMENT',
     NO_OPEN_WAIT: 'NO_OPEN_WAIT',
     NO_PENDING: 'NO_PENDING',

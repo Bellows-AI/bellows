@@ -110,6 +110,32 @@ describe.skipIf(!enabled)('the env var store', () => {
         });
     });
 
+    it('namesFor answers the names resolveFor would carry, Claude Code’s from one scope, reading no secret', async () => {
+        await store.replaceOrg('env-admin', [
+            { name: 'ANTHROPIC_API_KEY', value: 'org-key', isSecret: true },
+            { name: 'ONLY_ORG', value: 'o', isSecret: false },
+        ]);
+        await store.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: 'mine', isSecret: true }]);
+        await store.replaceRepo('env-admin', 'acme', 'other', [{ name: 'OPENAI_API_KEY', value: 'x', isSecret: true }]);
+        const unreadable = createEnvVarStore({
+            sql,
+            orgId: ORG,
+            secrets: faultySecrets(secrets, { readActive: () => Promise.reject(new Error('no secret is read')) }),
+            secretLog: () => {},
+        });
+        const target = { userId: ALICE, repo: `${REPO.owner}/${REPO.name}` };
+
+        expect((await unreadable.namesFor(target)).sort()).toEqual([
+            'ANTHROPIC_API_KEY',
+            'ONLY_ORG',
+            'OPENROUTER_API_KEY',
+        ]);
+        expect((await unreadable.namesFor(target, { agentType: 'claude-code' })).sort()).toEqual(
+            Object.keys(await store.resolveFor(target, sql, { agentType: 'claude-code' })).sort()
+        );
+        expect(await unreadable.namesFor(target, { agentType: 'claude-code' })).not.toContain('ANTHROPIC_API_KEY');
+    });
+
     it('groups the repo scopes for the page', async () => {
         await store.replaceRepo('env-admin', REPO.owner, REPO.name, [{ name: 'R', value: '1', isSecret: false }]);
         // Created with its real value, then echoed without it — the write-only contract.

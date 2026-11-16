@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import { modelKeyRequired } from '@factory-ai/core';
 import { orgSql } from './db/org-sql.js';
 import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
 import { createAttachmentRows } from './attachments/attachment-rows.js';
@@ -67,6 +68,8 @@ export interface OrgRuntime {
     /** The PR lifecycle (036): the thread's publication identity and its PR waits. */
     prs?: PrLifecycleStore | undefined;
     envVars?: EnvVarStore | undefined;
+    /** A task must bring its own model credential (`modelKeyRequired`: cloud, no platform model); absent is false. */
+    modelRequired?: boolean | undefined;
     /** The batch plans (059) the batch routes read and freeze; present with the other stores. */
     batches?: BatchStore | undefined;
     /** Reads each batch task's PR from GitHub and records the observations (063); present with the batch store. */
@@ -196,6 +199,7 @@ function buildOrgStores({
     jobs: JobStore;
     workflows: WorkflowStore;
     commerce: CommerceStore | undefined;
+    modelRequired: boolean;
 } {
     const envVars = createEnvVarStore({ sql, orgId, ready, secrets, secretLog });
     const connections = createConnectionStore({ sql, orgId, ready });
@@ -227,6 +231,7 @@ function buildOrgStores({
         planDefaults: config.planDefaults,
         batches: config.batches.enabled,
         deploymentMode: config.deploymentMode,
+        platformModelProvided: config.platformModelProvided,
         ...(claimMetrics ? { metrics: claimMetrics } : {}),
         ...(orgKey ? { orgKey } : {}),
     });
@@ -299,6 +304,7 @@ function buildOrgStores({
         jobs,
         workflows,
         commerce: config.commerce.enabled ? createCommerceStore({ sql, orgId, ready }) : undefined,
+        modelRequired: modelKeyRequired(config.deploymentMode, config.platformModelProvided),
     };
 }
 
@@ -318,6 +324,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.prs = stores.prs;
     runtime.workflows = stores.workflows;
     runtime.commerce = stores.commerce;
+    runtime.modelRequired = stores.modelRequired;
 }
 
 /** The org's artifact index over the process's object store, or undefined when none was configured. */

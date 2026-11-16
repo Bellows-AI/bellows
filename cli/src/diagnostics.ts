@@ -50,7 +50,7 @@ export interface PreflightSelection {
 }
 
 export interface PreflightCheck {
-    subject: 'repo' | 'executor' | 'skill' | 'connection';
+    subject: 'repo' | 'executor' | 'model' | 'skill' | 'connection';
     name: string | null;
     /** `unverified`: only the board can say, and it does at claim. */
     status: 'ok' | 'blocked' | 'unverified';

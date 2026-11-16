@@ -1,4 +1,10 @@
-import { CLAUDE_CODE_OAUTH_TOKEN, CLOUD, type DeploymentMode, platformCredentialBlanks } from './deployment-mode.js';
+import {
+    CLAUDE_CODE_OAUTH_TOKEN,
+    CLOUD,
+    type DeploymentMode,
+    isCredentialKey,
+    platformCredentialBlanks,
+} from './deployment-mode.js';
 import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
 
 /**
@@ -189,4 +195,43 @@ export function claimCredentialEnv(
     mode: DeploymentMode
 ): Record<string, string> {
     return openRouterClaudeWiring(env, agentType) ?? (mode === CLOUD ? platformCredentialBlanks(env) : {});
+}
+
+/** What a task with no model credential is refused with (`NO_MODEL`), at create, in preflight and at claim. */
+export const NO_MODEL_MESSAGE =
+    'Connect a model in Settings → Model, or ask an admin to connect one for the organization.';
+
+/** A task must bring its own model credential in cloud mode, unless the operator supplies the model. */
+export const modelKeyRequired = (mode: DeploymentMode, platformModelProvided: boolean): boolean =>
+    mode === CLOUD && !platformModelProvided;
+
+/** The env names each agent can run its model on. Claude Code's OpenRouter key works through its claim wiring. */
+const MODEL_KEYS: Readonly<Record<ExecutorType, readonly string[]>> = {
+    [CLAUDE_CODE]: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', CLAUDE_CODE_OAUTH_TOKEN, 'OPENROUTER_API_KEY'],
+    [OPENCODE]: ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'],
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** The model credentials an executor profile's config holds: Claude Code's `env` keys, OpenCode's provider keys. */
+function profileHoldsKey(config: unknown, agentType: ExecutorType): boolean {
+    if (!isRecord(config)) return false;
+    if (agentType === CLAUDE_CODE) {
+        const env = isRecord(config.env) ? config.env : {};
+        return MODEL_KEYS[CLAUDE_CODE].some((name) => nonEmpty(env[name]));
+    }
+    const providers = isRecord(config.provider) ? Object.values(config.provider) : [];
+    return providers.some((provider) => {
+        const options = isRecord(provider) && isRecord(provider.options) ? provider.options : {};
+        return Object.entries(options).some(([key, value]) => isCredentialKey(key) && nonEmpty(value));
+    });
+}
+
+/**
+ * Whether a task's agent has a model credential: one of its key names in the env it gets (names only, or the
+ * non-empty names at claim), or one held in its executor profile's config.
+ */
+export function hasModelKey(names: readonly string[], config: unknown, agentType: ExecutorType): boolean {
+    return MODEL_KEYS[agentType].some((name) => names.includes(name)) || profileHoldsKey(config, agentType);
 }

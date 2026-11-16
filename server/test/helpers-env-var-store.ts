@@ -1,6 +1,6 @@
 import type { TransactionSql } from 'postgres';
 import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
-import { EnvScopeRefusal, stackEnv } from '../src/db/env-var-store.js';
+import { EnvScopeRefusal, stackEnv, stackNames } from '../src/db/env-var-store.js';
 import { storeOutage } from './helpers-outage.js';
 
 export interface MemoryEnvVarStore extends EnvVarStore {
@@ -138,6 +138,20 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
                 pick(rows.filter((r) => r.userId === null && r.owner === null)),
                 pick(userId ? rows.filter((r) => r.userId === userId) : []),
                 pick(owner && name ? rows.filter((r) => r.owner === owner && r.repoName === name) : [])
+            );
+        },
+
+        async namesFor({ userId, repo }, options = {}) {
+            if (store.broken) throw storeOutage('database is unreachable');
+            const [owner, name] = repo ? repo.split('/') : [null, null];
+            const namesOf = (list: Row[]) => list.map((r) => r.name);
+            return stackNames(
+                [
+                    namesOf(rows.filter((r) => r.userId === null && r.owner === null)),
+                    namesOf(userId ? rows.filter((r) => r.userId === userId) : []),
+                    namesOf(owner && name ? rows.filter((r) => r.owner === owner && r.repoName === name) : []),
+                ],
+                options.agentType
             );
         },
     };

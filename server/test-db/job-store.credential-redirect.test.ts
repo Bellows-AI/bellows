@@ -98,6 +98,8 @@ describe.skipIf(!enabled)('cloud mode: a redirect with no member key never reach
     it('(d) granted to a reviewer: the review claim is refused', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        // The author claims on a model key; the org scope is then rewritten to the bare redirect, key gone.
+        await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: 'sk-ant-author', isSecret: true }]);
         await task(jobs, 'acme/api');
         const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
         expect(caller.executorRefusal).toBeNull();

@@ -1,4 +1,9 @@
-import { CLOUD_CREDENTIAL_MESSAGE, type DeploymentMode, STORED_CREDENTIAL_PREFIX } from '@factory-ai/core';
+import {
+    CLOUD_CREDENTIAL_MESSAGE,
+    type DeploymentMode,
+    NO_MODEL_MESSAGE,
+    STORED_CREDENTIAL_PREFIX,
+} from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
@@ -26,13 +31,19 @@ const REVIEWER: ReviewerSpec = { name: 'sec', instructions: 'Look.', timeoutMinu
 
 let sql: Sql;
 
-function stores(orgId: string, deploymentMode: DeploymentMode, reviewer: ReviewerSpec = REVIEWER) {
+function stores(
+    orgId: string,
+    deploymentMode: DeploymentMode,
+    reviewer: ReviewerSpec = REVIEWER,
+    platformModelProvided = false
+) {
     const executors = createUserExecutorStore({ sql, orgId, ...testSecretDeps(sql) });
     const env = createEnvVarStore({ sql, orgId, secrets: testSecretStore(sql), secretLog: () => {} });
     const jobs = createJobStore({
         sql,
         orgId,
         deploymentMode,
+        platformModelProvided,
         env,
         executorConfig: executors,
         githubApp: true,
@@ -89,7 +100,9 @@ describe.skipIf(!enabled)('cloud mode: a stored OAuth token never reaches a clai
 
     it('(c) granted to a reviewer: the review claim is refused', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        // A model key in the profile, so the author's claim and the reviewer's run on it and only the token refuses.
+        const config = { env: { ANTHROPIC_API_KEY: 'sk-ant-profile' } };
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config }]);
         await mustCreate(jobs.create('ship it', ALICE, { repo: 'acme/api', executor: 'main', executorScope: 'user' }));
         const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
         expect(caller.executorRefusal).toBeNull();
@@ -176,5 +189,66 @@ describe.skipIf(!enabled)('a reviewer granted only an OpenRouter key', () => {
         const claim = 'claim' in review ? review.claim : undefined;
         expect(claim?.executorRefusal).toBeNull();
         expect(claim?.env).toMatchObject({ ANTHROPIC_AUTH_TOKEN: 'member-bearer', ANTHROPIC_API_KEY: '' });
+    });
+});
+
+describe.skipIf(!enabled)('cloud mode: a claim with no model credential is refused (NO_MODEL)', () => {
+    it('a key deleted between create and claim fails the task with the fix, sending no env', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud');
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceWorkspace(ALICE, [{ name: 'ANTHROPIC_API_KEY', value: 'sk-ant-member', isSecret: true }]);
+        await mustCreate(jobs.create('echo hi', ALICE, { repo: 'acme/web', executor: 'main', executorScope: 'user' }));
+        await env.replaceWorkspace(ALICE, [{ name: 'DEPLOY_REGION', value: 'eu', isSecret: false }]);
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBe(NO_MODEL_MESSAGE);
+        expect(claim?.env).toBeUndefined();
+        // Leased to the driver that fails it, never handed out again.
+        expect(await jobs.claim('w2', LEASE_SECONDS)).toBeNull();
+    });
+
+    it('a key in the executor profile, or an OpenRouter key for Claude Code, claims', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud');
+        await executors.replace(ALICE, [
+            { name: 'keyed', type: 'opencode', config: { provider: { openai: { options: { apiKey: 'sk-oai' } } } } },
+            { name: 'plain', type: 'claude-code', config: {} },
+        ]);
+        await mustCreate(jobs.create('one', ALICE, { repo: 'acme/web', executor: 'keyed', executorScope: 'user' }));
+        expect((await jobs.claim('w1', LEASE_SECONDS))?.executorRefusal).toBeNull();
+
+        await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: 'sk-or', isSecret: true }]);
+        await mustCreate(jobs.create('two', ALICE, { repo: 'acme/web', executor: 'plain', executorScope: 'user' }));
+        expect((await jobs.claim('w2', LEASE_SECONDS))?.executorRefusal).toBeNull();
+    });
+
+    it('a reviewer is judged on the env it is granted, not on the author env', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud', { ...REVIEWER, connections: ['DEPLOY_REGION'] });
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceOrg('env-admin', [
+            { name: 'ANTHROPIC_API_KEY', value: 'sk-ant-author-only', isSecret: true },
+            { name: 'DEPLOY_REGION', value: 'eu', isSecret: false },
+        ]);
+        await mustCreate(jobs.create('ship it', ALICE, { repo: 'acme/api', executor: 'main', executorScope: 'user' }));
+        const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
+        expect(caller.executorRefusal).toBeNull();
+
+        const review = await jobs.requestReview(caller.id, caller.leaseToken, {
+            key: 'sec-1',
+            profile: 'sec',
+            revision: 'h:1',
+            ref: reviewRefOf(caller.id, 'sec-1'),
+        });
+        const claim = 'claim' in review ? review.claim : undefined;
+        expect(claim?.executorRefusal).toBe(NO_MODEL_MESSAGE);
+        expect(claim?.env).toBeUndefined();
+    });
+
+    it('a self-hosted board, or a cloud board whose operator supplies the model, claims with no key', async () => {
+        for (const jobs of [stores(ORG, 'self-hosted').jobs, stores(ORG, 'cloud', REVIEWER, true).jobs]) {
+            const { executors } = stores(ORG, 'self-hosted');
+            await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+            await mustCreate(jobs.create('echo', ALICE, { repo: 'acme/web', executor: 'main', executorScope: 'user' }));
+            expect((await jobs.claim('w1', LEASE_SECONDS))?.executorRefusal).toBeNull();
+        }
     });
 });

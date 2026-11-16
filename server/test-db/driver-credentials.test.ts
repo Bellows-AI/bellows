@@ -102,6 +102,8 @@ async function boot(store: DriverCredentialStore): Promise<void> {
     const config = testConfig({
         auth: githubAuth(),
         deploymentMode: 'cloud',
+        // The operator supplies the model, so a task needs no member key here (that check: job-store.cloud-credentials).
+        platformModelProvided: true,
         planDefaults: { running: 5, queued: 20, wallSeconds: 3600 },
         operatorGithubIds: [operator.githubUserId],
     });
