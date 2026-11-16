@@ -17,9 +17,9 @@ import { craftJob, randomGithubId, testOrg } from './fixtures.js';
 import { assertTestDatabase } from './harness.js';
 
 /**
- * 156 forces the org policies on the owner. The owner here is a login of its own with neither superuser nor BYPASSRLS,
+ * 161 forces the org policies on the owner. The owner here is a login of its own with neither superuser nor BYPASSRLS,
  * as on a managed database, so the force is observable: the image's superuser ignores every policy. The schema stops
- * at the release before (a copy of the migrations without 156), where the owner is exempt and writes rows with no
+ * at the release before (a copy of the migrations without 161), where the owner is exempt and writes rows with no
  * setting, as a pod of that release does; the upgrade then forces the policies and the board's pools, built as
  * main.ts builds them, still serve every lookup.
  */
@@ -27,7 +27,7 @@ const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);
 
-const VERSION = '156_force_row_level_security.sql';
+const VERSION = '161_force_row_level_security.sql';
 const MIGRATIONS = fileURLToPath(new URL('../migrations/', import.meta.url));
 const POOL = { max: 2, statementTimeoutMs: 30_000 };
 const UPGRADE_TIMEOUT_MS = 120_000;
@@ -77,9 +77,9 @@ beforeAll(async () => {
     assertTestDatabase(ownerUrl);
     owner = pool(postgres(ownerUrl, { max: 1, onnotice: () => {} }));
 
-    before = mkdtempSync(join(tmpdir(), 'mig-155-'));
+    before = mkdtempSync(join(tmpdir(), 'mig-before-161-'));
     for (const name of readdirSync(MIGRATIONS)) {
-        if (name.endsWith('.sql') && !name.startsWith('156_')) copyFileSync(join(MIGRATIONS, name), join(before, name));
+        if (name.endsWith('.sql') && !name.startsWith('161_')) copyFileSync(join(MIGRATIONS, name), join(before, name));
     }
 });
 
@@ -93,9 +93,9 @@ afterAll(async () => {
     rmSync(before, { recursive: true, force: true });
 });
 
-describe.skipIf(!enabled)('156_force_row_level_security', () => {
+describe.skipIf(!enabled)('161_force_row_level_security', () => {
     it(
-        'upgrades from 155 as an owner without BYPASSRLS: the owner is bound, and the board still serves every lookup',
+        'upgrades from the migration before as an owner without BYPASSRLS: the owner is bound, and the board still serves every lookup',
         async () => {
             const [attrs] = await owner<{ rolsuper: boolean; rolbypassrls: boolean }[]>`
                 select rolsuper, rolbypassrls from pg_roles where rolname = current_user

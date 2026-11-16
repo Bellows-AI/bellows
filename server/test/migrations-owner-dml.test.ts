@@ -3,13 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { ORG_TABLES } from '../src/db/org-tables.js';
 
 /**
- * From 156 the org policies bind the owner the migrations run as, so a data migration that writes org rows as the
+ * From 161 the org policies bind the owner the migrations run as, so a data migration that writes org rows as the
  * owner reads and changes nothing on a managed database whose owner has no BYPASSRLS, and says nothing: the image's
- * superuser, which CI runs as, ignores the policies. Every migration after 156 that inserts, updates or deletes an
+ * superuser, which CI runs as, ignores the policies. Every migration after 161 that inserts, updates or deletes an
  * org table's rows therefore takes the cross-org role first. Function bodies run when called, not at migration
  * time, and are not scanned.
  */
-const FORCED_AT = 156;
+const FORCED_AT = 161;
 const ORG = new Set<string>(ORG_TABLES);
 const DML = /\b(?:insert\s+into|update|delete\s+from)\s+(?:only\s+)?"?(\w+)"?/gi;
 const CROSS_ORG = /\bset\s+(?:local\s+)?role\s+"?bellows_cross_org"?/i;
