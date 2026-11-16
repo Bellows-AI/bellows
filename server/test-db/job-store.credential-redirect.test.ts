@@ -183,37 +183,49 @@ describe.skipIf(!enabled)('cloud mode: an OpenRouter key wired for Claude Code',
 
 /**
  * The driver forwards its own ANTHROPIC_API_KEY (RUNNER_ENV) unless the claim names it, and the claim's
- * name wins even when empty. So beside a member's base URL with no member ANTHROPIC_API_KEY the claim
- * carries it blank: the deployment's key never follows a member's redirect, in either mode.
+ * name wins even when empty. In cloud mode, beside a member's base URL with no member ANTHROPIC_API_KEY,
+ * the claim carries it blank: the deployment's key never follows a member's redirect. A self-hosted board
+ * keeps it, so an operator's proxy URL in org env can still use the key in RUNNER_ENV.
  */
-describe.skipIf(!enabled)('a member redirect never carries the platform Anthropic key', () => {
-    for (const mode of ['cloud', 'self-hosted'] as const) {
-        it(`${mode}: a bearer redirect in member env claims ANTHROPIC_API_KEY blank`, async () => {
-            const { executors, env, jobs } = stores(ORG, mode);
-            await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
-            await env.replaceWorkspace(ALICE, [
-                { name: BASE_URL, value: URL, isSecret: false },
-                { name: 'ANTHROPIC_AUTH_TOKEN', value: KEY, isSecret: true },
-            ]);
-            await task(jobs);
+describe.skipIf(!enabled)('a member redirect never carries the platform Anthropic key in cloud mode', () => {
+    it('cloud: a bearer redirect in member env claims ANTHROPIC_API_KEY blank', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud');
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceWorkspace(ALICE, [
+            { name: BASE_URL, value: URL, isSecret: false },
+            { name: 'ANTHROPIC_AUTH_TOKEN', value: KEY, isSecret: true },
+        ]);
+        await task(jobs);
 
-            const claim = await jobs.claim('w1', LEASE_SECONDS);
-            expect(claim?.executorRefusal).toBeNull();
-            expect(claim?.env).toMatchObject({ [BASE_URL]: URL, ANTHROPIC_AUTH_TOKEN: KEY, ANTHROPIC_API_KEY: '' });
-        });
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBeNull();
+        expect(claim?.env).toMatchObject({ [BASE_URL]: URL, ANTHROPIC_AUTH_TOKEN: KEY, ANTHROPIC_API_KEY: '' });
+    });
 
-        it(`${mode}: a bearer redirect in a claude-code profile's env claims ANTHROPIC_API_KEY blank`, async () => {
-            const { executors, jobs } = stores(ORG, mode);
-            const config = { env: { [BASE_URL]: URL, ANTHROPIC_AUTH_TOKEN: KEY } };
-            await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config }]);
-            await task(jobs);
+    it("cloud: a bearer redirect in a claude-code profile's env claims ANTHROPIC_API_KEY blank", async () => {
+        const { executors, jobs } = stores(ORG, 'cloud');
+        const config = { env: { [BASE_URL]: URL, ANTHROPIC_AUTH_TOKEN: KEY } };
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config }]);
+        await task(jobs);
 
-            const claim = await jobs.claim('w1', LEASE_SECONDS);
-            expect(claim?.executorRefusal).toBeNull();
-            expect(claim?.env?.ANTHROPIC_API_KEY).toBe('');
-            expect(JSON.parse(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual(config);
-        });
-    }
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBeNull();
+        expect(claim?.env?.ANTHROPIC_API_KEY).toBe('');
+        expect(JSON.parse(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual(config);
+    });
+
+    it('self-hosted: a member redirect, in env or a profile, leaves the platform key alone', async () => {
+        const { executors, env, jobs } = stores(ORG, 'self-hosted');
+        const config = { env: { ANTHROPIC_AUTH_TOKEN: KEY } };
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config }]);
+        await env.replaceOrg('env-admin', [{ name: BASE_URL, value: URL, isSecret: false }]);
+        await task(jobs);
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBeNull();
+        expect(claim?.env?.[BASE_URL]).toBe(URL);
+        expect(claim?.env).not.toHaveProperty('ANTHROPIC_API_KEY');
+    });
 
     it('a member ANTHROPIC_API_KEY beside the redirect travels as is', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');

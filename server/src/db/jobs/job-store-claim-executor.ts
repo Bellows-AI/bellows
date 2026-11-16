@@ -141,7 +141,7 @@ export async function resolveClaimExecutor(
         claimEnv = mergeExecutorConfigEnv(claimEnv, agent);
         profileConfig = agent.config;
     }
-    claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType);
+    claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType, deploymentMode);
     // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
     // token, or a redirect of the deployment's model credential with no member key, saved before
     // cloud mode or split across scopes and profile, never travels. The driver fails the task with the
@@ -178,19 +178,20 @@ function frozenAgentOf(row: ClaimExecutorRow): { type: ExecutorType; config: Rec
 
 /**
  * What the claim adds over the member's env (`claimCredentialEnv`): Claude Code's OpenRouter route on
- * a member's OpenRouter key alone, and an empty platform key beside any member redirect without its
- * member key, so the driver's own key never follows it. Judged on the env that TRAVELS (after a
+ * a member's OpenRouter key alone (both modes), and in cloud mode an empty platform key beside any
+ * member redirect without its member key, so the driver's own key never follows it. Judged on the env that TRAVELS (after a
  * reviewer's grant) with a claude-code config's `env` applied last, as `redirectsPlatformCredential`
  * reads it. Recomputed on every claim; nothing is stored.
  */
 function withClaimCredentials(
     claimEnv: Record<string, string> | undefined,
     config: unknown,
-    type: ExecutorType | null
+    type: ExecutorType | null,
+    mode: DeploymentMode
 ): Record<string, string> | undefined {
     if (type === null) return claimEnv;
     const configEnv = type === CLAUDE_CODE && isRecord(config) && isRecord(config.env) ? config.env : {};
-    const added = claimCredentialEnv({ ...claimEnv, ...configEnv }, type);
+    const added = claimCredentialEnv({ ...claimEnv, ...configEnv }, type, mode);
     return Object.keys(added).length === 0 ? claimEnv : { ...claimEnv, ...added };
 }
 

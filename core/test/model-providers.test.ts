@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { CLOUD, DEPLOYMENT_MODES, SELF_HOSTED } from '../src/deployment-mode.js';
 import { CLAUDE_CODE, OPENCODE } from '../src/executors.js';
 import {
     claimCredentialEnv,
@@ -47,14 +48,27 @@ describe('openRouterClaudeWiring', () => {
 });
 
 describe('claimCredentialEnv', () => {
-    it('is the OpenRouter wiring when it applies, and the platform-key blank for any other member redirect', () => {
-        expect(claimCredentialEnv({ OPENROUTER_API_KEY: 'k' }, CLAUDE_CODE)).toEqual(
-            openRouterClaudeWiring({ OPENROUTER_API_KEY: 'k' }, CLAUDE_CODE)
+    const bearer = { ANTHROPIC_BASE_URL: 'https://gateway.example.test', ANTHROPIC_AUTH_TOKEN: 't' };
+
+    it('wires OpenRouter for Claude Code, its platform key blank, in both modes', () => {
+        for (const mode of DEPLOYMENT_MODES) {
+            expect(claimCredentialEnv({ OPENROUTER_API_KEY: 'k' }, CLAUDE_CODE, mode)).toEqual(
+                openRouterClaudeWiring({ OPENROUTER_API_KEY: 'k' }, CLAUDE_CODE)
+            );
+            expect(claimCredentialEnv({ OPENROUTER_API_KEY: 'k' }, OPENCODE, mode)).toEqual({});
+        }
+    });
+
+    it('in cloud, blanks the platform key beside any other member redirect without the member key', () => {
+        expect(claimCredentialEnv(bearer, CLAUDE_CODE, CLOUD)).toEqual({ ANTHROPIC_API_KEY: '' });
+        expect(claimCredentialEnv(bearer, OPENCODE, CLOUD)).toEqual({ ANTHROPIC_API_KEY: '' });
+        expect(claimCredentialEnv({ ...bearer, ANTHROPIC_API_KEY: 'member' }, CLAUDE_CODE, CLOUD)).toEqual({});
+    });
+
+    it('self-hosted keeps a member redirect beside the platform key: nothing is blanked', () => {
+        expect(claimCredentialEnv(bearer, CLAUDE_CODE, SELF_HOSTED)).toEqual({});
+        expect(claimCredentialEnv({ OPENAI_BASE_URL: 'https://proxy.example.test' }, OPENCODE, SELF_HOSTED)).toEqual(
+            {}
         );
-        const bearer = { ANTHROPIC_BASE_URL: 'https://gateway.example.test', ANTHROPIC_AUTH_TOKEN: 't' };
-        expect(claimCredentialEnv(bearer, CLAUDE_CODE)).toEqual({ ANTHROPIC_API_KEY: '' });
-        expect(claimCredentialEnv(bearer, OPENCODE)).toEqual({ ANTHROPIC_API_KEY: '' });
-        expect(claimCredentialEnv({ ...bearer, ANTHROPIC_API_KEY: 'member' }, CLAUDE_CODE)).toEqual({});
-        expect(claimCredentialEnv({ OPENROUTER_API_KEY: 'k' }, OPENCODE)).toEqual({});
     });
 });

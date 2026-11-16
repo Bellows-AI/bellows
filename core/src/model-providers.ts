@@ -1,4 +1,4 @@
-import { CLAUDE_CODE_OAUTH_TOKEN, platformCredentialBlanks } from './deployment-mode.js';
+import { CLAUDE_CODE_OAUTH_TOKEN, CLOUD, type DeploymentMode, platformCredentialBlanks } from './deployment-mode.js';
 import { CLAUDE_CODE } from './executors.js';
 
 /**
@@ -28,24 +28,29 @@ function openRouterRoute(env: Readonly<Record<string, unknown>>, agentType: stri
 }
 
 /**
- * What a claim adds over the member's effective env: the OpenRouter route when it applies, then the
- * platform-key blank for every member redirect (`platformCredentialBlanks`) — one rule for both, so the
- * OpenRouter wiring's empty `ANTHROPIC_API_KEY` is that blank, not a copy of it.
- */
-export function claimCredentialEnv(env: Readonly<Record<string, unknown>>, agentType: string): Record<string, string> {
-    const route = openRouterRoute(env, agentType) ?? {};
-    return { ...route, ...platformCredentialBlanks({ ...env, ...route }) };
-}
-
-/**
  * The env a Claude Code claim gains when the member brought only an OpenRouter key: the base URL, the
- * key as the bearer token, and an empty `ANTHROPIC_API_KEY` so the platform's own key cannot follow it
- * to OpenRouter. Null when the agent is not Claude Code, there is no OpenRouter key, or the effective
- * env already names any Anthropic credential or host.
+ * key as the bearer token, and an empty `ANTHROPIC_API_KEY` (`platformCredentialBlanks`) so the
+ * platform's own key cannot follow it to OpenRouter — in either mode. Null when the agent is not Claude
+ * Code, there is no OpenRouter key, or the effective env already names any Anthropic credential or host.
  */
 export function openRouterClaudeWiring(
     env: Readonly<Record<string, unknown>>,
     agentType: string
 ): Record<string, string> | null {
-    return openRouterRoute(env, agentType) === null ? null : claimCredentialEnv(env, agentType);
+    const route = openRouterRoute(env, agentType);
+    return route === null ? null : { ...route, ...platformCredentialBlanks({ ...env, ...route }) };
+}
+
+/**
+ * What a claim adds over the member's effective env: the OpenRouter wiring when it applies, in both
+ * modes; otherwise, in cloud mode only, the platform-key blank beside every member redirect, where the
+ * redirect rule (`redirectsPlatformCredential`) applies. A self-hosted board keeps the platform key
+ * beside a member redirect: an operator's proxy URL in org env may rely on the key in `RUNNER_ENV`.
+ */
+export function claimCredentialEnv(
+    env: Readonly<Record<string, unknown>>,
+    agentType: string,
+    mode: DeploymentMode
+): Record<string, string> {
+    return openRouterClaudeWiring(env, agentType) ?? (mode === CLOUD ? platformCredentialBlanks(env) : {});
 }
