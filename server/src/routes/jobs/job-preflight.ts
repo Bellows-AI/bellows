@@ -2,6 +2,7 @@ import {
     ERROR_CODES,
     executorMissingMessage,
     executorSuspendedMessage,
+    NO_MODEL_MESSAGE,
     requiredProviders,
     noExecutorMessage,
     selectedBy,
@@ -19,7 +20,7 @@ import {
     type EffectiveCatalog,
     type ExecutorTypeRead,
 } from '../../skill-catalog.js';
-import { executorTypeOf } from './executor-usable.js';
+import { executorTypeOf, modelStanding } from './executor-usable.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body } from '../helpers.js';
 import { parseConnectionIds } from '../connections.js';
@@ -45,9 +46,11 @@ const HTTP_UNAUTHORIZED = 401;
 type Status = 'ok' | 'blocked' | 'unverified';
 
 interface Check {
-    subject: 'repo' | 'executor' | 'skill' | 'connection';
+    subject: 'repo' | 'executor' | 'model' | 'skill' | 'connection';
     name: string | null;
     status: Status;
+    /** The refusal code create would answer for this blocked check (`NO_MODEL`); absent on the others. */
+    code?: string;
     detail: string;
     /** Set on a blocked check that only a connection of the caller's own can clear: which provider and why. */
     integration?: { provider: string; reason: IntegrationReason };
@@ -134,6 +137,8 @@ async function repoCheck(log: FastifyBaseLogger, repo: string | null, rt: Runtim
 interface ExecutorStanding {
     check: Check;
     type: ExecutorTypeRead;
+    /** The resolved profile's config, which may hold the model credential; absent when no profile resolved. */
+    config?: Record<string, unknown>;
 }
 
 async function executorCheck(
@@ -178,6 +183,19 @@ async function executorCheck(
                 type: { state: 'unconfirmed', error: noExecutorMessage },
             };
         }
+        if (fallback.value.kind === 'agent') {
+            const { agentType, model, from } = fallback.value;
+            const whose = from === 'personal' ? 'your agent default' : "the organization's agent default";
+            return {
+                check: {
+                    subject: 'executor',
+                    name: null,
+                    status: 'ok',
+                    detail: `none selected: the task runs on ${whose}, ${agentType} with model ${model}`,
+                },
+                type: executorTypeOf(agentType),
+            };
+        }
         ({ name, scope: at } = fallback.value);
     }
     const row = await attempt(log, 'executor profile', () => store.configFor(userId, name, at));
@@ -207,7 +225,42 @@ async function executorCheck(
     return {
         check: { subject: 'executor', name, status: 'ok', detail },
         type: executorTypeOf(row.value.type),
+        config: row.value.config,
     };
+}
+
+/**
+ * Where the board requires one (cloud, no platform model), whether the task's agent has a model credential, by create's
+ * predicate (`modelStanding`): blocked with the fix when it has none; unverified when the agent is not resolved or the
+ * env cannot be read. Null where no credential is required.
+ */
+async function modelCheck(
+    log: FastifyBaseLogger,
+    selection: Selection,
+    userId: string,
+    { rt, executor }: { rt: Runtime; executor: ExecutorStanding }
+): Promise<Check | null> {
+    if (!rt.modelRequired) return null;
+    const subject = { userId, repo: selection.repo, type: executor.type, config: executor.config ?? null };
+    const read = await attempt(log, 'model credential names', () => modelStanding(rt, subject));
+    if (!read.ok || read.value === 'unverified') {
+        return {
+            subject: 'model',
+            name: null,
+            status: 'unverified',
+            detail: 'the model credential could not be checked',
+        };
+    }
+    if (read.value === 'missing') {
+        return {
+            subject: 'model',
+            name: null,
+            status: 'blocked',
+            code: ERROR_CODES.NO_MODEL,
+            detail: NO_MODEL_MESSAGE,
+        };
+    }
+    return { subject: 'model', name: null, status: 'ok', detail: 'a model credential is set' };
 }
 
 /** `unknown`: the caller's connection list could not be read, so `missing` would be a guess. */
@@ -396,9 +449,11 @@ async function handlePreflight(orgs: OrgRegistry, request: FastifyRequest, reply
         onUnconfirmed: (err) => log.warn({ err }, 'preflight: repo skills could not be read'),
     });
     const standing = await connectionStanding(log, selection, { userId, rt }, catalog);
+    const model = await modelCheck(log, selection, userId, { rt, executor });
     const checks = [
         await repoCheck(log, selection.repo, rt),
         executor.check,
+        ...(model ? [model] : []),
         ...skillChecks(selection, standing, catalog),
         ...standing.checks,
     ];

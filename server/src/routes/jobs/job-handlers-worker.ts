@@ -3,7 +3,7 @@ import { interruptionOf } from './job-interruption-body.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { usableSelection } from './executor-usable.js';
+import { refusedAsNoModel, usableSelection } from './executor-usable.js';
 import {
     type FairBoardScanner,
     boardsFor,
@@ -23,6 +23,7 @@ import {
     validateCommandField,
     validateExecutorField,
     validateExecutorScopeField,
+    validateModelField,
     validateRepoField,
     validateTitleField,
     validateSkillsField,
@@ -208,8 +209,8 @@ async function refusedAsUnknownSkill(
 }
 
 /**
- * The create's shape-checked simple fields (title, repo, executor and its scope), each refused with its own
- * code; null once a 400 has landed on `reply`. The title is null when none was given.
+ * The create's shape-checked simple fields (title, repo, executor and its scope, the chosen model), each refused
+ * with its own code; null once a 400 has landed on `reply`. The title and the model are null when none was given.
  */
 function checkedFields(reply: FastifyReply, fields: Record<string, unknown>) {
     const title = validateTitleField(fields.title);
@@ -220,7 +221,15 @@ function checkedFields(reply: FastifyReply, fields: Record<string, unknown>) {
     if (!executor.ok) return void bad(reply, ERROR_CODES.BAD_EXECUTOR, executor.message);
     const scope = validateExecutorScopeField(fields.executorScope);
     if (!scope.ok) return void bad(reply, ERROR_CODES.BAD_EXECUTOR_SCOPE, scope.message);
-    return { title: title.value, repo: repo.value, executor: executor.value, executorScope: scope.value };
+    const model = validateModelField(fields.model);
+    if (!model.ok) return void bad(reply, ERROR_CODES.BAD_BODY, model.message);
+    return {
+        title: title.value,
+        repo: repo.value,
+        executor: executor.value,
+        executorScope: scope.value,
+        model: model.value,
+    };
 }
 
 export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
@@ -263,7 +272,9 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
         scope: simple.executorScope,
     });
     if (!selection) return reply;
-    const { executor, scope: executorScope, type: executorType } = selection;
+    const { executor, scope: executorScope, type: executorType, agent } = selection;
+    const subject = { userId: createdBy, repo, type: executorType, config: selection.config };
+    if (await refusedAsNoModel(request, reply, await orgs.for(orgOf(request)), subject)) return reply;
     const baseBranch = await checkedTarget(orgs, request, reply, { repo, rawBaseBranch: fields.baseBranch });
     if (baseBranch === undefined) return reply;
     if (await refusedAsUnknownSkill(orgs, request, reply, { names: skills, repo, baseBranch, executorType }))
@@ -296,6 +307,10 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 repo,
                 executor,
                 executorScope,
+                // The agent default that won, frozen on the task: the claim runs it, never a later default. A chosen
+                // model wins over the default's, and rides a profile task alone (it overrides the profile's model).
+                ...(agent ? { agentType: agent.agentType, agentModel: simple.model ?? agent.model } : {}),
+                ...(!agent && simple.model !== null ? { agentModel: simple.model } : {}),
                 skills,
                 baseBranch,
                 title,

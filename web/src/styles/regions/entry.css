@@ -116,6 +116,11 @@
         padding: var(--space-8) var(--space-6) var(--space-12);
     }
 
+    /* Ready holds the task composer, whose control bar needs the wide measure to keep its chips in a row. */
+    .onboarding.onboarding-wide {
+        max-width: var(--measure-wide);
+    }
+
     /* The attachment upload page's drop target: a dashed region inside the .onboarding column. */
     .upload-zone {
         align-items: center;
@@ -410,6 +415,322 @@
         width: 40%;
     }
 
+    /* The setup walk's stepper: one muted row above the h1, each step a numbered mark and
+       its label joined by a short rule; the current step reads in ink with an accent ring, a
+       finished one fills with the run lamp. */
+    .setup-steps {
+        color: var(--ink-muted);
+        display: flex;
+        flex-wrap: wrap;
+        font-size: var(--text-xs);
+        gap: var(--space-2);
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .setup-steps li {
+        align-items: center;
+        display: flex;
+        gap: var(--space-2);
+    }
+
+    .setup-steps li + li::before {
+        background: var(--line-strong);
+        content: '';
+        height: 1px;
+        width: var(--space-6);
+    }
+
+    .setup-steps a {
+        color: inherit;
+    }
+
+    .setup-step-mark {
+        align-items: center;
+        border: 1px solid var(--line-strong);
+        border-radius: 50%;
+        display: inline-flex;
+        font-weight: 600;
+        height: 18px;
+        justify-content: center;
+        width: 18px;
+    }
+
+    .setup-steps [aria-current='step'] {
+        color: var(--ink);
+        font-weight: 500;
+    }
+
+    .setup-steps [aria-current='step'] .setup-step-mark {
+        border-color: var(--accent);
+        color: var(--accent);
+    }
+
+    .setup-step-done .setup-step-mark {
+        background: var(--lamp-run);
+        border-color: var(--lamp-run);
+        color: var(--ink-inverse);
+    }
+
+    /* A step's actions: Back at the start, the one primary at the end. */
+    .setup-actions {
+        align-items: center;
+        display: flex;
+        gap: var(--space-3);
+        justify-content: flex-end;
+    }
+
+    .setup-back {
+        margin-right: auto;
+    }
+
+    /* The issue-tracker step: one soft card per tracker (mark, name, purpose, its state and
+       choice), Connect at the end; a connected card takes the ok border. */
+    .setup-tools {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .setup-tool {
+        align-items: flex-start;
+        background: var(--surface-soft);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        display: flex;
+        gap: var(--space-3);
+        padding: var(--space-4);
+    }
+
+    .setup-tool[data-connected] {
+        border-color: var(--ok-border);
+    }
+
+    .setup-tool-body {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        gap: var(--space-1);
+        min-width: 0;
+    }
+
+    .setup-tool-name {
+        font-weight: 600;
+    }
+
+    .setup-tool-purpose,
+    .setup-tools-more {
+        color: var(--ink-muted);
+        font-size: var(--text-sm);
+    }
+
+    .setup-tool-connection {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-2);
+        justify-content: space-between;
+    }
+
+    .setup-tool-state {
+        color: var(--lamp-run);
+        font-size: var(--text-xs);
+        overflow-wrap: anywhere;
+    }
+
+    .setup-tools-more {
+        margin: 0;
+    }
+
+    .setup-tools-retry {
+        align-items: center;
+        display: flex;
+        gap: var(--space-3);
+    }
+
+    /* Ready: one soft panel of summary rows (lamp, name over detail, Change at the end), then the inline
+       composer as it is everywhere, and the starter prompts under it as plain buttons. */
+    .ready-summary {
+        background: var(--surface-soft);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        list-style: none;
+        margin: 0;
+        padding: 0 var(--space-4);
+    }
+
+    .ready-row {
+        align-items: center;
+        display: flex;
+        gap: var(--space-3);
+        padding: var(--space-3) 0;
+    }
+
+    .ready-row + .ready-row {
+        border-top: 1px solid var(--line);
+    }
+
+    .ready-lamp {
+        background: currentColor;
+        border: 1px solid currentColor;
+        border-radius: 50%;
+        color: var(--line-strong);
+        flex: none;
+        height: var(--space-2);
+        width: var(--space-2);
+    }
+
+    .ready-lamp[data-state='ok'] {
+        color: var(--lamp-run);
+    }
+
+    .ready-lamp[data-state='wait'] {
+        color: var(--lamp-wait);
+    }
+
+    .ready-row-body {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        min-width: 0;
+    }
+
+    .ready-row-name {
+        font-weight: 600;
+    }
+
+    .ready-row-detail {
+        color: var(--ink-muted);
+        font-size: var(--text-sm);
+        overflow-wrap: anywhere;
+    }
+
+    /* Under the prompt, inside the chat input, above its control bar. */
+    .ready-starters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-2);
+        margin-top: var(--space-2);
+    }
+
+    /* The model step and Settings → Model (`web/src/model-setup/`): soft provider cards in a radiogroup (the
+       checked one takes the accent edge), the key with its Show toggle, the live check line in its lamp color, the
+       agent and model side by side, and the primary with its reason under it. */
+    .model-label {
+        font-size: var(--text-sm);
+        font-weight: 600;
+    }
+
+    .model-providers {
+        display: grid;
+        gap: var(--space-2);
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr));
+    }
+
+    .model-provider {
+        background: var(--surface-soft);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-1);
+        padding: var(--space-3);
+    }
+
+    .model-provider:has(input:checked) {
+        border-color: var(--accent-border);
+    }
+
+    .model-provider-head {
+        align-items: center;
+        display: flex;
+        font-weight: 600;
+        gap: var(--space-2);
+    }
+
+    .model-provider-tag {
+        color: var(--ink-muted);
+        font-size: var(--text-xs);
+        font-weight: 400;
+    }
+
+    .model-provider-sub,
+    .model-secret-note,
+    .model-save-why {
+        color: var(--ink-muted);
+        font-size: var(--text-sm);
+        margin: 0;
+    }
+
+    .model-key {
+        align-items: center;
+        display: flex;
+        gap: var(--space-2);
+    }
+
+    .model-key .field {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .model-check {
+        font-size: var(--text-sm);
+        margin: 0;
+        overflow-wrap: anywhere;
+    }
+
+    .model-check[data-state='ok'] {
+        color: var(--lamp-run);
+    }
+
+    .model-check[data-state='warn'] {
+        color: var(--lamp-wait);
+    }
+
+    .model-check[data-state='bad'],
+    .model-check[data-state='error'] {
+        color: var(--lamp-stop);
+    }
+
+    .model-fields {
+        display: grid;
+        gap: var(--space-4);
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+    }
+
+    .model-scope {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-4);
+    }
+
+    .model-advanced {
+        margin: var(--space-3) 0;
+    }
+
+    .model-banner-body {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-1);
+        min-width: 0;
+    }
+
+    .model-banner-body p {
+        margin: 0;
+    }
+
+    .model-primary {
+        align-items: flex-end;
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-1);
+    }
+
     @media (max-width: 640px) {
         /* Narrow: the choice reads top to bottom — checkbox and name on one row, mode radios and
            checklists stacked under them, every control a 44px target, nothing sideways (issue 187). */
@@ -472,6 +793,10 @@
     @media (max-width: 900px) {
         .login-button,
         .onboarding-actions button,
+        .setup-actions button,
+        .setup-tool > button,
+        .setup-back,
+        .setup-steps a,
         .token-create input,
         .token-create button,
         .onboarding-org-summary {

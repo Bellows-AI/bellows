@@ -21,7 +21,7 @@ import {
     runningThread,
     sessionAuthor,
 } from './fixtures/threads.js';
-import { FORBIDDEN, watchConsole } from './page-health.js';
+import { FORBIDDEN, shellSettled, watchConsole } from './page-health.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -30,9 +30,9 @@ const SHOTS = 'artifacts/ui';
 /** Queue a task through the real composer and land on its detail page. */
 async function queueTask(page: Page, command: string): Promise<string> {
     await page.goto('/tasks/new');
-    // The guided composer: the prompt is a labelled field, the action is Start task.
+    // The guided composer: the prompt is a labelled field; on a desktop screen Enter starts it.
     await page.getByLabel('What should the agent do?').fill(command);
-    await page.getByRole('button', { name: 'Start task' }).click();
+    await page.getByLabel('What should the agent do?').press('Enter');
     await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
     return /\/tasks\/([0-9a-f-]{36})$/.exec(page.url())![1]!;
 }
@@ -514,20 +514,41 @@ test.describe('the task detail page', () => {
     test('the detail renders at every target width without overflow', async ({ page }) => {
         test.setTimeout(60_000);
         await routeThread(page, authoredBy(publishedThread, await sessionAuthor(page)));
+        // The layout under test is the connected one: a confirmed key keeps the "No model yet"
+        // banner out, so the rail starts at the app bar rather than below the banner.
+        await page.route('**/api/model-setup', (route) =>
+            route.fulfill({
+                json: {
+                    platform: false,
+                    org: null,
+                    personal: { provider: 'anthropic', agentType: 'claude-code', model: 'm', keyNames: ['K'] },
+                    effective: 'personal',
+                },
+            })
+        );
 
         for (const width of [360, 768, 1024, 1440]) {
             await page.setViewportSize({ width, height: 1000 });
             await page.goto(`/tasks/${publishedThread[0]!.id}`);
             await expect(page.locator('.task-controls')).toBeVisible();
-            const overflow = await page.evaluate(
-                () => document.documentElement.scrollWidth - document.documentElement.clientWidth
-            );
+            // The shell's banner has decided, so no box moves under the measurement below.
+            await shellSettled(page);
+            const { overflow, rail, controls, conversation, head, appBar } = await page.evaluate(() => {
+                const box = (selector: string) => {
+                    const rect = document.querySelector(selector)?.getBoundingClientRect();
+                    return rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
+                };
+                return {
+                    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                    rail: box('.task-rail'),
+                    controls: box('.task-controls'),
+                    conversation: box('.task-conversation'),
+                    head: box('.task-head'),
+                    appBar: box('header.appbar'),
+                };
+            });
             expect(overflow, `${width}px overflows by ${overflow}px`).toBeLessThanOrEqual(0);
 
-            const rail = await page.locator('.task-rail').boundingBox();
-            const controls = await page.locator('.task-controls').boundingBox();
-            const conversation = await page.locator('.task-conversation').boundingBox();
-            const head = await page.locator('.task-head').boundingBox();
             if (width < 1024) {
                 // DOM order: the head, then the rail (controls first), then the conversation.
                 expect(head!.y + head!.height).toBeLessThanOrEqual(rail!.y + 1);
@@ -535,7 +556,6 @@ test.describe('the task detail page', () => {
             } else {
                 // The rail is a 340px right column from the app bar down, beside the head and the
                 // conversation; the controls tile leads it.
-                const appBar = await page.locator('header.appbar').boundingBox();
                 expect(Math.round(rail!.width)).toBe(340);
                 expect(conversation!.x + conversation!.width).toBeLessThanOrEqual(rail!.x + 1);
                 expect(head!.x + head!.width).toBeLessThanOrEqual(rail!.x + 1);
@@ -603,7 +623,7 @@ test.describe('the task detail page', () => {
         // Typed, not filled: the keystrokes land only if the caret really is in the composer.
         await page.keyboard.type(followUp.command);
         await expect(box).toHaveValue(followUp.command);
-        await page.getByRole('button', { name: 'Send follow-up' }).click();
+        await page.keyboard.press('Enter');
 
         await expect(page.locator('.task-conversation')).toContainText(followUp.command, { timeout: 10_000 });
         await expect(page.locator('.task-conversation article').last()).toContainText(followUp.command);
@@ -656,7 +676,7 @@ test.describe('the follow-up composer attachments', () => {
         await expect(chips.getByText('Ready')).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/task-detail-follow-up-attachments.png`, fullPage: true });
 
-        await page.getByRole('button', { name: 'Send follow-up' }).click();
+        await box.press('Enter');
         await expect.poll(() => sent.length).toBe(1);
         expect(sent[0]!.body).toEqual({ command: 'also check the export', attachments: [board.ids.get('notes.txt')] });
         expect(sent[0]!.key).toMatch(/^[0-9a-f]{32}$/);
@@ -791,6 +811,7 @@ test.describe('the task title', () => {
         }));
         expect(metrics.height, 'at most two lines').toBeLessThanOrEqual(2 * metrics.lineHeight + 1);
         expect(metrics.title, 'the full display title rides title=').toBe(metrics.text);
+        await shellSettled(page);
         const overflow = await page.evaluate(
             () => document.documentElement.scrollWidth - document.documentElement.clientWidth
         );
@@ -868,7 +889,7 @@ test.describe('the task title', () => {
         await page.goto('/tasks/new');
         await expect(page.getByLabel('Title (optional)')).toHaveCount(0);
         await page.getByLabel('What should the agent do?').fill('Fix the login crash');
-        await page.getByRole('button', { name: 'Start task' }).click();
+        await page.getByLabel('What should the agent do?').press('Enter');
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
         const id = /\/tasks\/([0-9a-f-]{36})$/.exec(page.url())![1]!;
         await expect(page.locator('.page-header-leading h1')).toHaveText('Fix the login crash');

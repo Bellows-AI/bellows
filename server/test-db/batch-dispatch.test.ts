@@ -168,6 +168,37 @@ describe.skipIf(!enabled)('batch dispatch', () => {
         expect(await scopeOf(retried.id)).toBe('org');
     });
 
+    it("launches a task frozen with the starter's agent default as that agent and model, and a retry keeps them", async () => {
+        const source = batchPlan('Agent', [{ key: 'build', tasks: [task('a')] }], { executor: undefined });
+        const resolved = resolveBatchPlan(source, { [BATCH_REPO]: 'main' });
+        // What the launch route stamps when the starter's agent default wins.
+        const stamped = {
+            ...resolved,
+            stages: resolved.stages.map((stage) => ({
+                ...stage,
+                tasks: stage.tasks.map((t) => ({ ...t, agentType: 'opencode' as const, agentModel: 'team-model' })),
+            })),
+        };
+        const { id } = await store.create(source, ALICE);
+        expect(await store.start({ id, version: 1, plan: stamped, startedBy: ALICE })).toMatchObject({ result: 'ok' });
+        await store.reconcile(id);
+        const agentOf = async (jobId: string) =>
+            (
+                await sql<{ executor: string | null; agent_type: string | null; agent_model: string | null }[]>`
+                    select executor, agent_type, agent_model from job where id = ${jobId}
+                `
+            )[0];
+        const { a } = await stateOf(id);
+        const expected = { executor: null, agent_type: 'opencode', agent_model: 'team-model' };
+        expect(await agentOf(a!.rootJobId!)).toEqual(expected);
+
+        await setStatus(a!.rootJobId!, 'failed');
+        await store.reconcile(id);
+        expect(await store.retry(id, 'a')).toEqual({ result: 'ok' });
+        await store.reconcile(id);
+        expect(await agentOf((await headOf(a!.rootJobId!)).id)).toEqual(expected);
+    });
+
     it('holds the concurrency limit, counting a moving task', async () => {
         const id = await frozen(parallelThenJoin(1));
         await store.reconcile(id);

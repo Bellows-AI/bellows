@@ -22,7 +22,7 @@ import {
     orgAdmission,
     repoRoom,
 } from './job-store-admission.js';
-import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
+import { type ResolvedClaimExecutor, recordRunModel, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf, threadBaseBranchFragment, workspacePathFor } from './job-store-rows.js';
 import { commitStagedConclusions } from './job-store-conclusions.js';
@@ -490,7 +490,7 @@ async function acquireCandidate(
             -- stopped, and is never claimed again.
             returning id, command, attempts, max_attempts, claim_seq, lease_token, ingest_token, lease_expires_at,
                       (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as run_as,
-                      session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
+                      session_id, repo, parent_job_id, executor, executor_scope, agent_type, agent_model, workflow_node, workflow_name, mode,
                       -- The post-update row: whether this attempt's loss would retire the job.
                       ${exhausted} as last_attempt,
                       extract(epoch from clock_timestamp() - ${locked.queued_since}::timestamptz)::float8 as queue_age,
@@ -583,10 +583,10 @@ async function assembleClaim(
     },
     prepared: { rootJobId: string; gates: ResolvedClaimGates; connections: ClaimConnections }
 ): Promise<Omit<Claim, 'attachments'>> {
-    const { orgId, env, githubApp, executorConfig, prs, deploymentMode } = ctx;
-    const { rootJobId } = prepared;
-    const { connections } = prepared;
-    const executor = await resolveClaimExecutor(tx, { env, executorConfig, deploymentMode }, row);
+    const { orgId, githubApp, prs } = ctx;
+    const { rootJobId, connections } = prepared;
+    const executor = await resolveClaimExecutor(tx, ctx, row);
+    await recordRunModel(tx, orgId, row.id, executor.runModel);
     const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.run_as) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);

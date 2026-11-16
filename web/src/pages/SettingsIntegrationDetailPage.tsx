@@ -1,4 +1,4 @@
-import { integrationProvider } from '@factory-ai/core';
+import { canConnect, integrationProvider } from '@factory-ai/core';
 import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { deleteConnection, type ConnectionView, type StartAuthorizationInput } from '../api/connections.js';
@@ -10,16 +10,13 @@ import { PageHeader } from '../components/PageHeader.js';
 import { ProviderMark } from '../components/ProviderMark.js';
 import { commitDate } from '../format.js';
 import { OAuthConnectionActions } from '../panels/OAuthConnectionActions.js';
-import { accessSentence, connectionState } from '../settings/integration-providers.js';
+import { accessSentence, connectionState, consentAuthority } from '../settings/integration-providers.js';
 import { DISCONNECTED_STATE, useIntegrationNotice } from '../settings/useIntegrationNotice.js';
 import { integrationPath, STATE_PILL } from './SettingsIntegrationsPage.js';
 import { StateNote } from '../components/StateNote.js';
 
 const OVERVIEW = '/settings/integrations';
 const ALREADY_DISCONNECTED = 'That connection was already disconnected.';
-
-/** Whose consent screen each provider's actions send the member to; a provider with none mounts no actions. */
-const CONSENT_AUTHORITY: Record<string, string> = { jira: 'Atlassian', linear: 'Linear' };
 
 const BACK_LABEL = 'Back to Integrations';
 
@@ -83,8 +80,10 @@ export function SettingsIntegrationDetailPage() {
         read.state === 'ok'
             ? read.connections.find((row) => row.id === connectionId && row.provider === provider)
             : undefined;
-    const label = integrationProvider(provider)?.label ?? provider;
-    const authority = CONSENT_AUTHORITY[provider];
+    const entry = integrationProvider(provider);
+    const label = entry?.label ?? provider;
+    // Every provider the member connects here has the same actions; another provider renders none.
+    const authority = entry && canConnect(entry) ? consentAuthority(entry) : null;
 
     return (
         <>

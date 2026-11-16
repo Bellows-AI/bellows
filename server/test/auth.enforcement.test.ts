@@ -152,6 +152,9 @@ const BATCH_PATHS: readonly (readonly [string, string])[] = [
 const PERSON_ROUTES: readonly (readonly [string, string])[] = [
     ['GET', '/api/env'],
     ['PUT', '/api/env/workspace'],
+    ['PUT', '/api/env/workspace/vars'],
+    ['PUT', '/api/env/workspace/vars/FOO'],
+    ['DELETE', '/api/env/workspace/vars/FOO'],
     ['GET', '/api/org/executors'],
     ['POST', '/api/org/executors'],
     ['GET', '/api/org/notification-subscriptions'],
@@ -369,6 +372,13 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/tokens', 'user'],
     ['/api/tokens/org', 'user'],
     ['/api/tokens/:id/revoke', 'user'],
+    // The member's own onboarding progress: a person's act, session cookie or personal bearer.
+    ['/api/onboarding/setup', 'user'],
+    ['/api/onboarding/setup/complete', 'user'],
+    // Checking a provider key the member pasted: a person's act in their own session.
+    ['/api/model-setup/verify', 'user'],
+    // Reading and saving the member's model setup: a person's act, the org scope's admin check in the handler.
+    ['/api/model-setup', 'user'],
     // Batches are a person's: no batch path is a worker route or on the organization-token allowlist.
     ...BATCH_PATHS.map(
         ([, path]) => [path.replace(JOB_ID, ':id').replace('/tasks/a/', '/tasks/:key/'), 'user'] as [string, string]
@@ -377,8 +387,14 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ...[
         '/api/tokens/org/:id/revoke',
         '/api/workflows/:id',
+        '/api/agent-default',
+        '/api/agent-default/org',
+        '/api/agent-default/personal',
         '/api/env/org',
         '/api/env/repo',
+        '/api/env/org/vars',
+        '/api/env/org/vars/:name',
+        '/api/env/workspace/vars/:name',
         '/api/workspace/executors/default',
         '/api/workspace/executors/:id',
         '/api/workspace/executors/:id/suspension',
@@ -461,6 +477,7 @@ describe('the route table', () => {
                     oauth: {} as OAuthStore,
                     uploadCapabilities: memoryUploadCapabilities().store,
                     commercePlanWriter: { put: async () => ({ verdict: 'stored' }) },
+                    providerKeys: { verify: async () => ({ ok: true }) },
                     // The runner credential routes exist exactly when their per-call check does.
                     attemptOfLease: async () => ({ ok: false, pending: false }),
                     pairMatches: async () => ({ ok: false, pending: false }),
@@ -1392,6 +1409,12 @@ describe('a bridged caller carries scopes the route class is checked against', (
             'POST /api/integrations/:provider/authorizations',
             'GET /api/integrations/:provider/callback',
             'PUT /api/env/org',
+            'PUT /api/env/org/vars',
+            'PUT /api/env/org/vars/:name',
+            'DELETE /api/env/org/vars/:name',
+            'PUT /api/env/workspace/vars',
+            'PUT /api/env/workspace/vars/:name',
+            'DELETE /api/env/workspace/vars/:name',
             'PUT /api/org/members/:userId/role',
             'DELETE /api/org/members/:userId',
             'DELETE /api/org/members/removed/:userId',

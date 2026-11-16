@@ -1,4 +1,5 @@
 import {
+    type AgentDefault,
     ExecutorDefaultNotFoundError,
     ExecutorSuspendedError,
     type ExecutorDefault,
@@ -50,6 +51,15 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
     }
     const rows: Row[] = [];
     const preferences = new Map<string, ExecutorDefault>();
+    /** Agent defaults keyed by owner: a member's id, or `''` for the organization's row. */
+    const agentDefaults = new Map<string, AgentDefault>();
+    const ownerKey = (owner: string | null) => owner ?? '';
+    /** The SQL's upsert: a write without a provider keeps the one the row recorded. */
+    const writeAgentDefault = (owner: string | null, value: AgentDefault) => {
+        const provider = value.provider ?? agentDefaults.get(ownerKey(owner))?.provider;
+        const row = { agentType: value.agentType, model: value.model };
+        agentDefaults.set(ownerKey(owner), provider === undefined ? row : { ...row, provider });
+    };
     let nextId = 1;
     const at = () => new Date().toISOString();
     const uuid = () => {
@@ -269,13 +279,36 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
             if (stored) {
                 const owner = stored.scope === USER_SCOPE ? userId : null;
                 if (rows.some((r) => r.userId === owner && r.name === stored.name && !r.suspended))
-                    return { ...stored };
+                    return { kind: 'profile', ...stored };
             }
+            const { personal: personalAgent, org: orgAgent } = await this.agentDefaults(userId);
+            if (personalAgent) return { kind: 'agent', ...personalAgent, from: 'personal' };
+            if (orgAgent) return { kind: 'agent', ...orgAgent, from: 'org' };
             const personal = byScope(userId).find((r) => !r.suspended);
-            if (personal) return { scope: USER_SCOPE, name: personal.name };
+            if (personal) return { kind: 'profile', scope: USER_SCOPE, name: personal.name };
             const orgRow = byScope(null).find((r) => !r.suspended);
-            if (orgRow) return { scope: 'org', name: orgRow.name };
+            if (orgRow) return { kind: 'profile', scope: 'org', name: orgRow.name };
             return null;
+        },
+
+        async agentDefaults(userId) {
+            return { org: agentDefaults.get(ownerKey(null)) ?? null, personal: agentDefaults.get(userId) ?? null };
+        },
+
+        async setAgentDefault(owner, value) {
+            writeAgentDefault(owner, value);
+        },
+
+        async setAgentDefaultInTx(_tx, owner, value) {
+            writeAgentDefault(owner, value);
+        },
+
+        async agentDefaultInTx(_tx, owner) {
+            return agentDefaults.get(ownerKey(owner)) ?? null;
+        },
+
+        async deleteAgentDefault(owner) {
+            return agentDefaults.delete(ownerKey(owner));
         },
     };
 }

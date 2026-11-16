@@ -16,7 +16,7 @@ import { readReviewEvidence } from './job-store-evidence.js';
 import { LEASE_EXPIRED_REASON } from './job-store-run-control.js';
 import { buildClaimResult } from './job-store-claim.js';
 import { withClaimAttachments } from './job-store-claim-row.js';
-import { resolveClaimExecutor } from './job-store-claim-executor.js';
+import { recordRunModel, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { recordExecution } from './job-store-provenance.js';
 import { exists, workspacePathFor } from './job-store-rows.js';
 import { decideSkillVisibilityInTx, type HiddenSkill } from './job-store-skill-pin.js';
@@ -70,6 +70,8 @@ interface CallerRow {
     repo: string | null;
     executor: string | null;
     executor_scope: string | null;
+    agent_type: string | null;
+    agent_model: string | null;
     mode: string;
     reviewers: ReviewerSpec[] | null;
 }
@@ -126,7 +128,8 @@ async function lockedCaller(
     leaseToken: string
 ): Promise<CallerRow | undefined> {
     const [caller] = await tx<CallerRow[]>`
-        select id, claim_seq, claimed_by, lease_expires_at, root_job_id, repo, executor, executor_scope, mode,
+        select id, claim_seq, claimed_by, lease_expires_at, root_job_id, repo, executor, executor_scope, agent_type,
+               agent_model, mode,
                (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as owner_id,
                reviewers
         from job
@@ -220,13 +223,14 @@ async function insertReview(
             org_id, command, created_by, repo, executor, executor_scope, id, root_job_id, mode,
             review_of, review_key, review_profile, review_spec, review_revision, review_ref,
             status, claimed_by, lease_token, lease_expires_at, attempts, claim_seq, started_at,
-            review_caller_seq, skill_pin, skill_hidden, execution_user_id
+            review_caller_seq, skill_pin, skill_hidden, execution_user_id, agent_type, agent_model
         )
         select ${orgId}, ${command}, ${caller.owner_id}, ${caller.repo}, ${caller.executor},
                ${caller.executor_scope ?? USER_SCOPE}, x, x, ${OBJECTIVE_MODE},
                ${caller.id}, ${request.key}, ${spec.name}, ${tx.json(spec as never)}, ${request.revision}, ${request.ref},
                'running', ${caller.claimed_by}, gen_random_uuid(), ${caller.lease_expires_at}, 1, 1, now(),
-               ${caller.claim_seq}, '[]'::jsonb, ${tx.json(hidden as never)}, ${caller.owner_id}
+               ${caller.claim_seq}, '[]'::jsonb, ${tx.json(hidden as never)}, ${caller.owner_id},
+               ${caller.agent_type}, ${caller.agent_model}
         from (select gen_random_uuid() as x) s
     `;
     return (await reviewByKey(tx, orgId, caller.id, request.key))!;
@@ -299,6 +303,8 @@ interface ReviewClaimRow {
     parent_job_id: string | null;
     executor: string | null;
     executor_scope: string | null;
+    agent_type: string | null;
+    agent_model: string | null;
     workflow_node: string | null;
     workflow_name: string | null;
     mode: JobMode;
@@ -317,13 +323,13 @@ interface ReviewClaimRow {
  * grants. The board decides all of it; the caller names none of it.
  */
 async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: string): Promise<Claim> {
-    const { orgId, env, executorConfig, deploymentMode } = ctx;
+    const { orgId, env, executorConfig, deploymentMode, platformModelProvided } = ctx;
     await recordExecution(tx, orgId, reviewId);
     const [row] = await tx<ReviewClaimRow[]>`
         select id, command, attempts, max_attempts, claim_seq, lease_token, ingest_token, lease_expires_at,
                execution_user_id as run_as,
-               session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
-               review_spec, review_ref, skill_hidden,
+               session_id, repo, parent_job_id, executor, executor_scope, agent_type, agent_model, workflow_node,
+               workflow_name, mode, review_spec, review_ref, skill_hidden,
                (session_id is not null
                 and coalesce((interruptions -> -1 ->> 'claimSeq')::bigint = claim_seq - 1, false))
                    as resumes_interrupted
@@ -332,9 +338,10 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
     const spec = row!.review_spec;
     const executor = await resolveClaimExecutor(
         tx,
-        { env, executorConfig, deploymentMode, grant: spec.connections },
+        { env, executorConfig, deploymentMode, platformModelProvided, grant: spec.connections },
         row!
     );
+    await recordRunModel(tx, orgId, reviewId, executor.runModel);
     const claim = buildClaimResult(
         {
             ...row!,

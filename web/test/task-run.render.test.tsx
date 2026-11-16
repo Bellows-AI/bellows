@@ -405,8 +405,8 @@ describe('follow-up composer', () => {
     });
 
     it('carries no placeholder, and the send copy, including the sending state', () => {
-        // The empty field is named by its hidden label alone.
-        expect(renderDetail({ jobs: [job()] })).not.toContain('placeholder=');
+        // The empty field is named by its hidden label alone (the Model chip's search field shows its value as one).
+        expect(renderDetail({ jobs: [job()] })).not.toMatch(/<textarea[^>]*placeholder=/);
         // Send is the round arrow only: its words are the accessible name.
         expect(renderDetail({ jobs: [job()] })).toMatch(
             /class="primary chat-input-send"[^>]*aria-label="Send follow-up"/

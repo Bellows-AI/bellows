@@ -32,6 +32,11 @@ const attachmentIds = z
         'Ids of completed, already-uploaded files you own to bind to the task. A client-local path is not readable by the board. Every id must be valid or the whole request is refused.'
     );
 
+/** 157_agent_default.sql's model bound; the board trims and refuses an empty or over-long name. */
+const MAX_MODEL_CHARS = 200;
+
+const model = (what: string) => z.string().min(1).max(MAX_MODEL_CHARS).optional().describe(what);
+
 const QueuedSchema = z.object({ id: z.string(), status: z.string() });
 
 /** The body of a write: only the fields the caller gave, so an absent one is the board's default, not a null. */
@@ -59,9 +64,12 @@ export const createTask = defineTool({
             .max(MAX_NAME_CHARS)
             .optional()
             .describe(
-                'An executor profile name (list_executors). Omit to run on your default (marked `default` there); with no usable profile the board refuses NO_EXECUTOR: tell the person to add one in Settings → Executors.'
+                'An executor profile name (list_executors). Omit to run on your default: your stored preference (marked `default` there), else your agent default, else the organization agent default, else your first usable profile. With none of those the board refuses NO_EXECUTOR: tell the person to add a profile in Settings → Executors or set an agent default.'
             ),
         executorScope: z.enum(['user', 'org']).optional().describe('Which profile list `executor` names.'),
+        model: model(
+            "The model the agent runs, overriding the profile's or the agent default's model; omit to use the default."
+        ),
         skills: z
             .array(z.string().max(MAX_NAME_CHARS))
             .max(MAX_SELECTED)
@@ -95,14 +103,21 @@ export const followUpTask = defineTool({
     scope: 'factory:write',
     routes: [['POST', '/api/jobs/:id/follow-up']],
     annotations: WRITES,
-    input: JobIdInput.extend({ command: command('What the agent should do next.'), attachmentIds, idempotencyKey }),
+    input: JobIdInput.extend({
+        command: command('What the agent should do next.'),
+        model: model(
+            "The model this run and the next ones run; omit to keep the thread's. The agent never changes in a thread."
+        ),
+        attachmentIds,
+        idempotencyKey,
+    }),
     output: QueuedSchema,
-    run: ({ jobId, command: text, attachmentIds: attachments, idempotencyKey: key }, ctx) =>
+    run: ({ jobId, command: text, model: chosen, attachmentIds: attachments, idempotencyKey: key }, ctx) =>
         ctx.call(
             {
                 method: 'POST',
                 url: `${jobPath(jobId)}/follow-up`,
-                body: bodyOf({ command: text, attachments }),
+                body: bodyOf({ command: text, model: chosen, attachments }),
                 ...(key === undefined ? {} : { idempotencyKey: key }),
             },
             QueuedSchema,

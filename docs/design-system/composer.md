@@ -16,6 +16,7 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
 | One wrapping tile per file: in a draft a square (spinner while uploading, then the preview; a failure is a ⚠ that retries; name in the tooltip; remove), in history a tile with name, size and download | `web/src/panels/AttachmentList.tsx` | `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
 | The follow-up composer's files and draft | `web/src/panels/TaskDetail.tsx` | `web/test/task-detail-follow-up.dom.test.tsx`, `e2e/task-detail.spec.ts` |
 | The base-branch chip: a pick-only combobox, debounced server-side search, "Load more" by cursor, an error row (never "no branches") | `web/src/components/BranchCombobox.tsx`, `web/src/api/useBranches.ts` | `web/test/branch-combobox.dom.test.tsx`, `e2e/composer.spec.ts` |
+| The Model chip on both composers: Default (named for an agent default) sends nothing, the provider's curated models, or any typed name; the follow-up's starts at the thread's model and sends one only when changed | `web/src/components/ModelCombobox.tsx` | `web/test/model-choice.dom.test.tsx` |
 | The prompt's `/` skill menu: a small list of names opening above the prompt, the highlighted skill's description in a tooltip beside it; built-ins and the repository's at the chosen branch; the picked `/name` stays in the text | `web/src/components/SlashSkillMenu.tsx`, `web/src/slash-skills.ts`, `web/src/api/useRepoSkills.ts` | `web/test/slash-skills.test.ts`, `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
 | A workflow's declared parameter fields | `web/src/components/WorkflowParameterFields.tsx` | `web/test/task-composer.render.test.tsx` |
 | The no-tracked-repository banner | `web/src/panels/TaskComposer.tsx` | `web/test/task-composer.dom.test.tsx` |
@@ -23,25 +24,26 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
 ## Invariants
 
 - The request counter's ceiling is core's `COMMAND_LIMIT`, imported, never restated.
-- Start's `aria-describedby` names whichever banner or status text is blocking it, so the reason is
-  announced rather than inferred from a disabled button.
+- Start's `aria-describedby` names whichever banner or status text is blocking it, and the prompt
+  field carries the same ids, so the reason is announced where Enter is pressed.
 - A task launches only against a tracked repository; the same rule is refused at `POST /api/jobs`
   (`400 UNKNOWN_REPO`) in `server/src/routes/jobs/job-handlers-worker.ts`,
   `server/test/routes.executor-lifecycle.test.ts`.
 
-`.chat-input` is the one chat input, reused by both composers, never restyled per composer. It has no surface of its own: the field (`.chat-input-field`) carries the only frame, `1px solid var(--line)`, and focus brightens that border to `--line-strong` instead of drawing a ring. The field starts one line high and grows with its text (`field-sizing: content`) up to half the viewport. The paperclip and the 24px round send arrow (44px on the compact shell) sit inside the field's frame on its last line (`.chat-input-box`); the row below holds only caller controls and the status. No shortcut hint is drawn; Ctrl/⌘+Enter still sends. The page's heading stays; the empty-prompt state is silent (Start is simply disabled).
+`.chat-input` is the one chat input, reused by both composers, never restyled per composer. It has no surface of its own: the field (`.chat-input-field`) carries the only frame, `1px solid var(--line)`, and focus brightens that border to `--line-strong` instead of drawing a ring. The field starts one line high and grows with its text (`field-sizing: content`) up to half the viewport. The paperclip sits inside the field's frame on its last line (`.chat-input-box`). On a desktop screen there is no send arrow: Enter sends, Shift+Enter is a new line, Ctrl/⌘+Enter still sends, and the row below holds the caller controls, the `.chat-input-hint` saying so, and the status, which hides the hint while it says why sending is blocked. On the compact shell (900px and under) the round arrow (`.chat-input-send`) shows inside the frame, a 36px circle in its 44px target, and return is a new line. The page's heading stays; the empty-prompt state is silent (Start is simply disabled).
 
 Classes defined here: `chat-input`, `chat-input-field`, `chat-input-box`, `chat-input-bar`, `chat-input-controls`,
-`chat-input-end`, `chat-input-send`, `composer-label`, `composer-fields`,
+`chat-input-end`, `chat-input-send`, `chat-input-hint`, `composer-label`, `composer-fields`,
 `composer-helper`, `composer-param-input`, `composer-param-error`, `composer-param-details`,
 `composer-heading`, `composer-visually-hidden`, `composer-blocker`, `composer-note`, `composer-counter`, `is-over`,
 `composer-context-item`, `composer-context-value`, `composer-branch`, `composer-branch-toggle`,
 `composer-branch-input`, `composer-branch-options`, `composer-branch-action`, `composer-branch-error`,
+`composer-model`, `composer-model-toggle`, `composer-model-input`,
 `composer-skill-menu`, `composer-skill-list`, `composer-skill-option`, `composer-skill-name`, `composer-skill-match`,
 `composer-skill-source`, `composer-skill-tip`, `composer-trigger-missing`,
 `composer-notices-body`, `composer-notices-dismiss`, `composer-skeleton-block`,
-`composer-skeleton-line`, `task-compose`, `task-compose-body`, `attachment-add`, `attachment-list`, `attachment-chip`,
-`attachment-tile`, `attachment-spinner`,
+`composer-skeleton-line`, `task-compose`, `task-compose-body`, `task-compose-inline`, `attachment-add`,
+`attachment-list`, `attachment-chip`, `attachment-tile`, `attachment-spinner`,
 `attachment-media`, `attachment-thumb`, `attachment-body`, `attachment-name`, `attachment-meta`, `attachment-state`,
 `attachment-action`, `attachment-retry`, `attachment-remove`, `attachment-download`,
 `attachment-list-history`, `drop-zone`, `is-dragging`, `drop-overlay`.

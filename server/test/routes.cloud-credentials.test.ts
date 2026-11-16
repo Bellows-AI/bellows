@@ -89,6 +89,15 @@ describe('cloud mode: env scopes refuse the OAuth token name', () => {
         expect(await envVars.listOrg()).toEqual([]);
     });
 
+    it('refuses it on a single-name and a multi-name write', async () => {
+        const { send, envVars } = await boot('cloud');
+        expectRefused(await send('PUT', `/api/env/org/vars/${TOKEN}`, { value: VALUE, secret: true }));
+        expectRefused(
+            await send('PUT', '/api/env/workspace/vars', { entries: [{ name: TOKEN, value: VALUE, secret: true }] })
+        );
+        expect(envVars.rows()).toEqual([]);
+    });
+
     it('accepts an API key', async () => {
         const { send } = await boot('cloud');
         expect((await send('PUT', '/api/env/org', vars('ANTHROPIC_API_KEY'))).statusCode).toBe(HTTP_OK);

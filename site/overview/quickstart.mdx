@@ -13,22 +13,8 @@ The examples use a small Go web server with lorem ipsum and notes endpoints. Any
 ## Steps
 
 <Steps>
-  <Step title="Sign in and choose repositories">
-    Sign in with GitHub, install the Bellows GitHub App, then choose the organizations and repositories Bellows should track.
-
-    <Frame>
-      <img src="/images/quickstart/01-onboarding.png" alt="Onboarding: choose organizations and repositories" />
-    </Frame>
-  </Step>
-  <Step title="Check the repository is tracked">
-    Open **Settings → Repositories**. Your repo is listed there, and **Configure** shows its environment.
-
-    <Frame>
-      <img src="/images/quickstart/02-settings-repos.png" alt="Settings, Repositories" />
-    </Frame>
-  </Step>
   <Step title="Add .bellows.yaml to the repo root">
-    This file sets the runner's container and the checks every run must pass.
+    This file sets the runner's container and the checks every run must pass. Add it first, so your first task already runs them.
 
     ```yaml .bellows.yaml
     environment:
@@ -45,8 +31,21 @@ The examples use a small Go web server with lorem ipsum and notes endpoints. Any
 
     Commit and push it to the default branch.
   </Step>
-  <Step title="Create a task">
-    Click **New task**. Under *What should we work on?* describe the change, pick the repo and executor, then click the arrow (**Start task**) or press `⌘ + Enter`.
+  <Step title="Sign in and choose repositories">
+    Sign in with GitHub, install the Bellows GitHub App, then choose the organizations and repositories Bellows should track. This is step 1 of 3.
+
+    <Frame>
+      <img src="/images/quickstart/01-onboarding.png" alt="Onboarding: choose organizations and repositories" />
+    </Frame>
+  </Step>
+  <Step title="Connect a model">
+    Step 2: choose Anthropic, OpenRouter, OpenAI or LiteLLM (self-hosted boards also offer a Claude subscription), and paste a key. Bellows picks the provider from the key's prefix, checks the key with the provider, and suggests an agent and a model. **Save and continue** saves the key as a secret and the agent and model as your default; change them later under **Settings → Model**. If your deployment or organization already provides a model, the step says so and **Continue** moves on. See [Saving a model key](/guides/env-and-secrets#saving-a-model-key-from-the-model-setup).
+  </Step>
+  <Step title="Connect your issue tracker">
+    Step 3 is optional: connect your issue tracker, such as Jira or Linear, so tasks can read the ticket they link to. Each step has **Skip for now**, and **Back** returns to the step before. Until you finish, opening Bellows brings you back to the step you stopped at.
+  </Step>
+  <Step title="Start your first task">
+    The last page, **You're set**, lists what you set up — GitHub, your repositories, the model and the issue tracker — each with **Change** to go back to its step. Below it is the task composer, with your first repository already chosen. Describe the change, or click a starter (**Write CONTRIBUTING.md**, **Fix a flaky test**, **Upgrade a dependency**), then press `Enter` (`Shift + Enter` adds a new line; on a phone, tap the round arrow, **Start task**). The task runs on your default agent and model, and Bellows opens its page.
 
     ```text Task
     Add a GET /api/notes/count endpoint that returns {"count": N}.
@@ -54,8 +53,10 @@ The examples use a small Go web server with lorem ipsum and notes endpoints. Any
     ```
 
     <Frame>
-      <img src="/images/quickstart/03-new-task.png" alt="New task form" />
+      <img src="/images/quickstart/03-new-task.png" alt="The task composer" />
     </Frame>
+
+    **Go to the dashboard instead** finishes setup without starting a task; later tasks start from **New task**. If you skipped the model and nothing else can run a task (on a self-hosted board, an executor profile or a model default also counts), the page says **Almost set** and **Start task** stays off until you connect one, and every page shows *No model yet — tasks will wait until one is connected* with a link to **Settings → Model**.
   </Step>
   <Step title="Answer questions, if any">
     Some tasks need a decision from you. The agent asks inline and waits. Pick an answer and click **Submit**.

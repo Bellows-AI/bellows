@@ -1,4 +1,4 @@
-import type { ChangeEvent, ReactNode, TextareaHTMLAttributes } from 'react';
+import type { ChangeEvent, KeyboardEvent, ReactNode, TextareaHTMLAttributes } from 'react';
 import type { AttachmentLimits } from '@factory-ai/core';
 import { Icon } from '../components/Icon.js';
 import type { DraftAttachment } from '../composer-draft.js';
@@ -13,6 +13,29 @@ export interface ChatInputFiles {
     retry: (localId: string) => void;
 }
 
+/** The compact shell's breakpoint (`styles/regions/composer.css`): the arrow shows, and return is a new line. */
+const COMPACT_QUERY = '(max-width: 900px)';
+
+/**
+ * Whether a keystroke is the desktop send: a plain Enter, outside an IME composition, that no
+ * earlier handler took (the slash menu's pick), on a screen wider than the compact shell. On the
+ * compact shell return is a new line and the arrow sends; Ctrl/⌘+Enter stays each caller's own.
+ */
+export function isEnterSend(e: KeyboardEvent<HTMLTextAreaElement>, compact: boolean): boolean {
+    return (
+        e.key === 'Enter' &&
+        !e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !e.nativeEvent.isComposing &&
+        !e.defaultPrevented &&
+        !compact
+    );
+}
+
+const isCompact = (): boolean => typeof window.matchMedia === 'function' && window.matchMedia(COMPACT_QUERY).matches;
+
 /** The round arrow: its accessible name, whether it can fire, and what it does. */
 export interface ChatInputSend {
     label: string;
@@ -24,9 +47,13 @@ export interface ChatInputSend {
 
 /**
  * The one chat input, shared by the new-task page and the task's follow-up: the draft's files
- * above, then a one-line bordered field that grows with its text, with the paperclip and the round
- * send arrow inside its frame; caller controls and the status sit in a row below. The visible label
- * is hidden; the field keeps it as its name. Drop is the surrounding `AttachmentDropZone`'s.
+ * above, then a one-line bordered field that grows with its text, with the paperclip inside its
+ * frame; caller controls, the Enter hint and the status sit in a row below. On a desktop screen
+ * Enter sends and Shift+Enter is a new line, through the same `onSend` the arrow calls; the round
+ * arrow shows only on the compact shell, where return is a new line. The field is described by
+ * whatever describes the arrow, so the reason it cannot send is read on the field too. The
+ * visible label is hidden; the field keeps it as its name. Drop is the surrounding
+ * `AttachmentDropZone`'s.
  */
 export function ChatInput({
     id,
@@ -63,6 +90,15 @@ export function ChatInput({
     /** Rendered beside the arrow (a live region saying why it is dark). */
     status?: ReactNode;
 }) {
+    const describedBy =
+        [fieldProps?.['aria-describedby'], send.describedBy].filter((id) => id !== undefined && id !== '').join(' ') ||
+        undefined;
+    const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+        fieldProps?.onKeyDown?.(e);
+        if (!isEnterSend(e, isCompact())) return;
+        e.preventDefault();
+        send.onSend();
+    };
     return (
         <div className="chat-input">
             <AttachmentChips
@@ -84,6 +120,8 @@ export function ChatInput({
                     value={value}
                     readOnly={readOnly}
                     {...fieldProps}
+                    aria-describedby={describedBy}
+                    onKeyDown={onKeyDown}
                     onChange={onChange}
                 />
                 <button
@@ -99,12 +137,15 @@ export function ChatInput({
                 </button>
             </div>
             {children}
-            {controls === undefined && status === undefined ? null : (
-                <div className="chat-input-bar">
-                    <div className="chat-input-controls">{controls}</div>
-                    <div className="chat-input-end">{status}</div>
+            <div className="chat-input-bar">
+                <div className="chat-input-controls">{controls}</div>
+                <div className="chat-input-end">
+                    <span className="chat-input-hint">
+                        <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> new line
+                    </span>
+                    {status}
                 </div>
-            )}
+            </div>
         </div>
     );
 }

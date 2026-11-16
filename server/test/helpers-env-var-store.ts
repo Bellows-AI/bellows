@@ -1,5 +1,6 @@
+import type { TransactionSql } from 'postgres';
 import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
-import { stackEnv } from '../src/db/env-var-store.js';
+import { EnvScopeRefusal, stackEnv, stackNames } from '../src/db/env-var-store.js';
 import { storeOutage } from './helpers-outage.js';
 
 export interface MemoryEnvVarStore extends EnvVarStore {
@@ -97,6 +98,38 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
             replaceRows({ owner, name }, vars);
         },
 
+        async writeScoped(scope, write, _actorId, options = {}) {
+            if (store.broken) throw storeOutage('database is unreachable');
+            const key = scope.kind === 'org' ? 'org' : scope.kind === 'workspace' ? { userId: scope.userId } : scope;
+            const upsert = write.upsert.filter((v) => v.value !== null);
+            const inScope = rows.filter((r) => matches(key, r));
+            const lockedRemovals = options.removeOf?.(inScope.map((r) => r.name)) ?? [];
+            const touched = new Set([...write.remove, ...lockedRemovals, ...upsert.map((v) => v.name)]);
+            const resulting = [
+                ...inScope
+                    .filter((r) => !touched.has(r.name))
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map((r) => ({ name: r.name, value: r.isSecret ? null : r.value, isSecret: r.isSecret })),
+                ...upsert,
+            ];
+            const reason = options.validate?.(resulting) ?? null;
+            if (reason !== null) throw new EnvScopeRefusal(reason);
+            // The hook's writes are the caller's concern; the double has no transaction to hand it.
+            await options.alsoInTx?.(undefined as unknown as TransactionSql);
+            for (let i = rows.length - 1; i >= 0; i -= 1) {
+                if (matches(key, rows[i]!) && touched.has(rows[i]!.name)) rows.splice(i, 1);
+            }
+            for (const v of upsert) {
+                rows.push({
+                    ...scopeColumns(key),
+                    name: v.name,
+                    value: v.value as string,
+                    isSecret: v.isSecret,
+                    updatedAt: at(),
+                });
+            }
+        },
+
         async resolveFor({ userId, repo }, _exec) {
             const pick = (list: Row[]): Record<string, string> =>
                 Object.fromEntries(list.map((r) => [r.name, r.value]));
@@ -105,6 +138,20 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
                 pick(rows.filter((r) => r.userId === null && r.owner === null)),
                 pick(userId ? rows.filter((r) => r.userId === userId) : []),
                 pick(owner && name ? rows.filter((r) => r.owner === owner && r.repoName === name) : [])
+            );
+        },
+
+        async namesFor({ userId, repo }, options = {}) {
+            if (store.broken) throw storeOutage('database is unreachable');
+            const [owner, name] = repo ? repo.split('/') : [null, null];
+            const namesOf = (list: Row[]) => list.map((r) => r.name);
+            return stackNames(
+                [
+                    namesOf(rows.filter((r) => r.userId === null && r.owner === null)),
+                    namesOf(userId ? rows.filter((r) => r.userId === userId) : []),
+                    namesOf(owner && name ? rows.filter((r) => r.owner === owner && r.repoName === name) : []),
+                ],
+                options.agentType
             );
         },
     };
@@ -131,11 +178,7 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
         vars: readonly { name: string; value: string | null; isSecret: boolean }[]
     ): void {
         if (store.broken) throw storeOutage('database is unreachable');
-        const inScope = (row: Row): boolean => {
-            if (scope === 'org') return row.userId === null && row.owner === null;
-            if ('userId' in scope) return row.userId === scope.userId;
-            return row.owner === scope.owner && row.repoName === scope.name;
-        };
+        const inScope = (row: Row): boolean => matches(scope, row);
         const columns = scopeColumns(scope);
         const keep = new Set(vars.filter((v) => v.isSecret && v.value === null).map((v) => v.name));
         for (let i = rows.length - 1; i >= 0; i -= 1) {
@@ -151,6 +194,12 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
                 updatedAt: at(),
             });
         }
+    }
+
+    function matches(scope: 'org' | { userId: string } | { owner: string; name: string }, row: Row): boolean {
+        if (scope === 'org') return row.userId === null && row.owner === null;
+        if ('userId' in scope) return row.userId === scope.userId;
+        return row.owner === scope.owner && row.repoName === scope.name;
     }
 
     /** The scope columns a row in this scope carries — null for every scope it is not. */

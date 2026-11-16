@@ -1,4 +1,4 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { canConnect, ERROR_CODES, INTEGRATION_CATALOG, type IntegrationProvider } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { safeReturnPath } from '../auth/session.js';
@@ -30,7 +30,9 @@ export interface IntegrationRoutesDeps {
     flowOf: (orgId: string) => AuthorizationFlow;
     /** The provider ids this deployment registered an OAuth client for. */
     configured?: readonly string[] | undefined;
-    /** Every registered provider; the list answers each with whether this deployment can connect it. */
+    /** The providers `GET /api/integrations` answers for: each `oauth` one, with whether this deployment can connect it. */
+    catalog?: readonly IntegrationProvider[] | undefined;
+    /** Every registered provider: a start of one this deployment has no client for is refused as not configured. */
     providers: readonly string[];
     /** The sentence a start of an unconfigured provider is refused with, naming what the operator sets. */
     notConfiguredOf: (provider: string) => string;
@@ -66,9 +68,11 @@ const signInRequired = (reply: FastifyReply) =>
 export function integrationRoutes({
     flowOf,
     configured = [],
+    catalog = INTEGRATION_CATALOG,
     providers,
     notConfiguredOf,
 }: IntegrationRoutesDeps): FastifyPluginAsync {
+    const connectable = catalog.filter(canConnect).map((provider) => provider.id);
     const start = async (request: FastifyRequest, reply: FastifyReply) => {
         const caller = callerOf(request);
         if (!caller) return signInRequired(reply);
@@ -134,7 +138,7 @@ export function integrationRoutes({
     const list = async (request: FastifyRequest, reply: FastifyReply) => {
         if (!callerOf(request)) return signInRequired(reply);
         return reply.header('cache-control', 'no-store').send({
-            integrations: providers.map((provider) => ({
+            integrations: connectable.map((provider) => ({
                 provider,
                 configured: configured.includes(provider),
             })),

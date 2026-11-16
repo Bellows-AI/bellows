@@ -106,6 +106,61 @@ describe('the composer launch triggers', () => {
         expect(launches()).toHaveLength(1);
     });
 
+    it('on a desktop screen Enter starts through the same gate, and Shift+Enter is a new line', async () => {
+        const user = userEvent.setup();
+        const { router, launches } = openComposer(reposReply(['web']));
+        const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+        await waitFor(() => expect(screen.getByRole('button', { name: 'Executor: e2e-executor' })).toBeTruthy());
+
+        // Empty, Enter sends nothing — the same gate the arrow has.
+        await user.click(prompt);
+        await user.keyboard('{Enter}');
+        expect(launches()).toHaveLength(0);
+
+        await user.type(prompt, 'fix the login crash{Shift>}{Enter}{/Shift}and the logout one');
+        expect(prompt.value).toBe('fix the login crash\nand the logout one');
+        expect(launches()).toHaveLength(0);
+
+        // Enter that confirms an IME composition is not a send.
+        fireEvent.keyDown(prompt, { key: 'Enter', isComposing: true });
+        expect(launches()).toHaveLength(0);
+
+        await user.keyboard('{Enter}');
+        await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${LAUNCHED_ID}`));
+        expect(launches()).toHaveLength(1);
+    });
+
+    it('on the compact shell Enter is a new line and only the arrow starts', async () => {
+        const user = userEvent.setup();
+        const original = window.matchMedia;
+        window.matchMedia = ((query: string) => ({
+            ...original(query),
+            matches: query === '(max-width: 900px)',
+        })) as typeof window.matchMedia;
+        try {
+            const { launches } = openComposer(reposReply(['web']));
+            const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+            await user.type(prompt, 'fix the login crash{Enter}');
+            expect(prompt.value).toBe('fix the login crash\n');
+            expect(launches()).toHaveLength(0);
+            await startEnabled();
+            await user.click(startButton());
+            await waitFor(() => expect(launches()).toHaveLength(1));
+        } finally {
+            window.matchMedia = original;
+        }
+    });
+
+    it('describes the prompt with whatever blocks Start, so the reason is read where Enter is pressed', async () => {
+        openComposer(reposReply([]));
+        const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+        await userEvent.setup().type(prompt, 'fix it');
+        await waitFor(() => expect(document.querySelector('.composer .banner-bad')).not.toBeNull());
+        const ids = (prompt.getAttribute('aria-describedby') ?? '').split(' ');
+        expect(ids).toEqual(startButton().getAttribute('aria-describedby')?.split(' '));
+        expect(ids.every((id) => document.getElementById(id) !== null)).toBe(true);
+    });
+
     it('with nothing tracked, Start stays dark behind the inline banner and no shortcut queues', async () => {
         const user = userEvent.setup();
         const { launches } = openComposer(reposReply([]));
@@ -699,5 +754,45 @@ describe('the composer base branch and skill menu', () => {
         await user.click(await screen.findByRole('button', { name: /^Repository: / }));
         await user.click(await screen.findByRole('option', { name: 'acme/api' }));
         await waitFor(() => expect(picker().placeholder).toBe('Default'));
+    });
+});
+
+describe('the composer with no executor profile', () => {
+    const profileless = (agentDefault: WorkspacePayload['agentDefault']) => (call: FetchCall) =>
+        call.url === '/api/workspace'
+            ? { executors: [], orgExecutors: [], defaultExecutor: null, agentDefault }
+            : undefined;
+
+    it('starts on the agent default: Start is enabled and the request names no executor', async () => {
+        const user = userEvent.setup();
+        const agentDefault = { agentType: 'claude-code', model: 'sonnet-test', from: 'personal' } as const;
+        const { launches, router } = openComposer(reposReply(['web']), undefined, profileless(agentDefault));
+        const prompt = await screen.findByLabelText('What should the agent do?');
+        expect(
+            await screen.findByRole('button', { name: 'Executor: Default — Claude Code · sonnet-test' })
+        ).toBeTruthy();
+        await user.type(prompt, 'fix the login crash');
+        await startEnabled();
+        expect(document.querySelector('.composer .banner-bad')).toBeNull();
+
+        await user.click(startButton());
+
+        await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${LAUNCHED_ID}`));
+        const body = launches()[0]!.body as Record<string, unknown>;
+        expect(body).not.toHaveProperty('executor');
+        expect(body).not.toHaveProperty('executorScope');
+    });
+
+    it('with no agent default either, Start stays dark behind the missing-executor banner', async () => {
+        const user = userEvent.setup();
+        const { launches } = openComposer(reposReply(['web']), undefined, profileless(null));
+        const prompt = await screen.findByLabelText('What should the agent do?');
+        await user.type(prompt, 'fix the login crash');
+        await waitFor(() =>
+            expect(document.querySelector('.composer .banner-bad')?.textContent).toContain('No executor configured')
+        );
+        expect(startButton().disabled).toBe(true);
+        await user.keyboard(KEYBOARD_LAUNCH);
+        expect(launches()).toHaveLength(0);
     });
 });

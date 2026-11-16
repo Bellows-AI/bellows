@@ -43,7 +43,7 @@ const entry = (name: string, extra: Record<string, unknown> = {}) => ({
 
 type RepoSkills = NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills'];
 
-async function boot(repoSkills?: RepoSkills) {
+async function boot(repoSkills?: RepoSkills, overrides: Parameters<typeof testConfig>[0] = {}) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
@@ -52,14 +52,27 @@ async function boot(repoSkills?: RepoSkills) {
     // A task needs a tracked repository: the board tracks one, so these tests keep exercising the
     // executor refusal rather than the repository's.
     const repos = staticRepoSource([READY_REPO]);
-    const queued: { command: string; executor: string | null; scope: string | undefined }[] = [];
+    const queued: {
+        command: string;
+        executor: string | null;
+        scope: string | undefined;
+        agentType?: string | null | undefined;
+        agentModel?: string | null | undefined;
+    }[] = [];
     const jobs = jobStoreSlice<JobActionStore>({
-        async create(command: string, _by: string | null, target?: { executor?: string; executorScope?: string }) {
-            queued.push({ command, executor: target?.executor ?? null, scope: target?.executorScope });
+        async create(command: string, _by: string | null, target: Parameters<JobActionStore['create']>[2]) {
+            const { agentType, agentModel } = target;
+            queued.push({
+                command,
+                executor: target.executor ?? null,
+                scope: target.executorScope,
+                // Recorded only when create stamps an agent default, so the profile cases keep their exact shape.
+                ...(agentType || agentModel ? { agentType, agentModel } : {}),
+            });
             return { id: '11111111-1111-4111-8111-111111111111' };
         },
     });
-    const config = testConfig({ auth: githubAuth() });
+    const config = testConfig({ auth: githubAuth(), ...overrides });
     const instance = await buildApp({
         config,
         orgs: staticRegistry({
@@ -352,12 +365,12 @@ describe('POST /api/jobs against a suspended profile', () => {
 });
 
 describe('POST /api/jobs naming no executor', () => {
-    const queueBare = (b: Booted, cookie: string) =>
+    const queueBare = (b: Booted, cookie: string, extra: Record<string, unknown> = {}) =>
         b.instance.inject({
             method: 'POST',
             url: '/api/jobs',
             headers: { cookie },
-            payload: { command: 'echo hi', repo: `${READY_REPO.owner}/${READY_REPO.name}` },
+            payload: { command: 'echo hi', repo: `${READY_REPO.owner}/${READY_REPO.name}`, ...extra },
         });
 
     it("stamps the caller's resolved default, so the claim has a profile to run", async () => {
@@ -374,6 +387,79 @@ describe('POST /api/jobs naming no executor', () => {
         await putPersonal(b, b.memberCookie, [entry('mine')]);
         expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
         expect(b.queued).toEqual([{ command: 'echo hi', executor: 'mine', scope: 'user' }]);
+    });
+
+    const putAgentDefault = (b: Booted, cookie: string, owner: 'personal' | 'org', model: string) =>
+        b.instance.inject({
+            method: 'PUT',
+            url: `/api/agent-default/${owner}`,
+            headers: { cookie },
+            payload: { agentType: 'opencode', model },
+        });
+
+    it("freezes the caller's agent default on the task when no profile exists: no executor, the agent and its model", async () => {
+        const b = await boot();
+        expect((await putAgentDefault(b, b.memberCookie, 'personal', 'mine-model')).statusCode).toBe(200);
+
+        const response = await queueBare(b, b.memberCookie);
+
+        expect(response.statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toEqual([
+            { command: 'echo hi', executor: null, scope: 'user', agentType: 'opencode', agentModel: 'mine-model' },
+        ]);
+    });
+
+    it("a chosen model wins over the agent default's model and keeps its agent", async () => {
+        const b = await boot();
+        expect((await putAgentDefault(b, b.memberCookie, 'personal', 'mine-model')).statusCode).toBe(200);
+
+        expect((await queueBare(b, b.memberCookie, { model: 'picked' })).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toEqual([
+            { command: 'echo hi', executor: null, scope: 'user', agentType: 'opencode', agentModel: 'picked' },
+        ]);
+    });
+
+    it('a chosen model rides a profile task alone: the profile stays, no agent is frozen', async () => {
+        const b = await boot();
+        await createOrg(b, 'Main');
+
+        expect((await queueBare(b, b.memberCookie, { model: 'picked' })).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toStrictEqual([
+            { command: 'echo hi', executor: 'Main', scope: 'org', agentType: undefined, agentModel: 'picked' },
+        ]);
+    });
+
+    it("the organization's agent default outranks a profile, as the resolution order says", async () => {
+        const b = await boot();
+        await createOrg(b, 'Main');
+        expect((await putAgentDefault(b, b.adminCookie, 'org', 'team-model')).statusCode).toBe(200);
+
+        expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toEqual([
+            { command: 'echo hi', executor: null, scope: 'user', agentType: 'opencode', agentModel: 'team-model' },
+        ]);
+    });
+
+    it('runs on the platform model once the model setup saved it: no profile, no key, no NO_EXECUTOR', async () => {
+        const b = await boot(undefined, { platformModelProvided: true });
+        const saved = await b.instance.inject({
+            method: 'PUT',
+            url: '/api/model-setup',
+            headers: { cookie: b.memberCookie },
+            payload: { scope: 'personal', provider: 'platform', agentType: 'claude-code', model: 'claude-sonnet-4-5' },
+        });
+        expect(saved.statusCode).toBe(200);
+
+        expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toEqual([
+            {
+                command: 'echo hi',
+                executor: null,
+                scope: 'user',
+                agentType: 'claude-code',
+                agentModel: 'claude-sonnet-4-5',
+            },
+        ]);
     });
 
     it('refuses with 409 NO_EXECUTOR, naming where to configure one, when the caller has no usable profile', async () => {

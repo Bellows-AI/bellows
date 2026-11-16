@@ -5,7 +5,7 @@ import type { JobActionStore } from '../../db/jobs/job-store-action-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad, body } from '../helpers.js';
 import { resolveJobRoute } from '../route-guards.js';
-import { validateCommandField } from './job-field-validation.js';
+import { validateCommandField, validateModelField } from './job-field-validation.js';
 import { guardKeyed, idempotencyOf, sendQueued } from './job-idempotency.js';
 import { followUpRefusal } from './job-refusals.js';
 import { taskRefsOf } from './job-task-refs.js';
@@ -21,7 +21,7 @@ export const adminOf = (request: FastifyRequest): boolean => callerOf(request)?.
 // on a parent that turns out to be running or done. No lease token — the task is finished, nobody
 // holds it, and this is a person's action for exactly that reason. The executor is NOT taken from
 // the body: the adjustment is bound to the executor that ran the task, copied from the parent at
-// insert like the repo and the session.
+// insert like the repo and the session. Only `model` may change: the parent's otherwise.
 export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
@@ -30,6 +30,9 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
     const fields = body(request.body);
     const commandResult = validateCommandField(fields.command);
     if (!commandResult.ok) return bad(reply, ERROR_CODES.BAD_COMMAND, commandResult.message);
+    // A follow-up may choose the model its run gets, never the agent: the agent never changes in a thread.
+    const model = validateModelField(fields.model);
+    if (!model.ok) return bad(reply, ERROR_CODES.BAD_BODY, model.message);
 
     // Read off the authenticated request, never off the body — the create route's rule about
     // impersonation applies word for word here.
@@ -44,6 +47,7 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
         command: commandResult.value,
         connections: fields.connections,
         attachments: fields.attachments,
+        model: model.value,
     };
     const idempotency = idempotencyOf(request, reply, 'follow-up', fingerprint);
     if (!idempotency.ok) return reply;
@@ -60,7 +64,8 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
                 idempotency.value,
                 connectionIds,
                 admin,
-                attachmentIds
+                attachmentIds,
+                model.value
             )
     );
     if (!created.ok) return reply;

@@ -3,13 +3,18 @@ import type { ConnectionView } from '../api/connections.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 
 export const WRITE_CONSENT_TITLE = 'Allow adding comments';
+/** The comment-access choice wherever a connection is asked for: a connect dialog, a setup card, a row action. */
+export const ALLOW_COMMENTS_LABEL = 'Allow adding comments';
+/** What the comment-access choice changes, for a provider by its catalog name. */
+export const commentsHelp = (label: string): string =>
+    `Without it tasks can only look ${label} up; with it they can also add comments.`;
 
 /**
  * The confirmation before a read connection asks the provider for comment access, in the
  * `OrgExecutorConfirmDialog` shape. `authority` names whose consent screen the member is sent to
- * (Atlassian for Jira, Linear for Linear). It states the consequence the board enforces: granting
- * write on a grant makes the tasks earlier bound read-only to that account refuse. Presentational —
- * the section starts the reconnect.
+ * (`consentAuthority`). It states the consequence the board enforces: granting write on a grant
+ * makes the tasks earlier bound read-only to that account refuse. Presentational — the section
+ * starts the reconnect.
  */
 export function WriteConsentDialog({
     connection,

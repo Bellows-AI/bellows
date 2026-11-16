@@ -3,9 +3,8 @@ import { batchRoutes } from './batch.js';
 import type { BatchRoutes } from './batch.js';
 import { operatorRoutes } from './operator-routes.js';
 import type { OperatorRoutes } from './operator-routes.js';
-import { attachRoutes } from './attach.js';
-import { preflightRoutes } from './diagnostics.js';
-import type { Preflight, PreflightSelection } from './diagnostics.js';
+import { attachRoutes, type FollowUpExtras } from './attach.js';
+import { preflightRoutes, type Preflight, type PreflightSelection } from './diagnostics.js';
 import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER, JSON_CONTENT_TYPE } from './http.js';
 import {
     BoardError,
@@ -317,6 +316,8 @@ export interface BoardClient extends BatchRoutes, OperatorRoutes {
         baseBranch?: string | undefined;
         /** The task's own title, sent verbatim: the board normalizes it. Absent leaves the derived title. */
         title?: string | undefined;
+        /** The model the agent runs, over the profile's or the agent default's; absent sends none. */
+        model?: string | undefined;
         /** The skills the task selects; absent selects none. */
         skills?: string[] | undefined;
         /** Names this logical attempt; a repeat under the same key never makes a second task. */
@@ -357,7 +358,7 @@ export interface BoardClient extends BatchRoutes, OperatorRoutes {
     ): Promise<{ jobId: string; streams: readonly ArtifactStream[] }>;
     /** One page of the selected streams' text, in attempt, session, stream and offset order. */
     readArtifacts(id: string, filters: ArtifactFilters): Promise<ArtifactPage>;
-    followUp(id: string, command: string, key?: string, attachments?: readonly string[]): Promise<JobCreated>;
+    followUp(id: string, command: string, key?: string, extras?: FollowUpExtras): Promise<JobCreated>;
     /** Uploads one file as a draft; the key makes a repeat answer the first attempt's id. */
     uploadAttachment(input: { name: string; bytes: Uint8Array; idempotencyKey: string }): Promise<{ id: string }>;
     /** Re-runs the thread head's own command as a fresh attempt; the board takes nothing from a body. */
@@ -650,14 +651,12 @@ export function createBoardClient({
 
         ...preflightRoutes(request, authHeaders),
 
-        async followUp(id, command, idempotencyKey, attachments) {
-            // The command is the whole body: the repo, the executor and the session are copied
-            // from the parent at insert, and sending them here would be a second opinion the
-            // board does not ask for.
+        async followUp(id, command, idempotencyKey, { attachments, model } = {}) {
+            // Command, uploads and a chosen model only: repo, executor, agent and session come from the parent.
             return created(`${jobPath(id)}/follow-up`, {
                 method: 'POST',
                 headers: { ...authHeaders(), ...keyHeader(idempotencyKey), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
-                body: JSON.stringify({ command, ...(attachments?.length ? { attachments } : {}) }),
+                body: JSON.stringify({ command, model, ...(attachments?.length ? { attachments } : {}) }),
             });
         },
 

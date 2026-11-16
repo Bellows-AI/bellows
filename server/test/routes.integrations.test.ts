@@ -1,3 +1,4 @@
+import { INTEGRATION_CATALOG, type IntegrationProvider } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type {
@@ -37,6 +38,7 @@ interface Boot {
     start?: (input: StartAuthorizationInput) => StartAuthorizationResult | Promise<StartAuthorizationResult>;
     complete?: (input: CompleteAuthorizationInput) => CompleteAuthorizationResult;
     configured?: readonly string[];
+    catalog?: readonly IntegrationProvider[];
     /** Registered beside the real Jira registration. */
     extra?: readonly ProviderRegistration[];
 }
@@ -49,7 +51,7 @@ const fakeRegistration: ProviderRegistration = {
     notConfigured: FAKE_NOT_CONFIGURED,
 };
 
-async function boot({ start, complete, configured, extra = [] }: Boot = {}) {
+async function boot({ start, complete, configured, catalog, extra = [] }: Boot = {}) {
     const registry = combineRegistrations([jiraProvider(null, null), ...extra]);
     const lines: string[] = [];
     const started: { ctx: TrustedIntegrationContext; input: StartAuthorizationInput }[] = [];
@@ -87,6 +89,7 @@ async function boot({ start, complete, configured, extra = [] }: Boot = {}) {
             }),
             flowOf: () => flow,
             configured,
+            catalog,
             ids: registry.ids,
             notConfiguredOf: registry.notConfiguredOf,
         },
@@ -281,17 +284,60 @@ describe('GET /api/integrations', () => {
     it('reports whether Jira is configured, as booleans only, and never caches the answer', async () => {
         const configured = await list(await boot({ configured: ['jira'] }));
         expect(configured.statusCode).toBe(200);
-        expect(configured.json()).toEqual({ integrations: [{ provider: 'jira', configured: true }] });
+        expect(configured.json()).toEqual({
+            integrations: [
+                { provider: 'jira', configured: true },
+                { provider: 'linear', configured: false },
+            ],
+        });
         expect(configured.headers['cache-control']).toBe('no-store');
         const absent = await list(await boot());
-        expect(absent.json()).toEqual({ integrations: [{ provider: 'jira', configured: false }] });
+        expect(absent.json()).toEqual({
+            integrations: [
+                { provider: 'jira', configured: false },
+                { provider: 'linear', configured: false },
+            ],
+        });
     });
 
-    it('lists every registered provider', async () => {
-        const response = await list(await boot({ configured: ['fake'], extra: [fakeRegistration] }));
+    it('answers one row per oauth provider of the catalog, so a new one shows without a route change', async () => {
+        const acme: IntegrationProvider = {
+            id: 'acme',
+            label: 'Acme Tracker',
+            category: 'Issue tracking',
+            availability: 'oauth',
+            description: 'Let tasks read Acme issues.',
+        };
+        const response = await list(await boot({ configured: ['acme'], catalog: [...INTEGRATION_CATALOG, acme] }));
+        // GitHub (organization) and the planned providers have no Connect, so no row.
         expect(response.json()).toEqual({
             integrations: [
                 { provider: 'jira', configured: false },
+                { provider: 'linear', configured: false },
+                { provider: 'acme', configured: true },
+            ],
+        });
+    });
+
+    it('lists a registered provider the catalog offers', async () => {
+        const fake: IntegrationProvider = {
+            id: 'fake',
+            label: 'Fake',
+            category: 'Issue tracking',
+            availability: 'oauth',
+            description: 'Let tasks read fake issues.',
+        };
+        const response = await list(
+            await boot({
+                configured: ['fake'],
+                extra: [fakeRegistration],
+                catalog: [...INTEGRATION_CATALOG, fake],
+            })
+        );
+        expect(response.json()).toEqual({
+            integrations: [
+                { provider: 'jira', configured: false },
+                { provider: 'linear', configured: false },
                 { provider: 'fake', configured: true },
             ],
         });

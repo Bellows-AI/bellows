@@ -202,11 +202,13 @@ describe('deriveReadiness — repositories come from the tracked list', () => {
 });
 
 describe('deriveReadiness — executors', () => {
-    it('reads zero rows as the deployment default, not an error', () => {
+    it('reads zero rows as no executor profile, not an error, pointing at the agent default', () => {
         const items = byId(...deriveReadiness(input({ workspace: { data: workspaceData() } })));
-        expect(items.get('executors')?.status).toBe('Using the deployment default');
+        expect(items.get('executors')?.status).toBe('No executor profile');
         expect(items.get('executors')?.tone).toBe('info');
         expect(JSON.stringify(items.get('executors')?.facts)).toContain('No personal executor rows are required');
+        expect(JSON.stringify(items.get('executors')?.facts)).toContain('agent default');
+        expect(JSON.stringify(items.get('executors')?.facts)).not.toContain('deployment default');
         expect(items.get('executors')?.action).toEqual({ label: 'Manage executors', to: '/settings/executors' });
     });
 

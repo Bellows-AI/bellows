@@ -1,3 +1,4 @@
+import type { IntegrationProvider } from '@factory-ai/core';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyServerOptions } from 'fastify';
 import type { DriverCredentialStore } from './auth/driver-credentials.js';
@@ -30,6 +31,9 @@ import type { OperationReceipts } from './db/operation-receipts.js';
 import { operationReceiptRoutes } from './routes/operation-receipts.js';
 import { integrationCatalogRoutes } from './routes/integration-catalog.js';
 import { integrationRoutes } from './routes/integrations.js';
+import { modelSetupRoutes } from './routes/model-setup.js';
+import { modelSetupVerifyRoutes } from './routes/model-setup-verify.js';
+import type { ProviderKeys } from './provider-keys/verify.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
@@ -140,7 +144,9 @@ export interface AppDeps {
               Partial<Pick<IntegrationRuntime, 'destroyRevokedSecret' | 'flowOf'>> & {
                   /** The provider ids with an OAuth client registered here; `GET /api/integrations` reports it as booleans. */
                   configured?: readonly string[] | undefined;
-                  /** Every registered provider id, configured or not: the list `GET /api/integrations` answers. */
+                  /** The catalog `GET /api/integrations` answers for; the tests' seam for a provider not shipped. */
+                  catalog?: readonly IntegrationProvider[] | undefined;
+                  /** Every registered provider id, configured or not: a start of one unconfigured is refused, not 404. */
                   ids?: readonly string[] | undefined;
                   /** The refusal sentence of an unconfigured provider's start. */
                   notConfiguredOf?: ((provider: string) => string) | undefined;
@@ -185,6 +191,8 @@ export interface AppDeps {
     attachmentMaxInFlight?: number | undefined;
     /** The single-use upload capabilities; with it the upload-request routes and the capability PUT exist. */
     uploadCapabilities?: UploadCapabilityStore | undefined;
+    /** The provider key check; with it `POST /api/model-setup/verify` exists. main.ts builds it for the deployment mode. */
+    providerKeys?: ProviderKeys | undefined;
 }
 
 // Set as a response header rather than a <meta> tag so dev can allow the Vite HMR
@@ -307,12 +315,13 @@ async function registerRunnerCredentialRoutes(
     }
     // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
     if (integrations?.flowOf) {
-        // Absent, no provider is registered: the list is empty and a refusal names the provider alone.
+        // Absent, no provider is registered: a start is refused as not found and a refusal names the provider alone.
         const none = combineRegistrations([]);
         await app.register(
             integrationRoutes({
                 flowOf: integrations.flowOf,
                 configured: integrations.configured,
+                catalog: integrations.catalog,
                 providers: integrations.ids ?? none.ids,
                 notConfiguredOf: integrations.notConfiguredOf ?? none.notConfiguredOf,
             })
@@ -320,13 +329,19 @@ async function registerRunnerCredentialRoutes(
     }
 }
 
-async function registerCommerce(
+/**
+ * The routes that exist only with their dependency — commerce (and COMMERCE_ENABLED), the provider key check — and
+ * the model setup the key check serves, which every board has.
+ */
+async function registerOptionalRoutes(
     app: FastifyInstance,
     config: AppConfig,
     orgs: OrgRegistry,
-    writer: CommercePlanWriter | undefined
+    { commercePlanWriter: writer, providerKeys, now }: Pick<AppDeps, 'commercePlanWriter' | 'providerKeys' | 'now'>
 ): Promise<void> {
     if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
+    if (providerKeys) await app.register(modelSetupVerifyRoutes({ providerKeys, now }));
+    await app.register(modelSetupRoutes({ config, orgs }));
 }
 
 /** What the personal and the organization executor routes share: the deployment mode and the runner classes. */
@@ -364,6 +379,7 @@ export async function buildApp({
     installationListing,
     commercePlanWriter,
     oauth,
+    providerKeys,
     notificationConnectors = createConnectorRegistry([]),
     ready,
     version = readVersion(),
@@ -485,8 +501,8 @@ export async function buildApp({
         githubRevoke,
     });
     await app.register(workspaceRoutes(executorRouteDeps(config, orgs)));
-    // Plans and usage: like the webhook, no route exists unless the deployment turned commerce on.
-    await registerCommerce(app, config, orgs, commercePlanWriter);
+    // Plans and usage (like the webhook, only when the deployment turned commerce on) and the provider key check.
+    await registerOptionalRoutes(app, config, orgs, { commercePlanWriter, providerKeys, now });
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes(executorRouteDeps(config, orgs)));
