@@ -130,7 +130,8 @@ export function AdvancedBase({
                     onChange={(event) => onChange(event.target.value)}
                 />
                 <p className="picker-help" id={`${ids}-base-help`}>
-                    Only for a gateway you run. Saved as <span className="mono">{name}</span> beside your key.
+                    Only for a gateway you run. Saved as <span className="mono">{name}</span> beside your key; left
+                    empty, a base URL saved earlier in this scope is removed.
                 </p>
             </div>
         </details>

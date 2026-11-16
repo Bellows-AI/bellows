@@ -1,6 +1,6 @@
-import { ADMIN_ROLE, type ModelProvider, SELF_HOSTED } from '@factory-ai/core';
+import { ADMIN_ROLE, isModelProvider, type ModelProvider, SELF_HOSTED } from '@factory-ai/core';
 import { useState } from 'react';
-import type { SetupScope, UseModelSetup } from '../api/useModelSetup.js';
+import type { ModelScopeView, SetupScope, UseModelSetup } from '../api/useModelSetup.js';
 import type { Session } from '../api/useSession.js';
 import { StateNote } from '../components/StateNote.js';
 import { AgentModelFields, useAgentModel } from './AgentModelFields.js';
@@ -8,6 +8,7 @@ import { AdvancedBase, KeyField, ProxyField, SecretNote } from './KeyField.js';
 import { ProviderCards } from './ProviderCards.js';
 import { agentLock, detectProvider, PROVIDER_META, providerAgents, providerChoices, saveReason } from './providers.js';
 import { useSaveRun } from './SavePrimary.js';
+import { keyBody } from './save-body.js';
 import { ScopeControl } from './ScopeControl.js';
 import { useKeyCheck } from './useKeyCheck.js';
 
@@ -18,30 +19,46 @@ const PROXY_MODEL_HELP = 'Read from the proxy after the check. Saved as your def
 const baseFor = (provider: ModelProvider, proxy: string, base: string) =>
     provider === 'litellm' ? proxy : provider === 'subscription' ? '' : base;
 
+/** A scope's saved provider, when it is one this deployment offers. */
+const savedProvider = (scopeView: ModelScopeView | null | undefined, choices: readonly ModelProvider[]) => {
+    const provider = scopeView?.provider;
+    return isModelProvider(provider) && choices.includes(provider) ? provider : null;
+};
+
 /**
  * The key form's state: provider (moved by a pasted key's prefix), key and its live check, base URLs, agent and model,
- * and scope — an admin's preselection is the organization until they pick, or until "Use a personal key".
+ * and scope. Until the member picks, each starts from what is saved: the scope holding the member's own key (else an
+ * admin's organization), that scope's provider, and its agent default while the provider is the saved one — an
+ * unlisted saved model included — so a save never swaps a saved value for a preselection the member did not see.
  */
 export function useKeyForm(session: Session | null, setup: UseModelSetup, onSaved: () => void | Promise<void>) {
     const mode = session?.deploymentMode ?? SELF_HOSTED;
     const admin = session?.role === ADMIN_ROLE;
-    const [provider, setProvider] = useState<ModelProvider>('anthropic');
+    const view = setup.data;
+    const choices = providerChoices(mode);
+    const [scopePick, setScopePick] = useState<SetupScope | null>(null);
+    const scope = scopePick ?? (admin && !view?.personal?.keyNames.length ? 'org' : 'personal');
+    const scopeView = view?.[scope];
+    const [providerPick, setProviderPick] = useState<ModelProvider | null>(null);
+    const provider = providerPick ?? savedProvider(scopeView, choices) ?? 'anthropic';
     const [key, setKey] = useState('');
     const [proxy, setProxy] = useState('');
     const [base, setBase] = useState('');
-    const [scopePick, setScopePick] = useState<SetupScope | null>(null);
-    const scope = scopePick ?? (admin ? 'org' : 'personal');
     const baseUrl = baseFor(provider, proxy, base).trim();
     const check = useKeyCheck({ provider, key, baseUrl, mode });
-    const choice = useAgentModel(provider, providerAgents(provider), check.models);
+    const saved =
+        scopeView && scopeView.provider === provider
+            ? { agent: scopeView.agentType, model: scopeView.model }
+            : undefined;
+    const choice = useAgentModel(provider, providerAgents(provider), check.models, saved);
     const save = useSaveRun(setup, onSaved);
     const choose = (next: ModelProvider) => {
         if (next === provider) return;
-        setProvider(next);
+        setProviderPick(next);
         choice.reset();
     };
     return {
-        choices: providerChoices(mode),
+        choices,
         admin,
         provider,
         choose,
@@ -61,14 +78,7 @@ export function useKeyForm(session: Session | null, setup: UseModelSetup, onSave
         save,
         reason: saveReason({ provider, key, baseUrl, model: choice.model, check: check.kind }),
         press: () =>
-            void save.run({
-                scope,
-                provider,
-                key: key.trim(),
-                ...(baseUrl ? { baseUrl } : {}),
-                agentType: choice.agent,
-                model: choice.model,
-            }),
+            void save.run(keyBody({ scope, provider, key, baseUrl, agentType: choice.agent, model: choice.model })),
     };
 }
 

@@ -1,4 +1,4 @@
-import type { ExecutorType } from '@factory-ai/core';
+import { type ExecutorType, normalizeModelId } from '@factory-ai/core';
 import { useState } from 'react';
 import { executorTypeLabel } from '../workspace/executors.js';
 import { type ModelSource, modelOptions } from './providers.js';
@@ -23,9 +23,38 @@ export interface AgentModel {
 }
 
 /**
+ * Where a saved model lands among the options: the option it names once both are normalized the way core stores ids
+ * (`normalizeModelId`), else "Other…" with the saved id as its free text. Never the first option in its place.
+ */
+export function savedModelChoice(
+    source: ModelSource,
+    agent: ExecutorType,
+    options: readonly string[],
+    saved: string
+): { option: string } | { free: string } {
+    const stored = normalizeModelId(source, agent, saved);
+    const option = options.find((id) => normalizeModelId(source, agent, id) === stored);
+    return option === undefined ? { free: saved } : { option };
+}
+
+/** The model while the saved one stands: its option, or its id as the "Other…" text. */
+const keptModel = (kept: { option: string } | { free: string }) =>
+    'free' in kept
+        ? { freeText: true, text: kept.free, model: kept.free }
+        : { freeText: false, text: '', model: kept.option };
+
+/** The model the member picked: an option (the first until one is picked), or the "Other…" text. */
+function pickedModel(options: readonly string[], pick: string | null, other: boolean, custom: string) {
+    const freeText = other || options.length === 0;
+    if (freeText) return { freeText, text: custom, model: custom.trim() };
+    return { freeText, text: custom, model: pick !== null && options.includes(pick) ? pick : (options[0] ?? '') };
+}
+
+/**
  * The agent and model choice for a source: the agent preselected per source (the first it runs), the models the key
- * check returned or the curated ones, and "Other…" for any id. `saved` is a default already saved: preselected until
- * the member picks, whenever it arrives.
+ * check returned or the curated ones, and "Other…" for any id. `saved` is a default already saved: shown as it is —
+ * an unlisted id as "Other…" text — until the member changes the agent or the model, whenever it arrives. Only a
+ * change the member makes (`reset`, a new agent) may drop it.
  */
 export function useAgentModel(
     source: ModelSource,
@@ -33,38 +62,50 @@ export function useAgentModel(
     checked: readonly string[] | undefined,
     saved?: { agent: ExecutorType | null; model: string | null }
 ): AgentModel {
+    const [touched, setTouched] = useState(false);
     const [agentPick, setAgentPick] = useState<ExecutorType | null>(null);
     const [modelPick, setModelPick] = useState<string | null>(null);
     const [other, setOther] = useState(false);
-    const [custom, setCustom] = useState('');
+    const [custom, setCustomText] = useState('');
     const offered = (pick: ExecutorType | null | undefined): pick is ExecutorType =>
         pick != null && agents.includes(pick);
     const savedAgent = saved?.agent;
     const agent = offered(agentPick) ? agentPick : offered(savedAgent) ? savedAgent : (agents[0] as ExecutorType);
     const options = modelOptions(source, agent, checked);
-    const freeText = other || options.length === 0;
-    const preferred = modelPick ?? (agentPick === null ? saved?.model : null) ?? null;
-    const picked = preferred !== null && options.includes(preferred) ? preferred : (options[0] ?? '');
+    const savedModel = saved?.model;
+    const kept = !touched && savedModel ? savedModelChoice(source, agent, options, savedModel) : null;
+    const { freeText, text, model } = kept ? keptModel(kept) : pickedModel(options, modelPick, other, custom);
     return {
         agents,
         agent,
         setAgent: (next) => {
+            setTouched(true);
             setAgentPick(next);
             setModelPick(null);
+            setOther(false);
         },
         options,
-        model: freeText ? custom.trim() : picked,
+        model,
         freeText,
-        custom,
+        custom: text,
         pick: (value) => {
+            // Leaving the saved state starts from what it showed: the saved id stays as the "Other…" text.
+            setTouched(true);
+            setCustomText(text);
             setOther(value === OTHER);
             if (value !== OTHER) setModelPick(value);
         },
-        setCustom,
+        setCustom: (value) => {
+            setTouched(true);
+            setOther(true);
+            setCustomText(value);
+        },
         reset: () => {
+            setTouched(true);
             setAgentPick(null);
             setModelPick(null);
             setOther(false);
+            setCustomText('');
         },
     };
 }
