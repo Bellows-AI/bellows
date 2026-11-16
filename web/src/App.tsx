@@ -21,6 +21,7 @@ import { SettingsIntegrationsCatalogPage } from './pages/SettingsIntegrationsCat
 import { SettingsIntegrationDetailPage } from './pages/SettingsIntegrationDetailPage.js';
 import { SettingsIntegrationsPage } from './pages/SettingsIntegrationsPage.js';
 import { SettingsLayout } from './pages/SettingsLayout.js';
+import { SettingsModelPage } from './pages/SettingsModelPage.js';
 import { SettingsOrganizationPage } from './pages/SettingsOrganizationPage.js';
 import { SettingsOverviewPage } from './pages/SettingsOverviewPage.js';
 import { SettingsRepositoriesPage } from './pages/SettingsRepositoriesPage.js';
@@ -84,6 +85,7 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
                 <Route index element={<SettingsOverviewPage />} />
                 <Route path="organization" element={<SettingsOrganizationPage />} />
                 <Route path="workspace" element={<SettingsWorkspacePage />} />
+                <Route path="model" element={<SettingsModelPage />} />
                 <Route path="integrations">
                     <Route index element={<SettingsIntegrationsPage />} />
                     <Route path="available" element={<SettingsIntegrationsCatalogPage />} />
