@@ -149,7 +149,11 @@ describe('integrationNotice', () => {
             tone: 'info',
         });
         expect(integrationNotice('fake', 'denied', catalog)).toEqual({
-            message: 'Fake Tracker connection failed (denied).',
+            message: 'Fake Tracker consent was denied; nothing was connected.',
+            tone: 'warn',
+        });
+        expect(integrationNotice('fake', 'error', catalog)).toEqual({
+            message: 'Fake Tracker connection failed (error).',
             tone: 'bad',
         });
         expect(integrationNotice('jira', 'denied', catalog)?.message).toBe(

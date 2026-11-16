@@ -31,16 +31,22 @@ export interface IntegrationNotice {
     tone: 'info' | 'warn' | 'bad';
 }
 
-/** Each callback result's sentence, worded from the provider's catalog name; any other result is a failure. */
-const RESULT_NOTICE: Record<string, (label: string) => IntegrationNotice> = {
+/**
+ * Each callback result's sentence, worded from the provider's catalog name and whose consent screen it sends the member
+ * to (`consentAuthority`: Atlassian for Jira); any other result is a failure.
+ */
+const RESULT_NOTICE: Record<string, (label: string, authority: string) => IntegrationNotice> = {
     connected: (label) => ({ message: `${label} connected.`, tone: 'info' }),
-    denied: (label) => ({ message: `${label} consent was denied; nothing was connected.`, tone: 'warn' }),
-    'identity-mismatch': (label) => ({
-        message: `That ${label} account is not the account this connection was made with. Reconnect with the original account, or disconnect and connect again.`,
+    denied: (_label, authority) => ({
+        message: `${authority} consent was denied; nothing was connected.`,
+        tone: 'warn',
+    }),
+    'identity-mismatch': (_label, authority) => ({
+        message: `That ${authority} account is not the account this connection was made with. Reconnect with the original account, or disconnect and connect again.`,
         tone: 'bad',
     }),
-    'site-mismatch': (label) => ({
-        message: `The ${label} account cannot reach that site, so nothing was connected.`,
+    'site-mismatch': (_label, authority) => ({
+        message: `The ${authority} account cannot reach that site, so nothing was connected.`,
         tone: 'bad',
     }),
 };
@@ -71,6 +77,6 @@ export const integrationNotice = (
     if (own) return own;
     const notice = RESULT_NOTICE[result];
     return notice
-        ? notice(provider.label)
+        ? notice(provider.label, consentAuthority(provider))
         : { message: `${provider.label} connection failed (${result}).`, tone: 'bad' };
 };

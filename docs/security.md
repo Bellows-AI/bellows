@@ -45,8 +45,7 @@ On kubernetes every control is **required by admission** (`charts/factory/templa
 | Agent launch, the `agent` and `reviewer` containers alone | `runAsUser: 0`, `capabilities.add: [SETUID, SETGID]`, admitted on a Job's `agent`, and on a `reviewer` whose command is `factory-launch --reviewer` | `--user 0:0 --cap-add SETUID --cap-add SETGID` |
 | Docker daemon, a docker class's `dockerd` alone | `privileged: true`, no added capability, no `drop`, no escalation field; admitted only as the `dockerd` init container of a docker class under its class's RuntimeClass | none: the docker executor refuses a docker class |
 
-There is **no opt-out for a declared service or a GATE image**: one needing root at boot declares `user: "uid:gid"`
-(numeric, uid never 0). `server/src/workspace/bellows-services.ts`, `driver/test/k8s-admission.test.ts`.
+There is **no opt-out for a declared service or a GATE image**: one needing root at boot declares `user: "uid:gid"` (numeric, uid never 0). `server/src/workspace/bellows-services.ts`, `driver/test/k8s-admission.test.ts`.
 
 ## Stated limits
 
