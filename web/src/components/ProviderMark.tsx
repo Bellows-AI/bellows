@@ -7,10 +7,12 @@ import { integrationProvider } from '@factory-ai/core';
  *
  * Sources: Simple Icons 16.36.0 (the path data is CC0; each mark stays its owner's trademark, used here only to name
  * the integration, per the owner's brand guidelines), except Slack, which Simple Icons no longer carries. Each path
- * keeps its published grid and the default nonzero fill rule it was drawn for.
+ * keeps its published grid and the default nonzero fill rule it was drawn for. The model providers (the model step's
+ * cards) are simple stand-in glyphs drawn here, Anthropic's after Simple Icons `anthropic`; a line glyph (`stroke`) is
+ * stroked in the brand token instead of filled.
  */
 
-const GLYPHS: Record<string, { viewBox: string; d: string }> = {
+const GLYPHS: Record<string, { viewBox: string; d: string; stroke?: number }> = {
     // Simple Icons `jira`.
     jira: {
         viewBox: '0 0 24 24',
@@ -41,7 +43,44 @@ const GLYPHS: Record<string, { viewBox: string; d: string }> = {
         viewBox: '0 0 24 24',
         d: 'M13.85 0a4.16 4.16 0 0 0-2.95 1.217L1.456 10.66a.835.835 0 0 0 0 1.18.835.835 0 0 0 1.18 0l9.442-9.442a2.49 2.49 0 0 1 3.541 0 2.49 2.49 0 0 1 0 3.541L8.59 12.97l-.1.1a.835.835 0 0 0 0 1.18.835.835 0 0 0 1.18 0l.1-.098 7.03-7.034a2.49 2.49 0 0 1 3.542 0l.049.05a2.49 2.49 0 0 1 0 3.54l-8.54 8.54a1.96 1.96 0 0 0 0 2.755l1.753 1.753a.835.835 0 0 0 1.18 0 .835.835 0 0 0 0-1.18l-1.753-1.753a.266.266 0 0 1 0-.394l8.54-8.54a4.185 4.185 0 0 0 0-5.9l-.05-.05a4.16 4.16 0 0 0-2.95-1.218c-.2 0-.401.02-.6.048a4.17 4.17 0 0 0-1.17-3.552A4.16 4.16 0 0 0 13.85 0m0 3.333a.84.84 0 0 0-.59.245L6.275 10.56a4.186 4.186 0 0 0 0 5.902 4.186 4.186 0 0 0 5.902 0L19.16 9.48a.835.835 0 0 0 0-1.18.835.835 0 0 0-1.18 0l-6.985 6.984a2.49 2.49 0 0 1-3.54 0 2.49 2.49 0 0 1 0-3.54l6.983-6.985a.835.835 0 0 0 0-1.18.84.84 0 0 0-.59-.245',
     },
+    // Simple Icons `anthropic`.
+    anthropic: {
+        viewBox: '0 0 24 24',
+        d: 'M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z',
+    },
+    // A routing fork: one key in, any model out.
+    openrouter: {
+        viewBox: '0 0 24 24',
+        d: 'M2 12h5c3 0 3-6 7-6h7M18 3l3 3-3 3M7 12c3 0 3 6 7 6h7M18 15l3 3-3 3',
+        stroke: 2.2,
+    },
+    // A knot of three interlocked links.
+    openai: {
+        viewBox: '0 0 24 24',
+        d: 'M12 3.5a4.5 4.5 0 0 1 4.4 3.6 4.5 4.5 0 0 1 3 6.9 4.5 4.5 0 0 1-5.1 5.9A4.5 4.5 0 0 1 7.6 18a4.5 4.5 0 0 1-3-6.9 4.5 4.5 0 0 1 5.1-5.9A4.5 4.5 0 0 1 12 3.5zM9.5 8.5v6l5 3M14.5 15.5v-6l-5-3',
+        stroke: 2,
+    },
+    // Two stacked servers: a proxy the member runs.
+    litellm: {
+        viewBox: '0 0 24 24',
+        d: 'M4.5 4h15A1.5 1.5 0 0 1 21 5.5v3a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 8.5v-3A1.5 1.5 0 0 1 4.5 4zM4.5 14h15a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-3A1.5 1.5 0 0 1 4.5 14zM7 7h.01M7 17h.01',
+        stroke: 2.2,
+    },
+    // A star: a Claude plan rather than a key.
+    subscription: {
+        viewBox: '0 0 24 24',
+        d: 'M12 2l2.2 6.6L21 9l-5.4 4.2L17.6 20 12 16.2 6.4 20l2-6.8L3 9l6.8-.4z',
+    },
 };
+
+/** A line glyph's paint: no fill, the brand token as the stroke. */
+const lineOf = (provider: string, width: number) => ({
+    fill: 'none',
+    stroke: `var(--brand-${provider})`,
+    strokeWidth: width,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+});
 
 /** `decorative` is for a mark beside its own text label: hidden from assistive tech instead of announced twice. */
 export function ProviderMark({ provider, decorative = false }: { provider: string; decorative?: boolean }) {
@@ -56,7 +95,7 @@ export function ProviderMark({ provider, decorative = false }: { provider: strin
             viewBox={glyph?.viewBox ?? '0 0 24 24'}
             fill={`var(--brand-${provider})`}
         >
-            {glyph ? <path d={glyph.d} /> : null}
+            {glyph ? <path d={glyph.d} {...(glyph.stroke ? lineOf(provider, glyph.stroke) : {})} /> : null}
         </svg>
     );
 }

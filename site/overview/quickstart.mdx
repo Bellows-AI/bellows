@@ -21,7 +21,9 @@ The examples use a small Go web server with lorem ipsum and notes endpoints. Any
     </Frame>
   </Step>
   <Step title="Finish setup">
-    Steps 2 and 3 connect a model and your issue tracker. Each one has **Skip for now**, and **Back** returns to the step before. Then click **Go to the dashboard**. Until you finish, opening Bellows brings you back to the step you stopped at.
+    Step 2 connects a model: choose Anthropic, OpenRouter, OpenAI or LiteLLM (self-hosted boards also offer a Claude subscription), and paste a key. Bellows picks the provider from the key's prefix, checks the key with the provider, and suggests an agent and a model. **Save and continue** saves the key as a secret and the agent and model as your default; change them later under **Settings → Model**. If your deployment or organization already provides a model, the step says so and **Continue** moves on. See [Saving a model key](/guides/env-and-secrets#saving-a-model-key-from-the-model-setup).
+
+    Step 3 connects your issue tracker. Each step has **Skip for now**, and **Back** returns to the step before. Then click **Go to the dashboard**. Until you finish, opening Bellows brings you back to the step you stopped at.
   </Step>
   <Step title="Check the repository is tracked">
     Open **Settings → Repositories**. Your repo is listed there, and **Configure** shows its environment.
