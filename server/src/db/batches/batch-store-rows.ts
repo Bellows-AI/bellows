@@ -27,7 +27,7 @@ export interface RootTask {
     executor: string | null;
     /** Null beside a null executor, which only a board with no executor store or no caller launches. */
     executor_scope: ExecutorScope | null;
-    /** The starter's agent default frozen at start beside a null executor (BEL-412); null otherwise. */
+    /** The starter's agent default frozen at start beside a null executor; null otherwise. */
     agent_type: ExecutorType | null;
     agent_model: string | null;
 }

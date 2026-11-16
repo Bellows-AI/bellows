@@ -30,7 +30,7 @@ export interface PendingSuccessor {
     repo: string | null;
     executor: string | null;
     executorScope: ExecutorScope;
-    /** The agent default frozen on the thread (BEL-412): parked with the round, restored on the woken job. Absent is none. */
+    /** The agent default frozen on the thread: parked with the round, restored on the woken job. Absent is none. */
     agentType?: string | null;
     agentModel?: string | null;
     sessionId: string | null;
@@ -231,7 +231,7 @@ async function insertWakeContinuation(
         repo: round.job_repo,
         executor: round.executor,
         executorScope: (round.executor_scope ?? USER_SCOPE) as ExecutorScope,
-        // The round's frozen copy, never the agent default as it reads at wake (BEL-412).
+        // The round's frozen copy, never the agent default as it reads at wake.
         agentType: round.agent_type,
         agentModel: round.agent_model,
         parentJobId: round.parent_job_id,

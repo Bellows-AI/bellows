@@ -18,9 +18,10 @@ export type RenameOutcome =
 export interface QueueTaskInput {
     command: string;
     repo: string | null;
-    executor: string;
+    /** Absent when the task runs on the member's agent default: the board stamps it. */
+    executor?: string;
     /** The scope `executor` names: the author's own profiles or the organization's. */
-    executorScope: ExecutorScope;
+    executorScope?: ExecutorScope;
     workflow: string | null;
     workflowParams: Record<string, string> | null;
     /** The branch the task works from; null is the repository's default branch. */

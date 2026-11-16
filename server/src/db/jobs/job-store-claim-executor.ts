@@ -149,7 +149,7 @@ export async function resolveClaimExecutor(
     return { claimEnv, executorType, executorRefusal };
 }
 
-/** The agent default frozen on a job row (BEL-412). */
+/** The agent default frozen on a job row. */
 export interface FrozenAgentColumns {
     agent_type: string | null;
     agent_model: string | null;
@@ -164,7 +164,7 @@ export interface ClaimExecutorRow extends FrozenAgentColumns {
 }
 
 /**
- * The agent default frozen on a task naming no profile (BEL-412): its agent is the runner type and its model the whole
+ * The agent default frozen on a task naming no profile: its agent is the runner type and its model the whole
  * config, merged exactly as a profile's would be. Read off the row only — the agent default as it reads now is never
  * consulted, so a retry, a follow-up or a takeover runs what the task was created with. Null for a profile task.
  */

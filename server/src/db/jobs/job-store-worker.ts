@@ -849,7 +849,7 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
         repo: completed?.repo ?? root.repo,
         executor: completed?.executor ?? null,
         executorScope: (completed?.executor_scope ?? USER_SCOPE) as ExecutorScope,
-        // The agent default frozen on the thread rides with the label, never re-resolved (BEL-412).
+        // The agent default frozen on the thread rides with the label, never re-resolved.
         ...frozenAgentOf(completed),
         parentJobId: completedId,
         sessionId: session,

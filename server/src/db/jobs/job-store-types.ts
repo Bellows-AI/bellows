@@ -272,7 +272,7 @@ export interface Job {
      */
     executorScope: ExecutorScope;
     /**
-     * The agent default frozen on a task naming no profile (BEL-412): the agent the claim runs and its model. Null on a
+     * The agent default frozen on a task naming no profile: the agent the claim runs and its model. Null on a
      * profile task. Copied wherever `executor` is, and never re-resolved after create.
      */
     agentType: ExecutorType | null;

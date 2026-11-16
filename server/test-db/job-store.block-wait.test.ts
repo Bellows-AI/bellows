@@ -62,7 +62,7 @@ beforeAll(async () => {
     store = createJobStore({ sql, orgId: ORG, prs });
 });
 
-/** The agent default a task may be frozen with at create (BEL-412); none by default. */
+/** The agent default a task may be frozen with at create; none by default. */
 type FrozenAgent = { agentType?: 'claude-code' | 'opencode'; agentModel?: string };
 
 async function queueWaitingThread(
@@ -810,11 +810,11 @@ describe.skipIf(!enabled)('durable block waits — user control (issue #328)', (
 });
 
 /**
- * The agent default frozen on a workflow thread (BEL-412) rides every successor: the parked round stores it and the
+ * The agent default frozen on a workflow thread rides every successor: the parked round stores it and the
  * woken continuation carries it back, read off the round only — an agent default changed while the thread waited
  * never reaches the continuation, and a successor never lands as a null/null job the driver would fail.
  */
-describe.skipIf(!enabled)('durable block waits — the frozen agent default (BEL-412)', () => {
+describe.skipIf(!enabled)('durable block waits — the frozen agent default', () => {
     const frozen = { agentType: 'opencode', agentModel: 'frozen-model' } as const;
 
     it('a parked round keeps the frozen agent and model, and the woken continuation runs them', async () => {

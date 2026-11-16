@@ -322,7 +322,7 @@ export interface WorkflowSuccessorInput {
     repo: string | null;
     executor: string | null;
     executorScope: ExecutorScope;
-    /** The agent default frozen on the thread (BEL-412), copied from the completed run; absent is none. */
+    /** The agent default frozen on the thread, copied from the completed run; absent is none. */
     agentType?: string | null;
     agentModel?: string | null;
     parentJobId: string;

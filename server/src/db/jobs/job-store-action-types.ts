@@ -50,7 +50,7 @@ export interface JobActionStore {
              */
             executorScope?: ExecutorScope;
             /**
-             * The agent default frozen on a task naming no profile (BEL-412): the agent the claim runs and the model
+             * The agent default frozen on a task naming no profile: the agent the claim runs and the model
              * its config carries. Absent is none. Copied wherever `executor` is; never re-resolved after create.
              */
             agentType?: ExecutorType | null;

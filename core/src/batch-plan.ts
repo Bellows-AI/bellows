@@ -106,7 +106,7 @@ export interface ResolvedBatchPlan extends Omit<BatchPlan, 'targets' | 'stages'>
             executor: string | null;
             executorScope: ExecutorScope;
             /**
-             * The starter's agent default, frozen at launch on a task naming no executor (BEL-412): the agent its
+             * The starter's agent default, frozen at launch on a task naming no executor: the agent its
              * root job runs and that agent's model. Never authored in a plan; absent beside an executor.
              */
             agentType?: ExecutorType;

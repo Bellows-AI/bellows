@@ -171,7 +171,7 @@ describe.skipIf(!enabled)('batch dispatch', () => {
     it("launches a task frozen with the starter's agent default as that agent and model, and a retry keeps them", async () => {
         const source = batchPlan('Agent', [{ key: 'build', tasks: [task('a')] }], { executor: undefined });
         const resolved = resolveBatchPlan(source, { [BATCH_REPO]: 'main' });
-        // What the launch route stamps when the starter's agent default wins (BEL-412).
+        // What the launch route stamps when the starter's agent default wins.
         const stamped = {
             ...resolved,
             stages: resolved.stages.map((stage) => ({

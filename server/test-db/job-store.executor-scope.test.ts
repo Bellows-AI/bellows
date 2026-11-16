@@ -233,12 +233,12 @@ describe.skipIf(!enabled)('the scope rides the thread (issue 391)', () => {
 });
 
 /**
- * The agent default (BEL-412): a task naming no profile is frozen at create with the agent and model that won, and the
+ * The agent default: a task naming no profile is frozen at create with the agent and model that won, and the
  * claim runs exactly that — never the agent default as it reads at claim time. Kubernetes is the primary executor and
  * docker the development one; both consume this same claim payload (`executorType` + the config env), so each agent
  * type is pinned once here and the driver needs nothing new.
  */
-describe.skipIf(!enabled)('a task frozen with an agent default (BEL-412)', () => {
+describe.skipIf(!enabled)('a task frozen with an agent default', () => {
     const CONFIG_ENV = { 'claude-code': 'CLAUDE_CODE_CONFIG_CONTENT', opencode: 'OPENCODE_CONFIG_CONTENT' } as const;
     const executors = () => createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
 

@@ -296,7 +296,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 repo,
                 executor,
                 executorScope,
-                // The agent default that won, frozen on the task: the claim runs it, never a later default (BEL-412).
+                // The agent default that won, frozen on the task: the claim runs it, never a later default.
                 ...(agent ? { agentType: agent.agentType, agentModel: agent.model } : {}),
                 skills,
                 baseBranch,

@@ -176,7 +176,7 @@ export async function launchChecks(
 
 /**
  * A task naming no executor runs on the starter's default, stamped into the plan the start freezes: a profile as the
- * label, an agent default as the task's agent and model (BEL-412). The claim reads only what was stamped. Null once a
+ * label, an agent default as the task's agent and model. The claim reads only what was stamped. Null once a
  * refusal is on `reply` (409 `NO_EXECUTOR` when nothing resolves for the starter).
  */
 async function withDefaultExecutor(

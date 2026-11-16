@@ -87,7 +87,7 @@ export async function refusedAsUnusable(
 /**
  * What a selection naming no executor runs on: the caller's resolved default (their stored preference, else their own
  * agent default, else the organization's, else the first active personal profile, else the first active org one). A
- * profile is stamped as the label; an agent default is frozen on the task as its agent and model (BEL-412). The claim
+ * profile is stamped as the label; an agent default is frozen on the task as its agent and model. The claim
  * reads only what was stamped, so a task queued with neither would fail there. Null when there is nothing to resolve
  * against (no executor store, no caller); `refused` once the refusal is on `reply`: 409 `NO_EXECUTOR` for a caller with
  * nothing resolved, or a failed read.
