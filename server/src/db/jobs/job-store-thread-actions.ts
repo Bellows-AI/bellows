@@ -153,6 +153,8 @@ export interface FollowUpRowInput {
     /** The route's org-admin verdict; ignored for a null caller. */
     admin?: boolean | undefined;
     githubApp?: boolean | undefined; // the `github` connection a skill may require
+    /** The model this turn runs; null or absent copies the parent's `agent_model`. The agent is always the parent's. */
+    model?: string | null | undefined;
 }
 
 /**
@@ -274,7 +276,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
             )
             insert into job (org_id, command, created_by, repo, executor, executor_scope, agent_type, agent_model, parent_job_id, session_id, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
             select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.executor_scope,
-                   parent.agent_type, parent.agent_model, parent.id,
+                   parent.agent_type, coalesce(${input.model ?? null}::text, parent.agent_model), parent.id,
                    coalesce(primary_session.session_id, parent.session_id),
                    parent.root_job_id, parent.workflow_name, parent.mode, '[]'::jsonb, '[]'::jsonb
             from parent, root, primary_session

@@ -30,6 +30,8 @@ export interface ResolvedClaimExecutor {
     claimEnv: Record<string, string> | undefined;
     executorType: ExecutorType | null;
     executorRefusal: string | null;
+    /** The model the runner is handed (the merged config's `model`), recorded as `job.run_model`; null when none travels. */
+    runModel: string | null;
 }
 
 /**
@@ -118,8 +120,23 @@ export async function resolveClaimExecutor(
     // cloud mode or split across scopes and profile, never travels. The driver fails the task with the
     // sentence before anything spawns; a throw here would roll the claim back and re-claim it forever.
     const refusal = deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType) : null;
-    if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal };
-    return { claimEnv, executorType, executorRefusal };
+    if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal, runModel: null };
+    return { claimEnv, executorType, executorRefusal, runModel: runModelOf(source, executorType) };
+}
+
+/** The model a merged config hands its runner: only a known agent's config travels (`mergeExecutorConfigEnv`). */
+function runModelOf(source: { config: Record<string, unknown> } | null, type: ExecutorType | null): string | null {
+    const config: unknown = source?.config;
+    const model = isRecord(config) ? config.model : undefined;
+    return type !== null && typeof model === 'string' ? model : null;
+}
+
+/**
+ * Records on the claimed row what its runner got (`job.run_model`), inside the claim transaction so it rolls back with
+ * the claim. Every claim writes it — a retry, a takeover and a follow-up each re-record their own.
+ */
+export async function recordRunModel(tx: TransactionSql, orgId: string, jobId: string, runModel: string | null) {
+    await tx`update job set run_model = ${runModel} where org_id = ${orgId} and id = ${jobId}`;
 }
 
 /**
@@ -160,8 +177,17 @@ async function claimExecutorOf(
     return {
         executorType: known ? (configured.type as ExecutorType) : null,
         executorRefusal: null,
-        source: configured,
+        source: withChosenModel(configured, row.agent_model),
     };
+}
+
+/**
+ * The profile's config with the task's chosen model over its own (`agent_model` on a profile task). `model` is not a
+ * runner-fenced key, so it travels like the rest of the config; every other key stays the profile's.
+ */
+function withChosenModel<T extends { config: Record<string, unknown> }>(configured: T | null, model: string | null) {
+    if (configured === null || model === null) return configured;
+    return { ...configured, config: { ...configured.config, model } };
 }
 
 /** The agent default frozen on a job row. */
@@ -179,8 +205,9 @@ export interface ClaimExecutorRow extends FrozenAgentColumns {
 }
 
 /**
- * The agent default frozen on a task naming no profile: its agent is the runner type and its model the whole
- * config, merged exactly as a profile's would be. Read off the row only — the agent default as it reads now is never
+ * The agent default frozen on a task naming no profile: its agent is the runner type and its model (the chosen one when
+ * the task picked one, which create and a follow-up write over the default's) the whole config, merged exactly as a
+ * profile's would be. Read off the row only — the agent default as it reads now is never
  * consulted, so a retry, a follow-up or a takeover runs what the task was created with. Null for a profile task.
  */
 function frozenAgentOf(row: ClaimExecutorRow): { type: ExecutorType; config: Record<string, unknown> } | null {

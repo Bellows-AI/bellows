@@ -359,6 +359,145 @@ describe.skipIf(!enabled)('a task frozen with an agent default', () => {
 
         expect(review.result).toBe('created');
         expectFrozen('claim' in review ? review.claim : null, 'claude-code', 'frozen');
+        const reviewId = 'claim' in review ? review.claim.id : '';
+        expect(await reviewing.get(reviewId)).toMatchObject({ agentModel: 'frozen', resolvedModel: 'frozen' });
+    });
+});
+
+/**
+ * A model chosen at task start or on a follow-up: `agent_model` on the row overrides the profile's `config.model`
+ * (after the runner fence) or the agent default's model, and every claim records what the runner got as
+ * `run_model`, read back as `resolvedModel` beside the requested `agentModel`.
+ */
+describe.skipIf(!enabled)('a model chosen for the task', () => {
+    const CONFIG_ENV = { 'claude-code': 'CLAUDE_CODE_CONFIG_CONTENT', opencode: 'OPENCODE_CONFIG_CONTENT' } as const;
+    const executors = () => createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
+    const saveProfile = (type: 'claude-code' | 'opencode', config: Record<string, unknown>) =>
+        executors().replace(ALICE, [{ name: 'main', type, config }]);
+    const profileTask = (agentModel?: string) =>
+        mustCreate(
+            store.create('echo hi', ALICE, {
+                repo: null,
+                executor: 'main',
+                executorScope: 'user',
+                ...(agentModel ? { agentModel } : {}),
+            })
+        );
+    const configOf = (claim: Claim | null, type: 'claude-code' | 'opencode') =>
+        JSON.parse(claim?.env?.[CONFIG_ENV[type]] ?? 'null');
+    /** A finished turn with a session, so a follow-up may continue it. */
+    const finish = async (id: string, worker: string) => {
+        const claim = await store.claim(worker, LEASE_SECONDS);
+        expect(claim?.id).toBe(id);
+        await store.session(id, claim!.leaseToken, FOLLOW_UP_SESSION);
+        await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        return claim;
+    };
+    const followUp = async (parentId: string, model?: string) => {
+        const ref = await store.createFollowUp(
+            parentId,
+            'adjust',
+            ALICE,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            model
+        );
+        if (typeof ref === 'string') throw new Error(`createFollowUp refused: ${ref}`);
+        return ref.id;
+    };
+
+    for (const type of ['claude-code', 'opencode'] as const) {
+        it(`overrides the ${type} profile's model and keeps the rest of its config`, async () => {
+            await saveProfile(type, { model: 'A', provider: { p: 1 } });
+            const { id } = await profileTask('B');
+
+            const claim = await store.claim('w1', LEASE_SECONDS);
+
+            expect(claim?.executorType).toBe(type);
+            expect(configOf(claim, type)).toEqual({ model: 'B', provider: { p: 1 } });
+            expect(await store.get(id)).toMatchObject({ agentType: null, agentModel: 'B', resolvedModel: 'B' });
+        });
+    }
+
+    it('a follow-up with a model runs it, and the next follow-up without one keeps it', async () => {
+        await saveProfile('opencode', { model: 'A' });
+        const { id } = await profileTask('B');
+        await finish(id, 'w1');
+
+        const second = await followUp(id, 'C');
+        expect(configOf(await finish(second, 'w2'), 'opencode')).toEqual({ model: 'C' });
+        const third = await followUp(second);
+
+        expect(configOf(await store.claim('w3', LEASE_SECONDS), 'opencode')).toEqual({ model: 'C' });
+        expect(await store.get(third)).toMatchObject({ agentModel: 'C', resolvedModel: 'C' });
+    });
+
+    it('a follow-up of an agent-default task changes the model, never the agent', async () => {
+        const { id } = await mustCreate(
+            store.create('drive me', ALICE, { repo: null, executor: null, agentType: 'claude-code', agentModel: 'm-1' })
+        );
+        await finish(id, 'w1');
+
+        const next = await followUp(id, 'm-2');
+        const claim = await store.claim('w2', LEASE_SECONDS);
+
+        expect(claim?.executorType).toBe('claude-code');
+        expect(configOf(claim, 'claude-code')).toEqual({ model: 'm-2' });
+        expect(await store.get(next)).toMatchObject({ agentType: 'claude-code', agentModel: 'm-2' });
+    });
+
+    it('a takeover and a retry keep the chosen model', async () => {
+        await saveProfile('opencode', { model: 'A' });
+        const { id } = await profileTask('B');
+        await store.claim('w1', LEASE_SECONDS);
+        await expireLease(sql, id);
+        const takeover = await store.claim('w2', LEASE_SECONDS);
+        expect(configOf(takeover, 'opencode')).toEqual({ model: 'B' });
+        await store.complete(id, takeover!.leaseToken, { status: 'failed', exitCode: 1, output: 'no' });
+
+        const retry = await store.createRetry(id, ALICE);
+        if (typeof retry === 'string') throw new Error(`createRetry refused: ${retry}`);
+
+        expect(configOf(await store.claim('w3', LEASE_SECONDS), 'opencode')).toEqual({ model: 'B' });
+        expect(await store.get(retry.id)).toMatchObject({ agentModel: 'B', resolvedModel: 'B' });
+    });
+
+    it('records the model each claim handed out: override, else agent default, else profile, else null', async () => {
+        await saveProfile('claude-code', { model: 'A' });
+        const profileOnly = (await profileTask()).id;
+        expect(await store.get(profileOnly)).toMatchObject({ agentModel: null, resolvedModel: null });
+        await store.claim('w1', LEASE_SECONDS);
+        expect(await store.get(profileOnly)).toMatchObject({ agentModel: null, resolvedModel: 'A' });
+
+        const agent = (
+            await mustCreate(
+                store.create('echo hi', ALICE, { repo: null, executor: null, agentType: 'opencode', agentModel: 'm-1' })
+            )
+        ).id;
+        await store.claim('w2', LEASE_SECONDS);
+        expect(await store.get(agent)).toMatchObject({ resolvedModel: 'm-1' });
+
+        await saveProfile('claude-code', { permissions: { allow: [] } });
+        const none = (await profileTask()).id;
+        await store.claim('w3', LEASE_SECONDS);
+        expect(await store.get(none)).toMatchObject({ agentModel: null, resolvedModel: null });
+    });
+
+    it('a retry re-records from its own claim, after the profile changed', async () => {
+        await saveProfile('opencode', { model: 'A' });
+        const { id } = await profileTask();
+        const first = await store.claim('w1', LEASE_SECONDS);
+        await store.complete(id, first!.leaseToken, { status: 'failed', exitCode: 1, output: 'no' });
+        await saveProfile('opencode', { model: 'A2' });
+
+        const retry = await store.createRetry(id, ALICE);
+        if (typeof retry === 'string') throw new Error(`createRetry refused: ${retry}`);
+        await store.claim('w2', LEASE_SECONDS);
+
+        expect(await store.get(id)).toMatchObject({ resolvedModel: 'A' });
+        expect(await store.get(retry.id)).toMatchObject({ agentModel: null, resolvedModel: 'A2' });
     });
 });
 

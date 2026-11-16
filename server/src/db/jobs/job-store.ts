@@ -295,7 +295,7 @@ function jobStoreMethods(ctx: JobStoreContext): JobStore {
 
         // The rest tuple keeps the interface's five parameters (the params ceiling is for hand-written signatures).
         async createFollowUp(
-            ...[parentId, command, createdBy, idempotency, connectionIds, admin, attachmentIds]: Parameters<
+            ...[parentId, command, createdBy, idempotency, connectionIds, admin, attachmentIds, model]: Parameters<
                 JobStore['createFollowUp']
             >
         ) {
@@ -309,6 +309,7 @@ function jobStoreMethods(ctx: JobStoreContext): JobStore {
                 connectionIds,
                 admin,
                 attachmentIds,
+                model,
                 githubApp: ctx.githubApp,
             });
         },

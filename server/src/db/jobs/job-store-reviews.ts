@@ -16,7 +16,7 @@ import { readReviewEvidence } from './job-store-evidence.js';
 import { LEASE_EXPIRED_REASON } from './job-store-run-control.js';
 import { buildClaimResult } from './job-store-claim.js';
 import { withClaimAttachments } from './job-store-claim-row.js';
-import { resolveClaimExecutor } from './job-store-claim-executor.js';
+import { recordRunModel, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { recordExecution } from './job-store-provenance.js';
 import { exists, workspacePathFor } from './job-store-rows.js';
 import { decideSkillVisibilityInTx, type HiddenSkill } from './job-store-skill-pin.js';
@@ -341,6 +341,7 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
         { env, executorConfig, deploymentMode, grant: spec.connections },
         row!
     );
+    await recordRunModel(tx, orgId, reviewId, executor.runModel);
     const claim = buildClaimResult(
         {
             ...row!,

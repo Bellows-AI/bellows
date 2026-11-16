@@ -156,7 +156,7 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
     // and the read answers null.
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
-               session_id, exit_code, output, gates, runtime, repo, executor, executor_scope, agent_type, agent_model,
+               session_id, exit_code, output, gates, runtime, repo, executor, executor_scope, agent_type, agent_model, run_model,
                parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                -- The task's overall wall clock, summed over the thread the WHERE already
                -- scoped: every member carries the total, so the view reads it off any of
@@ -258,7 +258,7 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
     const { sql, orgId, authorJoin, authorColumns, waitLateral, publicationJoin, publicationColumns } = ctx;
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
-               session_id, exit_code, output, gates, runtime, repo, executor, executor_scope, agent_type, agent_model,
+               session_id, exit_code, output, gates, runtime, repo, executor, executor_scope, agent_type, agent_model, run_model,
                parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                summary, wall_clock_ms, agent_turns, setup_ms, interruptions, failure_kind, failure_cause,
                -- The thread's wait (036) and publication, served by the detail reads on
@@ -634,7 +634,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                    head.failure_kind as failure_kind, head.failure_cause as failure_cause,
                    head.wall_clock_ms as wall_clock_ms,
                    job.repo as repo, job.executor as executor, job.executor_scope as executor_scope,
-                   job.agent_type as agent_type, job.agent_model as agent_model,
+                   job.agent_type as agent_type, job.agent_model as agent_model, head.run_model as run_model,
                    job.parent_job_id as parent_job_id, job.root_job_id as root_job_id,
                    job.workflow_node as workflow_node, job.workflow_name as workflow_name,
                    job.mode as mode,
@@ -674,7 +674,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
     }
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
-               session_id, exit_code, runtime, repo, executor, executor_scope, agent_type, agent_model,
+               session_id, exit_code, runtime, repo, executor, executor_scope, agent_type, agent_model, run_model,
                parent_job_id, root_job_id, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                -- The close-time summary and the run's own banked clock ride beside the
                -- vitals, both bounded where output is not; the structured failure

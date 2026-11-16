@@ -43,6 +43,9 @@ export const INPUT_OPTIONS = {
     [STDIN_OPTION]: { type: 'boolean', default: false },
 } as const;
 
+/** The model a create or a follow-up runs, sent as `model`; the board validates the name. */
+export const MODEL_OPTION = { model: { type: 'string' } } as const;
+
 export interface InputIo {
     readFile?: ((path: string) => Promise<string>) | undefined;
     readStdin?: (() => Promise<string>) | undefined;

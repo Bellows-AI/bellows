@@ -93,6 +93,12 @@ If you don't pick one, Bellows uses the first of these that exists:
 
 With none of these, Bellows refuses the task and links to **Add an executor in Settings**. A task on an agent default keeps that agent and model: changing the default later doesn't change a queued task, its retry or its follow-up.
 
+### Choosing the model for one task
+
+You can pick the model when you start a task, and again on a follow-up. It replaces the model of the profile or the agent default for that task only; the agent stays the same. Leave it empty to use the default. A follow-up without a model keeps the one the task last ran with, and so do a retry and a run that resumes after an interruption. Each run records the model it actually got.
+
+From the CLI, pass `--model <name>` to `bellows job create` or `bellows job follow-up`. From an assistant, pass `model` to `create_task` or `follow_up_task`. A model name is 1 to 200 characters.
+
 ## Defaults and suspending
 
 - **Make default** in a row's actions saves your own preference. The default row shows a **Default** tag, and the composer selects it for you. Each member chooses their own default, including among organization profiles.

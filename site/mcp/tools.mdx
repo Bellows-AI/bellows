@@ -53,8 +53,8 @@ All of these act as you. Tools that create runs accept an `idempotencyKey` (8-12
 
 | Tool | What it does | Key inputs |
 | --- | --- | --- |
-| `create_task` | Queues a new task and returns its id | `command`, `repo` (required); `baseBranch`, `executor`, `executorScope`, `skills`, `connections`, `attachmentIds`, `idempotencyKey` |
-| `follow_up_task` | Queues a follow-up run on a finished task, in the same session and checkout | `jobId`, `command`, `attachmentIds`, `idempotencyKey` |
+| `create_task` | Queues a new task and returns its id | `command`, `repo` (required); `baseBranch`, `executor`, `executorScope`, `model`, `skills`, `connections`, `attachmentIds`, `idempotencyKey` |
+| `follow_up_task` | Queues a follow-up run on a finished task, in the same session and checkout | `jobId`, `command`, `model`, `attachmentIds`, `idempotencyKey` |
 | `retry_task` | Queues a retry of a failed run | `jobId`, `idempotencyKey` |
 | `edit_task` | Replaces the command of a task still queued that you queued. Refused once claimed | `jobId`, `command` |
 | `answer_question` | Answers an agent's question, one answer per prompt, in order. Give an option label or free text | `jobId`, `questionId`, `answers` |
