@@ -100,4 +100,24 @@ describe.skipIf(!enabled)('saveModelKey', () => {
             { user_id: ALICE, agent_type: 'opencode', model: 'openrouter/openai/gpt-5', provider: 'openrouter' },
         ]);
     });
+
+    it('a key replaced by hand is the one a switch removes, decided under the lock', async () => {
+        const stores = storesOver(healthy);
+        await saveModelKey(stores, SAVE);
+        await stores.envVars.writeScoped(
+            { kind: 'workspace', userId: ALICE },
+            { upsert: [{ name: 'OPENAI_API_KEY', value: 'sk-openai', isSecret: true }], remove: ['ANTHROPIC_API_KEY'] },
+            ALICE
+        );
+
+        await saveModelKey(stores, {
+            ...SAVE,
+            provider: 'openrouter',
+            key: 'sk-or-store-test',
+            agentType: 'opencode',
+            model: 'openai/gpt-5',
+        });
+
+        expect(await envNames()).toEqual(['OPENROUTER_API_KEY']);
+    });
 });

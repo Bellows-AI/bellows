@@ -4,10 +4,13 @@ import { CLAUDE_CODE, OPENCODE } from '../src/executors.js';
 import {
     AGENT_PROVIDERS,
     claimCredentialEnv,
+    currentProvider,
     inferProvider,
     isAgentProvider,
     isModelProvider,
+    MODEL_CREDENTIAL_NAMES,
     MODEL_PROVIDERS,
+    modelCredentialScope,
     normalizeModelId,
     OPENROUTER_ANTHROPIC_BASE_URL,
     openRouterClaudeWiring,
@@ -17,6 +20,7 @@ import {
     PROVIDER_ENV,
     providerAvailable,
     providerEnvNames,
+    stackModelEnv,
 } from '../src/model-providers.js';
 
 describe('MODEL_PROVIDERS', () => {
@@ -88,6 +92,65 @@ describe('inferProvider', () => {
         expect(inferProvider(['OPENROUTER_API_KEY'])).toBe('openrouter');
         expect(inferProvider(['OPENAI_API_KEY'])).toBe('openai');
         expect(inferProvider(['CLAUDE_CODE_OAUTH_TOKEN'])).toBe('subscription');
+    });
+});
+
+describe('currentProvider', () => {
+    it('trusts the recorded provider only while its credential names are in the scope', () => {
+        expect(currentProvider(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'], 'anthropic')).toBe('anthropic');
+        expect(currentProvider(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'], 'litellm')).toBe('litellm');
+        expect(currentProvider(['ANTHROPIC_API_KEY'], 'litellm')).toBe('anthropic');
+        // The key was replaced by hand: the names win over the record.
+        expect(currentProvider(['OPENAI_API_KEY'], 'anthropic')).toBe('openai');
+        expect(currentProvider([], 'anthropic')).toBeNull();
+        expect(currentProvider(['OPENROUTER_API_KEY'], 'platform')).toBe('openrouter');
+        expect(currentProvider(['OPENROUTER_API_KEY'], undefined)).toBe('openrouter');
+    });
+
+    it('infers in provider order when nothing is recorded', () => {
+        expect(currentProvider(['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'], undefined)).toBe('anthropic');
+        expect(currentProvider(['OPENAI_API_KEY', 'OPENROUTER_API_KEY'], undefined)).toBe('openrouter');
+        expect(currentProvider(['CLAUDE_CODE_OAUTH_TOKEN', 'OPENAI_API_KEY'], undefined)).toBe('openai');
+    });
+});
+
+describe('model credentials come from one scope', () => {
+    it('names every provider key, base URL and Anthropic token', () => {
+        expect([...MODEL_CREDENTIAL_NAMES].sort()).toEqual(
+            [
+                'ANTHROPIC_API_KEY',
+                'ANTHROPIC_AUTH_TOKEN',
+                'ANTHROPIC_BASE_URL',
+                'CLAUDE_CODE_OAUTH_TOKEN',
+                'OPENAI_API_KEY',
+                'OPENAI_BASE_URL',
+                'OPENROUTER_API_KEY',
+                'OPENROUTER_BASE_URL',
+            ].sort()
+        );
+    });
+
+    it('the highest scope naming any model credential owns them', () => {
+        expect(modelCredentialScope([['ANTHROPIC_API_KEY'], ['OPENROUTER_API_KEY'], []])).toBe(1);
+        expect(modelCredentialScope([['ANTHROPIC_API_KEY'], ['OTHER'], ['OPENAI_BASE_URL']])).toBe(2);
+        expect(modelCredentialScope([['OTHER'], [], []])).toBe(-1);
+    });
+
+    it('drops a lower scope’s model credentials and stacks the rest, the higher scope winning', () => {
+        expect(
+            stackModelEnv([
+                { ANTHROPIC_API_KEY: 'org', ANTHROPIC_BASE_URL: 'https://org.example.test', SHARED: 'org', A: 'a' },
+                { OPENROUTER_API_KEY: 'mine', SHARED: 'mine' },
+                {},
+            ])
+        ).toEqual({ A: 'a', SHARED: 'mine', OPENROUTER_API_KEY: 'mine' });
+        expect(stackModelEnv([{ ANTHROPIC_API_KEY: 'org' }, { OTHER: 'x' }, {}])).toEqual({
+            ANTHROPIC_API_KEY: 'org',
+            OTHER: 'x',
+        });
+        expect(stackModelEnv([{}, { OPENROUTER_API_KEY: 'mine' }, { ANTHROPIC_API_KEY: 'repo' }])).toEqual({
+            ANTHROPIC_API_KEY: 'repo',
+        });
     });
 });
 

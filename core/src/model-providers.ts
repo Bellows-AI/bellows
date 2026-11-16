@@ -59,16 +59,65 @@ export const providerAvailable = (provider: ModelProvider, mode: DeploymentMode)
     provider !== 'subscription' || mode !== CLOUD;
 
 /**
- * The provider a scope's names point to, for a scope saved before its provider was recorded. An Anthropic key beside
- * an Anthropic base URL reads as LiteLLM; null when no provider key is present.
+ * The provider a scope's names point to, in provider order: an Anthropic key (LiteLLM when an Anthropic base URL is
+ * beside it), then OpenRouter, OpenAI, a subscription token. Null when no provider key is present.
  */
 export function inferProvider(names: readonly string[]): ModelProvider | null {
     const has = new Set(names);
-    if (has.has(CLAUDE_CODE_OAUTH_TOKEN)) return 'subscription';
     if (has.has('ANTHROPIC_API_KEY')) return has.has('ANTHROPIC_BASE_URL') ? 'litellm' : 'anthropic';
     if (has.has('OPENROUTER_API_KEY')) return 'openrouter';
     if (has.has('OPENAI_API_KEY')) return 'openai';
+    if (has.has(CLAUDE_CODE_OAUTH_TOKEN)) return 'subscription';
     return null;
+}
+
+/** The names a provider's setup cannot run without: its key, and LiteLLM's required base URL. */
+const requiredNames = (provider: ModelProvider): string[] =>
+    provider === 'litellm' ? providerEnvNames(provider) : [PROVIDER_ENV[provider]];
+
+/**
+ * The key provider a scope holds now: the recorded one while its credential names are all in the scope (it tells
+ * Anthropic behind a base URL from LiteLLM), else the one the names point to. A key replaced by hand outranks the
+ * record.
+ */
+export function currentProvider(
+    names: readonly string[],
+    recorded: AgentProvider | null | undefined
+): ModelProvider | null {
+    const has = new Set(names);
+    if (isModelProvider(recorded) && requiredNames(recorded).every((name) => has.has(name))) return recorded;
+    return inferProvider(names);
+}
+
+/** Every name that carries a model credential or says where it is sent: one scope owns all of them for a run. */
+export const MODEL_CREDENTIAL_NAMES: ReadonlySet<string> = new Set([
+    ...MODEL_PROVIDERS.flatMap(providerEnvNames),
+    'ANTHROPIC_AUTH_TOKEN',
+]);
+
+/** The index of the highest scope (lowest first) naming any model credential; -1 when none does. */
+export function modelCredentialScope(scopes: readonly (readonly string[])[]): number {
+    for (let i = scopes.length - 1; i >= 0; i -= 1) {
+        if (scopes[i]?.some((name) => MODEL_CREDENTIAL_NAMES.has(name))) return i;
+    }
+    return -1;
+}
+
+/**
+ * Stacks scope envs lowest first, a higher scope winning a name, except that the model credentials come from one
+ * scope: the highest naming any of them. A lower scope's credential and base-URL names are dropped, so its key can
+ * neither follow a higher scope's provider nor turn off that provider's wiring.
+ */
+export function stackModelEnv(scopes: readonly Readonly<Record<string, string>>[]): Record<string, string> {
+    const owner = modelCredentialScope(scopes.map((scope) => Object.keys(scope)));
+    const stacked: Record<string, string> = {};
+    scopes.forEach((scope, index) => {
+        for (const [name, value] of Object.entries(scope)) {
+            if (index < owner && MODEL_CREDENTIAL_NAMES.has(name)) continue;
+            stacked[name] = value;
+        }
+    });
+    return stacked;
 }
 
 /** OpenCode's provider id for the models each key reaches; LiteLLM is reached as Anthropic. */

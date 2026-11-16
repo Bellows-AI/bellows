@@ -243,10 +243,13 @@ export type { AgentProvider, ModelProvider } from './model-providers.js';
 export {
     AGENT_PROVIDERS,
     claimCredentialEnv,
+    currentProvider,
     inferProvider,
     isAgentProvider,
     isModelProvider,
+    MODEL_CREDENTIAL_NAMES,
     MODEL_PROVIDERS,
+    modelCredentialScope,
     normalizeModelId,
     OPENROUTER_ANTHROPIC_BASE_URL,
     openRouterClaudeWiring,
@@ -256,6 +259,7 @@ export {
     PROVIDER_ENV,
     providerAvailable,
     providerEnvNames,
+    stackModelEnv,
 } from './model-providers.js';
 export type { JobMode } from './job-mode.js';
 export { JOB_MODES, OBJECTIVE_MODE, WORKFLOW_MODE } from './job-mode.js';

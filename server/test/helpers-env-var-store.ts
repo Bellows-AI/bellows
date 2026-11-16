@@ -102,8 +102,9 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
             if (store.broken) throw storeOutage('database is unreachable');
             const key = scope.kind === 'org' ? 'org' : scope.kind === 'workspace' ? { userId: scope.userId } : scope;
             const upsert = write.upsert.filter((v) => v.value !== null);
-            const touched = new Set([...write.remove, ...upsert.map((v) => v.name)]);
             const inScope = rows.filter((r) => matches(key, r));
+            const lockedRemovals = options.removeOf?.(inScope.map((r) => r.name)) ?? [];
+            const touched = new Set([...write.remove, ...lockedRemovals, ...upsert.map((v) => v.name)]);
             const resulting = [
                 ...inScope
                     .filter((r) => !touched.has(r.name))

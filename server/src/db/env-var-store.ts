@@ -1,3 +1,4 @@
+import { stackModelEnv } from '@factory-ai/core';
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { recordAudit, userActor } from './audit-log.js';
 import type { SecretDiagnostic, SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
@@ -17,6 +18,7 @@ import {
     EnvScopeRefusal,
     lockScope,
     resultingList,
+    withLockedRemovals,
     scopeKeyOf,
     type ScopeWrite,
     type WriteScopedOptions,
@@ -129,7 +131,9 @@ const toRow = (row: Row): EnvVarRow => ({
 /**
  * The stacking rule, in one place and pure: `org` first, `workspace` over it, `repo` over that —
  * the issue's "everything should stack upon each other", and the GitHub Actions precedence
- * (repository beats organization). Exported because a rule this load-bearing is pinned by the
+ * (repository beats organization). The model credentials are the exception (`stackModelEnv`): the
+ * highest scope naming any of them supplies all of them, so a lower scope's key never rides along
+ * with a higher scope's provider. Exported because a rule this load-bearing is pinned by the
  * offline suite, which cannot reach the SQL that feeds it.
  */
 export function stackEnv(
@@ -137,7 +141,7 @@ export function stackEnv(
     workspace: Record<string, string>,
     repo: Record<string, string>
 ): Record<string, string> {
-    return { ...org, ...workspace, ...repo };
+    return stackModelEnv([org, workspace, repo]);
 }
 
 /**
@@ -269,9 +273,13 @@ const namesBody =
         orgId: string,
         scope: Scope,
         actorId: string,
-        { write, options }: { write: ScopeWrite; options: WriteScopedOptions }
+        { write: asked, options }: { write: ScopeWrite; options: WriteScopedOptions }
     ): TxBody =>
     async (tx, created, retired) => {
+        const write = await withLockedRemovals(tx, orgId, scopeWhere(tx, scope), {
+            write: asked,
+            removeOf: options.removeOf,
+        });
         const resulting = await resultingList(tx, orgId, scopeWhere(tx, scope), write);
         const reason = options.validate?.(resulting) ?? null;
         if (reason !== null) throw new EnvScopeRefusal(reason);

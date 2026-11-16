@@ -277,6 +277,67 @@ describe('PUT /api/model-setup with a key', () => {
         });
     });
 
+    it('a key replaced by hand outranks the recorded provider: GET shows it and a switch removes it', async () => {
+        const b = await boot();
+        const scope = { kind: 'workspace' as const, userId: b.member.user.id };
+        await put(b, b.memberCookie, anthropicPersonal);
+        await b.envVars.writeScoped(
+            scope,
+            { upsert: [{ name: 'OPENAI_API_KEY', value: 'sk-openai', isSecret: true }], remove: ['ANTHROPIC_API_KEY'] },
+            b.member.user.id
+        );
+        expect((await get(b, b.memberCookie)).json().personal).toMatchObject({
+            provider: 'openai',
+            keyNames: ['OPENAI_API_KEY'],
+        });
+
+        await put(b, b.memberCookie, {
+            scope: 'personal',
+            provider: 'openrouter',
+            key: OPENROUTER_KEY,
+            agentType: 'opencode',
+            model: 'openai/gpt-5',
+        });
+
+        expect(b.envVars.rows().map((row) => row.name)).toEqual(['OPENROUTER_API_KEY']);
+    });
+
+    it('keeps an unrelated provider key the member saved beside the current one', async () => {
+        const b = await boot();
+        await put(b, b.memberCookie, anthropicPersonal);
+        await b.envVars.writeScoped(
+            { kind: 'workspace', userId: b.member.user.id },
+            { upsert: [{ name: 'OPENAI_API_KEY', value: 'sk-openai', isSecret: true }], remove: [] },
+            b.member.user.id
+        );
+        await put(b, b.memberCookie, {
+            scope: 'personal',
+            provider: 'openrouter',
+            key: OPENROUTER_KEY,
+            agentType: 'opencode',
+            model: 'openai/gpt-5',
+        });
+        expect(
+            b.envVars
+                .rows()
+                .map((row) => row.name)
+                .sort()
+        ).toEqual(['OPENAI_API_KEY', 'OPENROUTER_API_KEY']);
+    });
+
+    it('a personal key makes the personal scope effective over an org key of another provider', async () => {
+        const b = await boot();
+        await b.envVars.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: 'org', isSecret: true }]);
+        await put(b, b.memberCookie, {
+            scope: 'personal',
+            provider: 'openrouter',
+            key: OPENROUTER_KEY,
+            agentType: 'claude-code',
+            model: 'anthropic/claude-sonnet-4.5',
+        });
+        expect((await get(b, b.memberCookie)).json().effective).toBe('personal');
+    });
+
     it('a failing write answers 503 and leaves the agent default unwritten', async () => {
         const b = await boot();
         b.envVars.broken = true;

@@ -1,10 +1,7 @@
 import {
-    type AgentProvider,
+    currentProvider,
     type DeploymentMode,
     type ExecutorType,
-    inferProvider,
-    isModelProvider,
-    MODEL_PROVIDERS,
     type ModelProvider,
     normalizeModelId,
     PROVIDER_BASE_URL_ENV,
@@ -44,9 +41,6 @@ export interface KeySave {
 /** The provider recorded on the scope's agent default moved while the save ran: retried with the new one. */
 class ProviderMoved extends Error {}
 
-/** Every name any provider's setup writes: the names a provider switch reasons about. */
-const PROVIDER_NAMES = new Set(MODEL_PROVIDERS.flatMap(providerEnvNames));
-
 /** The tries a save makes before it reports a conflict: each one only re-reads what a concurrent save changed. */
 const ATTEMPTS = 3;
 
@@ -68,11 +62,6 @@ export async function scopeNames(envVars: EnvVarStore, scope: SetupScope, userId
     return rows.map((row) => row.name);
 }
 
-/** The key provider a scope holds: the one its agent default recorded, else the one its names point to. */
-export function scopeProvider(recorded: AgentProvider | undefined, names: readonly string[]): ModelProvider | null {
-    return isModelProvider(recorded) ? recorded : inferProvider(names);
-}
-
 const KEY_NAMES = new Set(Object.values(PROVIDER_ENV));
 
 /** The provider key names among a scope's names, sorted: names only, never a value. */
@@ -89,22 +78,20 @@ export async function providerInView(
     userId: string
 ): Promise<ModelProvider | null> {
     const defaults = await stores.executors.agentDefaults(userId);
-    const keyed = (recorded: AgentProvider | undefined, names: string[]) =>
-        keyNamesOf(names).length > 0 ? scopeProvider(recorded, names) : null;
     if (scope === 'personal') {
-        const own = keyed(defaults.personal?.provider, await scopeNames(stores.envVars, 'personal', userId));
+        const own = currentProvider(await scopeNames(stores.envVars, 'personal', userId), defaults.personal?.provider);
         if (own !== null) return own;
     }
-    return keyed(defaults.org?.provider, await scopeNames(stores.envVars, 'org', userId));
+    return currentProvider(await scopeNames(stores.envVars, 'org', userId), defaults.org?.provider);
 }
 
 /**
  * Writes the key, its base URL (removed when none is given) and the agent default in one transaction under the scope
- * lock. The names removed are the previous provider's — the recorded one, else the one the scope's names point to.
- * Both are confirmed under the lock (the recorded provider re-read, the scope's provider names compared): when a
- * concurrent write moved either, this save rolls back and runs again on what that write left. A refusal from the
- * scope's rules throws `EnvScopeRefusal`; any throw leaves neither side written and a secret the write created
- * released once (env-var-store.ts).
+ * lock. The names removed are the current provider's key and base URL (`currentProvider`), decided on the names the
+ * scope holds under the lock; any other name, an unrelated key included, stays. The recorded provider that decision
+ * reads is re-read under the lock: when a concurrent save moved it, this save rolls back and runs again. A refusal
+ * from the scope's rules throws `EnvScopeRefusal`; any throw leaves neither side written and a secret the write
+ * created released once (env-var-store.ts).
  */
 export async function saveModelKey(stores: ModelSetupStores, input: KeySave): Promise<void> {
     const { envVars, executors, deploymentMode } = stores;
@@ -124,20 +111,15 @@ export async function saveModelKey(stores: ModelSetupStores, input: KeySave): Pr
     for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
         const defaults = await executors.agentDefaults(input.userId);
         const recorded = (input.scope === 'org' ? defaults.org : defaults.personal)?.provider;
-        const names = new Set(await scopeNames(envVars, input.scope, input.userId));
-        const previous = scopeProvider(recorded, [...names]);
-        const touched = new Set([...providerEnvNames(input.provider), ...(previous ? providerEnvNames(previous) : [])]);
-        const remove = [...touched].filter((name) => !written.has(name));
+        const removeOf = (stored: readonly string[]) => {
+            const previous = currentProvider(stored, recorded);
+            const group = [...providerEnvNames(input.provider), ...(previous ? providerEnvNames(previous) : [])];
+            return [...new Set(group)].filter((name) => !written.has(name));
+        };
         try {
-            await envVars.writeScoped(envScopeOf(input.scope, input.userId), { upsert, remove }, input.userId, {
-                // The list read under the lock: a provider name this save did not see means the scope moved.
-                validate: (resulting) => {
-                    const unseen = (name: string) => PROVIDER_NAMES.has(name) && !names.has(name) && !written.has(name);
-                    if (resulting.some((entry) => unseen(entry.name))) {
-                        throw new ProviderMoved();
-                    }
-                    return validateScopeList(resulting, deploymentMode);
-                },
+            await envVars.writeScoped(envScopeOf(input.scope, input.userId), { upsert, remove: [] }, input.userId, {
+                removeOf,
+                validate: (resulting) => validateScopeList(resulting, deploymentMode),
                 alsoInTx: async (tx) => {
                     const locked = await executors.agentDefaultInTx(tx, owner);
                     if (locked?.provider !== recorded) throw new ProviderMoved();

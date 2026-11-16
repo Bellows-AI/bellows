@@ -2,10 +2,12 @@ import {
     ADMIN_ROLE,
     type AgentProvider,
     CLOUD_CREDENTIAL_MESSAGE,
+    currentProvider,
     ERROR_CODES,
     EXECUTOR_TYPES,
     type ExecutorType,
     isModelProvider,
+    modelCredentialScope,
     type ModelProvider,
     normalizeModelId,
     PLATFORM_PROVIDER,
@@ -28,7 +30,6 @@ import {
     ownerOf,
     providerInView,
     saveModelKey,
-    scopeProvider,
     type SetupScope,
 } from './model-setup-save.js';
 import { validBase, validKey } from './model-setup-verify.js';
@@ -129,22 +130,30 @@ interface ScopeView {
     keyNames: string[];
 }
 
-/** One scope's setup: its recorded or inferred provider, its agent default, its key names; null when it has none. */
+/**
+ * One scope's setup: the provider its names hold now (`currentProvider`; the platform when it holds none and its
+ * agent default runs on it), its agent default, its key names; null when it has none.
+ */
 function viewOf(names: string[], agent: AgentDefault | null): ScopeView | null {
     const keyNames = keyNamesOf(names);
     if (agent === null && keyNames.length === 0) return null;
+    const platform = agent?.provider === PLATFORM_PROVIDER ? PLATFORM_PROVIDER : null;
     return {
-        provider: agent?.provider === PLATFORM_PROVIDER ? PLATFORM_PROVIDER : scopeProvider(agent?.provider, names),
+        provider: currentProvider(names, agent?.provider) ?? platform,
         agentType: agent?.agentType ?? null,
         model: agent?.model ?? null,
         keyNames,
     };
 }
 
-/** Which source a task naming no executor runs on: a key in the member's scope, then the org's, then the platform. */
-function effectiveOf(personal: ScopeView | null, org: ScopeView | null, platform: boolean) {
-    if (personal?.keyNames.length) return 'personal';
-    if (org?.keyNames.length) return 'org';
+/**
+ * Which source a task naming no executor runs on: the claim's rule (`modelCredentialScope`) — the highest scope naming
+ * any model credential owns them all — then the platform.
+ */
+function effectiveOf(orgNames: readonly string[], personalNames: readonly string[], platform: boolean) {
+    const owner = modelCredentialScope([orgNames, personalNames]);
+    if (owner === 1) return 'personal';
+    if (owner === 0) return 'org';
     return platform ? 'platform' : null;
 }
 
@@ -191,16 +200,15 @@ async function handleGet(config: AppConfig, orgs: OrgRegistry, request: FastifyR
     );
     if (!read.ok) return reply;
     const [orgRows, personalRows, defaults] = read.value;
-    const org = viewOf(
-        orgRows.map((row) => row.name),
-        defaults.org
-    );
-    const personal = viewOf(
-        personalRows.map((row) => row.name),
-        defaults.personal
-    );
+    const orgNames = orgRows.map((row) => row.name);
+    const personalNames = personalRows.map((row) => row.name);
     const platform = config.platformModelProvided;
-    return reply.code(HTTP_OK).send({ platform, org, personal, effective: effectiveOf(personal, org, platform) });
+    return reply.code(HTTP_OK).send({
+        platform,
+        org: viewOf(orgNames, defaults.org),
+        personal: viewOf(personalNames, defaults.personal),
+        effective: effectiveOf(orgNames, personalNames, platform),
+    });
 }
 
 /** The agent default alone: on the platform model, or on a key the scope's view holds (re-read here, never trusted). */
