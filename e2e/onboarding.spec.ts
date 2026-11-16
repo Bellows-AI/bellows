@@ -57,7 +57,16 @@ test('a first sign-in connects a model, starts its first task from Ready and lan
     await expect(page).toHaveURL(/\/onboarding\/ready\?returnTo=%2F$/, { timeout: 60_000 });
     await expect(title(page, "You're set")).toBeVisible();
     await expect(page.getByRole('listitem', { name: 'Model' })).toContainText(`Claude Code · Anthropic · ${model}`);
+    // The composer asks for a task in the preselected repository, its chips on one row in the wide column.
+    await expect(page.getByLabel('What should the agent do?')).toHaveAttribute(
+        'placeholder',
+        /^Describe a task for [\w.-]+\/[\w.-]+…$/,
+        { timeout: 60_000 }
+    );
     await page.screenshot({ path: 'artifacts/ui/onboarding-ready.png', fullPage: true });
+    const repoChip = await page.getByRole('button', { name: /^Repository: / }).boundingBox();
+    const modelChip = await page.getByRole('combobox', { name: /^Model: / }).boundingBox();
+    expect(Math.abs(repoChip!.y + repoChip!.height / 2 - (modelChip!.y + modelChip!.height / 2))).toBeLessThan(4);
 
     // Repositories' Change: the reselect round trip, back to Ready — never "That sign-in expired".
     await page

@@ -41,6 +41,7 @@ import {
 
 /** The prompt's placeholder example: a skill invocation on a ticket. */
 const PROMPT_PLACEHOLDER = '/factory-fix TICKET-XXX';
+const skillExample = (): string => PROMPT_PLACEHOLDER;
 
 /** The ids Start's `aria-describedby` points at: the readiness banner, or the quiet status text. */
 const READINESS_ID = 'composer-readiness';
@@ -479,6 +480,9 @@ export function TaskComposer({
     onSend,
     onRepoChange,
     draftStore,
+    inline = false,
+    placeholderFor = skillExample,
+    starters,
 }: {
     /**
      * The tracked repositories. Null until the list is confirmed — "not known" is a different
@@ -519,6 +523,12 @@ export function TaskComposer({
     onRepoChange?: (repo: string | null) => void;
     /** The shell's held draft (F1): read once at mount, written on every change, cleared on launch. */
     draftStore: ComposerDraftStore;
+    /** Set where the composer sits inside a page's column (Ready), not filling a page of its own. */
+    inline?: boolean;
+    /** The prompt's placeholder for the chosen repository ('' when none); absent, the skill example. */
+    placeholderFor?: (repo: string) => string;
+    /** Prompts the caller offers right under the field, above the control bar. */
+    starters?: ReactNode;
 }) {
     const limits = useAttachmentLimits();
     const frozen = sending || draftStore.submits[TASK_SCOPE] !== undefined;
@@ -586,7 +596,11 @@ export function TaskComposer({
     const launch = composerLaunch(blocker, frozen, attemptStart);
     return (
         // The whole page takes dropped files, not only the input.
-        <AttachmentDropZone className="composer task-compose" accepts={() => limits !== null} onFiles={files.add}>
+        <AttachmentDropZone
+            className={['composer task-compose', inline && 'task-compose-inline'].filter(Boolean).join(' ')}
+            accepts={() => limits !== null}
+            onFiles={files.add}
+        >
             {/* biome-ignore lint/a11y/noStaticElementInteractions: the launch shortcut is a composer-wide keystroke surface — a member tabbed into any field of the guided form (prompt, selects, workflow inputs) presses Ctrl/⌘+Enter and gets exactly what the Start button would have given them, so the handler must sit above every control rather than on each one */}
             <div
                 className="task-compose-body"
@@ -604,7 +618,7 @@ export function TaskComposer({
                 <ChatInput
                     id={PROMPT_ID}
                     label="What should the agent do?"
-                    placeholder={PROMPT_PLACEHOLDER}
+                    placeholder={placeholderFor(state.repo)}
                     value={state.draft}
                     readOnly={frozen}
                     onChange={(e) => {
@@ -641,6 +655,7 @@ export function TaskComposer({
                             {commandCount(state.draft)}
                         </p>
                     ) : null}
+                    {starters}
                 </ChatInput>
                 {workflows === null ? null : <ComposerWorkflowDetails composer={composer} />}
                 <ReadinessBanner blocker={blocker} workflow={state.workflow} />

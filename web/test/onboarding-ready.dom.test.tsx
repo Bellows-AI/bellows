@@ -164,6 +164,21 @@ describe('the Ready step', () => {
         );
     });
 
+    it('the composer asks for a task in the chosen repository, the starters right under the prompt, inline in a wide column', async () => {
+        board();
+        const { container } = renderApp('/onboarding/ready');
+        const field = (await prompt()) as HTMLTextAreaElement;
+        expect(field.placeholder).toBe('Describe a task for acme/web…');
+        // The starters sit inside the chat input, between the prompt and the control bar.
+        const chat = field.closest('.chat-input');
+        const starters = screen.getByRole('button', { name: 'Fix a flaky test' }).closest('.ready-starters');
+        expect(starters?.parentElement).toBe(chat);
+        expect(starters?.nextElementSibling?.classList.contains('chat-input-bar')).toBe(true);
+        // The inline composer does not fill the page the way /tasks/new does, in the wider setup column.
+        expect(container.querySelector('.task-compose')?.classList.contains('task-compose-inline')).toBe(true);
+        expect(container.querySelector('main.onboarding')?.classList.contains('onboarding-wide')).toBe(true);
+    });
+
     it('Start creates the task on the agent default, completes setup, re-reads the session, then opens the task', async () => {
         const user = userEvent.setup();
         const calls = board();

@@ -1081,6 +1081,28 @@ describe('the design-system inventory', () => {
         expect(body('.identity-head p')).toMatch(/overflow-wrap:\s*anywhere/);
     });
 
+    it('gives Ready the wide measure and its inline composer no page-filling height', () => {
+        const entry = rules(stripComments(readFileSync(join(webSrc, 'styles/regions/entry.css'), 'utf8')));
+        const wide = entry.find(([p]) => p.trim() === '.onboarding.onboarding-wide')?.[1] ?? '';
+        expect(wide).toMatch(/max-width:\s*var\(--measure-wide\)/);
+        const composer = rules(stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8')));
+        const inline = composer.find(([p]) => p.trim() === '.composer.task-compose-inline')?.[1] ?? '';
+        expect(inline).toMatch(/flex:\s*none/);
+        expect(inline).toMatch(/min-height:\s*0/);
+    });
+
+    it('sizes the model and branch chips to their value and ellipsizes a long one, never a mid-word clip', () => {
+        const css = rules(stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8')));
+        const input = css.find(
+            ([p]) => /\.composer-model-input/.test(p) && /\.composer-branch-input/.test(p) && !/::/.test(p)
+        );
+        expect(input?.[1]).toMatch(/field-sizing:\s*content/);
+        expect(input?.[1]).toMatch(/text-overflow:\s*ellipsis/);
+        // The bar wraps its end below the chips rather than squeezing them into a column.
+        const bar = css.find(([p]) => p.trim() === '.chat-input-bar')?.[1] ?? '';
+        expect(bar).toMatch(/flex-wrap:\s*wrap/);
+    });
+
     it('styles the shared state note as quiet text, red only for an error', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/primitives.css'), 'utf8'));
         const preludes = rules(css).map(([prelude]) => prelude);

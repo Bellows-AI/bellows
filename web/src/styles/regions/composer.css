@@ -41,6 +41,12 @@
         padding-top: 0;
     }
 
+    /* Inside a page's column (Ready) the composer is one block among others: no page-filling height. */
+    .composer.task-compose-inline {
+        flex: none;
+        min-height: 0;
+    }
+
     .task-compose-body {
         display: flex;
         flex-direction: column;
@@ -134,9 +140,11 @@
         outline-offset: -1px;
     }
 
+    /* The end wraps below the chips when both do not fit, rather than squeezing the chips into a column. */
     .chat-input-bar {
         align-items: center;
         display: flex;
+        flex-wrap: wrap;
         gap: var(--space-1);
         margin-top: var(--space-1);
     }
@@ -275,7 +283,10 @@
 
     .composer-context .select-trigger {
         font-size: var(--text-base);
-        max-width: min(240px, 100%);
+        /* Four chips (repository, branch, executor, model) share one row of the 720px setup column. A fixed cap,
+           not `min(…, 100%)`: a percentage drops out of the row's intrinsic width, which then wraps early. The
+           item's own `max-width: 100%` still keeps a chip inside a narrow row. */
+        max-width: 200px;
     }
 
     /* Chip-sized only on a wide screen: below it the shared 44px touch floor must win. */
@@ -337,9 +348,12 @@
         font: inherit;
         /* The global focus ring stays: it is the keyboard cue. */
         align-self: stretch;
-        min-width: 0;
+        /* As wide as the chosen value (the placeholder) or the search, up to the trigger's cap, where a long
+           value ends in an ellipsis; the full value stays the trigger's title and the field's name. */
+        field-sizing: content;
+        min-width: 4ch;
         padding: 0;
-        width: 12ch;
+        text-overflow: ellipsis;
     }
 
     .composer-branch-input::placeholder,
