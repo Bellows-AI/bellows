@@ -811,6 +811,7 @@ test.describe('the task title', () => {
         }));
         expect(metrics.height, 'at most two lines').toBeLessThanOrEqual(2 * metrics.lineHeight + 1);
         expect(metrics.title, 'the full display title rides title=').toBe(metrics.text);
+        await shellSettled(page);
         const overflow = await page.evaluate(
             () => document.documentElement.scrollWidth - document.documentElement.clientWidth
         );

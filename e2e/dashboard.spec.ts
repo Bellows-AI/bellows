@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { FORBIDDEN, watchConsole } from './page-health.js';
+import { FORBIDDEN, shellSettled, watchConsole } from './page-health.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -45,6 +45,7 @@ async function assertRendersCleanly(page: Page, name: string) {
         expect(await page.locator('section.panel').count()).toBeGreaterThan(2);
     }
 
+    await shellSettled(page);
     const text = await page.locator('main').innerText();
     for (const token of FORBIDDEN) expect(text, `${name} contains ${token}`).not.toContain(token);
 
