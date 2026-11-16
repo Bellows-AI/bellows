@@ -244,13 +244,14 @@ try {
         const sessionRepo = data.sessions.find((s) => s.sessionId === j.sessionId)?.repo ?? repo;
         await sql`
             insert into job (org_id, id, root_job_id, parent_job_id, command, status, created_by, session_id, repo,
-                             created_at, started_at, finished_at, agent_turns, failure_kind, output)
+                             created_at, started_at, finished_at, agent_turns, failure_kind, output,
+                             execution_user_id)
             values (${LOCAL_ORG_ID}, ${j.id}, ${j.rootJobId}, ${j.parentJobId}, 'seed task',
                     ${j.failureKind ? 'failed' : 'succeeded'},
                     ${createdBy}, ${j.sessionId}, ${sessionRepo}, ${new Date(j.createdAt)},
                     ${new Date(j.startedAt ?? j.createdAt)},
                     ${new Date(j.finishedAt ?? j.createdAt)}, ${j.agentTurns},
-                    ${j.failureKind ?? null}, ${j.output ?? null})
+                    ${j.failureKind ?? null}, ${j.output ?? null}, ${j.id === j.rootJobId ? createdBy : null})
             on conflict (org_id, id) do nothing
         `;
         // The claim's own evidence of who owns the session: the usage reader attributes tokens

@@ -116,6 +116,8 @@ describe.skipIf(!enabled)('100_legacy_jira_tokens', () => {
     let alreadyWaiting: string;
     let completedRoot: string;
     let completedFollowUp: string;
+    /** Each root's `jira_connection_id` right after 100: a later migration drops the column. */
+    const projectedAfter100 = new Map<string, string | null>();
 
     it('upgrades a 099 database', async () => {
         await applyAll(versioned(VERSION));
@@ -149,6 +151,16 @@ describe.skipIf(!enabled)('100_legacy_jira_tokens', () => {
             values (${org}, ${completedFollowUp}, 'more', ${completedRoot}, ${completedRoot}, ${author})
         `;
         await applyAll([VERSION]);
+        const projected = await pool<{ id: string; jira_connection_id: string | null }[]>`
+            select id, jira_connection_id from job where org_id = ${org}
+        `;
+        for (const row of projected) projectedAfter100.set(row.id, row.jira_connection_id);
+        // The second run happens here: a later migration drops a column 100 writes, so 100 cannot run at head.
+        await pool.unsafe(readFileSync(new URL(VERSION, DIR), 'utf8'));
+        const rerun = await pool<{ id: string; jira_connection_id: string | null }[]>`
+            select id, jira_connection_id from job where org_id = ${org}
+        `;
+        expect(new Map(rerun.map((row) => [row.id, row.jira_connection_id]))).toEqual(projectedAfter100);
         // The claim below is today's code: it reads columns later migrations add, so the schema goes on to head.
         await applyAll(versioned().filter((name) => name > VERSION));
     });
@@ -196,15 +208,7 @@ describe.skipIf(!enabled)('100_legacy_jira_tokens', () => {
     });
 
     it('82: job.jira_connection_id pointing at a legacy row is nulled; an oauth one is kept', async () => {
-        const rows = await pool<{ id: string; jira_connection_id: string | null }[]>`
-            select id, jira_connection_id from job where org_id = ${org} and id in ${pool([
-                queuedLegacy,
-                queuedOrgWide,
-                runningLegacy,
-                queuedOauth,
-            ])}
-        `;
-        const byId = new Map(rows.map((r) => [r.id, r.jira_connection_id]));
+        const byId = projectedAfter100;
         expect(byId.get(queuedLegacy)).toBeNull();
         expect(byId.get(queuedOrgWide)).toBeNull();
         expect(byId.get(runningLegacy)).toBeNull();
@@ -224,7 +228,6 @@ describe.skipIf(!enabled)('100_legacy_jira_tokens', () => {
     });
 
     it('a second run changes nothing', async () => {
-        await pool.unsafe(readFileSync(new URL(VERSION, DIR), 'utf8'));
         expect(await openRequirements(org, queuedLegacy)).toEqual([{ provider: 'jira', reason: 'missing' }]);
         const [counted] = await pool<{ n: number }[]>`
             select count(*)::int as n from job_integration_requirement where org_id = ${org}

@@ -20,6 +20,7 @@ import { agentTitleRoutes } from './routes/agent-title.js';
 import { errorHandler } from './routes/error-handler.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
+import { combineRegistrations } from './integrations/provider-registry.js';
 import { batchRoutes } from './routes/batches/batches.js';
 import type { UploadCapabilityStore } from './attachments/upload-capability-store.js';
 import { attachmentRoutes } from './routes/attachments.js';
@@ -139,6 +140,10 @@ export interface AppDeps {
               Partial<Pick<IntegrationRuntime, 'destroyRevokedSecret' | 'flowOf'>> & {
                   /** The provider ids with an OAuth client registered here; `GET /api/integrations` reports it as booleans. */
                   configured?: readonly string[] | undefined;
+                  /** Every registered provider id, configured or not: the list `GET /api/integrations` answers. */
+                  ids?: readonly string[] | undefined;
+                  /** The refusal sentence of an unconfigured provider's start. */
+                  notConfiguredOf?: ((provider: string) => string) | undefined;
               })
         | undefined;
     githubMint?: GithubMint | undefined;
@@ -301,8 +306,18 @@ async function registerRunnerCredentialRoutes(
         if (agentTitle) await app.register(agentTitleRoutes({ attemptOfLease, agentTitle }));
     }
     // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
-    if (integrations?.flowOf)
-        await app.register(integrationRoutes({ flowOf: integrations.flowOf, configured: integrations.configured }));
+    if (integrations?.flowOf) {
+        // Absent, no provider is registered: the list is empty and a refusal names the provider alone.
+        const none = combineRegistrations([]);
+        await app.register(
+            integrationRoutes({
+                flowOf: integrations.flowOf,
+                configured: integrations.configured,
+                providers: integrations.ids ?? none.ids,
+                notConfiguredOf: integrations.notConfiguredOf ?? none.notConfiguredOf,
+            })
+        );
+    }
 }
 
 async function registerCommerce(
@@ -313,6 +328,13 @@ async function registerCommerce(
 ): Promise<void> {
     if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
 }
+
+/** What the personal and the organization executor routes share: the deployment mode and the runner classes. */
+const executorRouteDeps = (config: AppConfig, orgs: OrgRegistry) => ({
+    orgs,
+    deploymentMode: config.deploymentMode,
+    runnerClasses: config.runnerClasses,
+});
 
 /** No `listen` here — that split is what lets the route tests drive the app in-process. */
 export async function buildApp({
@@ -462,12 +484,12 @@ export async function buildApp({
         githubMint,
         githubRevoke,
     });
-    await app.register(workspaceRoutes({ orgs, deploymentMode: config.deploymentMode }));
+    await app.register(workspaceRoutes(executorRouteDeps(config, orgs)));
     // Plans and usage: like the webhook, no route exists unless the deployment turned commerce on.
     await registerCommerce(app, config, orgs, commercePlanWriter);
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
-    await app.register(orgExecutorRoutes({ orgs, deploymentMode: config.deploymentMode }));
+    await app.register(orgExecutorRoutes(executorRouteDeps(config, orgs)));
     // The organization's export archive: an admin read over every org table and object.
     await app.register(orgExportRoutes({ orgs }));
     // Notification subscriptions: the org's settings for who hears about a task verdict.

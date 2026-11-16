@@ -150,7 +150,8 @@ export async function mockExecutors(
             const { executors } = route.request().postDataJSON() as { executors: Omit<MockExecutor, 'createdAt'>[] };
             held.executors = executors.map((row) => ({ ...row, createdAt: E2E_EXECUTOR.createdAt }));
         }
-        await route.fulfill({ json: { executors: held.executors } });
+        // The personal list declares no runner class: only an organization profile names one.
+        await route.fulfill({ json: { executors: held.executors, runnerClasses: [] } });
     });
     return held;
 }

@@ -63,7 +63,7 @@ jobs:
                   printf 'registry=ghcr.io/%s\n' "$(printf '%s' "$OWNER" | tr 'A-Z' 'a-z')" >>"$GITHUB_OUTPUT"
 
     # The buildkit image every build cell boots its builder from, pulled once and copied into the
-    # release registry. Eight cells pulling it anonymously at once trip a registry's per-IP limits;
+    # release registry. Ten cells pulling it anonymously at once trip a registry's per-IP limits;
     # a retry inside a cell reuses the same IP, so only the one pull here retries. ECR Public's
     # per-IP data limit refuses even this one pull on a shared runner IP, so the source is Google's
     # Docker Hub cache, as mirror-images.yml's postgres is. imagetools copies the manifest list, so
@@ -96,18 +96,18 @@ jobs:
                   done
                   exit 1
 
-    # The four images the chart renders, each built natively on its own architecture. QEMU would
-    # need one job instead of two, but every executor image runs a full npm install, and under
+    # The four images the chart renders and the dev runner image, each built natively on its own
+    # architecture. QEMU would need one job instead of two, but every executor image runs a full npm install, and under
     # emulation that is tens of minutes per arch. GitHub's arm64 runners are free to public
     # repositories, so the native pair is both faster and simpler to read.
     #
     # Each job pushes an arch-suffixed tag; `manifest` merges the pair into the real tag. The
-    # alternative — pushing by digest and passing eight digests between jobs as artifacts — buys
+    # alternative — pushing by digest and passing ten digests between jobs as artifacts — buys
     # only the absence of the two extra tags in the registry.
     build:
         needs: [validate, tag, buildkit]
         strategy:
-            # One image failing should not hide whether the other three build.
+            # One image failing should not hide whether the other four build.
             fail-fast: false
             matrix:
                 image:
@@ -124,6 +124,10 @@ jobs:
                     - name: opencode-executor
                       context: docker/opencode-executor
                       args: --build-context skills=docker/skills --build-context common=docker/executor-common
+                    # The image this repository's own .bellows.yaml gates run in.
+                    - name: dev-runner
+                      context: docker/dev-runner
+                      args: ''
                 arch: [amd64, arm64]
                 include:
                     - arch: amd64
@@ -193,7 +197,7 @@ jobs:
                       image --input /tmp/image.tar --scanners vuln,secret \
                       --severity CRITICAL,HIGH --ignore-unfixed --skip-files /usr/local/bin/acli \
                       --format sarif --output /tmp/trivy.sarif --exit-code 0
-            # A distinct category per matrix cell: one category holds one result set, so eight
+            # A distinct category per matrix cell: one category holds one result set, so ten
             # uploads under a shared name would leave only whichever finished last.
             - if: always()
               uses: github/codeql-action/upload-sarif@v3
@@ -266,7 +270,7 @@ jobs:
                   REGISTRY: ${{ needs.tag.outputs.registry }}
                   IMAGE_TAG: ${{ needs.tag.outputs.image-tag }}
               run: |
-                  for image in factory-ai factory-driver claude-executor opencode-executor; do
+                  for image in factory-ai factory-driver claude-executor opencode-executor dev-runner; do
                       docker buildx imagetools create -t "$REGISTRY/$image:$IMAGE_TAG" \
                           "$REGISTRY/$image:$IMAGE_TAG-amd64" "$REGISTRY/$image:$IMAGE_TAG-arm64"
                   done

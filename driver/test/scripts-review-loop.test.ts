@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { reviewLoopArgv, reviewLoopScript } from '../src/container-scripts.js';
+import { reviewerLaunchArgv, reviewLoopArgv, reviewLoopScript } from '../src/container-scripts.js';
 import { MAILBOXES, REVIEW_FILES } from '../src/supervisor-contract.js';
+import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /*
  * The reviewer container's loop (`scripts/review-loop.sh`), pinned by its bytes ONLY. It is never
@@ -18,6 +21,8 @@ const code = reviewLoopScript
 describe('the review loop script', () => {
     it('is the container command', () => {
         expect(reviewLoopArgv()).toEqual(['sh', '-c', reviewLoopScript, 'review-loop']);
+        // Behind the launcher, which starts the tool broker and drops to the reviewer uid.
+        expect(reviewerLaunchArgv()).toEqual(['/usr/local/bin/factory-launch', '--reviewer', ...reviewLoopArgv()]);
     });
 
     it('serves the review mailbox the contract names, by the file names the contract spells', () => {
@@ -36,6 +41,20 @@ describe('the review loop script', () => {
         expect(code.lastIndexOf(kill, exitWrite)).toBeGreaterThan(code.indexOf('wait "$pid"'));
     });
 
+    // The loop's `kill -1` reaches its own uid alone; what a review's tools left — the tool uid's,
+    // `setsid` children past their group included — the broker's sweep ends, exited or cancelled.
+    it('sweeps the tool uid after every request and on a cancel, before the exit is written', () => {
+        const sweep = '/usr/local/bin/node /usr/local/lib/factory-tool/factory-tool.cjs sweep >/dev/null 2>&1';
+        expect(code.split(sweep).length - 1).toBe(1);
+        const at = code.indexOf(sweep);
+        expect(at).toBeGreaterThan(code.lastIndexOf('kill -KILL -1'));
+        expect(at).toBeGreaterThan(code.indexOf('wait "$pid"'));
+        expect(at).toBeLessThan(code.indexOf('/exit.tmp'));
+        // The cancel branch leaves the wait loop by `break`, so it reaches the same line.
+        const cancelBranch = code.slice(code.indexOf('/cancel" ]; then'));
+        expect(cancelBranch.slice(0, cancelBranch.indexOf('fi'))).toContain('break');
+    });
+
     it('applies a request’s env inside its own subshell, and drops the env file before the command', () => {
         const open = code.indexOf('(\n');
         const close = code.indexOf(') > "$1/output"');
@@ -46,6 +65,21 @@ describe('the review loop script', () => {
         expect(subshell).toContain('export "$line"');
         expect(subshell.indexOf('/bin/rm -f "$1/env"')).toBeLessThan(subshell.indexOf('exec /bin/sh'));
         expect(subshell).toContain('exit 126');
+    });
+
+    // A request's env is member-settable: SHELL or CLAUDE_CODE_SHELL in it would route the review's
+    // tools around the broker, as the reviewer, with its lease (docker/tool-isolation-checks.sh).
+    it('sets the launcher’s broker shells back after a request’s env, before the command runs', () => {
+        // A literal, not a value saved at the loop's start: a request env can name any variable.
+        const subshell = code.slice(code.indexOf('done < "$1/env"'), code.indexOf('exec /bin/sh'));
+        expect(subshell).toContain(
+            'SHELL=/usr/local/libexec/factory-tool/bash\n            CLAUDE_CODE_SHELL=/usr/local/libexec/factory-tool/bash\n'
+        );
+        // The launcher's own value, both names.
+        const launch = readFileSync(join(ROOT, 'docker/executor-common/factory-launch.sh'), 'utf8');
+        expect(launch).toContain(
+            'CLAUDE_CODE_SHELL=/usr/local/libexec/factory-tool/bash\nSHELL=/usr/local/libexec/factory-tool/bash\n'
+        );
     });
 
     it('runs the request’s command as the executor entrypoint argv, with no gate shell', () => {

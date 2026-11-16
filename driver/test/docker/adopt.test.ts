@@ -1079,6 +1079,37 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             await expect(running).rejects.toThrow(/ended with a signal/);
         });
 
+        // The same driver process held the group under the earlier claim and abandoned it when that lease
+        // lapsed: the abandonment is that attempt's, never the takeover's that now follows the group's log.
+        it("an earlier attempt of the group abandoned in this process leaves the takeover's followed log alone", async () => {
+            const { exec } = liveDaemon(true, listing());
+            const { seen, spawnHeld } = heldFollow();
+            const runner = dockerRunner(exec, { spawn: spawnHeld });
+            await runner.adopt(adopter);
+            runner.abandon(job);
+            const running = runner.run(takenJob(), { id: SESSION, resume: true });
+            await vitest.waitFor(() => expect(seen).toHaveLength(1));
+
+            expect(seen[0]?.signal?.aborted).toBe(false);
+            seen[0]?.close(0);
+            await expect(running).resolves.toMatchObject({ timedOut: false });
+        });
+
+        it("an earlier attempt abandoned after the takeover began leaves the takeover's followed log alone", async () => {
+            const { exec } = liveDaemon(true, listing());
+            const { seen, spawnHeld } = heldFollow();
+            const runner = dockerRunner(exec, { spawn: spawnHeld });
+            await runner.adopt(adopter);
+            const running = runner.run(takenJob(), { id: SESSION, resume: true });
+            await vitest.waitFor(() => expect(seen).toHaveLength(1));
+
+            runner.abandon(job);
+
+            expect(seen[0]?.signal?.aborted).toBe(false);
+            seen[0]?.close(0);
+            await expect(running).resolves.toMatchObject({ timedOut: false });
+        });
+
         it('answers nothing for a group no runner container runs (created, never started)', async () => {
             const { exec, calls, logs } = liveDaemon(true, '');
 

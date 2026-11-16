@@ -1284,6 +1284,19 @@ describe('the shared executor skills', () => {
         expect(existsSync(join(ROOT, `${SKILLS}/factory-jira/jira.cjs`))).toBe(true);
     });
 
+    it('the linear skill names the helper at its fixed path, triggers on linear.app issue URLs, and asks on a bare key bound twice', () => {
+        const text = read(`${SKILLS}/factory-linear/SKILL.md`);
+        expect(text).toContain('node /usr/local/share/factory-skills/factory-linear/linear.cjs');
+        expect(text).toMatch(/requires-connections: linear/);
+        expect(text).toMatch(/^description: .*linear\.app\/<workspace>\/issue\//m);
+        expect(text).not.toMatch(/\bcurl\b|LINEAR_API|RUNNER_LEASE_TOKEN|lin_api_/);
+        expect(existsSync(join(ROOT, `${SKILLS}/factory-linear/linear.cjs`))).toBe(true);
+        // a bare ABC-123 belongs to whichever tracker is bound; with both, the user is asked (both skills say it).
+        for (const skill of ['factory-jira', 'factory-linear']) {
+            expect(read(`${SKILLS}/${skill}/SKILL.md`)).toMatch(/both Jira and Linear are bound, ask the user/);
+        }
+    });
+
     // after a successful issue read the jira skill hands the issue's subject to the title helper, only on
     // exit 0, never renaming the Jira issue; the title skill states the same rule without naming a provider.
     it('the jira skill sets the task title only after a successful issue read, and the title skill stays provider-neutral', () => {
@@ -1293,6 +1306,12 @@ describe('the shared executor skills', () => {
         expect(jira).toMatch(/Only after `issue <KEY>` exited 0/);
         expect(jira).toMatch(/never invent a subject/);
         expect(jira).toMatch(/never rename the Jira issue/);
+        const linear = read(`${SKILLS}/factory-linear/SKILL.md`);
+        expect(linear).toContain('node /usr/local/share/factory-skills/factory-task-title/task-title.cjs');
+        expect(linear).toMatch(/## Naming the task after a ticket/);
+        expect(linear).toMatch(/Only after `issue <KEY>` exited 0/);
+        expect(linear).toMatch(/never invent a subject/);
+        expect(linear).toMatch(/never rename the Linear issue/);
         const title = read(`${SKILLS}/factory-task-title/SKILL.md`);
         expect(title).toMatch(/## After an issue read/);
         expect(title).toMatch(/Only when the read succeeded/);
@@ -1989,8 +2008,10 @@ describe('the agent launcher (issue #814)', () => {
     it('starts the broker under an empty environment, then drops root and every capability for good', () => {
         expect(LAUNCH).toContain(
             '/usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin NODE_DISABLE_COMPILE_CACHE=1 \\\n' +
-                '    /usr/local/bin/node /usr/local/lib/factory-tool/factory-tool.cjs serve &'
+                '    /usr/local/bin/node /usr/local/lib/factory-tool/factory-tool.cjs serve $BROKER_FLAG &'
         );
+        // The flag is the launcher's own word or nothing, never one the environment set.
+        expect(LAUNCH).toMatch(/^BROKER_FLAG=\n/m);
         expect(LAUNCH).toContain(
             'exec /usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all -- "$@"'
         );
@@ -2004,6 +2025,29 @@ describe('the agent launcher (issue #814)', () => {
                 word.trim()
             );
         }
+    });
+
+    it('starts the reviewer’s broker in reviewer mode and drops to the reviewer uid with the broker group', () => {
+        expect(LAUNCH).toMatch(
+            /^if \[ "\$\{1:-\}" = --reviewer \]; then\n {4}BROKER_FLAG=--reviewer\n {4}shift\nfi\n/m
+        );
+        // The flag is read before the uid check, so an image run by hand drops it too.
+        expect(LAUNCH.indexOf('BROKER_FLAG=--reviewer')).toBeLessThan(LAUNCH.indexOf('/usr/bin/id -u'));
+        // uid 1002 has no passwd entry: its groups are named, not looked up.
+        expect(LAUNCH).toContain(
+            'if [ -n "$BROKER_FLAG" ]; then\n' +
+                '    exec /usr/bin/setpriv --reuid=1002 --regid=1000 --groups=1002 --inh-caps=-all -- "$@"\nfi\n' +
+                'exec /usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups --inh-caps=-all -- "$@"'
+        );
+    });
+
+    it('drops --reviewer and runs its argument when not root', () => {
+        const ran = spawnSync(
+            '/bin/sh',
+            [join(ROOT, 'docker/executor-common/factory-launch.sh'), '--reviewer', 'sh', '-c', 'echo "$0 ran"'],
+            { encoding: 'utf8' }
+        );
+        expect(ran.stdout).toBe('sh ran\n');
     });
 
     it('runs its argument unchanged when it is not root, as an image run by hand', () => {

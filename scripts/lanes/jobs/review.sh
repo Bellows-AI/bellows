@@ -82,6 +82,12 @@ expect_contains 'the refusal says the first review is running'    "$rv_out" 'is 
 expect_contains 'the review ends clean'                           "$rv_out" 'verdict":"clean'
 expect_contains 'the review ran as uid 1002'                      "$rv_out" 'uid=1002'
 expect_contains 'the review could not write the shared tree'      "$rv_out" 'tree-write=denied'
+# The review's CLI holds the attempt lease; a command it runs goes through the tool broker as the
+# tool uid and sees neither the lease nor the telemetry credential.
+expect_contains 'the review'"'"'s CLI holds the attempt lease'      "$rv_out" 'cli-lease=set'
+expect_contains 'a review'"'"'s tool runs as the tool uid'          "$rv_out" 'tool-uid=1001'
+expect_contains 'a review'"'"'s tool sees no attempt lease'         "$rv_out" 'tool-lease=unset'
+expect_contains 'a review'"'"'s tool sees no OTLP header'           "$rv_out" 'tool-otlp=unset'
 expect_contains 'the stored key reads back after the review'      "$rv_out" 'reread=200'
 rv_reviewers="$(grep -c ' reviewer$' <(sort -u "$work/review-seen"))"
 rv_foreign="$(sort -u "$work/review-seen" | awk -v job="$rv" '$2 != job' | wc -l | tr -d ' ')"
@@ -89,9 +95,10 @@ rv_foreign="$(sort -u "$work/review-seen" | awk -v job="$rv" '$2 != job' | wc -l
     bad 'the group has exactly one reviewer container' "$rv_reviewers seen: $(sort -u "$work/review-seen" | tr '\n' ';')"
 [ "$rv_foreign" = 0 ] && ok 'no container besides the group'"'"'s was created for the review' ||
     bad 'no container besides the group'"'"'s was created for the review' "$(sort -u "$work/review-seen" | tr '\n' ';')"
+# Created as root, as the agent is: factory-launch --reviewer drops it to 1002 (the uid=1002 above).
 case "$(cat "$work/review-user")" in
-1002:*) ok 'the reviewer container is created as uid 1002' ;;
-*) bad 'the reviewer container is created as uid 1002' "user: '$(cat "$work/review-user")'" ;;
+0:0) ok 'the reviewer container is created as root, for factory-launch to drop' ;;
+*) bad 'the reviewer container is created as root, for factory-launch to drop' "user: '$(cat "$work/review-user")'" ;;
 esac
 
 # The opencode executor reaches the same reviewer container through its own entrypoint.
@@ -99,6 +106,10 @@ rvo="$(create_job 'review' opencode)"
 expect_contains 'an opencode caller completes its review' "$(await_settled "$rvo" 180)" succeeded
 rvo_out="$(field "$(body "$(api GET "/api/jobs/$rvo")")" output)"
 expect_contains 'the opencode review ran through opencode-executor' "$rvo_out" 'executor=opencode-executor'
+expect_contains 'the opencode review'"'"'s CLI holds the attempt lease' "$rvo_out" 'cli-lease=set'
+expect_contains 'an opencode review'"'"'s tool runs as the tool uid'  "$rvo_out" 'tool-uid=1001'
+expect_contains 'an opencode review'"'"'s tool sees no attempt lease' "$rvo_out" 'tool-lease=unset'
+expect_contains 'an opencode review'"'"'s tool sees no OTLP header'   "$rvo_out" 'tool-otlp=unset'
 expect_contains 'the opencode review ends clean'                   "$rvo_out" 'verdict":"clean'
 
 # Clear the reviewer plan before later phases reuse the smoke repository.

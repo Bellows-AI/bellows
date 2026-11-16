@@ -87,7 +87,10 @@ beforeEach(async () => {
     });
     fake = fakeConnector('fake');
     const ready = Promise.resolve();
-    const config = testConfig({ auth: githubAuth(), integrations: { callbackOrigin: ORIGIN, jira: null } });
+    const config = testConfig({
+        auth: githubAuth(),
+        integrations: { callbackOrigin: ORIGIN, jira: null, linear: null },
+    });
     app = await buildApp({
         config,
         orgs: createOrgRegistry({ sql, ready, config, withStores: true, secrets, secretLog: () => {} }),

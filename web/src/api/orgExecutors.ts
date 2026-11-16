@@ -18,6 +18,8 @@ export interface OrgExecutorFull {
     /** The administrator who created (or last promoted) the row — an audit fact, not an ownership. */
     createdBy: string | null;
     config: object;
+    /** The runner class the profile's tasks run in; null for the deployment's default. */
+    runnerClass: string | null;
 }
 
 /** One validated org-profile payload, the shape POST and PUT take. */
@@ -26,6 +28,8 @@ export interface OrgExecutorInput {
     type: string;
     config: object;
     gateFixRounds: number;
+    /** Always sent: the PUT is whole-entry, and an omitted class resets the profile to the default. */
+    runnerClass: string | null;
 }
 
 /**
@@ -42,7 +46,8 @@ const isOrgExecutorFull = (row: unknown): row is OrgExecutorFull =>
     typeof (row as OrgExecutorFull).createdAt === 'string' &&
     typeof (row as OrgExecutorFull).gateFixRounds === 'number' &&
     typeof (row as OrgExecutorFull).config === 'object' &&
-    (row as OrgExecutorFull).config !== null;
+    (row as OrgExecutorFull).config !== null &&
+    ((row as OrgExecutorFull).runnerClass === null || typeof (row as OrgExecutorFull).runnerClass === 'string');
 
 /** The admin list's read — the dialog's opening state, configs included, fetched on demand. */
 export const listOrgExecutorConfigs = async (): Promise<

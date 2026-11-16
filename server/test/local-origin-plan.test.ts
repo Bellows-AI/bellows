@@ -108,6 +108,17 @@ function fifo() {
     };
 }
 
+/** A `git` whose `ls-remote` writes `noise` bytes and then `line` to stderr and exits 128; everything else is real. */
+function refusingGit(line: string, noise = 0): string {
+    const bin = join(tempDir('refusing-git-'), 'git');
+    writeFileSync(
+        bin,
+        `#!/bin/sh\nif [ "$1" = ls-remote ]; then head -c ${noise} /dev/zero | tr '\\0' x >&2; printf '\\n%s\\n\\n' '${line}' >&2; exit 128; fi\nexec git "$@"\n`
+    );
+    chmodSync(bin, 0o755);
+    return bin;
+}
+
 /** The read deadline, handed to the reader as a signal the test aborts; any other timeout stays real. */
 const DEADLINE_MS = 424_242;
 function controlledDeadline() {
@@ -231,6 +242,35 @@ describe('the origin plan reader', () => {
                 kind: READ_TRANSPORT,
             });
         }
+    });
+
+    it("names git's last stderr line in the outage, so a refused connection says so", async () => {
+        const { base } = mirror('acme/web', [SERVICE]);
+        const fatal = 'fatal: unable to connect to 127.0.0.1';
+
+        for (const branch of ['main', null]) {
+            const read = readerOver(base, { gitBin: refusingGit(fatal) }).reader.read('acme/web', branch);
+            await expect(read).rejects.toMatchObject({ kind: READ_TRANSPORT });
+            await expect(read).rejects.toThrow(`git ls-remote: exited 128: ${fatal}`);
+        }
+    });
+
+    it('keeps only a bounded tail of a huge stderr', async () => {
+        const { base } = mirror('acme/web', [SERVICE]);
+        const fatal = 'fatal: unable to connect to 127.0.0.1';
+
+        const huge = await readerOver(base, { gitBin: refusingGit(fatal, 1 << 20) })
+            .reader.read('acme/web', 'main')
+            .catch((e: Error) => e);
+        expect((huge as Error).message).toContain(fatal);
+        expect((huge as Error).message.length).toBeLessThan(400);
+
+        // One megabyte with no line break at all still yields a bounded message.
+        const unbroken = await readerOver(base, { gitBin: refusingGit('', 1 << 20) })
+            .reader.read('acme/web', 'main')
+            .catch((e: Error) => e);
+        expect((unbroken as Error).message).toMatch(/^git ls-remote: exited 128/);
+        expect((unbroken as Error).message.length).toBeLessThan(400);
     });
 
     it('rejects as an outage when the origin accepts and never answers, within the deadline', async () => {

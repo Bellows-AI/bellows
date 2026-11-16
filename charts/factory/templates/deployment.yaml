@@ -141,6 +141,11 @@ spec:
                         value: {{ .Values.dashboard.admission.maxRunningPerOrg | quote }}
                       - name: ADMISSION_MAX_RUNNING_PER_REPO
                         value: {{ .Values.dashboard.admission.maxRunningPerRepo | quote }}
+                      # The runner classes, the same JSON the driver reads: the board offers their
+                      # names (and docker flags) to an org executor profile and refuses any other
+                      # class. The driver stays the authority on the rest of a class.
+                      - name: RUNNER_CLASSES
+                        value: {{ include "factory.runnerClasses" . | quote }}
                       # The Free plan's limits (server/src/db/plan-limits.ts); empty is unlimited.
                       - name: PLAN_DEFAULT_MAX_RUNNING
                         value: {{ .Values.dashboard.planDefaults.maxRunning | quote }}
@@ -191,6 +196,15 @@ spec:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
                                 key: atlassian-client-secret
+                                optional: true
+                      # Linear OAuth (docs/connections.md); both empty, Linear is unconfigured.
+                      - name: LINEAR_CLIENT_ID
+                        value: {{ .Values.integrations.linear.clientId | quote }}
+                      - name: LINEAR_CLIENT_SECRET
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: linear-client-secret
                                 optional: true
                       {{- if and .Values.dashboard.offline .Values.driver.repoCloneBase }}
                       # The offline entry reads each repo's .bellows.yaml from this origin.

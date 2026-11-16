@@ -10,6 +10,7 @@ import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, MERGE_PATCH_CONTENT_TYPE } from
 import type { Board, BoardLease } from '../board/board.js';
 import type { KillLedger } from '../kill-ledger.js';
 import type { StepSink, SupervisorEndpoint } from '../step-control.js';
+import { StartupRefused } from '../startup-cause.js';
 import type { TaskGroup } from './k8s-group.js';
 import type { TeardownIdentity } from './k8s-teardown.js';
 import { parseJsonObject } from '../json-parse.js';
@@ -89,6 +90,7 @@ export const HTTP_ERROR_STATUS = 300;
 export const HTTP_BAD_REQUEST = 400;
 export const HTTP_NOT_FOUND = 404;
 export const HTTP_CONFLICT = 409;
+export const HTTP_UNPROCESSABLE = 422;
 export const HTTP_TOO_MANY_REQUESTS = 429;
 export const HTTP_SERVER_ERROR_STATUS = 500;
 
@@ -219,6 +221,30 @@ export const refusal = (res: K8sResponse, what: string, ...tolerate: number[]): 
 export function expectOk(res: K8sResponse, what: string): void {
     const message = refusal(res, what);
     if (message) throw new Error(message);
+}
+
+/**
+ * A create the API server confirmed it refuses for its spec — a 422 whose body is a `Status` with
+ * a message (an admission policy's denial, a spec that fails validation) — as a config
+ * `StartupRefused`: the same spec is refused on every claim. Anything else, a 422 without a
+ * `Status` body included, is null and stays inconclusive. Built from the Status words only.
+ */
+export function specRefusalOf(res: K8sResponse, what: string): StartupRefused | null {
+    if (res.status !== HTTP_UNPROCESSABLE) return null;
+    const status = readStatus(res.body);
+    if (!status) return null;
+    const reason = status.reason ? ` ${status.reason}` : '';
+    return new StartupRefused(
+        `${what} was refused (${res.status}${reason}): ${status.message.slice(0, DIAGNOSIS_BODY_CHARS)}`,
+        'config'
+    );
+}
+
+/** `expectOk` for a create: a spec the API server confirmed it refuses throws a config `StartupRefused`. */
+export function expectCreated(res: K8sResponse, what: string): void {
+    const refused = specRefusalOf(res, what);
+    if (refused) throw refused;
+    expectOk(res, what);
 }
 
 /**

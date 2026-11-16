@@ -7,6 +7,9 @@ import type {
     StartAuthorizationInput,
     StartAuthorizationResult,
 } from '../src/integrations/authorization-flow.js';
+import { combineRegistrations, type ProviderRegistration } from '../src/integrations/provider-registry.js';
+import { jiraProvider } from '../src/integrations/providers/jira.js';
+import { linearProvider } from '../src/integrations/providers/linear.js';
 import { isTrustedContext, type TrustedIntegrationContext } from '../src/integrations/trusted-context.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import {
@@ -34,9 +37,20 @@ interface Boot {
     start?: (input: StartAuthorizationInput) => StartAuthorizationResult | Promise<StartAuthorizationResult>;
     complete?: (input: CompleteAuthorizationInput) => CompleteAuthorizationResult;
     configured?: readonly string[];
+    /** Registered beside the real Jira registration. */
+    extra?: readonly ProviderRegistration[];
 }
 
-async function boot({ start, complete, configured }: Boot = {}) {
+const FAKE_NOT_CONFIGURED = 'Fake OAuth is not configured on this deployment: the operator sets FAKE_CLIENT_ID';
+const fakeRegistration: ProviderRegistration = {
+    id: 'fake',
+    configured: true,
+    apiBaseOf: () => null,
+    notConfigured: FAKE_NOT_CONFIGURED,
+};
+
+async function boot({ start, complete, configured, extra = [] }: Boot = {}) {
+    const registry = combineRegistrations([jiraProvider(null, null), ...extra]);
     const lines: string[] = [];
     const started: { ctx: TrustedIntegrationContext; input: StartAuthorizationInput }[] = [];
     const completed: (CompleteAuthorizationInput & { signal?: AbortSignal | undefined })[] = [];
@@ -73,6 +87,8 @@ async function boot({ start, complete, configured }: Boot = {}) {
             }),
             flowOf: () => flow,
             configured,
+            ids: registry.ids,
+            notConfiguredOf: registry.notConfiguredOf,
         },
         logger: { level: 'trace', stream: { write: (line: string) => lines.push(line) } },
     });
@@ -109,6 +125,35 @@ describe('POST /api/integrations/:provider/authorizations', () => {
         expect(response.json().error).toContain('ATLASSIAN_CLIENT_SECRET');
         const noClient = await boot({ start: () => ({ ok: false, reason: 'not-configured' }) });
         expect((await post(noClient, {})).statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+    });
+
+    it('an unconfigured Linear start is 503 with the LINEAR sentence', async () => {
+        const ctx = await boot({
+            start: () => ({ ok: false, reason: 'unknown-provider' }),
+            extra: [linearProvider(null, null)],
+        });
+        const response = await post(ctx, {}, 'linear');
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(response.json().code).toBe('INTEGRATION_NOT_CONFIGURED');
+        expect(response.json().error).toContain('LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET');
+        expect(response.json().error).not.toContain('ATLASSIAN');
+    });
+
+    it('a not-configured second provider is refused with its own sentence', async () => {
+        const ctx = await boot({ start: () => ({ ok: false, reason: 'not-configured' }), extra: [fakeRegistration] });
+        const response = await post(ctx, {}, 'fake');
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(response.json().code).toBe('INTEGRATION_NOT_CONFIGURED');
+        expect(response.json().error).toBe(FAKE_NOT_CONFIGURED);
+        expect(response.json().error).not.toContain('ATLASSIAN');
+        // A registered provider with no hooks (no client) is the flow's unknown-provider: still its own 503.
+        const noHooks = await boot({
+            start: () => ({ ok: false, reason: 'unknown-provider' }),
+            extra: [fakeRegistration],
+        });
+        const refused = await post(noHooks, {}, 'fake');
+        expect(refused.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(refused.json().error).toBe(FAKE_NOT_CONFIGURED);
     });
 
     it('answers 201 with the authorize URL, no-store, and passes the whole body to the flow as the caller', async () => {
@@ -240,6 +285,37 @@ describe('GET /api/integrations', () => {
         expect(configured.headers['cache-control']).toBe('no-store');
         const absent = await list(await boot());
         expect(absent.json()).toEqual({ integrations: [{ provider: 'jira', configured: false }] });
+    });
+
+    it('lists every registered provider', async () => {
+        const response = await list(await boot({ configured: ['fake'], extra: [fakeRegistration] }));
+        expect(response.json()).toEqual({
+            integrations: [
+                { provider: 'jira', configured: false },
+                { provider: 'fake', configured: true },
+            ],
+        });
+    });
+
+    it('lists Linear configured when its client and the callback origin are set', async () => {
+        const linear = linearProvider(
+            {
+                clientId: 'lid',
+                clientSecret: 'ls',
+                authorizeUrl: 'https://l.example.test/a',
+                apiOrigin: 'https://l.example.test',
+            },
+            'https://board.example.test'
+        );
+        const response = await list(
+            await boot({ configured: combineRegistrations([linear]).configured, extra: [linear] })
+        );
+        expect(response.json()).toEqual({
+            integrations: [
+                { provider: 'jira', configured: false },
+                { provider: 'linear', configured: true },
+            ],
+        });
     });
 
     it('answers only provider and configured: no client id, origin or secret', async () => {

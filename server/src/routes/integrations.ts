@@ -1,4 +1,4 @@
-import { ERROR_CODES, selectedBy } from '@factory-ai/core';
+import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { safeReturnPath } from '../auth/session.js';
@@ -23,18 +23,17 @@ const HTTP_UNAVAILABLE = 503;
 const START_BODY_LIMIT = 4096;
 const QUERY_VALUE_LIMIT = 2048;
 const START_KEYS = new Set(['connectionId', 'returnTo', 'interactionId', 'access', 'site', 'jobId']);
-const NOT_CONFIGURED =
-    'Jira OAuth is not configured on this deployment: the operator sets ATLASSIAN_CLIENT_ID and ATLASSIAN_CLIENT_SECRET (docs/jira-app-runbook.md)';
 /** Only the path, query and fragment of a redirect are ever used; the host is a placeholder for the URL parser. */
 const REDIRECT_BASE = 'http://board.invalid';
-
-/** The providers the catalog asks about; each is answered with whether this deployment can connect it. */
-const CATALOG_PROVIDERS = ['jira'] as const;
 
 export interface IntegrationRoutesDeps {
     flowOf: (orgId: string) => AuthorizationFlow;
     /** The provider ids this deployment registered an OAuth client for. */
     configured?: readonly string[] | undefined;
+    /** Every registered provider; the list answers each with whether this deployment can connect it. */
+    providers: readonly string[];
+    /** The sentence a start of an unconfigured provider is refused with, naming what the operator sets. */
+    notConfiguredOf: (provider: string) => string;
 }
 
 /** The start body's fields, or the sentence it is refused with: every key known, every value a string. */
@@ -64,7 +63,12 @@ function redirectTo(returnTo: string, provider: string, result: string): string 
 const signInRequired = (reply: FastifyReply) =>
     reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: ERROR_CODES.UNAUTHENTICATED });
 
-export function integrationRoutes({ flowOf, configured = [] }: IntegrationRoutesDeps): FastifyPluginAsync {
+export function integrationRoutes({
+    flowOf,
+    configured = [],
+    providers,
+    notConfiguredOf,
+}: IntegrationRoutesDeps): FastifyPluginAsync {
     const start = async (request: FastifyRequest, reply: FastifyReply) => {
         const caller = callerOf(request);
         if (!caller) return signInRequired(reply);
@@ -86,8 +90,11 @@ export function integrationRoutes({ flowOf, configured = [] }: IntegrationRoutes
                 .header('cache-control', 'no-store')
                 .send({ authorizationId, authorizeUrl, expiresAt });
         }
-        if (result.reason === 'not-configured' || (result.reason === 'unknown-provider' && selectedBy(provider))) {
-            return bad(reply, ERROR_CODES.INTEGRATION_NOT_CONFIGURED, NOT_CONFIGURED, HTTP_UNAVAILABLE);
+        if (
+            result.reason === 'not-configured' ||
+            (result.reason === 'unknown-provider' && providers.includes(provider))
+        ) {
+            return bad(reply, ERROR_CODES.INTEGRATION_NOT_CONFIGURED, notConfiguredOf(provider), HTTP_UNAVAILABLE);
         }
         if (result.reason === 'unknown-provider' || result.reason === 'not-found') {
             return bad(reply, ERROR_CODES.NOT_FOUND, 'No such integration or connection', HTTP_NOT_FOUND);
@@ -127,7 +134,7 @@ export function integrationRoutes({ flowOf, configured = [] }: IntegrationRoutes
     const list = async (request: FastifyRequest, reply: FastifyReply) => {
         if (!callerOf(request)) return signInRequired(reply);
         return reply.header('cache-control', 'no-store').send({
-            integrations: CATALOG_PROVIDERS.map((provider) => ({
+            integrations: providers.map((provider) => ({
                 provider,
                 configured: configured.includes(provider),
             })),

@@ -1,7 +1,7 @@
 /**
  * The subset of CEL the chart's admission policies are written in, evaluated over plain JSON: field
- * selection, `has()`, `!` `&&` `||` `==` `!=` `in`, `+` (list and string concatenation), the ternary, list literals, `size()`, the
- * `all`/`exists`/`filter`/`map` macros and the string `matches`/`startsWith`/`endsWith`/`contains`.
+ * selection, `has()`, `!` `&&` `||` `==` `!=` `in`, `+` (list and string concatenation), the ternary, list and map literals, `size()`, the
+ * `all`/`exists`/`filter`/`map` macros (over a list, or a map's keys) and the string `matches`/`startsWith`/`endsWith`/`contains`.
  * Anything outside it throws at parse time, so a policy rule written in more CEL than this knows
  * fails the suite instead of passing unevaluated. A field that is absent throws when selected, as
  * the apiserver's does, and a throwing validation is a refusal (`failurePolicy: Fail`).
@@ -14,12 +14,13 @@ type Node =
     | { k: 'idx'; of: Node; at: Node }
     | { k: 'call'; fn: string; of: Node | null; args: Node[] }
     | { k: 'list'; items: Node[] }
+    | { k: 'map'; entries: [Node, Node][] }
     | { k: 'not'; of: Node }
     | { k: 'bin'; op: string; l: Node; r: Node }
     | { k: 'cond'; test: Node; then: Node; else: Node };
 
 const TOKEN =
-    /\s*(?:(\d+)|'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|([A-Za-z_][A-Za-z0-9_]*)|(&&|\|\||==|!=|<=|>=|[!?:.,()[\]<>+]))/y;
+    /\s*(?:(\d+)|'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|([A-Za-z_][A-Za-z0-9_]*)|(&&|\|\||==|!=|<=|>=|[!?:.,()[\]{}<>+]))/y;
 
 function tokenize(src: string): string[] {
     const tokens: string[] = [];
@@ -77,6 +78,17 @@ export function parse(src: string): Node {
             }
             take(']');
             return { k: 'list', items };
+        }
+        if (t === '{') {
+            const entries: [Node, Node][] = [];
+            while (peek() !== '}') {
+                const key = ternary();
+                take(':');
+                entries.push([key, ternary()]);
+                if (peek() === ',') take(',');
+            }
+            take('}');
+            return { k: 'map', entries };
         }
         if (t.startsWith('#')) return { k: 'lit', v: Number(t.slice(1)) };
         if (t.startsWith("'")) return { k: 'lit', v: t.slice(1).replace(/\\(.)/g, '$1') };
@@ -219,7 +231,8 @@ function call(node: Extract<Node, { k: 'call' }>, scope: Scope): unknown {
         const variable = args[0];
         if (variable?.k !== 'id') throw new Error(`${fn}() takes a variable name first`);
         const each = (item: unknown) => evaluate(args[1]!, { ...scope, [variable.name]: item });
-        const items = list(receiver);
+        // A macro over a map ranges over its keys, as CEL's does.
+        const items = isObject(receiver) ? Object.keys(receiver) : list(receiver);
         if (fn === 'map') return items.map(each);
         if (fn === 'filter') return items.filter((item) => bool(each(item)));
         // `all`/`exists` absorb an element's error when another element decides, as `&&`/`||` do.
@@ -260,6 +273,10 @@ export function evaluate(node: Node, scope: Scope): unknown {
         }
         case 'list':
             return node.items.map((item) => evaluate(item, scope));
+        case 'map':
+            return Object.fromEntries(
+                node.entries.map(([key, value]) => [str(evaluate(key, scope)), evaluate(value, scope)])
+            );
         case 'not':
             return !bool(evaluate(node.of, scope));
         case 'cond':

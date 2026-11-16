@@ -1184,6 +1184,10 @@
         fill: var(--brand-jira);
     }
 
+    .provider-mark[data-provider='linear'] {
+        fill: var(--brand-linear);
+    }
+
     .provider-mark[data-provider='slack'] {
         fill: var(--brand-slack);
     }

@@ -35,7 +35,7 @@ import {
 } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse, ListRead, Refused } from './k8s-transport.js';
 import { heldWords, startupCauseOf, StartupRefused } from '../startup-cause.js';
-import { type HeldImage, heldOf, heldUnpullable } from './k8s-held.js';
+import { crashLoopingOf, type HeldImage, heldOf, heldUnpullable } from './k8s-held.js';
 import {
     AGENT_CONTAINER,
     SUPERVISOR_CONTAINER,
@@ -257,9 +257,8 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
     const pod = items === null ? undefined : livePodOfItems(items);
     const status = pod?.status;
     const containers = status?.containerStatuses ?? [];
-    const holder = [...(status?.initContainerStatuses ?? []), ...containers].find((c) =>
-        STUCK_REASONS.has(c.state?.waiting?.reason ?? '')
-    );
+    const every = [...(status?.initContainerStatuses ?? []), ...containers];
+    const holder = every.find((c) => STUCK_REASONS.has(c.state?.waiting?.reason ?? ''));
     const waiting = holder?.state?.waiting;
     const held = heldOf(holder, pod);
     const startedAny = containers.some((c) => c.state?.terminated !== undefined || c.state?.running !== undefined);
@@ -271,6 +270,7 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
         items === null ? 'unread' : !livePodOfItems(items) ? 'none' : startedAny ? 'started' : 'starting';
     const disrupted = isDisrupted(pod);
     const stuck = waiting?.reason ? { reason: waiting.reason, message: waiting.message ?? '' } : null;
+    const crashLooping = crashLoopingOf(every);
     if (stuck && PULL_REASONS.has(stuck.reason)) {
         return {
             blocked: pullDetail(stuck),
@@ -282,6 +282,7 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
             agentEnded,
             volumeAffinity: null,
             disrupted,
+            crashLooping,
         };
     }
     const containerSeen =
@@ -297,6 +298,7 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
         agentEnded,
         volumeAffinity: volumeAffinityOf(pod),
         disrupted,
+        crashLooping,
     };
 }
 
@@ -323,6 +325,8 @@ export interface ImagePullStatus {
     volumeAffinity: string | null;
     /** The control plane marked the pod a disruption target, or the kubelet evicted it: it is being taken away. */
     disrupted: boolean;
+    /** A container held in CrashLoopBackOff, named in words (`crashLoopingOf`); else null. */
+    crashLooping: string | null;
 }
 
 const NODES_AVAILABLE = /^0\/(\d+) nodes are available:([^.]*)/;

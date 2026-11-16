@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { githubAuth, harness, memoryAuthStore, memoryUserExecutorStore, signedIn } from './helpers.js';
 import { MAX_EXECUTORS_PER_USER } from '../src/routes/executor-fields.js';
-import { HTTP_BAD_REQUEST, HTTP_NOT_FOUND, HTTP_OK, trackApps } from './helpers-http.js';
+import { HTTP_BAD_REQUEST, HTTP_NOT_FOUND, HTTP_OK, HTTP_UNPROCESSABLE, trackApps } from './helpers-http.js';
 
 /** Offline: the member's executor profiles over the in-memory store; the board has no workspace configuration. */
 
@@ -13,7 +13,7 @@ const REPOS = [
     { owner: 'acme', name: 'api' },
 ];
 
-async function boot() {
+async function boot(runnerClasses: { name: string; docker: boolean }[] = []) {
     const auth = memoryAuthStore();
     const caller = auth.seedMember('test-org', 'octocat');
     const executors = memoryUserExecutorStore();
@@ -24,7 +24,7 @@ async function boot() {
         // github mode, so the cookie is what identifies the caller. Under `none` the resolver
         // returns the stand-in local account regardless of what cookie arrives, and a test
         // about per-member profiles needs two members to be distinguishable.
-        config: { auth: githubAuth() },
+        config: { auth: githubAuth(), runnerClasses },
     });
     track(h.app);
     return { app: h.app, caller, cookie: await signedIn(auth, caller), executors };
@@ -317,6 +317,47 @@ describe('executors: validation', () => {
         expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('BAD_EXECUTOR_ROUNDS');
         expect(executors.rows()).toEqual([]);
+    });
+});
+
+describe('executors: runner class', () => {
+    const CLASSES = [
+        { name: 'standard', docker: false },
+        { name: 'sandboxed', docker: true },
+    ];
+
+    it('a personal profile naming a class is refused', async () => {
+        const { app, cookie, executors } = await boot(CLASSES);
+        // Even a class the board declares: a class is an organization admin's choice, on org profiles only.
+        const response = await putExecutors(app, cookie, [{ ...CLAUDE_CODE, runnerClass: 'standard' }]);
+
+        expect(response.statusCode).toBe(HTTP_UNPROCESSABLE);
+        expect(response.json().code).toBe('BAD_RUNNER_CLASS');
+        expect(response.json().error).toMatch(/runnerClass/);
+        expect(executors.rows()).toEqual([]);
+    });
+
+    it('a personal entry carrying runnerClass null names no class and is accepted', async () => {
+        const { app, cookie, executors } = await boot(CLASSES);
+        const response = await putExecutors(app, cookie, [{ ...CLAUDE_CODE, runnerClass: null }]);
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(executors.rows()).toEqual([expect.objectContaining({ name: 'main', runnerClass: null })]);
+    });
+
+    it('GET /api/workspace/executors lists the classes the board declares, with their docker flag', async () => {
+        const { app, cookie } = await boot(CLASSES);
+        const response = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json().runnerClasses).toEqual(CLASSES);
+    });
+
+    it('a board that declares no classes lists none', async () => {
+        const { app, cookie } = await boot();
+        const response = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
+
+        expect(response.json().runnerClasses).toEqual([]);
     });
 });
 

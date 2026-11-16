@@ -9,7 +9,7 @@ import type { DriverConfig } from './config.js';
 import type { BoardJob } from './board/board.js';
 import { OPENCODE } from './executors.js';
 import { opencodeConfigContent } from './master-prompt.js';
-import { WORKSPACE_PATH, checkoutDir } from './publish/publish.js';
+import { WORKSPACE_PATH, baseBranchOf, checkoutDir } from './publish/publish.js';
 import { TASK_MOUNT, UUID, taskRootOf } from './task-volume.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
 import { OTLP_HEADER_ENV_NAMES, OTLP_HEADERS_ENV, otlpHeadersOf } from './telemetry-config.js';
@@ -245,8 +245,8 @@ export const RESERVED_ENV_NAMES = [
 /** Every loader name, listed or not; mirrored at the board (isReservedEnvName in core/src/env.ts). */
 const LOADER_ENV_PREFIX = 'LD_';
 
-/** The job fields the repo cache path is composed from. */
-export type CacheJob = Pick<BoardJob, 'id' | 'env' | 'repo' | 'gates' | 'workspacePath'>;
+/** The job fields the repo cache path, and the rest of the gate env, are composed from. */
+export type CacheJob = Pick<BoardJob, 'id' | 'env' | 'repo' | 'gates' | 'workspacePath' | 'baseBranch'>;
 
 /**
  * Names a cache path may not take: the driver's own and the ones a shell, loader or runtime reads as
@@ -331,10 +331,18 @@ export function repoCacheEnv(job: CacheJob | undefined): [string, string][] {
 
 /**
  * The gate env's own literals, rendered as `-e` by docker and as container env by kubernetes. HOME
- * for the non-root uid — /tmp is world-writable where the image's own is not.
+ * for the non-root uid — /tmp is world-writable where the image's own is not. BELLOWS_BASE_BRANCH, when
+ * the claim names a valid one, for a gate that measures the change against the task's base; not
+ * BASE_BRANCH, which the task scripts read and a gate's suites and boards would inherit.
  */
 export function gateEnv(job: CacheJob | undefined): [string, string][] {
-    return [['HOME', '/tmp'], ...npmQuietEnv(job), ...repoCacheEnv(job)];
+    const base = job ? baseBranchOf(job) : null;
+    return [
+        ['HOME', '/tmp'],
+        ...npmQuietEnv(job),
+        ...repoCacheEnv(job),
+        ...(base ? [['BELLOWS_BASE_BRANCH', base] as [string, string]] : []),
+    ];
 }
 
 /**

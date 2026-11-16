@@ -17,6 +17,10 @@ CAP_DIR='/task/.lane-cap'
 CAP_MK="mkdir -p $CAP_DIR;" # the volume is born at the claim: every command makes the directory first
 CAP_TOKEN="drv_$(openssl rand -hex 32)" # the drivers' credential; their board records only its SHA-256
 cap_pg=''
+# psql on the run's database, bounded per statement and per lock wait: the compose postgres container's own
+# psql, or with TEST_JOBS_PG_URL the host's against that server (cap_run sets it).
+cap_pg_options='-c statement_timeout=5000 -c lock_timeout=5000'
+cap_pg_argv=()
 cap_a_pid=''
 cap_b_pid=''
 cap_board_pid=''
@@ -39,7 +43,7 @@ cap_stop() { # cap_stop <pid> -> the process gone, waited for, and no longer cle
 }
 
 cap_psql() { # cap_psql <sql> -> the answer, unaligned; non-zero when the read failed
-    timeout 10 docker exec -e PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' "$cap_pg" psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -c "$1" 2>&1
+    timeout 10 "${cap_pg_argv[@]}" -qtA -v ON_ERROR_STOP=1 -c "$1" 2>&1 </dev/null
 }
 
 cap_status() { # cap_status <job> -> its status once the board answered, retried for 30 s; non-zero when it never did
@@ -73,7 +77,10 @@ cap_running() { # cap_running -> how many non-review tasks run, as the database 
 }
 
 cap_board() { # cap_board <port> <log> -> a shared-budget AUTH_MODE=github board; its pid in cap_board_pid
-    env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$1" HOST=127.0.0.1 \
+    # On LANE_HOST like the board it replaces on $PORT ($BASE); off loopback an authenticated board has no
+    # default origin, so PUBLIC_URL names it.
+    env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$1" "${LANE_BOARD_BIND[@]}" \
+        PUBLIC_URL="http://$LANE_HOST:$1" \
         REPO_CLONE_BASE="$PLAN_BASE" \
         AUTH_MODE=github \
         GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
@@ -86,7 +93,7 @@ cap_board() { # cap_board <port> <log> -> a shared-budget AUTH_MODE=github board
 cap_up() { # cap_up <port> -> success once that board answers migrated, within 40 s
     local until=$(($(date +%s) + 40))
     while [ "$(date +%s)" -lt "$until" ]; do
-        [ "$(status "$(BASE="http://127.0.0.1:$1" api GET /api/ready)")" = '200' ] && return 0
+        [ "$(status "$(BASE="http://$LANE_HOST:$1" api GET /api/ready)")" = '200' ] && return 0
         sleep 1
     done
     return 1
@@ -99,7 +106,7 @@ const c = require("node:crypto");
 const t = "fat_" + c.randomBytes(32).toString("base64url");
 process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
 ')
-    out="$(timeout 30 docker exec -i -e PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' "$cap_pg" psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 \
+    out="$(timeout 30 "${cap_pg_argv[@]}" -qtA -v ON_ERROR_STOP=1 \
         -v "login=$1" -v "hash=$hash" -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" -f - 2>&1 <<'SQL'
 with o as (
     insert into organization (id, name) values (:'login', :'login') returning id
@@ -202,12 +209,17 @@ cap_run() {
 
     # The budget counts every running row on the database: a leftover one is not this phase's to count around.
     # The docker executable itself under timeout, so the deadline kills the process holding the pipe; the compose project is the one compose() uses.
-    cap_pg="$(timeout 30 docker ps -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-$(basename "$REPO" | tr '[:upper:]' '[:lower:]')}" \
-        --filter label=com.docker.compose.service=postgres | sed -n 1p)"
-    [ -n "$cap_pg" ] || {
-        bad 'capacity: the postgres container is found' 'no running postgres container carries the compose project label'
-        return 1
-    }
+    if [ -n "${TEST_JOBS_PG_URL:-}" ]; then
+        cap_pg_argv=(env "PGOPTIONS=$cap_pg_options" psql -d "$DATABASE_URL")
+    else
+        cap_pg="$(timeout 30 docker ps -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-$(basename "$REPO" | tr '[:upper:]' '[:lower:]')}" \
+            --filter label=com.docker.compose.service=postgres | sed -n 1p)"
+        [ -n "$cap_pg" ] || {
+            bad 'capacity: the postgres container is found' 'no running postgres container carries the compose project label'
+            return 1
+        }
+        cap_pg_argv=(docker exec -i -e "PGOPTIONS=$cap_pg_options" "$cap_pg" psql -U factory -d "$DB")
+    fi
     running="$(cap_psql "select count(*) from job where status in ('running', 'queued') and review_of is null")" && [ "$running" = 0 ] || {
         bad 'capacity: the board starts with no running or queued task' "rows: $running"
         return 1
@@ -254,7 +266,7 @@ cap_run() {
     h1="$(AUTH_HEADER="Bearer $cap_heavy_token" create_job "$(cap_command "$h1_name")")"
     h2="$(AUTH_HEADER="Bearer $cap_heavy_token" create_job "$(cap_command "$h2_name")")"
     h3="$(AUTH_HEADER="Bearer $cap_heavy_token" create_job "$(cap_command "$h3_name")")"
-    l1="$(AUTH_HEADER="Bearer $cap_light_token" BASE="http://127.0.0.1:$CAP_LIGHT_PORT" create_job "$(cap_command "$l1_name")")"
+    l1="$(AUTH_HEADER="Bearer $cap_light_token" BASE="http://$LANE_HOST:$CAP_LIGHT_PORT" create_job "$(cap_command "$l1_name")")"
     cap_light_job="$l1"
     [ -n "$h1" ] && [ -n "$h2" ] && [ -n "$h3" ] && [ -n "$l1" ] || {
         bad 'capacity: the four tasks are queued' "h1 '$h1' h2 '$h2' h3 '$h3' l1 '$l1'"
@@ -272,10 +284,10 @@ cap_run() {
 
     # Both drivers start together and race for the first wave: polls reading the same demand at once may both
     # serve the heavy org (docs/jobs.md), so the light org either made the first wave or must get the first slot freed.
-    disruption_driver DRIVER_WORKER=cap-a JOB_BOARD_URL="http://127.0.0.1:$PORT" DRIVER_CREDENTIAL="$CAP_TOKEN" \
+    disruption_driver DRIVER_WORKER=cap-a JOB_BOARD_URL="http://$LANE_HOST:$PORT" DRIVER_CREDENTIAL="$CAP_TOKEN" \
         DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
     cap_a_pid=$driver_pid
-    disruption_driver DRIVER_WORKER=cap-b JOB_BOARD_URL="http://127.0.0.1:$CAP_LIGHT_PORT" DRIVER_CREDENTIAL="$CAP_TOKEN" \
+    disruption_driver DRIVER_WORKER=cap-b JOB_BOARD_URL="http://$LANE_HOST:$CAP_LIGHT_PORT" DRIVER_CREDENTIAL="$CAP_TOKEN" \
         DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
     cap_b_pid=$driver_pid
     driver_pid=""

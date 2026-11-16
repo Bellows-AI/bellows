@@ -21,7 +21,8 @@ import type { InputDelivery } from './input-control.js';
 import { attachersOf, createControlChannel, gateRunAttacher } from './control-channel.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
 import { TASK_MOUNT } from './task-volume.js';
-import { reportTail } from './runner.js';
+import { type DaemonState, type Read, reportTail } from './runner.js';
+import { withDaemonNote } from './dockerd-loss.js';
 import { StepTokenUnanswered, stepLost, type StepBroker } from './step-control.js';
 import type { GateStepRequest } from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
@@ -372,6 +373,8 @@ export interface GateClaim {
      * agent's call answers incomplete, and the attempt is the loop's to interrupt.
      */
     onInfraLoss?: (reason: string) => void;
+    /** The attempt's docker daemon restart read (`Runner.dockerdRestarts`): a failed run it moved under gets a note. */
+    dockerdRestarts?: (signal: AbortSignal) => Promise<Read<DaemonState>>;
     /** The claim's gate-run record; absent, an ad-hoc run is not recorded. */
     ledger?: GateLedger;
 }
@@ -663,10 +666,8 @@ export function createGateServer({
             return respond(reply, HTTP_SERVICE_UNAVAILABLE, { error: 'ad-hoc gate runs are closed', retryable: true });
         }
         const cancelled = AbortSignal.any([cancels.get(auth)?.signal ?? AbortSignal.abort(), hangup]);
-        const result = await admission.admit(
-            auth,
-            runRegisteredGate(manager, claim, { gate, filter: parsedRequest.filter }, cancelled)
-        );
+        const run = () => runRegisteredGate(manager, claim, { gate, filter: parsedRequest.filter }, cancelled);
+        const result = await admission.admit(auth, withDaemonNote(claim.dockerdRestarts, cancelled, run));
         // A filtered run is a partial answer: it never stands as the gate's latest run.
         if (result.status === HTTP_OK && parsedRequest.filter === undefined)
             recordNote(history, auth, gate.name, (result.body as { exitCode: number | null }).exitCode);

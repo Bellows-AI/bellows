@@ -120,6 +120,18 @@ describe.skipIf(!enabled)('the skill visibility decision on a job row', () => {
         expect((await claimOf(c, id)).skillHidden).toContainEqual(JIRA_HIDDEN);
     });
 
+    it('hides factory-linear from a task without a Linear binding (needs_connection, linear)', async () => {
+        const c = freshCase();
+        const id = await createJob(c);
+
+        expect(await hiddenOf(id)).toContainEqual({
+            name: 'factory-linear',
+            source: 'builtin',
+            reason: 'needs_connection',
+            connection: 'linear',
+        });
+    });
+
     it('answers the row’s hidden skills, name and reason only, on get alone', async () => {
         const c = freshCase();
         await c.skills.setBuiltinEnabled('factory-fix', false, ADMIN.id);

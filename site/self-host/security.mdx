@@ -9,7 +9,7 @@ This page is for a security reviewer. It states what each control does and what 
 
 - An agent runs code you did not write, next to credentials. Bellows confines it with hardened containers, separate user ids, a network policy, and an admission policy. It holds no long-lived credential.
 - The agent gets a short-lived GitHub token for one repository, fetched on demand. The token is not in its environment.
-- By default this is **not** kernel or VM isolation: every runner shares the node's kernel with other pods. Set `runner.runtimeClassName` (for example `gvisor` on GKE Sandbox) to run every runner pod in a sandbox kernel.
+- By default this is **not** kernel or VM isolation: every runner shares the node's kernel with other pods. Set a runner class's `runtimeClassName` (for example `kata`, a Kata Containers microVM) to run that class's runner pods on their own guest kernel. A Docker class must use one.
 - Membership is not a sandbox. Anyone in an organization can queue a command that an agent runs on any tracked repository.
 
 ## Trust boundaries
@@ -21,7 +21,7 @@ This page is for a security reviewer. It states what each control does and what 
 | Runner pod | Its per-attempt credentials, model credentials, a memory-only GitHub token cache | No ServiceAccount token, no App key |
 | Agent tool commands | Nothing | No GitHub token, no model credential, no control-channel token |
 
-Keep the runner node group separate from the dashboard's nodes (`runner.nodeSelector`, `runner.tolerations`). Then agent code never shares a node with the process that holds the App key.
+Keep the runner node group separate from the dashboard's nodes (each runner class's `nodeSelector` and `tolerations` under `runner.classes`). Then agent code never shares a node with the process that holds the App key.
 
 ## Runner isolation
 
@@ -38,13 +38,13 @@ On Kubernetes, the admission policy requires these on every pod the driver creat
 | No host access | No host ports, no host namespaces, no host path mounts, no `nodeName` pinning |
 | Limited mounts | Only the task volume, `emptyDir` and the pod's own per-attempt Secrets |
 | Limited Secret reads | Only the pod's own per-attempt Secrets and the runner credentials |
-| Sandbox runtime | `runtimeClassName` equal to `runner.runtimeClassName`, when it is set |
+| Runner class | A `factory.runner-class` label naming a class in `runner.classes`, and a `runtimeClassName` equal to that class's (none when the class sets none) |
 
-One exception exists. The `agent` container starts as root with only `SETUID` and `SETGID` added, so it can start commands as another user. A declared service or a gate image has no such exception. If a service needs root at boot, it declares a numeric `user: "uid:gid"` that is not 0.
+One exception exists, for two containers. The `agent` container and the `reviewer` sidecar start as root with only `SETUID` and `SETGID` added, so they can start commands as another user. Each then drops to its own user before the agent program or the review runs. Admission requires the reviewer to start through the launcher that makes that drop. A declared service or a gate image has no such exception. If a service needs root at boot, it declares a numeric `user: "uid:gid"` that is not 0.
 
-Pod Security `restricted` cannot admit the agent container. `baseline` can.
+A Docker class has a second exception. Its `dockerd` sidecar runs privileged. The policy admits that only on the `dockerd` container of a pod in a Docker class, under that class's RuntimeClass, and with no added capability. A privileged container always runs seccomp Unconfined, so the pod's `RuntimeDefault` profile does not filter the daemon. The class's microVM is the boundary: task code can hold root over the task volume and the VM's guest kernel, never the node's. Under a RuntimeClass that runs plain containers, a privileged daemon would be root of the node, so the driver checks each Docker class's RuntimeClass at startup and refuses to start unless its handler is `kata` or `kata-<variant>`. A RuntimeClass it cannot read refuses too.
 
-Under gVisor (GKE Sandbox) the policy keeps every rule above. GKE admits and starts these pods, but seccomp and No New Privileges have no effect inside the sandbox: a runner reads `Seccomp: 0`. The gVisor kernel is the boundary there. The rules stay so that one policy fits installs with and without a RuntimeClass.
+Pod Security `restricted` cannot admit the agent or the reviewer container. `baseline` can, unless the namespace hosts a Docker class: `baseline` refuses the privileged daemon, so that namespace must enforce `privileged`. The admission policy then enforces the `baseline` controls on every runner pod itself: host namespaces, ports and paths, capabilities, seccomp, AppArmor, SELinux, the `/proc` mount, sysctls and Windows HostProcess.
 
 ### Separate users
 
@@ -53,8 +53,9 @@ Under gVisor (GKE Sandbox) the policy keeps every rule above. GKE admits and sta
 | CLI (the agent program) | 1000 |
 | Tool commands the agent runs | 1001, started through a root broker |
 | Reviewer sidecar | 1002 |
+| Tool commands a review runs | 1001, started through a root broker |
 
-Commands the agent runs execute as the tool user. The CLI's configuration, credentials and mailboxes stay closed to that user. The control channel to the supervisor is reached only through a proxy in the CLI's user. No tool environment holds a control token.
+Commands the agent runs execute as the tool user. The CLI's configuration, credentials and mailboxes stay closed to that user. A review's commands also run as the tool user. They do not see the review's attempt lease or its telemetry credential, and nothing they start outlives the review. The control channel to the supervisor is reached only through a proxy in the CLI's user. No tool environment holds a control token.
 
 <Warning>
 The tool user protects the CLI against accidents, not against a hostile tool. A tool can still write files the CLI later reads (`.git/config`, `.claude`, `.mcp.json`) and can exhaust memory, CPU or process slots. Hooks and MCP servers run as the CLI's user. Treat what an agent can do inside its container as unconstrained.
@@ -79,7 +80,7 @@ Gates run in a separate `gate` sidecar, and declared services run as `svc-<name>
 | Other runner pods | No | Runner pods accept no ingress |
 | The Kubernetes API | No | No ServiceAccount token |
 | Other tasks' files | No | Each thread has its own volume |
-| Connection tokens (Jira) | By brokered call | A task you allowed can use the connection. Tokens are not printed by any command |
+| Connection tokens (Jira, Linear) | By brokered call | A task you allowed can use the connection. Tokens are not printed by any command |
 
 Declared services resolve by name to `127.0.0.1` inside the pod, not through DNS.
 
@@ -92,7 +93,7 @@ The agent never holds a standing GitHub credential.
 3. The helper caches it in memory only (`emptyDir` with `medium: Memory`) and renews it before expiry.
 4. At the end of the attempt the token is revoked.
 
-The token is not in the runner's environment, not in a Secret, and not in git config. Connection credentials such as Jira use the same broker.
+The token is not in the runner's environment, not in a Secret, and not in git config. Connection credentials such as Jira and Linear use the same broker.
 
 Publishing a pull request is a supervised step: the supervisor runs it in its own container with its own copy of the token, over an authenticated channel. The supervisor's three per-attempt tokens each open a different door, and any other route answers 403.
 
@@ -125,7 +126,7 @@ Sign-in uses the OAuth App with the `read:org` scope and reads no repository dat
 
 A GitHub organization owner is an admin, and so is the account a user installation belongs to. An installation that has not yet accepted the Members permission keeps the older rule: the first member to sign in is the admin. Bellows never demotes an admin on GitHub's word, and demoting the last admin is refused.
 
-An admin removes a member under **Settings → Organization**, section **Members**. Their sessions end and their personal tokens are revoked at once. The removal sticks: signing in again does not bring the membership back until an admin restores it from **Removed members** on the same page.
+An admin removes a member under **Settings → Organization**, section **Members**. Their sessions end and their personal tokens are revoked at once. The removal sticks: signing in again does not bring the membership back until an admin restores it from **Removed members** on the same page. The **Invite members** link opens the selection screen with the organization already ticked, so a restored member follows it and presses **Continue**.
 
 Only an admin can mint, list or revoke organization access tokens, save organization or repository variables and secrets, change member roles, remove or restore members, manage organization executors, skills and notifications, read the [audit log](/guides/audit-log) or download the [organization export](/guides/export). A member's session or personal access token gets `403` there. Every member manages their own personal tokens, workspace variables, executors, skills and notifications.
 
@@ -168,7 +169,9 @@ Attachment type is decided from the file's bytes, not its declared type. SVG, HT
 
 ## Known limits
 
-- Kernel isolation needs a RuntimeClass. Without `runner.runtimeClassName`, runners share the node kernel. With it, the admission policy refuses any pod the driver creates outside that RuntimeClass, even from a compromised driver. The chart does not provision the runtime: install gVisor, Kata Containers or Firecracker on the runner nodes, or use a GKE Sandbox node pool.
+- Kernel isolation needs a RuntimeClass. A runner class without `runtimeClassName` shares the node kernel. With it, the admission policy refuses any pod of that class outside that RuntimeClass, even from a compromised driver; a pod without the label of a declared class is refused too. The chart does not provision the runtime: install Kata Containers on the runner nodes, or use your cloud's managed microVM node pool.
+- A Docker class gives task code root over the task volume. Its daemon runs privileged with the task volume mounted, and the tool user can reach its socket, so the separate tool user does not hold in that class. The class's microVM is the boundary there.
+- The admission policy trusts a Docker class's RuntimeClass by name, not by what it runs. The driver's startup check reads the RuntimeClass's handler name, not what the node runs for it: a handler named `kata` that runs plain containers would give the daemon root of the node.
 - The network controls do nothing without an enforcing CNI.
 - A taken-over run's gate requests keep the lost driver's endpoint, and a node that goes NotReady is noticed only when the cluster acts on it (about 300 seconds by default).
 - A task volume is a thread boundary. A volume's size is a request, and a cap only where the provisioner enforces it.

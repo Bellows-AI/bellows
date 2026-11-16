@@ -2,7 +2,7 @@
 A namespace LimitRange (issue #454): a pod created without limits — by anything, not only the
 driver — inherits these defaults instead of running unbounded in a namespace that carries no
 ResourceQuota. A container's own limits and requests win; the runner pods set theirs explicitly
-(runner.resources).
+(each runner class's resources, runner.classes).
 */}}
 {{- if .Values.limitRange.enabled }}
 apiVersion: v1

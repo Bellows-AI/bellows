@@ -5,7 +5,7 @@ import { claimContinuesSession, repoCacheProblem } from '../claim.js';
 import { pickSession } from '../runner-plan.js';
 import { evidencePolicyActive, type GatesOutcome } from '../evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from '../runner.js';
-import { adoptStep, recordAdopted } from './loop-adopt.js';
+import { adoptStep, recordAdopted, runnerClassStep } from './loop-adopt.js';
 import { askGithubToken } from './loop-github.js';
 import { preHelperStep } from './loop-helpers.js';
 import { probeTreeNow, type GateFailure, type GateSession } from './loop-gates.js';
@@ -15,7 +15,7 @@ import {
     mintGateCredentials,
     openRunControl,
     probeDeadServices,
-    runDeclaredGates,
+    runVerdictGates,
     sizeGateForVerify,
 } from './loop-gates.js';
 import { armLeaseClock } from './loop-lease.js';
@@ -59,6 +59,7 @@ import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 import { stepLost } from '../step-control.js';
 import { restartDeadServices, servicesLost, startServicesStep } from './loop-services.js';
 import { servicePlanRefusal } from '../services.js';
+import { DaemonLost } from '../dockerd-loss.js';
 
 /** How the attempt's log line names the session it runs under. */
 const sessionNote = (session: RunSession | null): string =>
@@ -223,6 +224,7 @@ type SetupStep = (ctx: AttemptCtx) => Promise<SetupConclusion | AdoptedRecord | 
 const setupSteps: readonly SetupStep[] = [
     waitReclaimBarrier,
     adoptStep,
+    runnerClassStep,
     syncCheckoutStep,
     checkPlanStep,
     // An adopted or taken-over run's pre-helpers ran before it did, and its services are already up.
@@ -568,10 +570,9 @@ async function gatesOrLoss(
     try {
         return await runGatesPhase(ctx, gateSession, outcome);
     } catch (e) {
-        if (!servicesLost(e)) throw e;
+        if (!servicesLost(e) && !(e instanceof DaemonLost)) throw e;
         const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
-        const { nodeLoss = false, blocked = false } = await supervisorLossFlag(ctx, e);
-        await end(ctx, interruptDecision(reason, null, false, { nodeLoss, blocked }));
+        await end(ctx, interruptDecision(reason, null, false, await supervisorLossFlag(ctx, e)));
         return STOOD_DOWN;
     }
 }
@@ -614,7 +615,7 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
         }
         recoveredServices = deadBefore;
     }
-    const failure = await runDeclaredGates(rt, job, gateSession, { state, treeAfter: ctx.treeAfter ?? null });
+    const failure = await runVerdictGates(rt, job, gateSession, { state, treeAfter: ctx.treeAfter ?? null });
     // A service OOM-killed by the suite fails the gate for a reason the agent cannot fix: re-probe.
     const deadAfter = failure ? await probeDeadServices(rt, job) : [];
     return {

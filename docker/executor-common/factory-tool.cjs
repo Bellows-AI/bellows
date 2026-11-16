@@ -7,8 +7,12 @@
  *
  *   node factory-tool.cjs serve        the broker: root with CAP_SETUID and CAP_SETGID and nothing
  *                                      else, started by factory-launch before it drops to the CLI uid
+ *   node factory-tool.cjs serve --reviewer
+ *                                      a reviewer's broker: its tools see no attempt lease either
  *   node factory-tool.cjs run ARGS...  the client: the CLI's shell (`tool-bash.sh`), standing in
  *                                      for `bash ARGS...`
+ *   node factory-tool.cjs sweep        kills every process of the tool uid, and exits once that ended
+ *                                      (review-loop.sh, after each review)
  *
  * The client sends its argv, working directory and environment over the broker's socket, which only
  * the CLI uid can reach (group factory-agent); the broker starts `/bin/bash ARGS...` as the tool uid
@@ -44,6 +48,10 @@ const SHARED_TMP_MODE = '2770';
 const TOOL_COMPILE_CACHE = `${TOOL_HOME}/.cache/node-compile-cache`;
 /** A sweep that outlasts this is cut off: the next command's sweep finishes it. */
 const SWEEP_TIMEOUT_MS = 5000;
+/** The sweep client's absolute bound, connect and answer together: past it the client gives up with 1. */
+const SWEEP_CLIENT_DEADLINE_MS = 10_000;
+/** Run as the tool uid: every process that uid has left, `setsid` ones included. */
+const SWEEP_TOOL = 'kill -KILL -1 2>/dev/null; exit 0';
 /** The kubernetes `out` mailbox is a root-owned 0777 emptyDir; sticky, a tool cannot rename the agent's own. */
 const AGENT_OUT_MAILBOX = '/factory/out';
 const STICKY_SHARED_MODE = 0o1777;
@@ -51,6 +59,11 @@ const STICKY_SHARED_MODE = 0o1777;
 const WITHHELD = ['CLAUDE_CODE_SHELL'];
 /** Never passed to a tool either: the attempt's telemetry export credential, under every OTLP header variable. */
 const OTLP_HEADERS = /^OTEL_EXPORTER_OTLP_(?:[A-Z]+_)?HEADERS$/;
+/**
+ * Never passed to a reviewer's tool: the review's attempt lease. A task's tools keep it — their git and
+ * Jira helpers present the attempt pair — but a review's tools have no helper that needs it.
+ */
+const REVIEWER_WITHHELD = ['RUNNER_LEASE_TOKEN'];
 const SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'SIGKILL'];
 /** `sh`'s "cannot execute": the command never started, and nothing ran as the CLI uid instead. */
 const REFUSED_EXIT = 126;
@@ -67,6 +80,7 @@ const FRAME = {
     stdout: 'o',
     stderr: 'r',
     exit: 'x',
+    sweep: 'k',
 };
 
 function frame(type, payload = '') {
@@ -112,14 +126,15 @@ function parseRequest(payload) {
 /**
  * The tool's environment: the CLI's, its own HOME, shell and compile cache, a TMPDIR both uids share
  * unless the run named its own, and nothing withheld — the CLI's shell override and its telemetry
- * credential.
+ * credential, and for a reviewer's tool the attempt lease as well.
  */
-function toolEnv(env, sharedTmp = SHARED_TMP) {
+function toolEnv(env, sharedTmp = SHARED_TMP, { reviewer = false } = {}) {
     const out = { ...env, HOME: TOOL_HOME, SHELL: TOOL_SHELL, NODE_COMPILE_CACHE: TOOL_COMPILE_CACHE };
     // A null shared TMPDIR is one the broker could not make: the tool keeps the TMPDIR it had.
     if (sharedTmp && (!env.TMPDIR || env.TMPDIR === '/tmp')) out.TMPDIR = sharedTmp;
     for (const name of WITHHELD) delete out[name];
     for (const name of Object.keys(out)) if (OTLP_HEADERS.test(name)) delete out[name];
+    if (reviewer) for (const name of REVIEWER_WITHHELD) delete out[name];
     return out;
 }
 
@@ -206,7 +221,7 @@ function serveConnection(deps, conn) {
         try {
             child = deps.spawn(TOOL_SHELL, ['-c', ENTER_CWD, TOOL_SHELL, request.cwd, ...request.argv], {
                 cwd: '/',
-                env: toolEnv(request.env, deps.sharedTmpReady ? deps.sharedTmp : null),
+                env: toolEnv(request.env, deps.sharedTmpReady ? deps.sharedTmp : null, { reviewer: deps.reviewer === true }),
                 ...(deps.identity ?? {}),
                 detached: true,
                 stdio: ['pipe', 'pipe', 'pipe'],
@@ -260,8 +275,16 @@ function serveConnection(deps, conn) {
             setTimeout(expire, DRAIN_GRACE_MS).unref();
         });
     };
+    // A sweep runs no command: the tool uid kills its own, bounded like every script of the broker's.
+    const sweep = () => {
+        ended = true;
+        asTool(deps, SWEEP_TOOL, [], SWEEP_TIMEOUT_MS).then((code) => {
+            if (!conn.destroyed) conn.end(frame(FRAME.exit, JSON.stringify({ code, signal: null })));
+        });
+    };
     const parse = frames((type, payload) => {
         if (type === FRAME.request && !child && !ended) start(payload);
+        else if (type === FRAME.sweep && !child && !ended) sweep();
         else if (type === FRAME.stdin && child) child.stdin.write(payload);
         else if (type === FRAME.stdinEnd && child) child.stdin.end();
         else if (type === FRAME.signal && child?.pid) signalGroup(deps, child.pid, payload.toString());
@@ -362,6 +385,31 @@ function run(argv, deps) {
     });
 }
 
+/**
+ * The sweep client: asks the broker to kill every process of the tool uid. Resolves with the sweep's
+ * exit code, or 1 — on an error, a close without an answer, or the deadline, which covers connect and
+ * answer together.
+ */
+function sweep(deps) {
+    return new Promise((resolve) => {
+        let status = null;
+        const conn = net.connect(deps.socket);
+        const deadline = setTimeout(() => conn.destroy(), deps.deadlineMs);
+        const parse = frames((type, payload) => {
+            if (type === FRAME.exit) status = JSON.parse(payload.toString('utf8'));
+        });
+        conn.on('connect', () => conn.write(frame(FRAME.sweep)));
+        conn.on('data', (chunk) => {
+            if (!parse(chunk)) conn.destroy();
+        });
+        conn.on('error', () => undefined);
+        conn.on('close', () => {
+            clearTimeout(deadline);
+            resolve(status?.code ?? 1);
+        });
+    });
+}
+
 /** Ends this process as the command ended: its exit code, or the signal that ended it re-raised. */
 function exitAs(status) {
     const done = () => {
@@ -374,7 +422,8 @@ function exitAs(status) {
 if (require.main === module) {
     const [mode, ...argv] = process.argv.slice(2);
     if (mode === 'serve') {
-        serve({ fs, spawn, helper: spawn, socket: SOCKET, mailbox: AGENT_OUT_MAILBOX, sharedTmp: SHARED_TMP, identity: TOOL }).catch((error) => {
+        const reviewer = argv[0] === '--reviewer';
+        serve({ fs, spawn, helper: spawn, socket: SOCKET, mailbox: AGENT_OUT_MAILBOX, sharedTmp: SHARED_TMP, identity: TOOL, reviewer }).catch((error) => {
             process.stderr.write(`factory-tool: the broker could not start: ${error.message}\n`);
             process.exit(1);
         });
@@ -387,8 +436,10 @@ if (require.main === module) {
             stdout: process.stdout,
             stderr: process.stderr,
         }).then(exitAs);
+    } else if (mode === 'sweep') {
+        sweep({ socket: SOCKET, deadlineMs: SWEEP_CLIENT_DEADLINE_MS }).then((code) => process.exit(code));
     } else {
-        process.stderr.write('usage: factory-tool.cjs serve | run ARGS...\n');
+        process.stderr.write('usage: factory-tool.cjs serve [--reviewer] | run ARGS... | sweep\n');
         process.exit(2);
     }
 }
@@ -396,6 +447,7 @@ if (require.main === module) {
 module.exports = {
     serve,
     run,
+    sweep,
     toolEnv,
     frame,
     frames,
@@ -406,4 +458,5 @@ module.exports = {
     TOOL_COMPILE_CACHE,
     WITHHELD,
     REFUSED_EXIT,
+    SWEEP_CLIENT_DEADLINE_MS,
 };

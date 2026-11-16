@@ -32,6 +32,9 @@ export const AUTH_PORT = PORT_BASE + AUTH_PORT_OFFSET;
 export const IDP_PORT = PORT_BASE + IDP_PORT_OFFSET;
 /** Exported with the auth database below: org-executors.spec.ts promotes exactly this member. */
 export const E2E_LOGIN = 'e2e-user';
+
+/** The auth board's RUNNER_CLASSES: the classes org-executors.spec.ts offers an org profile. */
+export const E2E_RUNNER_CLASSES = { standard: { docker: false }, builds: { docker: true } };
 /**
  * A fresh GitHub identity every run. The seed writes no sign-in selection, so a fixed id would keep
  * its stored selection between runs and the selection screen (issue 125) would only ever be
@@ -74,7 +77,7 @@ export const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
 
 /** The specs that need a signed-in member. */
 const AUTH_SPECS =
-    /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|task-connect-auth|oauth-consent|attachment-upload|mcp-connect|skills|members|audit-log)\.spec\.ts$/;
+    /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|linear-connections|task-connect-auth|oauth-consent|attachment-upload|mcp-connect|skills|members|audit-log)\.spec\.ts$/;
 /**
  * Heavy captures that gate nothing — the baseline gallery, the fixed-seed gremlins — carry this tag
  * and run only under playwright.nightly.config.ts (`npm run verify:ui:nightly`), with the specimen.
@@ -177,6 +180,9 @@ export default defineConfig({
                 PORT: String(AUTH_PORT),
                 DATABASE_URL: AUTH_DATABASE_URL,
                 AUTH_MODE: 'github',
+                // Two runner classes, one with Docker, so org-executors.spec.ts picks a class through
+                // the dialog and the board's own validation accepts it. Exported as E2E_RUNNER_CLASSES.
+                RUNNER_CLASSES: JSON.stringify(E2E_RUNNER_CLASSES),
                 GITHUB_OAUTH_CLIENT_ID: 'stub-client-id',
                 GITHUB_OAUTH_CLIENT_SECRET: 'stub-client-secret',
                 SESSION_SECRET: 'an-e2e-session-secret-of-at-least-32-chars',
@@ -197,6 +203,12 @@ export default defineConfig({
                 ATLASSIAN_AUTHORIZE_URL: `http://127.0.0.1:${IDP_PORT}/atlassian/authorize`,
                 ATLASSIAN_TOKEN_URL: `http://127.0.0.1:${IDP_PORT}/atlassian/oauth/token`,
                 ATLASSIAN_API_URL: `http://127.0.0.1:${IDP_PORT}/atlassian/api`,
+                // The Linear connect flow against the stub's /linear/* endpoints (token, revoke and graphql
+                // live under LINEAR_API_URL); the board logs loudly for these overrides too.
+                LINEAR_CLIENT_ID: 'stub-linear-client-id',
+                LINEAR_CLIENT_SECRET: 'stub-linear-client-secret',
+                LINEAR_AUTHORIZE_URL: `http://127.0.0.1:${IDP_PORT}/linear/authorize`,
+                LINEAR_API_URL: `http://127.0.0.1:${IDP_PORT}/linear`,
                 // First sign-in materializes the installation the stub reports as the member's
                 // organization — the half of the flow most worth driving in a browser.
                 // The seed's stored-repo rows land under these orgs (same ids the stub IdP

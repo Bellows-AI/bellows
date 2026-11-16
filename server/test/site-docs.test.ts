@@ -47,6 +47,26 @@ describe('site/ .bellows.yaml examples', () => {
         }
         expect(failures, 'site/ .bellows.yaml example the parser rejects').toEqual([]);
     });
+
+    // A stock postgres chowns its data directory as root at first boot and crash-loops under the
+    // services' hardening (docs/jobs.md): a copied example must carry the `user:` that avoids it.
+    it('every postgres service in an example declares a user', () => {
+        const missing: string[] = [];
+        for (const file of mdxFiles()) {
+            const src = readFileSync(file, 'utf8');
+            for (const m of src.matchAll(/^([ \t]*)```ya?ml([^\n]*)\n([\s\S]*?)\n\1```/gm)) {
+                const [, , meta = '', body = ''] = m;
+                if (!/\.bellows\.yaml/.test(meta) || /excerpt/.test(meta) || !/^services:/m.test(body)) continue;
+                for (const service of parseServices(body)) {
+                    if (/(^|\/)postgres(:|@|$)/.test(service.image) && service.user === undefined)
+                        missing.push(
+                            `${relative(site, file)}:${src.slice(0, m.index).split('\n').length} ${service.name}`
+                        );
+                }
+            }
+        }
+        expect(missing).toEqual([]);
+    });
 });
 
 describe('site/mcp/tools.mdx', () => {

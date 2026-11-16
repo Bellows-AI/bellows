@@ -60,7 +60,9 @@ describe('the Jira helper requests equal the core operations', () => {
             { issues: [], nextPageToken: '' },
             { issues: [] },
         ]) {
-            expect(helper.nextPath('searchIssues', json, path)).toEqual(search?.next(json, path));
+            expect(helper.nextPath('searchIssues', json, path)).toEqual(
+                search?.next(json, { method: 'GET', path })?.path ?? null
+            );
         }
         const comments = JIRA_OPERATIONS.listComments.paginate;
         const cpath = `/ex/jira/${CLOUD}/rest/api/3/issue/ABC-1/comment?startAt=0&maxResults=100&orderBy=created`;
@@ -70,7 +72,9 @@ describe('the Jira helper requests equal the core operations', () => {
             { comments: [], total: 10 },
             { comments: [{}], total: 'x' },
         ]) {
-            expect(helper.nextPath('listComments', json, cpath)).toEqual(comments?.next(json, cpath));
+            expect(helper.nextPath('listComments', json, cpath)).toEqual(
+                comments?.next(json, { method: 'GET', path: cpath })?.path ?? null
+            );
         }
     });
 });

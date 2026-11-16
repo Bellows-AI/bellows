@@ -2,23 +2,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BoardJob } from '../board/board.js';
 import { executorImage, type DriverConfig } from '../config.js';
-import {
-    GATE_GID,
-    GATE_UID,
-    gateEnv,
-    REVIEWER_HOME,
-    REVIEWER_TREE_DIR,
-    REVIEWER_UID,
-    supervisorEnvFileBody,
-} from '../claim.js';
+import { jobClassOf } from '../runner-classes.js';
+import { GATE_GID, GATE_UID, gateEnv, REVIEWER_HOME, REVIEWER_TREE_DIR, supervisorEnvFileBody } from '../claim.js';
 import {
     bindingWriteArgv,
     claudeExportScript,
     gateLoopArgv,
-    reviewLoopArgv,
+    reviewerLaunchArgv,
     supervisorScript,
 } from '../container-scripts.js';
-import { containerHardeningArgs, resourceArgs } from './docker.js';
+import { agentLaunchArgs, containerHardeningArgs, resourceArgs } from './docker.js';
 import { boardIdentity, taskMountArgs } from '../task-volume.js';
 import {
     bindingVolumeName,
@@ -197,7 +190,7 @@ export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: strin
         ...taskMountArgs(job),
         ...mailboxMountArgs(job, MAILBOXES.gate, 'rw'),
         ...groupNetworkArgs(job),
-        ...resourceArgs(config.gateResources),
+        ...resourceArgs(jobClassOf(config, job).gateResources),
         '--entrypoint',
         'sh',
         image,
@@ -207,8 +200,9 @@ export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: strin
 
 /**
  * The reviewer container's `docker create` argv — the executor image running the review
- * loop over the review mailbox (`scripts/review-loop.sh`), the pod's reviewer sidecar's twin. Its own
- * uid in the gate's group, in its supervisor's network namespace. The member tree is read-only (the
+ * loop over the review mailbox (`scripts/review-loop.sh`), the pod's reviewer sidecar's twin. It starts
+ * as the agent does, root with the launch pair, through factory-launch --reviewer, which starts the
+ * tool broker and drops to its own uid in the gate's group; in its supervisor's network namespace. The member tree is read-only (the
  * shared clone and the review's worktree are in it) but for its HOME, a fixed directory of that tree
  * the server provisions group-writable (`server/src/workspace/provision.ts`). Only the review
  * mailbox of the group's; no claim env file, attempt or publish token, credential helper — the model
@@ -222,8 +216,7 @@ export function reviewerCreateArgs(config: DriverConfig, job: BoardJob): string[
         '--name',
         reviewerName(job),
         ...labelArgs(config, job, REVIEWER_CONTAINER),
-        '--user',
-        `${REVIEWER_UID}:${GATE_GID}`,
+        ...agentLaunchArgs(),
         '-e',
         `HOME=${REVIEWER_HOME}`,
         ...config.passEnv.flatMap((name) => ['-e', name]),
@@ -231,11 +224,11 @@ export function reviewerCreateArgs(config: DriverConfig, job: BoardJob): string[
         ...taskMountArgs(job, { subPath: REVIEWER_TREE_DIR, target: REVIEWER_HOME }),
         ...mailboxMountArgs(job, MAILBOXES.review, 'rw'),
         ...groupNetworkArgs(job),
-        ...resourceArgs(config.runnerResources),
+        ...resourceArgs(jobClassOf(config, job).runnerResources),
         '--entrypoint',
-        'sh',
+        reviewerLaunchArgv()[0]!,
         executorImage(config, job.executorType),
-        ...reviewLoopArgv().slice(1),
+        ...reviewerLaunchArgv().slice(1),
     ];
 }
 
@@ -293,6 +286,8 @@ export function groupShape(
  * infrastructure refusal the loop leaves to its lease, never a run that silently loses its record.
  */
 export async function createGroup(deps: GroupDeps, job: BoardJob, session: RunSession | null): Promise<void> {
+    // Before anything is created: a class no longer declared is refused whole, never half a group.
+    jobClassOf(deps.config, job);
     const shape = groupShape(job, session);
     const { exporting } = shape;
     try {

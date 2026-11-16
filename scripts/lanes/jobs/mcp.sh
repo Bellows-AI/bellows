@@ -12,6 +12,8 @@ begin_phase mcp
 echo
 echo '# mcp (board + driver + MCP client, stub runner)'
 
+# Loopback, not LANE_HOST: only the host's MCP client and host driver reach this board, and MCP refuses an http
+# PUBLIC_URL off loopback. The driver's gate listener, which its containers dial, still binds LANE_HOST.
 MCP_BASE="http://127.0.0.1:$MCP_PORT"
 MCP_ORG=999999 # the installation e2e/stub-idp.mjs reports; the board names the member's organization after it
 

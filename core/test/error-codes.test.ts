@@ -33,6 +33,10 @@ describe('ERROR_CODES', () => {
         expect(ERROR_CODES.LEASE_PENDING).toBe('LEASE_PENDING');
     });
 
+    it('carries the runner-class refusal the executor dialog branches on', () => {
+        expect(ERROR_CODES.BAD_RUNNER_CLASS).toBe('BAD_RUNNER_CLASS');
+    });
+
     it('carries the disabled-batches answer the web and CLI branch on', () => {
         expect(ERROR_CODES.BATCHES_DISABLED).toBe('BATCHES_DISABLED');
     });

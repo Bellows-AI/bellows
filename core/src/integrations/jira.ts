@@ -1,4 +1,9 @@
-import { defineIntegration, type IntegrationDefinition, type IntegrationOperation } from './definition.js';
+import {
+    defineIntegration,
+    type IntegrationDefinition,
+    type IntegrationOperation,
+    type OperationRequest,
+} from './definition.js';
 
 /**
  * The Jira Cloud adapter (3LO, classic scopes). Pure data and request builders: the board runs it through
@@ -66,11 +71,11 @@ const withQuery = (path: string, params: URLSearchParams): string => {
     return query === '' ? path : `${path}?${query}`;
 };
 
-/** The path just read with one query parameter replaced. */
-const withParam = (previousPath: string, name: string, value: string): string => {
-    const url = new URL(previousPath, 'http://placeholder.invalid');
+/** The request just sent with one query parameter of its path replaced. */
+const withParam = (previous: OperationRequest, name: string, value: string): OperationRequest => {
+    const url = new URL(previous.path, 'http://placeholder.invalid');
     url.searchParams.set(name, value);
-    return `${url.pathname}${url.search}`;
+    return { ...previous, path: `${url.pathname}${url.search}` };
 };
 
 const arrayOf = (json: unknown, field: string): readonly unknown[] => {
@@ -105,12 +110,12 @@ const searchIssues: IntegrationOperation<{ jql: string; fields?: readonly string
         maxPages: SEARCH_MAX_PAGES,
         maxItems: SEARCH_MAX_ITEMS,
         items: (json) => arrayOf(json, 'issues'),
-        next: (json, previousPath) => {
+        next: (json, previous) => {
             const page = json as { nextPageToken?: unknown; isLast?: unknown };
             if (page.isLast === true || typeof page.nextPageToken !== 'string' || page.nextPageToken === '') {
                 return null;
             }
-            return withParam(previousPath, 'nextPageToken', page.nextPageToken);
+            return withParam(previous, 'nextPageToken', page.nextPageToken);
         },
     },
 };
@@ -127,13 +132,13 @@ const listComments: IntegrationOperation<{ key: string }> = {
         maxPages: COMMENT_MAX_PAGES,
         maxItems: COMMENT_MAX_ITEMS,
         items: (json) => arrayOf(json, 'comments'),
-        next: (json, previousPath) => {
+        next: (json, previous) => {
             const comments = arrayOf(json, 'comments');
             const total = (json as { total?: unknown }).total;
-            const startAt = Number(new URL(previousPath, 'http://placeholder.invalid').searchParams.get('startAt'));
+            const startAt = Number(new URL(previous.path, 'http://placeholder.invalid').searchParams.get('startAt'));
             if (typeof total !== 'number' || !Number.isInteger(startAt) || comments.length === 0) return null;
             const following = startAt + comments.length;
-            return following < total ? withParam(previousPath, 'startAt', String(following)) : null;
+            return following < total ? withParam(previous, 'startAt', String(following)) : null;
         },
     },
 };

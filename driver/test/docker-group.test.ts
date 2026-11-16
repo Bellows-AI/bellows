@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
-import {
-    claimEnv,
-    GATE_GID,
-    RESERVED_ENV_NAMES,
-    REVIEWER_HOME,
-    REVIEWER_TREE_DIR,
-    REVIEWER_UID,
-} from '../src/claim.js';
+import { claimEnv, RESERVED_ENV_NAMES, REVIEWER_HOME, REVIEWER_TREE_DIR } from '../src/claim.js';
 import { executorImage, loadDriverConfig } from '../src/config.js';
 import { dockerArgs } from '../src/docker/docker.js';
 import {
@@ -44,6 +37,7 @@ import {
 } from '../src/supervisor-contract.js';
 import { bindingBody, orphanBoundMs, takeoverBoundMs } from '../src/supervisor-plan.js';
 import { REBIND_DEADLINE_MS } from '../src/runner.js';
+import { oneClass } from './fixtures/runner-classes.js';
 
 /*
  * The docker twin of the runner pod: the supervisor, the agent and the exporter as one container
@@ -192,8 +186,11 @@ describe('the reviewer container', () => {
     const argv = reviewerCreateArgs(config, reviewing);
     const pairs = (flag: string): string[] => argv.filter((_arg, i) => argv[i - 1] === flag);
 
-    it('runs as its own uid in the gate group, in its supervisor’s network namespace', () => {
-        expect(pairs('--user')).toEqual([`${REVIEWER_UID}:${GATE_GID}`]);
+    // Root with the launch pair, as the agent starts: factory-launch --reviewer starts the tool broker
+    // and drops to REVIEWER_UID (executor-images.test.ts), so the review's tools run as the tool uid.
+    it('starts as the agent does, in its supervisor’s network namespace', () => {
+        expect(pairs('--user')).toEqual(['0:0']);
+        expect(pairs('--cap-add')).toEqual(['SETUID', 'SETGID']);
         expect(pairs('--network')).toEqual([`container:${supervisorName(reviewing)}`]);
         expect(pairs('--name')).toEqual([reviewerName(reviewing)]);
         expect(reviewerName(reviewing)).toBe(`factory-reviewer-${reviewing.id}-${reviewing.leaseToken}`);
@@ -202,11 +199,11 @@ describe('the reviewer container', () => {
         expect(argv).toEqual(expect.arrayContaining(['--label', `factory.lease=${reviewing.leaseToken}`]));
     });
 
-    it('runs the review loop in the executor image', () => {
+    it('runs the review loop in the executor image, through factory-launch --reviewer', () => {
         const [image, ...command] = argv.slice(argv.indexOf('--entrypoint') + 2);
-        expect(argv[argv.indexOf('--entrypoint') + 1]).toBe('sh');
+        expect(argv[argv.indexOf('--entrypoint') + 1]).toBe('/usr/local/bin/factory-launch');
         expect(image).toBe(executorImage(config, reviewing.executorType));
-        expect(command).toEqual(reviewLoopArgv().slice(1));
+        expect(command).toEqual(['--reviewer', ...reviewLoopArgv()]);
     });
 
     it('mounts the member tree read-only, its home read-write and the review mailbox, no other mailbox', () => {
@@ -318,6 +315,17 @@ describe('creating and starting the group', () => {
         expect(calls.some((argv) => argv.includes(ctlVolumeName(job, MAILBOXES.review)))).toBe(false);
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
+    });
+
+    it('creates nothing for a group whose runner class is no longer declared: a transient refusal naming it', async () => {
+        const { calls, deps } = recorder();
+        const refused = await createGroup(deps, { ...gated, runnerClass: 'retired' }, SESSION).catch((e: unknown) => e);
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect(refused).toMatchObject({
+            startupCause: 'transient',
+            message: 'the runner class "retired" is not declared on this driver',
+        });
+        expect(calls).toEqual([]);
     });
 
     it('creates no container when the task volume is gone: a transient refusal, never an empty volume made by a mount', async () => {
@@ -605,6 +613,18 @@ describe('the gate container (issue #773)', () => {
         );
     });
 
+    // A gate that measures the change (the jobs lane's mapping wrapper) compares against the claim's
+    // base, not the remote default; a value no branch can have is dropped. Never as BASE_BRANCH: the
+    // task scripts read that name, and a gate's suites and boards inherit the gate env.
+    it('names the claim’s base branch, and drops a malformed one', () => {
+        const named = literals(gateCreateArgs(config, { ...gated, baseBranch: 'release/2' }, 'node:24'));
+        expect(named).toContain('BELLOWS_BASE_BRANCH=release/2');
+        expect(named).not.toContain('BASE_BRANCH=release/2');
+        expect(
+            literals(gateCreateArgs(config, { ...gated, baseBranch: 'bad..name' }, 'node:24')).join(' ')
+        ).not.toContain('BELLOWS_BASE_BRANCH');
+    });
+
     // Issue #773: the gate reaches the declared services on loopback by name, and the registry a
     // setup installs from, through the namespace its group's supervisor holds.
     it('is hardened, labelled for the fence and the reaper, and joins its supervisor’s network namespace', () => {
@@ -620,10 +640,15 @@ describe('the gate container (issue #773)', () => {
         }
     });
 
-    // Issue #507: sized by GATE_*, each unset slot the runner's; nothing configured leaves it unthrottled.
+    // Issue #507: sized by the class's gateResources, each unset slot the runner's; nothing configured leaves it unthrottled.
     it('carries the gate resources before the image, and none when unconfigured', () => {
         const sized = gateCreateArgs(
-            loadDriverConfig({ RUNNER_CPU_LIMIT: '4', GATE_MEMORY_LIMIT: '8Gi', GATE_MEMORY_REQUEST: '2Gi' }),
+            loadDriverConfig(
+                oneClass({
+                    resources: { limits: { cpu: '4' } },
+                    gateResources: { requests: { memory: '2Gi' }, limits: { memory: '8Gi' } },
+                })
+            ),
             gated,
             'node:24'
         );

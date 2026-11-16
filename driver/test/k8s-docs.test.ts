@@ -29,6 +29,90 @@ describe('the volume-affinity loss record', () => {
     });
 });
 
+describe('the runner classes record', () => {
+    // The docker refusal names docs/kubernetes-limits.md; the limit it points at must be there.
+    it('states that a docker runner class carries resources only', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            'a runner class carries resources only — one setting `runtimeClassName`, `nodeSelector`, `tolerations`, `affinity` or `docker` is refused at boot'
+        );
+    });
+
+    it('states the zone hazard of every class, the export Job included', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            "every runner class's node pools must span the zones task volumes live in, the default class's too since the reaper's export Job runs in it"
+        );
+    });
+
+    // The interruption the driver lands for a run whose class was removed: never a failure, never moved.
+    it('states that a run whose class is no longer declared is handed back, never failed or moved', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            'a finished run adopted, or a group respecced after a node loss, whose class is no longer declared is handed back as an interruption naming the class'
+        );
+    });
+});
+
+describe('the docker class record', () => {
+    // The daemon runs as root over the task volume and the tool uid reaches its socket.
+    it('states that a docker class gives task code root over the task volume', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            'a docker class gives task code root over the task volume, so tool-uid isolation does not hold there'
+        );
+        expect(prose(kubernetesDocs)).toContain('The docker executor has no docker class (refused at boot, above)');
+        expect(securityDocs).toContain('**A docker class gives task code root over the task volume**');
+    });
+
+    // The microVM gives the daemon its own guest kernel and network stack: docker's own iptables, user
+    // networks and their DNS work, so no network caveat is left; what remains is what the VM needs.
+    it("states the node requirements of a docker class's microVM, for operators", () => {
+        const doc = prose(kubernetesDocs);
+        expect(doc).toContain('a docker class runs only under a microVM (Kata) RuntimeClass');
+        expect(doc).toContain('nested virtualization (a machine shape that supports it, not a shared-core family)');
+        expect(doc).toContain('`overhead.podFixed`');
+        expect(doc).toContain("the VM is sized from the sum of its containers' limits");
+        expect(doc).toContain('a plain emptyDir is virtiofs in the guest and overlay2 cannot use it');
+        expect(readFileSync(join(ROOT, 'driver/src/scripts/dockerd-start.sh'), 'utf8')).not.toContain(
+            '--iptables=false'
+        );
+        const site = (path: string) => prose(readFileSync(join(ROOT, 'site', path), 'utf8'));
+        expect(site('self-host/kubernetes.mdx')).toContain('nested virtualization');
+        for (const page of ['guides/executors.mdx', 'guides/gates.mdx', 'self-host/kubernetes.mdx']) {
+            expect(site(page), page).not.toContain('--network host');
+        }
+        expect(prose(limitsDocs)).toContain('`make runners` took 86 s');
+    });
+
+    // Admission pins the pod to the RuntimeClass by name; the driver's boot read of its handler is the guard.
+    it("states that admission trusts the class's RuntimeClass name and the boot check guards it", () => {
+        const doc = prose(kubernetesDocs);
+        expect(doc).toContain("admission trusts a docker class's RuntimeClass name, not its handler");
+        expect(doc).toContain(
+            "the driver refuses to start unless each docker class's RuntimeClass handler is `kata` or `kata-<variant>`"
+        );
+        expect(doc).toContain('a missing, forbidden or unreadable RuntimeClass refuses too');
+        expect(prose(securityDocs)).toContain('a privileged container always runs seccomp Unconfined');
+        expect(prose(securityDocs)).toContain(
+            'A namespace hosting a docker class must enforce Pod Security `privileged`'
+        );
+    });
+
+    it('states the dockerd restart interruption, its per-phase granularity and the ad-hoc note', () => {
+        const doc = prose(kubernetesDocs);
+        expect(doc).toContain(
+            'a `dockerd` loss — its restart count moved, or it is not running at either read — is checked per verdict gate phase, not per gate'
+        );
+        expect(doc).toContain('refunded under the node-loss bound');
+        // A run of them is bounded on the board; any other interruption between two starts the count again.
+        expect(doc).toContain('the third consecutive dockerd loss on spends an attempt and the interruption budget');
+        expect(doc).toContain('any other interruption between two dockerd losses starts the count again');
+        expect(doc).toContain('the task pod is torn down, not kept');
+        expect(doc).toContain('An ad-hoc gate run gets a note only.');
+    });
+
+    it('states that no lane starts a real dockerd', () => {
+        expect(prose(kubernetesDocs)).toContain('no lane starts a real `dockerd`');
+    });
+});
+
 describe('the EKS prerequisites record', () => {
     it('states the node and add-on prerequisites in docs/kubernetes.md', () => {
         expect(kubernetesDocs).toContain('EKS prerequisites');
@@ -51,6 +135,12 @@ describe('the EKS prerequisites record', () => {
     it('states that the reaper is scoped to its own driver, and the unscoped limit', () => {
         expect(prose(kubernetesDocs)).toContain('The orphan reaper is scoped to its own driver on both executors');
         expect(prose(kubernetesDocs)).toContain('a driver started with no `K8S_RELEASE` is unscoped');
+    });
+
+    // A runner create the API server refuses with a 422 `Status` fails the task as config on
+    // kubernetes; the docker CLI prints no status, so its counterpart is a stated limit.
+    it('states that a docker create refusal is typed only by its words', () => {
+        expect(prose(kubernetesDocs)).toContain('a docker create the daemon refuses is typed only by its words');
     });
 
     it('states the VPC-endpoint answer for the blocked private ranges', () => {
@@ -102,8 +192,10 @@ describe('the executor isolation record (#382)', () => {
     it('refuses to claim kernel or VM isolation from ordinary pod hardening', () => {
         expect(securityDocs).toContain('not kernel isolation and it is not VM isolation');
         expect(securityDocs).toContain('shares one host kernel');
+        // Scoped to non-docker classes: a docker class's boundary is its microVM.
+        expect(prose(securityDocs)).toContain('VM isolation for a non-docker class');
         // And it says what WOULD give one, so the limit is actionable rather than just a warning.
-        expect(securityDocs).toMatch(/gVisor|Kata|Firecracker/);
+        expect(securityDocs).toContain('microVM (Kata) RuntimeClass');
     });
 
     it('states the controls and that they are required, not merely set', () => {

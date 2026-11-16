@@ -8,13 +8,12 @@ import {
     REVIEWER_CONTAINER,
     SUPERVISOR_CONTAINER,
 } from '../../src/supervisor-contract.js';
-import { gateLoopArgv, reviewLoopArgv, supervisorScript } from '../../src/container-scripts.js';
+import { gateLoopArgv, reviewerLaunchArgv, supervisorScript } from '../../src/container-scripts.js';
 import { ARTIFACT_LIMIT } from '../../src/runner.js';
 import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { LOG_TAIL_LINES } from '../../src/k8s/k8s-transport.js';
 import { jobsPath, runnerJobName, runnerJobSpec, secretName } from '../../src/k8s/k8s-podspec.js';
 import {
-    GATE_GID,
     GATE_UID,
     CREDENTIAL_CACHE_DIR,
     REVIEWER_HOME,
@@ -23,7 +22,8 @@ import {
     REVIEWER_UID,
     TOOL_UID,
 } from '../../src/claim.js';
-import { reviewerRequests } from '../../src/k8s/k8s-podfields.js';
+import { agentLaunchHardeningField, reviewerRequests } from '../../src/k8s/k8s-podfields.js';
+import { sized } from '../fixtures/runner-classes.js';
 import { TASK_MOUNT, TASK_VOLUME, taskInitScript } from '../../src/task-volume.js';
 import {
     SUPERVISED,
@@ -167,6 +167,15 @@ describe('the gate sidecar', () => {
         );
     });
 
+    // The docker executor's counterpart (docker-group.test.ts): the gate compares against the claim's base.
+    it('names the claim’s base branch, and drops a malformed one', () => {
+        expect(gateOf({ ...gated, baseBranch: 'release/2' }).env).toContainEqual({
+            name: 'BELLOWS_BASE_BRANCH',
+            value: 'release/2',
+        });
+        expect(JSON.stringify(gateOf({ ...gated, baseBranch: 'bad..name' }).env)).not.toContain('BELLOWS_BASE_BRANCH');
+    });
+
     // Issue #734: the gate and the agent name the same cache path, inside the one member mount.
     it('points each declared cache name into the repo cache, the same path the agent gets', () => {
         const cacheJob: BoardJob = {
@@ -241,7 +250,7 @@ describe('the reviewer sidecar (issue #774)', () => {
         const reviewer = reviewerOf();
         expect(reviewer.restartPolicy).toBe('Always');
         expect(reviewer.image).toBe(podOf(reviewing).containers.find((c) => c.name === 'agent')!.image);
-        expect(reviewer.command).toEqual(reviewLoopArgv());
+        expect(reviewer.command).toEqual(reviewerLaunchArgv());
         expect(reviewer.workingDir).toBe(MAILBOXES.review.path);
         expect(podOf(reviewing).initContainers?.map((container) => container.name)).toEqual([
             'gate',
@@ -259,11 +268,14 @@ describe('the reviewer sidecar (issue #774)', () => {
         }
     });
 
-    it('the reviewer runs as REVIEWER_UID ≠ TOOL_UID, mounts only its read-only tree, its mailbox, its home and its telemetry config', () => {
+    // It starts as the agent does — root with the launch pair — so its tools run through the broker as
+    // the tool uid; factory-launch --reviewer drops it to REVIEWER_UID (executor-images.test.ts).
+    it('the reviewer launches through factory-launch --reviewer, mounts only its read-only tree, its mailbox, its home and its telemetry config', () => {
         const reviewer = reviewerOf();
         expect(REVIEWER_UID).not.toBe(TOOL_UID);
         expect(REVIEWER_UID).not.toBe(GATE_UID);
-        expect(reviewer.securityContext).toMatchObject({ runAsUser: REVIEWER_UID, runAsGroup: GATE_GID });
+        expect(reviewer.securityContext).toEqual(agentLaunchHardeningField().securityContext);
+        expect(reviewer.command?.slice(0, 2)).toEqual(['/usr/local/bin/factory-launch', '--reviewer']);
         expect(reviewer.volumeMounts).toEqual([
             { name: TASK_VOLUME, mountPath: TASK_MOUNT, readOnly: true },
             { name: MAILBOXES.review.name, mountPath: MAILBOXES.review.path },
@@ -344,8 +356,9 @@ describe('the reviewer sidecar (issue #774)', () => {
 
     it('sizes the reviewer idle-low at creation, with the runner’s limits', () => {
         const { resources } = reviewerOf();
-        expect(resources?.requests).toEqual(reviewerRequests(gatedConfig, 'idle'));
-        expect(reviewerRequests(gatedConfig, 'idle')).toEqual({ cpu: '50m', memory: '64Mi' });
+        const runnerClass = gatedConfig.runnerClasses.default!;
+        expect(resources?.requests).toEqual(reviewerRequests(runnerClass, 'idle'));
+        expect(reviewerRequests(runnerClass, 'idle')).toEqual({ cpu: '50m', memory: '64Mi' });
     });
 
     /** fakeRequest, with every pod resize answered 200 and recorded. */
@@ -364,7 +377,7 @@ describe('the reviewer sidecar (issue #774)', () => {
 
     it('resizes the reviewer alone, by a strategic merge patch naming its container', async () => {
         const api = resizing();
-        const k8s = runner(api.request, { RUNNER_CPU_REQUEST: '2', RUNNER_MEMORY_REQUEST: '4Gi' });
+        const k8s = runner(api.request, sized({ requests: { cpu: '2', memory: '4Gi' } }));
         expect(await k8s.resizeReviewer(reviewing, 'run')).toBe(true);
         expect(api.patches).toEqual([
             {
@@ -466,7 +479,7 @@ describe('the kubernetes runner and the gates', () => {
     // merges by container name, so only the gate's requests change.
     it('resizes for verify with a strategic merge patch naming the gate container alone', async () => {
         const api = resizing();
-        const k8s = runner(api.request, { GATE_CPU_REQUEST: '2', GATE_MEMORY_REQUEST: '2Gi' });
+        const k8s = runner(api.request, sized({}, { requests: { cpu: '2', memory: '2Gi' } }));
         expect(await k8s.resizeGate(gated, 'verify')).toBe(true);
         expect(api.patches).toEqual([
             {

@@ -44,7 +44,7 @@ export interface LoopRuntime {
         result: Parameters<Board['complete']>[1],
         options?: { after?: Promise<void>; leaseLapsed?: AbortSignal }
     ) => Promise<LeaseState>;
-    /** The attempts in flight, by job id — what a drain hands over (`Loop.handover`). */
+    /** The attempts in flight, by lease token (one per claim) — what a drain hands over (`Loop.handover`). */
     live?: Map<string, LiveAttempt>;
     /** Set once a drain's handover began: an attempt that registers on `live` after it is handed over too. */
     handoverReason?: string;
@@ -169,6 +169,8 @@ export type EndDecision =
           requirement?: true;
           /** The platform took the attempt away, on the executor's structured evidence: outside the poison budget. */
           nodeLoss?: true;
+          /** A docker class's dockerd lost under a failed gate: the board refunds two in a row, not a third. */
+          daemonLoss?: true;
           /** The task's organization is suspended: released outside every budget, resumed on its reactivation. */
           orgSuspended?: true;
           /** The work that must land while the lease still lets it, before the hand-back (the output tail, the session). */

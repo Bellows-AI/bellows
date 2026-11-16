@@ -29,6 +29,8 @@ export interface ResolvedClaimExecutor {
     claimEnv: Record<string, string> | undefined;
     executorType: ExecutorType | null;
     executorRefusal: string | null;
+    /** The stamped profile's runner class; null for the driver's default, a suspended or a missing profile. */
+    runnerClass: string | null;
 }
 
 /**
@@ -117,6 +119,7 @@ export async function resolveClaimExecutor(
     // this selection's answer.
     let executorType: ExecutorType | null = null;
     let executorRefusal: string | null = null;
+    let runnerClass: string | null = null;
     let profileConfig: unknown;
     if (executorConfig && row.executor !== null && row.run_as !== null) {
         const scope = (row.executor_scope ?? USER_SCOPE) as ExecutorScope;
@@ -131,6 +134,9 @@ export async function resolveClaimExecutor(
                 executorType = configured.type as ExecutorType;
             }
             claimEnv = mergeExecutorConfigEnv(claimEnv, configured);
+            // Resolved here, at claim, like the type: an admin's edit reaches every later claim. The
+            // driver is the authority on the name, and fails the task when it declares no such class.
+            runnerClass = configured?.runnerClass ?? null;
             profileConfig = configured?.config;
         }
     }
@@ -139,8 +145,8 @@ export async function resolveClaimExecutor(
     // cloud mode or split across scopes and profile, never travels. The driver fails the task with the
     // sentence before anything spawns; a throw here would roll the claim back and re-claim it forever.
     const refusal = deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType) : null;
-    if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal };
-    return { claimEnv, executorType, executorRefusal };
+    if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal, runnerClass };
+    return { claimEnv, executorType, executorRefusal, runnerClass };
 }
 
 /** The sentence cloud mode refuses an effective env with, or null. Names keys only, never a value. */

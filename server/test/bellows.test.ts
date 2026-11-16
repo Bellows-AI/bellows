@@ -260,10 +260,44 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     // parser is the one the board runs at claim.
     it('parses under the strict grammar', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
-        expect(parseBellows(text)?.gates).toEqual([
+        const gates = parseBellows(text)?.gates ?? [];
+        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db', 'test:jobs']);
+        expect(gates.slice(0, 2)).toEqual([
             { name: 'test', command: 'npm test' },
             { name: 'lint', command: 'npm run lint' },
         ]);
+    });
+
+    // The gates run in the dev runner image a release publishes, pinned to one release tag: a moving
+    // tag would change the gates' tools under a commit that did not change.
+    it('runs its gates in a released dev runner image', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        expect(parseBellows(text)?.image).toMatch(/^ghcr\.io\/bellows-ai\/dev-runner:v\d+\.\d+\.\d+(-rc(-\d+)?)?$/);
+    });
+
+    // The suites that need more than `npm test`: each states its own budget, and test:db points at
+    // the declared `postgres` service, never at a server of its own.
+    it('declares typecheck and test:db, each with a timeout', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        const gates = new Map((parseBellows(text)?.gates ?? []).map((gate) => [gate.name, gate]));
+        for (const name of ['typecheck', 'test:db']) expect(gates.get(name)?.timeoutMinutes, name).toBeGreaterThan(0);
+        expect(gates.get('typecheck')?.command).toBe('npm run typecheck');
+        expect(gates.get('test:db')?.command).toBe(
+            'DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db'
+        );
+    });
+
+    // The jobs lane is a required gate: it runs the phases the change maps to (an empty map passes
+    // before the runner images are built), on run databases on the declared `postgres` service, within
+    // a budget sized for the full lane in a docker class's microVM.
+    it('declares a required test:jobs gate through the mapping wrapper', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        const gate = (parseBellows(text)?.gates ?? []).find((g) => g.name === 'test:jobs');
+        expect(gate).toEqual({
+            name: 'test:jobs',
+            command: 'TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 sh scripts/gate-test-jobs.sh',
+            timeoutMinutes: 45,
+        });
     });
 
     // The gate image ships no jq and runs as a non-root user; the pr-land suite needs one.
@@ -308,6 +342,13 @@ describe('parseBellows: rejects malformed structure, invalid gates and limits', 
         ['a tab indent', 'environment:\n\timage: node:24\n', /tab/i],
         ['an unknown top-level key', `pipeline:\n    steps: []\n${EXAMPLE}`, /pipeline/],
         ['an unknown key inside environment', 'environment:\n    image: node:24\n    timeout: 30\n', /timeout/],
+        // A runner class is an org admin's choice on an executor profile: a repo never names one.
+        ['a top-level runnerClass', `runnerClass: sandboxed\n${EXAMPLE}`, /runnerClass/],
+        [
+            'a runnerClass inside environment',
+            'environment:\n    image: node:24\n    runnerClass: sandboxed\n',
+            /runnerClass/,
+        ],
         ['an unknown field in a gate', `${GATES}        - name: test\n          cwd: /app\n`, /cwd/],
         [
             'gates without an image',

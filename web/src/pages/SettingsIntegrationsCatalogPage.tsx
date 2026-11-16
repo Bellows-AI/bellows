@@ -4,12 +4,13 @@ import {
     type IntegrationCategory,
     type IntegrationProvider,
 } from '@factory-ai/core';
-import { useState } from 'react';
+import { type ComponentProps, type ComponentType, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuthorizationStart } from '../api/useAuthorizationStart.js';
 import { useConnections, type UseConnections } from '../api/useConnections.js';
 import { useIntegrationConfig, type UseIntegrationConfig } from '../api/useIntegrationConfig.js';
 import { JiraConnectionDialog } from '../components/JiraConnectionDialog.js';
+import { LinearConnectionDialog } from '../components/LinearConnectionDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { ProviderMark } from '../components/ProviderMark.js';
 import { connectionState } from '../settings/integration-providers.js';
@@ -20,24 +21,38 @@ const RETURN_TO = '/settings/integrations';
 
 type Config = UseIntegrationConfig & { retry: () => void };
 
-/** What the Jira card says and offers, from two independent reads: the deployment's configuration and the member's rows. */
-function JiraState({
+type ConnectDialogProps = ComponentProps<typeof JiraConnectionDialog>;
+
+/** The connect dialog of each oauth provider; an oauth provider without one offers no Connect. */
+const CONNECT_DIALOGS: Record<string, ComponentType<ConnectDialogProps>> = {
+    jira: JiraConnectionDialog,
+    linear: LinearConnectionDialog,
+};
+
+/** What an oauth card says and offers, from two independent reads: the deployment's configuration and the member's rows. */
+function OAuthCardState({
+    provider,
     config,
     connections,
     onConnect,
 }: {
+    provider: IntegrationProvider;
     config: Config;
     connections: UseConnections;
-    onConnect: () => void;
+    /** Absent when no connect dialog is registered for the provider. */
+    onConnect: (() => void) | undefined;
 }) {
     const rows =
-        connections.state === 'ok' ? connections.connections.filter((c) => connectionState(c) !== 'disconnected') : [];
+        connections.state === 'ok'
+            ? connections.connections.filter((c) => c.provider === provider.id && connectionState(c) !== 'disconnected')
+            : [];
     const healthy = rows.some((row) => connectionState(row) === 'connected');
     const pill = rows.length > 0 ? STATE_PILL[healthy ? 'connected' : 'needs-reconnect'] : null;
     const label = rows.length > 0 ? 'Connect another' : 'Connect';
-    // An answer that names no Jira entry did not answer the question: it reads as a failed check, never "not configured".
-    const jira = config.state === 'ok' ? config.configured.jira : undefined;
-    const state = config.state === 'ok' && jira === undefined ? 'error' : config.state;
+    // An answer that names no entry for the provider did not answer the question: it reads as a failed check, never
+    // "not configured".
+    const configured = config.state === 'ok' ? config.configured[provider.id] : undefined;
+    const state = config.state === 'ok' && configured === undefined ? 'error' : config.state;
     return (
         <>
             {pill ? <span className={pill.className}>{pill.text}</span> : null}
@@ -49,14 +64,14 @@ function JiraState({
             ) : null}
             {state === 'error' ? (
                 <>
-                    <span className="muted">Could not check whether Jira is available</span>
+                    <span className="muted">{`Could not check whether ${provider.label} is available`}</span>
                     <button type="button" className="tertiary" onClick={config.retry}>
                         Retry
                     </button>
                 </>
             ) : null}
-            {jira === false ? <span className="muted">Not configured on this deployment</span> : null}
-            {jira === true ? (
+            {configured === false ? <span className="muted">Not configured on this deployment</span> : null}
+            {configured === true && onConnect ? (
                 <button type="button" onClick={onConnect}>
                     {label}
                 </button>
@@ -74,7 +89,7 @@ function CardState({
     provider: IntegrationProvider;
     config: Config;
     connections: UseConnections;
-    onConnect: () => void;
+    onConnect: (() => void) | undefined;
 }) {
     if (provider.availability === 'organization') {
         return (
@@ -84,7 +99,14 @@ function CardState({
             </>
         );
     }
-    return <JiraState config={config} connections={connections} onConnect={onConnect} />;
+    return <OAuthCardState provider={provider} config={config} connections={connections} onConnect={onConnect} />;
+}
+
+/** One provider's connect dialog, starting that provider's authorization. */
+function ConnectDialog({ provider, open, onClose }: { provider: string; open: boolean; onClose: () => void }) {
+    const { saving, start } = useAuthorizationStart(provider, RETURN_TO);
+    const Dialog = CONNECT_DIALOGS[provider];
+    return Dialog ? <Dialog open={open} saving={saving} onClose={onClose} onStart={start} /> : null;
 }
 
 /**
@@ -100,8 +122,7 @@ export function SettingsIntegrationsCatalogPage({
     const connections = useConnections();
     const config = useIntegrationConfig();
     const [filter, setFilter] = useState<IntegrationCategory | typeof ALL>(ALL);
-    const [open, setOpen] = useState(false);
-    const { saving, start } = useAuthorizationStart('jira', RETURN_TO);
+    const [openProvider, setOpenProvider] = useState<string | null>(null);
     const shown = providers.filter((provider) => filter === ALL || provider.category === filter);
     const categories = INTEGRATION_CATEGORIES.filter((category) => providers.some((p) => p.category === category));
 
@@ -150,14 +171,25 @@ export function SettingsIntegrationsCatalogPage({
                                     provider={provider}
                                     config={config}
                                     connections={connections}
-                                    onConnect={() => setOpen(true)}
+                                    onConnect={
+                                        CONNECT_DIALOGS[provider.id] ? () => setOpenProvider(provider.id) : undefined
+                                    }
                                 />
                             </span>
                         </li>
                     ))}
                 </ul>
             ) : null}
-            <JiraConnectionDialog open={open} saving={saving} onClose={() => setOpen(false)} onStart={start} />
+            {providers
+                .filter((provider) => CONNECT_DIALOGS[provider.id])
+                .map((provider) => (
+                    <ConnectDialog
+                        key={provider.id}
+                        provider={provider.id}
+                        open={openProvider === provider.id}
+                        onClose={() => setOpenProvider(null)}
+                    />
+                ))}
         </>
     );
 }

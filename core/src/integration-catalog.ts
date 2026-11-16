@@ -5,6 +5,7 @@
  */
 
 import { createJiraIntegration } from './integrations/jira.js';
+import { createLinearIntegration } from './integrations/linear.js';
 import type { IntegrationDefinition } from './integrations/definition.js';
 
 /** The closed list a provider is filed under. */
@@ -35,6 +36,14 @@ export const INTEGRATION_CATALOG: readonly IntegrationProvider[] = [
         availability: 'oauth',
         description: 'Let tasks look up and comment on your Jira issues.',
         integration: createJiraIntegration(),
+    },
+    {
+        id: 'linear',
+        label: 'Linear',
+        category: 'Issue tracking',
+        availability: 'oauth',
+        description: 'Let tasks look up and comment on your Linear issues.',
+        integration: createLinearIntegration(),
     },
     {
         id: 'slack',

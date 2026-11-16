@@ -1,5 +1,6 @@
 /**
- * A stand-in for github.com's OAuth endpoints (and Atlassian's, below), so the browser check can drive a real sign-in.
+ * A stand-in for github.com's OAuth endpoints (and Atlassian's and Linear's, below), so the browser check can drive a real
+ * sign-in.
  *
  * There is no way to complete a genuine GitHub round trip offline, and the alternative — seeding a
  * session cookie straight into the browser context — would need a test-only login route, i.e. a back
@@ -9,6 +10,7 @@
  * The server logs loudly at boot when these overrides are in use, because a configurable authorize
  * URL that reached a real deployment would be a phishing vector.
  */
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 
 // playwright.config.ts passes STUB_IDP_PORT; the fallback is the same E2E_PORT_BASE + 2 it derives.
@@ -115,10 +117,140 @@ async function atlassianRoute(url, request, response) {
     return false;
 }
 
+// ── Linear (OAuth2, actor=user) ──
+// The board's LINEAR_AUTHORIZE_URL points at /linear/authorize and LINEAR_API_URL at /linear, so the token,
+// revoke and GraphQL endpoints are /linear/oauth/token, /linear/oauth/revoke and /linear/graphql. Consent
+// redirects straight back as the account `POST /linear/_control` selected (`a` or `b`), or with access_denied.
+// The token call is form-encoded and checks the S256 verifier; every refresh issues a NEW refresh token and
+// spends the old one, as Linear does. `_control` answers what authorize and revoke recorded.
+const LINEAR_WORKSPACE = 'e2e-workspace';
+const linear = {
+    account: 'a',
+    deny: false,
+    counter: 0,
+    codes: new Map(),
+    tokens: new Map(),
+    refresh: new Map(),
+    authorized: [],
+    revoked: [],
+};
+
+const readForm = (request) =>
+    new Promise((resolve) => {
+        let raw = '';
+        request.on('data', (chunk) => (raw += chunk));
+        request.on('end', () => resolve(Object.fromEntries(new URLSearchParams(raw))));
+    });
+
+const linearTokens = (grant) => {
+    linear.counter += 1;
+    const access = `stub-lin-at-${linear.counter}`;
+    const refresh = `stub-lin-rt-${linear.counter}`;
+    linear.tokens.set(access, grant);
+    linear.refresh.set(refresh, grant);
+    return {
+        access_token: access,
+        token_type: 'Bearer',
+        expires_in: 3600,
+        refresh_token: refresh,
+        scope: grant.scopes,
+    };
+};
+
+const linearState = () => ({
+    account: linear.account,
+    deny: linear.deny,
+    authorized: linear.authorized,
+    revoked: linear.revoked,
+});
+
+async function linearRoute(url, request, response) {
+    if (url.pathname === '/linear/_control') {
+        if (request.method === 'POST') {
+            const body = await readJson(request);
+            if (body.account === 'a' || body.account === 'b') linear.account = body.account;
+            linear.deny = body.deny === true;
+        }
+        json(response, linearState());
+        return true;
+    }
+    if (url.pathname === '/linear/authorize') {
+        const back = new URL(url.searchParams.get('redirect_uri'));
+        back.searchParams.set('state', url.searchParams.get('state') ?? '');
+        const scope = url.searchParams.get('scope') ?? '';
+        const challenge = url.searchParams.get('code_challenge') ?? '';
+        linear.authorized.push({ scope, codeChallenge: challenge });
+        if (linear.deny) {
+            back.searchParams.set('error', 'access_denied');
+        } else {
+            linear.counter += 1;
+            const code = `stub-lin-code-${linear.counter}`;
+            const scopes = scope.split(',').filter(Boolean);
+            linear.codes.set(code, { account: linear.account, scopes, challenge });
+            back.searchParams.set('code', code);
+        }
+        response.writeHead(302, { location: back.toString() });
+        response.end();
+        return true;
+    }
+    if (url.pathname === '/linear/oauth/token' && request.method === 'POST') {
+        const form = await readForm(request);
+        if (form.grant_type === 'refresh_token') {
+            const grant = linear.refresh.get(form.refresh_token);
+            linear.refresh.delete(form.refresh_token);
+            if (!grant) json(response, { error: 'invalid_grant' }, 400);
+            else json(response, linearTokens(grant));
+            return true;
+        }
+        const grant = linear.codes.get(form.code);
+        linear.codes.delete(form.code);
+        const verified =
+            grant &&
+            createHash('sha256')
+                .update(form.code_verifier ?? '')
+                .digest('base64url') === grant.challenge;
+        if (!verified) json(response, { error: 'invalid_grant' }, 400);
+        else json(response, linearTokens({ account: grant.account, scopes: grant.scopes }));
+        return true;
+    }
+    if (url.pathname === '/linear/oauth/revoke' && request.method === 'POST') {
+        const form = await readForm(request);
+        linear.revoked.push(form.token ?? '');
+        linear.refresh.delete(form.token);
+        linear.tokens.delete(form.token);
+        response.writeHead(200);
+        response.end();
+        return true;
+    }
+    if (url.pathname === '/linear/graphql' && request.method === 'POST') {
+        const grant = linear.tokens.get((request.headers.authorization ?? '').replace(/^Bearer /, ''));
+        await readJson(request);
+        if (!grant) {
+            json(response, {
+                errors: [{ message: 'Authentication required', extensions: { code: 'AUTHENTICATION_ERROR' } }],
+            });
+            return true;
+        }
+        json(response, {
+            data: {
+                viewer: {
+                    id: `stub-linear-user-${grant.account}`,
+                    name: `Stub Linear ${grant.account.toUpperCase()}`,
+                    email: `stub-linear-${grant.account}@example.com`,
+                    organization: { id: 'stub-linear-org', name: 'E2E Workspace', urlKey: LINEAR_WORKSPACE },
+                },
+            },
+        });
+        return true;
+    }
+    return false;
+}
+
 createServer(async (request, response) => {
     const url = new URL(request.url, `http://127.0.0.1:${port}`);
 
     if (url.pathname.startsWith('/atlassian/') && (await atlassianRoute(url, request, response))) return;
+    if (url.pathname.startsWith('/linear/') && (await linearRoute(url, request, response))) return;
 
     if (url.pathname === '/_control/identity' && request.method === 'POST') {
         const body = await readJson(request);

@@ -44,9 +44,9 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
 - **Every membership deletion is `endMemberships`** (sign-in sweep, webhook, re-check, admin removal): membership,
   sessions in that org and personal tokens there, in one transaction, so a later membership revives no old
   credential. Onboarding writes an allowlist only for an org the sign-in admitted. `server/test-db/auth-membership.test.ts`.
-- **An admin's removal is a block row** (`org_membership_removal`): sign-in materializes no membership for a blocked
-  `(org, user)` until a restore deletes the row; the last admin is refused. An invitation is only the sign-in link, so
-  GitHub still decides who gets in. `server/test-db/auth-membership.test.ts`, `e2e/members.spec.ts`.
+- **An admin's removal is a block row** (`org_membership_removal`): sign-in admits no blocked `(org, user)` until a
+  restore deletes the row; the last admin is refused. An invitation is only the sign-in link, so GitHub still decides
+  who gets in; it pre-ticks its org if reported and unblocked. `server/test-db/auth-membership.test.ts`, `e2e/members.spec.ts`.
 - **The role a route needs is its `ROUTE_CLASSES` row's 4th column**, checked once in the auth hook for every user
   caller (cookie, `fat_`, bridged): an `admin` row is `403` to a member before the handler runs. `admin` is the
   org-wide administration (org tokens, org and repository env, the roster, org executors, skills and notification

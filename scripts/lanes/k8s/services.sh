@@ -324,6 +324,11 @@ else
     expect_contains 'the verdict reaches the caller in the new pod' "$review_out" 'verdict":"clean'
     expect_contains 'the reviewer ran as uid 1002'                  "$review_out" 'uid=1002'
     expect_contains 'the reviewer could not write the shared tree'  "$review_out" 'tree-write=denied'
+    # On the replacement pod too: its tools run through the broker, with no lease and no OTLP header.
+    expect_contains 'the reviewer'"'"'s CLI holds the attempt lease'   "$review_out" 'cli-lease=set'
+    expect_contains 'a reviewer tool runs as the tool uid'           "$review_out" 'tool-uid=1001'
+    expect_contains 'a reviewer tool sees no attempt lease'          "$review_out" 'tool-lease=unset'
+    expect_contains 'a reviewer tool sees no OTLP header'            "$review_out" 'tool-otlp=unset'
     rows="$(review_rows "$review_task")"
     [ "$rows" = 'succeeded|2' ] && ok 'one review row, re-leased once, succeeded' ||
         bad 'one review row, re-leased once, succeeded' "status|claim_seq: '$rows'; $(review_why "$review_task")"
