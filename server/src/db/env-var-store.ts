@@ -1,3 +1,4 @@
+import { CLAUDE_CODE, stackClaudeCodeEnv } from '@factory-ai/core';
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { recordAudit, userActor } from './audit-log.js';
 import type { SecretDiagnostic, SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
@@ -17,6 +18,7 @@ import {
     EnvScopeRefusal,
     lockScope,
     resultingList,
+    withLockedRemovals,
     scopeKeyOf,
     type ScopeWrite,
     type WriteScopedOptions,
@@ -38,6 +40,11 @@ export interface EnvVarEntry {
 /** What the list routes echo. A secret's `value` is null for every caller — see listScoped. */
 export interface EnvVarRow extends EnvVarEntry {
     readonly updatedAt: string;
+}
+
+/** What a claim tells the resolver about its run: a Claude Code run takes its model names from one scope. */
+export interface ResolveOptions {
+    readonly agentType?: string | null;
 }
 
 export interface EnvVarStore {
@@ -65,10 +72,12 @@ export interface EnvVarStore {
      *
      * `exec` lets a caller run the read on an executor it already holds (the job store's claim
      * passes its transaction, so a claim holds one connection, never two) — the pool by default.
+     * `options.agentType` Claude Code takes its model names from one scope (`stackClaudeCodeEnv`).
      */
     resolveFor(
         target: { userId: string | null; repo: string | null },
-        exec?: Sql | TransactionSql
+        exec?: Sql | TransactionSql,
+        options?: ResolveOptions
     ): Promise<Record<string, string>>;
 }
 
@@ -269,9 +278,13 @@ const namesBody =
         orgId: string,
         scope: Scope,
         actorId: string,
-        { write, options }: { write: ScopeWrite; options: WriteScopedOptions }
+        { write: asked, options }: { write: ScopeWrite; options: WriteScopedOptions }
     ): TxBody =>
     async (tx, created, retired) => {
+        const write = await withLockedRemovals(tx, orgId, scopeWhere(tx, scope), {
+            write: asked,
+            removeOf: options.removeOf,
+        });
         const resulting = await resultingList(tx, orgId, scopeWhere(tx, scope), write);
         const reason = options.validate?.(resulting) ?? null;
         if (reason !== null) throw new EnvScopeRefusal(reason);
@@ -475,7 +488,7 @@ export function createEnvVarStore({
 
         writeScoped,
 
-        async resolveFor({ userId, repo }, exec = sql) {
+        async resolveFor({ userId, repo }, exec = sql, options = {}) {
             await gate();
             const [owner, name] = repo ? repo.split('/') : [null, null];
             // One round trip for all three levels. The predicates degrade on their own: a null
@@ -502,7 +515,11 @@ export function createEnvVarStore({
                 Object.fromEntries(
                     rows.flatMap((row, i) => (row.scope === scope ? [[row.name, values[i] as string]] : []))
                 );
-            return stackEnv(pick('org'), pick('workspace'), pick('repo'));
+            const levels = { org: pick('org'), workspace: pick('workspace'), repo: pick('repo') };
+            if (options.agentType === CLAUDE_CODE) {
+                return stackClaudeCodeEnv([levels.org, levels.workspace, levels.repo]);
+            }
+            return stackEnv(levels.org, levels.workspace, levels.repo);
         },
     };
 }

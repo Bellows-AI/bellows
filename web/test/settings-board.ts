@@ -121,6 +121,7 @@ function session(board: SettingsBoard): Session {
         mcp: false,
         batches: false,
         deploymentMode: board.deploymentMode,
+        platformModel: false,
     };
 }
 

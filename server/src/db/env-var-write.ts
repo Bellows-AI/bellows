@@ -23,6 +23,11 @@ export type ScopeValidator = (resulting: readonly Entry[]) => string | null;
 
 export interface WriteScopedOptions {
     validate?: ScopeValidator;
+    /**
+     * More names to delete, decided from the names the scope holds under the lock (never from a read the caller
+     * made before it): what a write that replaces a group of names removes of the group it finds.
+     */
+    removeOf?: (stored: readonly string[]) => readonly string[];
     /** Runs last inside the write's transaction, under the scope lock; a throw rolls the env write back. */
     alsoInTx?: (tx: TransactionSql) => Promise<void>;
 }
@@ -79,6 +84,18 @@ export async function resultingList(
             .map((row) => ({ name: row.name, value: row.is_secret ? null : row.value, isSecret: row.is_secret })),
         ...write.upsert,
     ];
+}
+
+/** The write with `removeOf`'s names added, decided on the scope's names read under the lock. */
+export async function withLockedRemovals(
+    tx: TransactionSql,
+    orgId: string,
+    where: Fragment,
+    { write, removeOf }: { write: ScopeWrite; removeOf: WriteScopedOptions['removeOf'] }
+): Promise<ScopeWrite> {
+    if (!removeOf) return write;
+    const stored = await tx<{ name: string }[]>`select name from env_var where org_id = ${orgId} ${where}`;
+    return { upsert: write.upsert, remove: [...write.remove, ...removeOf(stored.map((row) => row.name))] };
 }
 
 /** Deletes the touched names, answering what each deleted row referenced. */

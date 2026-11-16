@@ -25,7 +25,8 @@ const FIELDS = new Set(['provider', 'key', 'baseUrl']);
 const KEY_SHAPE = /^[\x21-\x7e]+$/;
 const BAD_BODY_MESSAGE = 'The check needs a known provider, a key and, for LiteLLM, an http(s) base URL';
 
-const validBase = (raw: string): boolean => {
+/** An http(s) URL with no credentials in it, within the length a base URL may have. */
+export const validBase = (raw: string): boolean => {
     if (raw.length > URL_MAX) return false;
     let url: URL;
     try {
@@ -36,13 +37,17 @@ const validBase = (raw: string): boolean => {
     return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password;
 };
 
+/** A provider key a header can carry: printable ASCII, no spaces, within the length a key may have. */
+export const validKey = (key: unknown): key is string =>
+    typeof key === 'string' && key.length <= KEY_MAX && KEY_SHAPE.test(key);
+
 /** The check's input, or null: every field known, a listed provider, a header-safe key, a base URL where one fits. */
 function parseVerify(raw: unknown): VerifyInput | null {
     const fields = jsonBody(raw);
     if (Object.keys(fields).some((name) => !FIELDS.has(name))) return null;
     const { provider, key, baseUrl } = fields;
     if (!isModelProvider(provider)) return null;
-    if (typeof key !== 'string' || key.length > KEY_MAX || !KEY_SHAPE.test(key)) return null;
+    if (!validKey(key)) return null;
     if (baseUrl === undefined) return provider === 'litellm' ? null : { provider, key };
     if (provider === 'subscription' || typeof baseUrl !== 'string' || !validBase(baseUrl)) return null;
     return { provider, key, baseUrl };

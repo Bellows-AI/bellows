@@ -274,3 +274,74 @@ describe.skipIf(!enabled)('self-hosted mode: a redirect still travels', () => {
         expect(JSON.parse(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual({ env: { [BASE_URL]: URL } });
     });
 });
+
+describe.skipIf(!enabled)('Claude Code takes its model credentials from one scope', () => {
+    const TEAM_KEY = 'sk-ant-org-owned';
+    const OPENROUTER_KEY = 'sk-or-v1-member-owned';
+
+    it('a personal OpenRouter key over an org Anthropic key: the wiring runs, the org key stays behind', async () => {
+        const { executors, env, jobs } = stores(ORG, 'self-hosted');
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: TEAM_KEY, isSecret: true }]);
+        await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true }]);
+        await task(jobs);
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBeNull();
+        expect(claim?.env).toMatchObject({
+            [BASE_URL]: 'https://openrouter.ai/api',
+            ANTHROPIC_AUTH_TOKEN: OPENROUTER_KEY,
+            ANTHROPIC_API_KEY: '',
+        });
+        expect(JSON.stringify(claim)).not.toContain(TEAM_KEY);
+    });
+
+    it('an org Anthropic key with nothing personal travels unchanged', async () => {
+        const { executors, env, jobs } = stores(ORG, 'self-hosted');
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: TEAM_KEY, isSecret: true }]);
+        await env.replaceWorkspace(ALICE, [{ name: 'OTHER', value: 'x', isSecret: false }]);
+        await task(jobs);
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.env).toMatchObject({ ANTHROPIC_API_KEY: TEAM_KEY, OTHER: 'x' });
+        expect(claim?.env).not.toHaveProperty(BASE_URL);
+    });
+
+    it('another provider’s key in a repo neither owns nor drops the org Anthropic key', async () => {
+        const { executors, env, jobs } = stores(ORG, 'self-hosted');
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: TEAM_KEY, isSecret: true }]);
+        await env.replaceRepo('env-admin', 'acme', 'web', [{ name: 'OPENAI_API_KEY', value: 'repo', isSecret: true }]);
+        await task(jobs, 'acme/web');
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.env).toMatchObject({ ANTHROPIC_API_KEY: TEAM_KEY, OPENAI_API_KEY: 'repo' });
+    });
+
+    it('an OpenCode run stacks plainly: the org and the personal keys both travel', async () => {
+        const { executors, env, jobs } = stores(ORG, 'self-hosted');
+        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: {} }]);
+        await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: TEAM_KEY, isSecret: true }]);
+        await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true }]);
+        await task(jobs);
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.env).toMatchObject({ ANTHROPIC_API_KEY: TEAM_KEY, OPENROUTER_API_KEY: OPENROUTER_KEY });
+    });
+
+    it('a repo-scope key overrides the workspace provider', async () => {
+        const { executors, env, jobs } = stores(ORG, 'self-hosted');
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true }]);
+        await env.replaceRepo('env-admin', 'acme', 'web', [
+            { name: 'ANTHROPIC_API_KEY', value: 'repo', isSecret: true },
+        ]);
+        await task(jobs, 'acme/web');
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.env).toMatchObject({ ANTHROPIC_API_KEY: 'repo' });
+        expect(claim?.env).not.toHaveProperty('OPENROUTER_API_KEY');
+        expect(claim?.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+    });
+});

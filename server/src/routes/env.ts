@@ -419,7 +419,7 @@ export const envRoutes =
     };
 
 /** The refusal code for a parseVars reason, in one place so the codes stay honest. */
-function varsCode(reason: string): string {
+export function varsCode(reason: string): string {
     if (reason.startsWith('at most')) return ERROR_CODES.TOO_MANY_ENV_VARS;
     if (reason.includes('exceeds the limit or contains a newline')) return ERROR_CODES.BAD_ENV_VALUE;
     if (reason.startsWith('secret value for')) return ERROR_CODES.BAD_ENV_VALUE;

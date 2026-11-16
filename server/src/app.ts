@@ -30,6 +30,7 @@ import type { OperationReceipts } from './db/operation-receipts.js';
 import { operationReceiptRoutes } from './routes/operation-receipts.js';
 import { integrationCatalogRoutes } from './routes/integration-catalog.js';
 import { integrationRoutes } from './routes/integrations.js';
+import { modelSetupRoutes } from './routes/model-setup.js';
 import { modelSetupVerifyRoutes } from './routes/model-setup-verify.js';
 import type { ProviderKeys } from './provider-keys/verify.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
@@ -318,7 +319,10 @@ async function registerRunnerCredentialRoutes(
         );
 }
 
-/** The routes that exist only with their dependency: commerce (and COMMERCE_ENABLED), the provider key check. */
+/**
+ * The routes that exist only with their dependency — commerce (and COMMERCE_ENABLED), the provider key check — and
+ * the model setup the key check serves, which every board has.
+ */
 async function registerOptionalRoutes(
     app: FastifyInstance,
     config: AppConfig,
@@ -327,6 +331,7 @@ async function registerOptionalRoutes(
 ): Promise<void> {
     if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
     if (providerKeys) await app.register(modelSetupVerifyRoutes({ providerKeys, now }));
+    await app.register(modelSetupRoutes({ config, orgs }));
 }
 
 /** No `listen` here — that split is what lets the route tests drive the app in-process. */

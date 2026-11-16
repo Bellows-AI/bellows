@@ -416,6 +416,8 @@ export const authRoutes =
                 batches: config.batches.enabled,
                 // Where this board runs: cloud settings explain why an OAuth token is refused.
                 deploymentMode: config.deploymentMode,
+                // Whether the operator supplies the model: onboarding offers running on it without a key.
+                platformModel: config.platformModelProvided,
             });
         });
 

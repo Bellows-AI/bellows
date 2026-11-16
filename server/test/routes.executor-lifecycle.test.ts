@@ -43,7 +43,7 @@ const entry = (name: string, extra: Record<string, unknown> = {}) => ({
 
 type RepoSkills = NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills'];
 
-async function boot(repoSkills?: RepoSkills) {
+async function boot(repoSkills?: RepoSkills, overrides: Parameters<typeof testConfig>[0] = {}) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
@@ -72,7 +72,7 @@ async function boot(repoSkills?: RepoSkills) {
             return { id: '11111111-1111-4111-8111-111111111111' };
         },
     });
-    const config = testConfig({ auth: githubAuth() });
+    const config = testConfig({ auth: githubAuth(), ...overrides });
     const instance = await buildApp({
         config,
         orgs: staticRegistry({
@@ -417,6 +417,28 @@ describe('POST /api/jobs naming no executor', () => {
         expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
         expect(b.queued).toEqual([
             { command: 'echo hi', executor: null, scope: 'user', agentType: 'opencode', agentModel: 'team-model' },
+        ]);
+    });
+
+    it('runs on the platform model once the model setup saved it: no profile, no key, no NO_EXECUTOR', async () => {
+        const b = await boot(undefined, { platformModelProvided: true });
+        const saved = await b.instance.inject({
+            method: 'PUT',
+            url: '/api/model-setup',
+            headers: { cookie: b.memberCookie },
+            payload: { scope: 'personal', provider: 'platform', agentType: 'claude-code', model: 'claude-sonnet-4-5' },
+        });
+        expect(saved.statusCode).toBe(200);
+
+        expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued).toEqual([
+            {
+                command: 'echo hi',
+                executor: null,
+                scope: 'user',
+                agentType: 'claude-code',
+                agentModel: 'claude-sonnet-4-5',
+            },
         ]);
     });
 

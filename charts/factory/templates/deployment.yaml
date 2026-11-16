@@ -289,6 +289,9 @@ spec:
                       # Where this board runs (docs/configuration.md): self-hosted or cloud.
                       - name: DEPLOYMENT_MODE
                         value: {{ .Values.deploymentMode | quote }}
+                      # The operator supplies the model credential in RUNNER_ENV (docs/configuration.md).
+                      - name: PLATFORM_MODEL_PROVIDED
+                        value: {{ .Values.platformModelProvided | quote }}
                       - name: COOKIE_SECURE
                         value: {{ .Values.auth.cookieSecure | quote }}
                       # The App's installation webhook: present, the route verifies GitHub's HMAC
