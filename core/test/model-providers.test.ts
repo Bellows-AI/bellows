@@ -260,6 +260,23 @@ describe('hasModelKey', () => {
         expect(hasModelKey([], { provider: { anthropic: { options: { apiKey: '' } } } }, OPENCODE)).toBe(false);
     });
 
+    it('counts only a key the run will have: a Claude Code profile env that clears a key removes it', () => {
+        expect(hasModelKey(['ANTHROPIC_API_KEY'], { env: { ANTHROPIC_API_KEY: '' } }, CLAUDE_CODE)).toBe(false);
+        expect(
+            hasModelKey(['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'], { env: { ANTHROPIC_API_KEY: '' } }, CLAUDE_CODE)
+        ).toBe(true);
+    });
+
+    it('OpenCode counts a literal provider apiKey, or `{env:NAME}` when NAME is present; nothing else', () => {
+        const withKey = (options: Record<string, unknown>) => ({ provider: { custom: { options } } });
+        expect(hasModelKey([], withKey({ apiKey: 'sk-literal' }), OPENCODE)).toBe(true);
+        expect(hasModelKey(['PRESENT'], withKey({ apiKey: '{env:PRESENT}' }), OPENCODE)).toBe(true);
+        expect(hasModelKey(['PRESENT'], withKey({ apiKey: '{env:MISSING}' }), OPENCODE)).toBe(false);
+        expect(hasModelKey([], withKey({ apiKey: '{file:/run/key}' }), OPENCODE)).toBe(false);
+        expect(hasModelKey([], withKey({ password: 'p' }), OPENCODE)).toBe(false);
+        expect(hasModelKey([], withKey({ accessToken: 't' }), OPENCODE)).toBe(false);
+    });
+
     it('is required in cloud only, and not when the platform supplies the model', () => {
         expect(modelKeyRequired(CLOUD, false)).toBe(true);
         expect(modelKeyRequired(CLOUD, true)).toBe(false);

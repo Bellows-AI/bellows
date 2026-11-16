@@ -4775,6 +4775,26 @@ describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', 
         expect((await opencode.create()).statusCode).toBe(201);
     });
 
+    it('refuses NO_MODEL when the profile holds only what the run will not have', async () => {
+        const opencode = (options: Record<string, unknown>) => ({ provider: { custom: { options } } });
+        const cases: [string, Record<string, unknown>, number][] = [
+            ['claude-code', { env: { ANTHROPIC_API_KEY: '' } }, 409],
+            ['opencode', opencode({ password: 'p' }), 409],
+            ['opencode', opencode({ apiKey: '{env:MISSING}' }), 409],
+            ['opencode', opencode({ apiKey: '{env:GATEWAY_KEY}' }), 201],
+            ['opencode', opencode({ apiKey: 'sk-literal' }), 201],
+        ];
+        for (const [type, config, status] of cases) {
+            const b = await bootCloud();
+            // Claude Code's profile clears the org key; OpenCode gets only a name its substitution can read.
+            const name = type === 'opencode' ? 'GATEWAY_KEY' : 'ANTHROPIC_API_KEY';
+            await b.envVars.replaceOrg('admin', [{ name, value: 'k', isSecret: true }]);
+            await b.executors.replace(b.userId, [{ name: 'mine', type, config }]);
+            await b.executors.deleteAgentDefault(b.userId);
+            expect((await b.create()).statusCode, JSON.stringify(config)).toBe(status);
+        }
+    });
+
     it('a self-hosted board, or a cloud board whose operator supplies the model, creates with no key', async () => {
         expect((await (await bootCloud({ deploymentMode: 'self-hosted' })).create()).statusCode).toBe(201);
         expect((await (await bootCloud({ platformModelProvided: true })).create()).statusCode).toBe(201);

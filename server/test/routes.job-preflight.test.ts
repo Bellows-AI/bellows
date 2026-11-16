@@ -168,7 +168,7 @@ describe('POST /api/jobs/preflight model', () => {
         const env = memoryEnvVarStore();
         const booted = await boot({ cloudEnv: env });
         const { check, body } = await verdict(booted, { repo: 'acme/web', executor: 'main' }, 'model');
-        expect(check).toMatchObject({ status: 'blocked', detail: NO_MODEL_MESSAGE });
+        expect(check).toMatchObject({ status: 'blocked', code: 'NO_MODEL', detail: NO_MODEL_MESSAGE });
         expect(body.ready).toBe(false);
 
         await env.replaceWorkspace(booted.member.user.id, [{ name: 'ANTHROPIC_API_KEY', value: 'k', isSecret: true }]);

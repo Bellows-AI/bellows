@@ -1,10 +1,4 @@
-import {
-    CLAUDE_CODE_OAUTH_TOKEN,
-    CLOUD,
-    type DeploymentMode,
-    isCredentialKey,
-    platformCredentialBlanks,
-} from './deployment-mode.js';
+import { CLAUDE_CODE_OAUTH_TOKEN, CLOUD, type DeploymentMode, platformCredentialBlanks } from './deployment-mode.js';
 import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
 
 /**
@@ -214,24 +208,39 @@ const MODEL_KEYS: Readonly<Record<ExecutorType, readonly string[]>> = {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** The model credentials an executor profile's config holds: Claude Code's `env` keys, OpenCode's provider keys. */
-function profileHoldsKey(config: unknown, agentType: ExecutorType): boolean {
-    if (!isRecord(config)) return false;
-    if (agentType === CLAUDE_CODE) {
-        const env = isRecord(config.env) ? config.env : {};
-        return MODEL_KEYS[CLAUDE_CODE].some((name) => nonEmpty(env[name]));
-    }
-    const providers = isRecord(config.provider) ? Object.values(config.provider) : [];
-    return providers.some((provider) => {
-        const options = isRecord(provider) && isRecord(provider.options) ? provider.options : {};
-        return Object.entries(options).some(([key, value]) => isCredentialKey(key) && nonEmpty(value));
-    });
+/** opencode's `{env:NAME}` substitution, alone in the value: the key is whatever `NAME` holds in the run's env. */
+const ENV_SUBSTITUTION = /^\{env:([^}]+)\}$/;
+
+/**
+ * Whether an OpenCode provider `apiKey` gives the run a key: a non-empty literal, or `{env:NAME}` with `NAME` among the
+ * names the run gets. `{file:…}` (the board cannot see the file) and any other option do not count.
+ */
+function providerKeyPresent(value: unknown, names: ReadonlySet<string>): boolean {
+    if (!nonEmpty(value)) return false;
+    const substituted = ENV_SUBSTITUTION.exec(value);
+    if (substituted) return names.has(substituted[1] as string);
+    return !/\{(?:env|file):/.test(value);
 }
 
 /**
- * Whether a task's agent has a model credential: one of its key names in the env it gets (names only, or the
- * non-empty names at claim), or one held in its executor profile's config.
+ * Whether a task's agent has a model credential the run will actually have, judged on the names its env carries (names
+ * only at create; the non-empty names at claim) and its executor profile's config. Claude Code: its settings' `env`
+ * applies over the env, a non-empty value adding the name and an empty one removing it. OpenCode: a key name in the
+ * env, or a provider `options.apiKey` (`providerKeyPresent`).
  */
 export function hasModelKey(names: readonly string[], config: unknown, agentType: ExecutorType): boolean {
-    return MODEL_KEYS[agentType].some((name) => names.includes(name)) || profileHoldsKey(config, agentType);
+    const present = new Set(names);
+    const settings = isRecord(config) ? config : {};
+    if (agentType === CLAUDE_CODE && isRecord(settings.env)) {
+        for (const [name, value] of Object.entries(settings.env)) {
+            if (nonEmpty(value)) present.add(name);
+            else present.delete(name);
+        }
+    }
+    if (MODEL_KEYS[agentType].some((name) => present.has(name))) return true;
+    if (agentType !== OPENCODE || !isRecord(settings.provider)) return false;
+    return Object.values(settings.provider).some(
+        (provider) =>
+            isRecord(provider) && isRecord(provider.options) && providerKeyPresent(provider.options.apiKey, present)
+    );
 }

@@ -49,6 +49,8 @@ interface Check {
     subject: 'repo' | 'executor' | 'model' | 'skill' | 'connection';
     name: string | null;
     status: Status;
+    /** The refusal code create would answer for this blocked check (`NO_MODEL`); absent on the others. */
+    code?: string;
     detail: string;
     /** Set on a blocked check that only a connection of the caller's own can clear: which provider and why. */
     integration?: { provider: string; reason: IntegrationReason };
@@ -249,7 +251,15 @@ async function modelCheck(
             detail: 'the model credential could not be checked',
         };
     }
-    if (read.value === 'missing') return { subject: 'model', name: null, status: 'blocked', detail: NO_MODEL_MESSAGE };
+    if (read.value === 'missing') {
+        return {
+            subject: 'model',
+            name: null,
+            status: 'blocked',
+            code: ERROR_CODES.NO_MODEL,
+            detail: NO_MODEL_MESSAGE,
+        };
+    }
     return { subject: 'model', name: null, status: 'ok', detail: 'a model credential is set' };
 }
 

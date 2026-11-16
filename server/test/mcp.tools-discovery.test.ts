@@ -535,6 +535,7 @@ describe('preflight_task', () => {
             subject: 'model',
             name: null,
             status: 'blocked',
+            code: 'NO_MODEL',
             detail: NO_MODEL_MESSAGE,
         });
     });

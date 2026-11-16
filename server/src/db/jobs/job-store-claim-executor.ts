@@ -284,9 +284,10 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
- * `NO_MODEL_MESSAGE` when the env that travels (a reviewer's grant and the claim's wiring applied) holds no non-empty
- * model key for the agent and its profile config none either; null otherwise. An agent the claim does not know is not
- * judged: the driver fails it on its own. The create's verdict is never trusted here: the env is read at claim.
+ * `NO_MODEL_MESSAGE` when the run would have no model key: judged by `hasModelKey` on the non-empty names of the env
+ * that travels (a reviewer's grant, the one-scope rule and the claim's wiring applied) with the profile config over it,
+ * so a Claude Code `env` value of "" clears a key; null otherwise. An agent the claim does not know is not judged: the
+ * driver fails it on its own. The create's verdict is never trusted here: the env is read at claim.
  */
 function noModelRefusal(env: Record<string, string> | undefined, config: unknown, type: ExecutorType | null) {
     if (type === null) return null;

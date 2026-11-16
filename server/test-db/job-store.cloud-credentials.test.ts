@@ -221,6 +221,33 @@ describe.skipIf(!enabled)('cloud mode: a claim with no model credential is refus
         expect((await jobs.claim('w2', LEASE_SECONDS))?.executorRefusal).toBeNull();
     });
 
+    it('a key the run will not have is not counted: a profile env clearing it, a non-key option, a missing `{env:}`', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud');
+        await env.replaceWorkspace(ALICE, [{ name: 'ANTHROPIC_API_KEY', value: 'sk-ant-member', isSecret: true }]);
+        const opencode = (options: Record<string, unknown>) => ({ provider: { custom: { options } } });
+        await executors.replace(ALICE, [
+            { name: 'cleared', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: '' } } },
+            { name: 'password', type: 'opencode', config: { model: 'm', ...opencode({ password: 'p' }) } },
+            { name: 'missing', type: 'opencode', config: opencode({ apiKey: '{env:MISSING_KEY}' }) },
+        ]);
+        for (const executor of ['cleared', 'password', 'missing']) {
+            // OpenCode reads no Anthropic key off a profile: the member's key only travels for Claude Code here.
+            if (executor !== 'cleared') await env.replaceWorkspace(ALICE, []);
+            await mustCreate(jobs.create(executor, ALICE, { repo: 'acme/web', executor, executorScope: 'user' }));
+            const claim = await jobs.claim(`w-${executor}`, LEASE_SECONDS);
+            expect(claim?.executorRefusal, executor).toBe(NO_MODEL_MESSAGE);
+        }
+    });
+
+    it('an OpenCode `{env:NAME}` apiKey claims when NAME travels', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud');
+        await env.replaceWorkspace(ALICE, [{ name: 'GATEWAY_KEY', value: 'gw', isSecret: true }]);
+        const config = { provider: { custom: { options: { apiKey: '{env:GATEWAY_KEY}' } } } };
+        await executors.replace(ALICE, [{ name: 'gw', type: 'opencode', config }]);
+        await mustCreate(jobs.create('gw', ALICE, { repo: 'acme/web', executor: 'gw', executorScope: 'user' }));
+        expect((await jobs.claim('w1', LEASE_SECONDS))?.executorRefusal).toBeNull();
+    });
+
     it('a reviewer is judged on the env it is granted, not on the author env', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud', { ...REVIEWER, connections: ['DEPLOY_REGION'] });
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
