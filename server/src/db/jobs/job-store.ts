@@ -229,6 +229,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         planDefaults = {},
         batches = true,
         deploymentMode = SELF_HOSTED,
+        platformModelProvided = false,
         metrics,
         orgKey,
     } = deps;
@@ -257,6 +258,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         planDefaults,
         batches,
         deploymentMode,
+        platformModelProvided,
     };
 
     return gated(gate, jobStoreMethods(ctx));

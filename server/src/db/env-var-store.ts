@@ -79,6 +79,11 @@ export interface EnvVarStore {
         exec?: Sql | TransactionSql,
         options?: ResolveOptions
     ): Promise<Record<string, string>>;
+    /**
+     * The names `resolveFor` would carry, stacked by the same rules, read without a single value or secret: what
+     * create, a batch launch and preflight judge a task's model credential on (`hasModelKey`).
+     */
+    namesFor(target: { userId: string | null; repo: string | null }, options?: ResolveOptions): Promise<string[]>;
 }
 
 interface Row {
@@ -135,6 +140,12 @@ const toRow = (row: Row): EnvVarRow => ({
     updatedAt: row.updated_at.toISOString(),
 });
 
+/** The names a claim's env carries, given each scope's names lowest first: `resolveFor`'s stacking, by name. */
+export function stackNames(scopes: readonly (readonly string[])[], agentType?: string | null): string[] {
+    const levels = scopes.map((names) => Object.fromEntries(names.map((name) => [name, ''])));
+    return Object.keys(agentType === CLAUDE_CODE ? stackClaudeCodeEnv(levels) : Object.assign({}, ...levels));
+}
+
 /**
  * The stacking rule, in one place and pure: `org` first, `workspace` over it, `repo` over that —
  * the issue's "everything should stack upon each other", and the GitHub Actions precedence
@@ -147,6 +158,31 @@ export function stackEnv(
     repo: Record<string, string>
 ): Record<string, string> {
     return { ...org, ...workspace, ...repo };
+}
+
+/**
+ * Each scope's names for one claim target, org then workspace then repo: `resolveFor`'s predicates, selecting names
+ * and scopes only, so no value or secret reference is read.
+ */
+async function scopeNames(
+    sql: Sql,
+    orgId: string,
+    { userId, repo }: { userId: string | null; repo: string | null }
+): Promise<string[][]> {
+    const [owner, name] = repo ? repo.split('/') : [null, null];
+    const rows = await sql<{ name: string; user_id: string | null; repo_owner: string | null }[]>`
+        select name, user_id, repo_owner from env_var
+        where org_id = ${orgId}
+          and (
+              (user_id is null and repo_owner is null)
+              or user_id = ${userId}
+              or (repo_owner = ${owner} and repo_name = ${name})
+          )
+    `;
+    const org = rows.filter((row) => row.user_id === null && row.repo_owner === null);
+    const workspace = rows.filter((row) => row.user_id !== null);
+    const repoRows = rows.filter((row) => row.repo_owner !== null);
+    return [org, workspace, repoRows].map((level) => level.map((row) => row.name));
 }
 
 /**
@@ -520,6 +556,11 @@ export function createEnvVarStore({
                 return stackClaudeCodeEnv([levels.org, levels.workspace, levels.repo]);
             }
             return stackEnv(levels.org, levels.workspace, levels.repo);
+        },
+
+        async namesFor(target, options = {}) {
+            await gate();
+            return stackNames(await scopeNames(sql, orgId, target), options.agentType);
         },
     };
 }

@@ -3,7 +3,7 @@ import { interruptionOf } from './job-interruption-body.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { usableSelection } from './executor-usable.js';
+import { refusedAsNoModel, usableSelection } from './executor-usable.js';
 import {
     type FairBoardScanner,
     boardsFor,
@@ -273,6 +273,8 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     });
     if (!selection) return reply;
     const { executor, scope: executorScope, type: executorType, agent } = selection;
+    const subject = { userId: createdBy, repo, type: executorType, config: selection.config };
+    if (await refusedAsNoModel(request, reply, await orgs.for(orgOf(request)), subject)) return reply;
     const baseBranch = await checkedTarget(orgs, request, reply, { repo, rawBaseBranch: fields.baseBranch });
     if (baseBranch === undefined) return reply;
     if (await refusedAsUnknownSkill(orgs, request, reply, { names: skills, repo, baseBranch, executorType }))

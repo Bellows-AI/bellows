@@ -1,4 +1,4 @@
-import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
+import { NO_MODEL_MESSAGE, OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -51,8 +51,11 @@ import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import { memoryBatchStore } from './helpers-batch-store.js';
 import {
     githubAuth,
+    jobStoreSlice,
     makeClaim,
     memoryAuthStore,
+    memoryEnvVarStore,
+    memoryUserExecutorStore,
     signedIn,
     staticRegistry,
     stubTelemetryClient,
@@ -4681,5 +4684,128 @@ describe('error-path mapping', () => {
     ])('takes no lease token on %s', async (_label, url, payload) => {
         const instance = await harnessWith(stubStore());
         expect((await post(instance, url, payload)).statusCode).toBe(201);
+    });
+});
+
+describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', () => {
+    async function bootCloud(overrides: Parameters<typeof testConfig>[0] = {}) {
+        const auth = memoryAuthStore();
+        const member = auth.seedMember('test-org', 'octocat');
+        const executors = memoryUserExecutorStore();
+        const envVars = memoryEnvVarStore();
+        const created: string[] = [];
+        const jobs = jobStoreSlice<JobStore>({
+            async create(command: string) {
+                created.push(command);
+                return { id: '11111111-1111-4111-8111-111111111111' };
+            },
+        });
+        const config = testConfig({ auth: githubAuth(), deploymentMode: 'cloud', ...overrides });
+        const instance = await buildApp({
+            config,
+            orgs: staticRegistry({
+                config,
+                jobs,
+                envVars,
+                userExecutors: executors,
+                repos: staticRepoSource([TRACKED]),
+                telemetry: stubTelemetryClient(),
+            }),
+            auth,
+        });
+        track(instance);
+        const userId = member.user.id;
+        await executors.setAgentDefault(userId, { agentType: 'claude-code', model: 'sonnet' });
+        const cookie = await signedIn(auth, member);
+        const create = () =>
+            instance.inject({
+                method: 'POST',
+                url: '/api/jobs',
+                headers: { cookie },
+                payload: { command: 'echo hi', repo: `${TRACKED.owner}/${TRACKED.name}` },
+            });
+        return { instance, executors, envVars, userId, created, create };
+    }
+
+    it('refuses with 409 NO_MODEL and the fix, and queues nothing, when no scope holds a key', async () => {
+        const b = await bootCloud();
+        await b.envVars.replaceOrg('admin', [{ name: 'ANTHROPIC_BASE_URL', value: 'https://x.test', isSecret: false }]);
+        const response = await b.create();
+        expect(response.statusCode).toBe(409);
+        expect(response.json()).toMatchObject({ code: 'NO_MODEL', error: NO_MODEL_MESSAGE });
+        expect(b.created).toEqual([]);
+    });
+
+    it('creates once a key is in the org, workspace or repo scope', async () => {
+        for (const put of [
+            (b: Awaited<ReturnType<typeof bootCloud>>) =>
+                b.envVars.replaceOrg('admin', [{ name: 'ANTHROPIC_API_KEY', value: 'k', isSecret: true }]),
+            (b: Awaited<ReturnType<typeof bootCloud>>) =>
+                b.envVars.replaceWorkspace(b.userId, [{ name: 'ANTHROPIC_API_KEY', value: 'k', isSecret: true }]),
+            (b: Awaited<ReturnType<typeof bootCloud>>) =>
+                b.envVars.replaceRepo('admin', TRACKED.owner, TRACKED.name, [
+                    { name: 'ANTHROPIC_API_KEY', value: 'k', isSecret: true },
+                ]),
+        ]) {
+            const b = await bootCloud();
+            await put(b);
+            expect((await b.create()).statusCode).toBe(201);
+        }
+    });
+
+    it('creates for Claude Code on an OpenRouter key alone', async () => {
+        const b = await bootCloud();
+        await b.envVars.replaceWorkspace(b.userId, [{ name: 'OPENROUTER_API_KEY', value: 'k', isSecret: true }]);
+        expect((await b.create()).statusCode).toBe(201);
+    });
+
+    it('creates when the executor profile itself holds the key', async () => {
+        const claude = await bootCloud();
+        await claude.executors.replace(claude.userId, [
+            { name: 'mine', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: 'k' } } },
+        ]);
+        await claude.executors.deleteAgentDefault(claude.userId);
+        expect((await claude.create()).statusCode).toBe(201);
+
+        const opencode = await bootCloud();
+        await opencode.executors.replace(opencode.userId, [
+            { name: 'mine', type: 'opencode', config: { provider: { openai: { options: { apiKey: 'k' } } } } },
+        ]);
+        await opencode.executors.deleteAgentDefault(opencode.userId);
+        expect((await opencode.create()).statusCode).toBe(201);
+    });
+
+    it('refuses NO_MODEL when the profile holds only what the run will not have', async () => {
+        const opencode = (options: Record<string, unknown>) => ({ provider: { custom: { options } } });
+        const cases: [string, Record<string, unknown>, number][] = [
+            ['claude-code', { env: { ANTHROPIC_API_KEY: '' } }, 409],
+            ['opencode', opencode({ password: 'p' }), 409],
+            ['opencode', opencode({ apiKey: '{env:MISSING}' }), 409],
+            ['opencode', opencode({ apiKey: '{env:GATEWAY_KEY}' }), 201],
+            ['opencode', opencode({ apiKey: 'sk-literal' }), 201],
+        ];
+        for (const [type, config, status] of cases) {
+            const b = await bootCloud();
+            // Claude Code's profile clears the org key; OpenCode gets only a name its substitution can read.
+            const name = type === 'opencode' ? 'GATEWAY_KEY' : 'ANTHROPIC_API_KEY';
+            await b.envVars.replaceOrg('admin', [{ name, value: 'k', isSecret: true }]);
+            await b.executors.replace(b.userId, [{ name: 'mine', type, config }]);
+            await b.executors.deleteAgentDefault(b.userId);
+            expect((await b.create()).statusCode, JSON.stringify(config)).toBe(status);
+        }
+    });
+
+    it('a self-hosted board, or a cloud board whose operator supplies the model, creates with no key', async () => {
+        expect((await (await bootCloud({ deploymentMode: 'self-hosted' })).create()).statusCode).toBe(201);
+        expect((await (await bootCloud({ platformModelProvided: true })).create()).statusCode).toBe(201);
+    });
+
+    it('answers 503, never NO_MODEL, when the env cannot be read', async () => {
+        const b = await bootCloud();
+        b.envVars.broken = true;
+        const response = await b.create();
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).not.toBe('NO_MODEL');
+        expect(b.created).toEqual([]);
     });
 });

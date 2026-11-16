@@ -1,10 +1,12 @@
 import { createServer } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
+import { NO_MODEL_MESSAGE } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { McpCaller, OAuthStore } from '../src/auth/oauth-store.js';
 import { hashToken } from '../src/auth/session.js';
 import type { ConnectionStore, ConnectionView } from '../src/db/connection-store.js';
+import type { EnvVarStore } from '../src/db/env-var-store.js';
 import type { Resolution } from '../src/db/connection-bindings.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { AuthorizationFlow } from '../src/integrations/authorization-flow.js';
@@ -12,6 +14,7 @@ import type { OrgRegistry } from '../src/orgs.js';
 import {
     githubAuth,
     memoryAuthStore,
+    memoryEnvVarStore,
     memoryUserExecutorStore,
     staticRegistry,
     stubTelemetryClient,
@@ -78,6 +81,8 @@ interface Scenario {
     repoSkills?: NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills'];
     /** Also configure an org opencode executor `oc`. */
     opencodeExecutor?: boolean;
+    /** Bellows Cloud: the task's model credential is judged on this env store. */
+    cloudEnv?: EnvVarStore;
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -110,6 +115,7 @@ async function boot(scenario: Scenario = {}) {
         auth: githubAuth({ publicUrl }),
         port,
         mcp: { enabled: true, resource, trustedOrigins: [] },
+        ...(scenario.cloudEnv ? { deploymentMode: 'cloud' as const } : {}),
     });
     const base = staticRepoSource(scenario.repos ?? [{ owner: 'acme', name: 'web' }], {
         error: scenario.repoError ?? null,
@@ -151,6 +157,7 @@ async function boot(scenario: Scenario = {}) {
         repos,
         connections,
         repoSkills: scenario.repoSkills,
+        ...(scenario.cloudEnv ? { envVars: scenario.cloudEnv } : {}),
         ...(scenario.noExecutorStore ? {} : { userExecutors: executors }),
     });
     const orgB = staticRegistry({
@@ -514,6 +521,23 @@ describe('preflight_task', () => {
         const { data, isError } = await call(await boot(), 'alice', 'preflight_task', selection);
         expect(isError).toBeFalsy();
         expect(data).toMatchObject({ verdict: 'ready', ready: true, integrationRequired: [] });
+    });
+
+    it('in cloud, blocks on the model check with its fix when the task has no model credential', async () => {
+        const { data } = await call(
+            await boot({ cloudEnv: memoryEnvVarStore() }),
+            'alice',
+            'preflight_task',
+            selection
+        );
+        expect(data).toMatchObject({ verdict: 'blocked', ready: false });
+        expect(data.checks).toContainEqual({
+            subject: 'model',
+            name: null,
+            status: 'blocked',
+            code: 'NO_MODEL',
+            detail: NO_MODEL_MESSAGE,
+        });
     });
 
     it('keeps blocked apart: an untracked repo is blocked, not integration_required', async () => {

@@ -190,3 +190,57 @@ export function claimCredentialEnv(
 ): Record<string, string> {
     return openRouterClaudeWiring(env, agentType) ?? (mode === CLOUD ? platformCredentialBlanks(env) : {});
 }
+
+/** What a task with no model credential is refused with (`NO_MODEL`), at create, in preflight and at claim. */
+export const NO_MODEL_MESSAGE =
+    'Connect a model in Settings → Model, or ask an admin to connect one for the organization.';
+
+/** A task must bring its own model credential in cloud mode, unless the operator supplies the model. */
+export const modelKeyRequired = (mode: DeploymentMode, platformModelProvided: boolean): boolean =>
+    mode === CLOUD && !platformModelProvided;
+
+/** The env names each agent can run its model on. Claude Code's OpenRouter key works through its claim wiring. */
+const MODEL_KEYS: Readonly<Record<ExecutorType, readonly string[]>> = {
+    [CLAUDE_CODE]: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', CLAUDE_CODE_OAUTH_TOKEN, 'OPENROUTER_API_KEY'],
+    [OPENCODE]: ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'],
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** opencode's `{env:NAME}` substitution, alone in the value: the key is whatever `NAME` holds in the run's env. */
+const ENV_SUBSTITUTION = /^\{env:([^}]+)\}$/;
+
+/**
+ * Whether an OpenCode provider `apiKey` gives the run a key: a non-empty literal, or `{env:NAME}` with `NAME` among the
+ * names the run gets. `{file:…}` (the board cannot see the file) and any other option do not count.
+ */
+function providerKeyPresent(value: unknown, names: ReadonlySet<string>): boolean {
+    if (!nonEmpty(value)) return false;
+    const substituted = ENV_SUBSTITUTION.exec(value);
+    if (substituted) return names.has(substituted[1] as string);
+    return !/\{(?:env|file):/.test(value);
+}
+
+/**
+ * Whether a task's agent has a model credential the run will actually have, judged on the names its env carries (names
+ * only at create; the non-empty names at claim) and its executor profile's config. Claude Code: its settings' `env`
+ * applies over the env, a non-empty value adding the name and an empty one removing it. OpenCode: a key name in the
+ * env, or a provider `options.apiKey` (`providerKeyPresent`).
+ */
+export function hasModelKey(names: readonly string[], config: unknown, agentType: ExecutorType): boolean {
+    const present = new Set(names);
+    const settings = isRecord(config) ? config : {};
+    if (agentType === CLAUDE_CODE && isRecord(settings.env)) {
+        for (const [name, value] of Object.entries(settings.env)) {
+            if (nonEmpty(value)) present.add(name);
+            else present.delete(name);
+        }
+    }
+    if (MODEL_KEYS[agentType].some((name) => present.has(name))) return true;
+    if (agentType !== OPENCODE || !isRecord(settings.provider)) return false;
+    return Object.values(settings.provider).some(
+        (provider) =>
+            isRecord(provider) && isRecord(provider.options) && providerKeyPresent(provider.options.apiKey, present)
+    );
+}

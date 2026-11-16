@@ -1080,6 +1080,8 @@ export interface CreateJobStoreDeps {
     batches?: boolean;
     /** `config.deploymentMode`, default self-hosted. Cloud refuses a claim whose effective env or profile carries a Claude subscription OAuth token. */
     deploymentMode?: DeploymentMode;
+    /** `config.platformModelProvided`, default false. Cloud without it refuses a claim with no model credential. */
+    platformModelProvided?: boolean;
     ready?: Promise<unknown>;
     /**
      * The env-var store's resolver, when the deployment stores runner environment. Present in
@@ -1235,6 +1237,8 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     batches: boolean;
     /** `CreateJobStoreDeps.deploymentMode`, defaulted. */
     deploymentMode: DeploymentMode;
+    /** `CreateJobStoreDeps.platformModelProvided`, defaulted. */
+    platformModelProvided: boolean;
     env: CreateJobStoreDeps['env'];
     githubApp: boolean;
     planReader: CreateJobStoreDeps['plan'];

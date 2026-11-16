@@ -7,10 +7,13 @@ import {
     claimCredentialEnv,
     claudeCodeCredentialScope,
     currentProvider,
+    hasModelKey,
     inferProvider,
     isAgentProvider,
     isModelProvider,
     MODEL_PROVIDERS,
+    modelKeyRequired,
+    NO_MODEL_MESSAGE,
     normalizeModelId,
     OPENROUTER_ANTHROPIC_BASE_URL,
     openRouterClaudeWiring,
@@ -222,6 +225,64 @@ describe('claimCredentialEnv', () => {
         expect(claimCredentialEnv(bearer, CLAUDE_CODE, SELF_HOSTED)).toEqual({});
         expect(claimCredentialEnv({ OPENAI_BASE_URL: 'https://proxy.example.test' }, OPENCODE, SELF_HOSTED)).toEqual(
             {}
+        );
+    });
+});
+
+describe('hasModelKey', () => {
+    it('Claude Code runs on an Anthropic key or token, a subscription token, or an OpenRouter key (its claim wiring)', () => {
+        for (const name of [
+            'ANTHROPIC_API_KEY',
+            'ANTHROPIC_AUTH_TOKEN',
+            'CLAUDE_CODE_OAUTH_TOKEN',
+            'OPENROUTER_API_KEY',
+        ]) {
+            expect(hasModelKey([name], null, CLAUDE_CODE)).toBe(true);
+        }
+        expect(hasModelKey(['OPENAI_API_KEY', 'ANTHROPIC_BASE_URL', 'GITHUB_TOKEN'], null, CLAUDE_CODE)).toBe(false);
+        expect(hasModelKey([], {}, CLAUDE_CODE)).toBe(false);
+    });
+
+    it('OpenCode runs on an Anthropic, OpenRouter or OpenAI key, and on nothing else', () => {
+        for (const name of ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY']) {
+            expect(hasModelKey([name], null, OPENCODE)).toBe(true);
+        }
+        expect(hasModelKey(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_AUTH_TOKEN'], null, OPENCODE)).toBe(false);
+    });
+
+    it('counts a credential the executor profile holds: a Claude Code `env` key, an OpenCode provider `apiKey`', () => {
+        expect(hasModelKey([], { env: { ANTHROPIC_API_KEY: 'stored-credential:r' } }, CLAUDE_CODE)).toBe(true);
+        expect(hasModelKey([], { env: { ANTHROPIC_API_KEY: '' } }, CLAUDE_CODE)).toBe(false);
+        expect(hasModelKey([], { env: { SOME_ACCESS_TOKEN: 'x' } }, CLAUDE_CODE)).toBe(false);
+        const provider = { provider: { anthropic: { options: { apiKey: 'stored-credential:r' } } } };
+        expect(hasModelKey([], provider, OPENCODE)).toBe(true);
+        expect(hasModelKey([], provider, CLAUDE_CODE)).toBe(false);
+        expect(hasModelKey([], { provider: { anthropic: { options: { apiKey: '' } } } }, OPENCODE)).toBe(false);
+    });
+
+    it('counts only a key the run will have: a Claude Code profile env that clears a key removes it', () => {
+        expect(hasModelKey(['ANTHROPIC_API_KEY'], { env: { ANTHROPIC_API_KEY: '' } }, CLAUDE_CODE)).toBe(false);
+        expect(
+            hasModelKey(['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'], { env: { ANTHROPIC_API_KEY: '' } }, CLAUDE_CODE)
+        ).toBe(true);
+    });
+
+    it('OpenCode counts a literal provider apiKey, or `{env:NAME}` when NAME is present; nothing else', () => {
+        const withKey = (options: Record<string, unknown>) => ({ provider: { custom: { options } } });
+        expect(hasModelKey([], withKey({ apiKey: 'sk-literal' }), OPENCODE)).toBe(true);
+        expect(hasModelKey(['PRESENT'], withKey({ apiKey: '{env:PRESENT}' }), OPENCODE)).toBe(true);
+        expect(hasModelKey(['PRESENT'], withKey({ apiKey: '{env:MISSING}' }), OPENCODE)).toBe(false);
+        expect(hasModelKey([], withKey({ apiKey: '{file:/run/key}' }), OPENCODE)).toBe(false);
+        expect(hasModelKey([], withKey({ password: 'p' }), OPENCODE)).toBe(false);
+        expect(hasModelKey([], withKey({ accessToken: 't' }), OPENCODE)).toBe(false);
+    });
+
+    it('is required in cloud only, and not when the platform supplies the model', () => {
+        expect(modelKeyRequired(CLOUD, false)).toBe(true);
+        expect(modelKeyRequired(CLOUD, true)).toBe(false);
+        expect(modelKeyRequired(SELF_HOSTED, false)).toBe(false);
+        expect(NO_MODEL_MESSAGE).toBe(
+            'Connect a model in Settings → Model, or ask an admin to connect one for the organization.'
         );
     });
 });

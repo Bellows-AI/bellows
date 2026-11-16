@@ -50,10 +50,12 @@ export interface PreflightSelection {
 }
 
 export interface PreflightCheck {
-    subject: 'repo' | 'executor' | 'skill' | 'connection';
+    subject: 'repo' | 'executor' | 'model' | 'skill' | 'connection';
     name: string | null;
     /** `unverified`: only the board can say, and it does at claim. */
     status: 'ok' | 'blocked' | 'unverified';
+    /** The code create would refuse with (`NO_MODEL`), on a blocked check that has one. */
+    code?: string | undefined;
     detail: string;
     /** On a blocked check only a connection of the caller's own clears: which provider, and why. */
     integration?: { provider: string; reason: 'missing' | 'ambiguous' | 'reconnect' | 'unknown' };
