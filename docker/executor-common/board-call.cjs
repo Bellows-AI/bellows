@@ -10,7 +10,12 @@
  * request, body read and wait. The helper's `classify` turns an answer into `{ done: value }` (a verdict,
  * success or refusal) or `{ retry: true, waitMs? }`; a wire failure — a throw, an abort, a cut-off or oversize
  * body — is a retry. `boardCall` resolves on every path, never rejects:
- * `{ ok: true, value, pair }` or `{ ok: false, reason: 'no_pair' | 'deadline' | 'rate_limited' }`.
+ * `{ ok: true, value, pair }` or `{ ok: false, reason: 'no_pair' | 'deadline' | 'rate_limited' | 'pending' }`.
+ *
+ * A 503 whose parsed body says `LEASE_PENDING` is the board telling a pair the task held to wait for the new
+ * lease (a takeover's binding not yet delivered here). It never reaches `classify`: the budget extends once to
+ * `LEASE_PENDING_WINDOW_MS` from its start, each wait is clamped to what is left, and a window that runs out ends
+ * `pending` — transient, never a refusal. Any other answer, a wire failure aside, ends the pending state.
  *
  * One file, built into both executor images (driver/test/executor-images.test.ts); skills require it at
  * `/usr/local/bin/board-call.cjs`.
@@ -22,12 +27,41 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const BODY_CAP_BYTES = 64 * 1024;
 const BACKOFF_MS = 500;
 const BACKOFF_MAX_MS = 4000;
+const MS_PER_SECOND = 1000;
+const HTTP_UNAVAILABLE = 503;
+/**
+ * How long a call may wait for a takeover's new lease, from the helper's start. Kubernetes delivers it with the
+ * binding Secret's refresh into the mounted file: the kubelet's sync period (60 s) plus its jitter and the Secret
+ * cache's propagation, observed at 60-90 s, then one supervisor control poll. Docker writes the binding at once:
+ * one control poll.
+ */
+const LEASE_PENDING_WINDOW_MS = 120_000;
 
-/** One absolute deadline for a helper invocation: every nested board call spends from the same one. */
-function createBudget({ now, baseMs, start = now() }) {
-    const end = start + baseMs;
-    return { start, end, remaining: () => end - now() };
+/**
+ * One absolute deadline for a helper invocation: every nested board call spends from the same one.
+ * `extendForPending()` raises it, once, to `start + pendingWindowMs`; it never moves the start, so no nested
+ * call grants itself a fresh window.
+ */
+function createBudget({ now, baseMs, start = now(), pendingWindowMs = LEASE_PENDING_WINDOW_MS }) {
+    const budget = {
+        start,
+        end: start + baseMs,
+        remaining: () => budget.end - now(),
+        extendForPending: () => {
+            budget.end = Math.max(budget.end, start + pendingWindowMs);
+        },
+    };
+    return budget;
 }
+
+/** `Retry-After` in seconds, as milliseconds; null where absent or not a plain count. */
+function retryAfterMs(headers) {
+    const value = headers.get('retry-after');
+    return value && /^\d{1,6}$/.test(value.trim()) ? Number(value) * MS_PER_SECOND : null;
+}
+
+const leasePending = (answer) =>
+    answer.status === HTTP_UNAVAILABLE && answer.json !== null && typeof answer.json === 'object' && answer.json.code === 'LEASE_PENDING';
 
 /** The body as text, read to its end; past the cap, or cut off, it throws (a wire failure). */
 async function readText(response) {
@@ -83,10 +117,13 @@ async function request(deps, pair, call, timeoutMs) {
  * `call`: `{ method, path (under /api/jobs/:id), body? (sent as JSON), headers? (beside the pair), classify, once?,
  * requestTimeoutMs?, backoffMs?, backoffMaxMs? }`.
  * `once` makes one request whatever the answer (a best-effort revoke). A wait the board hints that the budget
- * cannot cover ends `rate_limited`; backoff the budget cannot cover ends `deadline`.
+ * cannot cover ends `rate_limited`; backoff the budget cannot cover ends `deadline`. A pending wait is never
+ * `rate_limited`: it sleeps what is left and ends `pending`.
  */
 async function boardCall(deps, budget, call) {
     let backoff = call.backoffMs ?? BACKOFF_MS;
+    let pending = false;
+    const unsettled = () => ({ ok: false, reason: pending ? 'pending' : 'deadline' });
     while (budget.remaining() > 0) {
         const pair = await readPair(deps, Math.max(1, Math.min(PAIR_DEADLINE_MS, budget.remaining())));
         if (!pair) return { ok: false, reason: 'no_pair' };
@@ -98,16 +135,37 @@ async function boardCall(deps, budget, call) {
         } catch {
             // A wire failure: no answer, tried again inside the budget.
         }
+        if (answer && leasePending(answer)) {
+            pending = true;
+            budget.extendForPending();
+            if (call.once) break;
+            const wait = Math.max(0, Math.min(retryAfterMs(answer.headers) ?? backoff, budget.remaining()));
+            await deps.sleep(wait);
+            backoff = Math.min(backoff * 2, call.backoffMaxMs ?? BACKOFF_MAX_MS);
+            continue;
+        }
+        if (answer) pending = false;
         const verdict = answer ? call.classify(answer) : { retry: true };
         if ('done' in verdict) return { ok: true, value: verdict.done, pair };
         if (call.once) break;
         const hinted = verdict.waitMs ?? null;
         const wait = hinted ?? backoff;
-        if (wait >= budget.remaining()) return { ok: false, reason: hinted === null ? 'deadline' : 'rate_limited', lastWaitMs: wait };
+        if (wait >= budget.remaining()) {
+            if (hinted === null) return { ...unsettled(), lastWaitMs: wait };
+            return { ok: false, reason: 'rate_limited', lastWaitMs: wait };
+        }
         await deps.sleep(wait);
         backoff = Math.min(backoff * 2, call.backoffMaxMs ?? BACKOFF_MAX_MS);
     }
-    return { ok: false, reason: 'deadline' };
+    return unsettled();
 }
 
-module.exports = { boardCall, createBudget, readPair, PAIR_DEADLINE_MS, REQUEST_TIMEOUT_MS, BODY_CAP_BYTES };
+module.exports = {
+    boardCall,
+    createBudget,
+    readPair,
+    PAIR_DEADLINE_MS,
+    REQUEST_TIMEOUT_MS,
+    BODY_CAP_BYTES,
+    LEASE_PENDING_WINDOW_MS,
+};

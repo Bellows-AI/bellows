@@ -6,6 +6,7 @@
  */
 import { existsSync, mkdtempSync } from 'node:fs';
 import { request } from 'node:http';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -13,6 +14,7 @@ import type { BoardJob } from '../src/board/board.js';
 import { AGENT_MAILBOX_DIR, MAILBOX_FILES } from '../src/supervisor-contract.js';
 import { takeoverBoundMs } from '../src/supervisor-plan.js';
 import { busyWait } from './fixtures/host-stall.js';
+import { REPO_ROOT } from './fixtures/repo-files.js';
 import { liveSupervisors } from './fixtures/supervisor-tracker.js';
 import {
     ADOPTED,
@@ -520,4 +522,182 @@ describe('takeover simulation, the board clock under a host stall (#972)', () =>
             await s.teardown();
         }
     }, 40_000);
+});
+
+/*
+ * The adopted agent's GitHub credential call across a takeover: the real broker and `board-call.cjs`, the real
+ * `attempt-pair.cjs` over the group's agent relay, and the board's credential route as the Sim answers it (a held
+ * lease on an unended row is 503 LEASE_PENDING). Kubernetes delivers the new lease with the binding Secret's refresh;
+ * docker writes it into the group at once.
+ *
+ * Production numbers, compressed: the window (120 s) is derived from the observed Secret delivery (60-90 s, taken as
+ * 75 s) and the base budget is 30 s; both are scaled by the factor that maps 75 s to the timing's `refreshMs`, and so
+ * are the helper's sleeps (its Retry-After and backoff). The relations are what the case pins: the delivery outlasts
+ * the base and fits the window.
+ */
+const requireRunner = createRequire(import.meta.url);
+type BrokerResult = { ok: boolean; token?: string; reason?: string };
+const credentialBroker = requireRunner(join(REPO_ROOT, 'docker/executor-common/credential-broker.cjs')) as {
+    obtain: (deps: unknown, key: string) => Promise<BrokerResult>;
+    defaultDeps: (env: Record<string, string>) => Record<string, unknown>;
+    GITHUB_KEY: string;
+};
+const { createBudget } = requireRunner(join(REPO_ROOT, 'docker/executor-common/board-call.cjs')) as {
+    createBudget: (options: { now: () => number; baseMs: number; pendingWindowMs?: number }) => unknown;
+};
+const OBSERVED_DELIVERY_MS = 75_000;
+const BASE_MS = 30_000;
+const WINDOW_MS = 120_000;
+/** The kind lane's timing with a refresh longer than the grace (a row of the matrix above). */
+const DELIVERY: Timing = { ...scaled(15), refreshMs: 2 * scaled(15).rebindGraceMs };
+const rebound = (g: Group) => g.logs.some((l) => l.startsWith('supervisor: rebound to claim 2'));
+
+/** One `github-credential.cjs`-shaped call from inside group `g`, started now. */
+function credentialCall(s: Sim, g: Group, t: Timing) {
+    const by = t.refreshMs / OBSERVED_DELIVERY_MS;
+    // Whole milliseconds: a timer or an abort signal takes no fraction.
+    const baseMs = Math.round(BASE_MS * by);
+    const windowMs = Math.round(WINDOW_MS * by);
+    const delivery = t.refreshMs + t.controlMs;
+    if (delivery >= windowMs || delivery <= baseMs) {
+        throw new Error(
+            `the delivery (${delivery} ms) must outlast the base (${baseMs}) and fit the window (${windowMs})`
+        );
+    }
+    const tries: { lease: string; status: number }[] = [];
+    const stderr: string[] = [];
+    const env = {
+        RUNNER_JOB_ID: s.row.id,
+        RUNNER_LEASE_TOKEN: g.lease,
+        FACTORY_STATS_URL: 'http://board.test',
+        FACTORY_CONTROL_SOCKET: join(g.root, 'out', AGENT_MAILBOX_DIR, MAILBOX_FILES.relay),
+    };
+    const deps = {
+        ...credentialBroker.defaultDeps(env),
+        dir: join(mkdtempSync(join(tmpdir(), 'takeover-credentials-')), 'cache'),
+        fetch: async (url: string, init: RequestInit) => {
+            const headers = init.headers as Record<string, string>;
+            const lease = headers['x-factory-job-lease-token'] ?? '';
+            const answer = s.credentialAnswer(new URL(url).pathname.split('/')[3] ?? '', lease);
+            tries.push({ lease, status: answer.status });
+            return answer;
+        },
+        sleep: (ms: number) => nap(Math.round(ms * by)),
+        stderr: (line: string) => stderr.push(line),
+        budget: createBudget({ now: Date.now, baseMs, pendingWindowMs: windowMs }),
+    };
+    const started = Date.now();
+    const done = credentialBroker
+        .obtain(deps, credentialBroker.GITHUB_KEY)
+        .then((result) => ({ result, elapsed: Date.now() - started }));
+    return { done, tries, stderr, baseMs, windowMs };
+}
+
+describe('takeover simulation, the adopted agent asks for its GitHub credential', () => {
+    it("kubernetes: the adopted agent's GitHub credential call made before the Secret refresh succeeds once the binding arrives", async () => {
+        const s = new Sim(DELIVERY);
+        try {
+            s.release();
+            const a = await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            await s.kill(a);
+            s.expireLease();
+            await s.start('B');
+            await until('claim 2', s, () => s.claimSeqs.length === 2);
+            expect(rebound(g)).toBe(false);
+            const call = credentialCall(s, g, DELIVERY);
+            const { result, elapsed } = await call.done;
+            expect(result, `${call.stderr.join('\n')}\n${s.text()}`).toMatchObject({
+                ok: true,
+                token: `ghs_for_${s.row.leaseToken}`,
+            });
+            expect(rebound(g)).toBe(true);
+            expect(elapsed).toBeGreaterThan(call.baseMs);
+            expect(call.tries.some((t) => t.lease === g.lease && t.status === 503)).toBe(true);
+            expect(call.tries.at(-1)).toEqual({ lease: s.row.leaseToken, status: 200 });
+            s.agentExits(g, 0);
+            await settled(s);
+        } finally {
+            await s.teardown();
+        }
+    }, 60_000);
+
+    it('kubernetes: a drained hand-back, re-claimed, then the credential call', async () => {
+        const s = new Sim(DELIVERY);
+        try {
+            s.release();
+            const a = await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            await a.loop.handover('the driver is draining');
+            await s.kill(a);
+            expect(s.row.status).toBe('queued');
+            // The hand-back gave A's lease up while its agent runs on: the call starts before any claim.
+            const call = credentialCall(s, g, DELIVERY);
+            await s.start('B');
+            const { result } = await call.done;
+            expect(result, `${call.stderr.join('\n')}\n${s.text()}`).toMatchObject({
+                ok: true,
+                token: `ghs_for_${s.row.leaseToken}`,
+            });
+            expect(call.tries[0]).toEqual({ lease: g.lease, status: 503 });
+            s.agentExits(g, 0);
+            await settled(s);
+        } finally {
+            await s.teardown();
+        }
+    }, 60_000);
+
+    // Counterpart pin, green before the fix: docker writes the binding at once, so the new lease reaches the agent in
+    // one control poll, inside the base budget.
+    it("docker: the adopted agent's credential call succeeds on the direct binding write", async () => {
+        const s = new Sim(DELIVERY, { executor: 'docker' });
+        try {
+            s.release();
+            const a = await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            await s.kill(a);
+            s.expireLease();
+            await s.start('B');
+            await until('claim 2', s, () => s.claimSeqs.length === 2);
+            const call = credentialCall(s, g, DELIVERY);
+            const { result, elapsed } = await call.done;
+            expect(result, `${call.stderr.join('\n')}\n${s.text()}`).toMatchObject({
+                ok: true,
+                token: `ghs_for_${s.row.leaseToken}`,
+            });
+            expect(elapsed).toBeLessThan(call.baseMs);
+            s.agentExits(g, 0);
+            await settled(s);
+        } finally {
+            await s.teardown();
+        }
+    }, 60_000);
+
+    it('kubernetes: the call ends pending, not refused, when the binding never arrives', async () => {
+        const s = new Sim(DELIVERY);
+        s.deliverBindings = false;
+        try {
+            s.release();
+            const a = await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            await s.kill(a);
+            s.expireLease();
+            await s.start('B');
+            await until('claim 2', s, () => s.claimSeqs.length === 2);
+            const call = credentialCall(s, g, DELIVERY);
+            const { result, elapsed } = await call.done;
+            expect(result).toEqual({ ok: false, reason: 'pending' });
+            expect(call.stderr.join('\n')).toContain('Retry the step shortly');
+            expect(elapsed).toBeGreaterThan(call.baseMs);
+            // One request or pair read past the window at most: each is clamped to what was left.
+            expect(elapsed).toBeLessThanOrEqual(call.windowMs + 1000);
+            expect(call.tries.every((t) => t.status === 503)).toBe(true);
+        } finally {
+            await s.teardown();
+        }
+    }, 60_000);
 });

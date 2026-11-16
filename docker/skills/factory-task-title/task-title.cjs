@@ -75,7 +75,11 @@ async function send(deps, budget, title) {
         backoffMs: BACKOFF_MS,
         backoffMaxMs: BACKOFF_MAX_MS,
     });
-    if (!result.ok) throw result.reason === 'no_pair' ? new Stop(EXIT_USAGE, 'no_pair', 'no_pair', NO_PAIR) : unknown('deadline');
+    if (!result.ok) {
+        if (result.reason === 'no_pair') throw new Stop(EXIT_USAGE, 'no_pair', 'no_pair', NO_PAIR);
+        // A takeover's new lease had not reached this container inside the window: nothing is known about the title.
+        throw unknown(result.reason === 'pending' ? 'lease_pending' : 'deadline');
+    }
     if (result.value instanceof Stop) throw result.value;
     return result.value;
 }

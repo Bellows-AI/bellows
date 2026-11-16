@@ -8,7 +8,9 @@
  * the `connectionCredential(id)` library export — no command prints a connection token.
  *
  * One wall-clock deadline covers every request, `Retry-After` wait and backoff of a call; a refusal
- * or a typed stop ends it at once; a malformed answer is a retry, never "no credential". `clear`
+ * or a typed stop ends it at once; a malformed answer is a retry, never "no credential". A takeover's
+ * LEASE_PENDING extends that deadline once to 120 s from the call's start (board-call.cjs) and, unmet,
+ * ends `pending`: exit 1, retry shortly. `clear`
  * revokes the cached GitHub token through the board and then removes every entry.
  *
  * Callers pass `deps` (see `defaultDeps`) and receive `{ok:true, token, ...}` or `{ok:false, reason}`;
@@ -63,6 +65,9 @@ const GUIDANCE = {
     integration_required:
         'credential-broker: the connection needs the user to connect or reconnect it before the board issues a credential.',
     rate_limited: 'credential-broker: the board asked to wait longer than this call may; retry the step shortly.',
+    pending:
+        'credential-broker: this task was taken over and its new lease had not reached this container in time; ' +
+        'git and gh run without a credential. Retry the step shortly.',
     unreachable:
         'credential-broker: the board did not issue a credential before its deadline. git and gh run without ' +
         'a credential; retry the step shortly.',
@@ -151,7 +156,7 @@ const classifyFor = (key) => (answer) => {
 
 const pathOf = (key) => (key === GITHUB_KEY ? '/credentials/github' : `/credentials/connections/${key.slice('connection:'.length)}`);
 
-const UNSETTLED = { no_pair: 'no_pair', rate_limited: 'rate_limited', deadline: 'unreachable' };
+const UNSETTLED = { no_pair: 'no_pair', rate_limited: 'rate_limited', deadline: 'unreachable', pending: 'pending' };
 
 /** The credential for a key: the cached one while it has more than the skew left, else a renewed one. */
 async function obtain(deps, key) {
@@ -165,8 +170,9 @@ async function obtain(deps, key) {
         const { token, expiresAt, scopes, resource } = cached;
         return { ok: true, token, expiresAt, scopes, resource };
     }
-    // A helper with its own wall-clock budget passes the part it has left, never a fresh one.
-    const budget = createBudget({ now: deps.now, baseMs: deps.deadlineMs ?? DEADLINE_MS });
+    // A helper with its own wall-clock budget passes that budget (`deps.budget`), never a fresh one: a pending wait
+    // spends from the one ceiling the helper's invocation has.
+    const budget = deps.budget ?? createBudget({ now: deps.now, baseMs: DEADLINE_MS });
     const result = await boardCall(deps, budget, { method: 'POST', path: pathOf(key), classify: classifyFor(key) });
     if (!result.ok) return fail(deps, UNSETTLED[result.reason]);
     const answer = result.value;
@@ -217,7 +223,8 @@ function listEntries(deps) {
 /** One revoke of one token, within the revoke cap, never retried. Whatever the answer, the caller removes its entry. */
 async function revoke(deps, token) {
     // A failure leaves the token to its own expiry; the entry is removed regardless.
-    await boardCall(deps, createBudget({ now: deps.now, baseMs: REVOKE_DEADLINE_MS }), {
+    // The revoke route never answers pending, and teardown must not wait out a takeover: no window past the cap.
+    await boardCall(deps, createBudget({ now: deps.now, baseMs: REVOKE_DEADLINE_MS, pendingWindowMs: REVOKE_DEADLINE_MS }), {
         method: 'POST',
         path: '/credentials/github/revoke',
         body: { token },

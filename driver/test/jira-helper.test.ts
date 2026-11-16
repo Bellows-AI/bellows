@@ -38,7 +38,8 @@ interface Deps {
     fetch: typeof fetch;
     sleep: (ms: number) => Promise<void>;
     pair: (env: Record<string, string | undefined>) => Promise<{ jobId: string; leaseToken: string }>;
-    credential: (id: string, remainingMs: number) => Promise<Result>;
+    /** The helper's one budget is handed to the broker, never a fresh deadline. */
+    credential: (id: string, budget: unknown) => Promise<Result>;
     ask: (provider: string, remainingMs: number, target?: string) => Promise<Asked>;
     eraseCredential: (id: string) => void;
     readFile: (path: string) => string;
@@ -226,7 +227,7 @@ async function scenario(
             fetch: globalThis.fetch,
             sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
             pair: async () => ({ jobId: JOB, leaseToken: LEASE }),
-            credential: async (id, _remaining) => {
+            credential: async (id, _budget) => {
                 ask.count++;
                 if (options.refuse?.id === id) {
                     refused[id] = (refused[id] ?? 0) + 1;
@@ -725,7 +726,7 @@ describe('Jira answers and the deadline', () => {
         const clock = { t: Date.now() };
         const overrides: Partial<Deps> = {
             now: () => clock.t,
-            credential: (id, remainingMs) =>
+            credential: (id, budget) =>
                 broker.connectionCredential(id, {
                     env: { FACTORY_STATS_URL: s.boardUrl },
                     dir,
@@ -735,7 +736,7 @@ describe('Jira answers and the deadline', () => {
                     signal: (ms: number) => AbortSignal.timeout(ms),
                     stderr: () => undefined,
                     pair: async () => ({ jobId: JOB, leaseToken: LEASE }),
-                    deadlineMs: remainingMs,
+                    budget,
                 }),
         };
         expect((await s.run(['issue', 'ABC-1'], overrides)).code).toBe(0);
@@ -753,5 +754,78 @@ describe('Jira answers and the deadline', () => {
         const { code } = await s.run(['issue', 'ABC-1']);
         expect(code).toBe(1);
         expect(Date.now() - started).toBeLessThan(3000);
+    });
+});
+
+/*
+ * A takeover window: the board answers the pair the task held 503 LEASE_PENDING until the new lease reaches this
+ * container (a kubernetes Secret refresh, observed 60-90 s). The helper's one budget extends once to 120 s from its
+ * start, shared with the broker. A clock the test owns: every sleep advances it; the board is real HTTP.
+ */
+describe('a takeover window: LEASE_PENDING from the board', () => {
+    const OLD = '55555555-5555-4555-8555-555555555555';
+    const WINDOW_MS = 120_000;
+    const virtual = (moveAtMs: number | null) => {
+        const clock = { t: Date.now(), start: 0, reads: 0 };
+        clock.start = clock.t;
+        const overrides: Partial<Deps> = {
+            now: () => clock.t,
+            sleep: async (ms) => {
+                clock.t += ms;
+            },
+            pair: async () => {
+                clock.reads++;
+                const moved = moveAtMs !== null && clock.t - clock.start >= moveAtMs;
+                return { jobId: JOB, leaseToken: moved ? LEASE : OLD };
+            },
+        };
+        return { clock, overrides, elapsed: () => clock.t - clock.start };
+    };
+
+    it('a board call answered LEASE_PENDING past the 60 s budget succeeds once the pair moves', async () => {
+        const s = await scenario({ deadlineMs: 60_000 });
+        s.board.supersededLease = OLD;
+        const v = virtual(75_000);
+        let handed: { start: number; end: number } | null = null;
+        const result = await s.run(['issue', 'ABC-1'], {
+            ...v.overrides,
+            credential: async (_id, budget) => {
+                handed = budget as { start: number; end: number };
+                return { ok: true, token: TOKEN, expiresAt: null, scopes: WRITE_SCOPES, resource: CLOUD };
+            },
+        });
+        expect(result.code, result.out + result.err).toBe(0);
+        expect(v.elapsed()).toBeGreaterThanOrEqual(75_000);
+        expect(v.elapsed()).toBeLessThan(WINDOW_MS);
+        expect(v.clock.reads).toBeGreaterThan(2);
+        // The broker spends from the same, extended ceiling: never a fresh deadline of its own.
+        expect(handed).not.toBeNull();
+        expect(handed!.end - handed!.start).toBe(WINDOW_MS);
+    });
+
+    it("pending past the window ends 'unavailable' / lease_pending, retryable, never board_refused", async () => {
+        const s = await scenario({ deadlineMs: 60_000 });
+        s.board.supersededLease = OLD;
+        const v = virtual(null);
+        const result = await s.run(['issue', 'ABC-1'], v.overrides);
+        expect(result.code).toBe(1);
+        expect(JSON.parse(result.out.trim().split('\n').pop() ?? '{}')).toEqual({
+            outcome: 'unavailable',
+            reason: 'lease_pending',
+            retryable: true,
+        });
+        expect(result.err).toContain('retry the step shortly');
+        expect(v.elapsed()).toBeGreaterThan(60_000);
+        expect(v.elapsed()).toBeLessThanOrEqual(WINDOW_MS);
+        // The broker's own pending verdict maps the same way.
+        const viaBroker = await (await scenario()).run(['issue', 'ABC-1'], {
+            credential: async () => ({ ok: false, reason: 'pending' }),
+        });
+        expect(viaBroker.code).toBe(1);
+        expect(JSON.parse(viaBroker.out.trim().split('\n').pop() ?? '{}')).toMatchObject({
+            outcome: 'unavailable',
+            reason: 'lease_pending',
+            retryable: true,
+        });
     });
 });

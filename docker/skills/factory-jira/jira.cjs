@@ -70,6 +70,15 @@ class Stop extends Error {
 }
 const bad = (message) => new Stop(EXIT_FAILED, 'bad_input', 'bad_input', message);
 const deadline = () => new Stop(EXIT_FAILED, 'unavailable', 'deadline', 'jira: the call ran past its deadline; retry the step shortly.');
+/** A takeover's new lease had not reached this container inside the call's window: transient, never a refusal. */
+const leasePending = () =>
+    new Stop(
+        EXIT_FAILED,
+        'unavailable',
+        'lease_pending',
+        'jira: this task was taken over and its new lease had not reached this container in time; retry the step shortly.',
+        { retryable: true }
+    );
 
 // ---- Requests: the core's operations, restated (the parity test is the enforcement) ----
 
@@ -247,7 +256,7 @@ async function board(ctx, method, path, body, accept) {
         if (result.reason === 'no_pair') {
             throw new Stop(EXIT_FAILED, 'unavailable', 'no_pair', 'jira: this container holds no attempt credential, so the board cannot be asked.');
         }
-        throw deadline();
+        throw result.reason === 'pending' ? leasePending() : deadline();
     }
     if (result.value.stop) throw result.value.stop;
     return result.value.value;
@@ -377,17 +386,18 @@ function urlFor(conn, path) {
 /** The token for `conn`, and the connection that issued it: after a reconnect, the one the board now lists for that site. */
 async function credentialFor(ctx, first, required) {
     let conn = first;
-    let result = await ctx.deps.credential(conn.id, Math.max(1, remaining(ctx)));
+    let result = await ctx.deps.credential(conn.id, ctx.budget);
     // The broker says the bound connection needs the user (revoked, to be reconnected): ask for that site, and when
     // bound read the list again and use what it holds now, never the connection that just failed.
     if (!result.ok && result.reason === 'integration_required' && (await requireConnection(ctx, conn.site)) === 'bound') {
         conn = await connectionFor(ctx, conn.site, true);
-        result = await ctx.deps.credential(conn.id, Math.max(1, remaining(ctx)));
+        result = await ctx.deps.credential(conn.id, ctx.budget);
     }
     if (!result.ok) {
         if (result.reason === 'integration_required') {
             throw new Stop(EXIT_INTEGRATION_REQUIRED, 'integration_required', 'connection', 'jira: the connection needs the user to connect or reconnect it.');
         }
+        if (result.reason === 'pending') throw leasePending();
         throw new Stop(EXIT_FAILED, 'unavailable', result.reason ?? 'credential', 'jira: the board did not issue a credential for this connection.');
     }
     const missing = required.filter((scope) => !(result.scopes ?? []).includes(scope));
@@ -697,7 +707,7 @@ function defaultDeps(env = process.env) {
         pair: currentPair,
         ask: (provider, remainingMs, target) =>
             require('/usr/local/bin/connection-ask.cjs').askConnection(provider, { deadlineMs: remainingMs, ...(target === undefined ? {} : { target }) }),
-        credential: (id, remainingMs) => broker.connectionCredential(id, { ...broker.defaultDeps(env), deadlineMs: remainingMs }),
+        credential: (id, budget) => broker.connectionCredential(id, { ...broker.defaultDeps(env), budget }),
         eraseCredential: (id) => broker.erase(broker.defaultDeps(env), broker.connectionKey(id)),
         readFile: (path) => fs.readFileSync(path, 'utf8'),
         stdout: (text) => process.stdout.write(text),

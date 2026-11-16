@@ -146,8 +146,9 @@ describe('task-title helper', () => {
         expect(fake.seen.map((s) => s.headers['x-factory-job-lease-token'])).toEqual([LEASE, RELAYED]);
     });
 
+    // A 503 that is not LEASE_PENDING: the pending wait is its own case below.
     it('503 + Retry-After is retried inside the deadline, then exits non-zero with guidance', async () => {
-        const fake = await board((_req, res) => json(res, 503, { code: 'LEASE_PENDING' }, { 'retry-after': '0' }));
+        const fake = await board((_req, res) => json(res, 503, { code: 'UNAVAILABLE' }, { 'retry-after': '0' }));
         let t = 0;
         const run = await call(['T'], fake.url, { now: () => (t += 100) });
         expect(run.code).toBe(EXIT_UNKNOWN);
@@ -157,7 +158,7 @@ describe('task-title helper', () => {
     });
 
     it('a Retry-After the remaining budget cannot cover is not slept', async () => {
-        const fake = await board((_req, res) => json(res, 503, { code: 'LEASE_PENDING' }, { 'retry-after': '5' }));
+        const fake = await board((_req, res) => json(res, 503, { code: 'UNAVAILABLE' }, { 'retry-after': '5' }));
         const slept: number[] = [];
         const run = await call(['T'], fake.url, { sleep: async (ms) => void slept.push(ms) });
         expect(run.code).toBe(EXIT_UNKNOWN);
@@ -250,5 +251,60 @@ describe('task-title helper', () => {
         expect((await call(['   '], fake.url)).code).toBe(EXIT_USAGE);
         expect((await call(['a', 'b'], fake.url)).code).toBe(EXIT_USAGE);
         expect(fake.seen).toEqual([]);
+    });
+});
+
+/*
+ * A takeover window: the board answers the pair the task held 503 LEASE_PENDING until the new lease reaches this
+ * container. The title waits it out up to 120 s from the helper's start; its outcomes are otherwise unchanged. A clock
+ * the test owns: every sleep advances it; the board is real HTTP.
+ */
+describe('task-title helper, a takeover window', () => {
+    const WINDOW_MS = 120_000;
+    const virtual = () => {
+        const clock = { t: Date.now(), start: 0 };
+        clock.start = clock.t;
+        return {
+            clock,
+            elapsed: () => clock.t - clock.start,
+            over: {
+                deadlineMs: 10_000,
+                now: () => clock.t,
+                sleep: async (ms: number) => {
+                    clock.t += ms;
+                },
+            } satisfies Partial<Deps>,
+        };
+    };
+
+    it('a title answered LEASE_PENDING past 10 s lands once the pair moves', async () => {
+        const v = virtual();
+        const fake = await board((req, res) =>
+            req.headers['x-factory-job-lease-token'] === RELAYED
+                ? json(res, 200, { title: 'T', updated: true, version: 1 })
+                : json(res, 503, { code: 'LEASE_PENDING', retryable: true }, { 'retry-after': '1' })
+        );
+        const run = await call(['T'], fake.url, {
+            ...v.over,
+            pair: async () => ({ jobId: JOB, leaseToken: v.elapsed() >= 40_000 ? RELAYED : LEASE }),
+        });
+        expect(run.code, run.out + run.err).toBe(0);
+        expect(JSON.parse(run.out)).toEqual({ title: 'T', updated: true, version: 1 });
+        expect(v.elapsed()).toBeGreaterThanOrEqual(40_000);
+        expect(v.elapsed()).toBeLessThan(WINDOW_MS);
+        expect(fake.seen.at(-1)?.headers['x-factory-job-lease-token']).toBe(RELAYED);
+    });
+
+    it('pending past the window ends exit 4 lease_pending', async () => {
+        const v = virtual();
+        const fake = await board((_req, res) =>
+            json(res, 503, { code: 'LEASE_PENDING', retryable: true }, { 'retry-after': '1' })
+        );
+        const run = await call(['T'], fake.url, v.over);
+        expect(run.code).toBe(EXIT_UNKNOWN);
+        expect(JSON.parse(run.out)).toEqual({ outcome: 'unknown', reason: 'lease_pending' });
+        expect(run.err).toContain('did not confirm');
+        expect(v.elapsed()).toBeGreaterThan(10_000);
+        expect(v.elapsed()).toBeLessThanOrEqual(WINDOW_MS);
     });
 });

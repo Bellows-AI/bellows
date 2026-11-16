@@ -41,9 +41,11 @@ interface Call {
 }
 type Result = { ok: true; value: unknown; pair: Pair } | { ok: false; reason: string; lastWaitMs?: number };
 const boardCalls = require_(MODULE) as {
-    createBudget: (options: { now: () => number; baseMs: number; start?: number }) => Budget;
+    createBudget: (options: { now: () => number; baseMs: number; start?: number; pendingWindowMs?: number }) => Budget;
     boardCall: (deps: Deps, budget: Budget, call: Call) => Promise<Result>;
 };
+/** The pending window (`LEASE_PENDING_WINDOW_MS`): a kubernetes Secret refresh plus a control poll, from the call's start. */
+const WINDOW_MS = 120_000;
 
 const JOB = '11111111-1111-4111-8111-111111111111';
 const LEASE = '22222222-2222-4222-8222-222222222222';
@@ -256,6 +258,60 @@ describe('board-call: one request path for the attempt pair', () => {
             throw new TypeError('bad init');
         });
         expect(await boardCalls.boardCall(r.deps, r.budget, call())).toMatchObject({ ok: false, reason: 'deadline' });
+    });
+});
+
+describe('board-call: a pair the task held answers LEASE_PENDING until the new lease arrives', () => {
+    const NEW = '33333333-3333-4333-8333-333333333333';
+    const pending = () => json(503, { error: 'moved', code: 'LEASE_PENDING', retryable: true }, { 'retry-after': '1' });
+
+    it('waits out LEASE_PENDING past the base budget, re-reading the pair each try, and returns the classified answer once the newer pair is presented', async () => {
+        const r = rig(() => pending());
+        // The relayed lease reaches the container 75 s in (a kubelet Secret refresh, observed 60-90 s).
+        r.deps.pair = async (from, options) => {
+            r.pairReads.push(options?.deadlineMs ?? Number.NaN);
+            return { jobId: JOB, leaseToken: r.elapsed() >= 75_000 ? NEW : (from.RUNNER_LEASE_TOKEN ?? '') };
+        };
+        r.deps.fetch = (async (url: string, init: RequestInit) => {
+            r.requests.push({ url, init, timeoutMs: 0, at: START + r.elapsed() });
+            const lease = (init.headers as Record<string, string>)['x-factory-job-lease-token'];
+            return lease === NEW ? json(200, { token: 'adopted' }) : pending();
+        }) as unknown as typeof fetch;
+        const result = await boardCalls.boardCall(r.deps, r.budget, call());
+        expect(result).toEqual({ ok: true, value: { token: 'adopted' }, pair: { jobId: JOB, leaseToken: NEW } });
+        expect(r.elapsed()).toBeGreaterThanOrEqual(75_000);
+        expect(r.elapsed()).toBeLessThan(WINDOW_MS);
+        expect(r.pairReads).toHaveLength(r.requests.length);
+    });
+
+    it('ends pending at start + window, never past it', async () => {
+        const r = rig(() => pending());
+        const result = await boardCalls.boardCall(r.deps, r.budget, call());
+        expect(result).toMatchObject({ ok: false, reason: 'pending' });
+        expect(r.elapsed()).toBeLessThanOrEqual(WINDOW_MS);
+        for (const request of r.requests) expect(request.at).toBeLessThan(START + WINDOW_MS);
+        // Every sleep ended inside the window: the clock moves only by sleeps here.
+        expect(r.sleeps.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(WINDOW_MS);
+        expect(r.requests.length).toBeGreaterThan(BASE_MS / 1000);
+    });
+
+    it('a nested call shares the outer budget', async () => {
+        const r = rig(() => pending());
+        const outer = boardCalls.createBudget({ now: r.deps.now, baseMs: 60_000 });
+        r.advance(50_000);
+        const result = await boardCalls.boardCall(r.deps, outer, call());
+        expect(result).toMatchObject({ ok: false, reason: 'pending' });
+        // The window runs from the outer budget's start, never from the nested call's.
+        expect(r.elapsed()).toBeLessThanOrEqual(WINDOW_MS);
+        expect(r.elapsed()).toBeGreaterThan(60_000);
+        for (const request of r.requests) expect(request.at).toBeLessThan(START + WINDOW_MS);
+    });
+
+    it('a window a budget names for itself is its ceiling (a revoke stays inside its cap)', async () => {
+        const r = rig(() => pending());
+        const capped = boardCalls.createBudget({ now: r.deps.now, baseMs: 3000, pendingWindowMs: 3000 });
+        expect(await boardCalls.boardCall(r.deps, capped, call())).toMatchObject({ ok: false, reason: 'pending' });
+        expect(r.elapsed()).toBeLessThanOrEqual(3000);
     });
 });
 
