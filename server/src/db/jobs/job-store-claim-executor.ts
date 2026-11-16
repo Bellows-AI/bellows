@@ -104,43 +104,14 @@ export async function resolveClaimExecutor(
     row: ClaimExecutorRow
 ): Promise<ResolvedClaimExecutor> {
     const { env, executorConfig, deploymentMode, grant } = deps;
+    const { executorType, executorRefusal, source } = await claimExecutorOf(tx, executorConfig, row);
+    // Read once the agent is known: a Claude Code run takes its model names from one scope (`stackClaudeCodeEnv`).
     const resolvedEnv = withoutGithubToken(
-        env ? await env.resolveFor({ userId: row.run_as, repo: row.repo }, tx) : undefined
+        env ? await env.resolveFor({ userId: row.run_as, repo: row.repo }, tx, { agentType: executorType }) : undefined
     );
     let claimEnv = grant !== undefined ? grantedEnv(resolvedEnv, grant) : resolvedEnv;
-    // The executor label a task was queued with names a row in the STAMPED SCOPE's list (issue
-    // 391): the author's own rows when the stamp is 'user' — null reads as 'user', the pre-391
-    // meaning — and the organization's when it is 'org', which is how a team-shared profile
-    // resolves for any author. Its TYPE is the execution input: it tells the driver which
-    // CLI/image family to run. A label matching nothing IN THAT SCOPE remains null on the claim
-    // and is failed explicitly by the driver; there is no global CLI fallback, and no cross-scope
-    // one either — a selection names its scope, and the other scope's same-named row is simply not
-    // this selection's answer.
-    let executorType: ExecutorType | null = null;
-    let executorRefusal: string | null = null;
-    let profileConfig: unknown;
-    if (executorConfig && row.executor !== null && row.run_as !== null) {
-        const scope = (row.executor_scope ?? USER_SCOPE) as ExecutorScope;
-        const configured = await executorConfig.claimConfigFor(row.run_as, row.executor, scope, tx);
-        if (configured?.suspended) {
-            // A suspended profile (issue 440) launches nothing and its config never reaches the
-            // claim: the driver fails the task with this sentence before any runner starts, for a
-            // fresh task, a retry and a follow-up alike — they all claim through here.
-            executorRefusal = executorSuspendedMessage(scope, row.executor);
-        } else {
-            if (configured && EXECUTOR_TYPES.includes(configured.type as ExecutorType)) {
-                executorType = configured.type as ExecutorType;
-            }
-            claimEnv = mergeExecutorConfigEnv(claimEnv, configured);
-            profileConfig = configured?.config;
-        }
-    }
-    const agent = frozenAgentOf(row);
-    if (agent !== null) {
-        executorType = agent.type;
-        claimEnv = mergeExecutorConfigEnv(claimEnv, agent);
-        profileConfig = agent.config;
-    }
+    if (source !== null) claimEnv = mergeExecutorConfigEnv(claimEnv, source);
+    const profileConfig: unknown = source?.config;
     claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType, deploymentMode);
     // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
     // token, or a redirect of the deployment's model credential with no member key, saved before
@@ -149,6 +120,48 @@ export async function resolveClaimExecutor(
     const refusal = deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType) : null;
     if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal };
     return { claimEnv, executorType, executorRefusal };
+}
+
+/**
+ * The executor a claim runs: the profile the task names, or the agent default frozen on it.
+ *
+ * The executor label a task was queued with names a row in the STAMPED SCOPE's list (issue
+ * 391): the author's own rows when the stamp is 'user' — null reads as 'user', the pre-391
+ * meaning — and the organization's when it is 'org', which is how a team-shared profile
+ * resolves for any author. Its TYPE is the execution input: it tells the driver which
+ * CLI/image family to run. A label matching nothing IN THAT SCOPE remains null on the claim
+ * and is failed explicitly by the driver; there is no global CLI fallback, and no cross-scope
+ * one either — a selection names its scope, and the other scope's same-named row is simply not
+ * this selection's answer. `source` is what merges over the env (null: nothing does).
+ */
+async function claimExecutorOf(
+    tx: TransactionSql,
+    executorConfig: CreateJobStoreDeps['executorConfig'],
+    row: ClaimExecutorRow
+): Promise<{
+    executorType: ExecutorType | null;
+    executorRefusal: string | null;
+    source: { type: string; config: Record<string, unknown> } | null;
+}> {
+    const agent = frozenAgentOf(row);
+    if (agent !== null) return { executorType: agent.type, executorRefusal: null, source: agent };
+    if (!executorConfig || row.executor === null || row.run_as === null) {
+        return { executorType: null, executorRefusal: null, source: null };
+    }
+    const scope = (row.executor_scope ?? USER_SCOPE) as ExecutorScope;
+    const configured = await executorConfig.claimConfigFor(row.run_as, row.executor, scope, tx);
+    if (configured?.suspended) {
+        // A suspended profile (issue 440) launches nothing and its config never reaches the
+        // claim: the driver fails the task with this sentence before any runner starts, for a
+        // fresh task, a retry and a follow-up alike — they all claim through here.
+        return { executorType: null, executorRefusal: executorSuspendedMessage(scope, row.executor), source: null };
+    }
+    const known = configured && EXECUTOR_TYPES.includes(configured.type as ExecutorType);
+    return {
+        executorType: known ? (configured.type as ExecutorType) : null,
+        executorRefusal: null,
+        source: configured,
+    };
 }
 
 /** The agent default frozen on a job row. */

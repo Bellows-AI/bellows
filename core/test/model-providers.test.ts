@@ -3,14 +3,14 @@ import { CLOUD, DEPLOYMENT_MODES, SELF_HOSTED } from '../src/deployment-mode.js'
 import { CLAUDE_CODE, OPENCODE } from '../src/executors.js';
 import {
     AGENT_PROVIDERS,
+    CLAUDE_CODE_CREDENTIAL_NAMES,
     claimCredentialEnv,
+    claudeCodeCredentialScope,
     currentProvider,
     inferProvider,
     isAgentProvider,
     isModelProvider,
-    MODEL_CREDENTIAL_NAMES,
     MODEL_PROVIDERS,
-    modelCredentialScope,
     normalizeModelId,
     OPENROUTER_ANTHROPIC_BASE_URL,
     openRouterClaudeWiring,
@@ -20,7 +20,7 @@ import {
     PROVIDER_ENV,
     providerAvailable,
     providerEnvNames,
-    stackModelEnv,
+    stackClaudeCodeEnv,
 } from '../src/model-providers.js';
 
 describe('MODEL_PROVIDERS', () => {
@@ -114,41 +114,38 @@ describe('currentProvider', () => {
     });
 });
 
-describe('model credentials come from one scope', () => {
-    it('names every provider key, base URL and Anthropic token', () => {
-        expect([...MODEL_CREDENTIAL_NAMES].sort()).toEqual(
+describe('Claude Code takes its model credentials from one scope', () => {
+    it('names what Claude Code reads for its model, and nothing another agent reads', () => {
+        expect([...CLAUDE_CODE_CREDENTIAL_NAMES].sort()).toEqual(
             [
                 'ANTHROPIC_API_KEY',
                 'ANTHROPIC_AUTH_TOKEN',
                 'ANTHROPIC_BASE_URL',
                 'CLAUDE_CODE_OAUTH_TOKEN',
-                'OPENAI_API_KEY',
-                'OPENAI_BASE_URL',
                 'OPENROUTER_API_KEY',
-                'OPENROUTER_BASE_URL',
             ].sort()
         );
     });
 
-    it('the highest scope naming any model credential owns them', () => {
-        expect(modelCredentialScope([['ANTHROPIC_API_KEY'], ['OPENROUTER_API_KEY'], []])).toBe(1);
-        expect(modelCredentialScope([['ANTHROPIC_API_KEY'], ['OTHER'], ['OPENAI_BASE_URL']])).toBe(2);
-        expect(modelCredentialScope([['OTHER'], [], []])).toBe(-1);
+    it('the highest scope naming any of them owns them; another provider’s key is no trigger', () => {
+        expect(claudeCodeCredentialScope([['ANTHROPIC_API_KEY'], ['OPENROUTER_API_KEY'], []])).toBe(1);
+        expect(claudeCodeCredentialScope([['ANTHROPIC_API_KEY'], ['OTHER'], ['OPENAI_API_KEY']])).toBe(0);
+        expect(claudeCodeCredentialScope([['OTHER'], [], ['OPENAI_BASE_URL']])).toBe(-1);
     });
 
-    it('drops a lower scope’s model credentials and stacks the rest, the higher scope winning', () => {
+    it('drops a lower scope’s Claude Code names and stacks the rest, the higher scope winning', () => {
         expect(
-            stackModelEnv([
+            stackClaudeCodeEnv([
                 { ANTHROPIC_API_KEY: 'org', ANTHROPIC_BASE_URL: 'https://org.example.test', SHARED: 'org', A: 'a' },
                 { OPENROUTER_API_KEY: 'mine', SHARED: 'mine' },
                 {},
             ])
         ).toEqual({ A: 'a', SHARED: 'mine', OPENROUTER_API_KEY: 'mine' });
-        expect(stackModelEnv([{ ANTHROPIC_API_KEY: 'org' }, { OTHER: 'x' }, {}])).toEqual({
+        expect(stackClaudeCodeEnv([{ ANTHROPIC_API_KEY: 'org' }, {}, { OPENAI_API_KEY: 'repo' }])).toEqual({
             ANTHROPIC_API_KEY: 'org',
-            OTHER: 'x',
+            OPENAI_API_KEY: 'repo',
         });
-        expect(stackModelEnv([{}, { OPENROUTER_API_KEY: 'mine' }, { ANTHROPIC_API_KEY: 'repo' }])).toEqual({
+        expect(stackClaudeCodeEnv([{}, { OPENROUTER_API_KEY: 'mine' }, { ANTHROPIC_API_KEY: 'repo' }])).toEqual({
             ANTHROPIC_API_KEY: 'repo',
         });
     });

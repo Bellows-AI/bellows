@@ -242,14 +242,14 @@ export { ERROR_CODES } from './error-codes.js';
 export type { AgentProvider, ModelProvider } from './model-providers.js';
 export {
     AGENT_PROVIDERS,
+    CLAUDE_CODE_CREDENTIAL_NAMES,
     claimCredentialEnv,
+    claudeCodeCredentialScope,
     currentProvider,
     inferProvider,
     isAgentProvider,
     isModelProvider,
-    MODEL_CREDENTIAL_NAMES,
     MODEL_PROVIDERS,
-    modelCredentialScope,
     normalizeModelId,
     OPENROUTER_ANTHROPIC_BASE_URL,
     openRouterClaudeWiring,
@@ -259,7 +259,7 @@ export {
     PROVIDER_ENV,
     providerAvailable,
     providerEnvNames,
-    stackModelEnv,
+    stackClaudeCodeEnv,
 } from './model-providers.js';
 export type { JobMode } from './job-mode.js';
 export { JOB_MODES, OBJECTIVE_MODE, WORKFLOW_MODE } from './job-mode.js';

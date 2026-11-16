@@ -89,31 +89,38 @@ export function currentProvider(
     return inferProvider(names);
 }
 
-/** Every name that carries a model credential or says where it is sent: one scope owns all of them for a run. */
-export const MODEL_CREDENTIAL_NAMES: ReadonlySet<string> = new Set([
-    ...MODEL_PROVIDERS.flatMap(providerEnvNames),
+/**
+ * The names Claude Code reads for its model: its keys and token, where it sends them, and the OpenRouter key its
+ * claim wiring turns into a bearer token. One scope owns all of them for a Claude Code run.
+ */
+export const CLAUDE_CODE_CREDENTIAL_NAMES: ReadonlySet<string> = new Set([
+    'ANTHROPIC_API_KEY',
     'ANTHROPIC_AUTH_TOKEN',
+    'ANTHROPIC_BASE_URL',
+    CLAUDE_CODE_OAUTH_TOKEN,
+    'OPENROUTER_API_KEY',
 ]);
 
-/** The index of the highest scope (lowest first) naming any model credential; -1 when none does. */
-export function modelCredentialScope(scopes: readonly (readonly string[])[]): number {
+/** The index of the highest scope (lowest first) naming any of Claude Code's model names; -1 when none does. */
+export function claudeCodeCredentialScope(scopes: readonly (readonly string[])[]): number {
     for (let i = scopes.length - 1; i >= 0; i -= 1) {
-        if (scopes[i]?.some((name) => MODEL_CREDENTIAL_NAMES.has(name))) return i;
+        if (scopes[i]?.some((name) => CLAUDE_CODE_CREDENTIAL_NAMES.has(name))) return i;
     }
     return -1;
 }
 
 /**
- * Stacks scope envs lowest first, a higher scope winning a name, except that the model credentials come from one
- * scope: the highest naming any of them. A lower scope's credential and base-URL names are dropped, so its key can
- * neither follow a higher scope's provider nor turn off that provider's wiring.
+ * A Claude Code run's env: scope envs stacked lowest first, a higher scope winning a name, except that Claude Code's
+ * model names come from one scope, the highest naming any of them. A lower scope's values of those names are dropped,
+ * so an org Anthropic key neither rides along with a member's OpenRouter key nor turns its wiring off. Every other
+ * name, another provider's key included, stacks as usual; an OpenCode run stacks plainly.
  */
-export function stackModelEnv(scopes: readonly Readonly<Record<string, string>>[]): Record<string, string> {
-    const owner = modelCredentialScope(scopes.map((scope) => Object.keys(scope)));
+export function stackClaudeCodeEnv(scopes: readonly Readonly<Record<string, string>>[]): Record<string, string> {
+    const owner = claudeCodeCredentialScope(scopes.map((scope) => Object.keys(scope)));
     const stacked: Record<string, string> = {};
     scopes.forEach((scope, index) => {
         for (const [name, value] of Object.entries(scope)) {
-            if (index < owner && MODEL_CREDENTIAL_NAMES.has(name)) continue;
+            if (index < owner && CLAUDE_CODE_CREDENTIAL_NAMES.has(name)) continue;
             stacked[name] = value;
         }
     });

@@ -275,7 +275,7 @@ describe.skipIf(!enabled)('self-hosted mode: a redirect still travels', () => {
     });
 });
 
-describe.skipIf(!enabled)('model credentials come from one scope', () => {
+describe.skipIf(!enabled)('Claude Code takes its model credentials from one scope', () => {
     const TEAM_KEY = 'sk-ant-org-owned';
     const OPENROUTER_KEY = 'sk-or-v1-member-owned';
 
@@ -306,6 +306,28 @@ describe.skipIf(!enabled)('model credentials come from one scope', () => {
         const claim = await jobs.claim('w1', LEASE_SECONDS);
         expect(claim?.env).toMatchObject({ ANTHROPIC_API_KEY: TEAM_KEY, OTHER: 'x' });
         expect(claim?.env).not.toHaveProperty(BASE_URL);
+    });
+
+    it('another provider’s key in a repo neither owns nor drops the org Anthropic key', async () => {
+        const { executors, env, jobs } = stores(ORG, 'self-hosted');
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: TEAM_KEY, isSecret: true }]);
+        await env.replaceRepo('env-admin', 'acme', 'web', [{ name: 'OPENAI_API_KEY', value: 'repo', isSecret: true }]);
+        await task(jobs, 'acme/web');
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.env).toMatchObject({ ANTHROPIC_API_KEY: TEAM_KEY, OPENAI_API_KEY: 'repo' });
+    });
+
+    it('an OpenCode run stacks plainly: the org and the personal keys both travel', async () => {
+        const { executors, env, jobs } = stores(ORG, 'self-hosted');
+        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: {} }]);
+        await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: TEAM_KEY, isSecret: true }]);
+        await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true }]);
+        await task(jobs);
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.env).toMatchObject({ ANTHROPIC_API_KEY: TEAM_KEY, OPENROUTER_API_KEY: OPENROUTER_KEY });
     });
 
     it('a repo-scope key overrides the workspace provider', async () => {

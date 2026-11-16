@@ -1,4 +1,4 @@
-import { stackModelEnv } from '@factory-ai/core';
+import { CLAUDE_CODE, stackClaudeCodeEnv } from '@factory-ai/core';
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { recordAudit, userActor } from './audit-log.js';
 import type { SecretDiagnostic, SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
@@ -42,6 +42,11 @@ export interface EnvVarRow extends EnvVarEntry {
     readonly updatedAt: string;
 }
 
+/** What a claim tells the resolver about its run: a Claude Code run takes its model names from one scope. */
+export interface ResolveOptions {
+    readonly agentType?: string | null;
+}
+
 export interface EnvVarStore {
     listOrg(): Promise<EnvVarRow[]>;
     listWorkspace(userId: string): Promise<EnvVarRow[]>;
@@ -67,10 +72,12 @@ export interface EnvVarStore {
      *
      * `exec` lets a caller run the read on an executor it already holds (the job store's claim
      * passes its transaction, so a claim holds one connection, never two) — the pool by default.
+     * `options.agentType` Claude Code takes its model names from one scope (`stackClaudeCodeEnv`).
      */
     resolveFor(
         target: { userId: string | null; repo: string | null },
-        exec?: Sql | TransactionSql
+        exec?: Sql | TransactionSql,
+        options?: ResolveOptions
     ): Promise<Record<string, string>>;
 }
 
@@ -131,9 +138,7 @@ const toRow = (row: Row): EnvVarRow => ({
 /**
  * The stacking rule, in one place and pure: `org` first, `workspace` over it, `repo` over that —
  * the issue's "everything should stack upon each other", and the GitHub Actions precedence
- * (repository beats organization). The model credentials are the exception (`stackModelEnv`): the
- * highest scope naming any of them supplies all of them, so a lower scope's key never rides along
- * with a higher scope's provider. Exported because a rule this load-bearing is pinned by the
+ * (repository beats organization). Exported because a rule this load-bearing is pinned by the
  * offline suite, which cannot reach the SQL that feeds it.
  */
 export function stackEnv(
@@ -141,7 +146,7 @@ export function stackEnv(
     workspace: Record<string, string>,
     repo: Record<string, string>
 ): Record<string, string> {
-    return stackModelEnv([org, workspace, repo]);
+    return { ...org, ...workspace, ...repo };
 }
 
 /**
@@ -483,7 +488,7 @@ export function createEnvVarStore({
 
         writeScoped,
 
-        async resolveFor({ userId, repo }, exec = sql) {
+        async resolveFor({ userId, repo }, exec = sql, options = {}) {
             await gate();
             const [owner, name] = repo ? repo.split('/') : [null, null];
             // One round trip for all three levels. The predicates degrade on their own: a null
@@ -510,7 +515,11 @@ export function createEnvVarStore({
                 Object.fromEntries(
                     rows.flatMap((row, i) => (row.scope === scope ? [[row.name, values[i] as string]] : []))
                 );
-            return stackEnv(pick('org'), pick('workspace'), pick('repo'));
+            const levels = { org: pick('org'), workspace: pick('workspace'), repo: pick('repo') };
+            if (options.agentType === CLAUDE_CODE) {
+                return stackClaudeCodeEnv([levels.org, levels.workspace, levels.repo]);
+            }
+            return stackEnv(levels.org, levels.workspace, levels.repo);
         },
     };
 }
