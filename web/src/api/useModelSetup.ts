@@ -1,5 +1,5 @@
 import type { ExecutorType, ModelProvider } from '@factory-ai/core';
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import type { VerifyAnswer } from '../model-setup/providers.js';
 import { request } from './request.js';
 import { useResource } from './useResource.js';
@@ -35,6 +35,9 @@ export type ModelSetupSave = { scope: SetupScope; agentType: ExecutorType; model
 const SETUP_URL = '/api/model-setup';
 const asView = (body: ModelSetupView) => body;
 
+/** Every mounted read's refresh: a save re-reads the others, so the shell's banner follows a save without a reload. */
+const readers = new Set<() => void>();
+
 export interface UseModelSetup {
     data: ModelSetupView | null;
     loading: boolean;
@@ -48,10 +51,21 @@ export interface UseModelSetup {
 
 export function useModelSetup(): UseModelSetup {
     const { data, setData, loading, error, refresh } = useResource(SETUP_URL, asView);
-    const save = useCallback(async (body: ModelSetupSave) => {
-        const result = await request(SETUP_URL, { method: 'PUT', body, verb: 'Could not save the model' });
-        return result.ok ? ({ ok: true } as const) : ({ ok: false, error: result.error } as const);
-    }, []);
+    useEffect(() => {
+        readers.add(refresh);
+        return () => {
+            readers.delete(refresh);
+        };
+    }, [refresh]);
+    const save = useCallback(
+        async (body: ModelSetupSave) => {
+            const result = await request(SETUP_URL, { method: 'PUT', body, verb: 'Could not save the model' });
+            if (!result.ok) return { ok: false, error: result.error } as const;
+            for (const reader of readers) if (reader !== refresh) reader();
+            return { ok: true } as const;
+        },
+        [refresh]
+    );
     const reread = useCallback(async () => {
         const result = await request<ModelSetupView>(SETUP_URL, { verb: 'Could not read the model setup' });
         if (result.ok) setData(result.value);
