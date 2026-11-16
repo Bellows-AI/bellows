@@ -179,6 +179,10 @@ export interface Job {
     repo: string | null;
     /** The member's executor name the task was stamped with, or null. Display metadata. */
     executor: string | null;
+    /** The model requested for the run (a chosen one, else the agent default's); null when none was. */
+    agentModel: string | null;
+    /** The model the latest claim handed the runner; null before a claim or when the profile sets none. */
+    resolvedModel: string | null;
     /** The branch the task was started from, on detail reads; null or absent is the default branch. */
     baseBranch?: string | null;
     /**

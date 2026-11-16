@@ -32,6 +32,8 @@ const job = (id: string): Job => ({
     runtime: null,
     repo: null,
     executor: null,
+    agentModel: null,
+    resolvedModel: null,
     workflowNode: null,
     workflowName: null,
     mode: OBJECTIVE_MODE,

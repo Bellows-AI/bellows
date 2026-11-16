@@ -97,6 +97,8 @@ With none of these, Bellows refuses the task and links to **Add an executor in S
 
 You can pick the model when you start a task, and again on a follow-up. It replaces the model of the profile or the agent default for that task only; the agent stays the same. Leave it empty to use the default. A follow-up without a model keeps the one the task last ran with, and so do a retry and a run that resumes after an interruption. Each run records the model it actually got.
 
+In the composer, the **Model** chip sits next to the executor. It reads **Default**, or **Default (model)** when your agent default runs the task; leave it there to send no model. Open it to pick one of your provider's models, or type any model name and press Enter. The follow-up composer has the same chip, starting at the model the task is using; change it only to switch. The task page's **Execution** facts show the **Model** the latest run got, or **profile default** when the profile chose it.
+
 From the CLI, pass `--model <name>` to `bellows job create` or `bellows job follow-up`. From an assistant, pass `model` to `create_task` or `follow_up_task`. A model name is 1 to 200 characters.
 
 ## Defaults and suspending

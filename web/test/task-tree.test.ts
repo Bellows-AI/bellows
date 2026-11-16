@@ -194,6 +194,8 @@ describe('taskSummary', () => {
         output: null,
         repo: null,
         executor: null,
+        agentModel: null,
+        resolvedModel: null,
         workflowNode: null,
         workflowName: null,
         mode: OBJECTIVE_MODE,

@@ -304,17 +304,20 @@
         white-space: nowrap;
     }
 
-    /* The base-branch chip: the shared trigger's frame around a glyph button and the search field.
-       The field holds only the search; the chosen branch is its placeholder, shown in full ink. */
-    .composer-branch {
+    /* The base-branch and Model chips: the shared trigger's frame around a glyph button and the search
+       field. The field holds only the search; the chosen value is its placeholder, shown in full ink. */
+    .composer-branch,
+    .composer-model {
         cursor: text;
     }
 
-    .composer-branch:focus-within {
+    .composer-branch:focus-within,
+    .composer-model:focus-within {
         background: var(--accent-wash);
     }
 
-    .composer-branch-toggle {
+    .composer-branch-toggle,
+    .composer-model-toggle {
         align-items: center;
         background: none;
         border: none;
@@ -327,7 +330,8 @@
         padding: 0;
     }
 
-    .composer-branch-input {
+    .composer-branch-input,
+    .composer-model-input {
         background: transparent;
         border: none;
         color: inherit;
@@ -339,7 +343,8 @@
         width: 12ch;
     }
 
-    .composer-branch-input::placeholder {
+    .composer-branch-input::placeholder,
+    .composer-model-input::placeholder {
         color: var(--ink);
         opacity: 1;
     }
@@ -679,9 +684,11 @@
             padding-left: 58px;
         }
 
-        /* The base-branch chip's two controls fill the chip, so each one is a full-height target. */
+        /* The base-branch and Model chips' two controls fill the chip, so each one is a full-height target. */
         .composer-branch-toggle,
-        .composer-branch-input {
+        .composer-branch-input,
+        .composer-model-toggle,
+        .composer-model-input {
             min-height: var(--touch);
         }
     }

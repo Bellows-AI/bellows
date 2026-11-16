@@ -254,8 +254,8 @@ describe('TaskComposer — the prompt and the launch', () => {
         // No list, no process to pick: the selector and anything about workflow details are absent.
         const html = renderComposer({ workflows: null });
         expect(html).not.toContain('Reusable workflow');
-        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(3);
-        // Repository, base branch and executor remain.
+        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(4);
+        // Repository, base branch, executor and model remain.
         expect(html).not.toContain('Workflow details');
     });
 
@@ -301,8 +301,8 @@ describe('TaskComposer — the prompt and the launch', () => {
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
         expect(html).toContain('class="composer-context"');
-        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(4);
-        // Repository, base branch, executor and workflow.
+        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(5);
+        // Repository, base branch, executor, model and workflow.
         // The full value stays reachable off the truncated trigger through the title attribute,
         // beside the listbox itself.
         expect(html).toContain('title="acme/web"');
@@ -445,7 +445,7 @@ describe('the redesigned composer (#280)', () => {
             restored: restoredDraft({ draft: 'fix it', workflow: 'fix-issue' }),
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org', params: [{ name: 'issue', pattern: '#\\d+' }] }],
         });
-        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(4);
+        expect(html.match(/class="composer-context-item"/g) ?? []).toHaveLength(5);
         expect(html.indexOf('id="composer-param-issue"')).toBeGreaterThan(html.indexOf('class="chat-input-bar"'));
         expect(html.match(/class="panel /g) ?? []).toHaveLength(0);
         expect(html.match(/class="chat-input"/g) ?? []).toHaveLength(1);
@@ -669,6 +669,7 @@ function restoredDraft(overrides: Partial<ComposerDraftInput>): ComposerDraftInp
         repoTouched: false,
         workflowRepo: 'acme/web',
         baseBranch: '',
+        model: '',
         workflow: '',
         storedParams: { workflowId: null, values: {} },
         paramTouched: {},

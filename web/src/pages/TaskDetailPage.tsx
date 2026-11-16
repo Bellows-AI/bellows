@@ -51,7 +51,7 @@ function useTaskConversationActions(
         };
     }, [id]);
 
-    const followUp = async (command: string, files?: SubmittedFiles): Promise<string | null> => {
+    const followUp = async (command: string, files?: SubmittedFiles, model?: string): Promise<string | null> => {
         if (latest === null) return 'No task to follow up on';
         const atStart = generation.current;
         setFollowUpError(null);
@@ -59,8 +59,8 @@ function useTaskConversationActions(
         try {
             // The adjustment continues the NEWEST run — it is the one that is finished and
             // carries the session the child inherits. No executor on the body: the board binds
-            // the follow-up to the executor that ran the task.
-            const result = await tasks.actions.followUp(latest.id, command, files);
+            // the follow-up to the executor that ran the task; only its model may change.
+            const result = await tasks.actions.followUp(latest.id, command, files, model);
             if (generation.current !== atStart) return result.error;
             if (result.error !== null) {
                 // Said inside the composer, beside the draft it refused — a 403 FORBIDDEN too.

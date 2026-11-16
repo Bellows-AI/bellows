@@ -63,6 +63,8 @@ export function job(overrides: Partial<Job> = {}): Job {
         output: null,
         repo: null,
         executor: null,
+        agentModel: null,
+        resolvedModel: null,
         workflowName: null,
         workflowNode: null,
         mode: OBJECTIVE_MODE,
