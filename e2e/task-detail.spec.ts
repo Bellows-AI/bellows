@@ -519,15 +519,23 @@ test.describe('the task detail page', () => {
             await page.setViewportSize({ width, height: 1000 });
             await page.goto(`/tasks/${publishedThread[0]!.id}`);
             await expect(page.locator('.task-controls')).toBeVisible();
-            const overflow = await page.evaluate(
-                () => document.documentElement.scrollWidth - document.documentElement.clientWidth
-            );
+            // One read, so a banner that lands between separate reads cannot shift one box and not another.
+            const { overflow, rail, controls, conversation, head, appBar } = await page.evaluate(() => {
+                const box = (selector: string) => {
+                    const rect = document.querySelector(selector)?.getBoundingClientRect();
+                    return rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : null;
+                };
+                return {
+                    overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+                    rail: box('.task-rail'),
+                    controls: box('.task-controls'),
+                    conversation: box('.task-conversation'),
+                    head: box('.task-head'),
+                    appBar: box('header.appbar'),
+                };
+            });
             expect(overflow, `${width}px overflows by ${overflow}px`).toBeLessThanOrEqual(0);
 
-            const rail = await page.locator('.task-rail').boundingBox();
-            const controls = await page.locator('.task-controls').boundingBox();
-            const conversation = await page.locator('.task-conversation').boundingBox();
-            const head = await page.locator('.task-head').boundingBox();
             if (width < 1024) {
                 // DOM order: the head, then the rail (controls first), then the conversation.
                 expect(head!.y + head!.height).toBeLessThanOrEqual(rail!.y + 1);
@@ -535,7 +543,6 @@ test.describe('the task detail page', () => {
             } else {
                 // The rail is a 340px right column from the app bar down, beside the head and the
                 // conversation; the controls tile leads it.
-                const appBar = await page.locator('header.appbar').boundingBox();
                 expect(Math.round(rail!.width)).toBe(340);
                 expect(conversation!.x + conversation!.width).toBeLessThanOrEqual(rail!.x + 1);
                 expect(head!.x + head!.width).toBeLessThanOrEqual(rail!.x + 1);
