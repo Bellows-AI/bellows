@@ -149,3 +149,55 @@ describe('the No model yet banner', () => {
         expect(document.querySelector('main#main-content > .no-model-banner')).toBeTruthy();
     });
 });
+
+/**
+ * The shell's settled signal: `data-no-model` on `.shell` reads `pending` until the banner has decided,
+ * then `shown` or `hidden` — what a whole-page e2e check waits on before it walks or measures.
+ */
+describe('the shell says when the No model yet decision is made', () => {
+    const shellState = () => document.querySelector('.shell')?.getAttribute('data-no-model');
+
+    it('pending while the reads load, then hidden once the workspace confirms a profile', async () => {
+        let release: (payload: WorkspacePayload) => void = () => {};
+        const workspace = new Promise<WorkspacePayload>((resolve) => {
+            release = resolve;
+        });
+        stubFetch((call: FetchCall) => {
+            if (call.url === '/api/auth/me') return memberSession({ deploymentMode: 'self-hosted' });
+            if (call.url === '/api/workspace') return workspace;
+            if (call.url === '/api/model-setup') return NONE;
+        });
+        renderApp('/settings');
+        await waitFor(() => expect(shellState()).toBe('pending'));
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        });
+        expect(shellState()).toBe('pending');
+        await act(async () => {
+            release(PROFILE);
+        });
+        await waitFor(() => expect(shellState()).toBe('hidden'));
+        expect(banner()).toBeNull();
+    });
+
+    it('hidden after a confirmed key', async () => {
+        board(SAVED);
+        renderApp('/settings');
+        await waitFor(() => expect(shellState()).toBe('hidden'));
+        expect(banner()).toBeNull();
+    });
+
+    it('shown after a confirmed none', async () => {
+        board(NONE);
+        renderApp('/settings');
+        await waitFor(() => expect(shellState()).toBe('shown'));
+        expect(banner()).toBeTruthy();
+    });
+
+    it('hidden after a failed read', async () => {
+        board({ status: 500 });
+        renderApp('/settings');
+        await waitFor(() => expect(shellState()).toBe('hidden'));
+        expect(banner()).toBeNull();
+    });
+});

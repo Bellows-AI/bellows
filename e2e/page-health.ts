@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test';
+import { expect, type Page } from '@playwright/test';
 import type { Theme } from './screenshot-matrix.js';
 
 /**
@@ -23,4 +23,15 @@ export function watchConsole(page: Page): string[] {
 export async function useTheme(page: Page, theme: Theme): Promise<void> {
     await page.emulateMedia({ colorScheme: theme });
     await page.addInitScript((t) => localStorage.setItem('factory.theme', t), theme);
+}
+
+/**
+ * Waits until the shell has decided the "No model yet" banner (`data-no-model` leaves `pending`), so a
+ * whole-page walk, measurement or screenshot never runs ahead of a banner about to land on top of the
+ * page. A no-op on a page that renders no shell. The self-hosted decision is two reads in sequence.
+ */
+export async function shellSettled(page: Page): Promise<void> {
+    const shell = page.locator('.shell');
+    if ((await shell.count()) === 0) return;
+    await expect(shell).not.toHaveAttribute('data-no-model', 'pending', { timeout: 60_000 });
 }

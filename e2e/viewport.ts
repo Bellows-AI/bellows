@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test';
+import { shellSettled } from './page-health.js';
 
 /** The elements allowed to scroll horizontally, by the design system's own account of them:
     the table wrap, the chart frame, the log wells, and text entry. Anything
@@ -19,6 +20,7 @@ export async function pageOverflow(page: Page): Promise<{ inner: number; documen
 /** No page renders wider than its own viewport — shared by every spec that walks narrow widths,
     so a fix to the check applies everywhere at once instead of drifting between copies. */
 export async function noHorizontalOverflow(page: Page): Promise<void> {
+    await shellSettled(page);
     const overflow = await pageOverflow(page);
     expect(overflow.inner, 'document is wider than the viewport').toBeLessThanOrEqual(0);
     expect(overflow.document, 'document overflows horizontally').toBeLessThanOrEqual(0);

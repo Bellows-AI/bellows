@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { BATCH_DETAIL_STATES, BatchBoard } from './fixtures/batch-board.js';
-import { FORBIDDEN, useTheme, watchConsole } from './page-health.js';
+import { FORBIDDEN, shellSettled, useTheme, watchConsole } from './page-health.js';
 import { COMPOSER_SHOT, DASHBOARD_SHOT, ENTRY_SHOTS, INBOX_SHOT, SETTINGS_SHOTS, SLOW, type Shot } from './routes.js';
 import { THEMES } from './screenshot-matrix.js';
 import { controlsOutsideViewport, noHorizontalOverflow } from './viewport.js';
@@ -53,6 +53,7 @@ async function walk(page: Page, cell: Cell, width: number, theme: (typeof THEMES
     const ready = await cell.shot.open(page);
     await expect(ready).toBeVisible({ timeout: SLOW });
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    await shellSettled(page);
     await page.evaluate(() => document.fonts.ready);
     await assertFits(page, width);
 }

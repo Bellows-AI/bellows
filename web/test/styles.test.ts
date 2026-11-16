@@ -387,6 +387,12 @@ describe('the stylesheet', () => {
     });
 });
 
+describe("the shell's settled signal", () => {
+    it('never styles data-no-model: it tells e2e checks the banner has decided, and changes nothing users see', () => {
+        expect(stripComments(shippedCss())).not.toMatch(/data-no-model/);
+    });
+});
+
 describe('the stylesheet — sizing and motion (#189)', () => {
     it('takes page widths from width tokens', () => {
         const css = stripComments(shippedCss());

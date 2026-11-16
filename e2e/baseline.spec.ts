@@ -36,6 +36,7 @@ import {
     shotFile,
     threadShot,
 } from './routes.js';
+import { shellSettled } from './page-health.js';
 import { THEMES, VIEWPORTS } from './screenshot-matrix.js';
 
 /**
@@ -145,6 +146,7 @@ test.describe('baseline gallery', { tag: '@nightly' }, () => {
                     await expect(ready).toBeVisible({ timeout: SLOW });
                     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
                     await page.waitForLoadState('networkidle');
+                    await shellSettled(page);
                     await page.evaluate(() => document.fonts.ready);
                     await page.screenshot({ path: `${OUT}/${file}`, fullPage: true, animations: 'disabled' });
                 });

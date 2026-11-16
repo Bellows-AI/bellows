@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { type UseModelSetup, useModelSetup } from '../api/useModelSetup.js';
 import { useSession } from '../api/useSession.js';
 import { useWorkspace } from '../api/useWorkspace.js';
-import { showNoModel } from '../onboarding/no-model.js';
+import { type NoModelState, noModelState } from '../onboarding/no-model.js';
 import { Icon } from './Icon.js';
 
 /** No workspace read: it is asked for only where it decides the answer. */
@@ -15,6 +15,15 @@ function useFocusRead(refresh: () => void) {
         window.addEventListener('focus', refresh);
         return () => window.removeEventListener('focus', refresh);
     }, [refresh]);
+}
+
+/** Tells the shell the decision once it is committed, so its `data-no-model` never runs ahead of the DOM. */
+type OnState = (state: NoModelState) => void;
+
+function useReport(state: NoModelState, onState: OnState | undefined) {
+    useEffect(() => {
+        onState?.(state);
+    }, [state, onState]);
 }
 
 function Warning() {
@@ -29,25 +38,30 @@ function Warning() {
 }
 
 /** Self-hosted with no key the board can see: the workspace says whether a profile or agent default runs tasks anyway. */
-function SelfHostedNoModel({ modelSetup }: { modelSetup: UseModelSetup }) {
+function SelfHostedNoModel({ modelSetup, onState }: { modelSetup: UseModelSetup; onState?: OnState | undefined }) {
     const workspace = useWorkspace();
     useFocusRead(workspace.refresh);
-    return showNoModel({ mode: 'self-hosted', modelSetup, workspace }) ? <Warning /> : null;
+    const state = noModelState({ mode: 'self-hosted', modelSetup, workspace });
+    useReport(state, onState);
+    return state === 'shown' ? <Warning /> : null;
 }
 
 /**
  * The shell's "No model yet" warning, above every app page while a task could not run (`showNoModel`:
  * cloud on a confirmed `effective: null`; self-hosted only when no profile or agent default exists
  * either). A read in flight or a failed one shows nothing, and a save through `useModelSetup` anywhere
- * re-reads it.
+ * re-reads it. `onState` hears `pending` until that decision is made, then `shown` or `hidden`.
  */
-export function NoModelBanner() {
+export function NoModelBanner({ onState }: { onState?: OnState }) {
     const modelSetup = useModelSetup();
-    const { session } = useSession();
+    const { session, loading } = useSession();
     useFocusRead(modelSetup.refresh);
     const mode = session?.deploymentMode ?? null;
-    if (mode === 'self-hosted' && modelSetup.error === null && modelSetup.data?.effective === null) {
-        return <SelfHostedNoModel modelSetup={modelSetup} />;
-    }
-    return showNoModel({ mode, modelSetup, workspace: UNREAD }) ? <Warning /> : null;
+    const selfHosted = mode === 'self-hosted' && modelSetup.error === null && modelSetup.data?.effective === null;
+    const decided = noModelState({ mode, modelSetup, workspace: UNREAD });
+    // No session once its read is over: nothing will say which mode, so nothing is said.
+    const state = mode === null && !loading && decided === 'pending' ? 'hidden' : decided;
+    useReport(state, selfHosted ? undefined : onState);
+    if (selfHosted) return <SelfHostedNoModel modelSetup={modelSetup} onState={onState} />;
+    return state === 'shown' ? <Warning /> : null;
 }
