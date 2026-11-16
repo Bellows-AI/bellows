@@ -14,6 +14,8 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  */
 const HELPER = join(ROOT, 'docker/skills/factory-task-title/task-title.cjs');
 const PAIR_HELPER = join(ROOT, 'docker/executor-common/attempt-pair.cjs');
+/** The one board-call path, injected from the repo as the image bakes it at /usr/local/bin/board-call.cjs. */
+const BOARD_CALL = join(ROOT, 'docker/executor-common/board-call.cjs');
 const require_ = createRequire(import.meta.url);
 
 interface Deps {
@@ -28,6 +30,7 @@ interface Deps {
     stdout: (text: string) => void;
     stderr: (text: string) => void;
     deadlineMs: number;
+    board: unknown;
 }
 const helper = require_(HELPER) as { run: (argv: string[], deps: Deps) => Promise<number> };
 const { currentPair } = require_(PAIR_HELPER) as { currentPair: Deps['pair'] };
@@ -85,6 +88,7 @@ async function call(argv: string[], url: string | undefined, over: Partial<Deps>
         stdout: (t) => (out += t),
         stderr: (t) => (err += t),
         deadlineMs: DEADLINE_MS,
+        board: require_(BOARD_CALL),
         ...over,
     };
     const started = Date.now();

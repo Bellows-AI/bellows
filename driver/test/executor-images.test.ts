@@ -1366,6 +1366,28 @@ describe('the shared executor skills', () => {
         }
     });
 
+    // skills are copied to /usr/local/share/factory-skills/, so they reach the shared board call by its baked path.
+    it('ships the board call one shared file, root-owned and executable, in both images', () => {
+        expect(read('docker/executor-common/board-call.cjs').length).toBeGreaterThan(0);
+        for (const image of ['claude', 'opencode']) {
+            const dockerfile = read(`docker/${image}-executor/Dockerfile`);
+            expect(dockerfile, image).toContain('COPY --from=common board-call.cjs /usr/local/bin/board-call.cjs');
+            expect(dockerfile, image).toMatch(/chmod 0755 [^\n]*\/usr\/local\/bin\/board-call\.cjs/);
+        }
+        const skills = readdirSync(join(ROOT, SKILLS), { recursive: true, encoding: 'utf8' }).filter((file) =>
+            file.endsWith('.cjs')
+        );
+        const requiring = skills.filter((file) => read(`${SKILLS}/${file}`).includes('board-call.cjs'));
+        expect(requiring.sort()).toEqual([
+            'factory-jira/jira.cjs',
+            'factory-linear/linear.cjs',
+            'factory-task-title/task-title.cjs',
+        ]);
+        for (const file of requiring) {
+            expect(read(`${SKILLS}/${file}`), file).toContain("require('/usr/local/bin/board-call.cjs')");
+        }
+    });
+
     it('ships the runtime connection ask one shared file, root-owned and executable, in both images', () => {
         expect(read('docker/executor-common/connection-ask.cjs').length).toBeGreaterThan(0);
         for (const image of ['claude', 'opencode']) {

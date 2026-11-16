@@ -17,6 +17,8 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 const HELPER = join(ROOT, 'docker/skills/factory-jira/jira.cjs');
 const BROKER = join(ROOT, 'docker/executor-common/credential-broker.cjs');
+/** The one board-call path, injected from the repo as the image bakes it at /usr/local/bin/board-call.cjs. */
+const BOARD_CALL = join(ROOT, 'docker/executor-common/board-call.cjs');
 const require_ = createRequire(import.meta.url);
 
 interface Result {
@@ -43,6 +45,7 @@ interface Deps {
     stdout: (text: string) => void;
     stderr: (text: string) => void;
     deadlineMs: number;
+    board: unknown;
 }
 const helper = require_(HELPER) as {
     run: (argv: string[], deps: Deps) => Promise<number>;
@@ -249,6 +252,7 @@ async function scenario(
                 err += text;
             },
             deadlineMs: options.deadlineMs ?? 3000,
+            board: require_(BOARD_CALL),
             ...overrides,
         };
         const code = await helper.run(argv, deps);

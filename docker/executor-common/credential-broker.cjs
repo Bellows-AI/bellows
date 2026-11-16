@@ -20,6 +20,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { currentPair } = require('./attempt-pair.cjs');
+const { boardCall, createBudget, readPair, REQUEST_TIMEOUT_MS } = require('./board-call.cjs');
 
 /** Memory-backed in both executors: docker `--tmpfs`, kubernetes `emptyDir: {medium: Memory}`; the agent container alone. */
 const CACHE_DIR = '/run/factory-credentials';
@@ -30,14 +31,13 @@ const RENEW_SKEW_MS = 5 * 60 * 1000;
 const NULL_EXPIRY_CAP_MS = 10 * 60 * 1000;
 /** All requests, waits and backoff of one call: an unreachable board must not hang a push. */
 const DEADLINE_MS = 30_000;
-const REQUEST_TIMEOUT_MS = 10_000;
 /** `clear` revokes inside this: the entrypoint's exit stays inside the docker-stop and kubernetes grace periods. */
 const REVOKE_DEADLINE_MS = 3000;
-const BACKOFF_MS = 500;
-const BACKOFF_MAX_MS = 4000;
 const EXIT_INTEGRATION_REQUIRED = 3;
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
+const HTTP_OK = 200;
+const HTTP_REDIRECT = 300;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
 const HTTP_CONFLICT = 409;
@@ -128,85 +128,52 @@ function credentialOf(body) {
     };
 }
 
-const urlOf = (deps, pair, key) => {
-    const base = `${deps.env.FACTORY_STATS_URL.replace(/\/+$/, '')}/api/jobs/${pair.jobId}/credentials`;
-    return key === GITHUB_KEY ? `${base}/github` : `${base}/connections/${key.slice('connection:'.length)}`;
-};
-
-const pairHeaders = (pair) => ({ 'x-factory-job-id': pair.jobId, 'x-factory-job-lease-token': pair.leaseToken });
-
 /** `Retry-After` in seconds, as milliseconds; null where absent or not a plain count. */
-function retryAfterMs(response) {
-    const value = response.headers.get('retry-after');
+function retryAfterMs(headers) {
+    const value = headers.get('retry-after');
     return value && /^\d{1,6}$/.test(value.trim()) ? Number(value) * MS_PER_SECOND : null;
 }
 
-/** One ask of the board: a credential, a stop, or `{retry, waitMs}`. */
-async function ask(deps, pair, key, remainingMs) {
-    let response;
-    try {
-        response = await deps.fetch(urlOf(deps, pair, key), {
-            method: 'POST',
-            headers: pairHeaders(pair),
-            signal: deps.signal(Math.min(REQUEST_TIMEOUT_MS, remainingMs)),
-        });
-    } catch {
-        return { retry: true };
+/** The credential routes' answer: a credential, a stop, or a retry (after `Retry-After` where the board names one). */
+const classifyFor = (key) => (answer) => {
+    if (answer.status === HTTP_UNAUTHORIZED || answer.status === HTTP_FORBIDDEN) return { done: { stop: 'refused' } };
+    if (answer.status === HTTP_CONFLICT) {
+        if (key === GITHUB_KEY) return { done: { stop: 'no_app' } };
+        return { done: { stop: 'integration_required', outcome: answer.json?.outcome ?? null } };
     }
-    if (response.status === HTTP_UNAUTHORIZED || response.status === HTTP_FORBIDDEN) return { stop: 'refused' };
-    if (response.status === HTTP_CONFLICT) {
-        if (key === GITHUB_KEY) return { stop: 'no_app' };
-        const body = await response.json().catch(() => ({}));
-        return { stop: 'integration_required', outcome: body?.outcome ?? null };
+    if (answer.status === HTTP_TOO_MANY || answer.status >= HTTP_SERVER_ERROR) {
+        return { retry: true, waitMs: retryAfterMs(answer.headers) };
     }
-    if (response.status === HTTP_TOO_MANY || response.status >= HTTP_SERVER_ERROR) {
-        return { retry: true, waitMs: retryAfterMs(response) };
-    }
-    if (!response.ok) return { retry: true };
-    const credential = credentialOf(await response.json().catch(() => null));
-    return credential ? { credential } : { retry: true };
-}
+    if (answer.status < HTTP_OK || answer.status >= HTTP_REDIRECT) return { retry: true };
+    const credential = credentialOf(answer.json);
+    return credential ? { done: { credential } } : { retry: true };
+};
+
+const pathOf = (key) => (key === GITHUB_KEY ? '/credentials/github' : `/credentials/connections/${key.slice('connection:'.length)}`);
+
+const UNSETTLED = { no_pair: 'no_pair', rate_limited: 'rate_limited', deadline: 'unreachable' };
 
 /** The credential for a key: the cached one while it has more than the skew left, else a renewed one. */
 async function obtain(deps, key) {
-    const { env } = deps;
-    // Read on every call and on every try: an adopting claim rotates the lease under a container whose env stays
-    // as it was, and a try made under the superseded lease is answered pending until the relayed pair is read.
-    if (!env.FACTORY_STATS_URL) return fail(deps, 'no_pair');
-    let pair = await deps.pair(env);
-    if (!pair.jobId || !pair.leaseToken) return fail(deps, 'no_pair');
+    // Read on every call, and by `boardCall` on every try: an adopting claim rotates the lease under a container
+    // whose env stays as it was, and a try made under the superseded lease is answered pending until the relayed
+    // pair is read.
+    const pair = await readPair(deps);
+    if (!pair) return fail(deps, 'no_pair');
     const cached = readEntry(deps, pair, key);
     if (cached) {
         const { token, expiresAt, scopes, resource } = cached;
         return { ok: true, token, expiresAt, scopes, resource };
     }
     // A helper with its own wall-clock budget passes the part it has left, never a fresh one.
-    const deadline = deps.now() + (deps.deadlineMs ?? DEADLINE_MS);
-    let backoff = BACKOFF_MS;
-    let tried = false;
-    while (deps.now() < deadline) {
-        if (tried) {
-            pair = await deps.pair(env);
-            if (!pair.jobId || !pair.leaseToken) return fail(deps, 'no_pair');
-            if (deps.now() >= deadline) break;
-        }
-        tried = true;
-        const answer = await ask(deps, pair, key, deadline - deps.now());
-        if (answer.credential) {
-            const { token, expiresAt, scopes, resource } = answer.credential;
-            writeEntry(deps, pair, key, { token, expiresAt, scopes, resource });
-            return answer.credential;
-        }
-        if (answer.stop) return fail(deps, answer.stop, answer.outcome === undefined ? {} : { outcome: answer.outcome });
-        const wait = answer.waitMs ?? backoff;
-        if (answer.waitMs !== null && answer.waitMs !== undefined && deps.now() + wait >= deadline) {
-            return fail(deps, 'rate_limited');
-        }
-        if (deps.now() + wait >= deadline) break;
-        await deps.sleep(wait);
-        backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
-    }
-    return fail(deps, 'unreachable');
+    const budget = createBudget({ now: deps.now, baseMs: deps.deadlineMs ?? DEADLINE_MS });
+    const result = await boardCall(deps, budget, { method: 'POST', path: pathOf(key), classify: classifyFor(key) });
+    if (!result.ok) return fail(deps, UNSETTLED[result.reason]);
+    const answer = result.value;
+    if (answer.stop) return fail(deps, answer.stop, answer.outcome === undefined ? {} : { outcome: answer.outcome });
+    const { token, expiresAt, scopes, resource } = answer.credential;
+    writeEntry(deps, result.pair, key, { token, expiresAt, scopes, resource });
+    return answer.credential;
 }
 
 /**
@@ -247,18 +214,16 @@ function listEntries(deps) {
     }
 }
 
-/** One revoke of one token, within the revoke cap. Whatever the answer, the caller removes its entry. */
-async function revoke(deps, pair, token) {
-    try {
-        await deps.fetch(`${deps.env.FACTORY_STATS_URL.replace(/\/+$/, '')}/api/jobs/${pair.jobId}/credentials/github/revoke`, {
-            method: 'POST',
-            headers: { ...pairHeaders(pair), 'content-type': 'application/json' },
-            body: JSON.stringify({ token }),
-            signal: deps.signal(REVOKE_DEADLINE_MS),
-        });
-    } catch {
-        // The token then lives until its own expiry; the entry is removed regardless.
-    }
+/** One revoke of one token, within the revoke cap, never retried. Whatever the answer, the caller removes its entry. */
+async function revoke(deps, token) {
+    // A failure leaves the token to its own expiry; the entry is removed regardless.
+    await boardCall(deps, createBudget({ now: deps.now, baseMs: REVOKE_DEADLINE_MS }), {
+        method: 'POST',
+        path: '/credentials/github/revoke',
+        body: { token },
+        classify: () => ({ done: true }),
+        once: true,
+    });
 }
 
 /**
@@ -278,10 +243,7 @@ async function clear(deps) {
             if (!(error && error.code === 'ENOENT')) unreadable = true;
         }
     }
-    const pair = tokens.length && deps.env.FACTORY_STATS_URL ? await deps.pair(deps.env) : null;
-    if (pair?.jobId && pair.leaseToken) {
-        for (const token of new Set(tokens)) await revoke(deps, pair, token);
-    }
+    for (const token of new Set(tokens)) await revoke(deps, token);
     for (const name of names) fs.rmSync(path.join(deps.dir, name), { force: true });
     if (unreadable) {
         deps.stderr('credential-broker: the credential cache was unreadable; it was removed and nothing was revoked.');

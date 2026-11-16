@@ -147,7 +147,7 @@ function nextPath(op, json, previousPath) {
 
 // ---- The wall-clock deadline and the wire ----
 
-const remaining = (ctx) => ctx.end - ctx.deps.now();
+const remaining = (ctx) => ctx.budget.remaining();
 
 /** The wait before the next try; null when the deadline cannot cover it. */
 async function pause(ctx, ms) {
@@ -207,43 +207,50 @@ async function wire(ctx, url, init) {
 // ---- The board: connection list and operation receipts ----
 
 /**
- * A board request retried inside the deadline. `accept(res)` returns a value to stop, null to try again
- * (an answer that is not the one needed), or throws a Stop. A refusal of the pair is final.
+ * A board request through the runner's one board-call path (docker/executor-common/board-call.cjs), retried inside
+ * the deadline. `accept(res)` returns a value to stop, null to try again (an answer that is not the one needed), or
+ * throws a Stop. A refusal of the pair is final.
  */
 async function board(ctx, method, path, body, accept) {
-    const { env } = ctx.deps;
-    let backoff = BACKOFF_MS;
-    while (remaining(ctx) > 0) {
-        const pair = await ctx.deps.pair(env);
-        if (!env.FACTORY_STATS_URL || !pair.jobId || !pair.leaseToken) {
+    const result = await ctx.deps.board.boardCall(ctx.deps, ctx.budget, {
+        method,
+        path,
+        body,
+        headers: { accept: 'application/json' },
+        requestTimeoutMs: REQUEST_TIMEOUT_MS,
+        backoffMs: BACKOFF_MS,
+        backoffMaxMs: BACKOFF_MAX_MS,
+        classify: (res) => {
+            if (res.status === HTTP_UNAUTHORIZED || res.status === HTTP_FORBIDDEN) {
+                return {
+                    done: {
+                        stop: new Stop(
+                            EXIT_FAILED,
+                            'refused',
+                            'board_refused',
+                            'jira: the board refused this attempt: it holds a lease it no longer holds, or its task is no longer authorized. Each call reads the current pair: retry once, and if a fresh call is refused the same way, report it.'
+                        ),
+                    },
+                };
+            }
+            if (res.status === HTTP_TOO_MANY) return { retry: true, waitMs: retryAfterMs(res.headers) };
+            if (res.status >= HTTP_SERVER_ERROR) return { retry: true };
+            try {
+                const value = accept(res);
+                return value === null ? { retry: true } : { done: { value } };
+            } catch (error) {
+                return error instanceof Stop ? { done: { stop: error } } : { retry: true };
+            }
+        },
+    });
+    if (!result.ok) {
+        if (result.reason === 'no_pair') {
             throw new Stop(EXIT_FAILED, 'unavailable', 'no_pair', 'jira: this container holds no attempt credential, so the board cannot be asked.');
         }
-        const url = `${env.FACTORY_STATS_URL.replace(/\/+$/, '')}/api/jobs/${pair.jobId}${path}`;
-        const headers = { 'x-factory-job-id': pair.jobId, 'x-factory-job-lease-token': pair.leaseToken, accept: 'application/json' };
-        if (body !== undefined) headers['content-type'] = 'application/json';
-        let wait = backoff;
-        try {
-            const res = await wire(ctx, url, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-            if (res.status === HTTP_UNAUTHORIZED || res.status === HTTP_FORBIDDEN) {
-                throw new Stop(
-                    EXIT_FAILED,
-                    'refused',
-                    'board_refused',
-                    'jira: the board refused this attempt: it holds a lease it no longer holds, or its task is no longer authorized. Each call reads the current pair: retry once, and if a fresh call is refused the same way, report it.'
-                );
-            }
-            if (res.status === HTTP_TOO_MANY) wait = retryAfterMs(res.headers) ?? backoff;
-            else if (res.status < HTTP_SERVER_ERROR) {
-                const value = accept(res);
-                if (value !== null) return value;
-            }
-        } catch (error) {
-            if (error instanceof Stop) throw error;
-        }
-        if (!(await pause(ctx, wait))) break;
-        backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
+        throw deadline();
     }
-    throw deadline();
+    if (result.value.stop) throw result.value.stop;
+    return result.value.value;
 }
 
 function validEntry(entry) {
@@ -662,7 +669,7 @@ async function execute(ctx, argv) {
 
 /** Runs one command; every exit prints its closed outcome on stdout and its guidance on stderr, never a token. */
 async function run(argv, deps) {
-    const ctx = { deps, end: deps.now() + deps.deadlineMs };
+    const ctx = { deps, budget: deps.board.createBudget({ now: deps.now, baseMs: deps.deadlineMs }) };
     try {
         return await execute(ctx, argv);
     } catch (error) {
@@ -677,12 +684,13 @@ async function run(argv, deps) {
     }
 }
 
-/** The real process's dependencies; the broker, the pair helper and the connection ask are baked at fixed paths in both images. */
+/** The real process's dependencies; the broker, the pair helper, the board call and the connection ask are baked at fixed paths in both images. */
 function defaultDeps(env = process.env) {
     const broker = require('/usr/local/bin/credential-broker.cjs');
     const { currentPair } = require('/usr/local/bin/attempt-pair.cjs');
     return {
         env,
+        board: require('/usr/local/bin/board-call.cjs'),
         now: Date.now,
         fetch: globalThis.fetch,
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
