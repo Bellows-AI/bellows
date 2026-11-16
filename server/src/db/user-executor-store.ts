@@ -195,6 +195,8 @@ export interface UserExecutorStore {
     setAgentDefault(owner: string | null, value: AgentDefault): Promise<void>;
     /** `setAgentDefault` inside a transaction the caller holds, so a save can write it beside other rows. */
     setAgentDefaultInTx(tx: TransactionSql, owner: string | null, value: AgentDefault): Promise<void>;
+    /** The agent default `owner` names, read and locked inside a transaction the caller holds; null when unset. */
+    agentDefaultInTx(tx: TransactionSql, owner: string | null): Promise<AgentDefault | null>;
     /** Removes the agent default `owner` names (null: the organization's). False when there was none. */
     deleteAgentDefault(owner: string | null): Promise<boolean>;
 }

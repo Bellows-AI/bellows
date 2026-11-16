@@ -76,6 +76,14 @@ describe('the route classes (what a scoped caller may do)', () => {
         );
     });
 
+    // The model setup names its scope in the body: the class admits a member, the handler refuses a member's org save.
+    it('the model setup reads as a member and saves as a browser act', () => {
+        expect(classOf('GET', '/api/model-setup')).toBe('read');
+        expect(roleOf('GET', '/api/model-setup')).toBe('member');
+        expect(classOf('PUT', '/api/model-setup')).toBe('none');
+        expect(roleOf('PUT', '/api/model-setup')).toBe('member');
+    });
+
     // The operator spans every organization: its rows are pinned the same way, and none is reachable by a scoped grant.
     it('operator is exactly the organization status, delete and driver credential surface, and never a scoped route', () => {
         const operator = ROUTE_CLASSES.filter((row) => row[3] === 'operator');

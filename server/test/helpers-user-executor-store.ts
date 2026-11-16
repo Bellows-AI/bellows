@@ -52,6 +52,12 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
     /** Agent defaults keyed by owner: a member's id, or `''` for the organization's row. */
     const agentDefaults = new Map<string, AgentDefault>();
     const ownerKey = (owner: string | null) => owner ?? '';
+    /** The SQL's upsert: a write without a provider keeps the one the row recorded. */
+    const writeAgentDefault = (owner: string | null, value: AgentDefault) => {
+        const provider = value.provider ?? agentDefaults.get(ownerKey(owner))?.provider;
+        const row = { agentType: value.agentType, model: value.model };
+        agentDefaults.set(ownerKey(owner), provider === undefined ? row : { ...row, provider });
+    };
     let nextId = 1;
     const at = () => new Date().toISOString();
     const uuid = () => {
@@ -280,11 +286,15 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
         },
 
         async setAgentDefault(owner, value) {
-            agentDefaults.set(ownerKey(owner), { agentType: value.agentType, model: value.model });
+            writeAgentDefault(owner, value);
         },
 
         async setAgentDefaultInTx(_tx, owner, value) {
-            agentDefaults.set(ownerKey(owner), { agentType: value.agentType, model: value.model });
+            writeAgentDefault(owner, value);
+        },
+
+        async agentDefaultInTx(_tx, owner) {
+            return agentDefaults.get(ownerKey(owner)) ?? null;
         },
 
         async deleteAgentDefault(owner) {

@@ -37,6 +37,7 @@ export function memberSession(
         mcp: false,
         batches: false,
         deploymentMode: 'self-hosted',
+        platformModel: false,
         ...rest,
     };
 }
