@@ -613,15 +613,26 @@ describe.skipIf(!enabled)('the recorded model is the one the runner uses', () =>
         expect(await profile.jobs.get(profile.id)).toMatchObject({ resolvedModel: 'P-env' });
     });
 
-    it('a Claude Code task with neither records the config model', async () => {
+    it('a Claude Code task with neither pins the config model, so a driver-forwarded ANTHROPIC_MODEL cannot win', async () => {
         const { executors, jobs } = withEnv();
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: { model: 'P' } }]);
         const { id } = await mustCreate(
             jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' })
         );
         const claim = await jobs.claim('w1', LEASE_SECONDS);
-        expect(claim?.env ?? {}).not.toHaveProperty('ANTHROPIC_MODEL');
+        expect(claim?.env?.ANTHROPIC_MODEL).toBe('P');
         expect(await jobs.get(id)).toMatchObject({ resolvedModel: 'P' });
+    });
+
+    it('a Claude Code task where nothing names a model sends none and records none', async () => {
+        const { executors, jobs } = withEnv();
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        const { id } = await mustCreate(
+            jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' })
+        );
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.env ?? {}).not.toHaveProperty('ANTHROPIC_MODEL');
+        expect(await jobs.get(id)).toMatchObject({ resolvedModel: null });
     });
 
     it('an OpenCode task reads no model env: its config model is recorded, and the env is left as it is', async () => {

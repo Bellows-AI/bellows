@@ -119,7 +119,7 @@ export async function resolveClaimExecutor(
     const profileConfig: unknown = source?.config;
     claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType, deploymentMode);
     // Claude Code takes `$ANTHROPIC_MODEL` over its settings' `model`: a chosen model rides under that name too, so no
-    // member or operator value outranks it (the claim env wins over the driver's RUNNER_ENV).
+    // member value outranks it.
     if (executorType === CLAUDE_CODE && row.agent_model !== null) {
         claimEnv = { ...claimEnv, [CLAUDE_MODEL_ENV]: row.agent_model };
     }
@@ -129,7 +129,11 @@ export async function resolveClaimExecutor(
     // sentence before anything spawns; a throw here would roll the claim back and re-claim it forever.
     const refusal = deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType) : null;
     if (refusal !== null) return { claimEnv: undefined, executorType, executorRefusal: refusal, runModel: null };
-    return { claimEnv, executorType, executorRefusal, runModel: runModelOf(source, executorType, claimEnv) };
+    const runModel = runModelOf(source, executorType, claimEnv);
+    // And whatever resolved is pinned there, so the model recorded is the one the CLI runs: the claim env wins over an
+    // `ANTHROPIC_MODEL` the driver forwards (RUNNER_ENV), which the board cannot see. Nothing resolved sends nothing.
+    if (executorType === CLAUDE_CODE && runModel !== null) claimEnv = { ...claimEnv, [CLAUDE_MODEL_ENV]: runModel };
+    return { claimEnv, executorType, executorRefusal, runModel };
 }
 
 /**
