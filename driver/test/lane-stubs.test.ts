@@ -69,7 +69,7 @@ describe('the lane stub executor images', () => {
         }
         // The credential helper requires attempt-pair.cjs beside it: copying one without the other fails at require.
         expect(script).toContain(
-            'cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs "$work/github/"'
+            'cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/board-call.cjs "$work/github/"'
         );
         expect(dockerfile(script, '"$work/github/Dockerfile"')).toContain(
             'COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs\\n'
@@ -89,10 +89,10 @@ describe('the lane stub executor images', () => {
         const line = dockerfile(script, '"$work/stub.Dockerfile"');
         expect(line).toContain(`${ENTRY}"sh","/stub.sh"]`);
         expect(script).toContain(
-            'cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/executor-common/skill-view.cjs docker/skills/factory-jira/jira.cjs docker/skills/factory-linear/linear.cjs docker/skills/factory-task-title/task-title.cjs "$work/"'
+            'cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/board-call.cjs docker/executor-common/connection-ask.cjs docker/executor-common/skill-view.cjs docker/skills/factory-jira/jira.cjs docker/skills/factory-linear/linear.cjs docker/skills/factory-task-title/task-title.cjs "$work/"'
         );
         expect(line).toContain(
-            'COPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs skill-view.cjs jira.cjs linear.cjs task-title.cjs /usr/local/bin/\\n'
+            'COPY github-credential.cjs credential-broker.cjs attempt-pair.cjs board-call.cjs connection-ask.cjs skill-view.cjs jira.cjs linear.cjs task-title.cjs /usr/local/bin/\\n'
         );
         // the stub's title branch calls the baked helper.
         expect(read('scripts/k8s-stub.sh')).toMatch(
@@ -102,6 +102,29 @@ describe('the lane stub executor images', () => {
         expect(script.indexOf('-f "$work/stub-runner.Dockerfile"')).toBeLessThan(
             script.indexOf('-f "$work/stub.Dockerfile"')
         );
+    });
+
+    // A helper requires its neighbours from /usr/local/bin (or `./` beside it there): a stub image that
+    // copies the helper without one of them fails only in the container, at require.
+    it('every helper a stub image bakes carries each runner module it requires', () => {
+        const copied = (script: string, cpNeedle: string): string[] => {
+            const line = script.split('\n').find((l) => l.startsWith('cp ') && l.includes(cpNeedle)) ?? '';
+            expect(line, cpNeedle).not.toBe('');
+            return line.split(/\s+/).filter((w) => w.endsWith('.cjs'));
+        };
+        const local = /require\(\s*'(?:\.\/|\/usr\/local\/bin\/)([\w.-]+\.cjs)'\s*\)/g;
+        for (const [lane, needle] of [
+            ['scripts/lanes/jobs/github-credential.sh', '"$work/github/"'],
+            ['scripts/test-k8s.sh', 'docker/skills/factory-task-title/task-title.cjs'],
+        ] as const) {
+            const sources = copied(readLaneScript(lane), needle);
+            const baked = new Set(sources.map((s) => s.split('/').pop()));
+            for (const source of sources) {
+                for (const [, dep] of read(source).matchAll(local)) {
+                    expect(baked, `${lane}: ${source} requires ${dep}`).toContain(dep);
+                }
+            }
+        }
     });
 
     it('test-k8s: every pod runs the stub by its pushed registry ref, never the bare host name', () => {
