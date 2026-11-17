@@ -78,7 +78,7 @@ See [Linear app](/self-host/linear-app).
 | `MCP_ENABLED` | | off | Turns on the MCP endpoint `POST /api/mcp`. Needs an https `PUBLIC_URL` (http is accepted only for a loopback `PUBLIC_URL` on a loopback `HOST`). Off, the endpoint answers 404. |
 | `MCP_TRUSTED_ORIGINS` | | none | Comma-separated exact http(s) origins, besides `PUBLIC_URL`, that may call MCP from a browser. No wildcards, paths or trailing slashes. |
 | `BATCHES_ENABLED` | | off | Turns on batches. Off, `/api/batches` answers 404 `BATCHES_DISABLED`, batch MCP tools are not listed, and the batch loops do not start. |
-| `DEPLOYMENT_MODE` | | `self-hosted` | `self-hosted` or `cloud`; any other value refuses to boot. Cloud refuses a Claude subscription OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) in executor settings and environment variables, and fails a task whose stored settings carry one. Cloud requires the `PLAN_DEFAULT_MAX_*` limits (below). The Helm chart (`deploymentMode`) refuses cloud without `telemetry.ingestToken`. |
+| `DEPLOYMENT_MODE` | | `self-hosted` | `self-hosted` or `cloud`; any other value refuses to boot. Cloud refuses a Claude subscription OAuth token (`CLAUDE_CODE_OAUTH_TOKEN`) in executor settings and environment variables, and fails a task whose stored settings carry one. Cloud requires the `PLAN_DEFAULT_MAX_*` limits (below). The Helm chart (`deploymentMode`) refuses cloud without `dashboard.admission.maxRunning`, `dashboard.admission.maxRunningPerOrg` and every `dashboard.planDefaults` value, and with `artifacts.retentionDays` set. |
 | `PLATFORM_MODEL_PROVIDED` | | off | Set `true` when you supply the model credential to runners yourself (in `RUNNER_ENV`). Members can then run on it without bringing a key, and onboarding offers that choice. It changes nothing the runners receive. The Helm chart value is `platformModelProvided`. |
 | `OPERATOR_GITHUB_IDS` | | none | Cloud only. Comma-separated numeric GitHub user ids of the board operator, who can list every organization and suspend, refuse or reactivate one ([`bellows operator`](/cli/commands)). Setting it on a self-hosted board refuses to boot. Helm: `dashboard.operatorGithubIds`. |
 
@@ -186,7 +186,7 @@ The driver reads only the environment. It has no database access and talks to th
 | --- | --- | --- | --- |
 | `CLAUDE_EXECUTOR_IMAGE` | | `claude-executor` | Image for Claude Code tasks. |
 | `OPENCODE_EXECUTOR_IMAGE` | | `opencode-executor` | Image for OpenCode tasks. |
-| `RUNNER_ENV` | | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names of driver environment variables forwarded to runners. Values never appear in a command line. Must not name `GITHUB_TOKEN` or `GH_TOKEN`. |
+| `RUNNER_ENV` | | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names of driver environment variables forwarded to runners. Values never appear in a command line. Must not name `GITHUB_TOKEN`, `GH_TOKEN`, `DRIVER_CREDENTIAL`, `DRIVER_CREDENTIAL_FILE` or `DRIVER_METRICS_TOKEN`. |
 | `RUNNER_SKIP_PERMISSIONS` | | off | Adds `--dangerously-skip-permissions`. Without it most headless jobs stall at a permission prompt. With it the agent runs anything inside the runner. |
 | `RUNNER_SERVICES` | | on | Starts the [services](/guides/services) a repo declares. `0` or `false` disables. |
 | `RUNNER_OTEL_ENDPOINT` | | `http://collector:4318` | OTLP endpoint given to runners. |
@@ -250,6 +250,8 @@ The board reads `RUNNER_CLASSES` too, for the class names and whether each has D
 RUNNER_CLASSES='{"standard":{"resources":{"limits":{"memory":"8Gi"}}},"sandbox":{"runtimeClassName":"kata","nodeSelector":{"pool":"sandbox"}}}'
 RUNNER_DEFAULT_CLASS=standard
 ```
+
+The bundled `docker-compose.yml` does not pass `RUNNER_CLASSES` or `RUNNER_DEFAULT_CLASS` from `.env` to the `dashboard` and `driver` services. To use classes with Compose, add both names to the `environment:` block of each.
 
 ### Kubernetes executor
 

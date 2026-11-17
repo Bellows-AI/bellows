@@ -1,0 +1,48 @@
+---
+title: "Organization status and plan limits"
+description: "What your organization's plan allows, what you see when a limit is reached, and what happens when an organization is suspended or deleted."
+---
+
+On Bellows Cloud each organization has a plan and a status. This page describes what you see. Every limit and its value is listed in [Limits](/reference/limits#organization-plan).
+
+## Plan limits
+
+Your plan sets how many tasks can run and queue, how long a run may take, how many tokens your runs may use in a period, and how much space attachments, run logs and transcripts may take. You do not have to watch these:
+
+- **Running tasks.** Tasks beyond your running limit stay **Queued** until one of yours ends.
+- **Run time.** A run that reaches its time limit stops and shows **Stopped · Needs review**. **Follow up** continues it. Time spent waiting for your answer does not count.
+- **Queued tasks, tokens, stored files.** A request over the limit is refused, and the message names the limit and its value, for example "The organization's plan allows 20 queued tasks at once". Tasks already running are not affected. The code is `PLAN_LIMIT` with HTTP `429`.
+
+To get room again: wait for queued tasks to start, wait for the token period to renew, remove attachments, or change the plan.
+
+How long finished tasks are kept is part of the plan too: [Data retention](/guides/retention).
+
+## Organization status
+
+| Status | Meaning | What you see |
+| --- | --- | --- |
+| Active | Normal | Everything works |
+| Suspended | The operator suspended the organization, or its GitHub App was uninstalled or suspended by GitHub | New tasks are refused with `ORG_INACTIVE` and status `suspended` |
+| Refused | The operator refused the organization | New tasks are refused with `ORG_INACTIVE` and status `refused` |
+
+While an organization is suspended or refused:
+
+- Queued tasks wait.
+- Runs in progress are interrupted, not failed. Each keeps its session and checkout, and resumes when the organization is reactivated.
+- Nothing is deleted by the retention window, and task volumes are kept.
+- Your data stays.
+
+Reactivating the organization starts queued tasks and resumes interrupted runs. The operator's actions are written to the [audit log](/guides/audit-log) as `org.suspend`, `org.refuse` and `org.activate`; the row names the old and the new status.
+
+<Note>
+`ORG_INACTIVE` and `PLAN_LIMIT` come from the server and are shown as its message. If you see one, contact whoever operates your Bellows. On Bellows Cloud, see [FAQ and troubleshooting](/reference/faq).
+</Note>
+
+## Deletion
+
+If the GitHub App is uninstalled, or GitHub suspends the installation, the organization is suspended and keeps all its data. Each suspension from GitHub records a delete-after date 30 days ahead.
+
+- If GitHub lifts the suspension within 30 days, the organization is active again, unless the operator has also suspended or refused it.
+- Otherwise, when the date passes, the organization is deleted: its tasks, logs, transcripts, settings, stored files and secrets are purged and cannot be restored. The request is written to the audit log as `org.delete`.
+
+Download an [organization export](/guides/export) before you uninstall the App if you want a copy. A self-hosted board never deletes an organization on its own.

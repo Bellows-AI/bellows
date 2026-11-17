@@ -40,7 +40,7 @@ Queued -> Running -> Succeeded · Needs review -> Done
               \----> Failed · Needs review -> (Retry) -> Queued
 ```
 
-- **Start task** creates the first job. It is **Queued**, then **Running** when a runner picks it up.
+- Sending the first prompt (`Enter`, or the round **Start task** arrow on a narrow screen) creates the first job. It is **Queued**, then **Running** when a runner picks it up.
 - When the agent asks a question, the task shows **Needs answer** until you answer. Your answer starts a new job.
 - **Stop** moves a running task to **Stopping**, then **Stopped · Needs review**.
 - A finished run waits for you. **Follow up**, **Retry** or **Edit** start a new job. **Mark done** closes the task. **Reopen** brings it back.

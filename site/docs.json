@@ -82,6 +82,8 @@
                             "guides/skills",
                             "guides/env-and-secrets",
                             "guides/connections",
+                            "guides/members",
+                            "guides/organization",
                             "guides/audit-log",
                             "guides/export",
                             "guides/retention"

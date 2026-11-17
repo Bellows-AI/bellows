@@ -1,0 +1,49 @@
+---
+title: "Members and roles"
+description: "Who can do what in an organization, how an admin invites, removes and restores people, and what a removed person sees."
+---
+
+Membership in a Bellows organization follows GitHub: anyone in the GitHub organization joins by signing in. Each person is an **Admin** or a **Member**. Admins manage the organization under **Settings → Organization**, section **Members**; other members see a note that roles are managed by the organization's admins.
+
+<Frame>
+  <img src="/images/guides/07-members.png" alt="Settings, Organization: members, removed members and the invite link" />
+</Frame>
+
+## Roles
+
+| | Member | Admin |
+| --- | --- | --- |
+| Create, follow up on and stop their own tasks | Yes | Yes |
+| Manage their own personal tokens, workspace variables, executors, skills and notifications | Yes | Yes |
+| Read how long finished tasks are kept ([Data retention](/guides/retention)) | Yes | Yes |
+| Save organization and repository variables and secrets ([Environment and secrets](/guides/env-and-secrets)) | No | Yes |
+| Manage organization executors, skills and notifications | No | Yes |
+| Create and revoke organization access tokens | No | Yes |
+| Change roles, remove and restore members | No | Yes |
+| Read the [audit log](/guides/audit-log) and download the [organization export](/guides/export) | No | Yes |
+
+A GitHub organization owner is an admin. An organization always keeps at least one admin: the last admin cannot be made a member or removed.
+
+## Change a role
+
+In the **Members** table, pick **Admin** or **Member** in the **Role** column. The change is written to the [audit log](/guides/audit-log) as `member.role`. If you demote yourself, you lose the admin screens at once.
+
+## Invite people
+
+Under **Invite members**, press **Copy link** and share the sign-in link. Anyone GitHub lists in the organization who has not signed in yet appears under **Not signed in yet**, each with their own **Copy link**. When everyone has signed in, the list says so.
+
+The link opens the organization selection screen with this organization already ticked, so a person who already uses Bellows for other organizations presses **Continue** and joins. GitHub still decides who is let in, and so does a removal: a removed person who follows the link is not admitted until you restore them.
+
+## Remove a member
+
+Press **Remove** on a row and confirm **Remove member**. The person loses access at once: their sessions end and their personal tokens are revoked. Signing in with GitHub again does not bring them back, even if GitHub still lists them. The removal is written to the audit log as `member.remove`.
+
+Their tasks and the organization's data stay.
+
+## Restore a member
+
+Removed people are listed under **Removed members** with the date and who removed them. Press **Restore**, then ask the person to sign in again, for example with the **Invite members** link. The restore is written to the audit log as `member.restore`.
+
+<Note>
+On a self-hosted board with no sign-in (`AUTH_MODE=none`) there are no members or roles, and this section does not appear. See [Security](/self-host/security) for how sign-in and removals are checked.
+</Note>

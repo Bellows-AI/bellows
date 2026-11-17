@@ -35,7 +35,7 @@ Each organization's plan sets these. With no plan, the operator's default plan a
 | Tokens per period | Set by the plan. The period is your billing period, or the calendar month (UTC) without one. Counts the input, output and cache tokens your runs report | New tasks and batches are refused with `429` and code `PLAN_LIMIT` (`limit: tokens`). Runs already going finish, and follow-ups still work |
 | Stored files and run logs | Set by the plan, in bytes. Counts your attachments (until you remove them) and your runs' logs and transcripts | An upload is refused with `429` and code `PLAN_LIMIT` (`limit: storage`). A run's log past it is cut off and marked truncated |
 
-On Bellows Cloud, an organization is active on the Free plan as soon as the GitHub App is installed and someone signs in. The operator can suspend or refuse an organization. While it is suspended or refused, new tasks and batches are refused with `403` and code `ORG_INACTIVE`, with `status` set to `suspended` or `refused`. Queued tasks wait. Runs already in progress are interrupted, not failed: each keeps its session and checkout. When the organization is reactivated, its queued tasks start and interrupted runs resume where they left off.
+On Bellows Cloud, an organization is active on the Free plan as soon as the GitHub App is installed and someone signs in. The operator can suspend or refuse an organization. While it is suspended or refused, new tasks and batches are refused with `403` and code `ORG_INACTIVE`, with `status` set to `suspended` or `refused`. Queued tasks wait, and on Kubernetes its task volumes are kept, so their storage is billed until the organization is reactivated or deleted. Runs already in progress are interrupted, not failed: each keeps its session and checkout. When the organization is reactivated, its queued tasks start and interrupted runs resume where they left off.
 
 Uninstalling the GitHub App, or GitHub suspending the installation, suspends the organization the same way and keeps all of its data. If GitHub lifts its suspension of the installation within 30 days, the organization is active again, unless the operator has also suspended or refused it. Otherwise, 30 days later the organization is deleted: its tasks, logs, transcripts, settings, stored files and secrets are purged and cannot be restored. A self-hosted board never deletes an organization on its own.
 
@@ -160,7 +160,7 @@ These count per server replica, so a board with two replicas admits up to twice 
 | --- | --- | --- |
 | Requests per sign-in session or token | 600 a minute. Set by the operator | `429` with code `RATE_LIMITED` and a `Retry-After` header in seconds |
 | Requests per organization, all its members together | 3,000 a minute. Set by the operator | `429` with code `RATE_LIMITED` and `Retry-After` |
-| MCP requests open at once per organization | 16. Set by the operator | `429` with `Retry-After: 5` |
+| MCP requests open at once per organization | 16. Set by the operator | `429` with code `TOO_MANY_STREAMS` and `Retry-After: 5` |
 | Run log read page (`GET /api/jobs/:id/artifacts/read`) | 256 KiB by default, up to 4 MiB | Refused: `BAD_LIMIT` |
 | One database statement | 60 seconds. Set by the operator | The request fails. A statistics query over a long range is the usual cause; narrow the range |
 

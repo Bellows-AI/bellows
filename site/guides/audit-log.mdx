@@ -19,6 +19,10 @@ Bellows keeps an audit log for each organization. Every row says when something 
 | An admin follows up, retries or controls the wait of another member's task | `task.admin_action` | The task. The row names the action and the task's owner |
 | An admin downloads the [organization export](/guides/export) | `org.export` | The organization |
 | The plan lowers the [retention window](/guides/retention); it applies 30 days later | `org.retention_downgrade` | The organization. The row names the old and the new days and when the new ones apply |
+| The operator, or GitHub through the App installation, suspends, refuses or reactivates the organization | `org.suspend`, `org.refuse`, `org.activate` | The organization. The row names the old and the new status and, for a suspension from GitHub, the delete-after date |
+| An organization deletion is requested by the operator, or its delete-after date passes | `org.delete` | The organization |
+
+Rows for the organization's own lifecycle are written by the operator or the system, not by a member. See [Organization status and plan limits](/guides/organization).
 
 A row never holds a secret value, a token or any other credential. It holds names, ids and roles only.
 
