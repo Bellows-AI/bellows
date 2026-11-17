@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { BOARD_CALL_ATTEMPTS, BoardHttpError, withBoardRetry } from '../src/board/board-retry.js';
+import { describe, expect, it, vi } from 'vitest';
+import {
+    BOARD_CALL_ATTEMPTS,
+    BoardHttpError,
+    BOARD_BUDGET_MAX_BACKOFF_MS,
+    BoardUncodedAnswerError,
+    withBoardRetry,
+} from '../src/board/board-retry.js';
 
 /** A recording io: every log line and every backoff the retry slept. */
 function io() {
@@ -44,6 +50,16 @@ describe('withBoardRetry: what is retried', () => {
         const call = failing(new BoardHttpError(status, `answered ${status}`));
 
         await expect(withBoardRetry(rec, 'x', call.call)).rejects.toThrow(`answered ${status}`);
+
+        expect(call.calls()).toBe(BOARD_CALL_ATTEMPTS);
+    });
+
+    // A 404 or 409 without the board's `code` is a route miss or a proxy page, not the board: tried again.
+    it.each([404, 409])('retries an uncoded %i like a 5xx, up to the attempt bound', async (status) => {
+        const { io: rec } = io();
+        const call = failing(new BoardUncodedAnswerError(status, `answered ${status} with no board code`));
+
+        await expect(withBoardRetry(rec, 'x', call.call)).rejects.toBeInstanceOf(BoardUncodedAnswerError);
 
         expect(call.calls()).toBe(BOARD_CALL_ATTEMPTS);
     });
@@ -96,6 +112,44 @@ describe('withBoardRetry: a backoff budget', () => {
         expect(total + 30_000).toBeGreaterThan(300_000);
         expect(call.calls()).toBe(slept.length + 1);
         expect(call.calls()).toBeGreaterThan(BOARD_CALL_ATTEMPTS);
+    });
+
+    it('spends the whole budget: the last backoff is cut to what is left, so a call just before the end is made', async () => {
+        const { io: rec, slept } = io();
+        const call = failing(new BoardHttpError(503, 'answered 503'));
+
+        await expect(withBoardRetry(rec, 'x', call.call, { budgetMs: 100_000 })).rejects.toThrow('answered 503');
+
+        expect(slept.reduce((sum, ms) => sum + ms, 0)).toBe(100_000);
+        expect(call.calls()).toBe(slept.length + 1);
+    });
+
+    // The lease fence lands just before the budget ends, as in production: the lease clock starts at the last beat.
+    it('lands a retry after a recovery late in the window, before the fence cuts it', async () => {
+        vi.useFakeTimers();
+        try {
+            const fence = new AbortController();
+            setTimeout(() => fence.abort(), 299_000);
+            const startedAt = Date.now();
+            let last = 0;
+            const call = async () => {
+                last = Date.now() - startedAt;
+                if (last < 280_000) throw new BoardHttpError(503, 'answered 503');
+                return 'held';
+            };
+            const rec = {
+                log: () => {},
+                sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+            };
+
+            const answer = withBoardRetry(rec, 'x', call, { budgetMs: 300_000, leaseLapsed: fence.signal });
+            await vi.advanceTimersByTimeAsync(300_000);
+
+            await expect(answer).resolves.toBe('held');
+            expect(last).toBeLessThan(280_000 + BOARD_BUDGET_MAX_BACKOFF_MS);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('still stops at once on a deterministic refusal', async () => {

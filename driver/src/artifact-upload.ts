@@ -9,6 +9,10 @@ import type { RunOutcome } from './runner.js';
  * incomplete stream, never thrown, so a passing gate stays passing — a failed upload only means no
  * `complete` manifest, which is what a reader and the volume-retention rule look at.
  *
+ * One upload is bounded by one `UploadBound` — the lease, fenced on the caller's lease clock — shared by every
+ * stream, chunk and manifest call: a board outage shorter than the lease is ridden out in place, and a longer one
+ * lapses the lease, whose next claim re-reads the run's log and uploads it again.
+ *
  * A retry after a lost response is safe by construction: a chunk is addressed by its byte offset in
  * the source text and the board answers a repeat of the same bytes `duplicate`, and the manifest is
  * built once before the first attempt so a repeat of it is identical.
@@ -27,7 +31,7 @@ const SCHEMA_VERSION = 1;
 export const UPLOAD_CAUSE = {
     /** The run's output was tail-kept at the driver's capture limit: the head is gone. */
     headDropped: 'head_dropped',
-    /** A chunk or the manifest could not be stored after the bounded retries. */
+    /** A chunk or the manifest could not be stored within the upload's bound. */
     uploadFailed: 'upload_failed',
 } as const;
 
@@ -74,6 +78,52 @@ export interface StreamSource {
 
 type Io = { log: (message: string) => void; sleep: (ms: number) => Promise<void>; now?: () => Date };
 
+/** What bounds one upload: the longest it retries a board that is down, and the signal that ends it at once. */
+export interface UploadBound {
+    budgetMs: number;
+    signal: AbortSignal;
+}
+
+const MS_PER_SECOND = 1_000;
+
+/** The bound of an upload that rides out a board outage for one lease, ended at once by `signal`. */
+export const leaseBound = (leaseSeconds: number, signal: AbortSignal): UploadBound => ({
+    budgetMs: leaseSeconds * MS_PER_SECOND,
+    signal,
+});
+
+/** One upload's clock: shared by all its board calls, so a dead board costs one bound, not one per call. */
+export interface UploadDeadline {
+    remainingMs(): number;
+    /** Aborts at the bound's own abort, or once its budget has passed in wall-clock time (a request that hangs). */
+    signal: AbortSignal;
+    release(): void;
+}
+
+export function startUploadDeadline(bound: UploadBound, io: Pick<Io, 'now'>): UploadDeadline {
+    const now = io.now ?? (() => new Date());
+    const startMs = now().getTime();
+    const ended = new AbortController();
+    const end = (): void => ended.abort();
+    if (bound.signal.aborted) end();
+    else bound.signal.addEventListener('abort', end, { once: true });
+    const timer = setTimeout(end, bound.budgetMs);
+    timer.unref();
+    return {
+        remainingMs: () => Math.max(0, bound.budgetMs - (now().getTime() - startMs)),
+        signal: ended.signal,
+        release() {
+            clearTimeout(timer);
+            bound.signal.removeEventListener('abort', end);
+        },
+    };
+}
+
+const retryWithin = (deadline: UploadDeadline) => ({
+    budgetMs: deadline.remainingMs(),
+    leaseLapsed: deadline.signal,
+});
+
 /** Where one stream goes: the board to call, the job whose claim sequence authorizes it, and the stream's name. */
 export interface UploadTarget {
     board: Pick<Board, 'putArtifactChunk' | 'finalizeArtifact'>;
@@ -82,12 +132,20 @@ export interface UploadTarget {
 }
 
 /** Puts the stream's chunks in order; the cause the upload stopped short for, or null when every chunk is stored. */
-async function putChunks({ board, job, ref }: UploadTarget, text: string, io: Io): Promise<string | null> {
+async function putChunks(
+    { board, job, ref }: UploadTarget,
+    text: string,
+    io: Io,
+    deadline: UploadDeadline
+): Promise<string | null> {
     const where = `job ${job.id}: ${ref.stream} artifact chunk`;
     for (const { offset, body } of cutChunks(Buffer.from(text, 'utf8'))) {
         try {
-            const answer = await withBoardRetry(io, `${where} at ${offset} was not stored`, () =>
-                board.putArtifactChunk(job, ref, offset, body)
+            const answer = await withBoardRetry(
+                io,
+                `${where} at ${offset} was not stored`,
+                () => board.putArtifactChunk(job, ref, offset, body),
+                retryWithin(deadline)
             );
             if (answer.result === 'refused') return answer.cause;
             if (answer.result === 'conflict' || answer.result === 'rejected') {
@@ -109,11 +167,16 @@ function stateOf(cause: string | null, stopped: string | null): ArtifactManifest
 }
 
 /** Uploads one stream and its manifest; true only when the manifest recorded the stream `complete`. */
-export async function uploadStream(target: UploadTarget, source: StreamSource, io: Io): Promise<boolean> {
+export async function uploadStream(
+    target: UploadTarget,
+    source: StreamSource,
+    io: Io,
+    deadline: UploadDeadline
+): Promise<boolean> {
     const { board, job, ref } = target;
     const now = io.now ?? (() => new Date());
     const startedAt = now();
-    const stopped = await putChunks(target, source.text, io);
+    const stopped = await putChunks(target, source.text, io, deadline);
     const cause = stopped ?? (source.truncated ? UPLOAD_CAUSE.headDropped : null);
     // Built once, before the first attempt: a retried manifest must be the same manifest.
     const manifest: ArtifactManifest = {
@@ -125,8 +188,11 @@ export async function uploadStream(target: UploadTarget, source: StreamSource, i
         terminalCause: cause,
     };
     try {
-        await withBoardRetry(io, `job ${job.id}: ${ref.stream} artifact manifest was not stored`, () =>
-            board.finalizeArtifact(job, ref, manifest)
+        await withBoardRetry(
+            io,
+            `job ${job.id}: ${ref.stream} artifact manifest was not stored`,
+            () => board.finalizeArtifact(job, ref, manifest),
+            retryWithin(deadline)
         );
     } catch (e) {
         io.log(`job ${job.id}: ${ref.stream} artifact manifest failed: ${(e as Error).message}`);
@@ -165,17 +231,23 @@ function sourcesOf(outcome: RunOutcome): StreamSource[] {
  */
 export async function uploadRunArtifacts(
     run: { board: UploadTarget['board']; job: BoardJob; executorType: string | null; outcome: RunOutcome },
-    io: Io
+    io: Io,
+    bound: UploadBound
 ): Promise<void> {
     const { board, job, executorType, outcome } = run;
     if (executorType === null) return;
     const session = outcome.sessionId ?? NO_SESSION;
-    for (const source of sourcesOf(outcome)) {
-        const ref = { executor: executorType, session, stream: source.stream };
-        try {
-            await uploadStream({ board, job, ref }, source, io);
-        } catch (e) {
-            io.log(`job ${job.id}: the ${source.stream} artifact upload failed: ${(e as Error).message}`);
+    const deadline = startUploadDeadline(bound, io);
+    try {
+        for (const source of sourcesOf(outcome)) {
+            const ref = { executor: executorType, session, stream: source.stream };
+            try {
+                await uploadStream({ board, job, ref }, source, io, deadline);
+            } catch (e) {
+                io.log(`job ${job.id}: the ${source.stream} artifact upload failed: ${(e as Error).message}`);
+            }
         }
+    } finally {
+        deadline.release();
     }
 }

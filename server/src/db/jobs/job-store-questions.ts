@@ -131,17 +131,21 @@ export async function questionsOfJobs(
     return byJob;
 }
 
-/** Every answered question of this lease token — the heartbeat's delivery list. */
+/**
+ * Every answered question of this attempt — the heartbeat's delivery list. Keyed by the job's
+ * attempt, not the lease: a takeover or a hand-back keeps the attempt and its agent session, so an
+ * answer given under the replaced lease still reaches the claim that resumed the session.
+ */
 export async function answeredQuestionsOf(
     ctx: JobStoreContext,
-    id: string,
-    leaseToken: string
+    id: string
 ): Promise<{ questionId: string; answers: Answers }[]> {
     const { sql, orgId } = ctx;
     const rows = await sql<{ question_id: string; answers: Answers }[]>`
-        select question_id, answers from job_question
-        where org_id = ${orgId} and job_id = ${id} and lease_token = ${leaseToken} and state = 'answered'
-        order by answered_at, question_id
+        select q.question_id, q.answers from job_question q
+        join job j on j.org_id = q.org_id and j.id = q.job_id and j.attempts = q.attempt
+        where q.org_id = ${orgId} and q.job_id = ${id} and q.state = 'answered'
+        order by q.answered_at, q.question_id
     `;
     return rows.map((row) => ({ questionId: row.question_id, answers: row.answers }));
 }
@@ -163,7 +167,18 @@ export async function askQuestionReport(
         `;
         if (!job) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
         const stored = await readQuestion(tx, orgId, id, ask.questionId);
-        if (stored) return { result: 'existing', question: stored };
+        if (stored) {
+            // The supervisor re-posts its pending questions to the claim that took the run over. A
+            // pending row of this attempt still bound to the replaced lease moves to the caller's
+            // pair, so it is answerable again and the new claim's heartbeat delivers the answer.
+            const rebound = await tx`
+                update job_question set lease_token = ${leaseToken}, claim_seq = ${job.claim_seq}
+                where org_id = ${orgId} and job_id = ${id} and question_id = ${ask.questionId}
+                  and state = 'pending' and attempt = ${job.attempts} and lease_token <> ${leaseToken}
+            `;
+            const question = rebound.count > 0 ? await readQuestion(tx, orgId, id, ask.questionId) : stored;
+            return { result: 'existing', question: question! };
+        }
         // Counted per claim, not per attempt: a takeover of an expired lease keeps the attempt.
         const [held] = await tx<{ held: number }[]>`
             select count(*)::int as held from job_question

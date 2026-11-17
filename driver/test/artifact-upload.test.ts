@@ -1,13 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
     cutChunks,
     uploadRunArtifacts,
+    startUploadDeadline,
     uploadStream,
     UPLOAD_CAUSE,
     type StreamSource,
     type UploadTarget,
 } from '../src/artifact-upload.js';
-import { BOARD_CALL_ATTEMPTS } from '../src/board/board-retry.js';
+import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board/board-retry.js';
 import { createBoard, type ArtifactManifest, type Board, type BoardJob, type ChunkAnswer } from '../src/board/board.js';
 
 const job = { id: '11111111-1111-4111-8111-111111111111', claimSeq: 4, leaseToken: 'lease-secret' } as BoardJob;
@@ -18,8 +19,16 @@ const KIB = 1024;
 const uploadLog = (
     board: UploadTarget['board'],
     source: Omit<StreamSource, 'stream'>,
-    io: Parameters<typeof uploadStream>[2]
-) => uploadStream({ board, job, ref: REF }, { stream: 'log', ...source }, io);
+    io: Parameters<typeof uploadStream>[2],
+    budgetMs = 300_000
+) => {
+    const deadline = startUploadDeadline({ budgetMs, signal: new AbortController().signal }, io);
+    return uploadStream({ board, job, ref: REF }, { stream: 'log', ...source }, io, deadline).finally(() =>
+        deadline.release()
+    );
+};
+
+const everyBound = { budgetMs: 300_000, signal: new AbortController().signal };
 
 const io = () => {
     const logs: string[] = [];
@@ -144,15 +153,26 @@ describe('uploadStream', () => {
             },
         });
 
+        let clock = 0;
+        const timed = {
+            log: () => {},
+            now: () => new Date(clock),
+            sleep: async (ms: number) => {
+                clock += ms;
+            },
+        };
+
         const complete = await uploadLog(
             memory.board,
             { text: `${'a'.repeat(300 * KIB)}\nb\n`, truncated: false },
-            io()
+            timed,
+            15_000
         );
 
         expect(complete).toBe(false);
-        // Bounded: one chunk's retries, then the stream stops instead of hammering every chunk.
-        expect(attempts).toHaveLength(BOARD_CALL_ATTEMPTS);
+        // Bounded: one chunk's retries until the budget is spent, then the stream stops instead of hammering every chunk.
+        expect(new Set(attempts)).toEqual(new Set([0]));
+        expect(attempts.length).toBeGreaterThanOrEqual(BOARD_CALL_ATTEMPTS);
         expect(memory.manifests).toEqual([
             expect.objectContaining({ state: 'partial', terminalCause: UPLOAD_CAUSE.uploadFailed }),
         ]);
@@ -213,7 +233,8 @@ describe('uploadRunArtifacts', () => {
                 executorType: 'claude-code',
                 outcome: { ...outcome, fullLog: 'log\n', transcript: 't\n', sessionId: 'sess-9' },
             },
-            io()
+            io(),
+            everyBound
         );
 
         expect(seen).toEqual(['claude-code/sess-9/log', 'claude-code/sess-9/transcript']);
@@ -231,7 +252,8 @@ describe('uploadRunArtifacts', () => {
                 executorType: 'claude-code',
                 outcome: { ...outcome, fullLog: 'log\n', logTruncated: true, transcript: 't\n', sessionId: 'sess-9' },
             },
-            io()
+            io(),
+            everyBound
         );
 
         expect(memory.manifests).toEqual([
@@ -243,10 +265,157 @@ describe('uploadRunArtifacts', () => {
     it('uploads nothing for a run that captured nothing', async () => {
         const memory = memoryBoard();
 
-        await uploadRunArtifacts({ board: memory.board, job, executorType: 'claude-code', outcome }, io());
+        await uploadRunArtifacts({ board: memory.board, job, executorType: 'claude-code', outcome }, io(), everyBound);
 
         expect(memory.chunks.size).toBe(0);
         expect(memory.manifests).toEqual([]);
+    });
+});
+
+describe('a board outage while a finished run uploads its artifacts', () => {
+    const run = (board: UploadTarget['board']) => ({
+        board,
+        job,
+        executorType: 'claude-code',
+        outcome: { exitCode: 0, output: '', timedOut: false, started: true, fullLog: 'log\n', transcript: 't\n' },
+    });
+    /** The board answers 503 until `outageMs` of backoff has been slept on the virtual clock, then stores. */
+    function outage(outageMs: number) {
+        let clock = 0;
+        const calls: string[] = [];
+        const stored = new Map<string, string>();
+        const manifests: ArtifactManifest[] = [];
+        const down = () => {
+            if (clock < outageMs) throw new BoardHttpError(503, '/api/x answered 503: upstream unavailable');
+        };
+        const board: UploadTarget['board'] = {
+            async putArtifactChunk(_job, ref, offset, bytes) {
+                calls.push('chunk');
+                down();
+                stored.set(`${ref.stream}:${offset}`, Buffer.from(bytes).toString('utf8'));
+                return { result: 'stored' };
+            },
+            async finalizeArtifact(_job, _ref, manifest) {
+                calls.push('manifest');
+                down();
+                manifests.push(manifest);
+                return 'stored';
+            },
+        };
+        const sleeps: number[] = [];
+        const clockIo = {
+            log: () => {},
+            now: () => new Date(clock),
+            sleep: async (ms: number) => {
+                sleeps.push(ms);
+                clock += ms;
+            },
+        };
+        return { board, stored, manifests, calls, sleeps, io: clockIo };
+    }
+    const bound = (budgetMs = 300_000, signal = new AbortController().signal) => ({ budgetMs, signal });
+
+    // The runner's log is gone once the run is torn down: an upload that gives up is lost evidence.
+    it.each([30, 90, 180, 290])('%i s of 503 does not drop the artifacts', async (seconds) => {
+        const o = outage(seconds * 1000);
+
+        await uploadRunArtifacts(run(o.board), o.io, bound());
+
+        expect([...o.stored.entries()]).toEqual([
+            ['log:0', 'log\n'],
+            ['transcript:0', 't\n'],
+        ]);
+        expect(o.manifests.map((m) => m.state)).toEqual(['complete', 'complete']);
+    });
+
+    it('spends one bound on a board that stays down, across every stream and chunk', async () => {
+        const o = outage(Number.POSITIVE_INFINITY);
+
+        await expect(uploadRunArtifacts(run(o.board), o.io, bound(60_000))).resolves.toBeUndefined();
+
+        // The first chunk alone outlasts the old five tries; the shared bound stops the rest of the upload.
+        expect(o.calls.indexOf('manifest')).toBeGreaterThan(BOARD_CALL_ATTEMPTS);
+        expect(o.sleeps.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(60_000);
+    });
+
+    it('stops at once when the lease lapses mid-outage and writes no manifest', async () => {
+        const o = outage(Number.POSITIVE_INFINITY);
+        const lapse = new AbortController();
+        const failing = {
+            ...o.board,
+            async putArtifactChunk(...args: Parameters<Board['putArtifactChunk']>): Promise<ChunkAnswer> {
+                if (o.calls.length >= 3) lapse.abort();
+                return o.board.putArtifactChunk(...args);
+            },
+        };
+
+        await uploadRunArtifacts(run(failing), o.io, bound(300_000, lapse.signal));
+
+        expect(o.calls.filter((c) => c === 'manifest')).toEqual([]);
+        expect(o.calls.length).toBeLessThanOrEqual(4);
+        expect(o.manifests).toEqual([]);
+    });
+
+    it('stores the artifacts after a recovery late in the lease, before the lease fence cuts the upload', async () => {
+        vi.useFakeTimers();
+        try {
+            const lease = new AbortController();
+            setTimeout(() => lease.abort(), 299_000);
+            const startedAt = Date.now();
+            const stored: string[] = [];
+            const manifests: string[] = [];
+            const down = () => {
+                if (Date.now() - startedAt < 280_000) throw new BoardHttpError(503, 'answered 503');
+            };
+            const board: UploadTarget['board'] = {
+                async putArtifactChunk(_job, ref) {
+                    down();
+                    stored.push(ref.stream);
+                    return { result: 'stored' };
+                },
+                async finalizeArtifact(_job, _ref, manifest) {
+                    down();
+                    manifests.push(manifest.state);
+                    return 'stored';
+                },
+            };
+            const timed = {
+                log: () => {},
+                sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+            };
+
+            const upload = uploadRunArtifacts(run(board), timed, bound(300_000, lease.signal));
+            await vi.advanceTimersByTimeAsync(300_000);
+            await upload;
+
+            expect(stored).toEqual(['log', 'transcript']);
+            expect(manifests).toEqual(['complete', 'complete']);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('cuts a request that never answers at the wall-clock bound and releases its timer', async () => {
+        vi.useFakeTimers();
+        try {
+            const board: UploadTarget['board'] = {
+                putArtifactChunk: () => new Promise<ChunkAnswer>(() => {}),
+                finalizeArtifact: () => new Promise<'stored'>(() => {}),
+            };
+            const cleared = vi.spyOn(globalThis, 'clearTimeout');
+            let settled = false;
+            const upload = uploadRunArtifacts(run(board), io(), bound(300_000)).then(() => {
+                settled = true;
+            });
+
+            await vi.advanceTimersByTimeAsync(300_000);
+            await upload;
+
+            expect(settled).toBe(true);
+            expect(cleared).toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
     });
 });
 

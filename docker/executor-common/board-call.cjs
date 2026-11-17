@@ -9,7 +9,7 @@
  * One wall-clock budget, created once at the helper's start (`createBudget`), covers every pair read,
  * request, body read and wait. The helper's `classify` turns an answer into `{ done: value }` (a verdict,
  * success or refusal) or `{ retry: true, waitMs? }`; a wire failure — a throw, an abort, a cut-off or oversize
- * body — is a retry. `boardCall` resolves on every path, never rejects:
+ * body — is a retry, and so is a 4xx without the board's own JSON `code` (not the board's answer, `uncoded`). `boardCall` resolves on every path, never rejects:
  * `{ ok: true, value, pair }` or `{ ok: false, reason: 'no_pair' | 'deadline' | 'rate_limited' | 'pending' }`.
  *
  * A 503 whose parsed body says `LEASE_PENDING` is the board telling a pair the task held to wait for the new
@@ -84,6 +84,14 @@ async function readText(response) {
     return Buffer.concat(chunks).toString('utf8');
 }
 
+/**
+ * A 4xx (but 429) that carries no board `code`: a route miss on a replica mid-roll, a load balancer's page. The board codes
+ * every answer it gives on purpose, so this one is no answer — it never reaches `classify`, where it would read as a
+ * refusal, and is tried again inside the budget.
+ */
+const uncoded = ({ status, json }) =>
+    status >= 400 && status < 500 && status !== 429 && !(typeof json?.code === 'string' && json.code !== '');
+
 /** The pair as it is now, or null where this container holds none. Read for a request, or for a key that must follow it (a cache). */
 async function readPair(deps, deadlineMs = PAIR_DEADLINE_MS) {
     if (!deps.env.FACTORY_STATS_URL) return null;
@@ -145,7 +153,7 @@ async function boardCall(deps, budget, call) {
             continue;
         }
         if (answer) pending = false;
-        const verdict = answer ? call.classify(answer) : { retry: true };
+        const verdict = answer && !uncoded(answer) ? call.classify(answer) : { retry: true };
         if ('done' in verdict) return { ok: true, value: verdict.done, pair };
         if (call.once) break;
         const hinted = verdict.waitMs ?? null;

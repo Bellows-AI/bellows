@@ -383,10 +383,17 @@ describe('one wall-clock deadline', () => {
 
     // Pin: a terminal refusal is one call and no sleep.
     it('a 403 is still refused at once: one call, no sleep', async () => {
-        const r = rig(() => ({ status: 403, body: { error: 'refused' } }));
+        const r = rig(() => ({ status: 403, body: { error: 'refused', code: 'CONNECTION_NOT_AUTHORIZED' } }));
         expect(await broker.obtain(r.deps, broker.GITHUB_KEY)).toMatchObject({ ok: false, reason: 'refused' });
         expect(r.calls).toHaveLength(1);
         expect(r.sleeps).toEqual([]);
+    });
+
+    // Pin: a 4xx with no board `code` (a load balancer's page) is no refusal: it is retried until the deadline.
+    it('a 403 without the board code is no refusal: retried, then unreachable', async () => {
+        const r = rig(() => ({ status: 403, body: { error: 'refused' } }));
+        expect(await broker.obtain(r.deps, broker.GITHUB_KEY)).toMatchObject({ ok: false, reason: 'unreachable' });
+        expect(r.calls.length).toBeGreaterThan(1);
     });
 });
 
@@ -405,7 +412,7 @@ describe('typed stops', () => {
     });
 
     it.each([401, 403])('stops at a %s and never retries it', async (status) => {
-        const r = rig(() => ({ status, body: { error: 'refused' } }));
+        const r = rig(() => ({ status, body: { error: 'refused', code: 'UNAUTHENTICATED' } }));
         expect(await broker.connectionCredential(CONNECTION, r.deps)).toMatchObject({ ok: false, reason: 'refused' });
         expect(r.calls).toHaveLength(1);
         expect(entries(r.deps.dir)).toEqual([]);
@@ -538,7 +545,7 @@ describe('no token on stdout or stderr, in any mode', () => {
     it('keeps tokens off stderr for refusals, outages, rate limits and a revoke, and stdout carries only what git and gh read', async () => {
         const modes: string[][] = [['git', 'get'], ['git', 'erase'], ['git', 'store'], ['token'], ['clear']];
         const boards: ((call: Call) => Answer)[] = [
-            () => ({ status: 403, body: { token: SECRETS[0] } }),
+            () => ({ status: 403, body: { token: SECRETS[0], code: 'CONNECTION_NOT_AUTHORIZED' } }),
             () => ({ status: 409, body: { token: SECRETS[0], code: 'GITHUB_UNAVAILABLE' } }),
             () => ({ status: 429, headers: { 'retry-after': '999' }, body: { token: SECRETS[0] } }),
             () => 'hang',

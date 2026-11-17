@@ -202,7 +202,8 @@ describe.skipIf(!hasNodeSqlite())('the opencode session export', () => {
         const io = { log: () => undefined, sleep: async () => undefined };
         await uploadRunArtifacts(
             { board, job: { id: 'job-1', claimSeq: 1 } as BoardJob, executorType: 'opencode', outcome },
-            io
+            io,
+            { budgetMs: 300_000, signal: new AbortController().signal }
         );
 
         expect([...streams.keys()].sort()).toEqual([

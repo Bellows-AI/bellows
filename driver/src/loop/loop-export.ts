@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ArtifactStreamRef, BoardJob, ReviewClaim } from '../board/board.js';
-import { ARTIFACT_STREAM, NO_SESSION, uploadRunArtifacts } from '../artifact-upload.js';
+import { ARTIFACT_STREAM, NO_SESSION, leaseBound, uploadRunArtifacts } from '../artifact-upload.js';
 import { mergeOpencodeOutcome, parseOpencodeRunOutcome } from '../close-read.js';
 import { CLAUDE_CODE } from '../executors.js';
 import type { CheckpointRelay, ExportRelay } from '../export-control.js';
@@ -162,6 +162,16 @@ export function drainTranscriptExport(ctx: AttemptCtx, outcome: RunOutcome): voi
     if (!run.done) rt.log(`job ${job.id}: the transcript exporter did not report done; its bytes remain on the volume`);
 }
 
+/** A finished run's log and driver-side transcripts, uploaded for as long as the attempt's lease holds. */
+export function uploadRunTail(ctx: AttemptCtx, executorType: string | null, outcome: RunOutcome): Promise<void> {
+    const { rt, job, state } = ctx;
+    return uploadRunArtifacts(
+        { board: rt.board, job, executorType, outcome },
+        rt,
+        leaseBound(rt.config.leaseSeconds, state.leaseExpiry.signal)
+    );
+}
+
 /**
  * The close-time export of one in-band review (amendment B5): an exporter token on the
  * CALLER's control channel, bound to a relay that sends under the REVIEW row's identity (its id and
@@ -172,7 +182,8 @@ export function drainTranscriptExport(ctx: AttemptCtx, outcome: RunOutcome): voi
 export function openReviewExport(
     rt: LoopRuntime,
     caller: BoardJob,
-    review: ReviewClaim
+    review: ReviewClaim,
+    stop: AbortSignal
 ): { exporter: ReviewExporter; close: () => void } | null {
     if (!rt.gates || !caller.supervisorEnv) return null;
     const owner = controlTokenOf(caller);
@@ -190,7 +201,11 @@ export function openReviewExport(
                     rt.log(`review ${review.id}: the session was not recorded: ${e.message}`);
                 });
             }
-            await uploadRunArtifacts({ board: rt.board, job: review, executorType: review.executorType, outcome }, rt);
+            await uploadRunArtifacts(
+                { board: rt.board, job: review, executorType: review.executorType, outcome },
+                rt,
+                leaseBound(rt.config.leaseSeconds, stop)
+            );
         },
     };
     return { exporter, close: () => rt.gates?.server.revokeExporter(token) };

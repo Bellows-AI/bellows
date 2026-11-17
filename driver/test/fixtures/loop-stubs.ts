@@ -160,8 +160,8 @@ export function stubBoard(
         githubTokens?: (string | null)[];
         /** The board's answer to a question report; held when absent. */
         questionVerdict?: QuestionVerdict;
-        /** Every artifact call throws, as a board that is down does. */
-        artifactsDown?: boolean;
+        /** Every artifact call throws, as a board that is down does; a number: only the first N calls do. */
+        artifactsDown?: boolean | number;
         /** The board's answer to an interruption report; held when absent. */
         interruptVerdict?: LeaseState | 'exhausted';
         /** The board's answer to a runtime connection ask; `waiting` when absent. */
@@ -190,6 +190,10 @@ export function stubBoard(
     let ackFailures = options.failAckReclaimTimes ?? 0;
     const githubTokenQueue = options.githubTokens ? [...options.githubTokens] : [];
 
+    let artifactCalls = 0;
+    const artifactsAreDown = (): boolean =>
+        options.artifactsDown === true ||
+        (typeof options.artifactsDown === 'number' && artifactCalls++ < options.artifactsDown);
     const board: BoardStub = {
         completed: [],
         staged: [],
@@ -233,13 +237,13 @@ export function stubBoard(
             return null;
         },
         async putArtifactChunk(claimed, ref, offset, bytes) {
-            if (options.artifactsDown) throw new Error('board unreachable');
+            if (artifactsAreDown()) throw new Error('board unreachable');
             const text = Buffer.from(bytes).toString('utf8');
             board.artifactChunks.push({ id: claimed.id, claimSeq: claimed.claimSeq, stream: ref.stream, offset, text });
             return { result: 'stored' };
         },
         async finalizeArtifact(claimed, ref, manifest) {
-            if (options.artifactsDown) throw new Error('board unreachable');
+            if (artifactsAreDown()) throw new Error('board unreachable');
             board.artifactManifests.push({
                 id: claimed.id,
                 claimSeq: claimed.claimSeq,

@@ -84,8 +84,8 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
   `server/test/bellows.plan.test.ts`, [security.md](security.md).
 - **A run reports agent turns**: the close-time agent-turn read counts the executor's own transcript; a job turn
   is in [docs/metrics.md](metrics.md). Null is the contract for unmeasured. `core/test/docs.terminology.test.ts`.
-- **A `409` from heartbeat means the container must be killed**; `cancelRequested` during the agent's run
-  drains to the next step boundary instead. `driver/test/loop/`.
+- **A `409` from heartbeat means the container must be killed**; `cancelRequested` drains to the next step boundary. Only a 4xx with the board's own JSON `code` is a verdict, an uncoded one is retried
+  — `board-retry.ts`, `board-call.cjs`, `driver/test/board-read-faults.test.ts`, `driver/test/loop/`.
 - **Every resource an attempt creates is scoped by its lease token**, so no sweep touches a sibling
   attempt — `driver/src/labels.ts`, `driver/test/docker/`. On docker each also carries the board's
   `factory.board`, the only objects that board's reaper scans — `driver/test/docker-reaper-boards.test.ts`.
