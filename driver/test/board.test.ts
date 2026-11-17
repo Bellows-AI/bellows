@@ -833,6 +833,17 @@ describe('the question calls', () => {
         expect(await board(404, { code: 'NOT_FOUND' }).board.question(job, 'toolu_1', questions)).toBe('removed');
     });
 
+    it('reads a stored question the board reports closed or expired as refused, an answered one as held', async () => {
+        for (const [status, verdict] of [
+            ['closed', 'refused'],
+            ['expired', 'refused'],
+            ['answered', 'held'],
+            ['pending', 'held'],
+        ] as const) {
+            expect(await board(200, { id: 'toolu_1', status }).board.question(job, 'toolu_1', questions)).toBe(verdict);
+        }
+    });
+
     it('throws on a 5xx so the caller retries', async () => {
         await expect(board(503).board.question(job, 'toolu_1', questions)).rejects.toThrow(/503/);
     });
