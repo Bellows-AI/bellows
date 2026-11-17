@@ -1,16 +1,13 @@
 import { useState } from 'react';
 import type { ConnectionView, StartAuthorizationInput } from '../api/connections.js';
 import { ConnectionDisconnectDialog } from '../components/ConnectionDisconnectDialog.js';
-import { ALLOW_COMMENTS_LABEL } from '../components/JiraConnectionDialog.js';
 import { RowActions, type RowAction } from '../components/RowActions.js';
-import { WriteConsentDialog } from '../components/WriteConsentDialog.js';
+import { ALLOW_COMMENTS_LABEL, WriteConsentDialog } from '../components/WriteConsentDialog.js';
 
-export { ALLOW_COMMENTS_LABEL };
-
-/** What the detail page lends an action set: the connection, the one in-flight guard and the two writes. */
+/** What a page lends an action set: the connection, the one in-flight guard and the two writes. */
 export interface ConnectionActionsProps {
     connection: ConnectionView;
-    /** Whose consent screen a reconnect goes to, as the write-consent copy names it. */
+    /** Whose consent screen a reconnect goes to, as the write-consent copy names it (`consentAuthority`). */
     authority: string;
     busy: boolean;
     /** Resolves to the refusal message, or null when the browser is on its way to the consent screen. */

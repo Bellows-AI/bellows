@@ -26,6 +26,9 @@ const REQUEST_MIB = 50;
 
 export const ATTACH_OPTION = { attach: { type: 'string', multiple: true } } as const;
 
+/** What a follow-up sends beside its command: its uploads, and the model it runs (absent keeps the thread's, never the agent). */
+export type FollowUpExtras = { attachments?: readonly string[] | undefined; model?: string | undefined };
+
 export const MAX_FILES_PER_REQUEST = 10;
 export const MAX_FILE_BYTES = FILE_MIB * BYTES_PER_MIB;
 export const MAX_REQUEST_BYTES = REQUEST_MIB * BYTES_PER_MIB;

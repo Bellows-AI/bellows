@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob, HeartbeatVerdict } from '../../src/board/board.js';
-import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../../src/board/board-retry.js';
+import { BoardHttpError } from '../../src/board/board-retry.js';
+import { ATTEMPTS_SPANNING_LEASE } from '../fixtures/lease-span.js';
 import type { RunOutcome, Runner } from '../../src/runner.js';
 import { readQuestion, recordQuestion } from '../../src/question-control.js';
 import type { ControlEntry } from '../../src/question-control.js';
@@ -901,7 +902,8 @@ describe('a stop the board cannot take (issue #820)', () => {
 
             expect(unhandled).toEqual([]);
             expect(board.board.completed.map((c) => c.id)).toEqual([job(2).id]);
-            expect(suspends()).toBe(BOARD_CALL_ATTEMPTS);
+            // Spans the whole lease, not five tries: a shortened budget has too few attempts.
+            expect(suspends()).toBeGreaterThanOrEqual(ATTEMPTS_SPANNING_LEASE);
             expect(logs.some((l) => l.includes(`job ${job(1).id}: the board did not take the stop`))).toBe(true);
         } finally {
             process.off('unhandledRejection', record);
@@ -938,7 +940,7 @@ describe('a stop the board cannot take (issue #820)', () => {
             fail();
             for (let i = 0; i < 50; i++) await tick();
 
-            expect(suspends).toBe(BOARD_CALL_ATTEMPTS);
+            expect(suspends).toBeGreaterThanOrEqual(ATTEMPTS_SPANNING_LEASE);
             expect(unhandled).toEqual([]);
         } finally {
             process.off('unhandledRejection', record);

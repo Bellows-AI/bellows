@@ -2,7 +2,8 @@ import { getEventListeners } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { driverSources } from './fixtures/driver-sources.js';
 import type { BoardJob, LeaseState } from '../src/board/board.js';
-import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board/board-retry.js';
+import { BoardHttpError } from '../src/board/board-retry.js';
+import { ATTEMPTS_SPANNING_LEASE } from './fixtures/lease-span.js';
 import { newJobState, raceStep } from '../src/loop/loop-attempt.js';
 import { end, endIfDown } from '../src/loop/loop-conclusion.js';
 import { recordEnding } from '../src/loop/loop-phase.js';
@@ -203,7 +204,8 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
         expect(await endIfDown(ctx, 'setup')).toBe(true);
 
-        expect(calls.filter((c) => c === 'suspend')).toHaveLength(BOARD_CALL_ATTEMPTS);
+        // The retry spans the whole 300 s lease, not five tries: a shortened budget has too few attempts.
+        expect(calls.filter((c) => c === 'suspend').length).toBeGreaterThanOrEqual(ATTEMPTS_SPANNING_LEASE);
         expect(lines.at(-1)).toContain('the board did not take the stop, left to the lease');
     });
 

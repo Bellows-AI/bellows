@@ -229,6 +229,7 @@ async function park(ctx: AttemptCtx, decision: Extract<EndDecision, { kind: 'par
     // Every park waits out the output pump: a write the park overtook would be refused, its tail lost.
     await state.drainOutput();
     const verdict = await withBoardRetry(rt, `job ${job.id}: the stop was not accepted`, () => rt.board.suspend(job), {
+        budgetMs: rt.config.leaseSeconds * MS_PER_SECOND,
         leaseLapsed: state.leaseExpiry.signal,
     }).catch((e: Error) => {
         rt.log(`job ${job.id}: the board did not take the stop, left to the lease: ${e.message}`);
@@ -247,7 +248,7 @@ async function park(ctx: AttemptCtx, decision: Extract<EndDecision, { kind: 'par
 }
 
 /**
- * Hands the attempt back as an interruption. One that does not land (the board unreachable, a refused
+ * Hands the attempt back as an interruption, retried for the lease like a verdict. One that does not land (the board unreachable, a refused
  * token) keeps the runner; that and a spent budget leave it to the lease, where the last attempt
  * reports it; a lost lease is the new holder's.
  */
@@ -278,7 +279,7 @@ async function interrupt(
                 ...(daemonLoss ? { daemonLoss } : {}),
                 ...(orgSuspended ? { orgSuspended } : {}),
             }),
-        { leaseLapsed: state.leaseExpiry.signal }
+        { budgetMs: rt.config.leaseSeconds * MS_PER_SECOND, leaseLapsed: state.leaseExpiry.signal }
     ).catch((e: Error) => {
         rt.log(`job ${job.id}: could not report the interruption: ${e.message}`);
         return null;

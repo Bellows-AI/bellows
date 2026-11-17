@@ -20,7 +20,7 @@ import type {
     SuspendResult,
 } from './job-store-types.js';
 import type { ParamValues, WorkflowDefinition } from '../workflows/workflow-schema.js';
-import type { ExecutorScope } from '@factory-ai/core';
+import type { ExecutorScope, ExecutorType } from '@factory-ai/core';
 
 /** The job and thread transitions the board writes: create, follow up, retry, edit, done, stop, remove, waits, reopen, and the worker-initiated suspend and interrupt. */
 export interface JobActionStore {
@@ -49,6 +49,12 @@ export interface JobActionStore {
              * refuses anything outside the pair, and the store stamps the resolved value.
              */
             executorScope?: ExecutorScope;
+            /**
+             * The agent default frozen on a task naming no profile: the agent the claim runs and the model
+             * its config carries. Absent is none. Copied wherever `executor` is; never re-resolved after create.
+             */
+            agentType?: ExecutorType | null;
+            agentModel?: string | null;
             /**
              * The skills the task selects, names the route validated against the
              * catalog. Stored on the root row only; a follow-up, retry or successor reads the
@@ -112,7 +118,8 @@ export interface JobActionStore {
      * The thread's labels, session and workflow name are ALL the parent's, taken from the row and
      * never from a body: an adjustment continues the run it adjusts, on the executor that ran it —
      * a conversation switching executors mid-thread is exactly the cross-CLI resume the driver
-     * cannot do. On a workflow thread the session copied is the primary (the first resume run's),
+     * cannot do. Only the model may change: `model`, when given, replaces the parent's `agent_model` for this turn
+     * and the turns after it. On a workflow thread the session copied is the primary (the first resume run's),
      * whatever node ran last, and the follow-up row itself is off-graph — no `workflow_node` —
      * so its completion re-fires the halted node's edges (docs/workflows.md).
      */
@@ -126,7 +133,9 @@ export interface JobActionStore {
         /** The route's verdict that the caller is an org admin: it admits a thread whose owner is someone else. */
         admin?: boolean,
         /** Uploads to bind to the follow-up itself; `AttachmentRefusedError` when any is not the author's ready file. */
-        attachmentIds?: readonly string[]
+        attachmentIds?: readonly string[],
+        /** The model this turn runs, overriding the parent's; absent or null copies the parent's. Never the agent. */
+        model?: string | null
     ): Promise<{ id: string; replayed?: boolean } | FollowUpRefusal | BatchesDisabledRefusal>;
 
     /**

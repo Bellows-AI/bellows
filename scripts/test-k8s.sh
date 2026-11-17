@@ -853,6 +853,12 @@ expect_contains 'the deployment mode defaults to self-hosted' "$(grep -A1 'name:
     'value: "self-hosted"'
 refuses 'an unknown deployment mode is refused' 'deploymentMode must be self-hosted or cloud' \
     "${GH_SETS[@]}" --set deploymentMode=saas
+# The operator-supplied model: off by default, rendered as the board's PLATFORM_MODEL_PROVIDED.
+expect_contains 'the platform model defaults to off' "$(grep -A1 'name: PLATFORM_MODEL_PROVIDED$' <<<"$mcp_off")" \
+    'value: "false"'
+platform_on="$(gh_render --set platformModelProvided=true)"
+expect_contains 'platformModelProvided renders PLATFORM_MODEL_PROVIDED' \
+    "$(grep -A1 'name: PLATFORM_MODEL_PROVIDED$' <<<"$platform_on")" 'value: "true"'
 # Cloud also refuses to render with an empty admission cap or Free plan limit: no cloud org is unlimited.
 CLOUD_SETS=(--set deploymentMode=cloud
     --set-string dashboard.admission.maxRunning=20 --set-string dashboard.admission.maxRunningPerOrg=4
@@ -2102,9 +2108,9 @@ begin_phase images
 # entrypoints honor.
 cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
     docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
-cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/executor-common/skill-view.cjs docker/skills/factory-jira/jira.cjs docker/skills/factory-linear/linear.cjs docker/skills/factory-task-title/task-title.cjs "$work/"
+cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/board-call.cjs docker/executor-common/connection-ask.cjs docker/executor-common/skill-view.cjs docker/skills/factory-jira/jira.cjs docker/skills/factory-linear/linear.cjs docker/skills/factory-task-title/task-title.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
-printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs skill-view.cjs jira.cjs linear.cjs task-title.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
+printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs board-call.cjs connection-ask.cjs skill-view.cjs jira.cjs linear.cjs task-title.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
 # Two Docker builds at once. Each process owns its log and is joined even if a sibling fails.
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >"$work/dashboard-build.log" 2>&1 &
 dash_build=$!

@@ -92,7 +92,7 @@ export async function insertJobInTx(
             insert into job (
                 org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
                 workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params, mode,
-                execution_user_id, skills, base_branch, skill_pin, skill_hidden
+                execution_user_id, skills, base_branch, skill_pin, skill_hidden, agent_type, agent_model
             )
             select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, ${target.executorScope ?? USER_SCOPE}, x, x,
                    ${target.workflow?.id ?? null},
@@ -104,7 +104,8 @@ export async function insertJobInTx(
                    ${createdBy},
                    ${sql.array([...(target.skills ?? [])])}::text[],
                    ${target.baseBranch ?? null},
-                   '[]'::jsonb, '[]'::jsonb
+                   '[]'::jsonb, '[]'::jsonb,
+                   ${target.agentType ?? null}, ${target.agentModel ?? null}
             from (select gen_random_uuid() as x) s
             returning id
         `;
@@ -152,6 +153,8 @@ export interface FollowUpRowInput {
     /** The route's org-admin verdict; ignored for a null caller. */
     admin?: boolean | undefined;
     githubApp?: boolean | undefined; // the `github` connection a skill may require
+    /** The model this turn runs; null or absent copies the parent's `agent_model`. The agent is always the parent's. */
+    model?: string | null | undefined;
 }
 
 /**
@@ -237,7 +240,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
     const { rootJobId } = admitted;
     const rows = await tx<{ id: string }[]>`
             with parent as (
-                select id, repo, executor, executor_scope, session_id, root_job_id, workflow_name, mode
+                select id, repo, executor, executor_scope, agent_type, agent_model, session_id, root_job_id, workflow_name, mode
                 from job
                 where org_id = ${orgId} and id = ${parentId}
                   and ${terminalFragment(tx)}
@@ -271,8 +274,9 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                     end as session_id
                 from parent, root
             )
-            insert into job (org_id, command, created_by, repo, executor, executor_scope, parent_job_id, session_id, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
-            select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.executor_scope, parent.id,
+            insert into job (org_id, command, created_by, repo, executor, executor_scope, agent_type, agent_model, parent_job_id, session_id, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
+            select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.executor_scope,
+                   parent.agent_type, coalesce(${input.model ?? null}::text, parent.agent_model), parent.id,
                    coalesce(primary_session.session_id, parent.session_id),
                    parent.root_job_id, parent.workflow_name, parent.mode, '[]'::jsonb, '[]'::jsonb
             from parent, root, primary_session
@@ -372,16 +376,17 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
                 for update
             ),
             head as (
-                select command, repo, executor, executor_scope, root_job_id, workflow_name, mode, skill_pin, skill_hidden
+                select command, repo, executor, executor_scope, agent_type, agent_model, root_job_id, workflow_name, mode,
+                       skill_pin, skill_hidden
                 from job
                 where org_id = ${orgId} and root_job_id = (select root_job_id from named)
                 order by created_at desc, id desc
                 limit 1
             )
             -- The pin is the head's, as the command is: a retry re-runs the head with the versions it was locked to.
-            insert into job (org_id, command, created_by, repo, executor, executor_scope, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
+            insert into job (org_id, command, created_by, repo, executor, executor_scope, agent_type, agent_model, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
             select ${orgId}, head.command, ${createdBy}, head.repo, head.executor, head.executor_scope,
-                   head.root_job_id, head.workflow_name, head.mode, head.skill_pin, head.skill_hidden
+                   head.agent_type, head.agent_model, head.root_job_id, head.workflow_name, head.mode, head.skill_pin, head.skill_hidden
             from named, head
             where ${threadIdleFragment(tx, orgId, 'head.root_job_id')}
             returning id

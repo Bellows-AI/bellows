@@ -1,3 +1,4 @@
+import { modelKeyRequired } from '@factory-ai/core';
 import { type AppDeps, buildApp } from '../src/app.js';
 import type { GitHubIdentityClient } from '../src/auth/github.js';
 import type { AuthStore } from '../src/auth/store.js';
@@ -73,6 +74,7 @@ export function staticRegistry(
         workflows: parts.workflows,
         prs: parts.prs,
         envVars: parts.envVars,
+        modelRequired: modelKeyRequired(config.deploymentMode, config.platformModelProvided),
         batches: parts.batches,
         batchObserver: parts.batchObserver,
         batchMerger: parts.batchMerger,

@@ -31,6 +31,8 @@ export interface ComposerDraftState {
     workflowRepo: string;
     /** The branch the task works from; '' is the repository's default. Reset when `repo` changes. */
     baseBranch: string;
+    /** The model chosen for the task; '' is Default — the executor's own, and nothing is sent. */
+    model: string;
     workflow: string;
     storedParams: WorkflowDraft['storedParams'];
     paramTouched: WorkflowDraft['paramTouched'];
@@ -60,6 +62,8 @@ export interface FileDraft {
 
 export interface FollowUpDraft extends FileDraft {
     text: string;
+    /** The model picked for the next run; absent is the thread's own, and nothing is sent. */
+    model?: string | undefined;
 }
 
 export const EMPTY_FILES: FileDraft = { attachments: [], submissionKey: null };
@@ -146,7 +150,8 @@ function settled(held: ComposerDraftHeld): ComposerDraftHeld | null {
     return empty ? null : held;
 }
 
-const followUpEmpty = (draft: FollowUpDraft) => draft.text === '' && draft.attachments.length === 0;
+const followUpEmpty = (draft: FollowUpDraft) =>
+    draft.text === '' && draft.attachments.length === 0 && draft.model === undefined;
 
 const bump = (held: ComposerDraftHeld, scope: SubmitScope): ComposerDraftHeld => ({
     ...held,

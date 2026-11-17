@@ -224,6 +224,43 @@ describe.skipIf(!enabled)('the managed-connection broker — on a real attempt',
         expect((await r.askAs({ id: second.id, leaseToken: second.leaseToken })).statusCode).toBe(HTTP_OK);
     });
 
+    /** The credential and the list route both answer the held pair LEASE_PENDING, with no token. */
+    const expectHeldPending = async (r: Awaited<ReturnType<typeof rig>>) => {
+        const held = { id: r.claim.id, leaseToken: r.claim.leaseToken };
+        for (const res of [await r.askAs(held), await r.list(held)]) {
+            expect(res.statusCode).toBe(HTTP_UNAVAILABLE);
+            expect(res.json()).toMatchObject({ code: 'LEASE_PENDING', retryable: true });
+            noToken(res);
+        }
+    };
+
+    // RED before the fix: the pair a drained driver handed back was a terminal 403, in the gap and after it.
+    it('answers 503 LEASE_PENDING to a handed-back pair before and after the re-claim, and 200 to the new pair', async () => {
+        const r = await rig();
+        expect(
+            await r.jobs.interrupt(r.claim.id, r.claim.leaseToken, {
+                reason: 'the driver was drained',
+                release: true,
+                nodeLoss: true,
+            })
+        ).toMatchObject({ result: 'ok', status: 'queued' });
+        await expectHeldPending(r);
+        const next = (await r.jobs.claim('w2', LEASE_SECONDS)) as Claim;
+        expect(next.id).toBe(r.claim.id);
+        await expectHeldPending(r);
+        expect((await r.askAs({ id: next.id, leaseToken: next.leaseToken })).statusCode).toBe(HTTP_OK);
+    });
+
+    // RED before the fix: only one claim back was kept.
+    it('answers 503 LEASE_PENDING to the pair two claims back', async () => {
+        const r = await rig();
+        for (const worker of ['w2', 'w3']) {
+            await expireLease(r.sql, r.claim.id);
+            expect(((await r.jobs.claim(worker, LEASE_SECONDS)) as Claim).id).toBe(r.claim.id);
+        }
+        await expectHeldPending(r);
+    });
+
     // Pin, green before the fix: a Stop clears the lease and stays terminal.
     it('keeps 403 for a stopped attempt', async () => {
         const r = await rig();

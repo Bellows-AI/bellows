@@ -45,6 +45,7 @@ Uninstalling the GitHub App, or GitHub suspending the installation, suspends the
 | --- | --- | --- |
 | Interruptions not proven to be node loss | 5 per trailing hour, per task | The task ends dead |
 | Node loss (a drained driver, an evicted or removed runner, a lost supervisor confirmed taken away, a driver that went silent and its lease expiring, a Docker daemon that restarted under a failed gate) | 100 per trailing 6 hours, per task | The task ends dead |
+| Wait for the new driver's lease after a takeover (the agent's GitHub, Jira, Linear and task-title calls) | 120 seconds from the call | The call fails with a retryable error and the agent retries the step |
 
 An interruption is retried for you and does not count as a failed attempt. See [Task lifecycle](/guides/task-lifecycle).
 

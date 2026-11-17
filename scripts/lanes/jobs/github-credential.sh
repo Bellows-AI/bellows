@@ -23,10 +23,10 @@ acc_until 40 mint_ready && mint_up=1
 [ -n "$mint_up" ] && ok 'the mint board comes up' || bad 'the mint board comes up' "$(tail -5 "$work/mint-server.log")"
 
 mkdir -p "$work/github"
-cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs "$work/github/"
+cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/board-call.cjs "$work/github/"
 # Through the tool shell: git and gh run as the tool uid, which owns the cache.
 printf '#!/bin/sh\nfor last in "$@"; do :; done\nexec "$SHELL" -c "$last"\n' >"$work/github/run.sh"
-printf 'FROM %s\nCOPY github-credential.cjs /usr/local/bin/github-credential.cjs\nCOPY credential-broker.cjs /usr/local/bin/credential-broker.cjs\nCOPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs\nCOPY run.sh /run.sh\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/github/Dockerfile"
+printf 'FROM %s\nCOPY github-credential.cjs /usr/local/bin/github-credential.cjs\nCOPY credential-broker.cjs /usr/local/bin/credential-broker.cjs\nCOPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs\nCOPY board-call.cjs /usr/local/bin/board-call.cjs\nCOPY run.sh /run.sh\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/github/Dockerfile"
 docker build -q -t "$IMAGE_GH" "$work/github" >/dev/null || {
     echo 'test-jobs: could not build the github helper stub image'
     exit 1

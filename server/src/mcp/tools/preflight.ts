@@ -4,9 +4,11 @@ import { defineTool, READ_ONLY } from '../tool.js';
 import { MAX_CONNECTIONS, MAX_NAME_CHARS, MAX_SELECTED } from './paging.js';
 
 const Check = z.object({
-    subject: z.enum(['repo', 'executor', 'skill', 'connection']),
+    subject: z.enum(['repo', 'executor', 'model', 'skill', 'connection']),
     name: z.string().nullable(),
     status: z.enum(['ok', 'blocked', 'unverified']),
+    /** The code create would refuse with (`NO_MODEL`), on a blocked check that has one. */
+    code: z.string().optional(),
     detail: z.string(),
     integration: z
         .object({ provider: z.string(), reason: z.enum(['missing', 'ambiguous', 'reconnect', 'unknown']) })

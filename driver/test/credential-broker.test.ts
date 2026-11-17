@@ -23,6 +23,7 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 const BROKER = join(ROOT, 'docker/executor-common/credential-broker.cjs');
 const FRONT_END = join(ROOT, 'docker/executor-common/github-credential.cjs');
+const BOARD_CALL = join(ROOT, 'docker/executor-common/board-call.cjs');
 
 interface Pair {
     jobId: string;
@@ -36,7 +37,8 @@ interface Deps {
     sleep: (ms: number) => Promise<void>;
     signal: (ms: number) => AbortSignal;
     stderr: (line: string) => void;
-    deadlineMs?: number;
+    /** The calling helper's one budget (board-call.cjs `createBudget`); absent, the broker makes its own 30 s one. */
+    budget?: unknown;
     pair: (env: Record<string, string | undefined>) => Promise<Pair>;
 }
 type Result = {
@@ -65,6 +67,11 @@ const broker = require_(BROKER) as {
     REVOKE_DEADLINE_MS: number;
     EXIT_INTEGRATION_REQUIRED: number;
 };
+const { createBudget } = require_(BOARD_CALL) as {
+    createBudget: (options: { now: () => number; baseMs: number }) => unknown;
+};
+/** The pending window from a call's start (`LEASE_PENDING_WINDOW_MS`). */
+const WINDOW_MS = 120_000;
 const frontEnd = require_(FRONT_END) as {
     main: (
         argv: string[],
@@ -266,7 +273,8 @@ describe('one wall-clock deadline', () => {
     it('takes the budget a helper passes, never a fresh one', async () => {
         const r = rig(() => 'hang');
         const budget = 4000;
-        expect(await broker.connectionCredential(CONNECTION, { ...r.deps, deadlineMs: budget })).toMatchObject({
+        const passed = createBudget({ now: r.deps.now, baseMs: budget });
+        expect(await broker.connectionCredential(CONNECTION, { ...r.deps, budget: passed })).toMatchObject({
             ok: false,
             reason: 'unreachable',
         });
@@ -343,26 +351,49 @@ describe('one wall-clock deadline', () => {
         expect(r.calls).toHaveLength(calls);
     });
 
-    // Pin, green before the fix: a pending answer that never clears ends on a transient outcome, never `refused`.
-    it('a pending answer that outlasts the deadline ends transient, never refused', async () => {
+    // A pending answer that never clears ends `pending` at the window from the call's start (it once ended at the
+    // 30 s base as `rate_limited`): transient, exit 1, never `refused`.
+    it('ends pending, never refused or rate_limited, when the board answers LEASE_PENDING past the window', async () => {
         const r = rig(() => ({
             status: 503,
             headers: { 'retry-after': '1' },
             body: { code: 'LEASE_PENDING', retryable: true },
         }));
         const result = await broker.obtain(r.deps, broker.GITHUB_KEY);
-        expect(result.ok).toBe(false);
-        expect(result.reason).not.toBe('refused');
-        expect(r.elapsed()).toBeLessThanOrEqual(broker.DEADLINE_MS);
+        expect(result).toEqual({ ok: false, reason: 'pending' });
+        expect(broker.exitCodeOf(result)).toBe(1);
+        expect(r.elapsed()).toBeGreaterThan(broker.DEADLINE_MS);
+        expect(r.elapsed()).toBeLessThanOrEqual(WINDOW_MS);
+        expect(r.stderr.join('\n')).toContain('Retry the step shortly');
         expect(r.stderr.join('\n')).not.toContain('report it');
+    });
+
+    it('returns the credential when the pair moves at 75 s', async () => {
+        const NEW = '44444444-4444-4444-8444-444444444444';
+        const r = rig((call) => {
+            if (call.headers['x-factory-job-lease-token'] === NEW) return minted('ghs_moved_secret');
+            if (r.elapsed() >= 75 * SECOND_MS) r.relayed.lease = NEW;
+            return { status: 503, headers: { 'retry-after': '1' }, body: { code: 'LEASE_PENDING', retryable: true } };
+        });
+        expect(await broker.obtain(r.deps, broker.GITHUB_KEY)).toMatchObject({ ok: true, token: 'ghs_moved_secret' });
+        expect(r.elapsed()).toBeGreaterThanOrEqual(75 * SECOND_MS);
+        expect(r.elapsed()).toBeLessThan(WINDOW_MS);
+        expect(r.calls.at(-1)!.headers['x-factory-job-lease-token']).toBe(NEW);
     });
 
     // Pin: a terminal refusal is one call and no sleep.
     it('a 403 is still refused at once: one call, no sleep', async () => {
-        const r = rig(() => ({ status: 403, body: { error: 'refused' } }));
+        const r = rig(() => ({ status: 403, body: { error: 'refused', code: 'CONNECTION_NOT_AUTHORIZED' } }));
         expect(await broker.obtain(r.deps, broker.GITHUB_KEY)).toMatchObject({ ok: false, reason: 'refused' });
         expect(r.calls).toHaveLength(1);
         expect(r.sleeps).toEqual([]);
+    });
+
+    // Pin: a 4xx with no board `code` (a load balancer's page) is no refusal: it is retried until the deadline.
+    it('a 403 without the board code is no refusal: retried, then unreachable', async () => {
+        const r = rig(() => ({ status: 403, body: { error: 'refused' } }));
+        expect(await broker.obtain(r.deps, broker.GITHUB_KEY)).toMatchObject({ ok: false, reason: 'unreachable' });
+        expect(r.calls.length).toBeGreaterThan(1);
     });
 });
 
@@ -381,7 +412,7 @@ describe('typed stops', () => {
     });
 
     it.each([401, 403])('stops at a %s and never retries it', async (status) => {
-        const r = rig(() => ({ status, body: { error: 'refused' } }));
+        const r = rig(() => ({ status, body: { error: 'refused', code: 'UNAUTHENTICATED' } }));
         expect(await broker.connectionCredential(CONNECTION, r.deps)).toMatchObject({ ok: false, reason: 'refused' });
         expect(r.calls).toHaveLength(1);
         expect(entries(r.deps.dir)).toEqual([]);
@@ -514,7 +545,7 @@ describe('no token on stdout or stderr, in any mode', () => {
     it('keeps tokens off stderr for refusals, outages, rate limits and a revoke, and stdout carries only what git and gh read', async () => {
         const modes: string[][] = [['git', 'get'], ['git', 'erase'], ['git', 'store'], ['token'], ['clear']];
         const boards: ((call: Call) => Answer)[] = [
-            () => ({ status: 403, body: { token: SECRETS[0] } }),
+            () => ({ status: 403, body: { token: SECRETS[0], code: 'CONNECTION_NOT_AUTHORIZED' } }),
             () => ({ status: 409, body: { token: SECRETS[0], code: 'GITHUB_UNAVAILABLE' } }),
             () => ({ status: 429, headers: { 'retry-after': '999' }, body: { token: SECRETS[0] } }),
             () => 'hang',

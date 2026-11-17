@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { emptyBlock, noExecutorMessage } from '@factory-ai/core';
+import { emptyBlock, NO_MODEL_MESSAGE, noExecutorMessage } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
+import type { EnvVarStore } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import {
     githubAuth,
     memoryAuthStore,
     memoryBatchStore,
+    memoryEnvVarStore,
     signedIn,
     staticRegistry,
     stubTelemetryClient,
@@ -100,6 +102,8 @@ async function setup(
         listError?: string;
         /** The deployment flag; the suite runs with batches on unless a case says otherwise. */
         batchesEnabled?: boolean;
+        /** Bellows Cloud: a task needs a model credential, judged on this env store. */
+        cloudEnv?: EnvVarStore;
     } = {}
 ) {
     const auth = memoryAuthStore();
@@ -114,7 +118,11 @@ async function setup(
             return { id: 'never' };
         },
     });
-    const config = testConfig({ auth: githubAuth(), batches: { enabled: options.batchesEnabled ?? true } });
+    const config = testConfig({
+        auth: githubAuth(),
+        batches: { enabled: options.batchesEnabled ?? true },
+        ...(options.cloudEnv ? { deploymentMode: 'cloud' as const } : {}),
+    });
     const repos = reposWithDefaults(
         options.repos ?? [
             { ...WEB, defaultBranch: 'main' },
@@ -145,6 +153,7 @@ async function setup(
                   }
                 : {}),
             ...(options.userExecutors ? { userExecutors: options.userExecutors } : {}),
+            ...(options.cloudEnv ? { envVars: options.cloudEnv } : {}),
         }),
         auth,
     });
@@ -535,7 +544,7 @@ describe('launch checks: validate and start', () => {
                     : null;
             },
             async resolvedDefault() {
-                return { scope: 'org', name: 'Main' };
+                return { kind: 'profile', scope: 'org', name: 'Main' };
             },
         } as unknown as UserExecutorStore;
         const { call, create } = await setup({ userExecutors });
@@ -547,6 +556,71 @@ describe('launch checks: validate and start', () => {
         expect(tasksOf(validated.json())).toEqual(['org:Main', 'org:Main', 'org:Main']);
         expect((await call('POST', `/api/batches/${id}/start`, { version: 1 })).statusCode).toBe(HTTP_OK);
         expect(tasksOf((await call('GET', `/api/batches/${id}`)).json())).toEqual(['org:Main', 'org:Main', 'org:Main']);
+    });
+
+    it("freezes the starter's agent default on every task that names no executor, on validate and on start", async () => {
+        const userExecutors = {
+            async configFor() {
+                return null;
+            },
+            async resolvedDefault() {
+                return { kind: 'agent', agentType: 'opencode', model: 'team-model', from: 'org' };
+            },
+        } as unknown as UserExecutorStore;
+        const { call, create } = await setup({ userExecutors });
+        const { id } = await create(plan());
+        type Tasks = {
+            plan: { stages: { tasks: { executor: string | null; agentType?: string; agentModel?: string }[] }[] };
+        };
+        const tasksOf = (body: Tasks) =>
+            body.plan.stages.flatMap((stage) => stage.tasks).map((t) => `${t.executor}:${t.agentType}:${t.agentModel}`);
+        const validated = await call('POST', `/api/batches/${id}/validate`, {});
+        expect(validated.statusCode).toBe(HTTP_OK);
+        const frozen = ['null:opencode:team-model', 'null:opencode:team-model', 'null:opencode:team-model'];
+        expect(tasksOf(validated.json())).toEqual(frozen);
+        expect((await call('POST', `/api/batches/${id}/start`, { version: 1 })).statusCode).toBe(HTTP_OK);
+        expect(tasksOf((await call('GET', `/api/batches/${id}`)).json())).toEqual(frozen);
+    });
+
+    it('in cloud, refuses NO_MODEL when a task’s repository and agent have no model key, and starts nothing', async () => {
+        const userExecutors = {
+            async resolvedDefault() {
+                return { kind: 'agent', agentType: 'claude-code', model: 'sonnet', from: 'personal' };
+            },
+        } as unknown as UserExecutorStore;
+        const env = memoryEnvVarStore();
+        // A key for another repository, and one Claude Code cannot run on: neither reaches this task.
+        await env.replaceRepo('admin', API.owner, API.name, [
+            { name: 'ANTHROPIC_API_KEY', value: 'k', isSecret: true },
+        ]);
+        await env.replaceOrg('admin', [{ name: 'OPENAI_API_KEY', value: 'k', isSecret: true }]);
+        const { call, create, batches, jobCreates } = await setup({ userExecutors, cloudEnv: env });
+        const { id } = await create(plan());
+        for (const route of ['validate', 'start']) {
+            const response = await call('POST', `/api/batches/${id}/${route}`, route === 'start' ? { version: 1 } : {});
+            expect(response.statusCode, route).toBe(HTTP_CONFLICT);
+            expect(response.json(), route).toMatchObject({ code: 'NO_MODEL', error: NO_MODEL_MESSAGE });
+        }
+        expect(batches.writes).toEqual(['create']);
+        expect(jobCreates).toEqual([]);
+
+        await env.replaceOrg('admin', [{ name: 'OPENROUTER_API_KEY', value: 'k', isSecret: true }]);
+        expect((await call('POST', `/api/batches/${id}/validate`, {})).statusCode).toBe(HTTP_OK);
+    });
+
+    it('in cloud, answers 503 and never NO_MODEL when the env cannot be read', async () => {
+        const userExecutors = {
+            async resolvedDefault() {
+                return { kind: 'agent', agentType: 'opencode', model: 'm', from: 'personal' };
+            },
+        } as unknown as UserExecutorStore;
+        const env = memoryEnvVarStore();
+        env.broken = true;
+        const { call, create, batches } = await setup({ userExecutors, cloudEnv: env });
+        const { id } = await create(plan());
+        const response = await call('POST', `/api/batches/${id}/start`, { version: 1 });
+        expect(response.statusCode).toBe(503);
+        expect(batches.writes).toEqual(['create']);
     });
 
     it('refuses a plan that names no executor with 409 NO_EXECUTOR when the starter has no usable profile', async () => {

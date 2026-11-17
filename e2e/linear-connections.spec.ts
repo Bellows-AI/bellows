@@ -134,7 +134,7 @@ test('reconnecting as another account is refused and the row keeps the first acc
 
     await consentAs(page, 'b');
     await pickFromMenu(page, 'Reconnect');
-    await expect(page.getByText(/That Linear account is not the one this connection was made with/)).toBeVisible();
+    await expect(page.getByText(/That Linear account is not the account this connection was made with/)).toBeVisible();
     await expect(page).toHaveURL(detailUrl);
     const detail = page.getByRole('region', { name: 'Linear connection' });
     await expect(detail).toContainText(ACCOUNT_A);

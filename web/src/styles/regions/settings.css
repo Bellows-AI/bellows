@@ -1208,6 +1208,28 @@
         fill: var(--brand-mcp);
     }
 
+    /* The model providers (the model step's cards): Anthropic and the subscription star are filled, the rest are
+       line glyphs whose path paints no fill and strokes the token. */
+    .provider-mark[data-provider='anthropic'] {
+        fill: var(--brand-anthropic);
+    }
+
+    .provider-mark[data-provider='subscription'] {
+        fill: var(--brand-subscription);
+    }
+
+    .provider-mark[data-provider='openrouter'] {
+        stroke: var(--brand-openrouter);
+    }
+
+    .provider-mark[data-provider='openai'] {
+        stroke: var(--brand-openai);
+    }
+
+    .provider-mark[data-provider='litellm'] {
+        stroke: var(--brand-litellm);
+    }
+
     .integration-list {
         display: grid;
         gap: var(--space-3);

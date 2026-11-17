@@ -237,8 +237,8 @@ export async function heartbeatJob(
             cancelRequested: row.cancel_requested_at !== null,
             stopCause: row.cancel_requested_at === null ? null : row.stop_cause,
             // The answers ride the beat the driver already sends (050): every answered question
-            // of THIS lease, re-listed each beat — the driver applies them idempotently.
-            answeredQuestions: await answeredQuestionsOf(ctx, id, leaseToken),
+            // of THIS attempt, re-listed each beat — the driver applies them idempotently.
+            answeredQuestions: await answeredQuestionsOf(ctx, id),
             requirementWait: await requirementWaitOf(sql, orgId, id),
             release: await orgRelease(sql, orgId, ctx.deploymentMode),
         };
@@ -720,6 +720,8 @@ function transitionContextOf(
         repo: string | null;
         executor: string | null;
         executor_scope: string | null;
+        agent_type: string | null;
+        agent_model: string | null;
     }[],
     verdict: Pick<WorkflowTransitionInput, 'completedId' | 'status' | 'output' | 'failureKind' | 'treeChanged'>
 ): { completed: (typeof threadRows)[number] | undefined; completedRun: CompletedRun; halted: string | null } {
@@ -743,6 +745,12 @@ function transitionContextOf(
         null;
     return { completed, completedRun, halted };
 }
+
+/** The completed run's frozen agent default, for its successor; none when the run is not in the thread read. */
+const frozenAgentOf = (row: { agent_type: string | null; agent_model: string | null } | undefined) => ({
+    agentType: row?.agent_type ?? null,
+    agentModel: row?.agent_model ?? null,
+});
 
 export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowTransitionInput): Promise<void> {
     const { orgId, rootJobId, root, completedId, prs } = input;
@@ -779,9 +787,11 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
             repo: string | null;
             executor: string | null;
             executor_scope: string | null;
+            agent_type: string | null;
+            agent_model: string | null;
         }[]
     >`
-        select id, workflow_node, status, output, gates, session_id, repo, executor, executor_scope
+        select id, workflow_node, status, output, gates, session_id, repo, executor, executor_scope, agent_type, agent_model
         from job
         where org_id = ${orgId} and root_job_id = ${rootJobId}
         order by created_at, id
@@ -839,6 +849,8 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
         repo: completed?.repo ?? root.repo,
         executor: completed?.executor ?? null,
         executorScope: (completed?.executor_scope ?? USER_SCOPE) as ExecutorScope,
+        // The agent default frozen on the thread rides with the label, never re-resolved.
+        ...frozenAgentOf(completed),
         parentJobId: completedId,
         sessionId: session,
         rootJobId,

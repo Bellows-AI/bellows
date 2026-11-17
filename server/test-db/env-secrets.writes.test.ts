@@ -501,3 +501,78 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
         expect(await storedRows()).toEqual({});
     });
 });
+
+describe.skipIf(!enabled)('a single-name secret write', () => {
+    const CAP = 2;
+    const cap = (resulting: readonly EnvVarEntry[]) => (resulting.length > CAP ? 'at most 2 for the test' : null);
+
+    it('refused inside the transaction (the cap) releases the secret it created exactly once; the prior secret resolves', async () => {
+        const spy = spySecrets(healthy);
+        const store = storeOver(spy.store);
+        await store.replaceOrg('env-admin', [
+            { name: 'PRIOR', value: 'prior-value', isSecret: true },
+            { name: 'PLAIN', value: 'p', isSecret: false },
+        ]);
+        const priorRef = (await storedRows()).PRIOR?.secret_ref ?? null;
+
+        const error = await rejection(
+            store.writeScoped(
+                ORG_SCOPE,
+                { upsert: [{ name: 'NEW', value: secretOf('new'), isSecret: true }], remove: [] },
+                'env-admin',
+                { validate: cap }
+            )
+        );
+
+        expect(error).toMatchObject({ reason: 'at most 2 for the test' });
+        const created = spy.calls.creates.find((c) => c.name === 'NEW');
+        expect(created).toBeDefined();
+        expect(spy.calls.deletes.filter((d) => d.ref === created?.ref)).toHaveLength(1);
+        expect(await readState(ORG_SCOPE, 'NEW', created?.ref ?? null)).toBe('not-found');
+        expect(spy.calls.deletes.map((d) => d.ref)).not.toContain(priorRef);
+        expect(Object.keys(await storedRows()).sort()).toEqual(['PLAIN', 'PRIOR']);
+        expect(await store.resolveFor({ userId: null, repo: null })).toEqual({ PRIOR: 'prior-value', PLAIN: 'p' });
+    });
+
+    it('replacing a secret retires the old reference after the commit', async () => {
+        const store = storeOver(healthy);
+        await store.replaceOrg('env-admin', [{ name: 'S', value: 'one', isSecret: true }]);
+        const first = (await storedRows()).S?.secret_ref ?? null;
+
+        await store.writeScoped(
+            ORG_SCOPE,
+            { upsert: [{ name: 'S', value: 'two', isSecret: true }], remove: [] },
+            'env-admin'
+        );
+
+        expect(await readState(ORG_SCOPE, 'S', first)).toBe('not-found');
+        expect(await store.resolveFor({ userId: null, repo: null })).toEqual({ S: 'two' });
+    });
+
+    it('a failing alsoInTx hook rolls the write back and releases what it created, keeping the old secret', async () => {
+        const spy = spySecrets(healthy);
+        const store = storeOver(spy.store);
+        await store.replaceOrg('env-admin', [{ name: 'S', value: 'old', isSecret: true }]);
+        const oldRef = (await storedRows()).S?.secret_ref ?? null;
+
+        const error = await rejection(
+            store.writeScoped(
+                ORG_SCOPE,
+                { upsert: [{ name: 'S', value: 'new', isSecret: true }], remove: [] },
+                'env-admin',
+                {
+                    alsoInTx: async () => {
+                        throw new Error('hook failed');
+                    },
+                }
+            )
+        );
+
+        expect(error).toMatchObject({ message: 'hook failed' });
+        const created = spy.calls.creates.at(-1);
+        expect(spy.calls.deletes.filter((d) => d.ref === created?.ref)).toHaveLength(1);
+        expect((await storedRows()).S?.secret_ref).toBe(oldRef);
+        expect(await readState(ORG_SCOPE, 'S', oldRef)).toBe('ok');
+        expect(await store.resolveFor({ userId: null, repo: null })).toEqual({ S: 'old' });
+    });
+});

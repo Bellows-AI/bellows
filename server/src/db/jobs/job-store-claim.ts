@@ -22,7 +22,7 @@ import {
     orgAdmission,
     repoRoom,
 } from './job-store-admission.js';
-import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
+import { type ResolvedClaimExecutor, recordRunModel, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf, threadBaseBranchFragment, workspacePathFor } from './job-store-rows.js';
 import { commitStagedConclusions } from './job-store-conclusions.js';
@@ -437,6 +437,10 @@ async function acquireCandidate(
                 -- still holding it is told to retry with the current pair, never refused for good. A claim of a
                 -- queued row supersedes no running attempt.
                 prior_lease_token = case when status = 'running' then lease_token else null end,
+                -- Every lease the task gave up (160): this claim's superseded one joins the list, so any pair the
+                -- task held stays a retry until it ends. A queued row's lease was appended by its hand-back.
+                superseded_lease_tokens = case when lease_token is null then superseded_lease_tokens
+                                               else superseded_lease_tokens || lease_token end,
                 -- The telemetry export credential (144): never rotated, so an adopted runner keeps exporting
                 -- under it; minted here only for a row from before the column that holds none.
                 ingest_token     = coalesce(ingest_token, gen_random_uuid()),
@@ -490,7 +494,7 @@ async function acquireCandidate(
             -- stopped, and is never claimed again.
             returning id, command, attempts, max_attempts, claim_seq, lease_token, ingest_token, lease_expires_at,
                       (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as run_as,
-                      session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
+                      session_id, repo, parent_job_id, executor, executor_scope, agent_type, agent_model, workflow_node, workflow_name, mode,
                       -- The post-update row: whether this attempt's loss would retire the job.
                       ${exhausted} as last_attempt,
                       extract(epoch from clock_timestamp() - ${locked.queued_since}::timestamptz)::float8 as queue_age,
@@ -583,10 +587,10 @@ async function assembleClaim(
     },
     prepared: { rootJobId: string; gates: ResolvedClaimGates; connections: ClaimConnections }
 ): Promise<Omit<Claim, 'attachments'>> {
-    const { orgId, env, githubApp, executorConfig, prs, deploymentMode } = ctx;
-    const { rootJobId } = prepared;
-    const { connections } = prepared;
-    const executor = await resolveClaimExecutor(tx, { env, executorConfig, deploymentMode }, row);
+    const { orgId, githubApp, prs } = ctx;
+    const { rootJobId, connections } = prepared;
+    const executor = await resolveClaimExecutor(tx, ctx, row);
+    await recordRunModel(tx, orgId, row.id, executor.runModel);
     const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.run_as) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);

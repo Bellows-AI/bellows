@@ -160,4 +160,15 @@ describe('TaskActivity', () => {
         const html = render({ [RUN_ID]: activityAnswer(RUN_ID, { input: 1 }, task) });
         expect(html).toContain('2 runs · 12 agent turns');
     });
+
+    it('names the model the latest run was handed, and "profile default" only when the claim recorded none', () => {
+        const ran = render({}, [
+            job({ id: RUN_ID, resolvedModel: 'claude-haiku-5-5' }),
+            job({ id: '22222222-2222-4222-8222-222222222222', agentModel: 'gpt-x', resolvedModel: 'gpt-x' }),
+        ]);
+        expect(ran).toContain('<dt>Model</dt><dd>gpt-x</dd>');
+        // The requested model is not what ran: a profile task with no claim yet says the profile decides.
+        const unclaimed = render({}, [job({ id: RUN_ID, agentModel: 'gpt-x', resolvedModel: null })]);
+        expect(unclaimed).toContain('<dt>Model</dt><dd>profile default</dd>');
+    });
 });

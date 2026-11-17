@@ -1,6 +1,7 @@
 import type { Sql, TransactionSql } from 'postgres';
 import { DEFAULT_GATE_FIX_ROUNDS, ORG_SCOPE, USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
 import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
+import { type AgentDefault, type AgentDefaults, agentDefaultMethods } from './agent-default-sql.js';
 import {
     convertedGate,
     type ExecutorCredentialDeps,
@@ -10,6 +11,8 @@ import {
     storedOf,
     writeSealed,
 } from './executor-credentials.js';
+
+export type { AgentDefault, AgentDefaults } from './agent-default-sql.js';
 
 /**
  * One executor profile: a member's personal row (`userId` set) or an organization-wide row the
@@ -68,6 +71,14 @@ export interface ExecutorDefault {
     readonly scope: ExecutorScope;
     readonly name: string;
 }
+
+/**
+ * What a task naming no executor runs on (`resolvedDefault`): a profile by scope and name, or an agent default the task
+ * is frozen with — its agent type and model, and whether the member's own row or the organization's won.
+ */
+export type ResolvedDefault =
+    | ({ readonly kind: 'profile' } & ExecutorDefault)
+    | ({ readonly kind: 'agent'; readonly from: 'personal' | 'org' } & AgentDefault);
 
 export interface UserExecutorStore {
     /**
@@ -185,13 +196,25 @@ export interface UserExecutorStore {
      */
     setDefault(userId: string, def: ExecutorDefault): Promise<void>;
     /**
-     * The preference as the composer may act on it, through the deterministic fallback chain: the
-     * stored preference while it still resolves to an ACTIVE row, then the first active personal
-     * row by position, then the first active org row by position, then null. A removed or
-     * suspended profile's preference falls through — it is never silently re-pointed at another
-     * row, and a suspended one stays stored so resuming restores it.
+     * What a task naming no executor runs on, through the deterministic chain: the stored preference
+     * while it still resolves to an ACTIVE row, then the member's agent default, then the
+     * organization's agent default, then the first active personal row by position, then the first
+     * active org row by position, then null. A removed or suspended profile's preference falls
+     * through — it is never silently re-pointed at another row, and a suspended one stays stored so
+     * resuming restores it. A failed read throws; it is never "no default".
      */
-    resolvedDefault(userId: string): Promise<ExecutorDefault | null>;
+    resolvedDefault(userId: string): Promise<ResolvedDefault | null>;
+
+    /** The organization's agent default and the member's own, each null when unset. */
+    agentDefaults(userId: string): Promise<AgentDefaults>;
+    /** Writes the agent default `owner` names — a member's id, or null for the organization's. */
+    setAgentDefault(owner: string | null, value: AgentDefault): Promise<void>;
+    /** `setAgentDefault` inside a transaction the caller holds, so a save can write it beside other rows. */
+    setAgentDefaultInTx(tx: TransactionSql, owner: string | null, value: AgentDefault): Promise<void>;
+    /** The agent default `owner` names, read and locked inside a transaction the caller holds; null when unset. */
+    agentDefaultInTx(tx: TransactionSql, owner: string | null): Promise<AgentDefault | null>;
+    /** Removes the agent default `owner` names (null: the organization's). False when there was none. */
+    deleteAgentDefault(owner: string | null): Promise<boolean>;
 }
 
 /**
@@ -438,6 +461,29 @@ async function updateOrgRow(
     return rows[0] ?? null;
 }
 
+/** `resolvedDefault`'s chain over the store's own reads, in the order the interface documents. */
+async function resolveDefault(
+    store: Pick<UserExecutorStore, 'defaultOf' | 'configFor' | 'agentDefaults' | 'list' | 'listOrg'>,
+    userId: string
+): Promise<ResolvedDefault | null> {
+    const stored = await store.defaultOf(userId);
+    const configured = stored ? await store.configFor(userId, stored.name, stored.scope) : null;
+    if (stored && configured && !configured.suspended) {
+        return { kind: 'profile', ...stored };
+    }
+    // An agent default comes before any profile the member never chose: the member's own, then the org's.
+    const agents = await store.agentDefaults(userId);
+    if (agents.personal) return { kind: 'agent', ...agents.personal, from: 'personal' };
+    if (agents.org) return { kind: 'agent', ...agents.org, from: 'org' };
+    // The fallback chain, deterministic: first active personal row by position, then first
+    // active org row. A member who never chose keeps "selected first on new tasks" semantics.
+    const personal = (await store.list(userId)).find((row) => !row.suspended);
+    if (personal) return { kind: 'profile', scope: USER_SCOPE, name: personal.name };
+    const orgRow = (await store.listOrg()).find((row) => !row.suspended);
+    if (orgRow) return { kind: 'profile', scope: ORG_SCOPE, name: orgRow.name };
+    return null;
+}
+
 /** The organization is bound at construction: one store serves one organization. */
 export function createUserExecutorStore({
     sql,
@@ -645,18 +691,9 @@ export function createUserExecutorStore({
 
         async resolvedDefault(userId) {
             await gate();
-            const stored = await this.defaultOf(userId);
-            const configured = stored ? await this.configFor(userId, stored.name, stored.scope) : null;
-            if (stored && configured && !configured.suspended) {
-                return stored;
-            }
-            // The fallback chain, deterministic: first active personal row by position, then first
-            // active org row. A member who never chose keeps "selected first on new tasks" semantics.
-            const personal = (await this.list(userId)).find((row) => !row.suspended);
-            if (personal) return { scope: USER_SCOPE, name: personal.name };
-            const orgRow = (await this.listOrg()).find((row) => !row.suspended);
-            if (orgRow) return { scope: ORG_SCOPE, name: orgRow.name };
-            return null;
+            return resolveDefault(this, userId);
         },
+
+        ...agentDefaultMethods(sql, orgId, gate),
     };
 }

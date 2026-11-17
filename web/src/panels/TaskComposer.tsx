@@ -11,6 +11,7 @@ import { type ComposerDraftInput, type ComposerDraftStore, TASK_SCOPE } from '..
 import { withDraftReturn } from '../components/DraftReturnBanner.js';
 import { BranchCombobox } from '../components/BranchCombobox.js';
 import { Icon } from '../components/Icon.js';
+import { ModelCombobox, useKnownModels } from '../components/ModelCombobox.js';
 import { SlashSkillMenu, useSlashMenu } from '../components/SlashSkillMenu.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
@@ -29,7 +30,9 @@ import {
     touchAll,
 } from '../task-composer.js';
 import { type ComposerDraft, type ComposerWorkflowOption, useComposerDraft } from '../use-composer-draft.js';
+import type { AgentDefaultChoice } from '../api/useWorkspace.js';
 import {
+    EXECUTOR_TYPE_META,
     executorChoiceId,
     executorChoiceOf,
     type ComposerExecutorOption,
@@ -38,6 +41,7 @@ import {
 
 /** The prompt's placeholder example: a skill invocation on a ticket. */
 const PROMPT_PLACEHOLDER = '/factory-fix TICKET-XXX';
+const skillExample = (): string => PROMPT_PLACEHOLDER;
 
 /** The ids Start's `aria-describedby` points at: the readiness banner, or the quiet status text. */
 const READINESS_ID = 'composer-readiness';
@@ -65,21 +69,62 @@ const shortRepo = (repo: string): string => repo.slice(repo.lastIndexOf('/') + 1
 /** The empty workflow option: objective mode, the prompt runs as written. */
 const NO_WORKFLOW_LABEL = 'No workflow';
 
+/** The executor chip's value: the chosen profile, else the agent default a task naming none runs, else the blocker. */
+function executorLabelOf(executor: string, agentDefault: AgentDefaultChoice | null): string {
+    if (executor !== '') return executor;
+    if (agentDefault === null) return 'No executor configured';
+    return `Default — ${EXECUTOR_TYPE_META[agentDefault.agentType].label} · ${agentDefault.model}`;
+}
+
+/**
+ * The Model chip beside the executor: Default is the executor's own model — the agent default's, named, when that
+ * runs — and sends nothing. The agent never changes here; the offered models are its provider's.
+ */
+function ComposerModelChip({
+    executors,
+    agentDefault,
+    state,
+    update,
+}: {
+    executors: readonly ComposerExecutorOption[];
+    agentDefault: AgentDefaultChoice | null;
+    state: ComposerDraftInput;
+    update: Update;
+}) {
+    const { executor, executorScope } = state;
+    const profile = executors.find((option) => option.name === executor && option.scope === executorScope);
+    const runsDefault = executor === '' && agentDefault !== null;
+    const models = useKnownModels(runsDefault ? agentDefault.agentType : (profile?.type ?? null));
+    return (
+        <div className="composer-context-item">
+            <ModelCombobox
+                value={state.model}
+                defaultLabel={runsDefault ? `Default (${agentDefault.model})` : 'Default'}
+                models={models}
+                onChange={(model) => update({ model })}
+            />
+        </div>
+    );
+}
+
 /**
  * The context chips (issue 571): Repository, Executor and Workflow as compact borderless triggers
  * in the surface's toolbar, each showing its glyph and selected value. The accessible name
  * is the field and that value (label in name), the full value also its title and its menu. A missing executor is a
- * blocker, said by the readiness banner; its trigger only wears the stop lamp's edge.
+ * blocker, said by the readiness banner; its trigger only wears the stop lamp's edge. No executor chosen beside an
+ * agent default is not missing: the task runs that default.
  */
 function ComposerContextRow({
     repos,
     executors,
+    agentDefault,
     workflows,
     state,
     update,
 }: {
     repos: readonly RepoOption[];
     executors: readonly ComposerExecutorOption[];
+    agentDefault: AgentDefaultChoice | null;
     workflows: readonly ComposerWorkflowOption[] | null;
     state: ComposerDraftInput;
     update: Update;
@@ -90,7 +135,8 @@ function ComposerContextRow({
     const executorAnchor = useDownwardAnchor('start');
     const { repo, executor } = state;
     const repoLabel = repo === '' ? REPO_PLACEHOLDER : repo;
-    const executorLabel = executor === '' ? 'No executor configured' : executor;
+    const executorLabel = executorLabelOf(executor, agentDefault);
+    const executorMissing = executor === '' && agentDefault === null;
     return (
         <div className="composer-context">
             <div className="composer-context-item">
@@ -141,7 +187,7 @@ function ComposerContextRow({
                 >
                     <ListboxButton
                         ref={executorAnchor.setReference}
-                        className={executor === '' ? 'select-trigger composer-trigger-missing' : 'select-trigger'}
+                        className={executorMissing ? 'select-trigger composer-trigger-missing' : 'select-trigger'}
                         aria-label={`Executor: ${executorLabel}`}
                         title={executorLabel}
                     >
@@ -168,6 +214,7 @@ function ComposerContextRow({
                     </ListboxOptions>
                 </Listbox>
             </div>
+            <ComposerModelChip executors={executors} agentDefault={agentDefault} state={state} update={update} />
             <ComposerWorkflowTrigger workflows={workflows} workflow={state.workflow} update={update} />
         </div>
     );
@@ -426,12 +473,16 @@ export function TaskComposer({
     onRetryWorkspace,
     executors,
     defaultExecutor,
+    agentDefault = null,
     workflows,
     actionError,
     sending,
     onSend,
     onRepoChange,
     draftStore,
+    inline = false,
+    placeholderFor = skillExample,
+    starters,
 }: {
     /**
      * The tracked repositories. Null until the list is confirmed — "not known" is a different
@@ -449,6 +500,8 @@ export function TaskComposer({
     executors: readonly ComposerExecutorOption[];
     /** The poll's resolved default executor (issue 391), or null when nothing is selectable. */
     defaultExecutor: ExecutorChoice | null;
+    /** The agent default a task naming no executor runs, from the same poll; null or absent when none wins. */
+    agentDefault?: AgentDefaultChoice | null;
     /**
      * The workflow choices for the selected repository's context, or null when the list has not
      * answered (or this board serves no workflows at all). Null HIDES the selector: a board
@@ -470,6 +523,12 @@ export function TaskComposer({
     onRepoChange?: (repo: string | null) => void;
     /** The shell's held draft (F1): read once at mount, written on every change, cleared on launch. */
     draftStore: ComposerDraftStore;
+    /** Set where the composer sits inside a page's column (Ready), not filling a page of its own. */
+    inline?: boolean;
+    /** The prompt's placeholder for the chosen repository ('' when none); absent, the skill example. */
+    placeholderFor?: (repo: string) => string;
+    /** Prompts the caller offers right under the field, above the control bar. */
+    starters?: ReactNode;
 }) {
     const limits = useAttachmentLimits();
     const frozen = sending || draftStore.submits[TASK_SCOPE] !== undefined;
@@ -480,6 +539,7 @@ export function TaskComposer({
         executors,
         executorsLoaded: workspaceLoaded,
         defaultExecutor,
+        agentDefault: agentDefault !== null,
         workflows,
         onRepoChange,
         sending,
@@ -502,7 +562,7 @@ export function TaskComposer({
     const nearLimit = commandNearLimit(state.draft);
     const blocker = startBlocker({
         sending: frozen,
-        executorMissing: state.executor === '',
+        executorMissing: state.executor === '' && agentDefault === null,
         promptEmpty: state.draft.trim() === '',
         promptTooLong,
         ...(readiness !== undefined ? { repoReadiness: readiness } : {}),
@@ -536,7 +596,11 @@ export function TaskComposer({
     const launch = composerLaunch(blocker, frozen, attemptStart);
     return (
         // The whole page takes dropped files, not only the input.
-        <AttachmentDropZone className="composer task-compose" accepts={() => limits !== null} onFiles={files.add}>
+        <AttachmentDropZone
+            className={['composer task-compose', inline && 'task-compose-inline'].filter(Boolean).join(' ')}
+            accepts={() => limits !== null}
+            onFiles={files.add}
+        >
             {/* biome-ignore lint/a11y/noStaticElementInteractions: the launch shortcut is a composer-wide keystroke surface — a member tabbed into any field of the guided form (prompt, selects, workflow inputs) presses Ctrl/⌘+Enter and gets exactly what the Start button would have given them, so the handler must sit above every control rather than on each one */}
             <div
                 className="task-compose-body"
@@ -554,7 +618,7 @@ export function TaskComposer({
                 <ChatInput
                     id={PROMPT_ID}
                     label="What should the agent do?"
-                    placeholder={PROMPT_PLACEHOLDER}
+                    placeholder={placeholderFor(state.repo)}
                     value={state.draft}
                     readOnly={frozen}
                     onChange={(e) => {
@@ -573,6 +637,7 @@ export function TaskComposer({
                         <ComposerContextRow
                             repos={repos}
                             executors={executors}
+                            agentDefault={agentDefault}
                             workflows={workflows}
                             state={state}
                             update={update}
@@ -590,6 +655,7 @@ export function TaskComposer({
                             {commandCount(state.draft)}
                         </p>
                     ) : null}
+                    {starters}
                 </ChatInput>
                 {workflows === null ? null : <ComposerWorkflowDetails composer={composer} />}
                 <ReadinessBanner blocker={blocker} workflow={state.workflow} />

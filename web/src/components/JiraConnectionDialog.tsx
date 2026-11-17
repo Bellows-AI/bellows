@@ -1,13 +1,13 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 import type { StartAuthorizationInput } from '../api/connections.js';
+import { ALLOW_COMMENTS_LABEL, commentsHelp } from './WriteConsentDialog.js';
 
 export const CONNECT_DIALOG_TITLE = 'Connect Jira';
 export const CONNECT_SUBMIT_LABEL = 'Continue to Atlassian';
-export const ALLOW_COMMENTS_LABEL = 'Allow adding comments';
 export const SITE_HELP =
     'Leave blank to connect every site the Atlassian account can reach, or name one, as example.atlassian.net.';
-export const COMMENTS_HELP = 'Without it tasks can only look Jira up; with it they can also add comments.';
+export const COMMENTS_HELP = commentsHelp('Jira');
 
 /**
  * Connect Jira: an optional site and the comment-access checkbox stacked one per row in the

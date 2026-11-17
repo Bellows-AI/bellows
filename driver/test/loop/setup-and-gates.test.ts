@@ -514,6 +514,20 @@ describe('verification gates', () => {
         expect(board.board.completed[0]!.status).toBe('succeeded');
     });
 
+    it('keeps the artifacts through a board outage longer than five tries', async () => {
+        const board = stubBoard([gatedJob(1)], { artifactsDown: 8 });
+        const stack = stubGateStack();
+        const runner = stubRunner(async () =>
+            ok({ fullLog: 'line one\n', transcript: '{"a":1}\n', sessionId: 'sess-1' })
+        );
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(board.board.artifactChunks.map((c) => c.stream)).toEqual(['log', 'transcript']);
+        expect(board.board.artifactManifests.map((m) => m.state)).toEqual(['complete', 'complete']);
+        expect(board.board.completed[0]!.status).toBe('succeeded');
+    });
+
     it('keeps a passing verdict when every artifact upload fails', async () => {
         const board = stubBoard([gatedJob(1)], { artifactsDown: true });
         const stack = stubGateStack();

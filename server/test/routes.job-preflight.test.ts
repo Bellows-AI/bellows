@@ -1,13 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { noExecutorMessage } from '@factory-ai/core';
+import { NO_MODEL_MESSAGE, noExecutorMessage } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { ConnectionStore, ConnectionView } from '../src/db/connection-store.js';
+import type { EnvVarStore } from '../src/db/env-var-store.js';
 import type { SkillStore } from '../src/db/skill-store.js';
 import type { Resolution, ResolveRefusal } from '../src/db/connection-bindings.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import {
     githubAuth,
     memoryAuthStore,
+    memoryEnvVarStore,
     memoryUserExecutorStore,
     signedIn,
     staticRegistry,
@@ -72,6 +74,8 @@ interface Scenario {
     skills?: SkillStore;
     /** The executor profile reads throw: the caller's executor type cannot be confirmed. */
     brokenExecutors?: boolean;
+    /** Bellows Cloud: the task's model credential is judged on this env store. */
+    cloudEnv?: EnvVarStore;
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -108,13 +112,17 @@ async function boot(scenario: Scenario = {}) {
                       return { repos, installation: null, error: scenario.repoError ?? null };
                   },
               };
-    const config = testConfig({ auth: githubAuth() });
+    const config = testConfig({
+        auth: githubAuth(),
+        ...(scenario.cloudEnv ? { deploymentMode: 'cloud' as const } : {}),
+    });
     const app = await buildApp({
         config,
         orgs: staticRegistry({
             config,
             repos,
             connections,
+            ...(scenario.cloudEnv ? { envVars: scenario.cloudEnv } : {}),
             userExecutors: scenario.brokenExecutors
                 ? {
                       ...executors,
@@ -154,6 +162,34 @@ const verdict = async (booted: Booted, payload: unknown, subject: string, name?:
     };
     return { body, check: body.checks.find((c) => c.subject === subject && (name === undefined || c.name === name)) };
 };
+
+describe('POST /api/jobs/preflight model', () => {
+    it('is blocked with the fix in cloud when the agent has no model key, ok once one is set', async () => {
+        const env = memoryEnvVarStore();
+        const booted = await boot({ cloudEnv: env });
+        const { check, body } = await verdict(booted, { repo: 'acme/web', executor: 'main' }, 'model');
+        expect(check).toMatchObject({ status: 'blocked', code: 'NO_MODEL', detail: NO_MODEL_MESSAGE });
+        expect(body.ready).toBe(false);
+
+        await env.replaceWorkspace(booted.member.user.id, [{ name: 'ANTHROPIC_API_KEY', value: 'k', isSecret: true }]);
+        expect((await verdict(booted, { repo: 'acme/web', executor: 'main' }, 'model')).check).toMatchObject({
+            status: 'ok',
+        });
+    });
+
+    it('is unverified, never blocked, when the env cannot be read', async () => {
+        const env = memoryEnvVarStore();
+        env.broken = true;
+        const { check, body } = await verdict(await boot({ cloudEnv: env }), { repo: 'acme/web' }, 'model');
+        expect(check).toMatchObject({ status: 'unverified' });
+        expect(body.ready).toBe(true);
+    });
+
+    it('is not checked on a self-hosted board', async () => {
+        const { check } = await verdict(await boot(), { repo: 'acme/web', executor: 'main' }, 'model');
+        expect(check).toBeUndefined();
+    });
+});
 
 describe('POST /api/jobs/preflight repo', () => {
     it('is ok for a tracked repo', async () => {
@@ -228,6 +264,27 @@ describe('POST /api/jobs/preflight executor', () => {
         expect(check).toMatchObject({ name: null, status: 'blocked' });
         expect(check?.detail).toBe(noExecutorMessage);
     });
+
+    it.each([
+        { owner: 'personal', detail: 'your agent default' },
+        { owner: 'org', detail: "the organization's agent default" },
+    ] as const)(
+        'is ok when nothing is selected and the $owner agent default wins, naming it',
+        async ({ owner, detail }) => {
+            const booted = await boot();
+            const userId = booted.member.user.id;
+            // The agent default comes before the member's first profile, which they never chose.
+            await booted.executors.setAgentDefault(owner === 'org' ? null : userId, {
+                agentType: 'opencode',
+                model: 'anthropic/claude-sonnet-4-5',
+            });
+            const { check } = await verdict(booted, { repo: 'acme/web' }, 'executor');
+            expect(check).toMatchObject({ name: null, status: 'ok' });
+            expect(check?.detail).toContain(detail);
+            expect(check?.detail).toContain('opencode');
+            expect(check?.detail).toContain('anthropic/claude-sonnet-4-5');
+        }
+    );
 
     it('is blocked when the profile is suspended', async () => {
         const booted = await boot();

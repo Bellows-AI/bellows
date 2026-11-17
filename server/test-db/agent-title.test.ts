@@ -193,17 +193,57 @@ describe.skipIf(!enabled)('agent title — database', () => {
         expect(await events(id)).toHaveLength(0);
     });
 
-    it('the superseded pair is 503 pending, a pair one takeover older is 403, nothing written', async () => {
+    // A pair one takeover older was 403 before the fix: every pair the task held now stays pending until it ends.
+    it('the superseded pair and a pair one takeover older are 503 pending, nothing written', async () => {
         const first = await running();
         const second = await reclaim(first.id);
         const prior = await put(first.id, first.claim.leaseToken, 'Fix login');
         expect(prior.status).toBe(HTTP_UNAVAILABLE);
         expect(prior.body.code).toBe('LEASE_PENDING');
         const third = await reclaim(first.id);
-        expect((await put(first.id, first.claim.leaseToken, 'Fix login')).status).toBe(HTTP_FORBIDDEN);
+        expect((await put(first.id, first.claim.leaseToken, 'Fix login')).status).toBe(HTTP_UNAVAILABLE);
         expect((await put(first.id, second.leaseToken, 'Fix login')).status).toBe(HTTP_UNAVAILABLE);
         expect(await events(first.id)).toHaveLength(0);
         expect((await put(first.id, third.leaseToken, 'Fix login')).status).toBe(HTTP_OK);
+    });
+
+    // RED before the fix: a drained driver's hand-back forgot the token, so the re-claim left it a terminal 403.
+    it('a pair a drained driver handed back is 503 pending after the re-claim, nothing written', async () => {
+        const { id, claim } = await running();
+        expect(
+            await jobs.interrupt(id, claim.leaseToken, {
+                reason: 'the driver was drained',
+                release: true,
+                nodeLoss: true,
+            })
+        ).toMatchObject({ result: 'ok', status: 'queued' });
+        const next = (await jobs.claim('w2', LEASE_SECONDS)) as Claim;
+        expect(next.id).toBe(id);
+        const held = await put(id, claim.leaseToken, 'Fix login');
+        expect(held.status).toBe(HTTP_UNAVAILABLE);
+        expect(held.body.code).toBe('LEASE_PENDING');
+        expect(await events(id)).toHaveLength(0);
+        expect((await put(id, next.leaseToken, 'Fix login')).status).toBe(HTTP_OK);
+    });
+
+    // RED before the fix: the own-row check under the lock refused a pair handed back between the check and the write.
+    it.each([
+        { name: 'in the gap', reclaimed: false },
+        { name: 'after the re-claim', reclaimed: true },
+    ])('a hand-back between the pair check and the write is answered pending ($name)', async ({ reclaimed }) => {
+        const { id, claim } = await running();
+        afterCheck = async () => {
+            await jobs.interrupt(id, claim.leaseToken, {
+                reason: 'the driver was drained',
+                release: true,
+                nodeLoss: true,
+            });
+            if (reclaimed) expect(((await jobs.claim('w2', LEASE_SECONDS)) as Claim).id).toBe(id);
+        };
+        const res = await put(id, claim.leaseToken, 'Fix login');
+        expect(res.status).toBe(HTTP_UNAVAILABLE);
+        expect(res.body.code).toBe('LEASE_PENDING');
+        expect(await events(id)).toHaveLength(0);
     });
 
     it("a stopped, a finished, a reviewer row and another job's token are all 403", async () => {

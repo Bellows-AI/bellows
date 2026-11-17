@@ -6,7 +6,7 @@ import { type AttachmentContent, attachmentCalls, type ClaimAttachment } from '.
 import { claimOf, parseClaim } from './board-claim.js';
 import { type ClaimSkills, skillCalls } from './board-skills.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
-import { BoardHttpError } from './board-retry.js';
+import { BoardHttpError, uncodedAnswer } from './board-retry.js';
 import { type GithubGrant, githubCredentialCall } from '../github-credential-call.js';
 import { type Reclaim, reclaimCalls } from '../reclaim-calls.js';
 import { recordCalls, type RecordBoard } from './board-pr-operations.js';
@@ -761,10 +761,15 @@ const bestEffortLeases = async (
 };
 
 /** The board's answer to a question report, read as a verdict. */
-function questionVerdictOf(response: Response): QuestionVerdict {
+async function questionVerdictOf(response: Response): Promise<QuestionVerdict> {
     if (response.status === HTTP_TOO_MANY_REQUESTS) return 'refused';
     if (response.status === HTTP_CONFLICT) return 'lost';
-    return response.status === HTTP_NOT_FOUND ? 'removed' : 'held';
+    if (response.status === HTTP_NOT_FOUND) return 'removed';
+    // A stored question the board reports closed or expired can never be answered: refuse it, so
+    // the bridge cancels instead of waiting on an answer that cannot come.
+    if (!response.ok) return 'held';
+    const stored = (await response.json().catch(() => null)) as { status?: unknown } | null;
+    return stored?.status === 'closed' || stored?.status === 'expired' ? 'refused' : 'held';
 }
 
 const HTTP_BAD_REQUEST = 400;
@@ -797,7 +802,8 @@ async function reviewAnswerOf(response: Response): Promise<ReviewAnswer> {
 /**
  * The one POST every board call goes through: the JSON headers, the driver credential when there is one,
  * and the status policy. 409 is a verdict, not a failure; 404 is a verdict too for the calls that
- * ask for one (a heartbeat against a removed thread, an ack for a row that left the queue); `allow`
+ * ask for one (a heartbeat against a removed thread, an ack for a row that left the queue) — both only
+ * when the board's own `code` rides the body, an uncoded 4xx throws `BoardUncodedAnswerError`; `allow`
  * names any further status a call reads as an answer (a question report's 429). Everything else
  * outside 2xx is the board being broken or the driver being wrong, and neither should be swallowed
  * into a silent no-op.
@@ -823,6 +829,9 @@ function createPost({ url, credential, fetch }: { url: string; credential: () =>
             body: JSON.stringify(body),
             ...(signal ? { signal } : {}),
         });
+        // A 4xx the board did not give (a route miss on a replica mid-roll, a load balancer page) is no verdict.
+        const uncoded = await uncodedAnswer(response, path);
+        if (uncoded) throw uncoded;
         if (
             !response.ok &&
             response.status !== HTTP_CONFLICT &&

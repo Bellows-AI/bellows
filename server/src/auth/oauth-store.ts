@@ -690,6 +690,7 @@ const grantOps = (ctx: Ctx): GrantOps => ({
             select u.id, u.github_user_id, u.github_login, u.display_name,
                    u.avatar_url, u.created_at, u.last_login_at,
                    m.invited_at, m.claimed_at, m.role,
+                   m.setup_completed_at, m.setup_done, m.setup_skipped,
                    o.id as org_id, o.name as org_name,
                    t.scopes, f.client_id, f.resource, f.id as family_id
             from oauth_token t

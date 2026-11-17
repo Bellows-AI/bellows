@@ -8,6 +8,8 @@ import { buildRemovalMethods, endMemberships, SYSTEM_ACTOR } from './member-remo
 import { hashToken, mintToken } from './session.js';
 import { type AuditEventView, type AuditRange, readAuditEvents, recordAudit, userActor } from '../db/audit-log.js';
 import { buildOrgStatusMethods, type OrgStatusStore } from '../db/org-status.js';
+import type { MembershipSetup, MembershipSetupStore, SetupRow } from './setup-store.js';
+import { buildSetupMethods, toSetup } from './setup-store.js';
 import { replaceTrackedRepos as replaceTrackedRepoRows, trackedRepos as trackedRepoRows } from '../db/tracked-repos.js';
 
 export interface AuthUser {
@@ -22,10 +24,11 @@ export interface AuthUser {
     lastLoginAt: string | null;
 }
 
-/** When the membership was created and when this account claimed it, as ISO 8601. */
+/** When the membership was created and when this account claimed it, as ISO 8601, and its onboarding state. */
 export interface Membership {
     invitedAt: string | null;
     claimedAt: string | null;
+    setup: MembershipSetup;
 }
 
 /** One row of an organization's roster — what `GET /api/org/members` serves (issue 410). */
@@ -125,7 +128,7 @@ export interface OrgTokenIdentity {
     label: string;
 }
 
-export interface AuthStore extends OrgStatusStore {
+export interface AuthStore extends OrgStatusStore, MembershipSetupStore {
     /**
      * Binds a GitHub identity to an account and materializes the SELECTION: every
      * installation the caller passes becomes an organization row (id = the installation id, name
@@ -278,7 +281,7 @@ export interface AuthStore extends OrgStatusStore {
     auditEvents(orgId: string, range: AuditRange): AsyncIterable<AuditEventView>;
 }
 
-export interface CallerRow {
+export interface CallerRow extends SetupRow {
     id: string;
     github_user_id: string | number;
     github_login: string;
@@ -325,7 +328,7 @@ export const toCaller = (row: CallerRow): Caller => ({
         lastLoginAt: toIso(row.last_login_at),
     },
     org: { id: row.org_id, name: row.org_name },
-    membership: { invitedAt: toIso(row.invited_at), claimedAt: toIso(row.claimed_at) },
+    membership: { invitedAt: toIso(row.invited_at), claimedAt: toIso(row.claimed_at), setup: toSetup(row) },
     scopes: 'all',
     role: row.role,
     ...(row.checked_at !== undefined ? { membershipCheckedAt: row.checked_at } : {}),
@@ -382,7 +385,7 @@ function buildIdentityMethods(
         const rows = await sql<CallerRow[]>`
             select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
-                       m.invited_at, m.claimed_at, m.role,
+                       m.invited_at, m.claimed_at, m.role, m.setup_completed_at, m.setup_done, m.setup_skipped,
                        o.id as org_id, o.name as org_name
             from org_membership m join app_user u on u.id = m.user_id
             join organization o on o.id = m.org_id
@@ -604,6 +607,7 @@ function buildSessionMethods(
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
                        m.invited_at, m.claimed_at, m.role, m.checked_at,
+                       m.setup_completed_at, m.setup_done, m.setup_skipped,
                        o.id as org_id, o.name as org_name
                 from session s
                 join app_user u on u.id = s.user_id
@@ -683,7 +687,7 @@ function buildOrgMethods(
             const rows = await sql<CallerRow[]>`
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
-                       m.invited_at, m.claimed_at, m.role,
+                       m.invited_at, m.claimed_at, m.role, m.setup_completed_at, m.setup_done, m.setup_skipped,
                        o.id as org_id, o.name as org_name
                 from app_user u join org_membership m on m.user_id = u.id and m.org_id = ${orgId}
                 join organization o on o.id = m.org_id
@@ -836,6 +840,7 @@ function buildTokenMethods(
                 select u.id, u.github_user_id, u.github_login, u.display_name,
                        u.avatar_url, u.created_at, u.last_login_at,
                        m.invited_at, m.claimed_at, m.role, m.checked_at,
+                       m.setup_completed_at, m.setup_done, m.setup_skipped,
                        o.id as org_id, o.name as org_name, t.id as token_id
                 from access_token t
                 join app_user u on u.id = t.user_id
@@ -960,6 +965,7 @@ export function createAuthStore({ sql, ready }: { sql: Sql; ready?: Promise<unkn
         ...buildRemovalMethods(sql, gate),
         ...buildTokenMethods(sql, gate),
         ...buildOrgStatusMethods(sql, gate),
+        ...buildSetupMethods(sql, gate),
         async *auditEvents(orgId, range) {
             await gate();
             yield* readAuditEvents(sql, orgId, range);

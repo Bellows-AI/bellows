@@ -63,6 +63,7 @@ Flags for `job create`:
 | `--executor-scope user\|org` | Which scope the executor profile is looked up in. |
 | `--base-branch <branch>` | Branch to start from. |
 | `--title <text>` | Task title. |
+| `--model <name>` | Model the agent runs, instead of the profile's or your agent default's model. Up to 200 characters. |
 | `--skill <name>` | Skill to use. Repeat for several. See [Skills](/guides/skills). |
 | `--connection <id>` | Managed connection to use. Repeat for several. See [Connections](/guides/connections). |
 | `--attach <path>` | Attach a file. Repeat for several. |
@@ -126,7 +127,7 @@ bellows job create --repo acme/notes-api -- npm test --watch
 
 | Command | What it does |
 | --- | --- |
-| `bellows job follow-up <id> (<command...> \| --file <path> \| --stdin)` | Queue new instructions on the same task. Also takes `--attach` and `--idempotency-key`. |
+| `bellows job follow-up <id> (<command...> \| --file <path> \| --stdin)` | Queue new instructions on the same task. Also takes `--model`, `--attach` and `--idempotency-key`. |
 | `bellows job retry <id>` | Queue a fresh attempt of the task's existing command. Takes `--idempotency-key`. |
 | `bellows job edit <id> (<command...> \| --file <path> \| --stdin)` | Replace the command of a queued run you created. Refused once the run is claimed. |
 | `bellows job questions <id>` | List the agent's open questions. |

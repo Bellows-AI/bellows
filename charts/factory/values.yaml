@@ -170,6 +170,10 @@ batches:
 # maxRunningPerOrg caps, or any dashboard.planDefaults limit.
 deploymentMode: self-hosted
 
+# Whether the operator supplies the model credential in the runners' env (docs/configuration.md): on, a member may
+# run on it without bringing a key, and onboarding offers that choice. It only describes the runner env.
+platformModelProvided: false
+
 github:
     # The id and the key are required unless dashboard.offline: without them the server refuses to
     # boot — there is no no-fetch mode to fall back to.

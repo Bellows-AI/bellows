@@ -9,7 +9,7 @@ Who a caller is, and which credential each route accepts.
 | Session cookie: signing, flags, expiry | `server/src/auth/session.ts` | `server/test/auth.session.test.ts` |
 | OAuth round trip, state, redirect validation, `/me` (a present bearer is its credential — the CLI's `auth status`) | `server/src/routes/auth.ts`, `server/src/routes/auth-shared.ts`, `server/src/auth/github.ts` | `server/test/auth.oauth.sign-in.test.ts`, `server/test/auth.oauth.me.test.ts`, `server/test/auth.github-client.test.ts`, `server/test/auth.tokens.test.ts` |
 | Installation-selection screen, pending sign-in, repo scope | `server/src/routes/auth-onboarding.ts` | `server/test/auth.completion.test.ts` |
-| Accounts, sessions, memberships, roles (SQL) | `server/src/auth/store.ts`, `server/migrations/010_auth.sql` | `server/test-db/auth-store.test.ts` |
+| Accounts, sessions, memberships, roles (SQL); onboarding setup state per membership (156) and its `POST /api/onboarding/setup{,/complete}` | `server/src/auth/store.ts`, `server/migrations/010_auth.sql`, `server/migrations/156_membership_setup.sql`, `server/src/auth/setup-store.ts`, `server/src/routes/onboarding-setup.ts` | `server/test-db/auth-store.test.ts`, `server/test-db/migration.156-membership-setup.test.ts`, `server/test/routes.onboarding-setup.test.ts` |
 | Personal (`fat_`) and org (`oat_`) access tokens | `server/src/auth/access-token.ts`, `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts`, `server/test-db/auth-store.access-tokens.test.ts` |
 | MCP OAuth storage: clients (CIMD, DCR), codes, grant families, `mat_`/`mrt_` tokens, consent transaction, parked authorize requests | `server/src/auth/oauth-store.ts`, `server/src/auth/access-token.ts`, `server/migrations/122_oauth.sql`, `server/migrations/123_oauth_pending_authorize.sql` | `server/test-db/auth-store.oauth-codes.test.ts`, `server/test-db/auth-store.oauth-tokens.test.ts`, `server/test-db/auth-store.oauth-consent.test.ts`, `server/test-db/auth-store.oauth-concurrency.test.ts` |
 | MCP OAuth authorization server (only with `MCP_ENABLED` in github mode): metadata, authorize (+ `/resume`: the request is parked server-side, only an opaque id rides the return path), token, revoke, open DCR, consent and connected-apps APIs, the redirect-URI rule, the expiry sweep | `server/src/routes/oauth*.ts`, `server/src/oauth/redirect-match.ts`, `server/src/auth/oauth-sweep.ts` | `server/test/routes.oauth-metadata.test.ts`, `server/test/routes.oauth-register.test.ts`, `server/test/oauth.client-matrix.test.ts`, `server/test/oauth.redirect-match.test.ts`, `server/test-db/routes.oauth-*.test.ts`, `server/test-db/oauth.sdk-flow.test.ts` |
@@ -31,8 +31,8 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   installation and deletes memberships outside it; no invite, no auto-join. `server/src/auth/store.ts`,
   `server/test-db/auth-store.test.ts`.
 - **Every credential's reach is a live `org_membership` join** (`findSession`, `findPersonalToken`,
-  `findOrgToken`), so a removed membership ends sessions and both token kinds on the next request.
-  `server/test-db/auth-store.access-tokens.test.ts`.
+  `findOrgToken`), so a removed membership ends sessions and both token kinds on the next request. Setup state rides that row, so no separate read can push an existing member into onboarding; memberships older than 156 read completed, and `AUTH_MODE=none` always does.
+  `server/test-db/auth-store.access-tokens.test.ts`, `server/test-db/auth-membership.test.ts`, `server/test/auth.oauth.me.test.ts`.
 - **Admin is the GitHub owner where the installation grants `Members: read`**: an active `admin` org role, or a
   user installation's own account, lands `admin` at sign-in and at the re-check; nothing GitHub says demotes. Where
   GitHub gave no membership answer (permission not accepted yet, or unconfirmed) an org's first membership lands

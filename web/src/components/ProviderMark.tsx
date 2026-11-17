@@ -7,10 +7,13 @@ import { integrationProvider } from '@factory-ai/core';
  *
  * Sources: Simple Icons 16.36.0 (the path data is CC0; each mark stays its owner's trademark, used here only to name
  * the integration, per the owner's brand guidelines), except Slack, which Simple Icons no longer carries. Each path
- * keeps its published grid and the default nonzero fill rule it was drawn for.
+ * keeps its published grid and the default nonzero fill rule it was drawn for. The model providers (the model step's
+ * cards) use Simple Icons `anthropic`, `openrouter` and `claude` (the subscription); OpenAI and LiteLLM, which Simple
+ * Icons does not carry, are neutral line glyphs drawn here — a line glyph (`stroke`) is stroked in the brand token
+ * instead of filled.
  */
 
-const GLYPHS: Record<string, { viewBox: string; d: string }> = {
+const GLYPHS: Record<string, { viewBox: string; d: string; stroke?: number }> = {
     // Simple Icons `jira`.
     jira: {
         viewBox: '0 0 24 24',
@@ -46,7 +49,43 @@ const GLYPHS: Record<string, { viewBox: string; d: string }> = {
         viewBox: '0 0 24 24',
         d: 'M13.85 0a4.16 4.16 0 0 0-2.95 1.217L1.456 10.66a.835.835 0 0 0 0 1.18.835.835 0 0 0 1.18 0l9.442-9.442a2.49 2.49 0 0 1 3.541 0 2.49 2.49 0 0 1 0 3.541L8.59 12.97l-.1.1a.835.835 0 0 0 0 1.18.835.835 0 0 0 1.18 0l.1-.098 7.03-7.034a2.49 2.49 0 0 1 3.542 0l.049.05a2.49 2.49 0 0 1 0 3.54l-8.54 8.54a1.96 1.96 0 0 0 0 2.755l1.753 1.753a.835.835 0 0 0 1.18 0 .835.835 0 0 0 0-1.18l-1.753-1.753a.266.266 0 0 1 0-.394l8.54-8.54a4.185 4.185 0 0 0 0-5.9l-.05-.05a4.16 4.16 0 0 0-2.95-1.218c-.2 0-.401.02-.6.048a4.17 4.17 0 0 0-1.17-3.552A4.16 4.16 0 0 0 13.85 0m0 3.333a.84.84 0 0 0-.59.245L6.275 10.56a4.186 4.186 0 0 0 0 5.902 4.186 4.186 0 0 0 5.902 0L19.16 9.48a.835.835 0 0 0 0-1.18.835.835 0 0 0-1.18 0l-6.985 6.984a2.49 2.49 0 0 1-3.54 0 2.49 2.49 0 0 1 0-3.54l6.983-6.985a.835.835 0 0 0 0-1.18.84.84 0 0 0-.59-.245',
     },
+    // Simple Icons `anthropic`.
+    anthropic: {
+        viewBox: '0 0 24 24',
+        d: 'M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z',
+    },
+    // Simple Icons `openrouter`.
+    openrouter: {
+        viewBox: '0 0 24 24',
+        d: 'M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z',
+    },
+    // A neutral hexagon: Simple Icons no longer carries OpenAI's mark, and an imitation of it would mislead.
+    openai: {
+        viewBox: '0 0 24 24',
+        d: 'M12 2.8l8 4.6v9.2l-8 4.6-8-4.6V7.4zM12 12h.01',
+        stroke: 2,
+    },
+    // Two stacked servers: a proxy the member runs.
+    litellm: {
+        viewBox: '0 0 24 24',
+        d: 'M4.5 4h15A1.5 1.5 0 0 1 21 5.5v3a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 8.5v-3A1.5 1.5 0 0 1 4.5 4zM4.5 14h15a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-3A1.5 1.5 0 0 1 4.5 14zM7 7h.01M7 17h.01',
+        stroke: 2.2,
+    },
+    // Simple Icons `claude`: a Claude plan rather than an API key.
+    subscription: {
+        viewBox: '0 0 24 24',
+        d: 'm4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z',
+    },
 };
+
+/** A line glyph's paint: no fill, the brand token as the stroke. */
+const lineOf = (provider: string, width: number) => ({
+    fill: 'none',
+    stroke: `var(--brand-${provider})`,
+    strokeWidth: width,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+});
 
 /** `decorative` is for a mark beside its own text label: hidden from assistive tech instead of announced twice. */
 export function ProviderMark({ provider, decorative = false }: { provider: string; decorative?: boolean }) {
@@ -61,7 +100,7 @@ export function ProviderMark({ provider, decorative = false }: { provider: strin
             viewBox={glyph?.viewBox ?? '0 0 24 24'}
             fill={`var(--brand-${provider})`}
         >
-            {glyph ? <path d={glyph.d} /> : null}
+            {glyph ? <path d={glyph.d} {...(glyph.stroke ? lineOf(provider, glyph.stroke) : {})} /> : null}
         </svg>
     );
 }

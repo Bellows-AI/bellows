@@ -31,17 +31,35 @@ async function boot(runnerClasses: { name: string; docker: boolean }[] = []) {
 }
 
 describe('GET /api/workspace', () => {
-    it('keys are exactly executors, orgExecutors, defaultExecutor, executorsAvailable', async () => {
+    it('keys are exactly executors, orgExecutors, defaultExecutor, agentDefault, executorsAvailable', async () => {
         const { app, cookie } = await boot();
         const response = await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
 
         expect(response.statusCode).toBe(HTTP_OK);
         expect(Object.keys(response.json()).sort()).toEqual([
+            'agentDefault',
             'defaultExecutor',
             'executors',
             'executorsAvailable',
             'orgExecutors',
         ]);
+    });
+
+    it('answers the agent default with no default executor when it wins over a profile the member never chose', async () => {
+        const { app, cookie, caller, executors } = await boot();
+        await executors.replace(caller.user.id, [{ name: 'main', type: 'claude-code', config: {} }]);
+        const poll = async () =>
+            (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json() as {
+                defaultExecutor: unknown;
+                agentDefault: unknown;
+            };
+        expect(await poll()).toMatchObject({ defaultExecutor: { scope: 'user', name: 'main' }, agentDefault: null });
+
+        await executors.setAgentDefault(null, { agentType: 'opencode', model: 'anthropic/claude-sonnet-4-5' });
+        expect(await poll()).toMatchObject({
+            defaultExecutor: null,
+            agentDefault: { agentType: 'opencode', model: 'anthropic/claude-sonnet-4-5', from: 'org' },
+        });
     });
 });
 

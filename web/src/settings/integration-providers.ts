@@ -18,35 +18,42 @@ export const connectionState = (connection: ConnectionView): ConnectionState => 
 export const accessSentence = (label: string, access: ConnectionView['access']): string =>
     access === 'write' ? `Tasks can look ${label} up and add comments.` : `Tasks can look ${label} up.`;
 
+/** Whose consent screen a provider's connect sends the member to, where it is not the provider's own name. */
+const CONSENT_AUTHORITY: Readonly<Record<string, string>> = { jira: 'Atlassian' };
+
+/** The name a connect or reconnect button and the write consent say the member is sent to. */
+export const consentAuthority = (provider: Pick<IntegrationProvider, 'id' | 'label'>): string =>
+    CONSENT_AUTHORITY[provider.id] ?? provider.label;
+
 /** A callback result: the sentence and the banner it is shown in (`banner-info` success, `banner-warn` declined, `banner-bad` failed). */
 export interface IntegrationNotice {
     message: string;
     tone: 'info' | 'warn' | 'bad';
 }
 
-/** Each provider's own callback sentences; a result it has none for is worded from its label. */
-const RESULT_NOTICES: Record<string, Record<string, IntegrationNotice>> = {
-    jira: {
-        connected: { message: 'Jira connected.', tone: 'info' },
-        denied: { message: 'Atlassian consent was denied; nothing was connected.', tone: 'warn' },
-        'identity-mismatch': {
-            message:
-                'That Atlassian account is not the account this connection was made with. Reconnect with the original account, or disconnect and connect again.',
-            tone: 'bad',
-        },
-        'site-mismatch': {
-            message: 'The Atlassian account cannot reach that site, so nothing was connected.',
-            tone: 'bad',
-        },
-    },
+/**
+ * Each callback result's sentence, worded from the provider's catalog name and whose consent screen it sends the member
+ * to (`consentAuthority`: Atlassian for Jira); any other result is a failure.
+ */
+const RESULT_NOTICE: Record<string, (label: string, authority: string) => IntegrationNotice> = {
+    connected: (label) => ({ message: `${label} connected.`, tone: 'info' }),
+    denied: (_label, authority) => ({
+        message: `${authority} consent was denied; nothing was connected.`,
+        tone: 'warn',
+    }),
+    'identity-mismatch': (_label, authority) => ({
+        message: `That ${authority} account is not the account this connection was made with. Reconnect with the original account, or disconnect and connect again.`,
+        tone: 'bad',
+    }),
+    'site-mismatch': (_label, authority) => ({
+        message: `The ${authority} account cannot reach that site, so nothing was connected.`,
+        tone: 'bad',
+    }),
+};
+
+/** A provider's own sentence where the catalog name cannot say it: a Linear grant reaches a workspace, not a site. */
+const PROVIDER_NOTICE: Readonly<Record<string, Readonly<Record<string, IntegrationNotice>>>> = {
     linear: {
-        connected: { message: 'Linear connected.', tone: 'info' },
-        denied: { message: 'Linear consent was denied; nothing was connected.', tone: 'warn' },
-        'identity-mismatch': {
-            message:
-                'That Linear account is not the one this connection was made with. Reconnect with the original account, or disconnect and connect again.',
-            tone: 'bad',
-        },
         'site-mismatch': {
             message:
                 'That Linear account cannot reach that workspace, so nothing was connected. Reconnect choosing the original workspace, or connect it as a new connection.',
@@ -57,7 +64,7 @@ const RESULT_NOTICES: Record<string, Record<string, IntegrationNotice>> = {
 
 /**
  * The notice for the `?integration=…&result=…` the callback redirected back with, or null when there is none to show:
- * only an oauth provider of the catalog has a callback.
+ * only an `oauth` provider of the catalog has a callback.
  */
 export const integrationNotice = (
     integration: string | null,
@@ -66,9 +73,10 @@ export const integrationNotice = (
 ): IntegrationNotice | null => {
     const provider = catalog.find((entry) => entry.id === integration);
     if (!provider || !canConnect(provider) || !result) return null;
-    const own = RESULT_NOTICES[provider.id]?.[result];
+    const own = PROVIDER_NOTICE[provider.id]?.[result];
     if (own) return own;
-    return result === 'connected'
-        ? { message: `${provider.label} connected.`, tone: 'info' }
+    const notice = RESULT_NOTICE[result];
+    return notice
+        ? notice(provider.label, consentAuthority(provider))
         : { message: `${provider.label} connection failed (${result}).`, tone: 'bad' };
 };

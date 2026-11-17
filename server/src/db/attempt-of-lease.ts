@@ -30,9 +30,10 @@ interface Row {
     execution_user_id: string | null;
     claim_seq: string | number;
     current: unknown;
-    prior: unknown;
+    held: unknown;
     live: unknown;
     standing: unknown;
+    unended: unknown;
 }
 
 /** A flag the query must have answered true or false: anything else is an unconfirmed read, never a verdict. */
@@ -44,10 +45,11 @@ function flag(value: unknown): boolean {
 /**
  * The one check behind every runner credential route (docs/connections.md). It is org-less like
  * `createOrgOfLease` (the pair names the org) and WITHOUT a tail grace: the attempt must be unfinished,
- * unexpired and not asked to stop. A reclaim rotates the lease token and keeps the one before it
- * (`prior_lease_token`): that pair, or the current one once its lease lapsed, on a task that still stands,
- * is `pending` (a takeover window, retry), and every other refusal is terminal, so a pair the task never held
- * learns nothing about it. A reviewer row (`review_of`) never gets a credential. The binding is the thread
+ * unexpired and not asked to stop. A reclaim rotates the lease token, and a reclaim or a drained driver's
+ * hand-back keeps the one it gives up (`superseded_lease_tokens`, 160; `prior_lease_token`, 121): any pair the
+ * task held, while the task has not ended (queued again after a hand-back included), or the current one once its
+ * lease lapsed on a task that still stands, is `pending` (a takeover window, retry), and every other refusal is
+ * terminal, so a pair the task never held learns nothing about it. A reviewer row (`review_of`) never gets a credential. The binding is the thread
  * ROOT's: its stable execution user must still be a member of the org. A refusal is a successful query; a
  * throw, or a row whose flags are not booleans, is the caller's to answer as unavailable, never as a refusal.
  */
@@ -63,7 +65,8 @@ export function createAttemptOfLease({
         const rows = await sql<Row[]>`
             select j.org_id, j.root_job_id, j.repo, root.repo as root_repo, root.execution_user_id, j.claim_seq,
                    coalesce(j.lease_token = ${leaseToken}, false) as current,
-                   coalesce(j.prior_lease_token = ${leaseToken}, false) as prior,
+                   (coalesce(j.prior_lease_token = ${leaseToken}, false)
+                    or coalesce(${leaseToken} = any(j.superseded_lease_tokens), false)) as held,
                    coalesce(j.lease_expires_at > now(), false) as live,
                    (coalesce(j.status = 'running', false) and j.finished_at is null
                     and j.cancel_requested_at is null and j.review_of is null
@@ -71,18 +74,26 @@ export function createAttemptOfLease({
                     and exists (
                         select 1 from org_membership m
                         where m.org_id = j.org_id and m.user_id = root.execution_user_id
-                    )) as standing
+                    )) as standing,
+                   (coalesce(j.status in ('queued', 'running'), false) and j.finished_at is null
+                    and j.cancel_requested_at is null and j.review_of is null
+                    and root.execution_user_id is not null
+                    and exists (
+                        select 1 from org_membership m
+                        where m.org_id = j.org_id and m.user_id = root.execution_user_id
+                    )) as unended
             from job j
             join job root on root.org_id = j.org_id and root.id = j.root_job_id
             where j.id = ${jobId}
         `;
         const row = rows[0];
         if (!row) return { ok: false, pending: false };
-        const [current, prior, live, standing] = [
+        const [current, held, live, standing, unended] = [
             flag(row.current),
-            flag(row.prior),
+            flag(row.held),
             flag(row.live),
             flag(row.standing),
+            flag(row.unended),
         ];
         if (current && live && standing && row.execution_user_id !== null) {
             return {
@@ -96,7 +107,7 @@ export function createAttemptOfLease({
                 claimSeq: Number(row.claim_seq),
             };
         }
-        return { ok: false, pending: standing && ((current && !live) || prior) };
+        return { ok: false, pending: (standing && current && !live) || (unended && held) };
     };
 }
 
@@ -107,15 +118,15 @@ export type PairMatches = (jobId: string, leaseToken: string) => Promise<PairChe
 interface PairRow {
     org_id: string;
     current: unknown;
-    prior: unknown;
-    standing: unknown;
+    held: unknown;
+    unended: unknown;
 }
 
 /**
  * Whether the pair names an attempt row, and which org, with NO liveness: the revoke route's and the operation
  * move's check. A Stop (`cancel_requested_at`) or a settle must not stop a runner revoking the token it holds; a
- * reclaim rotates the lease token, so a superseded pair matches nothing, but the pair one claim back on a task
- * that still stands is `pending` (the move retries with the current pair). A reviewer row never matches. A
+ * reclaim rotates the lease token, so a superseded pair matches nothing, but any pair the task held, while the
+ * task has not ended, is `pending` (the move retries with the current pair). A reviewer row never matches. A
  * throw is the caller's to answer as unavailable.
  */
 export function createPairMatches({ sql, ready }: { sql: Sql; ready?: Promise<unknown> | undefined }): PairMatches {
@@ -124,15 +135,16 @@ export function createPairMatches({ sql, ready }: { sql: Sql; ready?: Promise<un
         const rows = await sql<PairRow[]>`
             select j.org_id,
                    coalesce(j.lease_token = ${leaseToken}, false) as current,
-                   coalesce(j.prior_lease_token = ${leaseToken}, false) as prior,
-                   (coalesce(j.status = 'running', false) and j.finished_at is null
-                    and j.cancel_requested_at is null) as standing
+                   (coalesce(j.prior_lease_token = ${leaseToken}, false)
+                    or coalesce(${leaseToken} = any(j.superseded_lease_tokens), false)) as held,
+                   (coalesce(j.status in ('queued', 'running'), false) and j.finished_at is null
+                    and j.cancel_requested_at is null) as unended
             from job j
             where j.id = ${jobId} and j.review_of is null
         `;
         const row = rows[0];
         if (!row) return { ok: false, pending: false };
         if (flag(row.current)) return { ok: true, orgId: row.org_id };
-        return { ok: false, pending: flag(row.standing) && flag(row.prior) };
+        return { ok: false, pending: flag(row.unended) && flag(row.held) };
     };
 }

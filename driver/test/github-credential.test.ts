@@ -198,7 +198,7 @@ describe('the runner GitHub helper', () => {
     });
 
     it.each([401, 403])('stops at a %s with reconnect guidance, and never retries it', async (status) => {
-        const r = rig([{ status, body: { error: 'refused' } }]);
+        const r = rig([{ status, body: { error: 'refused', code: 'UNAUTHENTICATED' } }]);
         expect(await helper.main(['git', 'get'], r.deps)).toBe(1);
         expect(r.asks).toHaveLength(1);
         expect(r.stderr.join('\n')).toContain('the board refused this attempt a credential');
@@ -304,7 +304,9 @@ describe('the runner GitHub helper as a process', () => {
     });
 
     it('prints guidance on stderr, no token anywhere, and exits non-zero on a refusal', async () => {
-        const fake = await board([{ status: 403, body: { error: 'refused', token: 'ghs_never_secret' } }]);
+        const fake = await board([
+            { status: 403, body: { error: 'refused', code: 'CONNECTION_NOT_AUTHORIZED', token: 'ghs_never_secret' } },
+        ]);
         servers.push(fake.server);
         const out = await spawnHelper(['token'], fake.url);
         expect(out.code).not.toBe(0);

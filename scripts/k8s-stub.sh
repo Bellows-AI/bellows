@@ -122,7 +122,10 @@ case "$*" in
         >"$FACTORY_CTL_OUT/questions/$qid.json.tmp"
     mv "$FACTORY_CTL_OUT/questions/$qid.json.tmp" "$FACTORY_CTL_OUT/questions/$qid.json"
     echo "asked in ${HOSTNAME:-stub}"
-    deadline=$(($(date +%s) + ${FACTORY_STUB_TIMEOUT_SECONDS:-120}))
+    ask_seconds="${FACTORY_STUB_TIMEOUT_SECONDS:-120}"
+    # `factory-stub-patient`: a takeover case holds the question past a kubelet Secret refresh.
+    case "$*" in *factory-stub-patient*) ask_seconds=900 ;; esac
+    deadline=$(($(date +%s) + ask_seconds))
     state=''
     while :; do
         answer="$(cat "$FACTORY_CTL_IN/answers/$qid.json" 2>/dev/null || true)"

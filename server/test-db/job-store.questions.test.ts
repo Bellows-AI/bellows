@@ -217,7 +217,7 @@ describe.skipIf(!enabled)('job questions — database', () => {
         expect(await stateOf(id, 'toolu_1')).toBe('pending');
     });
 
-    it('hands the heartbeat only the answered questions of its own lease', async () => {
+    it('hands the heartbeat the answered questions of its own attempt, not another attempt’s', async () => {
         const { id, claim } = await running();
         await ask(id, claim.leaseToken, 'toolu_old');
         await ask(id, claim.leaseToken, 'toolu_pending');
@@ -231,12 +231,63 @@ describe.skipIf(!enabled)('job questions — database', () => {
         await ask(id, second.leaseToken, 'toolu_new');
         await store.answerQuestion(id, 'toolu_new', { [QUESTION_TEXT]: 'SQLite' }, null);
 
+        // The takeover keeps the attempt, so the answer given under the replaced lease rides along.
         const beat = await store.heartbeat(id, second.leaseToken, LEASE_SECONDS);
-        expect(beat.answeredQuestions).toEqual([{ questionId: 'toolu_new', answers: { [QUESTION_TEXT]: 'SQLite' } }]);
+        expect(beat.answeredQuestions).toEqual([
+            { questionId: 'toolu_old', answers: ANSWERS },
+            { questionId: 'toolu_new', answers: { [QUESTION_TEXT]: 'SQLite' } },
+        ]);
         expect(await store.heartbeat(id, claim.leaseToken, LEASE_SECONDS)).toMatchObject({
             result: 'lost',
             answeredQuestions: [],
         });
+
+        // A retry is a new attempt and a new session: the earlier attempt's answers stay behind.
+        await sql`update job set attempts = attempts + 1 where id = ${id}`;
+        expect((await store.heartbeat(id, second.leaseToken, LEASE_SECONDS)).answeredQuestions).toEqual([]);
+    });
+
+    it('rebinds a pending question to the claim that takes over and re-asks it, so it is answerable', async () => {
+        const { id, claim } = await running();
+        await ask(id, claim.leaseToken, 'toolu_1');
+        await expireLease(sql, id);
+        const second = (await store.claim('w2', LEASE_SECONDS)) as Claim;
+
+        const again = await ask(id, second.leaseToken, 'toolu_1');
+
+        expect(again).toMatchObject({ result: 'existing', question: { status: 'pending', answerable: true } });
+        expect(await store.answerQuestion(id, 'toolu_1', ANSWERS, null)).toMatchObject({ result: 'ok' });
+        expect((await store.heartbeat(id, second.leaseToken, LEASE_SECONDS)).answeredQuestions).toEqual([
+            { questionId: 'toolu_1', answers: ANSWERS },
+        ]);
+    });
+
+    it('rebinds a question re-asked after a hand-back and claim, and leaves an already answered one alone', async () => {
+        const { id, claim } = await running();
+        await ask(id, claim.leaseToken, 'toolu_pending');
+        await ask(id, claim.leaseToken, 'toolu_done');
+        await store.answerQuestion(id, 'toolu_done', ANSWERS, null);
+        await store.interrupt(id, claim.leaseToken, { reason: 'drained', release: true });
+        const second = (await store.claim('w2', LEASE_SECONDS)) as Claim;
+        expect(second.id).toBe(id);
+
+        expect(await ask(id, second.leaseToken, 'toolu_pending')).toMatchObject({
+            question: { answerable: true },
+        });
+        expect(await ask(id, second.leaseToken, 'toolu_done')).toMatchObject({ question: { status: 'answered' } });
+        expect((await store.heartbeat(id, second.leaseToken, LEASE_SECONDS)).answeredQuestions).toEqual([
+            { questionId: 'toolu_done', answers: ANSWERS },
+        ]);
+    });
+
+    it('does not rebind a question of an earlier attempt: it stays closed', async () => {
+        const { id, claim } = await running();
+        await ask(id, claim.leaseToken, 'toolu_1');
+        await expireLease(sql, id);
+        const second = (await store.claim('w2', LEASE_SECONDS)) as Claim;
+        await sql`update job set attempts = attempts + 1 where id = ${id}`;
+
+        expect(await ask(id, second.leaseToken, 'toolu_1')).toMatchObject({ question: { status: 'closed' } });
     });
 
     it('lists every question of the thread on its own run, oldest first', async () => {

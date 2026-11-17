@@ -1,12 +1,12 @@
 import type { ArtifactManifest, Board, BoardJob, ChunkAnswer } from './board/board.js';
-import { BoardHttpError } from './board/board-retry.js';
+import { BoardHttpError, uncodedAnswer } from './board/board-retry.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, OCTET_STREAM_CONTENT_TYPE } from './http.js';
 
 /**
  * The two artifact calls (`PUT /api/jobs/:id/artifact/chunk` and `/manifest`). Neither carries the
  * lease token: the board authorizes them by the claim sequence the job was claimed under, which is
  * what lets a superseded attempt finish its uploads. A 5xx, a dropped connection or a refused driver
- * credential (401, 403: no answer about the upload, see `board-retry.ts`) throws — the caller retries it,
+ * credential (401, 403: no answer about the upload, see `board-retry.ts`) or a 4xx without the board's `code` throws — the caller retries it,
  * the relay answers the exporter 502 — while every answer the board gives on purpose is returned.
  */
 
@@ -50,6 +50,9 @@ export function artifactCalls({
 
     /** The board's answer, or a throw when it was a transient failure worth another try. */
     const answered = async (response: Response): Promise<{ status: number; body: Record<string, unknown> }> => {
+        // A 4xx the board did not give (a route miss, a proxy's 413 page) is no refusal: thrown, so retried.
+        const uncoded = await uncodedAnswer(response, 'the artifact upload');
+        if (uncoded) throw uncoded;
         const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
         const refusedCredential = response.status === HTTP_UNAUTHORIZED || response.status === HTTP_FORBIDDEN;
         if (response.status >= HTTP_SERVER_ERROR_MIN || refusedCredential) {

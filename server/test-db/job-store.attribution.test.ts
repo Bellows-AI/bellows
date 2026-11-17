@@ -297,8 +297,10 @@ describe.runIf(enabled)('attribution', () => {
             // selection is null rather than a Claude/OpenCode fallback for the driver to guess at.
             const claude = await store.claim('driver-1', LEASE_SECONDS);
             expect(claude?.executorType).toBe('claude-code');
+            // The profile's model is pinned as ANTHROPIC_MODEL too, so a driver-forwarded one cannot outrank it.
             expect(claude?.env).toEqual({
                 CLAUDE_CODE_CONFIG_CONTENT: '{"model":"x"}',
+                ANTHROPIC_MODEL: 'x',
             });
             const deleted = await store.claim('driver-2', LEASE_SECONDS);
             expect(deleted?.executorType).toBeNull();
@@ -328,6 +330,7 @@ describe.runIf(enabled)('attribution', () => {
 
             expect((await store.claim('driver-1', LEASE_SECONDS))?.env).toEqual({
                 CLAUDE_CODE_CONFIG_CONTENT: '{"model":"x"}',
+                ANTHROPIC_MODEL: 'x',
             });
         });
 
