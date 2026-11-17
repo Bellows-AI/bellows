@@ -901,7 +901,8 @@ describe('a stop the board cannot take (issue #820)', () => {
 
             expect(unhandled).toEqual([]);
             expect(board.board.completed.map((c) => c.id)).toEqual([job(2).id]);
-            expect(suspends()).toBe(BOARD_CALL_ATTEMPTS);
+            // Retried for the lease, not five tries.
+            expect(suspends()).toBeGreaterThan(BOARD_CALL_ATTEMPTS);
             expect(logs.some((l) => l.includes(`job ${job(1).id}: the board did not take the stop`))).toBe(true);
         } finally {
             process.off('unhandledRejection', record);
@@ -938,7 +939,7 @@ describe('a stop the board cannot take (issue #820)', () => {
             fail();
             for (let i = 0; i < 50; i++) await tick();
 
-            expect(suspends).toBe(BOARD_CALL_ATTEMPTS);
+            expect(suspends).toBeGreaterThan(BOARD_CALL_ATTEMPTS);
             expect(unhandled).toEqual([]);
         } finally {
             process.off('unhandledRejection', record);

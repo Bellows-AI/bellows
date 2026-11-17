@@ -342,7 +342,8 @@ describe('end retains the runner a board call did not reach', () => {
 
         await end(ctx, { kind: 'park', phase: 'setup' });
 
-        expect(calls.filter((call) => call === 'suspend')).toHaveLength(BOARD_CALL_ATTEMPTS);
+        // The retry runs on for the lease (300 s of backoff), far past the default five tries.
+        expect(calls.filter((call) => call === 'suspend').length).toBeGreaterThan(BOARD_CALL_ATTEMPTS);
         expect(lines.join('\n')).toContain('the board did not take the stop, left to the lease');
         expect(calls).not.toContain('finish');
         expect(calls).not.toContain('services');
@@ -386,6 +387,50 @@ describe('end retains the runner a board call did not reach', () => {
 
         expect(lines.join('\n')).toContain('the interruption budget is spent');
         expect(calls).toContain('finish');
+    });
+});
+
+describe('end retries a hand-back for the lease, not for five tries', () => {
+    /** A board call that answers 503 for its first `n` calls, then `held`. */
+    const downFor = (n: number) => {
+        let left = n;
+        return (() => {
+            if (left-- > 0) unavailable();
+            return 'held';
+        }) as unknown as () => never;
+    };
+
+    it('hands the attempt back once the board answers after an outage longer than five tries', async () => {
+        const { ctx, calls } = attempt({ interrupt: downFor(8) });
+
+        await end(ctx, { kind: 'interrupt', reason: 'the pod was evicted', exitCode: null });
+
+        expect(calls.filter((call) => call === 'interrupt')).toHaveLength(9);
+        expect(ctx.state.groupDisposition).not.toBe('keep');
+    });
+
+    it('parks once the board answers after an outage longer than five tries', async () => {
+        const { ctx, calls, lines } = attempt({ suspend: downFor(8) });
+
+        await end(ctx, { kind: 'park', phase: 'setup' });
+
+        expect(calls.filter((call) => call === 'suspend')).toHaveLength(9);
+        expect(lines.join('\n')).not.toContain('left to the lease');
+    });
+
+    it('still ends the retry at once when the lease lapses mid-outage', async () => {
+        const { ctx, calls } = attempt({ interrupt: unavailable });
+        const lapse = new AbortController();
+        ctx.state.leaseExpiry = { signal: lapse.signal, renewed: () => {}, stop: () => {} };
+        let seen = 0;
+        ctx.rt.sleep = async () => {
+            if (++seen === 2) lapse.abort();
+        };
+
+        await end(ctx, { kind: 'interrupt', reason: 'the pod was evicted', exitCode: null });
+
+        expect(calls.filter((call) => call === 'interrupt').length).toBeLessThanOrEqual(3);
+        expect(ctx.state.groupDisposition).toBe('keep');
     });
 });
 

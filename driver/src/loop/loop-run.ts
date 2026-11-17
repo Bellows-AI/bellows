@@ -1,6 +1,5 @@
 import { noChangeSkip } from './loop-no-change.js';
 import type { BoardJob, VerdictEvidence } from '../board/board.js';
-import { uploadRunArtifacts } from '../artifact-upload.js';
 import { claimContinuesSession, repoCacheProblem } from '../claim.js';
 import { pickSession } from '../runner-plan.js';
 import { evidencePolicyActive, type GatesOutcome } from '../evidence-policy.js';
@@ -19,7 +18,7 @@ import {
     sizeGateForVerify,
 } from './loop-gates.js';
 import { armLeaseClock } from './loop-lease.js';
-import { drainTranscriptExport } from './loop-export.js';
+import { drainTranscriptExport, uploadRunTail } from './loop-export.js';
 import { openChain, replayGates, runClaimSeqOf } from './loop-phase-checkpoints.js';
 import { runPostHelpersAndPublish } from './loop-post-run.js';
 import { lostOf, logRefusal, recordEnding, transition, transitionLine } from './loop-phase.js';
@@ -337,7 +336,7 @@ async function reportRunTail(
     await reportScrapedSession(rt, job, executorType, { ...outcome, started: outcome.started && launchedHere });
     // Never throws and never reaches the verdict: a failed upload only leaves a stream without a
     // `complete` manifest.
-    await uploadRunArtifacts({ board: rt.board, job, executorType, outcome }, rt);
+    await uploadRunTail(ctx, executorType, outcome);
 }
 
 /**

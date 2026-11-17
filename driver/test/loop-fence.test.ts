@@ -203,7 +203,8 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
         expect(await endIfDown(ctx, 'setup')).toBe(true);
 
-        expect(calls.filter((c) => c === 'suspend')).toHaveLength(BOARD_CALL_ATTEMPTS);
+        // The retry runs for the lease, not five tries.
+        expect(calls.filter((c) => c === 'suspend').length).toBeGreaterThan(BOARD_CALL_ATTEMPTS);
         expect(lines.at(-1)).toContain('the board did not take the stop, left to the lease');
     });
 

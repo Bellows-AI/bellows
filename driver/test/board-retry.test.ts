@@ -113,6 +113,16 @@ describe('withBoardRetry: a backoff budget', () => {
         expect(call.calls()).toBeGreaterThan(BOARD_CALL_ATTEMPTS);
     });
 
+    it('spends the whole budget: the last backoff is cut to what is left, so a call just before the end is made', async () => {
+        const { io: rec, slept } = io();
+        const call = failing(new BoardHttpError(503, 'answered 503'));
+
+        await expect(withBoardRetry(rec, 'x', call.call, { budgetMs: 100_000 })).rejects.toThrow('answered 503');
+
+        expect(slept.reduce((sum, ms) => sum + ms, 0)).toBe(100_000);
+        expect(call.calls()).toBe(slept.length + 1);
+    });
+
     it('still stops at once on a deterministic refusal', async () => {
         const { io: rec } = io();
         const call = failing(new BoardHttpError(413, 'answered 413'));
