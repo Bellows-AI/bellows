@@ -169,7 +169,7 @@ async function superviseOne(
     const beating = beatReview(rt, supervision, ended);
     let result: StepResult | null = null;
     let lost = false;
-    const exporting = openReviewExport(rt, caller, review);
+    const exporting = openReviewExport(rt, caller, review, stop.signal);
     if (caller.supervisorEnv) attachReviewInputs({ rt, review }, controlTokenOf(caller));
     try {
         await runner.resizeReviewer(caller, 'run').catch(() => false);

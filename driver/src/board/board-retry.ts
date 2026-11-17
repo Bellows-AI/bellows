@@ -1,8 +1,12 @@
 /** How many times a board call that must land is tried: the verdict and a question report. */
 export const BOARD_CALL_ATTEMPTS = 5;
 const BOARD_CALL_BACKOFF_MS = 1_000;
-/** The longest single backoff once a budget lets the doubling run on. */
-const BOARD_CALL_MAX_BACKOFF_MS = 30_000;
+/**
+ * The longest single backoff under a budget. The budget is a recovery bound (a lease) that a fence cuts short, so
+ * attempts must keep landing across the whole window: a longer sleep started just before the fence would end in it
+ * and never ask a board that recovered meanwhile.
+ */
+export const BOARD_BUDGET_MAX_BACKOFF_MS = 10_000;
 
 const HTTP_REQUEST_TIMEOUT = 408;
 const HTTP_TOO_EARLY = 425;
@@ -111,16 +115,23 @@ function retryable(e: unknown): boolean {
     return e.status >= HTTP_SERVER_ERROR || TRANSIENT_CLIENT_STATUSES.has(e.status);
 }
 
-/** Whether a retry loop has used what it was given: its attempts, or with a budget, the summed backoff. */
-const spent = (attempt: number, waitedMs: number, budgetMs?: number): boolean =>
-    budgetMs === undefined ? attempt >= BOARD_CALL_ATTEMPTS : waitedMs > budgetMs;
+/**
+ * The backoff before the next try, or null when the loop has used what it was given: its attempts, or with a
+ * budget, the summed backoff. The last backoff under a budget is cut to what is left of it, so a board that
+ * answers just before the budget ends is still asked once more at the end, never given up on a backoff early.
+ */
+function nextDelayMs(attempt: number, waitedMs: number, budgetMs?: number): number | null {
+    const delayMs = Math.min(BOARD_CALL_BACKOFF_MS * 2 ** (attempt - 1), BOARD_BUDGET_MAX_BACKOFF_MS);
+    if (budgetMs === undefined) return attempt >= BOARD_CALL_ATTEMPTS ? null : delayMs;
+    return waitedMs >= budgetMs ? null : Math.min(delayMs, budgetMs - waitedMs);
+}
 
 /**
  * Retries a board call that threw (a 5xx, a dropped connection) with doubling backoff; the last
  * throw propagates. A board VERDICT — a 409 or 404 carrying the board's `code` — is an answer and returns, so it is never retried,
  * and neither is a deterministic refusal (a 400, a 413): it throws at once.
  * `what` opens the log line ("job <id>: the verdict was not accepted"). Without `budgetMs` the call
- * is tried `BOARD_CALL_ATTEMPTS` times; with it, until the summed backoff would pass the budget.
+ * is tried `BOARD_CALL_ATTEMPTS` times; with it, until the summed backoff has used the budget.
  * `leaseLapsed` fences the retry on the driver's lease clock: no call starts once it aborts, and
  * one in flight or a backoff is abandoned with `LeaseLapsedError`, never retried.
  */
@@ -140,8 +151,8 @@ export async function withBoardRetry<T>(
                 io.log(`${what}, not retried: ${(e as Error).message}`);
                 throw e;
             }
-            const delayMs = Math.min(BOARD_CALL_BACKOFF_MS * 2 ** (attempt - 1), BOARD_CALL_MAX_BACKOFF_MS);
-            if (spent(attempt, waitedMs + delayMs, budgetMs)) throw e;
+            const delayMs = nextDelayMs(attempt, waitedMs, budgetMs);
+            if (delayMs === null) throw e;
             io.log(`${what}, retrying in ${delayMs}ms: ${(e as Error).message}`);
             await fenced(leaseLapsed, () => io.sleep(delayMs));
             waitedMs += delayMs;
