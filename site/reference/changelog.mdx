@@ -5,6 +5,25 @@ description: "What changed in each Bellows release, in plain words."
 
 User-facing changes only. Self-hosting upgrade notes live in the release notes on [GitHub](https://github.com/Bellows-AI/bellows/releases).
 
+<Update label="v0.0.17" description="2026-11-17">
+  **New**
+  - **Linear.** Connect Linear and work Linear issues from a task, alongside Jira and GitHub. See [Connections](/guides/connections#linear).
+  - **Docker runner classes.** The docker executor offers runner classes, with a microVM runtime option. See [Executors](/guides/executors).
+  - **Guided first run.** New organizations get a guided onboarding flow.
+  - **Organization lifecycle and limits.** Organizations have a status and a delete-after date, plan limits and allowances, audit events and per-organization metrics. See [Audit log](/guides/audit-log).
+
+  **Improved**
+  - Runs survive more infrastructure losses. A drained driver's takeover keeps GitHub, Jira and Linear calls working, and a question pending across a takeover can still be answered.
+  - A board outage no longer loses a run's log and transcript.
+  - A platform shutdown of a node counts as node loss, and up to 10 interruptions per hour are tolerated.
+  - The agent's checkout git commands (`reset`, `stash`, `checkout`, `restore`) are allowed without a prompt.
+  - The dashboard runs as two replicas spread over nodes and zones.
+
+  **Fixed**
+  - A temporary board error or a load balancer error page is retried instead of ending a healthy run.
+  - A runner create refused as a configuration error ends the attempt with that reason.
+</Update>
+
 <Update label="v0.0.16" description="2026-11-13">
   **New**
   - **Skills settings.** Manage workspace, organization and built-in skills from Settings, edit them inline, download them as a zip and see who changed each version. A switched-off skill, or one whose requirements are unmet, is hidden. See [Skills](/guides/skills).
