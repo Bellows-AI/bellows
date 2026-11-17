@@ -163,7 +163,11 @@ export function settleEnd(e: EndEvidence): SettledEnd {
     return {
         timedOut,
         infraLoss,
-        ...(infraLoss !== null && infraLoss === e.vanished ? { infraNodeLoss: true as const } : {}),
+        // A platform SIGTERM is the node going down (an eviction, a drain, a spot reclaim) whether or not a
+        // pod read still sees the pod, so it never spends the poison budget either.
+        ...(infraLoss !== null && (infraLoss === e.vanished || infraLoss === TERMINATED)
+            ? { infraNodeLoss: true as const }
+            : {}),
         fields: { ...reportVerdictOf(e.report), ...adoptedVerdictOf(e.kills) },
     };
 }

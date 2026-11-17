@@ -6,7 +6,7 @@ import type { Fragment, Sql, TransactionSql } from 'postgres';
  * #792): an interrupted attempt is refunded, so this — not `max_attempts` — bounds a job the
  * platform keeps taking away.
  */
-export const INTERRUPTION_BUDGET = 5;
+export const INTERRUPTION_BUDGET = 10;
 
 /** Only interruptions inside this trailing window count against `INTERRUPTION_BUDGET`. */
 export const INTERRUPTION_WINDOW_MS = 3_600_000;

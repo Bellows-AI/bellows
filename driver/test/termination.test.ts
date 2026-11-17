@@ -231,13 +231,36 @@ describe('settleEnd', () => {
             expect(settleEnd({ ...END, report: REPORT, vanished: VANISHED }).infraNodeLoss).toBe(true);
         });
 
+        it('flags the platform SIGTERM: exit 143 reported with no driver kill record is an eviction, drain or spot reclaim', () => {
+            expect(
+                settleEnd({
+                    ...END,
+                    report: { ...REPORT, outcome: 'failed', cause: 'agent_killed', agentExit: 143 },
+                })
+            ).toMatchObject({ infraLoss: expect.stringMatching(/platform terminated/), infraNodeLoss: true });
+        });
+
+        it('flags a supervisor that never finalized only when the pod read says its runner was taken away', () => {
+            expect(settleEnd({ ...END, unfinalized: UNFINALIZED, vanished: VANISHED })).toMatchObject({
+                infraLoss: VANISHED,
+                infraNodeLoss: true,
+            });
+        });
+
         it.each([
-            ['a supervisor that never finalized', { ...END, unfinalized: UNFINALIZED }],
-            ['an agent the supervisor lost', { ...END, report: { ...REPORT, agentEnd: 'lost' } }],
             [
-                'an agent killed by SIGTERM with no cause',
-                { ...END, report: { ...REPORT, outcome: 'failed', cause: 'agent_killed', agentExit: 143 } },
+                'a supervisor that never finalized, its pod read confirming nothing',
+                { ...END, unfinalized: UNFINALIZED },
             ],
+            [
+                'a SIGTERM the driver recorded itself',
+                {
+                    ...END,
+                    kills: [{ reason: 'timeout' as const, detail: '' }],
+                    report: { ...REPORT, outcome: 'failed', cause: 'agent_killed', agentExit: 143 },
+                },
+            ],
+            ['an agent the supervisor lost', { ...END, report: { ...REPORT, agentEnd: 'lost' } }],
             ['a runner the driver hard-killed', { ...END, driverKilledHard: true, vanished: VANISHED }],
             ['a run its budget ended', { ...END, budgetEnded: true, vanished: VANISHED }],
         ])('never flags %s', (_name, evidence) => {

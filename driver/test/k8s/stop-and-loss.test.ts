@@ -320,6 +320,16 @@ describe('runnerLossOf (issue #560)', () => {
         ).toBe('the runner pod was taken away before it exited (Evicted: low on memory)');
     });
 
+    it('names a pod the kubelet ended for its node shutting down', () => {
+        const message = 'Pod was terminated in response to imminent node shutdown.';
+        expect(
+            runnerLossOf([{ ...exited(143), status: { ...exited(143).status, reason: 'Terminated', message } }])
+        ).toBe(`the runner pod was taken away before it exited (Terminated: ${message})`);
+        expect(
+            runnerLossOf([{ ...exited(1), status: { ...exited(1).status, reason: 'Terminated', message: 'done' } }])
+        ).toBeNull();
+    });
+
     it('names a pod the control plane marked a disruption target', () => {
         const pod = {
             ...exited(137),
