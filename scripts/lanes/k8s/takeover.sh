@@ -195,6 +195,23 @@ tk_prepare() { # tk_prepare -> the origin's push log hook exists; the lane stops
     }
 }
 
+tk_question() { # tk_question <job id> -> "<id> <status>" of the job's first question, empty when none or unread
+    node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
+    .then(async (r) => { const q = ((await r.json()).questions ?? [])[0]; process.stdout.write(q ? q.id + " " + q.status : ""); })
+    .catch(() => {});
+' "$BASE/api/jobs/$1"
+}
+
+await_driver_log() { # await_driver_log <needle> <seconds> -> success once a driver pod's log holds the needle
+    local until=$(($(date +%s) + $2))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        case "$(driver_logs)" in *"$1"*) return 0 ;; esac
+        sleep 2
+    done
+    return 1
+}
+
 if selected_phase takeover; then
 begin_phase takeover
 # --- Driver killed at each step of a run -------------------------------------------
@@ -279,6 +296,62 @@ else
     tk_settled t2 "$t2" "$EXPIRED"
     tk_check 't2: the agent ran once' "$(tk_final tk_ready "$TK_D$n.go.ready-")" 1
     tk_check 't2: the gate ran once' "$(tk_final tk_count "$TK_D$n.gate.count")" 1
+fi
+
+# T7. A question pending across a takeover. The agent asks (the AskUserQuestion mailbox path) and waits;
+#     its driver is killed; once the next driver holds the run and the supervisor follows the rebind, the board must
+#     still read the question as pending, accept the answer, and the adopted agent must receive it and settle.
+begin_phase takeover-question
+n="$RELEASE-t7"
+commit_plan takeover-question "$(tk_plan "echo x >>$TK_D$n.gate.count")" || bad 'the question plan is committed' 'the plan pod did not commit'
+t7="$(queue_job "factory-stub-change factory-stub-ask-3 factory-stub-patient")"
+tk_use "$t7"
+t7_pod="$(await_runner_pod "$t7")"
+if [ -z "$t7" ] || [ -z "$t7_pod" ]; then
+    bad 't7: the asking agent is running' "job '$t7': $(job_brief "$t7")"
+else
+    t7_q=''
+    until=$(($(date +%s) + 120))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        t7_q="$(tk_question "$t7")"
+        case "$t7_q" in *' pending') break ;; esac
+        sleep 2
+    done
+    case "$t7_q" in *' pending') ok 't7: the board shows the question as pending' ;; *) bad 't7: the board shows the question as pending' "question: '$t7_q'" ;; esac
+    tk_kill "$t7"
+    await_driver_log "job $t7: $TOOK_OVER" 240 && ok 't7: the next driver takes over the asking agent' ||
+        bad 't7: the next driver takes over the asking agent' "$(driver_logs | grep -F "job $t7:" | tail -5)"
+    until=$(($(date +%s) + 300))
+    t7_rebound=''
+    while [ "$(date +%s)" -lt "$until" ]; do
+        case "$(kubectl logs "$t7_pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s 2>/dev/null)" in
+        *'supervisor: rebound to claim 2'*)
+            t7_rebound=1
+            break
+            ;;
+        esac
+        sleep 2
+    done
+    [ -n "$t7_rebound" ] && ok 't7: the supervisor rebinds to claim 2' || bad 't7: the supervisor rebinds to claim 2' 'no rebind in 300s'
+    t7_q="$(tk_question "$t7")"
+    case "$t7_q" in
+    *' pending') ok 't7: the question is still pending after the takeover' ;;
+    *) bad 't7: the question is still pending after the takeover' "question after takeover: '$t7_q' (a pending question bound to the dead lease reads closed)" ;;
+    esac
+    t7_status="$(http_status POST "$BASE/api/jobs/$t7/questions/${t7_q%% *}/answer" '{"answers":{"Which colour should the report use?":"Blue"}}')"
+    [ "$t7_status" = 200 ] && ok 't7: the member answers the question after the takeover' ||
+        bad 't7: the member answers the question after the takeover' "HTTP $t7_status"
+    t7_end="$(await_brief "$t7" 'succeeded*' 120)" && ok 't7: the adopted agent receives the answer and the run settles' ||
+        bad 't7: the adopted agent receives the answer and the run settles' "status|attempts|count|claimSeq|reason: $t7_end"
+    expect_contains 't7: the agent read the answer' "$(job_output "$t7")" 'ANSWER:'
+    case "$t7_end" in
+    succeeded*) ;;
+    *)
+        # An unanswerable question holds the agent for its whole patience: stop the run so the lane goes on.
+        http_status POST "$BASE/api/jobs/$t7/stop" '{}' >/dev/null
+        kubectl delete jobs -l "factory.job=$t7,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
+        ;;
+    esac
 fi
 
 # T4. The gates: killed while a gate runs. The agent has exited but its supervisor still serves, so the

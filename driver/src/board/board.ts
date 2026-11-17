@@ -761,10 +761,15 @@ const bestEffortLeases = async (
 };
 
 /** The board's answer to a question report, read as a verdict. */
-function questionVerdictOf(response: Response): QuestionVerdict {
+async function questionVerdictOf(response: Response): Promise<QuestionVerdict> {
     if (response.status === HTTP_TOO_MANY_REQUESTS) return 'refused';
     if (response.status === HTTP_CONFLICT) return 'lost';
-    return response.status === HTTP_NOT_FOUND ? 'removed' : 'held';
+    if (response.status === HTTP_NOT_FOUND) return 'removed';
+    // A stored question the board reports closed or expired can never be answered: refuse it, so
+    // the bridge cancels instead of waiting on an answer that cannot come.
+    if (!response.ok) return 'held';
+    const stored = (await response.json().catch(() => null)) as { status?: unknown } | null;
+    return stored?.status === 'closed' || stored?.status === 'expired' ? 'refused' : 'held';
 }
 
 const HTTP_BAD_REQUEST = 400;
