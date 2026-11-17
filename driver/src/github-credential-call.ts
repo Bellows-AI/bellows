@@ -1,4 +1,5 @@
 import type { BoardJob } from './board/board.js';
+import { boardCodeOf } from './board/board-retry.js';
 
 type Fetch = typeof globalThis.fetch;
 
@@ -13,6 +14,8 @@ const ASK_ATTEMPTS = 3;
 const ASK_RETRY_MS = 250;
 /** A deadline-bound ask backs off 250 ms, 500 ms, then 750 ms apart at most. */
 const ASK_BACKOFF_CAP = 3;
+const HTTP_REQUEST_TIMEOUT = 408;
+const HTTP_TOO_EARLY = 425;
 const HTTP_TOO_MANY = 429;
 const HTTP_SERVER_ERROR = 500;
 
@@ -20,9 +23,9 @@ const HTTP_SERVER_ERROR = 500;
 export type GithubGrant =
     /** A token, with the ISO instant it stops working when the board said (null: unknown). */
     | { kind: 'token'; token: string; expiresAt: string | null }
-    /** A confirmed no: no App installation (409), a refused attempt (403), any other 4xx but 429. */
+    /** A confirmed no: a 4xx the board coded (no App installation 409, a refused attempt 403), never 408, 425 or 429. */
     | { kind: 'refused' }
-    /** No confirmed answer: a failed request, a timeout, a 5xx, a 429 or a malformed body. Never a verdict. */
+    /** No confirmed answer: a failed request, a timeout, a 5xx, a 408, 425 or 429, a 4xx without the board's code or a malformed body. Never a verdict. */
     | { kind: 'unanswered' };
 
 /** One ask: the board's answer, or `retry` for a board that did not answer it. */
@@ -38,8 +41,10 @@ async function askOnce(url: string, fetch: Fetch, job: BoardJob, signal?: AbortS
     } catch {
         return 'retry';
     }
-    if (response.status === HTTP_TOO_MANY || response.status >= HTTP_SERVER_ERROR) return 'retry';
-    if (!response.ok) return { kind: 'refused' };
+    const later = [HTTP_REQUEST_TIMEOUT, HTTP_TOO_EARLY, HTTP_TOO_MANY];
+    if (later.includes(response.status) || response.status >= HTTP_SERVER_ERROR) return 'retry';
+    // A "no" is the board's own: a route miss or a load balancer's page is no answer about the ask.
+    if (!response.ok) return (await boardCodeOf(response)) === undefined ? 'retry' : { kind: 'refused' };
     try {
         const body = (await response.json()) as { token?: unknown; expiresAt?: unknown };
         if (typeof body.token !== 'string' || !body.token) return 'retry';
@@ -71,7 +76,7 @@ const pause = (ms: number, signal?: AbortSignal): Promise<void> =>
  * `POST /api/jobs/:id/credentials/github` (docs/connections.md), authenticated by the attempt pair and
  * never the driver credential. A board that did not answer is asked again — `githubGrant` until its signal
  * aborts (an absolute deadline), `githubCredential` a bounded number of times — and then the answer is
- * `unanswered`, which is no verdict: only a confirmed 4xx is `refused`.
+ * `unanswered`, which is no verdict: only a 4xx carrying the board's own `code` is `refused`.
  */
 export function githubCredentialCall({ url, fetch }: { url: string; fetch: Fetch }): {
     githubGrant(job: BoardJob, signal: AbortSignal): Promise<GithubGrant>;

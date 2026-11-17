@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { BOARD_CALL_ATTEMPTS, BoardHttpError, withBoardRetry } from '../src/board/board-retry.js';
+import {
+    BOARD_CALL_ATTEMPTS,
+    BoardHttpError,
+    BoardUncodedAnswerError,
+    withBoardRetry,
+} from '../src/board/board-retry.js';
 
 /** A recording io: every log line and every backoff the retry slept. */
 function io() {
@@ -44,6 +49,16 @@ describe('withBoardRetry: what is retried', () => {
         const call = failing(new BoardHttpError(status, `answered ${status}`));
 
         await expect(withBoardRetry(rec, 'x', call.call)).rejects.toThrow(`answered ${status}`);
+
+        expect(call.calls()).toBe(BOARD_CALL_ATTEMPTS);
+    });
+
+    // A 404 or 409 without the board's `code` is a route miss or a proxy page, not the board: tried again.
+    it.each([404, 409])('retries an uncoded %i like a 5xx, up to the attempt bound', async (status) => {
+        const { io: rec } = io();
+        const call = failing(new BoardUncodedAnswerError(status, `answered ${status} with no board code`));
+
+        await expect(withBoardRetry(rec, 'x', call.call)).rejects.toBeInstanceOf(BoardUncodedAnswerError);
 
         expect(call.calls()).toBe(BOARD_CALL_ATTEMPTS);
     });
