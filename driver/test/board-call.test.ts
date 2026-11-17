@@ -175,7 +175,7 @@ describe('board-call: one request path for the attempt pair', () => {
     // pin: 401/403 are no special case here; each helper's classify makes them terminal.
     it('hands 401/403 to classify at once', async () => {
         for (const status of [401, 403]) {
-            const r = rig(() => json(status, { error: 'refused' }));
+            const r = rig(() => json(status, { error: 'refused', code: 'UNAUTHENTICATED' }));
             const seen: number[] = [];
             const result = await boardCalls.boardCall(
                 r.deps,
@@ -188,6 +188,43 @@ describe('board-call: one request path for the attempt pair', () => {
             expect(result).toMatchObject({ ok: true, value: 'refused' });
             expect(r.requests).toHaveLength(1);
             expect(seen).toEqual([status]);
+        }
+    });
+
+    // pin: only the board's own answer reaches classify; a 4xx with no `code` (a route miss, a proxy page) is a retry.
+    it('retries a 4xx without the board code, never handing it to classify', async () => {
+        const replies: (() => Response)[] = [
+            () => json(404, { message: 'Route POST:/x not found', error: 'Not Found', statusCode: 404 }),
+            () => new Response('<html>403</html>', { status: 403 }),
+            () => json(409, { error: 'conflict' }),
+        ];
+        for (const reply of replies) {
+            const r = rig(reply);
+            const seen: number[] = [];
+            const result = await boardCalls.boardCall(
+                r.deps,
+                r.budget,
+                call((answer) => {
+                    seen.push(answer.status);
+                    return { done: 'refused' };
+                })
+            );
+            expect(result).toMatchObject({ ok: false, reason: 'deadline' });
+            expect(seen).toEqual([]);
+            expect(r.requests.length).toBeGreaterThan(1);
+        }
+    });
+
+    // pin: the board's coded 4xx and a 429 still reach classify.
+    it('hands a coded 4xx, and a 429, to classify', async () => {
+        for (const reply of [() => json(404, { code: 'NOT_FOUND' }), () => json(429, {})]) {
+            const r = rig(reply);
+            const result = await boardCalls.boardCall(
+                r.deps,
+                r.budget,
+                call(() => ({ done: 'answered' }))
+            );
+            expect(result).toMatchObject({ ok: true, value: 'answered' });
         }
     });
 

@@ -405,7 +405,7 @@ describe('asking for the attempt’s GitHub token (docs/connections.md)', () => 
             expiresAt: null,
         });
         for (const status of [403, 409]) {
-            const answered = recorder(() => Response.json({}, { status }));
+            const answered = recorder(() => Response.json({ code: 'CONNECTION_NOT_AUTHORIZED' }, { status }));
             expect(await boardOn(answered.fetch).githubGrant(job, AbortSignal.timeout(5_000))).toEqual({
                 kind: 'refused',
             });
@@ -442,7 +442,7 @@ describe('asking for the attempt’s GitHub token (docs/connections.md)', () => 
 
     it('never retries an answer: a refused attempt or no App is asked once', async () => {
         for (const status of [403, 409]) {
-            const answered = recorder(() => Response.json({}, { status }));
+            const answered = recorder(() => Response.json({ code: 'CONNECTION_NOT_AUTHORIZED' }, { status }));
             expect(await boardOn(answered.fetch).githubCredential(job)).toBeNull();
             expect(answered.calls).toHaveLength(1);
         }
@@ -493,7 +493,7 @@ describe('reporting an interrupted attempt (issue #792)', () => {
         const lost = recorder(() => Response.json({ code: 'LEASE_LOST' }, { status: 409 }));
         expect(await boardOn(lost.fetch).interrupt(job, { reason: 'evicted', release: true })).toBe('lost');
 
-        const gone = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
+        const gone = recorder(() => Response.json({ error: 'No such job', code: 'NOT_FOUND' }, { status: 404 }));
         expect(await boardOn(gone.fetch).interrupt(job, { reason: 'evicted', release: true })).toBe('lost');
     });
 });
@@ -519,7 +519,7 @@ describe('the runtime connection requirement', () => {
     it('reads 409 as lost, 404 as removed and 400 as a provider the board does not bind', async () => {
         const lost = recorder(() => Response.json({ code: 'LEASE_LOST' }, { status: 409 }));
         expect(await boardOn(lost.fetch).requireConnection(job, 'jira')).toBe('lost');
-        const gone = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
+        const gone = recorder(() => Response.json({ error: 'No such job', code: 'NOT_FOUND' }, { status: 404 }));
         expect(await boardOn(gone.fetch).requireConnection(job, 'jira')).toBe('removed');
         const refused = recorder(() => Response.json({ code: 'BAD_CONNECTION' }, { status: 400 }));
         expect(await boardOn(refused.fetch).requireConnection(job, 'nope')).toBe('refused');
@@ -789,7 +789,7 @@ describe('the heartbeat verdict', () => {
     });
 
     it('answers lost on a 409, which is a verdict not a failure', async () => {
-        const { fetch } = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
+        const { fetch } = recorder(() => Response.json({ error: 'Lease lost', code: 'LEASE_LOST' }, { status: 409 }));
         const board = boardOn(fetch);
         expect(await board.heartbeat(job)).toBe('lost');
     });
@@ -797,7 +797,7 @@ describe('the heartbeat verdict', () => {
     it('answers removed on a 404 — the thread was deleted while this attempt ran', async () => {
         // The only 404 a heartbeat can see is a Remove; the driver kills the container and
         // reports nothing, so the status has to arrive as a verdict rather than "board broken".
-        const { fetch } = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
+        const { fetch } = recorder(() => Response.json({ error: 'No such job', code: 'NOT_FOUND' }, { status: 404 }));
         const board = boardOn(fetch);
         expect(await board.heartbeat(job)).toBe('removed');
     });
@@ -829,8 +829,8 @@ describe('the question calls', () => {
 
     it('reads the question limit (429) as refused, a 409 as lost and a 404 as removed', async () => {
         expect(await board(429).board.question(job, 'toolu_1', questions)).toBe('refused');
-        expect(await board(409).board.question(job, 'toolu_1', questions)).toBe('lost');
-        expect(await board(404).board.question(job, 'toolu_1', questions)).toBe('removed');
+        expect(await board(409, { code: 'LEASE_LOST' }).board.question(job, 'toolu_1', questions)).toBe('lost');
+        expect(await board(404, { code: 'NOT_FOUND' }).board.question(job, 'toolu_1', questions)).toBe('removed');
     });
 
     it('reads a stored question the board reports closed or expired as refused, an answered one as held', async () => {
@@ -881,10 +881,10 @@ describe('the removed-thread reclaim queue', () => {
         expect(ok.calls[0]!.body).toEqual({ token: TOKEN });
         expect(ok.calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
 
-        const lost = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
+        const lost = recorder(() => Response.json({ error: 'Lease lost', code: 'LEASE_LOST' }, { status: 409 }));
         expect(await boardOn(lost.fetch).ackReclaim('row-1', TOKEN)).toBe('lost');
 
-        const gone = recorder(() => Response.json({ error: 'No such reclaim' }, { status: 404 }));
+        const gone = recorder(() => Response.json({ error: 'No such reclaim', code: 'NOT_FOUND' }, { status: 404 }));
         expect(await boardOn(gone.fetch).ackReclaim('row-1', TOKEN)).toBe('missing');
     });
 
@@ -905,10 +905,12 @@ describe('the removed-thread reclaim queue', () => {
         expect(await boardOn(bounded).renewReclaim('row-1', TOKEN, deadline)).toBe('held');
         expect(seen).toBe(deadline);
 
-        const lost = recorder(() => Response.json({ error: 'Reclaim is not yours' }, { status: 409 }));
+        const lost = recorder(() =>
+            Response.json({ error: 'Reclaim is not yours', code: 'LEASE_LOST' }, { status: 409 })
+        );
         expect(await boardOn(lost.fetch).renewReclaim('row-1', TOKEN)).toBe('lost');
 
-        const gone = recorder(() => Response.json({ error: 'No such reclaim' }, { status: 404 }));
+        const gone = recorder(() => Response.json({ error: 'No such reclaim', code: 'NOT_FOUND' }, { status: 404 }));
         expect(await boardOn(gone.fetch).renewReclaim('row-1', TOKEN)).toBe('missing');
     });
 
@@ -959,7 +961,7 @@ describe('the complete verdict', () => {
     });
 
     it('answers lost with no reclaim when the board refuses the verdict with a 409', async () => {
-        const { fetch } = recorder(() => Response.json({ error: 'Lease lost' }, { status: 409 }));
+        const { fetch } = recorder(() => Response.json({ error: 'Lease lost', code: 'LEASE_LOST' }, { status: 409 }));
         const board = boardOn(fetch);
 
         expect(await board.complete(job, { status: 'failed', exitCode: 1, output: 'boom' })).toEqual({
@@ -971,7 +973,7 @@ describe('the complete verdict', () => {
     it('still throws on any other non-ok answer', async () => {
         // 409 is a verdict; everything else is the board being broken or the driver being wrong,
         // and neither is swallowed into a silent no-op.
-        const { fetch } = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
+        const { fetch } = recorder(() => Response.json({ error: 'No such job', code: 'NOT_FOUND' }, { status: 404 }));
         const board = boardOn(fetch);
 
         await expect(board.complete(job, { status: 'succeeded', exitCode: 0, output: '' })).rejects.toThrow(/404/);

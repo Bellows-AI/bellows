@@ -37,6 +37,48 @@ export class BoardHttpError extends Error {
     }
 }
 
+/**
+ * The board's own `code` of an answer: a non-empty string in a JSON body, else undefined. The board codes every
+ * answer it gives on purpose (its 4xx, Fastify's own client errors included); a route miss on a replica that
+ * has not got the route yet, a load balancer's page or a proxy's body carries none. Reads a clone, so the
+ * caller's own read of the body is untouched; an unreadable body is uncoded.
+ */
+export async function boardCodeOf(response: Response): Promise<string | undefined> {
+    try {
+        const body = (await response.clone().json()) as { code?: unknown } | null;
+        return typeof body?.code === 'string' && body.code !== '' ? body.code : undefined;
+    } catch {
+        // Unreadable means "the board did not say": inconclusive, never a verdict.
+        return undefined;
+    }
+}
+
+/**
+ * A 4xx the board did not give (no `code`): no answer about the call, so no verdict — never "removed", "lost",
+ * "absent" or "refused" — and a retry may reach a replica that does answer it.
+ */
+export class BoardUncodedAnswerError extends BoardHttpError {
+    constructor(status: number, message: string) {
+        super(status, message);
+        this.name = 'BoardUncodedAnswerError';
+    }
+}
+
+/** The 4xx a board never sends uncoded; 429 is a rate limiter's, read by the calls that allow it. */
+const HTTP_FIRST_CLIENT_ERROR = 400;
+const HTTP_FIRST_SERVER_ERROR = 500;
+
+/** The error for a 4xx (not 429) that carries no board `code`; null for every other answer. */
+export async function uncodedAnswer(response: Response, what: string): Promise<BoardUncodedAnswerError | null> {
+    const { status } = response;
+    if (status < HTTP_FIRST_CLIENT_ERROR || status >= HTTP_FIRST_SERVER_ERROR) return null;
+    if (status === HTTP_TOO_MANY_REQUESTS || (await boardCodeOf(response)) !== undefined) return null;
+    return new BoardUncodedAnswerError(
+        status,
+        `${what} answered ${status} with no board code (not the board's answer)`
+    );
+}
+
 /** Thrown into a board call the driver's lapsed lease fenced (`loop-lease.ts`). */
 export class LeaseLapsedError extends Error {
     constructor() {
@@ -60,11 +102,12 @@ export function fenced<T>(signal: AbortSignal | undefined, call: () => Promise<T
 
 /**
  * Whether a throw is worth sending again unchanged: a transport failure or a 5xx is the board being
- * briefly down, a refused credential is no answer about the call; any other 4xx is its answer to this
- * exact body, and the same body earns it again.
+ * briefly down, a refused credential and an uncoded 4xx (not the board's answer) are no answer about the
+ * call; any other 4xx is its answer to this exact body, and the same body earns it again.
  */
 function retryable(e: unknown): boolean {
     if (!(e instanceof BoardHttpError)) return true;
+    if (e instanceof BoardUncodedAnswerError) return true;
     return e.status >= HTTP_SERVER_ERROR || TRANSIENT_CLIENT_STATUSES.has(e.status);
 }
 
@@ -74,7 +117,7 @@ const spent = (attempt: number, waitedMs: number, budgetMs?: number): boolean =>
 
 /**
  * Retries a board call that threw (a 5xx, a dropped connection) with doubling backoff; the last
- * throw propagates. A board VERDICT — 409, 404 — is an answer and returns, so it is never retried,
+ * throw propagates. A board VERDICT — a 409 or 404 carrying the board's `code` — is an answer and returns, so it is never retried,
  * and neither is a deterministic refusal (a 400, a 413): it throws at once.
  * `what` opens the log line ("job <id>: the verdict was not accepted"). Without `budgetMs` the call
  * is tried `BOARD_CALL_ATTEMPTS` times; with it, until the summed backoff would pass the budget.
