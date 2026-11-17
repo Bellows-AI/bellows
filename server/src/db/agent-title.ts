@@ -33,9 +33,10 @@ export type AgentTitle = (input: AgentTitleInput) => Promise<AgentTitleResult>;
 interface OwnRow {
     claim_seq: string | number;
     current: unknown;
-    prior: unknown;
+    held: unknown;
     live: unknown;
     standing: unknown;
+    unended: unknown;
 }
 
 interface RootRow {
@@ -54,8 +55,10 @@ function flag(value: unknown): boolean {
 function ownRefusal(own: OwnRow): 'pending' | 'refused' | null {
     const standing = flag(own.standing);
     if (flag(own.current) && flag(own.live) && standing) return null;
-    // A rotated pair, or the current one lapsed, on a task that still runs is a takeover window.
-    return standing && (flag(own.prior) || flag(own.current)) ? 'pending' : 'refused';
+    // Any pair the task held while it has not ended, or the current one lapsed on a task that still runs, is a
+    // takeover window.
+    const pending = (standing && flag(own.current)) || (flag(own.unended) && flag(own.held));
+    return pending ? 'pending' : 'refused';
 }
 
 /** What the root's title says about the proposal, before the cap: an answer to give, or null to write. */
@@ -74,10 +77,13 @@ export function createAgentTitle({ sql, ready }: { sql: Sql; ready?: Promise<unk
             const [own] = await tx<OwnRow[]>`
                 select claim_seq,
                        coalesce(lease_token = ${leaseToken}, false) as current,
-                       coalesce(prior_lease_token = ${leaseToken}, false) as prior,
+                       (coalesce(prior_lease_token = ${leaseToken}, false)
+                        or coalesce(${leaseToken} = any(superseded_lease_tokens), false)) as held,
                        coalesce(lease_expires_at > now(), false) as live,
                        (coalesce(status = 'running', false) and finished_at is null
-                        and cancel_requested_at is null and review_of is null) as standing
+                        and cancel_requested_at is null and review_of is null) as standing,
+                       (coalesce(status in ('queued', 'running'), false) and finished_at is null
+                        and cancel_requested_at is null and review_of is null) as unended
                 from job where org_id = ${orgId} and id = ${jobId} and root_job_id = ${rootJobId}
                 for update
             `;

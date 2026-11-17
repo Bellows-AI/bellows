@@ -193,6 +193,10 @@ export class Sim {
     readonly published: number[] = [];
     /** Every claim sequence the board handed out, in order. */
     readonly claimSeqs: number[] = [];
+    /** Every lease the board handed out, in order: the pairs the task held. */
+    readonly heldLeases: string[] = [];
+    /** Kubernetes: false holds every binding Secret refresh back from the mount (the kubelet never delivers it). */
+    deliverBindings = true;
     /** What the driver itself ended (`Runner.kill`), with whether its claim still held and was unexpired. */
     readonly driverKills: { claimSeq: number; held: boolean; unexpired: boolean }[] = [];
     /** A cluster model: places a new group's pod (a node, or null for Pending) and starts it later. */
@@ -278,6 +282,7 @@ export class Sim {
         this.claimSeqs.push(r.claimSeq);
         r.status = 'running';
         r.leaseToken = randomUUID();
+        this.heldLeases.push(r.leaseToken);
         r.leaseExpiresAt = this.now() + this.t.leaseSeconds * 1000;
         this.renewed = this.now();
         const continues = r.interruptions.at(-1)?.claimSeq === r.claimSeq - 1;
@@ -307,6 +312,31 @@ export class Sim {
 
     /** The board's calls with no driver in between: a scenario that needs one call at one instant. */
     readonly directBoard = () => this.boardImpl();
+
+    /**
+     * The runner credential route (`POST /api/jobs/:id/credentials/github`) as the server answers it
+     * (`server/src/db/attempt-of-lease.ts`): the current lease of a running, unexpired row is issued a credential named
+     * for it; any lease the task held while the row has not ended is 503 LEASE_PENDING (the new lease may not have
+     * reached the container yet); anything else is 403.
+     */
+    credentialAnswer(jobId: string, lease: string): Response {
+        const r = this.row;
+        const headers = { 'content-type': 'application/json' };
+        if (jobId !== r.id) return new Response(JSON.stringify({ error: 'refused' }), { status: 403, headers });
+        if (r.status === 'running' && lease === r.leaseToken && r.leaseExpiresAt > this.now()) {
+            return new Response(JSON.stringify({ token: `ghs_for_${lease}`, expiresAt: null }), {
+                status: 200,
+                headers,
+            });
+        }
+        if ((r.status === 'running' || r.status === 'queued') && this.heldLeases.includes(lease)) {
+            return new Response(JSON.stringify({ error: 'pending', code: 'LEASE_PENDING', retryable: true }), {
+                status: 503,
+                headers: { ...headers, 'retry-after': '1' },
+            });
+        }
+        return new Response(JSON.stringify({ error: 'refused' }), { status: 403, headers });
+    }
 
     private boardImpl(): Partial<Board> {
         const r = this.row;
@@ -460,12 +490,20 @@ export class Sim {
         return group;
     }
 
-    /** `kubectl patch secret`: visible in the mounted file after the kubelet's refresh. */
+    /**
+     * Kubernetes: `kubectl patch secret`, visible in the mounted file after the kubelet's refresh. Docker: the binding
+     * written into the group at once (`rebindGroup`'s `docker exec`).
+     */
     rebind(lease: string, body: string) {
         const group = this.groups.get(lease);
         if (!group) return;
         group.secretWrites += 1;
         group.tokens.add((JSON.parse(body) as { token: string }).token);
+        if (this.executor === 'docker') {
+            writeFileSync(group.file, body);
+            return;
+        }
+        if (!this.deliverBindings) return;
         // A pod deleted meanwhile has no mount for the refresh to reach.
         const refresh = setTimeout(() => {
             this.refreshes.delete(refresh);

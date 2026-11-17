@@ -437,6 +437,10 @@ async function acquireCandidate(
                 -- still holding it is told to retry with the current pair, never refused for good. A claim of a
                 -- queued row supersedes no running attempt.
                 prior_lease_token = case when status = 'running' then lease_token else null end,
+                -- Every lease the task gave up (160): this claim's superseded one joins the list, so any pair the
+                -- task held stays a retry until it ends. A queued row's lease was appended by its hand-back.
+                superseded_lease_tokens = case when lease_token is null then superseded_lease_tokens
+                                               else superseded_lease_tokens || lease_token end,
                 -- The telemetry export credential (144): never rotated, so an adopted runner keeps exporting
                 -- under it; minted here only for a row from before the column that holds none.
                 ingest_token     = coalesce(ingest_token, gen_random_uuid()),
