@@ -7,7 +7,7 @@ description: "Quick answers to common questions, and a symptom-to-fix guide for 
 
 <AccordionGroup>
   <Accordion title="Which model does the agent use?">
-    The one set on the [executor profile](/guides/executors) you pick. **Claude Code** takes a Claude model id or alias such as `sonnet`. **OpenCode** takes `provider/model`. If you leave the model on **Use runner default**, the runner's default applies.
+    The model of the [executor profile](/guides/executors) you pick or, with no profile, your agent default from **Settings → Model**. You can override it per task with the **Model** chip in the composer (see [Choosing the model for one task](/guides/executors#choosing-the-model-for-one-task)). **Claude Code** takes a Claude model id or alias such as `sonnet`. **OpenCode** takes `provider/model`. If you leave the model on **Use runner default**, the runner's default applies.
   </Accordion>
   <Accordion title="Does the agent push to my main branch?">
     Not by design. The agent works on a task branch and opens or updates a pull request; it is instructed never to push to your default branch, merge or close a pull request. That is an instruction, not a lock: the run's GitHub token is limited to the one repository, not to one branch. For a hard guarantee, turn on branch protection for your default branch in GitHub. See [Task lifecycle](/guides/task-lifecycle).
@@ -19,7 +19,7 @@ description: "Quick answers to common questions, and a symptom-to-fix guide for 
     Yes. Bellows works through its GitHub App, so any repository you gave the App access to can be tracked, public or private. For each run it issues a short-lived token for that one repository. See [Connections](/guides/connections#github).
   </Accordion>
   <Accordion title="Can I use my own API key?">
-    You can store a key as a [secret](/guides/env-and-secrets) under **Settings → Workspace** (only your runs) or **Settings → Organization** (everyone). It is injected into the runner's environment. Keep keys out of the executor's configuration JSON.
+    Connect it under **Settings → Model**, which checks the key and saves it as a secret together with your default agent and model. You can also store a key yourself as a [secret](/guides/env-and-secrets) under **Settings → Workspace** (only your runs) or **Settings → Organization** (everyone). It is injected into the runner's environment. Keep keys out of the executor's configuration JSON.
   </Accordion>
   <Accordion title="How long can a run take, and what does it cost?">
     Each gate has a `timeout` of 1 to 120 minutes (default 10). The driver also caps a whole run. Its default is 2 hours and a self-hosted admin can change it. A run that hits the cap fails as `timed out`. Bellows records token usage per run: see `bellows job activity <id>`. This page cannot state a price.
@@ -46,6 +46,14 @@ description: "Quick answers to common questions, and a symptom-to-fix guide for 
 Each entry reads symptom, cause, fix. For every failure badge, see [Task lifecycle](/guides/task-lifecycle#when-a-run-fails).
 
 <AccordionGroup>
+  <Accordion title="A task was refused with PLAN_LIMIT">
+    **Cause.** The organization's plan is used up: too many queued tasks, all the tokens of the period, or all the stored file space. The message names the limit and its value.
+    **Fix.** Wait for queued tasks to start or for the token period to renew, remove attachments, or change the plan. See [Organization status and plan limits](/guides/organization) and [Limits](/reference/limits#organization-plan).
+  </Accordion>
+  <Accordion title="A task was refused because the organization is suspended">
+    **Cause.** The code is `ORG_INACTIVE` and the status is `suspended` or `refused`. The operator suspended or refused the organization, or its GitHub App was uninstalled or suspended. Queued tasks wait and runs in progress are interrupted, not failed.
+    **Fix.** Contact whoever operates your Bellows, or reinstall the GitHub App. When the organization is reactivated, queued tasks start and interrupted runs resume. See [Organization status and plan limits](/guides/organization#organization-status).
+  </Accordion>
   <Accordion title="My repository is not in the list">
     **Cause.** The GitHub App has no access to it, or Bellows is not tracking it.
     **Fix.** Ask a GitHub admin to add the repository to the App installation, then open **Settings → Repositories**. Also check **Choose organizations and repositories**. Through MCP, `list_repos` returning `stale: true` means the list could not refresh, so a missing repo is not proof it is absent. See [Connections](/guides/connections#github).

@@ -23,7 +23,7 @@ Use these to find valid values before you create a task.
 | `list_skills` | Lists selectable [skills](/guides/skills) with their source (`builtin`, `org`, `workspace`, `repo`) | `repo` (owner/name), `branch`, `executor`, `executorScope` (`user` or `org`) |
 | `list_connections` | Lists your own [connections](/guides/connections) with a state: `connected`, `needs_reconnect` or `disconnected`. Never returns secrets | none |
 | `list_available_integrations` | Browses the providers Bellows offers. Connects nothing | `q`, `category`, `limit`, `cursor` |
-| `preflight_task` | Checks, without creating anything, whether a task would be accepted. Verdict: `ready`, `blocked`, `integration_required` or `unverified` | `repo`, `baseBranch`, `executor`, `executorScope`, `skills`, `connections` |
+| `preflight_task` | Checks, without creating anything, whether a task would be accepted. Checks cover the repository, executor, model, skills and connections. A task with no usable model is blocked with `NO_MODEL`. Verdict: `ready`, `blocked`, `integration_required` or `unverified` | `repo`, `baseBranch`, `executor`, `executorScope`, `skills`, `connections` |
 
 ## Reading
 

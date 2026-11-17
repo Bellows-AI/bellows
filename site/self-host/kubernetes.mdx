@@ -54,7 +54,8 @@ The render refuses to start without them, and names the missing value.
 | `dashboard.replicas` | `1` | Above 1 needs `artifacts.backend: s3` or `gcs` and at least two schedulable nodes. The pods spread over nodes (never two on one) and zones, and the PodDisruptionBudget keeps one pod through a drain. |
 | `dashboard.topologySpreadConstraints` | `[]` | Empty uses the default spread above one replica; a list replaces it, at any replica count. |
 | `artifacts.backend` | `s3` | `s3`, `gcs` or `filesystem`. `filesystem` keeps objects in the dashboard pod's `/tmp`. One replica only, and lost with the pod. Trials only. |
-| `artifacts.retentionDays` | `90` | Artifacts of a removed task are deleted after this many days. |
+| `artifacts.retentionDays` | `''` (90) | Days a deleted skill's versions are kept on a board with no organization retention window. Refused with `deploymentMode: cloud` and together with `dashboard.planDefaults.maxRetentionDays`. See [Data retention](/guides/retention). |
+| `deploymentMode`, `platformModelProvided`, `dashboard.planDefaults.*`, `dashboard.limits.*`, `dashboard.operatorGithubIds`, `dashboard.dbConnections` | | The cloud-mode and plan values. See [Server and driver configuration](/self-host/configuration). |
 | `ingress.enabled` | `false` | See [Ingress and TLS](#ingress-and-tls). |
 | `taskVolume.size` | `20Gi` | Size request of each thread's volume. |
 | `taskVolume.storageClass` | `''` | Empty is the cluster default. |
@@ -316,11 +317,16 @@ The local profile keeps artifacts in the dashboard pod (`artifacts.backend: file
       activeKeyId: k1
     runner:
       credentialsExistingSecret: bellows-runner-credentials
-      nodeSelector:
-        dedicated: runners
-      tolerations:
-        - { key: dedicated, operator: Equal, value: runners, effect: NoSchedule }
+      classes:
+        standard:
+          nodeSelector:
+            dedicated: runners
+          tolerations:
+            - { key: dedicated, operator: Equal, value: runners, effect: NoSchedule }
     driver:
+      credential:
+        existingSecret: bellows-driver-credential
+        sha256: <sha-256 of the credential>
       executorImages:
         claudeCode: claude-executor:1.2.3
         opencode: opencode-executor:1.2.3
@@ -447,12 +453,24 @@ helm upgrade bellows oci://ghcr.io/<owner>/charts/factory \
 - The driver drains on shutdown. On SIGTERM it stops claiming and hands running tasks back at once (`driver.handoverMs`, default `"0"`), so a spot node's two-minute notice is enough. They are retried at once, and each runner Job keeps running for the next claim. Set `driver.handoverMs` above zero, below `driver.terminationGracePeriodSeconds` (default `600`), to let more runs finish in place first.
 - Pin the executor image tags in values when you upgrade, since they are not derived from the chart version.
 
+### Upgrading from v0.0.16 or earlier
+
+The chart refuses to render, or silently ignores a value, in these cases:
+
+- `secret.jobBoardToken` and `telemetry.ingestToken` no longer exist and are ignored. The driver authenticates with its own credential: set `driver.credential.value`, or `driver.credential.existingSecret` with `driver.credential.sha256`. The render fails without one. With `driver.metricsPort` set (the default is `9464`), also set `driver.metricsToken` of at least 32 characters, or put `metrics-token` in the driver Secret.
+- `runner.runtimeClassName`, `runner.nodeSelector`, `runner.tolerations`, `runner.affinity`, `runner.resources` and `runner.gateResources` are retired, and the render fails if any of them is present, even empty. Move each into `runner.classes.<name>`, as in the production example above, and set `runner.defaultClass` if you name more than one class.
+- On Docker Compose, `JOB_BOARD_TOKEN` is ignored. Set `DRIVER_CREDENTIAL` (or `DRIVER_CREDENTIAL_FILE`) and `DRIVER_CREDENTIAL_SHA256`.
+
 ## Roll back
 
 ```bash
 helm history bellows -n bellows
 helm rollback bellows <revision> -n bellows
 ```
+
+<Warning>
+After upgrading from v0.0.16, do not roll back to it. The new schema drops columns v0.0.16 still reads and writes (migration 155 removes `job.jira_connection_id`). Restore the database backup you took before the upgrade if you must go back.
+</Warning>
 
 <Warning>
 Migrations only move forward. The repository ships no down migrations, and a Helm rollback does not undo them. Roll back only to a version that works with the current schema, or restore the database backup you took before the upgrade.

@@ -9,7 +9,11 @@ For a guided tour of the main ideas, read [Core concepts](/overview/concepts) fi
 
 **Agent.** The coding model that edits your code in a run. In Bellows it is chosen through an [executor](/guides/executors).
 
+**Agent default.** The agent and model you save under **Settings → Model**, so a task can run without an executor profile. See [Executors](/guides/executors#choosing-the-model-for-one-task).
+
 **Attachment.** A screenshot, PDF or other file you add to a task or follow-up so the agent can work from it. See [Attachments](/guides/attachments).
+
+**Audit log.** A record, per organization, of who changed what: roles, tokens, variables, connections and more. Admins read and export it. See [Audit log](/guides/audit-log).
 
 ## B
 
@@ -67,7 +71,7 @@ For a guided tour of the main ideas, read [Core concepts](/overview/concepts) fi
 
 **On-demand gate.** A gate marked `on_demand: true`. The agent can run it while it works. The end-of-run pass skips it, and it never fails the task. See [Gates](/guides/gates#on-demand-gates).
 
-**Organization.** One Bellows GitHub App installation. It owns the repository list and keeps its data apart from other organizations. See [Core concepts](/overview/concepts).
+**Organization.** One Bellows GitHub App installation. It owns the repository list and keeps its data apart from other organizations. It is active, suspended or refused. See [Core concepts](/overview/concepts) and [Organization status and plan limits](/guides/organization).
 
 **Organization access token.** A token with the `oat_` prefix. It is read-only and meant for automation that should outlive any member. See [Install and sign in](/cli/install#token-types).
 
@@ -87,11 +91,15 @@ For a guided tour of the main ideas, read [Core concepts](/overview/concepts) fi
 
 **Repository.** A GitHub repository tracked by Bellows. You choose which ones under **Settings → Repositories**. See [Configure your repo](/guides/configure-repo).
 
+**Retention window.** How long a finished task is kept before Bellows deletes it. Your plan sets it. See [Data retention](/guides/retention).
+
 **Reviewer.** A separate agent run, declared under `reviewers` in `.bellows.yaml`, that reviews the work and returns a verdict of `clean` or `blockers`. See [Policy and reviewers](/guides/policy-and-reviewers#reviewers).
 
 **Run.** See **Job**.
 
 **Runner.** The container your `.bellows.yaml` describes. The agent works and the gates run there. See [Introduction](/overview/introduction).
+
+**Runner class.** A kind of runner an admin gives an organization executor profile, for example one with more memory or, on Kubernetes, a Docker daemon. See [Executors](/guides/executors#runner-class).
 
 ## S
 
