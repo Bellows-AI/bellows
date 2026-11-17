@@ -237,8 +237,8 @@ export async function heartbeatJob(
             cancelRequested: row.cancel_requested_at !== null,
             stopCause: row.cancel_requested_at === null ? null : row.stop_cause,
             // The answers ride the beat the driver already sends (050): every answered question
-            // of THIS lease, re-listed each beat — the driver applies them idempotently.
-            answeredQuestions: await answeredQuestionsOf(ctx, id, leaseToken),
+            // of THIS attempt, re-listed each beat — the driver applies them idempotently.
+            answeredQuestions: await answeredQuestionsOf(ctx, id),
             requirementWait: await requirementWaitOf(sql, orgId, id),
             release: await orgRelease(sql, orgId, ctx.deploymentMode),
         };
