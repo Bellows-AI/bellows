@@ -251,8 +251,6 @@ RUNNER_CLASSES='{"standard":{"resources":{"limits":{"memory":"8Gi"}}},"sandbox":
 RUNNER_DEFAULT_CLASS=standard
 ```
 
-The bundled `docker-compose.yml` does not pass `RUNNER_CLASSES` or `RUNNER_DEFAULT_CLASS` from `.env` to the `dashboard` and `driver` services. To use classes with Compose, add both names to the `environment:` block of each.
-
 ### Kubernetes executor
 
 Used only with `EXECUTOR=kubernetes`. The Helm chart sets them. See [Kubernetes](/self-host/kubernetes).
