@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createJobStore, REPEATED_DAEMON_LOSS_NOTE } from '../src/db/jobs/job-store.js';
+import { createJobStore, INTERRUPTION_BUDGET, REPEATED_DAEMON_LOSS_NOTE } from '../src/db/jobs/job-store.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { testOrg } from './fixtures.js';
@@ -81,7 +81,7 @@ describe.skipIf(!enabled)('consecutive dockerd losses are bounded — database',
         const at = new Date().toISOString();
         await db.sql`update job set interruptions = (
             select jsonb_agg(jsonb_build_object('reason', 'gone', 'at', ${at}::text, 'refunded', true))
-            from generate_series(1, 5)
+            from generate_series(1, ${INTERRUPTION_BUDGET})
         ) || interruptions where id = ${id}`;
 
         expect(await store.interrupt(id, await claimed(store), daemonLost)).toEqual({ result: 'exhausted' });

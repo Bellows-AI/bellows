@@ -498,13 +498,16 @@ async function readPodLog(deps: K8sDeps, path: string): Promise<K8sResponse> {
 /**
  * Why a runner Job that failed inside its deadline was taken away rather than ended by its agent,
  * or null when its pod says the agent ended it: no live pod left (deleted, drained,
- * its node removed), or one the kubelet evicted or the control plane marked a disruption target.
+ * its node removed), or one the kubelet evicted or ended for its node's shutdown, or the control plane
+ * marked a disruption target.
  */
 export function runnerLossOf(pods: readonly K8sPod[]): string | null {
     const live = livePodOfItems([...pods]);
     const pod = live ?? pods[0];
     const disruption = pod?.status?.conditions?.find((c) => c.type === 'DisruptionTarget' && c.status === 'True');
-    const evicted = pod?.status?.reason === 'Evicted';
+    const evicted =
+        pod?.status?.reason === 'Evicted' ||
+        (pod?.status?.reason === 'Terminated' && /node shutdown/i.test(pod.status.message ?? ''));
     const said = disruption
         ? [disruption.reason, disruption.message]
         : evicted
