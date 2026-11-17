@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
     BOARD_CALL_ATTEMPTS,
     BoardHttpError,
+    BOARD_BUDGET_MAX_BACKOFF_MS,
     BoardUncodedAnswerError,
     withBoardRetry,
 } from '../src/board/board-retry.js';
@@ -121,6 +122,34 @@ describe('withBoardRetry: a backoff budget', () => {
 
         expect(slept.reduce((sum, ms) => sum + ms, 0)).toBe(100_000);
         expect(call.calls()).toBe(slept.length + 1);
+    });
+
+    // The lease fence lands just before the budget ends, as in production: the lease clock starts at the last beat.
+    it('lands a retry after a recovery late in the window, before the fence cuts it', async () => {
+        vi.useFakeTimers();
+        try {
+            const fence = new AbortController();
+            setTimeout(() => fence.abort(), 299_000);
+            const startedAt = Date.now();
+            let last = 0;
+            const call = async () => {
+                last = Date.now() - startedAt;
+                if (last < 280_000) throw new BoardHttpError(503, 'answered 503');
+                return 'held';
+            };
+            const rec = {
+                log: () => {},
+                sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+            };
+
+            const answer = withBoardRetry(rec, 'x', call, { budgetMs: 300_000, leaseLapsed: fence.signal });
+            await vi.advanceTimersByTimeAsync(300_000);
+
+            await expect(answer).resolves.toBe('held');
+            expect(last).toBeLessThan(280_000 + BOARD_BUDGET_MAX_BACKOFF_MS);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('still stops at once on a deterministic refusal', async () => {

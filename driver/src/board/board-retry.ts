@@ -1,8 +1,12 @@
 /** How many times a board call that must land is tried: the verdict and a question report. */
 export const BOARD_CALL_ATTEMPTS = 5;
 const BOARD_CALL_BACKOFF_MS = 1_000;
-/** The longest single backoff once a budget lets the doubling run on. */
-const BOARD_CALL_MAX_BACKOFF_MS = 30_000;
+/**
+ * The longest single backoff under a budget. The budget is a recovery bound (a lease) that a fence cuts short, so
+ * attempts must keep landing across the whole window: a longer sleep started just before the fence would end in it
+ * and never ask a board that recovered meanwhile.
+ */
+export const BOARD_BUDGET_MAX_BACKOFF_MS = 10_000;
 
 const HTTP_REQUEST_TIMEOUT = 408;
 const HTTP_TOO_EARLY = 425;
@@ -117,7 +121,7 @@ function retryable(e: unknown): boolean {
  * answers just before the budget ends is still asked once more at the end, never given up on a backoff early.
  */
 function nextDelayMs(attempt: number, waitedMs: number, budgetMs?: number): number | null {
-    const delayMs = Math.min(BOARD_CALL_BACKOFF_MS * 2 ** (attempt - 1), BOARD_CALL_MAX_BACKOFF_MS);
+    const delayMs = Math.min(BOARD_CALL_BACKOFF_MS * 2 ** (attempt - 1), BOARD_BUDGET_MAX_BACKOFF_MS);
     if (budgetMs === undefined) return attempt >= BOARD_CALL_ATTEMPTS ? null : delayMs;
     return waitedMs >= budgetMs ? null : Math.min(delayMs, budgetMs - waitedMs);
 }

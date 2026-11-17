@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob, LeaseState } from '../src/board/board.js';
-import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board/board-retry.js';
+import { BoardHttpError } from '../src/board/board-retry.js';
+import { ATTEMPTS_SPANNING_LEASE } from './fixtures/lease-span.js';
 import { end } from '../src/loop/loop-conclusion.js';
 import { newJobState } from '../src/loop/loop-attempt.js';
 import { recordEnding } from '../src/loop/loop-phase.js';
@@ -343,7 +344,7 @@ describe('end retains the runner a board call did not reach', () => {
         await end(ctx, { kind: 'park', phase: 'setup' });
 
         // The retry runs on for the lease (300 s of backoff), far past the default five tries.
-        expect(calls.filter((call) => call === 'suspend').length).toBeGreaterThan(BOARD_CALL_ATTEMPTS);
+        expect(calls.filter((call) => call === 'suspend').length).toBeGreaterThanOrEqual(ATTEMPTS_SPANNING_LEASE);
         expect(lines.join('\n')).toContain('the board did not take the stop, left to the lease');
         expect(calls).not.toContain('finish');
         expect(calls).not.toContain('services');
@@ -416,6 +417,39 @@ describe('end retries a hand-back for the lease, not for five tries', () => {
 
         expect(calls.filter((call) => call === 'suspend')).toHaveLength(9);
         expect(lines.join('\n')).not.toContain('left to the lease');
+    });
+
+    // Real timer semantics: the lease fence lands at 299 s, the board recovers at 280 s.
+    it.each([
+        ['interrupt', { kind: 'interrupt', reason: 'the pod was evicted', exitCode: null }, 'interrupt'],
+        ['park', { kind: 'park', phase: 'setup' }, 'suspend'],
+    ] as const)('lands a %s after a recovery late in the lease, before the fence', async (_name, decision, call) => {
+        vi.useFakeTimers();
+        try {
+            const startedAt = Date.now();
+            const heard: number[] = [];
+            const answers = {
+                [call]: (() => {
+                    heard.push(Date.now() - startedAt);
+                    if (Date.now() - startedAt < 280_000) unavailable();
+                    return 'held';
+                }) as unknown as () => never,
+            };
+            const { ctx, lines } = attempt(answers);
+            const fence = new AbortController();
+            setTimeout(() => fence.abort(), 299_000);
+            ctx.state.leaseExpiry = { signal: fence.signal, renewed: () => {}, stop: () => {} };
+            ctx.rt.sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+            const ended = end(ctx, decision as EndDecision);
+            await vi.advanceTimersByTimeAsync(300_000);
+            await ended;
+
+            expect(heard.at(-1)).toBeGreaterThanOrEqual(280_000);
+            expect(lines.join('\n')).not.toContain('left to the lease');
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('still ends the retry at once when the lease lapses mid-outage', async () => {

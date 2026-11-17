@@ -356,6 +356,45 @@ describe('a board outage while a finished run uploads its artifacts', () => {
         expect(o.manifests).toEqual([]);
     });
 
+    it('stores the artifacts after a recovery late in the lease, before the lease fence cuts the upload', async () => {
+        vi.useFakeTimers();
+        try {
+            const lease = new AbortController();
+            setTimeout(() => lease.abort(), 299_000);
+            const startedAt = Date.now();
+            const stored: string[] = [];
+            const manifests: string[] = [];
+            const down = () => {
+                if (Date.now() - startedAt < 280_000) throw new BoardHttpError(503, 'answered 503');
+            };
+            const board: UploadTarget['board'] = {
+                async putArtifactChunk(_job, ref) {
+                    down();
+                    stored.push(ref.stream);
+                    return { result: 'stored' };
+                },
+                async finalizeArtifact(_job, _ref, manifest) {
+                    down();
+                    manifests.push(manifest.state);
+                    return 'stored';
+                },
+            };
+            const timed = {
+                log: () => {},
+                sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+            };
+
+            const upload = uploadRunArtifacts(run(board), timed, bound(300_000, lease.signal));
+            await vi.advanceTimersByTimeAsync(300_000);
+            await upload;
+
+            expect(stored).toEqual(['log', 'transcript']);
+            expect(manifests).toEqual(['complete', 'complete']);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('cuts a request that never answers at the wall-clock bound and releases its timer', async () => {
         vi.useFakeTimers();
         try {
