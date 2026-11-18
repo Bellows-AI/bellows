@@ -150,6 +150,7 @@ interface QueuedStep {
     cwd?: string;
     env: Record<string, string>;
     timeoutMs: number;
+    parallel?: true;
 }
 interface StepAnswer {
     exitCode: number | null;
@@ -1196,14 +1197,19 @@ interface GatePlan {
  */
 function fakeGateLoop(
     gateDir: string,
-    plan: (request: GateRequestSeen) => GatePlan = () => ({ exitCode: 0, output: 'ok' })
+    plan: (request: GateRequestSeen) => GatePlan = () => ({ exitCode: 0, output: 'ok' }),
+    { parallel = true }: { parallel?: boolean } = {}
 ) {
     const at = (...parts: string[]) => join(gateDir, ...parts);
     for (const sub of [GATE_FILES.requests, GATE_FILES.running, GATE_FILES.done])
         mkdirSync(at(sub), { recursive: true });
+    // What a loop with `setsid` says: requests may run side by side.
+    if (parallel) writeFileSync(at(GATE_FILES.parallel), '');
     const loop = {
         seen: [] as GateRequestSeen[],
         cancelled: [] as string[],
+        /** The requests that carried the parallel marker when the loop took them. */
+        marked: [] as string[],
         beating: true,
         taking: true,
         /** A loop that does not honor a `cancel` order: the request stays open for the supervisor's grace. */
@@ -1230,6 +1236,7 @@ function fakeGateLoop(
                     env: file(GATE_FILES.env),
                 };
                 rmSync(at(GATE_FILES.running, id, GATE_FILES.env));
+                if (existsSync(at(GATE_FILES.running, id, GATE_FILES.parallel))) loop.marked.push(id);
                 loop.seen.push(request);
                 held.set(id, { plan: plan(request), since: Date.now() });
             }
@@ -1273,6 +1280,71 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
         ]);
         // The answer is read and gone: the mailbox keeps no finished request.
         expect(readdirSync(join(supervised.box.gate, GATE_FILES.done))).toEqual([]);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('runs gate steps one at a time in the lane, the second waiting for the first to answer', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        let released = false;
+        const loop = fakeGateLoop(supervised.box.gate, () => ({
+            exitCode: 0,
+            output: 'ok',
+            heldUntil: () => released,
+        }));
+        driver.order(gateStep('gate-1', 'npm test'));
+        driver.order(gateStep('gate-2', 'npm run lint'));
+        await until('the first gate to be taken', () => loop.seen.length === 1);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(loop.seen.map((request) => request.id)).toEqual(['gate-1']);
+        released = true;
+        await until('both answers', () => driver.answers.has('gate-1') && driver.answers.has('gate-2'));
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('hands gate steps marked parallel to the gate container together, and answers each its own exit', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        let released = false;
+        const loop = fakeGateLoop(supervised.box.gate, (request) => ({
+            exitCode: request.command === 'npm run lint' ? 1 : 0,
+            output: request.command,
+            heldUntil: () => released,
+        }));
+        driver.order(gateStep('gate-1', 'npm test', { parallel: true }));
+        driver.order(gateStep('gate-2', 'npm run lint', { parallel: true }));
+        await until('both gates to be taken before either answers', () => loop.seen.length === 2);
+        expect(driver.answers.has('gate-1') || driver.answers.has('gate-2')).toBe(false);
+        // The loop takes a request beside another only when it carries the marker.
+        expect(loop.marked.sort()).toEqual(['gate-1', 'gate-2']);
+        released = true;
+        await until('both answers', () => driver.answers.has('gate-1') && driver.answers.has('gate-2'));
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 0, stdout: 'npm test' });
+        expect(driver.answers.get('gate-2')).toMatchObject({ exitCode: 1, stdout: 'npm run lint' });
+        expect(supervised.ledger('gate-1').invocations['i-1']?.state).toBe('done');
+        expect(supervised.ledger('gate-2').invocations['i-1']?.state).toBe('done');
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('queues gate steps marked parallel in the lane when the gate loop does not say it can run them together', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        let released = false;
+        const loop = fakeGateLoop(
+            supervised.box.gate,
+            () => ({ exitCode: 0, output: 'ok', heldUntil: () => released }),
+            { parallel: false }
+        );
+        driver.order(gateStep('gate-1', 'npm test', { parallel: true }));
+        driver.order(gateStep('gate-2', 'npm run lint', { parallel: true }));
+        await until('the first gate to be taken', () => loop.seen.length === 1);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(loop.seen.map((request) => request.id)).toEqual(['gate-1']);
+        released = true;
+        await until('both answers', () => driver.answers.has('gate-1') && driver.answers.has('gate-2'));
         supervised.agentExits(0);
         await supervised.done;
     });

@@ -109,10 +109,11 @@ Each gate starts with `- name:`. Other keys are indented under it.
 | `timeout` | integer | no | 10 minutes | Whole minutes, 1 to 120. Without it, the platform's gate timeout applies (600 seconds by default) |
 | `on_demand` | `true` | no | off | Only the value `true`. The agent can run the gate, the end-of-run pass skips it |
 | `filter` | `true` | no | off | Only the value `true`. The agent can narrow a run; the value arrives as `$GATE_FILTER`, up to 256 characters |
+| `parallel` | `true` | no | off | Only the value `true`. The end-of-run pass runs it together with the `parallel` gates declared right next to it; needs `setsid` in the image, else the gates run one at a time; see [Parallel gates](/guides/gates#parallel-gates) |
 
 A gate's `timeout` is capped by the platform's run time budget. The agent cannot start a gate with `timeout` above 10 while it works; see [Gates](/guides/gates#on-demand-gates).
 
-Errors you may see: `gate "x" has no command`, `gate "x" is declared twice`, `more than 16 gates`, `unknown gate field "k" — only name, command, timeout, on_demand and filter are read`, `on_demand must be "true"`.
+Errors you may see: `gate "x" has no command`, `gate "x" is declared twice`, `more than 16 gates`, `unknown gate field "k" — only name, command, timeout, on_demand, filter and parallel are read`, `on_demand must be "true"`, `parallel must be "true"`.
 
 ## services
 

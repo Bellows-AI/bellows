@@ -1,12 +1,11 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import {
     createSupervisedGateManager,
-    declaredTimeoutMs,
     type GateAttempt,
-    type GateClaim,
     type GateManager,
     type GateRunOptions,
-} from '../src/gates.js';
+} from '../src/gate-manager.js';
+import { declaredTimeoutMs, type GateClaim } from '../src/gates.js';
 import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { TASK_MOUNT } from '../src/task-volume.js';
@@ -262,6 +261,92 @@ describe('the supervised gate manager: one gate as a step', () => {
         await manager.acquire(KEY, 'node:24', '', { job: JOB });
         await Promise.all([manager.runGate(KEY, 'a', 'a'), manager.runGate(KEY, 'b', 'b')]);
         expect(order).toEqual(['start a', 'end a', 'start b', 'end b']);
+    });
+
+    it('runs gates asked in parallel together, each its own step marked parallel, and never marks a serial one', async () => {
+        const started: string[] = [];
+        let release: () => void = () => {};
+        const held = new Promise<void>((resolve) => (release = resolve));
+        const { runner, calls } = gateRunner(async ({ gate }) => {
+            started.push(gate.command);
+            if (gate.command !== 'c') await held;
+            return answered(gate.command === 'b' ? 1 : 0, gate.command);
+        });
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
+        const group = Promise.all([
+            manager.runGate(KEY, 'a', 'a', { parallel: true }),
+            manager.runGate(KEY, 'b', 'b', { parallel: true }),
+        ]);
+        await vi.waitFor(() => expect(started).toEqual(['a', 'b']));
+        release();
+        expect(await group).toEqual([
+            { exitCode: 0, output: 'a' },
+            { exitCode: 1, output: 'b' },
+        ]);
+        await manager.runGate(KEY, 'c', 'c');
+        expect(calls.map((call) => [call.gate.command, call.gate.parallel])).toEqual([
+            ['a', true],
+            ['b', true],
+            ['c', undefined],
+        ]);
+    });
+
+    it('runs the pending setup once, before a group of gates asked together', async () => {
+        const { runner, calls } = gateRunner();
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        await Promise.all([
+            manager.runGate(KEY, 'a', 'a', { parallel: true }),
+            manager.runGate(KEY, 'b', 'b', { parallel: true }),
+            manager.runGate(KEY, 'c', 'c', { parallel: true }),
+        ]);
+        expect(calls.map((call) => call.gate.command)).toEqual(['npm ci', 'a', 'b', 'c']);
+        expect(calls[0]?.gate.parallel).toBeUndefined();
+    });
+
+    it('answers a failed setup to every gate of a group asked together, running it once', async () => {
+        const { runner, calls } = gateRunner((_call, n) => (n === 1 ? answered(1, 'registry down') : answered(0)));
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        const runs = await Promise.all([
+            manager.runGate(KEY, 'a', 'a', { parallel: true }),
+            manager.runGate(KEY, 'b', 'b', { parallel: true }),
+        ]);
+        expect(runs).toEqual([
+            { exitCode: 1, output: 'registry down', setupFailed: true },
+            { exitCode: 1, output: 'registry down', setupFailed: true },
+        ]);
+        expect(calls.map((call) => call.gate.command)).toEqual(['npm ci']);
+        // Still pending: the next gate retries it, as after any failed setup.
+        await manager.runGate(KEY, 'a', 'a');
+        expect(calls.map((call) => call.gate.command)).toEqual(['npm ci', 'npm ci', 'a']);
+    });
+
+    it('cancels every gate of a group with the one signal, and runs nothing for a Stop that landed before it', async () => {
+        const stop = new AbortController();
+        const { runner, calls } = gateRunner(
+            ({ signal }) =>
+                new Promise<StepResult>((resolve) => signal?.addEventListener('abort', () => resolve(answered(130))))
+        );
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: JOB });
+        const group = Promise.all([
+            manager.runGate(KEY, 'a', 'a', { parallel: true, signal: stop.signal }),
+            manager.runGate(KEY, 'b', 'b', { parallel: true, signal: stop.signal }),
+        ]);
+        await vi.waitFor(() => expect(calls).toHaveLength(2));
+        stop.abort();
+        // What the kill left, answered by the step itself.
+        expect(await group).toEqual([
+            { exitCode: 130, output: '' },
+            { exitCode: 130, output: '' },
+        ]);
+        expect(await manager.runGate(KEY, 'c', 'c', { parallel: true, signal: stop.signal })).toEqual({
+            exitCode: 130,
+            output: '[driver] gate cancelled',
+        });
+        expect(calls).toHaveLength(2);
     });
 
     it('refuses an acquire with no attempt, a malformed checkout key or image, and a gate with no environment', async () => {

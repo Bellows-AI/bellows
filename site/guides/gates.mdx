@@ -26,7 +26,7 @@ environment:
     The agent can run any declared gate by name, as often as it likes, and read the output. It is told to run the gates that cover its change before it pushes. If the Bellows driver running the task restarts, for example when its node is drained, the agent's gate runs go to the driver that takes the task over. A gate run in flight at that moment is cut off, and the agent runs it again.
   </Step>
   <Step title="When the agent finishes">
-    Bellows runs every declared gate once, in the order you wrote them. Gates marked `on_demand` are skipped. A gate that the agent already ran unfiltered, and that passed on exactly the final tree, is reused instead of run again.
+    Bellows runs every declared gate once, in the order you wrote them. Gates marked `on_demand` are skipped. Gates marked `parallel` that are declared next to each other run at the same time, see [Parallel gates](#parallel-gates). A gate that the agent already ran unfiltered, and that passed on exactly the final tree, is reused instead of run again.
   </Step>
 </Steps>
 
@@ -53,10 +53,42 @@ A gate that fails because the environment broke is not the agent's fault. Bellow
 | `timeout`   | no       | Whole minutes, 1 to 120. Without it, the platform default applies (10 minutes today)      |
 | `on_demand` | no       | Only `true`. The agent can run it, the end-of-run pass skips it, and it never fails the task |
 | `filter`    | no       | Only `true`. The agent can narrow a run; the value arrives as `$GATE_FILTER`             |
+| `parallel`  | no       | Only `true`. The end-of-run pass runs it together with the `parallel` gates declared right next to it |
 
 You can declare up to 16 gates. Values may be bare, `'single'` or `"double"` quoted. There are no escape sequences. If a command needs real quoting, put it in a script in your repo and call the script.
 
 When the task names a base branch, its gates see it as `$BELLOWS_BASE_BRANCH`. A gate can diff against `origin/$BELLOWS_BASE_BRANCH` to check only what the change touches. A task without a base branch leaves the variable unset, so fall back to your default branch: `origin/${BELLOWS_BASE_BRANCH:-main}`.
+
+## Parallel gates
+
+By default the end-of-run pass runs one gate after another, so it lasts as long as all gates added together. Mark independent gates `parallel: true` and they run at the same time, so the pass lasts as long as the slowest of them.
+
+```yaml
+environment:
+  image: node:24
+  gates:
+    - name: build
+      command: npm run build
+    - name: test
+      command: npm test
+      parallel: true
+    - name: lint
+      command: npm run lint
+      parallel: true
+    - name: typecheck
+      command: npm run typecheck
+      parallel: true
+```
+
+Here `build` runs first. `test`, `lint` and `typecheck` then start together, and the pass is over when all three have finished. Only gates declared right next to each other run together; any gate without `parallel` runs alone, in its place in the list, so a gate that must come before or after the others stays where you put it. An `on_demand` gate is not part of the end-of-run pass, so it does not separate two `parallel` gates around it.
+
+Each gate keeps its own timeout, exit code and output, and shows its own status on the task page. If several fail, the task fails with the first failing gate in the order you declared them, and every gate in the group still finishes first. The gates after a failed group do not run.
+
+<Warning>
+  Parallel gates share one checkout, one container and your declared services. Bellows does not keep two of them from writing the same file or using the same database. Mark a gate `parallel` only if it is safe beside the others: for example, two test gates that migrate the same database must not run together. A gate that edits files, such as a formatter, should not be `parallel` either.
+</Warning>
+
+Parallel gates need `setsid` in your environment image, which common images such as Debian, Ubuntu and Alpine include. Without it the gates still run, one after another. The agent's own gate runs while it works are always one at a time.
 
 ## On-demand gates
 

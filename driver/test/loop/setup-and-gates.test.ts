@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../../src/board/board.js';
 import { Inconclusive } from '../../src/runner.js';
-import type { GateRun } from '../../src/gates.js';
+import type { GateRun } from '../../src/gate-manager.js';
 import { setupTimeoutMs } from '../../src/claim.js';
 import { ServicesNotRunning } from '../../src/service-restart.js';
 import { config, drive, gatedJob, job, ok, stubBoard, stubGateStack, stubRunner } from '../fixtures/loop-stubs.js';
@@ -766,6 +766,98 @@ describe('verification gates', () => {
         expect(stack.stack.ran.names).toEqual(['test']);
         expect(board.board.gatesReported.at(-1)?.results.map((gate) => gate.name)).toEqual(['test']);
         expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    describe('parallel gates', () => {
+        const parallelJob = (): BoardJob => ({
+            ...gatedJob(1),
+            gates: {
+                image: 'node:24',
+                gates: [
+                    { name: 'build', command: 'npm run build' },
+                    { name: 'test', command: 'npm test', parallel: true },
+                    { name: 'lint', command: 'npm run lint', parallel: true },
+                    { name: 'types', command: 'npm run typecheck', parallel: true },
+                    { name: 'deploy-check', command: 'npm run deploy-check' },
+                ],
+            },
+        });
+
+        /** A hold that settles every gate of a group once `size` of them are running at once. */
+        const together = (size: number) => {
+            const running = new Set<string>();
+            let release: () => void = () => {};
+            const everyoneIn = new Promise<void>((resolve) => (release = resolve));
+            return async (name: string): Promise<void> => {
+                if (!['test', 'lint', 'types'].includes(name)) return;
+                running.add(name);
+                if (running.size === size) release();
+                await everyoneIn;
+            };
+        };
+
+        it('starts consecutive parallel gates together and runs the serial ones around them in order', async () => {
+            const board = stubBoard([parallelJob()]);
+            const stack = stubGateStack({}, { hold: together(3) });
+
+            await drive({ ...board, runner: stubRunner(async () => ok()), gates: stack.gates });
+
+            expect(stack.stack.started).toEqual([
+                { name: 'build', parallel: false },
+                { name: 'test', parallel: true },
+                { name: 'lint', parallel: true },
+                { name: 'types', parallel: true },
+                { name: 'deploy-check', parallel: false },
+            ]);
+            expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+            const reports = board.board.gatesReported.map((r) => r.results.map((g) => g.status[0]).join(''));
+            // The group's three are `running` in one report, and the last report holds every gate passed.
+            expect(reports).toContain('prrrp');
+            expect(reports.at(-1)).toBe('ppppp');
+        });
+
+        it('waits for every gate of a group, then fails with the first failure in declared order and runs no later gate', async () => {
+            const board = stubBoard([parallelJob()]);
+            const stack = stubGateStack({ test: 2, lint: 3 }, { hold: together(3) });
+
+            await drive({ ...board, runner: stubRunner(async () => ok()), gates: stack.gates });
+
+            expect(stack.stack.ran.names).toEqual(['build', 'test', 'lint', 'types']);
+            const complete = board.board.completed[0]!;
+            expect(complete).toMatchObject({ status: 'failed', failureKind: 'gate', failureCause: 'verification' });
+            expect(complete.exitCode).toBe(2);
+            expect(complete.output).toContain('test failed badly');
+            // Every gate of the group settled on the board, the one after it never started.
+            expect(board.board.gatesReported.at(-1)?.results.map((g) => g.status)).toEqual([
+                'passed',
+                'failed',
+                'failed',
+                'passed',
+                'pending',
+            ]);
+        });
+
+        it('runs a lone parallel gate like a serial one', async () => {
+            const lone: BoardJob = {
+                ...gatedJob(1),
+                gates: {
+                    image: 'node:24',
+                    gates: [
+                        { name: 'test', command: 'npm test', parallel: true },
+                        { name: 'lint', command: 'npm run lint' },
+                    ],
+                },
+            };
+            const board = stubBoard([lone]);
+            const stack = stubGateStack();
+
+            await drive({ ...board, runner: stubRunner(async () => ok()), gates: stack.gates });
+
+            expect(stack.stack.started).toEqual([
+                { name: 'test', parallel: false },
+                { name: 'lint', parallel: false },
+            ]);
+        });
     });
 
     // A gate that cannot run at all is a failed gate — an environment that cannot be re-acquired

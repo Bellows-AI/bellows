@@ -10,7 +10,8 @@
 import { withBoardRetry } from '../board/board-retry.js';
 import type { BoardJob, LeaseState } from '../board/board.js';
 import { groupRetained, type JobState } from './loop-attempt.js';
-import { closeRunControl, departRunControl, releaseGateSession } from './loop-gates.js';
+import { releaseGateSession } from './loop-gates.js';
+import { closeRunControl, departRunControl } from './loop-run-control.js';
 import { handBackFence, leaveDecision, standDown } from './loop-fence.js';
 import { transition } from './loop-phase.js';
 import { cancelReviews } from './loop-review.js';

@@ -2,13 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import type { GateRunRow } from '../src/board/board-gate-runs.js';
 import { loadDriverConfig } from '../src/config.js';
-import {
-    createGateServer,
-    createSupervisedGateManager,
-    type GateClaim,
-    type GateLedger,
-    type GateRunStart,
-} from '../src/gates.js';
+import { createSupervisedGateManager } from '../src/gate-manager.js';
+import { createGateServer, type GateClaim, type GateLedger, type GateRunStart } from '../src/gates.js';
 import { StepChannelClosed } from '../src/step-control.js';
 import type { GateStepRequest } from '../src/supervised-steps.js';
 import type { StepResult } from '../src/supervisor-contract.js';

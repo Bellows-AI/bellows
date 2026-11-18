@@ -273,6 +273,36 @@ describe('a lost supervisor under the gates and the setup', () => {
         interruptedOnly(board);
     });
 
+    it('interrupts an attempt whose supervisor was lost under a group of parallel gates, once every gate has settled its record', async () => {
+        const group: BoardJob = {
+            ...gatedJob(1),
+            gates: {
+                image: 'node:24',
+                gates: [
+                    { name: 'test', command: 'npm test', parallel: true },
+                    { name: 'lint', command: 'npm run lint', parallel: true },
+                ],
+            },
+        };
+        const board = stubBoard([group]);
+        const { stack, gates } = stubGateStack();
+        const settled: string[] = [];
+        stack.manager.runGate = async (_key, name) => {
+            // The lint step answers last: the group must not give the attempt up before its record is written.
+            await new Promise((resolve) => setTimeout(resolve, name === 'lint' ? 40 : 0));
+            settled.push(name);
+            throw lost();
+        };
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates });
+        expect(settled).toEqual(['test', 'lint']);
+        // The stub never wrote a running row, so each ended `not_started`: the point is that both rows landed.
+        expect(board.board.gateRunsWritten.map((row) => [row.gate, row.outcome])).toEqual([
+            ['test', 'not_started'],
+            ['lint', 'not_started'],
+        ]);
+        interruptedOnly(board);
+    });
+
     it('interrupts an attempt once its run is over when an ad-hoc gate found the supervisor lost', async () => {
         const board = stubBoard([gatedJob(1)]);
         const { stack, gates } = stubGateStack();
