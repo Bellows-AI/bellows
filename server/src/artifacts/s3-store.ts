@@ -55,8 +55,9 @@ const occurrences = (text: string, token: string): number =>
 /**
  * The keys of a complete ListObjectsV2 page, or null for anything else. Fail closed, not a parser: the whole document
  * must be there; `KeyCount` and `IsTruncated` each appear once, strictly formed; and every raw `<Contents` opener,
- * every `</Contents>` closer, every raw `<Key` and every strictly formed `<Contents><Key>k</Key>…</Contents>` entry
- * with a non-empty key all number exactly `KeyCount`. A grouped prefix (never asked for) or a truncated page with no
+ * every `</Contents>` closer, every raw `<Key` and every strictly formed `<Contents>…<Key>k</Key>…</Contents>` entry
+ * with a non-empty key all number exactly `KeyCount`. S3 fixes no element order inside an entry (RustFS writes the
+ * `ETag` first), so the key may sit anywhere in it. A grouped prefix (never asked for) or a truncated page with no
  * key is doubt too. Null is never an empty answer.
  */
 function keysOfListing(body: string): string[] | null {
@@ -68,7 +69,11 @@ function keysOfListing(body: string): string[] | null {
     if (occurrences(inner, '<KeyCount') !== 1 || occurrences(inner, '<IsTruncated') !== 1) return null;
     if (occurrences(inner, '<CommonPrefixes') !== 0) return null;
     const expected = Number(count);
-    const entries = [...inner.matchAll(/<Contents><Key>([^<]+)<\/Key>(?:(?!<Contents|<Key)[\s\S])*?<\/Contents>/g)];
+    const entries = [
+        ...inner.matchAll(
+            /<Contents>(?:(?!<Contents|<Key)[\s\S])*?<Key>([^<]+)<\/Key>(?:(?!<Contents|<Key)[\s\S])*?<\/Contents>/g
+        ),
+    ];
     const tallies = [
         occurrences(inner, '<Contents'),
         occurrences(inner, '</Contents>'),
