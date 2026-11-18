@@ -111,6 +111,28 @@ describe('the searchable select', () => {
         expect(onChange).not.toHaveBeenCalled();
     });
 
+    it('skips a disabled row when moving', async () => {
+        const user = userEvent.setup();
+        const { chip, onChange } = mount({
+            options: [REPOS[0]!, { ...REPOS[1]!, disabled: true }, REPOS[2]!],
+        });
+        await user.click(chip);
+        await user.keyboard('{ArrowDown}{Enter}');
+        expect(onChange).toHaveBeenCalledExactlyOnceWith('globex/web');
+    });
+
+    it('Enter right after a character typed on the chip takes the first row, not the chosen one', async () => {
+        const user = userEvent.setup();
+        const { chip, onChange } = mount();
+        chip.focus();
+        await user.keyboard('a{Enter}');
+        expect(onChange).toHaveBeenCalledExactlyOnceWith('acme/web');
+        onChange.mockClear();
+        chip.focus();
+        await user.keyboard('api{Enter}');
+        expect(onChange).toHaveBeenCalledExactlyOnceWith('acme/api');
+    });
+
     it('a character typed on the focused chip opens the list with it already searched', async () => {
         const user = userEvent.setup();
         const { chip } = mount();

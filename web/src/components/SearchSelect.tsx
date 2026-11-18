@@ -127,6 +127,7 @@ function SearchTrigger({
     triggerRef,
     icon,
     name,
+    title,
     text,
     open,
     disabled,
@@ -137,6 +138,7 @@ function SearchTrigger({
     triggerRef: (node: HTMLButtonElement | null) => void;
     icon: IconName;
     name: string;
+    title: string;
     text: string;
     open: boolean;
     disabled: boolean;
@@ -153,7 +155,7 @@ function SearchTrigger({
             aria-haspopup="listbox"
             aria-expanded={open}
             data-open={open ? '' : undefined}
-            title={name.slice(name.indexOf(': ') + 2)}
+            title={title}
             disabled={disabled}
             onClick={onClick}
             onKeyDown={onKeyDown}
@@ -210,6 +212,7 @@ function SearchPanel({
                     aria-controls={listId}
                     aria-activedescendant={activeIndex >= 0 ? optionId(listId, activeIndex) : undefined}
                     aria-autocomplete="list"
+                    aria-describedby={help === undefined ? undefined : `${listId}-help`}
                     autoComplete="off"
                     spellCheck={false}
                     placeholder="Search…"
@@ -219,7 +222,7 @@ function SearchPanel({
                 />
             </div>
             {help === undefined ? null : (
-                <p className="composer-note" role="presentation">
+                <p id={`${listId}-help`} className="composer-note">
                     {help}
                 </p>
             )}
@@ -373,7 +376,8 @@ export function SearchSelect({
     useEffect(() => {
         if (!open) return;
         search.current?.focus();
-        setActive(Math.max(chosen, 0));
+        // A search seeded from the chip leaves the first row active: Enter takes what was typed.
+        setActive(query === '' ? Math.max(chosen, 0) : 0);
     }, [open]);
     useEffect(() => {
         if (open) document.getElementById(optionId(listId, activeIndex))?.scrollIntoView?.({ block: 'nearest' });
@@ -432,6 +436,7 @@ export function SearchSelect({
                 }}
                 icon={icon}
                 name={`${field}: ${fullLabel ?? valueLabel}`}
+                title={fullLabel ?? valueLabel}
                 text={valueLabel}
                 open={open}
                 disabled={disabled === true}
