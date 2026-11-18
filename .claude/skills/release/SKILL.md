@@ -5,7 +5,8 @@ description: Cut a Factory release end to end — analyze everything since the l
 
 # Cut a release
 
-A release is a tag. `npm run release` (`scripts/release.sh`) patch-bumps `VERSION`, commits only
+A release is a tag. `npm run release` (`scripts/release.sh`) patch-bumps `VERSION`
+(`npm run release -- --minor` bumps the minor and zeroes the patch: `0.0.17` → `0.1.0`), commits only
 that, tags `vX.Y.Z` and pushes branch and tag atomically; the tag starts
 `.github/workflows/release-image.yml`, which re-runs CI, builds and scans the images, and publishes
 them, the chart and the `@bellows-ai/bellows-cli` npm package — the chart's and the package's version is the tag,
@@ -142,7 +143,7 @@ list; the tag carries that.
 a chart that deployments resolve by version and an npm version that can never be reused; it is not taken back.
 
 ```bash
-npm run release                                   # prints "released vX.Y.Z"
+npm run release                                   # prints "released vX.Y.Z"; -- --minor for X.(Y+1).0
 TAG=$(git describe --tags --abbrev=0)
 gh run list --workflow release-image.yml --limit 1
 gh run watch <run-id> --exit-status              # validate, build, scan, manifest, chart, npm
