@@ -263,7 +263,7 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         const gates = parseBellows(text)?.gates ?? [];
         expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db', 'test:jobs']);
         expect(gates.slice(0, 2)).toEqual([
-            { name: 'test', command: 'npm test' },
+            { name: 'test', command: 'npm test', timeoutMinutes: 30 },
             { name: 'lint', command: 'npm run lint' },
         ]);
     });

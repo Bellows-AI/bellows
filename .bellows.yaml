@@ -4,11 +4,13 @@ environment:
     image: ghcr.io/bellows-ai/dev-runner:v0.0.17
     setup: "npm ci && sh scripts/gate-jq.sh"
     gates:
+         # The budgets, in minutes, each capped by the driver's DRIVER_JOB_TIMEOUT_MS.
+         # npm test outran the 10-minute default in a microVM runner.
          - name: test
            command: "npm test"
+           timeout: 30
          - name: lint
            command: "npm run lint"
-         # The budgets, in minutes, each capped by the driver's DRIVER_JOB_TIMEOUT_MS.
          - name: typecheck
            command: "npm run typecheck"
            timeout: 15
