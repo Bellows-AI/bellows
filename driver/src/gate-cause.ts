@@ -31,7 +31,7 @@ const STALE_HANDLE = [/\berrno:?\s+-116\b/, /:\s*stale file handle\b/i];
 export const SETUP_FAILED_PREFIX = '[setup failed — the gate did not run]\n';
 /** A permission refusal (`EPERM`/`EACCES`, npm's `code` line or node's `errno`) from a setup the diff did not break. */
 const PERMISSION_REFUSED =
-    /^npm error code (?:EPERM|EACCES)\b|\b(?:EPERM|EACCES): (?:operation not permitted|permission denied)/m;
+    /^npm (?:error|ERR!) code (?:EPERM|EACCES)\b|\b(?:EPERM|EACCES): (?:operation not permitted|permission denied)/m;
 
 function setupRefusedByPermissions(output: string): boolean {
     return output.startsWith(SETUP_FAILED_PREFIX) && PERMISSION_REFUSED.test(output.replace(ANSI, ''));

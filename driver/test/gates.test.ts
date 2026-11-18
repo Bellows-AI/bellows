@@ -293,6 +293,22 @@ describe('the supervised gate manager: setup', () => {
         expect(calls.map((call) => call.gate.command)).toEqual(['npm ci', 'npm test', 'npm run lint']);
     });
 
+    it('marks only the setup run for the gate shell, whether it ran before a gate or on its own', async () => {
+        const { runner, calls } = gateRunner();
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', '', { job: WITH_SETUP });
+        await manager.runSetup(KEY);
+        await manager.acquire(KEY, 'node:24', '', { job: { ...WITH_SETUP, leaseToken: 'other-lease' } });
+        await manager.runGate(KEY, 'a', 'npm test');
+        await manager.runGate(KEY, 'b', 'npm run lint');
+        expect(calls.map((call) => [call.gate.command, call.gate.env?.FACTORY_GATE_SETUP])).toEqual([
+            ['npm ci', '1'],
+            ['npm ci', '1'],
+            ['npm test', undefined],
+            ['npm run lint', undefined],
+        ]);
+    });
+
     it('answers a failed setup as a setup failure, skips the gate, and retries setup before the next', async () => {
         const { runner, calls } = gateRunner((_call, n) => (n === 1 ? answered(1, 'registry down') : answered(0)));
         const manager = createSupervisedGateManager({ config, runner });
