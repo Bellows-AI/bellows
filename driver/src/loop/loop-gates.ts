@@ -7,6 +7,7 @@ import { stepLost } from '../step-control.js';
 import { declaredTimeoutMs, type GateLedger, type GateRun } from '../gates.js';
 import { gateIdentity, orgKeyOf } from '../gate-identity.js';
 import { recordGateRun, type GateEnd } from '../gate-record.js';
+import { SETUP_FAILED_PREFIX } from '../gate-cause.js';
 import { GATE_RUNS_READ_MS, reusableRun, reusedReport } from './gate-reuse.js';
 import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from '../supervisor-contract.js';
@@ -26,8 +27,6 @@ import { gatesUnderDaemon, readDaemon } from '../dockerd-loss.js';
 const GATES_REPORT_BUDGET_BYTES = 16384;
 const PER_GATE_OUTPUT_FLOOR_BYTES = 1024;
 const REFUSED_TO_RUN_EXIT_CODE = 125;
-/** Heads the output of a gate that never ran because the environment's `setup` command failed. */
-const SETUP_FAILED_PREFIX = '[setup failed — the gate did not run]\n';
 
 /**
  * One gated job's live registration: the checkout key its environment is filed under, the token

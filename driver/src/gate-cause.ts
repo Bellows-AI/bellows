@@ -27,6 +27,16 @@ const JEST_TEST_TIMEOUT = /Exceeded timeout of \d+ ?m?s for a test\b/;
  */
 const STALE_HANDLE = [/\berrno:?\s+-116\b/, /:\s*stale file handle\b/i];
 
+/** Heads the output of a gate that never ran because the environment's `setup` command failed. */
+export const SETUP_FAILED_PREFIX = '[setup failed — the gate did not run]\n';
+/** A permission refusal (`EPERM`/`EACCES`, npm's `code` line or node's `errno`) from a setup the diff did not break. */
+const PERMISSION_REFUSED =
+    /^npm (?:error|ERR!) code (?:EPERM|EACCES)\b|\b(?:EPERM|EACCES): (?:operation not permitted|permission denied)/m;
+
+function setupRefusedByPermissions(output: string): boolean {
+    return output.startsWith(SETUP_FAILED_PREFIX) && PERMISSION_REFUSED.test(output.replace(ANSI, ''));
+}
+
 function staleFileHandle(output: string): boolean {
     const plain = output.replace(ANSI, '');
     return STALE_HANDLE.some((pattern) => pattern.test(plain));
@@ -80,6 +90,11 @@ function onlyJestTestTimeouts(output: string): boolean {
  * cause means; this package depends on nothing, so the signals live here.
  */
 export function gateCauseOf(failure: { exitCode: number; output: string }): FailureCause {
-    if (ENVIRONMENT_EXITS.includes(failure.exitCode) || staleFileHandle(failure.output)) return 'environment';
+    if (
+        ENVIRONMENT_EXITS.includes(failure.exitCode) ||
+        staleFileHandle(failure.output) ||
+        setupRefusedByPermissions(failure.output)
+    )
+        return 'environment';
     return onlyWorkerTimeouts(failure.output) || onlyJestTestTimeouts(failure.output) ? 'environment' : 'verification';
 }

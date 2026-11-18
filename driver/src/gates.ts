@@ -263,7 +263,8 @@ export function createSupervisedGateManager({
     /** One command in the checkout's worktree, under `deadlineMs`, as the attempt's gate step. */
     const exec = async (
         entry: SupervisedEntry,
-        run: { command: string; deadlineMs: number; signal: AbortSignal | undefined; filter?: string | undefined }
+        run: { command: string; deadlineMs: number; signal: AbortSignal | undefined; filter?: string | undefined },
+        setup = false
     ): Promise<GateRun> => {
         const gate = {
             command: run.command,
@@ -271,6 +272,7 @@ export function createSupervisedGateManager({
             env: {
                 ...envBodyRecord(entry.envBody),
                 ...(run.filter === undefined ? {} : { [GATE_FILTER_ENV]: run.filter }),
+                ...(setup ? { [GATE_SETUP_ENV]: '1' } : {}),
             },
             timeoutMs: run.deadlineMs,
         };
@@ -311,7 +313,7 @@ export function createSupervisedGateManager({
                 // first gate, until it succeeds.
                 const pending = entry.pendingSetup;
                 if (pending) {
-                    const setupRun = await exec(entry, { command: pending, deadlineMs: gateTimeoutMs, signal });
+                    const setupRun = await exec(entry, { command: pending, deadlineMs: gateTimeoutMs, signal }, true);
                     if (setupRun.exitCode !== 0) return { ...setupRun, setupFailed: true as const };
                     if (entry.pendingSetup === pending) entry.pendingSetup = null;
                 }
@@ -329,7 +331,7 @@ export function createSupervisedGateManager({
             const setup = owner.job.gates?.setup;
             if (!setup) return Promise.resolve(null);
             return inQueue(key, signal, async (entry) => {
-                const run = await exec(entry, { command: setup, deadlineMs: timeoutMs ?? gateTimeoutMs, signal });
+                const run = await exec(entry, { command: setup, deadlineMs: timeoutMs ?? gateTimeoutMs, signal }, true);
                 // A setup queued for one attempt never settles another's.
                 const current = entries.get(key);
                 if (current?.job.leaseToken === owner.job.leaseToken) {
@@ -469,6 +471,8 @@ export interface GateServer {
 
 /** The env name a filter reaches the gate command as. */
 const GATE_FILTER_ENV = 'GATE_FILTER';
+/** Tells the gate shell the run is `environment.setup`: see scripts/gate-shell.sh. */
+const GATE_SETUP_ENV = 'FACTORY_GATE_SETUP';
 
 /** Why an ad-hoc call of `gate` answers 422, or null: a timeout past what the call can wait, a filter it did not opt into. */
 const adHocRefusal = (gate: DeclaredGate, filter: string | undefined): string | null => {

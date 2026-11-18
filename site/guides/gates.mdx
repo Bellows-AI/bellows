@@ -42,7 +42,7 @@ By default, Bellows then starts an automatic repair round: the agent gets the fa
   If repair rounds run out, the work still ships as a draft pull request, unless your repo sets `policy: gates: required`. Then nothing is published until the gates pass. See [Policy and reviewers](/guides/policy-and-reviewers).
 </Note>
 
-A gate that fails because the environment broke is not the agent's fault. Bellows treats a gate as an environment failure when it timed out, was killed (for example out of memory), could not start, hit a stale file handle, or when every failure in a vitest or jest run is a worker or test timeout. Those are not repaired by editing code.
+A gate that fails because the environment broke is not the agent's fault. Bellows treats a gate as an environment failure when it timed out, was killed (for example out of memory), could not start, hit a stale file handle, when the environment's setup was refused by file permissions (`EPERM` or `EACCES`), or when every failure in a vitest or jest run is a worker or test timeout. Those are not repaired by editing code.
 
 ## Gate options
 
