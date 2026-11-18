@@ -21,7 +21,7 @@ type Points = DataPoint<number | Histogram>[];
 
 /** The data points of one instrument in a collection; empty when it reported none. */
 export const pointsIn = (collected: MetricData[], name: string): Points =>
-    collected.find((m) => m.descriptor.name === name)?.dataPoints ?? [];
+    (collected.find((m) => m.descriptor.name === name)?.dataPoints ?? []) as Points;
 
 export interface MetricsHarness {
     meter: Meter;
