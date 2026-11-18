@@ -39,6 +39,10 @@ dashboard:
         # digest does not exist until the release pushes them, so they stay addressed by appVersion
         # (docs/ci.md).
         digest: ''
+    otel:
+        # An OTLP/HTTP collector the board exports its own traces and metrics to (OTEL_EXPORTER_OTLP_ENDPOINT).
+        # Empty exports nothing; the in-chart collector is for the runners and is not a backend.
+        endpoint: ''
     # IfNotPresent so side-loaded images (kind load docker-image) resolve without a registry.
     imagePullPolicy: IfNotPresent
     # Above one requires artifacts.backend=s3 or gcs (the filesystem backend is one pod's /tmp), at

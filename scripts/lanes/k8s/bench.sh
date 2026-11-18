@@ -68,7 +68,7 @@ process.stdin.on("data", (c) => (s += c)).on("end", () => {
 
 # The scrape runs inside the pod and reads its bearer from stdin — the driver's metrics token: it is in no argv
 # here, and no pod's environment holds it. The board exports over OTLP and has no scrape, so every board figure of
-# the summary reads `?` until the lane runs a collector.
+# the summary reads `?`; `scripts/bench-summary.mjs` still parses the retired series names.
 BENCH_SCRAPE_JS='const bearer = require("fs").readFileSync(0, "utf8").trim();
 fetch(process.argv[1], { headers: { authorization: "Bearer " + bearer }, signal: AbortSignal.timeout(8000) })
     .then(async (r) => { if (r.status !== 200) process.exit(3); process.stdout.write(await r.text()); })

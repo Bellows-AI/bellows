@@ -16,6 +16,10 @@ closeOnSignal(async () => {
     try {
         await close();
     } finally {
-        if (otel) await beforeDeadline(otel.shutdown(), Date.now() + OTEL_FLUSH_MS, 'flushing telemetry');
+        if (otel) {
+            await beforeDeadline(otel.shutdown(), Date.now() + OTEL_FLUSH_MS, 'flushing telemetry').catch((e: Error) =>
+                console.error(`[shutdown] ${e.message}`)
+            );
+        }
     }
 });

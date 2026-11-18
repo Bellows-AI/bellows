@@ -20,7 +20,7 @@ The board's MCP endpoint (`POST /api/mcp`): a stateless Streamable HTTP server w
 | Attachment handoff (`create_attachment_upload`; the registry is 40 tools): a single-use, 15-minute upload link, never file bytes | `server/src/mcp/tools/attachments.ts`, `server/src/routes/attachment-uploads.ts`, `server/src/attachments/upload-capability-store.ts`, `server/migrations/124_attachment_upload.sql` | `server/test/mcp.attachment-upload.test.ts`, `server/test-db/mcp.attachment-handoff.test.ts`, `web/test/AttachmentUploadPage.dom.test.tsx`, `e2e/attachment-upload.spec.ts` |
 | Which routes a scoped caller may reach, and which open routes a bridged call may | `server/src/auth/route-class.ts` | `server/test/auth.enforcement.test.ts`, `server/test/auth.me-bridged.test.ts` |
 | End to end: a real SDK client through consent and a task to its end; the 40-tool registry snapshot; the chart's https-only gate | `e2e/mcp-connect.spec.ts`, `scripts/mcp-phase-client.mjs`, `scripts/mcp-kind-client.mjs`, `charts/factory/templates/validate.yaml` | `server/test/mcp.registry-snapshot.test.ts`, `scripts/test-jobs.sh` (`--phase mcp`), `scripts/test-k8s.sh` (`mcp` phase) |
-| `factory_mcp_tool_duration_seconds{tool,outcome}` | `server/src/metrics.ts` | `server/test/mcp.whoami.test.ts` |
+| `bellows.mcp.tool.duration{tool,outcome}` | `server/src/metrics.ts` | `server/test/mcp.whoami.test.ts` |
 
 ## Connecting a client
 

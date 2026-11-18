@@ -40,16 +40,35 @@ export function installPostgresTracing(): void {
             kind: SpanKind.CLIENT,
             attributes: { 'db.system.name': 'postgresql', 'db.operation.name': operation },
         });
-        const { resolve, reject } = this;
-        this.resolve = (value) => {
+        let ended = false;
+        const end = (failed: boolean) => {
+            if (ended) return;
+            ended = true;
+            if (failed) span.setStatus({ code: SpanStatusCode.ERROR });
             span.end();
-            resolve(value);
         };
-        this.reject = (reason) => {
-            span.setStatus({ code: SpanStatusCode.ERROR });
-            span.end();
-            reject(reason);
-        };
+        // A cursor reassigns `resolve` and `reject` before every `next()`, so the wrapping rides accessors.
+        const wrapped = { resolve: this.resolve, reject: this.reject };
+        Object.defineProperty(this, 'resolve', {
+            configurable: true,
+            get: () => (value: unknown) => {
+                end(false);
+                wrapped.resolve(value);
+            },
+            set: (fn: TracedQuery['resolve']) => {
+                wrapped.resolve = fn;
+            },
+        });
+        Object.defineProperty(this, 'reject', {
+            configurable: true,
+            get: () => (reason: unknown) => {
+                end(true);
+                wrapped.reject(reason);
+            },
+            set: (fn: TracedQuery['reject']) => {
+                wrapped.reject = fn;
+            },
+        });
         return handle.call(this);
     };
 }

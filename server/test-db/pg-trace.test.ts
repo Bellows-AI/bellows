@@ -28,4 +28,16 @@ describe.skipIf(!enabled)('postgres tracing against a database', () => {
         expect(names).toEqual(expect.arrayContaining(['postgres SET', 'postgres SELECT']));
         expect(exporter.getFinishedSpans().every((s) => s.status.code !== 2)).toBe(true);
     });
+
+    it('ends the span of a cursor read once its rows are drained', async () => {
+        trace.setGlobalTracerProvider(provider);
+        installPostgresTracing();
+        exporter.reset();
+        const seen: number[] = [];
+        for await (const rows of db.sql<{ n: number }[]>`select n from generate_series(1, 3) as n`.cursor(1)) {
+            seen.push(...rows.map((r) => r.n));
+        }
+        expect(seen).toEqual([1, 2, 3]);
+        expect(exporter.getFinishedSpans().map((s) => s.name)).toEqual(['postgres SELECT']);
+    });
 });

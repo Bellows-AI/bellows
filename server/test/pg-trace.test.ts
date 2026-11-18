@@ -57,4 +57,25 @@ describe('postgres tracing', () => {
         await sql.end({ timeout: 1 });
         expect(exporter.getFinishedSpans()).toHaveLength(1);
     });
+
+    it('still ends the span when the query reassigns resolve after it started, as a cursor does', async () => {
+        exporter.reset();
+        const sql = postgres({ max: 0 });
+        const query = sql`select 1` as unknown as {
+            handler: (q: { resolve: (v: unknown) => void }) => void;
+        } & Promise<unknown>;
+        const delivered: unknown[] = [];
+        query.handler = (q) => {
+            q.resolve = (value) => delivered.push(value);
+            q.resolve('row');
+            q.resolve('done');
+        };
+        query.then(
+            () => undefined,
+            () => undefined
+        );
+        await new Promise((r) => setTimeout(r, 0));
+        expect(delivered).toEqual(['row', 'done']);
+        expect(exporter.getFinishedSpans().map((s) => s.name)).toEqual(['postgres SELECT']);
+    });
 });

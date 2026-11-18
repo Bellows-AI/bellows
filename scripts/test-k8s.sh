@@ -790,6 +790,11 @@ expect_contains 'the driver keeps the production step long poll' "$(grep -A1 'na
 gh_driver_lane="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$(gh_render --set-string driver.orphanMinMs=10000 --set-string driver.stepWaitMs=2000)")"
 expect_contains 'a lane lowers the orphan floor' "$(grep -A1 'name: DRIVER_ORPHAN_MIN_MS' <<<"$gh_driver_lane")" 'value: "10000"'
 expect_contains 'a lane lowers the step long poll' "$(grep -A1 'name: DRIVER_STEP_WAIT_MS' <<<"$gh_driver_lane")" 'value: "2000"'
+# The board's own OTEL export: off by default, and an endpoint names it.
+gh_dashboard_otel="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' <<<"$(gh_render --set-string dashboard.otel.endpoint=http://otel.example:4318)")"
+expect_not_contains 'the dashboard exports no OTEL by default' "$gh_dashboard" 'OTEL_EXPORTER_OTLP_ENDPOINT'
+expect_contains 'dashboard.otel.endpoint renders the board OTLP endpoint' \
+    "$(grep -A1 'name: OTEL_EXPORTER_OTLP_ENDPOINT' <<<"$gh_dashboard_otel")" 'value: "http://otel.example:4318"'
 # The driver's scrape listener: on by default behind its own token, and '' turns it off.
 expect_contains 'the driver scrape port defaults to 9464' "$(grep -A1 'name: DRIVER_METRICS_PORT' <<<"$gh_driver")" 'value: "9464"'
 expect_contains 'the scrape token is the driver Secret’s metrics-token' \
