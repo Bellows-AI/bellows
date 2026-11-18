@@ -16,6 +16,7 @@ import {
     testConfig,
 } from './helpers.js';
 import { trackApps } from './helpers-http.js';
+import { metricsHarness, countOf } from './helpers-metrics.js';
 
 const track = trackApps();
 const LOCALHOST = '127.0.0.1';
@@ -144,16 +145,18 @@ describe('whoami through POST /api/mcp', () => {
     });
 
     it('counts the call by tool and outcome, with no caller or argument in the labels', async () => {
+        const harness = metricsHarness();
         const metrics = createServerMetrics({
             admission: {},
             occupancy: async () => ({ global: 0, orgMax: 0, repoMax: 0 }),
+            meter: harness.meter,
         });
         const url = await boot('github', metrics);
         const client = await connect(url, TOKEN_A);
         await client.callTool({ name: 'whoami', arguments: {} });
-        const scrape = await metrics.render();
-        expect(scrape).toContain('factory_mcp_tool_duration_seconds_count{tool="whoami",outcome="ok"} 1');
-        expect(scrape).not.toContain('alice');
+        const calls = await harness.points('bellows.mcp.tool.duration');
+        expect(countOf(calls, { tool: 'whoami', outcome: 'ok' })).toBe(1);
+        expect(JSON.stringify(calls.map((p) => p.attributes))).not.toContain('alice');
         await client.close();
     });
 });

@@ -51,7 +51,6 @@ import { ingestRoutes } from './routes/ingest.js';
 import { registerTitleRoute } from './routes/jobs/job-handlers-title.js';
 import { preflightRoutes } from './routes/jobs/job-preflight.js';
 import { jobRoutes } from './routes/jobs/jobs.js';
-import { prometheusRoutes } from './routes/prometheus.js';
 import { repoRoutes } from './routes/repos.js';
 import { skillRoutes } from './routes/skills.js';
 import { skillStoreRoutes } from './routes/skills-store.js';
@@ -177,8 +176,8 @@ export interface AppDeps {
     /** Preset ranges are a lookback from now, so the routes need the same injection point. */
     now?: () => number;
     /**
-     * The board's Prometheus series. With it: the request histogram and `GET /api/metrics` exist;
-     * without it (the route tests) neither does. main.ts builds it once.
+     * The board's OTEL instruments. With it the request histogram is recorded; without it (the route
+     * tests) nothing is. main.ts builds it once.
      */
     metrics?: ServerMetrics | undefined;
     /** `true` for the server's own log; a destination object is the tests' capture of every line. */
@@ -465,7 +464,6 @@ export async function buildApp({
     await app.register(jobRoutes({ orgs, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
     registerTitleRoute(app, orgs);
     await app.register(preflightRoutes(orgs));
-    if (metrics) await app.register(prometheusRoutes(metrics));
     await app.register(
         attachmentRoutes({
             orgs,

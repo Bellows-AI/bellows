@@ -50,9 +50,6 @@ async function driverGrantOf(
     return credentialOf(token);
 }
 
-/** The board-wide worker routes a credential scoped to some organizations may not call. */
-const POOL_ONLY_ROUTES: ReadonlySet<string> = new Set(['/api/metrics']);
-
 const refuseOrg = (reply: FastifyReply) =>
     reply
         .code(HTTP_FORBIDDEN)
@@ -92,11 +89,7 @@ export async function enforceWorker(
     //
     // A scoped credential is refused on another organization's row with a 403, never the 404 above: a driver reads a
     // 404 as "the thread was removed" and would end the run, and the row is not absent, only not this credential's.
-    // The org-less routes are narrowed in the route layer (`boardsFor`, the lease lookup), except the board-wide ones.
-    if (grant.orgs && POOL_ONLY_ROUTES.has(pattern)) {
-        await refuseOrg(reply);
-        return;
-    }
+    // The org-less routes are narrowed in the route layer (`boardsFor`, the lease lookup).
     const rowId = ROW_PATTERN.test(pattern) ? (request.params as { id?: string }).id : undefined;
     let orgId: string | null = null;
     if (rowId && UUID.test(rowId)) {

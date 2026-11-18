@@ -1,4 +1,4 @@
-import postgres from 'postgres';
+import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { boardPool, waitAdvisoryXactLock } from '../src/db/pool.js';
 import { migrate, MIGRATION_LOCK_KEY } from '../src/db/migrate.js';

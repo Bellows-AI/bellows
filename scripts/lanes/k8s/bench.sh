@@ -66,8 +66,9 @@ process.stdin.on("data", (c) => (s += c)).on("end", () => {
 });'
 }
 
-# The scrape runs inside the pod and reads its bearer from stdin — the lane's pool driver credential for the
-# board, the driver's metrics token for a driver: it is in no argv here, and no pod's environment holds it.
+# The scrape runs inside the pod and reads its bearer from stdin — the driver's metrics token: it is in no argv
+# here, and no pod's environment holds it. The board exports over OTLP and has no scrape, so every board figure of
+# the summary reads `?`; `scripts/bench-summary.mjs` still parses the retired series names.
 BENCH_SCRAPE_JS='const bearer = require("fs").readFileSync(0, "utf8").trim();
 fetch(process.argv[1], { headers: { authorization: "Bearer " + bearer }, signal: AbortSignal.timeout(8000) })
     .then(async (r) => { if (r.status !== 200) process.exit(3); process.stdout.write(await r.text()); })
@@ -75,9 +76,9 @@ fetch(process.argv[1], { headers: { authorization: "Bearer " + bearer }, signal:
 
 bench_scrape() { # bench_scrape <cell> <s|a|b|c> -> the pods listed (<cell>.<board|driver>.<stage>.list) and each one's metrics (<pod>.prom) with the epoch second it answered (<pod>.at); every file is dropped first, so a scrape that fails leaves none
     local spec comp name container port path pod pods file list bearer
-    for spec in dashboard:board:dashboard:8080:/api/metrics driver:driver:driver:9464:/metrics; do
+    for spec in driver:driver:driver:9464:/metrics; do
         IFS=: read -r comp name container port path <<<"$spec"
-        if [ "$name" = board ]; then bearer="$CREDENTIAL"; else bearer="$METRICS_TOKEN"; fi
+        bearer="$METRICS_TOKEN"
         list="$BENCH_DIR/$1.$name.$2.list"
         rm -f -- "${list:?}"
         pods="$(bench_pods "$comp")" || continue

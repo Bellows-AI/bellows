@@ -5,7 +5,7 @@ import type { Caller } from '../auth/store.js';
 import type { Bridge, BridgeRequest } from './bridge.js';
 import { abortableSleep } from '../abortable-sleep.js';
 import { mapResult, refusal, inconclusive, type Tagged, type ToolOutcome } from './result.js';
-import { secondsSince } from '../prometheus.js';
+import { secondsSince } from '../timing.js';
 import type { Tool, ToolContext } from './tool.js';
 import { getBatchTasks } from './tools/batch-tasks.js';
 import { waitBatch } from './tools/batch-wait.js';

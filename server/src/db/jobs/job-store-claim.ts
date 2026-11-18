@@ -27,7 +27,7 @@ import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf, threadBaseBranchFragment, workspacePathFor } from './job-store-rows.js';
 import { commitStagedConclusions } from './job-store-conclusions.js';
 import { stagedUnderLease } from './job-store-staged.js';
-import { secondsSince } from '../../prometheus.js';
+import { secondsSince } from '../../timing.js';
 import { startAcquire } from './job-store-claim-probe.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
 import { recordExecution } from './job-store-provenance.js';

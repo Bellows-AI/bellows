@@ -237,8 +237,6 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/wait/cancel', 'user'],
     ['/api/jobs/:id/wait/poke', 'user'],
     ['/api/jobs/claim', 'worker'],
-    // The Prometheus scrape: a pool driver credential, never a session.
-    ['/api/metrics', 'worker'],
     // The orphan reaper's batched lease lookup: org-less like the claim, and
     // read-only — a worker token answers facts, it never moves rows.
     ['/api/jobs/leases', 'worker'],

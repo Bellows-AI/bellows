@@ -79,7 +79,7 @@ export const RULES = [
     // to an area marked NONE or to one phase moves its rule here in the same change. Unproven stays full.
     [/^server\/migrations\//, FULL, 'the schema every board migrates at boot'],
     [/^core\/src\//, FULL, 'shared with the board through the core index re-export; a path cannot show which board module uses it'],
-    [/^server\/src\/(main|app|index|offline|orgs|shutdown|cache|interval-loop|abortable-sleep|identifiers|metrics|prometheus|version|tar|config(-[a-z-]+)?)\.ts$/, FULL, 'board boot, configuration and wiring'],
+    [/^server\/src\/(main|app|index|offline|orgs|shutdown|cache|interval-loop|abortable-sleep|identifiers|metrics|otel|otel-register|pg-trace|timing|version|tar|config(-[a-z-]+)?)\.ts$/, FULL, 'board boot, configuration and wiring'],
     [/^server\/src\/(routes\/jobs|db\/jobs|db\/workflows)\//, FULL, 'the job, claim and workflow path every phase runs'],
     [/^server\/src\/(workspace|github|artifacts|telemetry|notifications)\//, FULL, 'plan reads, GitHub reads, artifacts, runner telemetry and the notification outbox every board runs'],
     [/^server\/src\/secrets\/rotate-(cli|args)\.ts$/, NONE, 'the rotation command line, not called by any jobs phase'],
@@ -107,7 +107,7 @@ export const RULES = [
     // Not called by any jobs phase.
     [/^server\/src\/(commerce\/|db\/commerce-|routes\/commerce\.ts$)/, NONE, 'commerce, off unless COMMERCE_ENABLED, which no lane sets; not called by any jobs phase'],
     [/^server\/src\/(db\/batches\/|routes\/batches\/|batch-merger\.ts$|batch-reconciler\.ts$)/, NONE, 'batches: their loops need BATCHES_ENABLED, which no lane sets, and no phase makes one; not called by any jobs phase'],
-    [/^server\/src\/(routes\/(org-members|org-retention|audit|tokens|tasks|prometheus|operator-driver-credentials|integrations|integration-catalog|attachment-uploads|attachment-ingest|model-setup|model-setup-save)\.ts|db\/org-export\.ts|attachments\/(name|sniff)\.ts)$/, NONE, 'settings, admin and dashboard routes; not called by any jobs phase'],
+    [/^server\/src\/(routes\/(org-members|org-retention|audit|tokens|tasks|operator-driver-credentials|integrations|integration-catalog|attachment-uploads|attachment-ingest|model-setup|model-setup-save)\.ts|db\/org-export\.ts|attachments\/(name|sniff)\.ts)$/, NONE, 'settings, admin and dashboard routes; not called by any jobs phase'],
     [/^server\/src\/seed\//, NONE, 'synthetic data command line, not called by any jobs phase'],
 
     // --- docker executor, specific concerns ------------------------------------------------------
