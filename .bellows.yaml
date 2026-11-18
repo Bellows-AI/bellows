@@ -15,7 +15,9 @@ environment:
            command: "npm run typecheck"
            timeout: 15
          - name: "test:db"
-           command: "DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db"
+           # The service is throwaway: durability off, and twice the default workers, since in a microVM
+           # the suite waits on round trips and WAL syncs, not CPU.
+           command: "sh scripts/gate-pg-fast.sh postgres://factory:factory@postgres:5432/postgres && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db"
            timeout: 30
          # Only the phases the change maps to (scripts/gate-test-jobs.sh); the full lane took ~23 min in a microVM.
          - name: "test:jobs"

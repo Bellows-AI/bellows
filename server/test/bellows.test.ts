@@ -276,14 +276,17 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     });
 
     // The suites that need more than `npm test`: each states its own budget, and test:db points at
-    // the declared `postgres` service, never at a server of its own.
+    // the declared `postgres` service, never at a server of its own. In a microVM the suite waits on
+    // round trips and WAL syncs, not CPU: test:db first turns the throwaway service's durability off,
+    // then runs eight workers instead of four.
     it('declares typecheck and test:db, each with a timeout', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const gates = new Map((parseBellows(text)?.gates ?? []).map((gate) => [gate.name, gate]));
         for (const name of ['typecheck', 'test:db']) expect(gates.get(name)?.timeoutMinutes, name).toBeGreaterThan(0);
         expect(gates.get('typecheck')?.command).toBe('npm run typecheck');
         expect(gates.get('test:db')?.command).toBe(
-            'DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db'
+            'sh scripts/gate-pg-fast.sh postgres://factory:factory@postgres:5432/postgres' +
+                ' && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db'
         );
     });
 
