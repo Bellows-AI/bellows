@@ -13,7 +13,6 @@ import { hashToken } from '../src/auth/session.js';
 import { type AuthStore, createAuthStore } from '../src/auth/store.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/jobs/job-store-org-resolvers.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
-import { createServerMetrics } from '../src/metrics.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
@@ -123,10 +122,6 @@ async function boot(store: DriverCredentialStore): Promise<void> {
         orgOfLease: createOrgOfLease({ sql, ready }),
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
-        metrics: createServerMetrics({
-            admission: { global: 8, org: 4 },
-            occupancy: async () => ({ global: 0, orgMax: 0, repoMax: 0 }),
-        }),
         ready,
         version: '0.0.0',
     });
@@ -252,13 +247,6 @@ describe.skipIf(!enabled)('per-driver credentials', () => {
         const own = await call('POST', '/api/jobs/leases', token, { ids: [jobA, randomUUID()] });
         expect(own.statusCode).toBe(OK);
         expect(own.json<{ jobs: { id: string }[] }>().jobs.map((row) => row.id)).toEqual([jobA]);
-    });
-
-    it('keeps the board-wide metrics to a pool credential', async () => {
-        const scoped = await issue({ label: 'org-a', orgs: [orgA] });
-        const pool = await issue({ label: 'pool', pool: true });
-        expect((await call('GET', '/api/metrics', scoped.token)).statusCode).toBe(FORBIDDEN);
-        expect((await call('GET', '/api/metrics', pool.token)).statusCode).toBe(OK);
     });
 
     it('a pool credential claims every organization’s queue', async () => {

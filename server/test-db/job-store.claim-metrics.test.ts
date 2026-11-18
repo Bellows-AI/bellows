@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { createServerMetrics } from '../src/metrics.js';
+import { metricsHarness, pointsIn, countOf } from '../test/helpers-metrics.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import {
     admissionLockKey,
@@ -164,22 +165,24 @@ describe.skipIf(!enabled)('claim wait includes the row lock wait', () => {
     });
 });
 
-describe.skipIf(!enabled)('a scrape while the pool is exhausted', () => {
+describe.skipIf(!enabled)('a collection while the pool is exhausted', () => {
     it('returns within its deadline, without occupancy samples, counting the failure', async () => {
         const pool = postgres(process.env.DATABASE_URL!, { max: 1 });
         const held = await pool.reserve();
         try {
-            const metrics = createServerMetrics({
+            const harness = metricsHarness();
+            createServerMetrics({
                 admission: { global: 8 },
                 occupancy: (signal) => admissionOccupancy(pool, { signal }),
                 readDeadlineMs: 300,
+                meter: harness.meter,
             });
             const started = Date.now();
-            const text = await metrics.render();
+            const collected = await harness.collect();
             expect(Date.now() - started).toBeLessThan(3000);
-            expect(text).not.toContain('factory_admission_running{');
-            expect(text).toContain('factory_metrics_read_failures_total{source="admission"} 1');
-            expect(text).toContain('factory_admission_limit{scope="global"} 8');
+            expect(pointsIn(collected, 'bellows.admission.running')).toEqual([]);
+            expect(countOf(pointsIn(collected, 'bellows.metrics.read.failures'), { source: 'admission' })).toBe(1);
+            expect(countOf(pointsIn(collected, 'bellows.admission.limit'), { scope: 'global' })).toBe(8);
         } finally {
             held.release();
             await pool.end({ timeout: 2 });

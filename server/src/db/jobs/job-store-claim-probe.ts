@@ -1,4 +1,4 @@
-import { secondsSince } from '../../prometheus.js';
+import { secondsSince } from '../../timing.js';
 import type { AdmissionScope, ClaimObserver, ClaimWaitKind } from './job-store-admission.js';
 
 /**

@@ -337,8 +337,8 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     //
     const artifacts = createArtifactBackend(config.artifacts);
     void prepareArtifactBackend(artifacts, (m) => console.log(`[artifacts] ${m}`));
-    // Prometheus series for the board: the claim reports into them, `GET /api/metrics`
-    // serves them, and the background loops below are wrapped with `metrics.timedPass`.
+    // OTEL instruments for the board: the claim reports into them, the SDK exports them, and the
+    // background loops below are wrapped with `metrics.timedPass`.
     const metrics = createServerMetrics({
         admission: config.admission,
         occupancy: (signal) => admissionOccupancy(sql, { signal }),
