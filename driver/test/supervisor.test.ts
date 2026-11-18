@@ -1540,7 +1540,8 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
 
     it('runs every gate execution it is asked for, and answers a redelivered one from its ledger', async () => {
         const driver = await startDriver();
-        const supervised = run(driver, GATED);
+        // A heartbeat limit a stalled CI worker cannot exceed: a gate loop read as lost answers no exit, never a replay.
+        const supervised = run(driver, { ...GATED, SUPERVISOR_GATE_LOST_MS: '10000' });
         const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', holdMs: 300 }));
         // The same named gate, asked twice: two executions, two ids.
         driver.order(gateStep('gate-a', 'npm test'));
