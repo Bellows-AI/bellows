@@ -620,6 +620,18 @@ test.describe('the task detail page', () => {
         await page.evaluate(() => window.scrollTo(0, 0));
         await page.screenshot({ path: `${SHOTS}/task-detail-gate-composer-focused.png`, fullPage: true });
 
+        // The box sits at the page's foot, so its Model list opens above the chip, search on the bottom edge.
+        const modelChip = page.getByRole('button', { name: /^Model: / });
+        await modelChip.click();
+        const modelSearch = page.getByRole('combobox', { name: 'Search model' });
+        await expect(modelSearch).toBeFocused();
+        const chipBox = (await modelChip.boundingBox())!;
+        const searchBox = (await modelSearch.boundingBox())!;
+        expect(searchBox.y + searchBox.height).toBeLessThanOrEqual(chipBox.y);
+        await page.screenshot({ path: `${SHOTS}/task-detail-follow-up-model-list.png` });
+        await page.keyboard.press('Escape');
+        await box.focus();
+
         // Typed, not filled: the keystrokes land only if the caret really is in the composer.
         await page.keyboard.type(followUp.command);
         await expect(box).toHaveValue(followUp.command);

@@ -20,17 +20,20 @@ const listCalls = (calls: FetchCall[]) => calls.filter((c) => c.url.startsWith(B
 function mount(value = '') {
     const onChange = vi.fn();
     render(<BranchCombobox repo={REPO} value={value} onChange={onChange} />);
-    return { onChange, input: screen.getByRole('combobox') as HTMLInputElement };
+    return { onChange, chip: screen.getByRole('button', { name: /^Base branch/ }) as HTMLButtonElement };
 }
+
+/** The search field, once the list is open. */
+const searchField = () => screen.getByRole('combobox', { name: 'Search base branch' }) as HTMLInputElement;
 
 describe('the base-branch picker', () => {
     it('lists the default first, then the branches, once opened', async () => {
         const calls = stubFetch(({ url }) => (url.startsWith(BRANCHES_URL) ? page(['feature-a', 'main']) : undefined));
         const user = userEvent.setup();
-        const { input } = mount();
+        const { chip } = mount();
         expect(listCalls(calls)).toHaveLength(0);
 
-        await user.click(input);
+        await user.click(chip);
         const options = await screen.findAllByRole('option');
         expect(options.map((o) => o.textContent)).toEqual(['Default (main)', 'feature-a', 'main']);
         expect(listCalls(calls)).toHaveLength(1);
@@ -40,11 +43,11 @@ describe('the base-branch picker', () => {
     it('sends ONE debounced search after the pause, not one per keystroke', async () => {
         const calls = stubFetch(({ url }) => (url.startsWith(BRANCHES_URL) ? page(['feature-a']) : undefined));
         const user = userEvent.setup();
-        const { input } = mount();
-        await user.click(input);
+        const { chip } = mount();
+        await user.click(chip);
         await screen.findByRole('option', { name: 'feature-a' });
 
-        await user.type(input, 'fea');
+        await user.type(searchField(), 'fea');
         await waitFor(() => expect(listCalls(calls).some((c) => queryOf(c).get('q') === 'fea')).toBe(true));
         const searches = listCalls(calls).filter((c) => queryOf(c).has('q'));
         expect(searches.map((c) => queryOf(c).get('q'))).toEqual(['fea']);
@@ -56,8 +59,8 @@ describe('the base-branch picker', () => {
             return queryOf({ url } as FetchCall).get('cursor') === 'c1' ? page(['b', 'c']) : page(['a', 'b'], 'c1');
         });
         const user = userEvent.setup();
-        const { input } = mount();
-        await user.click(input);
+        const { chip } = mount();
+        await user.click(chip);
         await user.click(await screen.findByRole('option', { name: 'Load more' }));
 
         await screen.findByRole('option', { name: 'c' });
@@ -68,27 +71,29 @@ describe('the base-branch picker', () => {
         expect(screen.getByRole('listbox')).toBeTruthy();
     });
 
-    it('typed text with no option picked leaves the value unchanged', async () => {
+    it('typed text with no option picked leaves the value, which stays the chip text', async () => {
         stubFetch(({ url }) => (url.startsWith(BRANCHES_URL) ? page([]) : undefined));
         const user = userEvent.setup();
-        const { input, onChange } = mount('release');
-        await user.click(input);
-        await user.type(input, 'made-up-branch');
+        const { chip, onChange } = mount('release');
+        await user.click(chip);
+        await user.type(searchField(), 'made-up-branch');
         await user.keyboard('{Escape}');
-        await user.tab();
         expect(onChange).not.toHaveBeenCalled();
-        expect(input.value).toBe('');
-        expect(input.placeholder).toBe('release');
+        expect(chip.textContent).toBe('release');
+        expect(chip.getAttribute('aria-label')).toBe('Base branch: release');
+        expect(screen.queryByRole('listbox')).toBeNull();
+        // Esc hands focus back to the chip.
+        expect(document.activeElement).toBe(chip);
     });
 
     it('commits only what an option picks, and the default as an empty value', async () => {
         stubFetch(({ url }) => (url.startsWith(BRANCHES_URL) ? page(['feature-a']) : undefined));
         const user = userEvent.setup();
-        const { input, onChange } = mount('release');
-        await user.click(input);
+        const { chip, onChange } = mount('release');
+        await user.click(chip);
         await user.click(await screen.findByRole('option', { name: 'feature-a' }));
         expect(onChange).toHaveBeenLastCalledWith('feature-a');
-        await user.click(input);
+        await user.click(chip);
         await user.click(await screen.findByRole('option', { name: 'Default (main)' }));
         expect(onChange).toHaveBeenLastCalledWith('');
     });
@@ -100,8 +105,8 @@ describe('the base-branch picker', () => {
             return failing ? { status: 503, body: { error: 'GitHub is unreachable' } } : page(['feature-a']);
         });
         const user = userEvent.setup();
-        const { input } = mount();
-        await user.click(input);
+        const { chip } = mount();
+        await user.click(chip);
         expect((await screen.findByRole('alert')).textContent).toBe('GitHub is unreachable');
         expect(screen.queryByText('No matching branches')).toBeNull();
 
@@ -112,11 +117,31 @@ describe('the base-branch picker', () => {
         expect(listCalls(calls)).toHaveLength(2);
     });
 
+    it('Enter on Retry or Load more runs it and keeps the list open; Enter on a branch commits it', async () => {
+        const calls = stubFetch(({ url }) => {
+            if (!url.startsWith(BRANCHES_URL)) return;
+            return queryOf({ url } as FetchCall).get('cursor') === 'c1' ? page(['c']) : page(['a'], 'c1');
+        });
+        const user = userEvent.setup();
+        const { chip, onChange } = mount();
+        await user.click(chip);
+        await screen.findByRole('option', { name: 'Load more' });
+        await user.keyboard('{ArrowDown}{ArrowDown}{Enter}');
+        await screen.findByRole('option', { name: 'c' });
+        expect(listCalls(calls).map((c) => queryOf(c).get('cursor'))).toEqual([null, 'c1']);
+        expect(onChange).not.toHaveBeenCalled();
+        expect(screen.getByRole('listbox')).toBeTruthy();
+
+        await user.keyboard('{ArrowUp}{Enter}');
+        expect(onChange).toHaveBeenLastCalledWith('a');
+        expect(screen.queryByRole('listbox')).toBeNull();
+    });
+
     it('"No matching branches" only for a confirmed empty answer', async () => {
         stubFetch(({ url }) => (url.startsWith(BRANCHES_URL) ? page([]) : undefined));
         const user = userEvent.setup();
-        const { input } = mount();
-        await user.click(input);
+        const { chip } = mount();
+        await user.click(chip);
         await screen.findByText('No matching branches');
         expect(screen.queryByRole('alert')).toBeNull();
     });
@@ -133,12 +158,12 @@ describe('the base-branch picker', () => {
             return q === 'ab' ? page(['ab-branch']) : page(['seed']);
         });
         const user = userEvent.setup();
-        const { input } = mount();
-        await user.click(input);
+        const { chip } = mount();
+        await user.click(chip);
         await screen.findByRole('option', { name: 'seed' });
-        await user.type(input, 'a');
+        await user.type(searchField(), 'a');
         await waitFor(() => expect(screen.getByText('Loading branches…')).toBeTruthy());
-        await user.type(input, 'b');
+        await user.type(searchField(), 'b');
         await screen.findByRole('option', { name: 'ab-branch' });
 
         releaseFirst(page(['stale-a']));

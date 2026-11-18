@@ -78,7 +78,7 @@ const KEYBOARD_LAUNCH = '{Control>}{Enter}{/Control}';
  * repository, and the draft fills it in a render after the prompt first appears; a click on a
  * disabled input is dropped and nothing reopens the menu, so a click waits for it to be enabled.
  */
-const branchPicker = () => screen.getByRole('combobox', { name: /^Base branch/ }) as HTMLInputElement;
+const branchPicker = () => screen.getByRole('button', { name: /^Base branch/ }) as HTMLButtonElement;
 const startButton = () => screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement;
 /** Start stays dark until the default executor lands; a click on it before then is dropped. */
 const startEnabled = () => waitFor(() => expect(startButton().disabled).toBe(false));
@@ -737,8 +737,8 @@ describe('the composer base branch and skill menu', () => {
         await act(() => router.navigate('/settings/repos'));
         await waitFor(() => expect(screen.queryByLabelText('What should the agent do?')).toBeNull());
         await act(() => router.navigate('/tasks/new'));
-        const picker = (await screen.findByRole('combobox', { name: /^Base branch/ })) as HTMLInputElement;
-        expect(picker.placeholder).toBe('feature-a');
+        const picker = (await screen.findByRole('button', { name: /^Base branch/ })) as HTMLButtonElement;
+        expect(picker.textContent).toBe('feature-a');
     });
 
     it('a repository switch resets the branch to the default', async () => {
@@ -749,11 +749,11 @@ describe('the composer base branch and skill menu', () => {
         await pickerEnabled();
         await user.click(picker());
         await user.click(await screen.findByRole('option', { name: 'feature-a' }));
-        expect(picker().placeholder).toBe('feature-a');
+        expect(picker().textContent).toBe('feature-a');
 
         await user.click(await screen.findByRole('button', { name: /^Repository: / }));
         await user.click(await screen.findByRole('option', { name: 'acme/api' }));
-        await waitFor(() => expect(picker().placeholder).toBe('Default'));
+        await waitFor(() => expect(picker().textContent).toBe('Default'));
     });
 });
 

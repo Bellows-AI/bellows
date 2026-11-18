@@ -65,7 +65,7 @@ test('a first sign-in connects a model, starts its first task from Ready and lan
     );
     await page.screenshot({ path: 'artifacts/ui/onboarding-ready.png', fullPage: true });
     const repoChip = await page.getByRole('button', { name: /^Repository: / }).boundingBox();
-    const modelChip = await page.getByRole('combobox', { name: /^Model: / }).boundingBox();
+    const modelChip = await page.getByRole('button', { name: /^Model: / }).boundingBox();
     expect(Math.abs(repoChip!.y + repoChip!.height / 2 - (modelChip!.y + modelChip!.height / 2))).toBeLessThan(4);
 
     // Repositories' Change: the reselect round trip, back to Ready — never "That sign-in expired".

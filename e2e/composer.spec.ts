@@ -625,7 +625,8 @@ async function stubBranches(page: Page, failing = false): Promise<{ queries: (st
     return seen;
 }
 
-const branchField = (page: Page) => page.getByRole('combobox', { name: /^Base branch/ });
+const branchChip = (page: Page) => page.getByRole('button', { name: /^Base branch/ });
+const branchSearch = (page: Page) => page.getByRole('combobox', { name: 'Search base branch' });
 
 test.describe('the base branch and the skill menu', () => {
     const prompt = (page: Page) => page.getByLabel('What should the agent do?');
@@ -643,23 +644,27 @@ test.describe('the base branch and the skill menu', () => {
         const launches = countLaunches(page);
         await page.goto('/tasks/new');
 
-        await branchField(page).scrollIntoViewIfNeeded();
-        await branchField(page).click();
+        await branchChip(page).scrollIntoViewIfNeeded();
+        await branchChip(page).click();
+        await expect(branchSearch(page)).toBeFocused();
         await expect(page.getByRole('option', { name: 'Default (main)' })).toBeVisible();
         await page.getByRole('option', { name: 'Load more' }).click();
         await expect(page.getByRole('option', { name: 'feature/beta' })).toBeVisible();
         await expect(page.getByRole('option', { name: 'feature/alpha' })).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/composer-branch-list.png` });
 
-        await branchField(page).fill('rel');
+        await branchSearch(page).fill('rel');
         await expect(page.getByRole('option', { name: 'release/1.0' })).toBeVisible();
         await expect(page.getByRole('option', { name: 'feature/beta' })).toHaveCount(0);
         // Typed text is a search, never the value: nothing is committed until an option is picked.
-        await expect(branchField(page)).toHaveAttribute('placeholder', 'Default');
+        await page.keyboard.press('Escape');
+        await expect(branchChip(page)).toHaveText('Default');
+        await branchChip(page).click();
+        await expect(branchSearch(page)).toHaveValue('');
         expect(seen.queries.filter((q) => q !== null)).toEqual(['rel']);
 
         await page.getByRole('option', { name: 'release/1.0' }).click();
-        await expect(branchField(page)).toHaveAttribute('placeholder', 'release/1.0');
+        await expect(branchChip(page)).toHaveText('release/1.0');
         await page.screenshot({ path: `${SHOTS}/composer-branch-picked.png` });
 
         await prompt(page).fill('ship it');
@@ -752,8 +757,9 @@ test.describe('the base branch and the skill menu', () => {
     test('branch list failure shows an error, not an empty picker', async ({ page }) => {
         await stubBranches(page, true);
         await page.goto('/tasks/new');
-        await branchField(page).scrollIntoViewIfNeeded();
-        await branchField(page).click();
+        await branchChip(page).scrollIntoViewIfNeeded();
+        await branchChip(page).click();
+        await expect(branchSearch(page)).toBeFocused();
         await expect(page.getByRole('alert')).toHaveText('GitHub is unreachable');
         await expect(page.getByText('No matching branches')).toHaveCount(0);
         await expect(page.getByRole('option', { name: 'Retry' })).toBeVisible();

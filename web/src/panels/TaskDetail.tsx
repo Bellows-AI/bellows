@@ -166,6 +166,7 @@ function FollowUpComposer({
                                 defaultLabel={current ?? 'Default'}
                                 models={models}
                                 disabled={frozen}
+                                side="up"
                                 onChange={(next) =>
                                     draftStore.updateFollowUp(rootId, (prev) => ({
                                         ...prev,

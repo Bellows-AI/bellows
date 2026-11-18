@@ -15,8 +15,8 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
 | The drop zone: a region taking dropped files, with the "Drop files to attach" overlay | `web/src/panels/AttachmentDropZone.tsx` | `web/test/attachment-drop-zone.dom.test.tsx`, `e2e/composer.spec.ts`, `e2e/task-detail.spec.ts` |
 | One wrapping tile per file: in a draft a square (spinner while uploading, then the preview; a failure is a ⚠ that retries; name in the tooltip; remove), in history a tile with name, size and download | `web/src/panels/AttachmentList.tsx` | `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
 | The follow-up composer's files and draft | `web/src/panels/TaskDetail.tsx` | `web/test/task-detail-follow-up.dom.test.tsx`, `e2e/task-detail.spec.ts` |
-| The base-branch chip: a pick-only combobox, debounced server-side search, "Load more" by cursor, an error row (never "no branches") | `web/src/components/BranchCombobox.tsx`, `web/src/api/useBranches.ts` | `web/test/branch-combobox.dom.test.tsx`, `e2e/composer.spec.ts` |
-| The Model chip on both composers: Default (named for an agent default) sends nothing, the provider's curated models, or any typed name; the follow-up's starts at the thread's model and sends one only when changed | `web/src/components/ModelCombobox.tsx` | `web/test/model-choice.dom.test.tsx` |
+| The base-branch chip: a pick-only `SearchSelect`, debounced server-side search, "Load more" by cursor, an error row (never "no branches") | `web/src/components/BranchCombobox.tsx`, `web/src/components/SearchSelect.tsx`, `web/src/api/useBranches.ts` | `web/test/branch-combobox.dom.test.tsx`, `web/test/search-select.dom.test.tsx`, `e2e/composer.spec.ts` |
+| The Model chip on both composers: Default (named for an agent default) sends nothing, the provider's curated models, or any typed name; the follow-up's starts at the thread's model, sends one only when changed and opens its list upward | `web/src/components/ModelCombobox.tsx` | `web/test/model-choice.dom.test.tsx` |
 | The prompt's `/` skill menu: a small list of names opening above the prompt, the highlighted skill's description in a tooltip beside it; built-ins and the repository's at the chosen branch; the picked `/name` stays in the text | `web/src/components/SlashSkillMenu.tsx`, `web/src/slash-skills.ts`, `web/src/api/useRepoSkills.ts` | `web/test/slash-skills.test.ts`, `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
 | A workflow's declared parameter fields | `web/src/components/WorkflowParameterFields.tsx` | `web/test/task-composer.render.test.tsx` |
 | The no-tracked-repository banner | `web/src/panels/TaskComposer.tsx` | `web/test/task-composer.dom.test.tsx` |
@@ -36,9 +36,7 @@ Classes defined here: `chat-input`, `chat-input-field`, `chat-input-box`, `chat-
 `chat-input-end`, `chat-input-send`, `chat-input-hint`, `composer-label`, `composer-fields`,
 `composer-helper`, `composer-param-input`, `composer-param-error`, `composer-param-details`,
 `composer-heading`, `composer-visually-hidden`, `composer-blocker`, `composer-note`, `composer-counter`, `is-over`,
-`composer-context-item`, `composer-context-value`, `composer-branch`, `composer-branch-toggle`,
-`composer-branch-input`, `composer-branch-options`, `composer-branch-action`, `composer-branch-error`,
-`composer-model`, `composer-model-toggle`, `composer-model-input`,
+`composer-context-item`, `composer-context-value`,
 `composer-skill-menu`, `composer-skill-list`, `composer-skill-option`, `composer-skill-name`, `composer-skill-match`,
 `composer-skill-source`, `composer-skill-tip`, `composer-trigger-missing`,
 `composer-notices-body`, `composer-notices-dismiss`, `composer-skeleton-block`,

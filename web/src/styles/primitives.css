@@ -1460,6 +1460,67 @@
         margin-left: auto;
     }
 
+    /* The searchable list the composer chips share (`SearchSelect`): a column of a fixed head — the search field and the
+       field's note — over a list that scrolls on its own. An upward list puts the head last, search on the bottom edge
+       beside the chip, so its note reads above the field. */
+    .popover-search-select {
+        display: flex;
+        flex-direction: column;
+        min-width: 220px;
+        overflow: hidden;
+    }
+
+    .popover-head {
+        display: flex;
+        flex: none;
+        flex-direction: column;
+    }
+
+    .popover-search-select[data-placement='up'] .popover-head {
+        flex-direction: column-reverse;
+    }
+
+    .popover-search {
+        padding: 2px;
+    }
+
+    .popover-search-input {
+        background: var(--surface);
+        border: 1px solid var(--line-strong);
+        border-radius: var(--radius-md);
+        color: inherit;
+        font: inherit;
+        padding: var(--space-1) var(--space-2);
+        width: 100%;
+    }
+
+    .popover-list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+    }
+
+    /* The matched text: bold and underlined, so the match never rides on color alone. */
+    .popover-match {
+        font-weight: 700;
+        text-decoration: underline;
+    }
+
+    /* A repository's owner, muted beside its name in normal text. */
+    .popover-prefix {
+        color: var(--ink-muted);
+    }
+
+    /* Load more and Retry act on the list; they are not choices, so they read as actions. */
+    .popover-action {
+        color: var(--accent);
+        font-weight: 600;
+    }
+
+    .composer-note.popover-error {
+        color: var(--lamp-stop);
+    }
+
     /* A restrained divider between option groups — the account menu's Account/Sign out split. */
     .popover-separator {
         border-top: 1px solid var(--line);
