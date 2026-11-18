@@ -309,6 +309,71 @@ describe('npm run release', () => {
     });
 });
 
+describe('npm run release -- --minor', () => {
+    it('cuts X.(Y+1).0 as one version-only commit, tagged and pushed together', async () => {
+        const fixture = await setup('0.0.17\n');
+        const orig = await git(fixture, fixture.work, 'rev-parse', 'HEAD');
+        const result = await release(fixture, '--minor');
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain('released v0.1.0');
+
+        const head = await git(fixture, fixture.work, 'rev-parse', 'HEAD');
+        expect(readFileSync(join(fixture.work, 'VERSION'), 'utf8')).toBe('0.1.0\n');
+        expect(await git(fixture, fixture.work, 'rev-list', '--count', `${orig}..HEAD`)).toBe('1');
+        expect(await git(fixture, fixture.work, 'show', '--name-only', '--format=', 'HEAD')).toBe('VERSION');
+        expect(await git(fixture, fixture.remote, 'rev-parse', 'main')).toBe(head);
+        expect(await git(fixture, fixture.remote, 'rev-parse', 'v0.1.0^{commit}')).toBe(head);
+    });
+
+    it('lets the next plain release patch the new minor', async () => {
+        const fixture = await setup('1.9.9\n');
+        expect((await release(fixture, '--minor')).status).toBe(0);
+        await git(fixture, fixture.seed, 'pull', '-q', 'origin', 'main');
+        await publish(fixture, { 'README.md': 'a fix\n' });
+        await git(fixture, fixture.work, 'pull', '-q', 'origin', 'main');
+        expect((await release(fixture)).status).toBe(0);
+        expect((await git(fixture, fixture.remote, 'tag', '--list')).split('\n')).toEqual(['v1.10.0', 'v1.10.1']);
+    });
+
+    it.each([
+        ['--minor', '--rc'],
+        ['--rc', '--minor'],
+    ])('with %s %s tags HEAD vX.(Y+1).0-rc, numbers later candidates, and leaves VERSION alone', async (...args) => {
+        const fixture = await setup('0.0.17\n');
+        await git(fixture, fixture.seed, 'commit', '-q', '--allow-empty', '-m', 'elsewhere');
+        await git(fixture, fixture.seed, 'tag', 'v0.0.18-rc-4');
+        await git(fixture, fixture.seed, 'push', '-q', 'origin', 'v0.0.18-rc-4');
+        const orig = await git(fixture, fixture.work, 'rev-parse', 'HEAD');
+        const result = await release(fixture, ...args);
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain('released v0.1.0-rc');
+        expect(readFileSync(join(fixture.work, 'VERSION'), 'utf8')).toBe('0.0.17\n');
+        expect(await git(fixture, fixture.remote, 'rev-parse', 'v0.1.0-rc^{commit}')).toBe(orig);
+
+        await publish(fixture, { 'README.md': 'second\n' });
+        await git(fixture, fixture.work, 'pull', '-q', 'origin', 'main');
+        expect((await release(fixture, ...args)).status).toBe(0);
+        expect((await git(fixture, fixture.remote, 'tag', '--list', 'v0.1.0*')).split('\n').sort()).toEqual(
+            ['v0.1.0-rc', 'v0.1.0-rc-2'].sort()
+        );
+    });
+
+    it('cuts the final minor over a HEAD that carries only its candidate', async () => {
+        const fixture = await setup();
+        expect((await release(fixture, '--minor', '--rc')).status).toBe(0);
+        expect((await release(fixture, '--minor')).status).toBe(0);
+        expect((await git(fixture, fixture.remote, 'tag', '--list')).split('\n')).toEqual(['v0.1.0', 'v0.1.0-rc']);
+    });
+
+    it.each([
+        ['a repeated flag', ['--minor', '--minor']],
+        ['three arguments', ['--minor', '--rc', '--rc']],
+        ['an unknown second argument', ['--minor', '--beta']],
+    ])('refuses %s', async (_label, args) => {
+        await expectRefusal(await setup(), /usage/, ...args);
+    });
+});
+
 describe('the CI gate', () => {
     it.each<[string, string]>([
         ['no CI run for HEAD', '[]'],

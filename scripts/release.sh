@@ -1,10 +1,11 @@
 #!/bin/sh
-# Cut a patch release: bump VERSION's patch, commit only that, tag the commit vX.Y.Z, and push the
-# branch and the tag in one atomic push. The tag starts release-image.yml, which validates and
-# publishes; ci.yml's push filter skips the VERSION-only commit on main.
+# Cut a release: bump VERSION, commit only that, tag the commit vX.Y.Z, and push the branch and the
+# tag in one atomic push. The tag starts release-image.yml, which validates and publishes; ci.yml's
+# push filter skips the VERSION-only commit on main.
 #
-#   npm run release
-#   npm run release -- --rc
+#   npm run release                  # patch: X.Y.(Z+1)
+#   npm run release -- --minor       # minor: X.(Y+1).0
+#   npm run release -- --rc          # candidate of the next patch (with --minor: of the next minor)
 #
 # --rc cuts a release candidate of that next version instead: HEAD itself is tagged vX.Y.Z-rc, then
 # -rc-2, -rc-3, ... (one past the highest candidate locally or on origin), and only the tag is
@@ -23,13 +24,17 @@ fail() {
     exit 1
 }
 
+usage='usage: npm run release [-- [--minor] [--rc]]'
 rc=
-case "${1-}" in
-'') ;;
---rc) rc=1 ;;
-*) fail "usage: npm run release [-- --rc]" ;;
-esac
-[ "$#" -le 1 ] || fail "usage: npm run release [-- --rc]"
+minor_bump=
+[ "$#" -le 2 ] || fail "$usage"
+for arg in "$@"; do
+    case "$arg" in
+    --rc) [ -z "$rc" ] || fail "$usage"; rc=1 ;;
+    --minor) [ -z "$minor_bump" ] || fail "$usage"; minor_bump=1 ;;
+    *) fail "$usage" ;;
+    esac
+done
 
 cd "$(git rev-parse --show-toplevel)"
 
@@ -67,7 +72,13 @@ major=${current%%.*}
 rest=${current#*.}
 minor=${rest%%.*}
 patch=${rest#*.}
-next="$major.$minor.$((patch + 1))"
+if [ -n "$minor_bump" ]; then
+    minor=$((minor + 1))
+    patch=0
+else
+    patch=$((patch + 1))
+fi
+next="$major.$minor.$patch"
 tag="v$next"
 
 if [ -n "$rc" ]; then
@@ -77,7 +88,7 @@ if [ -n "$rc" ]; then
         {
             git tag --list "$tag-rc*"
             printf '%s\n' "$remote_tags" | sed 's|.*refs/tags/||'
-        } | sed -n "s/^v$major\.$minor\.$((patch + 1))-rc\(-\([1-9][0-9]*\)\)\{0,1\}\$/\2/p" \
+        } | sed -n "s/^v$major\.$minor\.$patch-rc\(-\([1-9][0-9]*\)\)\{0,1\}\$/\2/p" \
             | sed 's/^$/1/' | sort -n | tail -n 1
     )
     if [ -z "$highest" ]; then
