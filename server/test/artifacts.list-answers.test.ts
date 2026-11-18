@@ -36,6 +36,17 @@ describe('S3 list answers', () => {
         expect(await s3(body).list('p/')).toEqual(['p/a', 'p/b&c']);
     });
 
+    // S3 fixes no element order inside an entry: RustFS writes the ETag before the Key.
+    it('reads a key wherever it sits in its entry, as RustFS orders it', async () => {
+        const body = listing(
+            '<KeyCount>2</KeyCount><IsTruncated>true</IsTruncated><NextContinuationToken>dG9r</NextContinuationToken>' +
+                '<Contents><ETag>"9dd4"</ETag><Key>p/a</Key><LastModified>2026-11-18T09:13:59.208Z</LastModified>' +
+                '<Size>1</Size><StorageClass>STANDARD</StorageClass></Contents>' +
+                '<Contents><ETag>"4152"</ETag><Key>p/b</Key><Size>1</Size></Contents>'
+        );
+        expect(await s3(body).list('p/')).toEqual(['p/a', 'p/b']);
+    });
+
     it('reads a complete empty listing as empty', async () => {
         expect(await s3(listing('<KeyCount>0</KeyCount><IsTruncated>false</IsTruncated>')).list('p/')).toEqual([]);
     });
@@ -115,6 +126,13 @@ describe('S3 list answers', () => {
         [
             'an empty key',
             listing('<KeyCount>1</KeyCount><IsTruncated>false</IsTruncated><Contents><Key></Key></Contents>'),
+        ],
+        [
+            'two keys in one entry',
+            listing(
+                '<KeyCount>2</KeyCount><IsTruncated>false</IsTruncated>' +
+                    '<Contents><Key>p/a</Key><Key>p/b</Key></Contents><Contents><Size>1</Size></Contents>'
+            ),
         ],
         [
             'a self-closed key',
