@@ -308,11 +308,14 @@
         word-break: normal;
     }
 
+    /* Never shrinks: beside a long branch name a squeezed button stacks "Copy" one letter a line. */
     .task-copy {
         align-items: center;
         display: inline-flex;
+        flex-shrink: 0;
         gap: var(--space-1);
         font-size: var(--text-sm);
+        white-space: nowrap;
     }
 
     /* The published branch: a mono chip beside its copy button. */
@@ -326,8 +329,13 @@
         font-size: var(--text-sm);
         gap: 6px;
         min-height: 28px;
+        min-width: 0;
         overflow-wrap: anywhere;
-        padding: 0 var(--space-2);
+        padding: var(--space-1) var(--space-2);
+    }
+
+    .task-branch > svg {
+        flex-shrink: 0;
     }
 
     /* The conversation sits on the canvas: no fill, no frame. The exchanges separate by their own

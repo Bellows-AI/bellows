@@ -14,6 +14,7 @@ import {
     failedGateThread,
     followUpThread,
     interruptedThread,
+    longContentThread,
     measuredActivityOf,
     recordedActivityOf,
     publishedThread,
@@ -564,6 +565,24 @@ test.describe('the task detail page', () => {
                 expect(controls!.y).toBeLessThan(rail!.y + 20);
             }
             await page.screenshot({ path: `${SHOTS}/task-detail-${width}.png`, fullPage: true });
+        }
+    });
+
+    test('beside a long branch name the Copy button keeps its one-line label', async ({ page }) => {
+        await routeThread(page, authoredBy(longContentThread, await sessionAuthor(page)));
+        for (const width of [360, 1440]) {
+            await page.setViewportSize({ width, height: 1000 });
+            await page.goto(`/tasks/${longContentThread[0]!.id}`);
+            const copy = page.getByRole('button', { name: 'Copy branch name' });
+            await expect(copy).toBeVisible();
+            const { height, fits } = await copy.evaluate((el) => ({
+                height: el.getBoundingClientRect().height,
+                fits: el.scrollWidth <= el.clientWidth,
+            }));
+            // A squeezed button stacks "Copy" one letter a line: taller than its touch target.
+            expect(height, `${width}px: button height`).toBeLessThanOrEqual(44);
+            expect(fits, `${width}px: label overflows the button`).toBe(true);
+            await page.locator('.task-outcome').screenshot({ path: `${SHOTS}/task-outcome-long-branch-${width}.png` });
         }
     });
 
