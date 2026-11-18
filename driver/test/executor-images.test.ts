@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { TOOL_UID } from '../src/claim.js';
+import { withoutGateEnv } from './fixtures/gate-env.js';
 import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
 
 const STAGED = new Map<string, string>();
@@ -671,7 +672,13 @@ describe('the entrypoint git credential', () => {
     const fill = (home: string, env: Record<string, string>) =>
         new Promise<string>((resolve, reject) => {
             const child = spawn('git', ['credential', 'fill'], {
-                env: { ...process.env, ...env, HOME: home, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' },
+                env: {
+                    ...withoutGateEnv(process.env),
+                    ...env,
+                    HOME: home,
+                    GIT_CONFIG_NOSYSTEM: '1',
+                    GIT_TERMINAL_PROMPT: '0',
+                },
             });
             let out = '';
             child.stdout.on('data', (chunk: Buffer) => {

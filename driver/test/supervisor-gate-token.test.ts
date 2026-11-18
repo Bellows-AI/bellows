@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { gateGithubScript, gateShellScript } from '../src/container-scripts.js';
 import { GATE_FILES, GATE_TOKEN_PATH, MAILBOX_FILES, MAILBOXES } from '../src/supervisor-contract.js';
+import { withoutGateEnv } from './fixtures/gate-env.js';
 import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 
 /*
@@ -101,7 +102,8 @@ beforeAll(() => {
     writeFileSync(join(shared.bin, 'gh'), gateGithubScript);
     chmodSync(join(shared.bin, 'gh'), 0o700);
     // Paid here, under the hook's own bound, instead of inside the first case.
-    const warm = { env: { ...process.env, GH_RECORD: '/dev/null' }, stdio: 'ignore' } as const;
+    // Outside any gate: inherited from a gate this suite runs in, the mailbox would make the helper ask and wait.
+    const warm = { env: { ...withoutGateEnv(process.env), GH_RECORD: '/dev/null' }, stdio: 'ignore' } as const;
     execFileSync(join(shared.fakeReal, 'gh'), warm);
     spawnSync(join(shared.bin, 'gh'), warm); // refuses with no mailbox: the exec is the point
 });
