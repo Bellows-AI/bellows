@@ -314,64 +314,6 @@
         white-space: nowrap;
     }
 
-    /* The base-branch and Model chips: the shared trigger's frame around a glyph button and the search
-       field. The field holds only the search; the chosen value is its placeholder, shown in full ink. */
-    .composer-branch,
-    .composer-model {
-        cursor: text;
-    }
-
-    .composer-branch:focus-within,
-    .composer-model:focus-within {
-        background: var(--accent-wash);
-    }
-
-    .composer-branch-toggle,
-    .composer-model-toggle {
-        align-items: center;
-        background: none;
-        border: none;
-        color: inherit;
-        cursor: pointer;
-        display: inline-flex;
-        flex: none;
-        /* Fills the chip, so the touch target is the chip's height, not the glyph's. */
-        align-self: stretch;
-        padding: 0;
-    }
-
-    .composer-branch-input,
-    .composer-model-input {
-        background: transparent;
-        border: none;
-        color: inherit;
-        font: inherit;
-        /* The global focus ring stays: it is the keyboard cue. */
-        align-self: stretch;
-        /* As wide as the chosen value (the placeholder) or the search, up to the trigger's cap, where a long
-           value ends in an ellipsis; the full value stays the trigger's title and the field's name. */
-        field-sizing: content;
-        min-width: 4ch;
-        padding: 0;
-        text-overflow: ellipsis;
-    }
-
-    .composer-branch-input::placeholder,
-    .composer-model-input::placeholder {
-        color: var(--ink);
-        opacity: 1;
-    }
-
-    /* Load more and Retry act on the list; they are not branches, so they read as actions. */
-    .composer-branch-action {
-        color: var(--accent);
-        font-weight: 600;
-    }
-
-    .composer-note.composer-branch-error {
-        color: var(--lamp-stop);
-    }
-
     /* The prompt's `/` menu: a small popover over the textarea, one compact row per skill name;
        the description lives in the tooltip beside it. */
     .composer-skill-menu {
@@ -718,14 +660,6 @@
 
         .chat-input-box:has(> .attachment-add) > .chat-input-field {
             padding-left: 58px;
-        }
-
-        /* The base-branch and Model chips' two controls fill the chip, so each one is a full-height target. */
-        .composer-branch-toggle,
-        .composer-branch-input,
-        .composer-model-toggle,
-        .composer-model-input {
-            min-height: var(--touch);
         }
     }
 }

@@ -75,3 +75,17 @@ export function useUpwardAnchor(align: 'start' | 'end') {
     });
     return { setReference: refs.setReference, setFloating: refs.setFloating, floatingStyles };
 }
+
+/** Which side of its trigger a panel opens on first: `down` never flips, `up` flips below only for want of room. */
+export type AnchorSide = 'down' | 'up';
+
+/** `useDownwardAnchor` or `useUpwardAnchor` by side, and the placement the panel finally took after any flip. */
+export function useSideAnchor(side: AnchorSide, align: 'start' | 'end') {
+    const { refs, floatingStyles, placement } = useFloating({
+        placement: `${side === 'up' ? 'top' : 'bottom'}-${align}`,
+        strategy: 'fixed',
+        whileElementsMounted: autoUpdate,
+        middleware: side === 'up' ? upwardMiddleware() : downwardMiddleware(),
+    });
+    return { setReference: refs.setReference, setFloating: refs.setFloating, floatingStyles, placement };
+}

@@ -1,10 +1,8 @@
 import { EXECUTOR_TYPES, type ExecutorType, isModelProvider } from '@factory-ai/core';
-import { Combobox, ComboboxButton, ComboboxInput, ComboboxOption, ComboboxOptions } from '@headlessui/react';
-import { useRef, useState } from 'react';
-import { useDownwardAnchor } from '../anchor.js';
+import type { AnchorSide } from '../anchor.js';
 import { type ModelSetupView, useModelSetup } from '../api/useModelSetup.js';
 import { type ModelSource, modelOptions } from '../model-setup/providers.js';
-import { Icon } from './Icon.js';
+import { type SearchRow, SearchSelect } from './SearchSelect.js';
 
 const MODEL_HELP = 'The model the agent runs. Pick one the provider offers, or type any model name it serves.';
 
@@ -30,82 +28,44 @@ export function useKnownModels(agent: string | null): string[] {
 }
 
 /**
- * The Model chip, on the new task and on a follow-up: the base-branch chip's frame around a glyph button and a field.
- * '' is the default — `defaultLabel` names it, and the caller sends nothing for it. The field is a search over the
- * provider's models, and the text typed is offered as a model of its own, so any model the provider serves can be used.
+ * The Model chip, on the new task and on a follow-up. '' is the default — `defaultLabel` names it, and the caller sends
+ * nothing for it. The search filters the provider's models, and the text typed is offered as a model of its own, so any
+ * model the provider serves can be used. A follow-up sits at the page's foot, so its list opens `up`.
  */
 export function ModelCombobox({
     value,
     defaultLabel,
     models,
     disabled,
+    side,
     onChange,
 }: {
     value: string;
     defaultLabel: string;
     models: readonly string[];
     disabled?: boolean;
+    side?: AnchorSide;
     onChange: (model: string) => void;
 }) {
-    const anchor = useDownwardAnchor('start');
-    const [query, setQuery] = useState('');
-    const toggle = useRef<HTMLButtonElement | null>(null);
-    const label = value === '' ? defaultLabel : value;
-    const typed = query.trim();
-    const matches = models.filter((model) => model.toLowerCase().includes(typed.toLowerCase()));
+    const options = models.map((model) => ({ value: model, label: model }));
+    // Ahead of the matches, so Enter on typed text takes it; the default only while nothing is typed.
+    const before = (query: string): SearchRow[] => {
+        const typed = query.trim();
+        if (typed === '') return [{ value: '', label: defaultLabel, highlight: false }];
+        return models.includes(typed) ? [] : [{ value: typed, label: `Use “${typed}”`, highlight: false }];
+    };
     return (
-        <Combobox
-            immediate
+        <SearchSelect
+            field="Model"
+            icon="sparkles"
+            valueLabel={value === '' ? defaultLabel : value}
             value={value}
+            options={options}
+            before={before}
+            help={MODEL_HELP}
+            side={side ?? 'down'}
             disabled={disabled ?? false}
-            onChange={(next: string | null) => {
-                if (next !== null) onChange(next);
-            }}
-            onClose={() => setQuery('')}
-        >
-            {({ open }) => (
-                <>
-                    <div ref={anchor.setReference} className="select-trigger composer-model" title={label}>
-                        <ComboboxButton ref={toggle} className="composer-model-toggle" aria-label="Show models">
-                            <Icon name="sparkles" />
-                        </ComboboxButton>
-                        <ComboboxInput
-                            className="composer-model-input"
-                            aria-label={`Model: ${label}`}
-                            autoComplete="off"
-                            spellCheck={false}
-                            placeholder={label}
-                            // The text field holds only the search; the chosen model is its placeholder.
-                            displayValue={() => ''}
-                            onChange={(e) => setQuery(e.target.value)}
-                            onClick={() => {
-                                if (!open) toggle.current?.click();
-                            }}
-                        />
-                    </div>
-                    <ComboboxOptions ref={anchor.setFloating} style={anchor.floatingStyles} portal className="popover">
-                        <p className="composer-note" role="presentation">
-                            {MODEL_HELP}
-                        </p>
-                        {/* First, so Enter on typed text takes it. */}
-                        {typed !== '' && !models.includes(typed) ? (
-                            <ComboboxOption value={typed} className="popover-option">
-                                Use “{typed}”
-                            </ComboboxOption>
-                        ) : null}
-                        {typed === '' ? (
-                            <ComboboxOption value="" className="popover-option">
-                                {defaultLabel}
-                            </ComboboxOption>
-                        ) : null}
-                        {matches.map((model) => (
-                            <ComboboxOption key={model} value={model} className="popover-option">
-                                {model}
-                            </ComboboxOption>
-                        ))}
-                    </ComboboxOptions>
-                </>
-            )}
-        </Combobox>
+            onChange={onChange}
+        />
     );
 }

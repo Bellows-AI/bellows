@@ -1097,13 +1097,10 @@ describe('the design-system inventory', () => {
         expect(inline).toMatch(/min-height:\s*0/);
     });
 
-    it('sizes the model and branch chips to their value and ellipsizes a long one, never a mid-word clip', () => {
+    it('ellipsizes a long chip value, never a mid-word clip', () => {
         const css = rules(stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8')));
-        const input = css.find(
-            ([p]) => /\.composer-model-input/.test(p) && /\.composer-branch-input/.test(p) && !/::/.test(p)
-        );
-        expect(input?.[1]).toMatch(/field-sizing:\s*content/);
-        expect(input?.[1]).toMatch(/text-overflow:\s*ellipsis/);
+        const value = css.find(([p]) => p.trim() === '.composer-context-value');
+        expect(value?.[1]).toMatch(/text-overflow:\s*ellipsis/);
         // The bar wraps its end below the chips rather than squeezing them into a column.
         const bar = css.find(([p]) => p.trim() === '.chat-input-bar')?.[1] ?? '';
         expect(bar).toMatch(/flex-wrap:\s*wrap/);

@@ -17,7 +17,8 @@ never utilities, and every color it renders resolves through a token.
 | Reduced motion, forced colors (unlayered) | `web/src/styles/platform.css` | `e2e/matrix.spec.ts`, `e2e/polish.spec.ts` |
 | Theme preference, `data-theme`, pre-paint bootstrap | `web/src/theme.tsx`, `web/public/theme-bootstrap.js` | `web/test/theme.test.tsx` |
 | Appearance control | `web/src/components/ThemeSelector.tsx` | `e2e/auth.spec.ts` (`e2e/appearance.ts`) |
-| Downward-only popover anchoring | `web/src/anchor.ts` | `web/test/anchor.test.ts` |
+| Popover anchoring: downward-only by default, upward (flipping below only for want of room) by side | `web/src/anchor.ts` | `web/test/anchor.test.ts` |
+| The composer chips' one searchable list: chip, search, note, rows, `down`/`up` placement | `web/src/components/SearchSelect.tsx` | `web/test/search-select.dom.test.tsx`, `e2e/composer.spec.ts` |
 | Token usage: four figures, breakdowns, info popover, notes (no data fetch) | `web/src/components/usage/` (`TokenFigures.tsx`, `PrecisionBadge.tsx`, `CoverageNote.tsx`, `UsageBreakdown.tsx`, `ModelUsageTable.tsx`, `InfoTip.tsx`, `UsageDiagnostics.tsx`, `UsageStateNote.tsx`, `usage-format.ts`) | `web/test/usage-components.render.test.tsx`, `web/test/usage-breakdown.dom.test.tsx`, `web/test/usage-format.test.ts`, `e2e/specimen.spec.ts` |
 | Icon set and `ICON_NAMES` | `web/src/components/Icon.tsx` | `web/test/icon.test.tsx` |
 | Page content widths: `--page-dense` (`.page`), `--page-standard` (settings), `--page-form` (composer); `--measure-wide`, `--measure-narrow` (task stats, onboarding) | `web/src/styles/tokens.css`, `web/src/styles/primitives.css` | `web/test/styles.test.ts` |
@@ -52,7 +53,7 @@ never utilities, and every color it renders resolves through a token.
 ## Stated limits
 
 - The specimen sheet is test-only: it is served by `e2e/specimen/vite.config.ts` and never built into `web/dist`. `npm run verify:ui:nightly` writes its shots to `artifacts/ui/` (gitignored); none are committed.
-- A popover never flips above its trigger — `useDownwardAnchor` omits floating-ui's `flip` deliberately and caps the panel to the space below.
+- A popover never flips above its trigger unless it asked to open `up` — `useDownwardAnchor` omits floating-ui's `flip` deliberately and caps the panel to the space below; `useSideAnchor('up')` opens above and flips below only for want of room.
 - `visually-hidden`, `token-once`, `mobile-nav-org` and the per-section hooks panels carry beside `panel` are markup hooks with no stylesheet rule. Do not style one without a row here.
 
 ## Shared classes
@@ -67,6 +68,8 @@ Shell and navigation: `shell-main`, `page-header-eyebrow`, `page-header-leading`
 `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `is-active`.
 
 Controls and overlays: `primary`, `tertiary`, `icon-button`, `danger`, `tabs`, `select-trigger`, `popover-option`, `popover-separator`,
+`popover-search-select`, `popover-head`, `popover-search`, `popover-search-input`, `popover-list`, `popover-match`,
+`popover-prefix`, `popover-action`, `popover-error`,
 `theme-field`, `theme-label`, `org-selector`, `org-select-name`, `user-menu-button`, `user-menu-login`,
 `user-menu-panel`, `avatar-fallback`, `avatar-lg`, `task-avatar`, `row-actions-trigger`,
 `dialog-layer`, `dialog-backdrop`, `dialog-position`, `lamp-glow`.

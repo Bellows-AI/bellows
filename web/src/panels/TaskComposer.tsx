@@ -1,7 +1,5 @@
 import type { ReactNode } from 'react';
-import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from '@headlessui/react';
 import { Link } from 'react-router-dom';
-import { useDownwardAnchor } from '../anchor.js';
 import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
 import type { QueueTaskInput } from '../api/taskWrites.js';
 import { AttachmentDropZone } from './AttachmentDropZone.js';
@@ -11,6 +9,7 @@ import { type ComposerDraftInput, type ComposerDraftStore, TASK_SCOPE } from '..
 import { withDraftReturn } from '../components/DraftReturnBanner.js';
 import { BranchCombobox } from '../components/BranchCombobox.js';
 import { Icon } from '../components/Icon.js';
+import { SearchSelect } from '../components/SearchSelect.js';
 import { ModelCombobox, useKnownModels } from '../components/ModelCombobox.js';
 import { SlashSkillMenu, useSlashMenu } from '../components/SlashSkillMenu.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
@@ -54,16 +53,7 @@ type Update = (patch: Partial<ComposerDraftInput>) => void;
 const REPO_HELP = 'The codebase the task runs in. The agent works on a copy of this repository.';
 const EXECUTOR_HELP = 'The configured agent environment that runs the task. Its type decides which runner is used.';
 
-/** The muted note atop a chip's open listbox: what the field is, said where the choice is made. */
-function ComposerNote({ children }: { children: ReactNode }) {
-    return (
-        <p className="composer-note" role="presentation">
-            {children}
-        </p>
-    );
-}
-
-/** The repository chip's short value: the name, with the owner left to the title and the listbox. */
+/** The repository chip's short value: the name, with the owner left to the title and the list. */
 const shortRepo = (repo: string): string => repo.slice(repo.lastIndexOf('/') + 1);
 
 /** The empty workflow option: objective mode, the prompt runs as written. */
@@ -129,10 +119,6 @@ function ComposerContextRow({
     state: ComposerDraftInput;
     update: Update;
 }) {
-    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
-    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
-    const repoAnchor = useDownwardAnchor('start');
-    const executorAnchor = useDownwardAnchor('start');
     const { repo, executor } = state;
     const repoLabel = repo === '' ? REPO_PLACEHOLDER : repo;
     const executorLabel = executorLabelOf(executor, agentDefault);
@@ -141,33 +127,20 @@ function ComposerContextRow({
         <div className="composer-context">
             <div className="composer-context-item">
                 {/* Reporting upward is the reporting effect's job — one path. */}
-                <Listbox value={repo} onChange={(next) => update({ repo: next, repoTouched: true })}>
-                    <ListboxButton
-                        ref={repoAnchor.setReference}
-                        className="select-trigger"
-                        aria-label={`Repository: ${repoLabel}`}
-                        title={repoLabel}
-                    >
-                        <Icon name="repo" />
-                        <span className="composer-context-value">{repo === '' ? repoLabel : shortRepo(repo)}</span>
-                    </ListboxButton>
-                    <ListboxOptions
-                        ref={repoAnchor.setFloating}
-                        style={repoAnchor.floatingStyles}
-                        portal
-                        className="popover"
-                    >
-                        <ComposerNote>{REPO_HELP}</ComposerNote>
-                        {repos.map(({ owner, name }) => {
-                            const full = `${owner}/${name}`;
-                            return (
-                                <ListboxOption key={full} value={full} className="popover-option">
-                                    {full}
-                                </ListboxOption>
-                            );
-                        })}
-                    </ListboxOptions>
-                </Listbox>
+                <SearchSelect
+                    field="Repository"
+                    icon="repo"
+                    valueLabel={repo === '' ? repoLabel : shortRepo(repo)}
+                    fullLabel={repoLabel}
+                    value={repo}
+                    options={repos.map(({ owner, name }) => ({
+                        value: `${owner}/${name}`,
+                        prefix: `${owner}/`,
+                        label: name,
+                    }))}
+                    help={REPO_HELP}
+                    onChange={(next) => update({ repo: next, repoTouched: true })}
+                />
             </div>
             <div className="composer-context-item">
                 <BranchCombobox
@@ -177,42 +150,23 @@ function ComposerContextRow({
                 />
             </div>
             <div className="composer-context-item">
-                <Listbox
+                <SearchSelect
+                    field="Executor"
+                    icon="terminal"
+                    valueLabel={executorLabel}
                     value={executorChoiceId({ scope: state.executorScope, name: executor })}
+                    options={executors.map((candidate) => ({
+                        value: executorChoiceId(candidate),
+                        label: `${candidate.name}${candidate.scope === 'org' ? ' — organization' : ''}`,
+                    }))}
+                    help={EXECUTOR_HELP}
                     disabled={executors.length === 0}
+                    missing={executorMissing}
                     onChange={(next) => {
                         const choice = executorChoiceOf(next);
                         if (choice) update({ executor: choice.name, executorScope: choice.scope });
                     }}
-                >
-                    <ListboxButton
-                        ref={executorAnchor.setReference}
-                        className={executorMissing ? 'select-trigger composer-trigger-missing' : 'select-trigger'}
-                        aria-label={`Executor: ${executorLabel}`}
-                        title={executorLabel}
-                    >
-                        <Icon name="terminal" />
-                        <span className="composer-context-value">{executorLabel}</span>
-                    </ListboxButton>
-                    <ListboxOptions
-                        ref={executorAnchor.setFloating}
-                        style={executorAnchor.floatingStyles}
-                        portal
-                        className="popover"
-                    >
-                        <ComposerNote>{EXECUTOR_HELP}</ComposerNote>
-                        {executors.map((candidate) => (
-                            <ListboxOption
-                                key={executorChoiceId(candidate)}
-                                value={executorChoiceId(candidate)}
-                                className="popover-option"
-                            >
-                                {candidate.name}
-                                {candidate.scope === 'org' ? ' — organization' : ''}
-                            </ListboxOption>
-                        ))}
-                    </ListboxOptions>
-                </Listbox>
+                />
             </div>
             <ComposerModelChip executors={executors} agentDefault={agentDefault} state={state} update={update} />
             <ComposerWorkflowTrigger workflows={workflows} workflow={state.workflow} update={update} />
@@ -220,10 +174,7 @@ function ComposerContextRow({
     );
 }
 
-/**
- * The workflow chip: the Reusable workflow trigger beside Repository and Executor. Split out so
- * its null bail (no workflow list yet) stays after its own hook.
- */
+/** The workflow chip: the Reusable workflow trigger beside Repository and Executor; none until the workflow list is read. */
 function ComposerWorkflowTrigger({
     workflows,
     workflow,
@@ -233,11 +184,6 @@ function ComposerWorkflowTrigger({
     workflow: string;
     update: Update;
 }) {
-    // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
-    // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`. Called
-    // unconditionally, before the null bail below, so the hook order never varies with the
-    // board's workflow feature.
-    const { setReference, setFloating, floatingStyles } = useDownwardAnchor('start');
     if (workflows === null) return null;
     const label = workflow === '' ? NO_WORKFLOW_LABEL : workflow;
     return (
@@ -245,27 +191,17 @@ function ComposerWorkflowTrigger({
             {/* The values reset through the identity-keyed read, and this choice's touched marks
                 reset with it: fields the member never reached in the new process must not arrive
                 pre-failed. A repo switch goes further and resets the whole workflow draft. */}
-            <Listbox value={workflow} onChange={(next) => update({ workflow: next, paramTouched: {} })}>
-                <ListboxButton
-                    ref={setReference}
-                    className="select-trigger"
-                    aria-label={`Reusable workflow: ${label}`}
-                    title={label}
-                >
-                    <Icon name="git-branch" />
-                    <span className="composer-context-value">{label}</span>
-                </ListboxButton>
-                <ListboxOptions ref={setFloating} style={floatingStyles} portal className="popover">
-                    <ListboxOption value="" className="popover-option">
-                        {NO_WORKFLOW_LABEL}
-                    </ListboxOption>
-                    {effectiveWorkflows(workflows).map((choice) => (
-                        <ListboxOption key={choice.id} value={choice.name} className="popover-option">
-                            {choice.name}
-                        </ListboxOption>
-                    ))}
-                </ListboxOptions>
-            </Listbox>
+            <SearchSelect
+                field="Reusable workflow"
+                icon="git-branch"
+                valueLabel={label}
+                value={workflow}
+                options={[
+                    { value: '', label: NO_WORKFLOW_LABEL },
+                    ...effectiveWorkflows(workflows).map((choice) => ({ value: choice.name, label: choice.name })),
+                ]}
+                onChange={(next) => update({ workflow: next, paramTouched: {} })}
+            />
         </div>
     );
 }

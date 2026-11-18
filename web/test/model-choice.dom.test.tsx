@@ -74,7 +74,7 @@ function openComposer(workspace: WorkspacePayload) {
     return { ...view, launched };
 }
 
-const modelPicker = () => screen.getByRole('combobox', { name: /^Model/ }) as HTMLInputElement;
+const modelPicker = () => screen.getByRole('button', { name: /^Model/ }) as HTMLButtonElement;
 const startEnabled = () =>
     waitFor(() =>
         expect((screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement).disabled).toBe(false)
@@ -123,7 +123,7 @@ describe('the new-task Model control', () => {
         const { launched } = openComposer(profileWorkspace);
         await screen.findByLabelText('What should the agent do?');
         await user.click(modelPicker());
-        await user.type(modelPicker(), 'my-proxy/model-7{Enter}');
+        await user.type(screen.getByRole('combobox', { name: 'Search model' }), 'my-proxy/model-7{Enter}');
         expect(modelPicker().getAttribute('aria-label')).toBe('Model: my-proxy/model-7');
         await launch(user, 'fix the login crash');
         await waitFor(() => expect(launched()).toHaveLength(1));
