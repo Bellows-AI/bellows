@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -25,6 +25,51 @@ describe('the gate shell', () => {
     it('never splits or re-expands the command it is handed', () => {
         expect(gate('printf %s "$1"').stdout).toBe('');
         expect(gate("echo '$(id -u)'").stdout).toBe('$(id -u)\n');
+    });
+
+    describe('files another uid owns', () => {
+        const dirs: string[] = [];
+        afterEach(() => {
+            for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+        });
+        /** A tree whose every file counts as foreign: `id -u` answers a uid nobody here owns. */
+        const foreignTree = () => {
+            const dir = mkdtempSync(join(tmpdir(), 'gate-owned-'));
+            dirs.push(dir);
+            mkdirSync(join(dir, 'bin'));
+            writeFileSync(join(dir, 'bin', 'id'), '#!/bin/sh\necho 4242\n', { mode: 0o755 });
+            mkdirSync(join(dir, 'tree', 'pkg', 'dist'), { recursive: true });
+            mkdirSync(join(dir, 'tree', 'node_modules'));
+            writeFileSync(join(dir, 'tree', 'pkg', 'dist', 'index.js'), 'built', { mode: 0o754 });
+            writeFileSync(join(dir, 'tree', 'node_modules', 'kept.js'), 'kept');
+            return dir;
+        };
+        const gateIn = (dir: string, command: string) =>
+            spawnSync('sh', ['-c', gateShellScript, 'gate', command], {
+                encoding: 'utf8',
+                cwd: join(dir, 'tree'),
+                env: { PATH: `${join(dir, 'bin')}:${process.env.PATH ?? ''}` },
+            });
+
+        it('replaces each with a copy of the same content and mode before the command runs', () => {
+            const dir = foreignTree();
+            const file = join(dir, 'tree', 'pkg', 'dist', 'index.js');
+            const before = statSync(file);
+            const ran = gateIn(dir, 'cat pkg/dist/index.js');
+            expect(ran.stdout).toBe('built');
+            const after = statSync(file);
+            expect(after.ino).not.toBe(before.ino);
+            expect(after.mode).toBe(before.mode);
+            expect(readdirSync(join(dir, 'tree', 'pkg', 'dist'))).toEqual(['index.js']);
+        });
+
+        it('leaves node_modules alone and still answers the command’s exit status', () => {
+            const dir = foreignTree();
+            const kept = join(dir, 'tree', 'node_modules', 'kept.js');
+            const before = statSync(kept);
+            expect(gateIn(dir, 'exit 3').status).toBe(3);
+            expect(statSync(kept).ino).toBe(before.ino);
+        });
     });
 
     describe('with a mailbox to ask for a GitHub token through', () => {

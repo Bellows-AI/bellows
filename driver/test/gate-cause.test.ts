@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gateCauseOf } from '../src/gate-cause.js';
+import { gateCauseOf, SETUP_FAILED_PREFIX } from '../src/gate-cause.js';
 import { causeOf, ledgerOf } from '../src/loop/loop-ledger.js';
 
 const WORKER_TIMEOUT_ERROR = 'Error: [vitest-worker]: Timeout calling "onTaskUpdate" with "[]"';
@@ -158,5 +158,30 @@ describe('gateCauseOf (issue #653)', () => {
         expect(gate(1, FAILING_ASSERTION)).toBe('verification');
         expect(gate(1, JEST_TIMEOUT)).toBe('environment');
         expect(gate(1, JEST_TIMEOUT_AND_ASSERTION)).toBe('verification');
+    });
+});
+
+describe('gateCauseOf: setup refused by file permissions', () => {
+    const NPM_EPERM = [
+        'npm error code EPERM',
+        'npm error syscall chmod',
+        "npm error Error: EPERM: operation not permitted, chmod '/task/repo/node_modules/@x/cli/dist/index.js'",
+    ].join('\n');
+
+    it('is an environment failure when setup could not chmod or write a file', () => {
+        expect(gateCauseOf({ exitCode: 255, output: `${SETUP_FAILED_PREFIX}${NPM_EPERM}` })).toBe('environment');
+        expect(
+            gateCauseOf({ exitCode: 1, output: `${SETUP_FAILED_PREFIX}npm error code EACCES\nnpm error syscall open` })
+        ).toBe('environment');
+    });
+
+    it('stays verification for a setup that failed another way', () => {
+        expect(gateCauseOf({ exitCode: 1, output: `${SETUP_FAILED_PREFIX}npm error code ERESOLVE` })).toBe(
+            'verification'
+        );
+    });
+
+    it('stays verification for a gate whose own output mentions a permission error', () => {
+        expect(gateCauseOf({ exitCode: 1, output: NPM_EPERM })).toBe('verification');
     });
 });

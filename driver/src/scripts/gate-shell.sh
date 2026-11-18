@@ -2,6 +2,13 @@
 # their own uid in group 1000, so a gate writes the tree they share group-writable.
 # The declared command is $1, one argv element, run exactly as `sh -c <command>` would run it.
 umask 002
+# A file the tool uid created is owned by it, and `chmod` (npm's bin links) needs ownership, not group
+# write: replace each such file in the tree with a copy this uid owns (a rename needs only the
+# group-writable directory). node_modules and .git are skipped: setup rebuilds the first, the second is git's.
+# Best effort: a file that cannot be replaced is left for the command to report.
+find . \( -name node_modules -o -name .git \) -prune -o -type f ! -user "$(id -u)" \
+    -exec sh -c 'for f; do cp -p "$f" "$f.owned.$$" && mv -f "$f.owned.$$" "$f" || rm -f "$f.owned.$$"; done' sh {} + \
+    >/dev/null 2>&1
 # A gate holds no GitHub token: with a mailbox to ask through (scripts/gate-github.sh, installed at
 # FACTORY_GATE_BIN/gh by the loop), `gh` resolves to the shim and git's github.com helper to it, the
 # request env's own GIT_CONFIG_* pairs kept. Without one (setup, other users of this shell) nothing changes.
