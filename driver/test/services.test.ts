@@ -3,7 +3,15 @@ import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { boardIdentity } from '../src/task-volume.js';
 
-import { plannedServices, serviceContainerName, servicePlanRefusal, serviceRunArgs } from '../src/services.js';
+import {
+    assertServiceSpec,
+    plannedServices,
+    SERVICE_PROBE_RECORD,
+    serviceContainerName,
+    servicePlanRefusal,
+    serviceRunArgs,
+} from '../src/services.js';
+import { serviceGenerationProbeScript, serviceProbeArgv } from '../src/container-scripts.js';
 import { supervisorName } from '../src/docker/docker-mailbox.js';
 import { awaitServicesRunning, ServicesNotRunning } from '../src/service-restart.js';
 import { Inconclusive, SERVICE_READY_POLL_MS } from '../src/runner.js';
@@ -155,6 +163,29 @@ describe('the service container arguments', () => {
         expect(withTmpfs('/factory/ctl', '1Gi')).toThrow(/refusing to run job .*"\/factory\/ctl" is not a safe tmpfs/);
         expect(withTmpfs('/data,uid=0', '1Gi')).toThrow(/refusing to run job .*"\/data,uid=0" is not a safe tmpfs/);
         expect(withTmpfs('/data', '2G')).toThrow(/refusing to run job .*"2G" is not a safe tmpfs size/);
+    });
+
+    // A memory emptyDir over the probe's record survives the kubernetes restart with the stale
+    // generation in it: the sidecar would fail every probe after a bump.
+    it('refuses a tmpfs over the restart probe’s record, and allows a deeper /tmp path', () => {
+        const spec = (path: string) => ({
+            name: 'db',
+            image: 'postgres',
+            environment: [],
+            tmpfs: [{ path, size: '64Mi' }],
+        });
+        for (const path of ['/tmp', SERVICE_PROBE_RECORD]) {
+            expect(() => assertServiceSpec(job, spec(path))).toThrow(
+                new RegExp(`refusing to run job .*"${path}" would hide the record the service restart keeps under /tmp`)
+            );
+        }
+        expect(() => assertServiceSpec(job, spec('/tmp/cache'))).not.toThrow();
+    });
+
+    it('reserves the very record the restart probe writes by default', () => {
+        expect(SERVICE_PROBE_RECORD).toBe('/tmp/.factory-generation');
+        expect(serviceGenerationProbeScript).toContain(`record=\${4:-${SERVICE_PROBE_RECORD}}`);
+        expect(serviceProbeArgv('db')).toHaveLength(7);
     });
 
     it('mounts each declared tmpfs with its size in bytes, before the image', () => {

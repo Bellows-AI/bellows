@@ -97,6 +97,18 @@ const isSafeTmpfsPath = (path: string): boolean =>
     !path.split('/').some((segment) => segment === '.' || segment === '..') &&
     !RESERVED_TMPFS_ROOTS.some((root) => path === root || path.startsWith(`${root}/`));
 
+/**
+ * Where the kubernetes restart's liveness probe records the generation it saw — the default of
+ * `scripts/service-generation-probe.sh`, which `serviceProbeArgv` relies on. The restart works because
+ * a restarted container gets a fresh writable layer without that record; a tmpfs is a pod volume, so a
+ * mount on the record or on a directory above it would keep the stale record and fail every probe.
+ */
+export const SERVICE_PROBE_RECORD = '/tmp/.factory-generation';
+
+/** True when a tmpfs on `path` would cover the probe's record (`/` is reserved already). */
+const hidesProbeRecord = (path: string): boolean =>
+    path === SERVICE_PROBE_RECORD || SERVICE_PROBE_RECORD.startsWith(`${path}/`);
+
 /** The state a declared service reports when the executor lists nothing for it: gone, not failed. */
 export const MISSING_SERVICE_STATE = 'missing';
 
@@ -218,6 +230,11 @@ export function assertServiceSpec(job: BoardJob, spec: ServiceSpec): void {
     for (const { path, size } of spec.tmpfs ?? []) {
         if (!isSafeTmpfsPath(path)) {
             throw new Error(`refusing to run job ${job.id}: "${path}" is not a safe tmpfs path`);
+        }
+        if (hidesProbeRecord(path)) {
+            throw new Error(
+                `refusing to run job ${job.id}: "${path}" would hide the record the service restart keeps under /tmp`
+            );
         }
         if (!TMPFS_SIZE.test(size)) {
             throw new Error(`refusing to run job ${job.id}: "${size}" is not a safe tmpfs size`);

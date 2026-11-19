@@ -63,6 +63,7 @@ Services share one network namespace, so two services cannot listen on the same 
 - Service names must be unique.
 - Every service runs hardened: all Linux capabilities dropped, no privilege escalation, and no way to turn that off. Declaring `unhardened` is an error.
 - There are no volumes but `tmpfs`, and no health checks, `depends_on` or restart policies.
+- A `tmpfs` can't cover `/tmp` itself, because Bellows keeps its service-restart record there. Mount a subdirectory such as `/tmp/cache` instead.
 - All services together declare at most 8Gi of `tmpfs`.
 
 ## Why Postgres needs `user`

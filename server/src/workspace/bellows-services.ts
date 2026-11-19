@@ -69,6 +69,12 @@ const RESERVED_TMPFS_ROOTS = ['/proc', '/sys', '/dev', '/factory'];
 /** A tmpfs size: a whole number of binary megabytes or gigabytes, both executors convert it. */
 const TMPFS_SIZE = /^[1-9][0-9]{0,4}(Mi|Gi)$/;
 const MAX_TMPFS_PER_SERVICE = 4;
+/**
+ * Where the kubernetes service restart's liveness probe records the generation it saw (the driver's
+ * `SERVICE_PROBE_RECORD`, copied). A tmpfs is a pod volume that survives that restart, so one on the
+ * record or above it would keep the stale record and fail every probe after a restart.
+ */
+const SERVICE_PROBE_RECORD = '/tmp/.factory-generation';
 
 /**
  * Cuts a comment. A `#` opens one at line start or after whitespace, never inside quotes — which
@@ -355,6 +361,12 @@ function readTmpfsEntry(entry: string): { path: string; size: string } {
     }
     if (path.split('/').some((segment) => segment === '.' || segment === '..')) {
         throw new Error(`.bellows.yaml: tmpfs path "${path}" must not contain a "." or ".." segment`);
+    }
+    if (path === SERVICE_PROBE_RECORD || SERVICE_PROBE_RECORD.startsWith(`${path}/`)) {
+        throw new Error(
+            `.bellows.yaml: tmpfs path "${path}" would hide the record the service restart keeps under /tmp — ` +
+                'mount a subdirectory of /tmp instead, e.g. /tmp/cache'
+        );
     }
     if (!TMPFS_SIZE.test(size)) {
         throw new Error(`.bellows.yaml: tmpfs size "${size}" must be a whole number of Mi or Gi, e.g. 2Gi`);

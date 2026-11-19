@@ -136,7 +136,7 @@ services:
 | `user` | string | no | image default | Numeric `"uid:gid"`. The uid is 1 to 999,999,999 (not 0), the gid 0 to 999,999,999 |
 | `ports` | inline list | no | none | `[5432]`. Up to 16 distinct ports, each 1 to 65535. A block list is an error |
 | `environment` | map | no | none | `KEY: value` lines. Key matches `[A-Za-z_][A-Za-z0-9_]*`, up to 256 characters. Value up to 8192 characters. Keys unique per service |
-| `tmpfs` | inline list | no | none | `[/var/lib/postgresql/data:2Gi]`: memory-backed mounts as `<absolute path>:<size>`. The path is letters, digits, `.`, `_` and `-` segments, at most 256 characters, no `.` or `..` segment, not `/`, `/proc`, `/sys`, `/dev`, `/factory` or anything under them. The size is a whole number of `Mi` or `Gi`. Up to 4 per service, no path twice. A block list is an error |
+| `tmpfs` | inline list | no | none | `[/var/lib/postgresql/data:2Gi]`: memory-backed mounts as `<absolute path>:<size>`. The path is letters, digits, `.`, `_` and `-` segments, at most 256 characters, no `.` or `..` segment, not `/`, `/proc`, `/sys`, `/dev`, `/factory` or anything under them, and not `/tmp` or `/tmp/.factory-generation`, where the service restart keeps its record (a subdirectory such as `/tmp/cache` is fine). The size is a whole number of `Mi` or `Gi`. Up to 4 per service, no path twice. A block list is an error |
 
 Plan-level rules, checked across all services:
 
@@ -146,6 +146,7 @@ Plan-level rules, checked across all services:
 - `unhardened` is refused. Every service runs hardened, so declare `user` instead.
 - All services together declare at most 8Gi of `tmpfs`: `service "db" declares 9216Mi of tmpfs — at most 8Gi of tmpfs fits one task pod`.
 - Other keys are errors: `unknown service key "k" — supported: name, image, ports, environment, user, tmpfs`.
+- A `tmpfs` on `/tmp` is refused: `tmpfs path "/tmp" would hide the record the service restart keeps under /tmp — mount a subdirectory of /tmp instead, e.g. /tmp/cache`.
 
 Quoted values accept the usual YAML escapes in double quotes (`\n`, `\"`, `\xNN`, `\uNNNN`). Single quotes know one escape, `''`.
 

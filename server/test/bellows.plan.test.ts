@@ -143,6 +143,22 @@ describe('parseServices', () => {
     ])('refuses %s', (_label, text, message) => {
         expect(() => parseServices(text)).toThrow(message);
     });
+
+    // The kubernetes restart's liveness probe records the generation it saw in
+    // /tmp/.factory-generation; a memory emptyDir over it would survive the restart and keep the
+    // stale record, so every probe after a bump would fail.
+    it.each([
+        ['/tmp', '[/tmp:64Mi]'],
+        ['the probe record itself', '[/tmp/.factory-generation:1Mi]'],
+    ])('refuses a tmpfs over %s, naming the restart record and the alternative', (_label, value) => {
+        expect(() => parseServices(tmpfs(value))).toThrow(
+            /would hide the record the service restart keeps under \/tmp — mount a subdirectory of \/tmp instead/
+        );
+    });
+
+    it('accepts a tmpfs on a subdirectory of /tmp', () => {
+        expect(parseServices(tmpfs('[/tmp/cache:64Mi]'))[0]?.tmpfs).toEqual([{ path: '/tmp/cache', size: '64Mi' }]);
+    });
 });
 
 describe('planProblems: what cannot share one pod', () => {
