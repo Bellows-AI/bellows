@@ -37,6 +37,7 @@ import { bad, body, checkReposVisible, guard } from '../helpers.js';
 import { resolveLeasedRoute, resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
 import { UUID } from '../../identifiers.js';
 import type { ClaimPollOutcome } from '../../metrics.js';
+import { markClaimed, markIdlePoll } from '../../board-span.js';
 import {
     HTTP_CONFLICT,
     HTTP_FORBIDDEN,
@@ -345,9 +346,11 @@ export async function handleClaimJob(
     // parsed to be recognised.
     if (claim.value === null) {
         claimPoll?.('idle');
+        markIdlePoll();
         return reply.code(HTTP_NO_CONTENT).send();
     }
     claimPoll?.('claimed');
+    markClaimed(claim.value);
     return reply.code(HTTP_OK).send(claim.value);
 }
 

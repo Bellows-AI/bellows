@@ -28,6 +28,7 @@ import { stopReviewsOf, threadBaseBranchFragment, workspacePathFor } from './job
 import { commitStagedConclusions } from './job-store-conclusions.js';
 import { stagedUnderLease } from './job-store-staged.js';
 import { secondsSince } from '../../timing.js';
+import { inBoardSpan } from '../../board-span.js';
 import { startAcquire } from './job-store-claim-probe.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
 import { recordExecution } from './job-store-provenance.js';
@@ -40,7 +41,8 @@ import type {
     JobStorePrs,
     ReviewerSpec,
 } from './job-store-types.js';
-import { type ClaimCandidateRow, rootRowFree, withClaimAttachments } from './job-store-claim-row.js';
+import { type ClaimCandidateRow, withClaimAttachments } from './job-store-claim-row.js';
+import { lockCandidate } from './job-store-claim-lock.js';
 import { claimCommand } from '../follow-up-recap.js';
 import { claimPromptInput, resolveMasterPrompt, resolveTurnContext } from '../master-prompt.js';
 import { activeOrgOf } from '../org-status.js';
@@ -341,25 +343,6 @@ async function slotsFor(
 }
 
 /**
- * Try, never wait: the acquire holds the candidate's row, and every thread-wide writer holds the root row and then
- * waits on the advisory lock or on a member row. So a member also tries the root row
- * (`skip locked`; the fence locks it while the claim holds the advisory lock). Busy or gone is not an answer about the
- * row, so the reservation's deferral goes back and the poll moves on. Only an explicit boolean is an answer.
- */
-async function tryThreadLock(tx: TransactionSql, orgId: string, reserved: ReservedCandidate): Promise<boolean> {
-    if (await rootRowFree(tx, orgId, reserved.id, reserved.root_job_id)) {
-        const [lock] = await tx<{ locked: boolean }[]>`
-            select pg_try_advisory_xact_lock(hashtextextended(${reserved.root_job_id}::text, 0)) as locked
-        `;
-        if (typeof lock?.locked !== 'boolean') throw new Error('thread lock probe answered nothing');
-        if (lock.locked) return true;
-    }
-    await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
-             where org_id = ${orgId} and id = ${reserved.id}`;
-    return false;
-}
-
-/**
  * The claim's short half: one transaction that takes the candidate's row lock, then TRIES its thread
  * root's advisory lock — and claims the row only if nothing moved since the reservation: the whole
  * claimability predicate re-asserted under the locks, and `claim_seq` unchanged, so a claim that
@@ -395,20 +378,10 @@ async function acquireCandidate(
     const expiry = sql.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString(), leaseExpired: true });
     const rootJobId = reserved.root_job_id;
     const probe = startAcquire(ctx.metrics);
-    const result = await sql.begin(async (tx) => {
-        // Gone (the thread was removed while this claim prepared): nothing to acquire. `queued_since`
-        // is where queued-to-claimed starts: the later of the row's creation, its release to the queue
-        // and the end of the deferral the reservation overwrote. The wait itself is read at the
-        // acquisition (`queue_age`), after the locks, so the lock wait is part of it.
-        const [locked] = await tx<{ status: string; queued_since: Date }[]>`
-            select status,
-                   greatest(created_at, lease_expires_at, coalesce(${reserved.prior_deferral}::timestamptz, created_at))
-                       as queued_since
-            from job where org_id = ${orgId} and id = ${reserved.id} for update
-        `;
-        // Gone: no row is left to carry a deferral.
-        if (!locked) return NEXT_CANDIDATE;
-        if (!(await tryThreadLock(tx, orgId, reserved))) return REFUSED;
+    const acquireInTx = async (tx: TransactionSql) => {
+        const locked = await inBoardSpan('claim.lock_wait', () => lockCandidate(tx, orgId, reserved));
+        if (locked === 'gone') return NEXT_CANDIDATE;
+        if (locked === 'busy') return REFUSED;
         probe.locked();
         // A row held back — its org suspended or refused meanwhile (a takeover too), or a queued row's required
         // integration with no live binding — is not a claim: checked under the locks and before any admission slot is
@@ -530,7 +503,8 @@ async function acquireCandidate(
         await recordExecution(tx, orgId, row.id);
         const connections = await claimConnectionsInTx(tx, { orgId, rootJobId }, row, locked.status === 'running');
         return withClaimAttachments(tx, orgId, await assembleClaim(ctx, tx, row, { rootJobId, gates, connections }));
-    });
+    };
+    const result = await inBoardSpan('claim.acquire', () => sql.begin(acquireInTx));
     // Only a transaction that resolved reports: a throw above rolled back and observed nothing.
     probe.done(result !== NEXT_CANDIDATE && result !== REFUSED);
     return result;
@@ -612,14 +586,9 @@ async function assembleClaim(
     return connections.outcomes.length > 0 ? { ...claim, connectionOutcomes: connections.outcomes } : claim;
 }
 
-export async function claimJob(
-    ctx: JobStoreContext,
-    worker: string,
-    leaseSeconds: number,
-    options: ClaimOptions = {}
-): ReturnType<JobStore['claim']> {
+/** The settle passes a claim runs before it looks for a candidate, each committed on its own. */
+async function sweepBeforeClaim(ctx: JobStoreContext): Promise<void> {
     const { sql, orgId, wallTick, prs } = ctx;
-    const sweepStart = performance.now();
     // Outside every transaction below: the conversion takes pool connections of its own.
     await ctx.executorConfig?.ready?.();
 
@@ -688,6 +657,16 @@ export async function claimJob(
     // reclaim, the same exposure the stamped stops above already accept: the task is not lost, only its tree is left
     // unreclaimed.
     for (const root of retiredRoots) await settleIfMergeClosed(ctx, root);
+}
+
+export async function claimJob(
+    ctx: JobStoreContext,
+    worker: string,
+    leaseSeconds: number,
+    options: ClaimOptions = {}
+): ReturnType<JobStore['claim']> {
+    const sweepStart = performance.now();
+    await inBoardSpan('claim.sweep', () => sweepBeforeClaim(ctx));
     ctx.metrics?.sweep(secondsSince(sweepStart));
 
     /*

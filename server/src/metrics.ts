@@ -8,6 +8,7 @@
 
 import { metrics, type Attributes, type Histogram, type Meter } from '@opentelemetry/api';
 import type { AdmissionBudgets, AdmissionOccupancy, ClaimObserver } from './db/jobs/job-store-admission.js';
+import { BOARD_SCOPE, inBoardSpan } from './board-span.js';
 import { secondsSince } from './timing.js';
 
 export type { AdmissionOccupancy } from './db/jobs/job-store-admission.js';
@@ -17,7 +18,9 @@ export type ClaimPollOutcome = 'claimed' | 'idle' | 'error';
 type PassOutcome = 'ok' | 'error';
 
 /** The Meter's instrumentation scope. */
-export const METER_NAME = 'bellows-board';
+export const METER_NAME = BOARD_SCOPE;
+
+const ATTR_PASS_OUTCOME = 'bellows.pass.outcome';
 
 const SECONDS = 's';
 
@@ -184,6 +187,20 @@ export function createServerMetrics(deps: ServerMetricsDeps): ServerMetrics {
             acquire: (seconds) => acquire.record(seconds),
             sweep: (seconds) => sweep.record(seconds),
         },
-        timedPass: (loop, fn) => timed(passes, (outcome) => ({ loop, outcome }), fn),
+        // Each pass is its own trace root, whatever span its loop was started under.
+        timedPass: (loop, fn) =>
+            inBoardSpan(
+                'background.pass',
+                (span) =>
+                    timed(
+                        passes,
+                        (outcome) => {
+                            span.setAttribute(ATTR_PASS_OUTCOME, outcome);
+                            return { loop, outcome };
+                        },
+                        fn
+                    ),
+                { root: true, attributes: { loop } }
+            ),
     };
 }
