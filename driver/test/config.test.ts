@@ -451,7 +451,7 @@ describe('the driver config: runner classes', () => {
         );
     });
 
-    // BEL-477: the sandbox pools (RUNNER_SANDBOX_POOLS, the chart's `isolation.sandboxPools` as JSON)
+    // The sandbox pools (RUNNER_SANDBOX_POOLS, the chart's `isolation.sandboxPools` as JSON)
     // are what the boot check holds every class to; a malformed one refuses boot, never drops a pool.
     const POOL = { taint: { key: 'sandbox.example/runtime', value: 'microvm' }, runtimeClassNames: ['vm'] };
     const poolsEnv = (raw: string) => ({ ...classesEnv(), RUNNER_SANDBOX_POOLS: raw });

@@ -104,7 +104,7 @@ describe('the boot check of a docker class RuntimeClass', () => {
 });
 
 /*
- * BEL-477. A sandbox pool's only fence is its taint: a class that tolerates it lands on the pool,
+ * A sandbox pool's only fence is its taint: a class that tolerates it lands on the pool,
  * docker or not, and every pod of the class (runner, gate, service sidecars, reader, export Job)
  * runs under its RuntimeClass. So such a class needs a Kata RuntimeClass the pool lists — Kata only,
  * gVisor too is refused — and the driver refuses to boot otherwise.
