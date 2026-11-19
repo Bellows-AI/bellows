@@ -3,6 +3,7 @@ import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import type { AuthStore } from '../auth/store.js';
 import type { JobMergeStore } from '../db/jobs/job-store-merge.js';
 import { INSTALLATION_ACTIONS } from '../db/org-status.js';
+import { describeError } from '../log.js';
 import type { OrgRegistry } from '../orgs.js';
 import { ERROR_CODES, JSON_CONTENT_TYPE } from '@factory-ai/core';
 
@@ -145,7 +146,7 @@ async function requestObservationRefresh(
             headSha: hint.headSha,
         });
     } catch (e) {
-        log.warn(`batch observation refresh failed: ${(e as Error).message}`);
+        log.warn(`batch observation refresh failed: ${describeError(e)}`);
     }
 }
 

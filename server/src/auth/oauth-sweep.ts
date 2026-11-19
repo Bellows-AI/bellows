@@ -1,5 +1,6 @@
 import { startIntervalLoop } from '../interval-loop.js';
 import type { OAuthStore } from './oauth-store.js';
+import { logger } from '../log.js';
 
 const MS_PER_MINUTE = 60_000;
 const OAUTH_SWEEP_INTERVAL_MS = 10 * MS_PER_MINUTE;
@@ -25,6 +26,6 @@ export function startOAuthSweep(
                 await alsoPurge();
             }),
         intervalMs,
-        { onError: (e) => console.error(`[oauth] purge failed: ${e.message}`) }
+        { onError: (e) => logger('oauth').error({ err: e }, 'purge failed') }
     );
 }

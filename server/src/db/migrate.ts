@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import type { Sql, TransactionSql } from 'postgres';
 import { LOCAL_ORG_ID } from '../identifiers.js';
+import { describeError } from '../log.js';
 import { liftStatementTimeout } from './pool.js';
 import { TelemetryError } from '../telemetry/errors.js';
 import { ADMIN_ROLE } from '@factory-ai/core';
@@ -288,7 +289,7 @@ export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> 
             if (e instanceof MigrationChecksumError) throw e;
             lastError = e;
             if (attempt === attempts) break;
-            log(`migration attempt ${attempt} failed, retrying: ${(e as Error).message}`);
+            log(`migration attempt ${attempt} failed, retrying: ${describeError(e)}`);
             await new Promise((resolve) => setTimeout(resolve, backoffMs * attempt));
         }
     }

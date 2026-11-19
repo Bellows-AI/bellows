@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
+import { captureLogs } from './helpers-log.js';
 
 const BASE = {
     DATABASE_URL: 'postgres://factory:factory@127.0.0.1:5432/factory_dev',
@@ -34,10 +35,10 @@ describe('integrations.jira', () => {
     });
 
     it('an override URL warns once and must be absolute http(s)', () => {
-        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const captured = captureLogs();
         const env = { ATLASSIAN_CLIENT_ID: 'cid', ATLASSIAN_CLIENT_SECRET: 'csecret' };
         expect(load(env).integrations.jira).not.toBeNull();
-        expect(warn).not.toHaveBeenCalled();
+        expect(captured.of('config')).toEqual([]);
         const config = load({
             ...env,
             ATLASSIAN_API_URL: 'http://127.0.0.1:9999/',
@@ -45,8 +46,9 @@ describe('integrations.jira', () => {
         });
         expect(config.integrations.jira?.apiOrigin).toBe('http://127.0.0.1:9999');
         expect(config.integrations.jira?.tokenUrl).toBe('http://127.0.0.1:9999/t');
-        expect(warn).toHaveBeenCalledTimes(1);
-        expect(String(warn.mock.calls[0]?.[0])).toContain('Atlassian');
+        expect(captured.of('config')).toHaveLength(1);
+        expect(String(captured.of('config')[0]?.[1])).toContain('Atlassian');
+        captured.stop();
         for (const name of ['ATLASSIAN_AUTHORIZE_URL', 'ATLASSIAN_TOKEN_URL', 'ATLASSIAN_API_URL']) {
             expect(() => load({ ...env, [name]: 'not a url' })).toThrow(new RegExp(name));
             expect(() => load({ ...env, [name]: 'ftp://example.test/x' })).toThrow(new RegExp(name));
@@ -75,10 +77,10 @@ describe('integrations.linear', () => {
     });
 
     it('an override URL warns once and must be absolute http(s)', () => {
-        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const captured = captureLogs();
         const env = { LINEAR_CLIENT_ID: 'lid', LINEAR_CLIENT_SECRET: 'lsecret' };
         expect(load(env).integrations.linear).not.toBeNull();
-        expect(warn).not.toHaveBeenCalled();
+        expect(captured.of('config')).toEqual([]);
         const config = load({
             ...env,
             LINEAR_API_URL: 'http://127.0.0.1:9999/linear/',
@@ -86,8 +88,9 @@ describe('integrations.linear', () => {
         });
         expect(config.integrations.linear?.apiOrigin).toBe('http://127.0.0.1:9999/linear');
         expect(config.integrations.linear?.authorizeUrl).toBe('http://127.0.0.1:9999/linear/authorize');
-        expect(warn).toHaveBeenCalledTimes(1);
-        expect(String(warn.mock.calls[0]?.[0])).toContain('Linear');
+        expect(captured.of('config')).toHaveLength(1);
+        expect(String(captured.of('config')[0]?.[1])).toContain('Linear');
+        captured.stop();
         for (const name of ['LINEAR_AUTHORIZE_URL', 'LINEAR_API_URL']) {
             expect(() => load({ ...env, [name]: 'not a url' })).toThrow(new RegExp(name));
             expect(() => load({ ...env, [name]: 'ftp://example.test/x' })).toThrow(new RegExp(name));

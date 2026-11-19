@@ -23,6 +23,7 @@ import { useTestDb } from './harness.js';
 import { startRow, testOrg, testUser } from './fixtures.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import { batchPlan, headOf, rootOf, startBatch } from './batch-fixtures.js';
+import { captureLogs } from '../test/helpers-log.js';
 
 /**
  * the durable notification outbox. The settle's own transaction fans an event out to the
@@ -577,7 +578,7 @@ describe.skipIf(!enabled)('notification outbox — retry and park', () => {
         const target = `room-${randomUUID()}`;
         const sub = await subs.create(ORG_OWNER, fields({ connectorConfig: { target } }), credential());
         await emit();
-        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const captured = captureLogs();
         const fake = fakeConnector('fake', verdict({ status: 'permanent', reason: 'destination-refused' }));
 
         await pass(fake);
@@ -588,8 +589,9 @@ describe.skipIf(!enabled)('notification outbox — retry and park', () => {
         clock.t = T0 + RETRY_CAP_MS;
         await pass(fake);
         expect(fake.sent).toHaveLength(1);
-        expect(warn).toHaveBeenCalledTimes(1);
-        const line = String(warn.mock.calls[0]![0]);
+        expect(captured.of('notifications')).toHaveLength(1);
+        const line = JSON.stringify(captured.emitted());
+        captured.stop();
         for (const part of [ORG, row.event_id, sub.id, 'destination-refused']) expect(line).toContain(part);
         expect(line).not.toContain(target);
     });

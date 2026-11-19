@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { EvidencePolicy, RecordedEvidence } from '../src/db/evidence-policy.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
@@ -20,6 +20,7 @@ import {
     spendInterruptionBudget,
     testOrg,
 } from './fixtures.js';
+import { captureLogs } from '../test/helpers-log.js';
 
 /**
  * Issue #821 (D1): an attempt's final envelope is staged on the board under its lease before the
@@ -507,16 +508,18 @@ describe.skipIf(!enabled)('a staged conclusion the board cannot commit — datab
         `;
         await expireLease(sql, poisoned);
         const healthy = await queue();
-        const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const captured = captureLogs();
         try {
             expect((await store.claim(WORKER, LEASE_SECONDS))?.id).toBe(healthy);
-            expect(errors).toHaveBeenCalledWith(expect.stringContaining(poisoned));
+            expect(captured.emitted().map((r) => JSON.stringify(r.attributes))).toContainEqual(
+                expect.stringContaining(poisoned)
+            );
             expect(await rowOf(poisoned)).toMatchObject({ status: 'running', interruptions: [] });
 
             expect(await store.stop(poisoned, null)).toEqual({ result: 'conflict', status: 'running' });
             expect(await rowOf(poisoned)).toMatchObject({ status: 'running', cancel_requested_at: null });
         } finally {
-            errors.mockRestore();
+            captured.stop();
         }
     });
 });
