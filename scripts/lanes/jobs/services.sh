@@ -52,6 +52,23 @@ environment:
 gated="$(create_job 'echo the agent ran')"
 expect_contains 'the gate reaches the service by name on 127.0.0.1' "$(await_settled "$gated" 120)" succeeded
 
+# A declared tmpfs is the service container's `--tmpfs`, sized in bytes: read off the live container
+# while the agent sleeps, since the fleet is removed with the run.
+write_bellows "services:
+  - name: stub-svc
+    image: $IMAGE_SVC
+    tmpfs: [/srv/scratch:16Mi]"
+tmpfs_job="$(create_job 'sleep 20')"
+tmpfs_fleet_up() {
+    tmpfs_fleet="$(docker ps -q --filter "label=factory.job=$tmpfs_job" --filter "label=factory.service")"
+    [ -n "$tmpfs_fleet" ]
+}
+tmpfs_fleet=""
+acc_until 60 tmpfs_fleet_up
+expect_contains 'a declared tmpfs is the service container’s sized --tmpfs' \
+    "$(docker inspect --format '{{json .HostConfig.Tmpfs}}' $tmpfs_fleet 2>&1)" '"/srv/scratch":"rw,size=16777216"'
+expect_contains 'the tmpfs run succeeds' "$(await_settled "$tmpfs_job" 120)" succeeded
+
 # The refusal path, end to end: a file the parser refuses fails the job with the reason, and the
 # runner never spawns — the output is the parse error alone.
 write_bellows 'services:

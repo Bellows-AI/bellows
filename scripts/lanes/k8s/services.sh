@@ -113,8 +113,10 @@ LANE_SERVICES="services:
     - name: postgres
       image: postgres:17
       user: \"999:999\"
+      tmpfs: [/var/lib/postgresql/data:256Mi]
       environment:
           POSTGRES_PASSWORD: lane
+          PGDATA: /var/lib/postgresql/data/pgdata
     - name: s3
       image: rustfs/rustfs:1.0.1
       user: \"10001:10001\""
@@ -161,6 +163,10 @@ if [ -z "$restarted" ] || [ -z "$restart_pod" ]; then
 else
     ok 'the restart runner is running'
     await_blocked "$restart_pod" "$svc_release" && ok 'the restart agent is blocked at its barrier' || give_up
+    # The declared tmpfs is a memory emptyDir on svc-postgres, and PGDATA (a subdirectory of it) is on it.
+    pgdata_fs="$(kubectl exec "$restart_pod" -c svc-postgres -n "$NAMESPACE" --request-timeout=10s -- \
+        sh -c 'stat -f -c %T "$PGDATA"' 2>&1)"
+    expect_contains 'the postgres data directory is on the declared tmpfs' "$pgdata_fs" 'tmpfs'
     end_postgres_sidecar "$restart_pod" || give_up
     died=""
     for _ in $(seq 1 60); do

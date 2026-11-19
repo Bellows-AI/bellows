@@ -110,12 +110,13 @@ function SearchOption({
             onClick={onPick}
             onKeyDown={undefined}
         >
-            {row.prefix === undefined ? null : (
-                <span className="popover-prefix">
-                    <Highlighted text={row.prefix} offset={0} full={full} query={shown} />
-                </span>
-            )}
+            {/* One flex item, so the option's accessible name reads "acme/api", not "acme/ api". */}
             <span>
+                {row.prefix === undefined ? null : (
+                    <span className="popover-prefix">
+                        <Highlighted text={row.prefix} offset={0} full={full} query={shown} />
+                    </span>
+                )}
                 <Highlighted text={row.label} offset={row.prefix?.length ?? 0} full={full} query={shown} />
             </span>
         </div>

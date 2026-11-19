@@ -111,7 +111,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 - Admission budgets count board leases, not pods; a rollout runs each replica's values. Org fairness is eventual:
   polls reading the same demand at once may serve one org; the next free slot goes to the other. A poll whose claim the global budget refused admits nothing from later boards (takeovers aside). Reclaims rotate. A plan's wall time stops a run through the heartbeat (`job.stop_cause = 'wall-time'`): a `stopped` outcome on both executors, never an interruption.
 - Attachments have no OCR: a scanned PDF yields no text (`unreadable`, `no_text`) and an image is read only by the model. OpenCode reads image attachments only with a vision-capable model; the prompt marks image entries so an agent that cannot see one says so.
-- No priority; no per-job authorization ([repos.md](repos.md)); no service volumes, health checks,
+- No priority; no per-job authorization ([repos.md](repos.md)); no service volumes but a memory-backed `tmpfs`, empty in every recreated service (`server/src/workspace/bellows-services.ts`), and no health checks,
   `depends_on` or restart policies in `.bellows.yaml`.
 - Skill precedence differs by layer: listings and the board use built-in < org < repo < workspace (a non-built-in `factory-*` name never wins over the built-in), but opencode loads a repo skill over a same-name built-in at run time (claude keeps the built-in); a repo skill missing from the checkout at run time is not detectable by the board (`docker/opencode-executor/test.sh`, `scripts/test-jobs.sh` phase `repo-skills`).
 - No abort for an in-flight publish; the next lease holder reads the ledger and the remote first. A custom

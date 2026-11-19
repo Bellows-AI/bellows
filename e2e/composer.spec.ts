@@ -663,6 +663,8 @@ test.describe('the base branch and the skill menu', () => {
         await expect(branchSearch(page)).toHaveValue('');
         expect(seen.queries.filter((q) => q !== null)).toEqual(['rel']);
 
+        // The reopened list is the unsearched first page, so the branch is found by searching again.
+        await branchSearch(page).fill('rel');
         await page.getByRole('option', { name: 'release/1.0' }).click();
         await expect(branchChip(page)).toHaveText('release/1.0');
         await page.screenshot({ path: `${SHOTS}/composer-branch-picked.png` });
