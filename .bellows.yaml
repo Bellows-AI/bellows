@@ -32,10 +32,15 @@ services:
       image: postgres:17
       user: "999:999"
       ports: [5432]
+      # The data directory lives in memory (the test:db data is ~1.2 GiB): on a microVM's virtiofs
+      # rootfs test:db ran over four times slower. PGDATA is a subdirectory because the mount root is
+      # root-owned, and postgres (uid 999) can own only what it creates.
+      tmpfs: [/var/lib/postgresql/data:2Gi]
       environment:
           POSTGRES_USER: factory
           POSTGRES_PASSWORD: factory
           POSTGRES_DB: factory_test
+          PGDATA: /var/lib/postgresql/data/pgdata
     - name: s3
       image: rustfs/rustfs:1.0.1
       user: "10001:10001"

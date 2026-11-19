@@ -23,7 +23,12 @@ const isServiceSpec = (value: unknown): value is ServiceSpec =>
     Array.isArray(value.environment) &&
     value.environment.every(
         (entry) => isRecord(entry) && typeof entry.key === 'string' && typeof entry.value === 'string'
-    );
+    ) &&
+    (value.tmpfs === undefined ||
+        (Array.isArray(value.tmpfs) &&
+            value.tmpfs.every(
+                (mount) => isRecord(mount) && typeof mount.path === 'string' && typeof mount.size === 'string'
+            )));
 
 /**
  * The claim's resolved services, read defensively. A malformed list is the board breaking its own

@@ -1241,7 +1241,14 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     // Issues #560, #773 (R1-4): the restart is the fleet's — the healthy sibling re-runs too — into
     // the same namespace, whose hosts file still names every service on loopback.
     it('restartServices re-runs every service, a healthy sibling too, in the group’s namespace', async () => {
-        const DB: ServiceSpec = { name: 'db', image: 'postgres:17', environment: [] };
+        // The re-run argv carries the declared tmpfs again: the restarted service starts on a fresh,
+        // empty memory mount, never on its rootfs.
+        const DB: ServiceSpec = {
+            name: 'db',
+            image: 'postgres:17',
+            environment: [],
+            tmpfs: [{ path: '/var/lib/postgresql/data', size: '2Gi' }],
+        };
         const fleet: BoardJob = { ...job, services: [STUB, DB] };
         const base = daemon();
         let removedByHand = false;
@@ -1267,6 +1274,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             serviceRunArgs(fleet, STUB, supervisorName(fleet), BOARD),
             ['rm', '-f', serviceContainerName(fleet, 'db')],
             serviceRunArgs(fleet, DB, supervisorName(fleet), BOARD),
+        ]);
+        const rerun = calls[3] ?? [];
+        expect(rerun.slice(rerun.indexOf('--tmpfs'), rerun.indexOf('--tmpfs') + 2)).toEqual([
+            '--tmpfs',
+            '/var/lib/postgresql/data:rw,size=2147483648',
         ]);
         expect(calls.some((a) => a[0] === 'network')).toBe(false);
         expect(await runner.deadServices(fleet)).toEqual([]);
