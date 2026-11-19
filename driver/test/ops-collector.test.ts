@@ -45,8 +45,7 @@ describe('the ops collector config shared by the chart and compose', () => {
         }
         expect(config.exporters.otlp_http.endpoint).toBe('${env:OPS_BACKEND_ENDPOINT}');
         expect(config.exporters.otlp_http.headers).toBe('${env:OPS_BACKEND_HEADERS}');
-        // The header comment names these on purpose (why the file never uses them): pin the config.
-        const text = read(CONFIG).replace(/^\s*#.*$/gm, '');
+        const text = read(CONFIG);
         for (const forbidden of ['/api/otlp', 'dashboard', 'headers_setter', '{{']) {
             expect(text).not.toContain(forbidden);
         }

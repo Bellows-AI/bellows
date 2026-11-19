@@ -39,10 +39,6 @@ dashboard:
         # digest does not exist until the release pushes them, so they stay addressed by appVersion
         # (docs/ci.md).
         digest: ''
-    otel:
-        # An OTLP/HTTP collector the board exports its own traces and metrics to (OTEL_EXPORTER_OTLP_ENDPOINT).
-        # Empty exports nothing; the in-chart collector is for the runners and is not a backend.
-        endpoint: ''
     # IfNotPresent so side-loaded images (kind load docker-image) resolve without a registry.
     imagePullPolicy: IfNotPresent
     # Above one requires artifacts.backend=s3 or gcs (the filesystem backend is one pod's /tmp), at
@@ -489,6 +485,34 @@ collector:
         # by digest (.github/workflows/release-image.yml). scripts/pin-digests.sh re-resolves it.
         digest: 'sha256:fd328de2552466ad78385e1b1289c3f2402b1c45f265b252aab1955b42845ac1'
     imagePullPolicy: IfNotPresent
+    resources:
+        requests:
+            cpu: 50m
+            memory: 128Mi
+        limits:
+            memory: 512Mi
+
+# The ops collector: the board's and the driver's own traces, metrics and logs (never a runner's),
+# tail-sampled and forwarded to any OTLP/HTTP backend. Off by default: nothing exports until it is
+# on. It runs the `collector.image` above (one pin, one mirror entry, re-resolved by
+# scripts/pin-digests.sh), so there is no image value here. Its NetworkPolicy admits the board and
+# driver pods only.
+observability:
+    enabled: false
+    # The backend's OTLP/HTTP base URL. Required when enabled.
+    endpoint: ''
+    # An existing Secret whose `key` holds a JSON map of header name → value sent with every export
+    # (for example `{"Authorization":"Basic …"}`). Empty name sends no headers.
+    headersSecret:
+        name: ''
+        key: ''
+    sampling:
+        # The share, 0-100, of traces kept beyond the ones that errored or ran slow.
+        tailPercent: 25
+        latencyThresholdMs: 2000
+    # Lane-only (scripts/lanes/k8s/observability.sh): also write traces to a file in the pod and add
+    # a reader sidecar, since the collector image has no shell to read it with.
+    debugFile: false
     resources:
         requests:
             cpu: 50m

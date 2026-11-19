@@ -30,6 +30,7 @@ const podSpecSources = [
     '../../charts/factory/templates/deployment.yaml',
     '../../charts/factory/templates/driver-deployment.yaml',
     '../../charts/factory/templates/collector.yaml',
+    '../../charts/factory/templates/ops-collector.yaml',
     '../../driver/src/k8s/k8s-podspec.ts',
 ];
 
