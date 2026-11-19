@@ -450,6 +450,61 @@ describe('the driver config: runner classes', () => {
             '2'
         );
     });
+
+    // The sandbox pools (RUNNER_SANDBOX_POOLS, the chart's `isolation.sandboxPools` as JSON)
+    // are what the boot check holds every class to; a malformed one refuses boot, never drops a pool.
+    const POOL = { taint: { key: 'sandbox.example/runtime', value: 'microvm' }, runtimeClassNames: ['vm'] };
+    const poolsEnv = (raw: string) => ({ ...classesEnv(), RUNNER_SANDBOX_POOLS: raw });
+
+    it('parses RUNNER_SANDBOX_POOLS, a JSON array of pools by taint; unset or blank is none', () => {
+        expect(loadDriverConfig(classesEnv()).sandboxPools).toEqual([]);
+        expect(loadDriverConfig(poolsEnv(' ')).sandboxPools).toEqual([]);
+        expect(loadDriverConfig(poolsEnv(JSON.stringify([POOL]))).sandboxPools).toEqual([POOL]);
+        const keyOnly = { taint: { key: 'pool' }, runtimeClassNames: ['vm'] };
+        expect(loadDriverConfig(poolsEnv(JSON.stringify([keyOnly]))).sandboxPools).toEqual([
+            { taint: { key: 'pool', value: '' }, runtimeClassNames: ['vm'] },
+        ]);
+    });
+
+    it.each([
+        ['malformed JSON', '[{', /RUNNER_SANDBOX_POOLS must be JSON/],
+        ['not an array', JSON.stringify(POOL), /RUNNER_SANDBOX_POOLS must be a JSON array/],
+        ['a pool without a taint', JSON.stringify([{ runtimeClassNames: ['vm'] }]), /RUNNER_SANDBOX_POOLS\[0\]\.taint/],
+        [
+            'a pool without taint.key',
+            JSON.stringify([{ taint: { value: 'x' }, runtimeClassNames: ['vm'] }]),
+            /RUNNER_SANDBOX_POOLS\[0\]\.taint\.key/,
+        ],
+        [
+            'a taint value that is not a string',
+            JSON.stringify([{ taint: { key: 'k', value: 3 }, runtimeClassNames: ['vm'] }]),
+            /RUNNER_SANDBOX_POOLS\[0\]\.taint\.value/,
+        ],
+        [
+            'an empty runtimeClassNames',
+            JSON.stringify([{ ...POOL, runtimeClassNames: [] }]),
+            /RUNNER_SANDBOX_POOLS\[0\]\.runtimeClassNames/,
+        ],
+        [
+            'a runtimeClassName that is not a RuntimeClass name',
+            JSON.stringify([{ ...POOL, runtimeClassNames: ['Kata'] }]),
+            /RUNNER_SANDBOX_POOLS\[0\]\.runtimeClassNames\[0\]/,
+        ],
+        ['an unknown pool key', JSON.stringify([{ ...POOL, effect: 'NoSchedule' }]), /unknown key "effect"/],
+        [
+            'an unknown taint key',
+            JSON.stringify([{ ...POOL, taint: { ...POOL.taint, effect: 'NoSchedule' } }]),
+            /RUNNER_SANDBOX_POOLS\[0\]\.taint has an unknown key "effect"/,
+        ],
+    ])('refuses RUNNER_SANDBOX_POOLS at boot on %s', (_, raw, refusal) => {
+        expect(() => loadDriverConfig(poolsEnv(raw))).toThrow(refusal);
+    });
+
+    it('refuses RUNNER_SANDBOX_POOLS under EXECUTOR=docker, naming the limit', () => {
+        expect(() => loadDriverConfig({ RUNNER_SANDBOX_POOLS: JSON.stringify([POOL]) })).toThrow(
+            /RUNNER_SANDBOX_POOLS.*docker executor cannot honor.*docs\/kubernetes-limits\.md/
+        );
+    });
 });
 
 describe('the driver config: policy and gates', () => {

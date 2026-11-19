@@ -374,6 +374,50 @@ host_process="$(dind_pod hostprocess "    hostNetwork: true
 $DIND_SPEC" "$(pod_ctx 'windowsOptions: {hostProcess: true}')" | as_driver)"
 expect_refused 'the policy refuses a Windows HostProcess pod' "$host_process" 'may not share host namespaces'
 
+# The sandbox-pool guard (isolation.sandboxPools, charts/factory/templates/sandbox-admission.yaml):
+# cluster-wide, every caller, every non-exempt namespace. The install declares one pool, tainted
+# factory.test/sandbox=kata, whose one RuntimeClass is the dind class's; exempt are kube-system,
+# local-path-storage and the prefix lane-exempt-. Bare pods, dry-run as the lane's own admin.
+SANDBOX_NS="$RELEASE-sandbox"
+EXEMPT_NS="lane-exempt-$RELEASE"
+kubectl create namespace "$SANDBOX_NS" >/dev/null 2>&1 && kubectl create namespace "$EXEMPT_NS" >/dev/null 2>&1 ||
+    bad 'the sandbox-pool probe namespaces are created' "$SANDBOX_NS, $EXEMPT_NS"
+sandbox_namespaces_created=1
+SANDBOX_TOLERATION='tolerations: [{key: factory.test/sandbox, operator: Equal, value: kata, effect: NoSchedule}]'
+bare_pod() { # bare_pod <name> [<extra spec lines>]
+    cat <<EOF
+apiVersion: v1
+kind: Pod
+metadata: {name: sandbox-probe-$1}
+spec:
+    containers: [{name: c, image: alpine}]
+${2:+    $2}
+EOF
+}
+in_ns() { kubectl create -n "$1" --dry-run=server -f - 2>&1; }
+unsandboxed="$(bare_pod plain "$SANDBOX_TOLERATION" | in_ns "$SANDBOX_NS")"
+expect_refused 'the sandbox-pool policy refuses a pod tolerating the pool taint without its RuntimeClass' \
+    "$unsandboxed" 'a pod that tolerates the sandbox taint factory.test/sandbox must run under one of its RuntimeClasses'
+sandboxed="$(bare_pod sandboxed "$SANDBOX_TOLERATION
+    runtimeClassName: $KATA_RC" | in_ns "$SANDBOX_NS")"
+expect_contains 'the sandbox-pool policy admits that pod under the pool RuntimeClass' "$sandboxed" 'created (server dry run)'
+untolerating="$(bare_pod untolerating | in_ns "$SANDBOX_NS")"
+expect_contains 'the sandbox-pool policy admits a pod without the toleration' "$untolerating" 'created (server dry run)'
+wildcard="$(bare_pod wildcard 'tolerations: [{operator: Exists}]' | in_ns "$SANDBOX_NS")"
+expect_refused 'the sandbox-pool policy refuses a tolerate-everything pod' "$wildcard" \
+    'tolerates the sandbox taint factory.test/sandbox'
+exempt_exact="$(bare_pod wildcard 'tolerations: [{operator: Exists}]' | in_ns kube-system)"
+expect_contains 'the sandbox-pool policy admits a tolerate-everything pod in an exempt namespace' \
+    "$exempt_exact" 'created (server dry run)'
+exempt_prefix="$(bare_pod wildcard 'tolerations: [{operator: Exists}]' | in_ns "$EXEMPT_NS")"
+expect_contains 'the sandbox-pool policy admits a tolerate-everything pod in a prefix-exempt namespace' \
+    "$exempt_prefix" 'created (server dry run)'
+lane_node="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}' --request-timeout=10s 2>/dev/null)"
+pinned="$(bare_pod pinned "nodeName: ${lane_node:-unread}" | in_ns "$SANDBOX_NS")"
+expect_refused 'the sandbox-pool policy refuses a pod pinned by spec.nodeName without a sandbox RuntimeClass' \
+    "$pinned" 'a pod that sets spec.nodeName skips the sandbox pool taints'
+kubectl delete namespace "$SANDBOX_NS" "$EXEMPT_NS" --ignore-not-found --wait=false >/dev/null 2>&1
+
 # --- The agent's tool isolation, on the real kubelet ----------------------------------
 #
 # The stub's one tool runs through the CLI's shell — the tool broker — and signals everything its

@@ -9,7 +9,7 @@ This page is for a security reviewer. It states what each control does and what 
 
 - An agent runs code you did not write, next to credentials. Bellows confines it with hardened containers, separate user ids, a network policy, and an admission policy. It holds no long-lived credential.
 - The agent gets a short-lived GitHub token for one repository, fetched on demand. The token is not in its environment.
-- Runners can run in a microVM, on their own guest kernel. Bellows Cloud runs every runner that way. On a self-hosted install, set `runtimeClassName` (for example `kata`, a Kata Containers microVM) on each runner class, the default class included. The admission policy then refuses any runner pod of that class outside the microVM. A Docker class always needs one. A class without a RuntimeClass shares the node's kernel, and the chart leaves it empty until you set it.
+- Runners can run in a microVM, on their own guest kernel. Bellows Cloud runs every runner that way. On a self-hosted install, set `runtimeClassName` (for example `kata`, a Kata Containers microVM) on each runner class, the default class included. The admission policy then refuses any runner pod of that class outside the microVM. A Docker class always needs one. A class without a RuntimeClass shares the node's kernel, and the chart leaves it empty until you set it. A microVM node pool's taint keeps out only pods that do not tolerate it: set `isolation.sandboxPools` and the cluster refuses any pod that tolerates the pool's taint outside one of the pool's RuntimeClasses, and the driver refuses to start a class that does.
 - Membership is not a sandbox. Anyone in an organization can queue a command that an agent runs on any tracked repository.
 
 ## Trust boundaries
@@ -39,6 +39,7 @@ On Kubernetes, the admission policy requires these on every pod the driver creat
 | Limited mounts | Only the task volume, `emptyDir` and the pod's own per-attempt Secrets |
 | Limited Secret reads | Only the pod's own per-attempt Secrets and the runner credentials |
 | Runner class | A `factory.runner-class` label naming a class in `runner.classes`, and a `runtimeClassName` equal to that class's (none when the class sets none) |
+| Sandbox pools | With `isolation.sandboxPools`, on every pod in the cluster outside `isolation.sandboxExemptNamespaces`, not only the driver's: a pod that tolerates a pool's taint runs under one of that pool's RuntimeClasses, and a pod that sets `nodeName` under one of any pool's |
 
 One exception exists, for two containers. The `agent` container and the `reviewer` sidecar start as root with only `SETUID` and `SETGID` added, so they can start commands as another user. Each then drops to its own user before the agent program or the review runs. Admission requires the reviewer to start through the launcher that makes that drop. A declared service or a gate image has no such exception. If a service needs root at boot, it declares a numeric `user: "uid:gid"` that is not 0.
 

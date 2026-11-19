@@ -1,10 +1,11 @@
-{{- $runtimeClasses := include "factory.runnerDockerRuntimeClasses" . | fromJsonArray }}
+{{- $runtimeClasses := include "factory.driverRuntimeClassReads" . | fromJsonArray }}
 {{- if $runtimeClasses }}
 {{/*
-The driver's one cluster-scoped grant, rendered only when a runner class sets `docker: true`. A
-docker class runs `dockerd` privileged, root of a guest kernel only under a microVM RuntimeClass;
-admission pins the pod to the class's RuntimeClass by name, so the driver reads each docker class's
-RuntimeClass at boot and refuses to start unless its handler is Kata
+The driver's one cluster-scoped grant, rendered only when a runner class sets `docker: true` or a
+sandbox pool is declared (isolation.sandboxPools). A docker class runs `dockerd` privileged, root of
+a guest kernel only under a microVM RuntimeClass, and a class that tolerates a pool's taint runs task
+code on that pool's nodes; admission pins those pods to a RuntimeClass by name, so the driver reads
+each such class's RuntimeClass at boot and refuses to start unless its handler is Kata
 (driver/src/k8s/k8s-runtime-class.ts). RuntimeClasses are cluster-scoped, so the namespaced Role
 (driver-rbac.yaml) cannot hold this: `get`, on those names alone — no list, no watch, no other
 RuntimeClass. A RuntimeClass names a handler and its scheduling, never secret material.
