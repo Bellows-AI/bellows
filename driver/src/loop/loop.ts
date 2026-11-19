@@ -12,6 +12,7 @@ import { withBoardRetry } from '../board/board-retry.js';
 import { down } from './loop-attempt.js';
 import { handOver } from './loop-handover.js';
 import { describeError } from '../log.js';
+import { withClaimSpan } from '../lifecycle-span.js';
 
 export interface Loop {
     /**
@@ -337,7 +338,9 @@ export function createLoop({
         while (running) {
             let reclaim: Reclaim | null;
             try {
-                reclaim = await board.claimReclaim(config.worker);
+                reclaim = await withClaimSpan('reclaim.claim', config.executor, () =>
+                    board.claimReclaim(config.worker)
+                );
             } catch (e) {
                 log(`reclaim claim failed, retrying: ${describeError(e)}`);
                 await sleep(config.pollMs);
@@ -363,7 +366,8 @@ export function createLoop({
     async function claimAndTrack(): Promise<void> {
         let job: BoardJob | null;
         try {
-            job = await board.claim(config.worker);
+            // The span wraps only the board call: `track` below runs outside it, so no trace spans the attempt.
+            job = await withClaimSpan('claim', config.executor, () => board.claim(config.worker));
         } catch (e) {
             log(`claim failed, retrying: ${describeError(e)}`);
             await sleep(config.pollMs);
