@@ -65,6 +65,9 @@ jobs:
                   cache: npm
             - name: npm ci
               run: npm ci
+            # The lane's real-CLI phases run the runner images and the lane never builds them.
+            - name: make runners
+              run: make runners
             # Every phase but compose-driver and question-round-trip, which need host networking
             # to reach the loopback-only open board (docs/ci.md).
             - name: npm run test:jobs

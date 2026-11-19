@@ -131,6 +131,10 @@ describe('ci workflows', () => {
         const run = runs(doc.jobs.jobs!).find((r) => r.includes('npm run test:jobs'))!;
         const named = run.split(/\s+/).at(-1)!.split(',');
         expect(named).toEqual(jobsPhases.filter((phase) => !hostNetworking.includes(phase)));
+        // The lane refuses to start without the runner images its real-CLI phases use, and never builds them.
+        const order = runs(doc.jobs.jobs!);
+        expect(order.indexOf('make runners')).toBeGreaterThan(order.indexOf('npm ci'));
+        expect(order.indexOf('make runners')).toBeLessThan(order.indexOf(run));
     });
 
     it('uploads the lane evidence bundles and alerts through one issue on a red night, with no secret', () => {
