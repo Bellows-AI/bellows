@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useTestDb } from './harness.js';
 import { createPostgresHarness, createSecret, exhaustRetries, testIdentity, utf8 } from './secrets-postgres-harness.js';
+import { captureLogs } from '../test/helpers-log.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 const db = useTestDb({ max: 8 });
@@ -22,6 +23,7 @@ afterEach(() => {
 describe.skipIf(!enabled)('sanitization', () => {
     it('a payload, an error body and the key bytes never reach results, errors, diagnostics, console or the catalog', async () => {
         const logged: string[] = [];
+        const captured = captureLogs();
         for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {
             vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
                 logged.push(JSON.stringify(args));
@@ -99,9 +101,10 @@ describe.skipIf(!enabled)('sanitization', () => {
         const surfaces: Array<[string, string]> = [
             ['results and errors', JSON.stringify(seen)],
             ['diagnostics', JSON.stringify(h.diagnostics())],
-            ['console', logged.join('\n')],
+            ['console', logged.join('\n') + captured.everything()],
             ['catalog', dumps.join('\n')],
         ];
+        captured.stop();
         for (const [surface, text] of surfaces) {
             for (const secret of secrets) {
                 expect(text.includes(secret), `${surface} leaks ${secret.slice(0, 10)}...`).toBe(false);

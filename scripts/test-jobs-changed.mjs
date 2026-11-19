@@ -79,7 +79,7 @@ export const RULES = [
     // to an area marked NONE or to one phase moves its rule here in the same change. Unproven stays full.
     [/^server\/migrations\//, FULL, 'the schema every board migrates at boot'],
     [/^core\/src\//, FULL, 'shared with the board through the core index re-export; a path cannot show which board module uses it'],
-    [/^server\/src\/(main|app|index|offline|orgs|shutdown|cache|interval-loop|abortable-sleep|identifiers|metrics|otel|otel-register|pg-trace|timing|version|tar|config(-[a-z-]+)?)\.ts$/, FULL, 'board boot, configuration and wiring'],
+    [/^server\/src\/(main|app|index|offline|orgs|shutdown|cache|interval-loop|abortable-sleep|identifiers|metrics|log|otel|otel-register|otel-scrub|pg-trace|timing|version|tar|config(-[a-z-]+)?)\.ts$/, FULL, 'board boot, configuration and wiring'],
     [/^server\/src\/(routes\/jobs|db\/jobs|db\/workflows)\//, FULL, 'the job, claim and workflow path every phase runs'],
     [/^server\/src\/(workspace|github|artifacts|telemetry|notifications)\//, FULL, 'plan reads, GitHub reads, artifacts, runner telemetry and the notification outbox every board runs'],
     [/^server\/src\/secrets\/rotate-(cli|args)\.ts$/, NONE, 'the rotation command line, not called by any jobs phase'],
