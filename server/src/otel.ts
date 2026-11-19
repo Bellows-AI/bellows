@@ -12,6 +12,7 @@ import { AggregationType } from '@opentelemetry/sdk-metrics';
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import type { SpanProcessor } from '@opentelemetry/sdk-trace';
 import pino from 'pino';
+import { DeferringSpanProcessor } from './otel-idle.js';
 import { UrlScrubProcessor } from './otel-scrub.js';
 import { installPostgresTracing } from './pg-trace.js';
 
@@ -52,16 +53,18 @@ function stdoutDiagLogger() {
 
 /**
  * `NodeSDK` builds the exporters' span processors from the environment only when it is given none, so the scrubber
- * cannot be passed in beside them: it joins the provider's own list instead, ahead of the exporters. A provider that
- * no longer has that list fails the start rather than export unscrubbed URLs.
+ * and the idle-poll deferral cannot be passed in beside them: the provider's own list is rewritten in place to the
+ * scrubber, then the deferral wrapping the exporters. A provider that no longer has that list fails the start rather
+ * than export unscrubbed URLs.
  */
-function installUrlScrubber(): void {
+function installSpanProcessors(): void {
     const provider = (trace.getTracerProvider() as ProxyTracerProvider).getDelegate() as unknown as {
         _activeSpanProcessor?: { _spanProcessors?: SpanProcessor[] };
     };
     const processors = provider._activeSpanProcessor?._spanProcessors;
     if (!processors) throw new Error('the tracer provider no longer exposes its span processors: cannot scrub URLs');
-    processors.unshift(new UrlScrubProcessor());
+    const exporters = [...processors];
+    processors.splice(0, processors.length, new UrlScrubProcessor(), new DeferringSpanProcessor(exporters));
 }
 
 export interface Otel {
@@ -83,7 +86,7 @@ export function startOtel(env: NodeJS.ProcessEnv = process.env): Otel | null {
         })),
     });
     sdk.start();
-    installUrlScrubber();
+    installSpanProcessors();
     installPostgresTracing();
     return { shutdown: () => sdk.shutdown() };
 }
