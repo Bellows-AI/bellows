@@ -164,6 +164,8 @@ rm -rf "$VOL"
 # the mount, which no container could read.
 GITMNT="$(mktemp -d)"
 git -C "$GITMNT" init -q
+# mktemp makes it 0700 for the host user; the image's user is another uid wherever the daemon is native.
+chmod -R a+rX "$GITMNT"
 check 'git reads the mount' 'true' docker run --rm -v "$GITMNT:/workspace" --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; git rev-parse --is-inside-work-tree'
 rm -rf "$GITMNT"
 

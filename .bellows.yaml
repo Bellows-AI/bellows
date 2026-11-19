@@ -1,5 +1,5 @@
 # The gates run in the dev runner image (docker/dev-runner), pinned to the release that published it.
-# test:jobs needs a docker daemon: it runs under a docker runner class (a Kata microVM RuntimeClass).
+# No gate needs a docker daemon: the docker lane (npm run test:jobs) runs nightly, as the kind lane does.
 environment:
     image: ghcr.io/bellows-ai/dev-runner:v0.0.17
     setup: "npm ci && sh scripts/gate-jq.sh"
@@ -22,10 +22,10 @@ environment:
            # the suite waits on round trips and WAL syncs, not CPU.
            command: "sh scripts/gate-pg-fast.sh postgres://factory:factory@postgres:5432/postgres && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test sh scripts/gate-test-changed.sh --db"
            timeout: 30
-         # Only the phases the change maps to (scripts/gate-test-jobs.sh); the full lane took ~23 min in a microVM.
-         - name: "test:jobs"
-           command: "TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 sh scripts/gate-test-jobs.sh"
-           timeout: 45
+         # The in-process driver, supervisor and job-route suites, whatever the change touched: no daemon.
+         - name: "test:executors"
+           command: "npm run test:executors"
+           timeout: 15
 
 services:
     - name: postgres

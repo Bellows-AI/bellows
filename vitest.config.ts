@@ -95,6 +95,8 @@ export default defineConfig({
         hookTimeout: 30_000,
         // Suites inject their own state, so sharing one worker costs nothing.
         isolate: false,
+        // Forks run at once: each gets its own temp directory, so a fixture-derived path is never shared.
+        setupFiles: ['./vitest.tmpdir.ts'],
         // A core watch build rewrites core/dist while vitest watches; re-running
         // on it invalidates the module graph for every server/web test.
         watchExclude: ['**/node_modules/**', '**/dist/**'],

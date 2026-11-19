@@ -345,8 +345,9 @@ esac
 # logging after the 429 is recovering, not hung — the quiet window must keep resetting.
 RLW="$(mktemp -d)"
 mkdir -p "$RLW/opencode/log"
-chmod -R a+rwX "$RLW"
 zombie_log "$RLW/opencode/log/opencode.log" rlw0run1 /workspace
+# After the log exists: the container appends to it, as another uid wherever the daemon is native.
+chmod -R a+rwX "$RLW"
 got="$(run_watch "$RLW" '
     sleep 60 & CLI=$!
     (while :; do echo "timestamp=2026-09-13T11:04:00.000Z level=INFO run=rlw0run1 message=loop step=1" >> /data/opencode/log/opencode.log; sleep 0.5; done) &
