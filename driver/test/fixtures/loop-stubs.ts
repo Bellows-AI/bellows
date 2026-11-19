@@ -24,7 +24,8 @@ import type { GateTokenRelay } from '../../src/gate-token-control.js';
 import type { ConnectionRelay } from '../../src/connection-control.js';
 import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
-import type { GateManager, GateRun, GateRunOptions, GateServer } from '../../src/gates.js';
+import type { GateManager, GateRun, GateRunOptions } from '../../src/gate-manager.js';
+import type { GateServer } from '../../src/gates.js';
 import type { HelperResult } from '../../src/helpers.js';
 import { createLoop, type Loop } from '../../src/loop/loop.js';
 import type { GateStack, LoopRuntime } from '../../src/loop/loop-types.js';
@@ -686,6 +687,8 @@ export function stubGateStack(
         onRun?: (name: string) => void;
         /** The ad-hoc server's `quiesce`: settles once no ad-hoc run is in flight; immediate when absent. */
         quiesce?: (token: string) => Promise<void>;
+        /** Awaited inside each declared gate after it started: a gate that is still running while its siblings start. */
+        hold?: (name: string) => Promise<void>;
     } = {}
 ) {
     const stack = {
@@ -714,6 +717,8 @@ export function stubGateStack(
         quiesced: [] as string[],
         advertised: '',
         ran: { key: '', names: [] as string[] },
+        /** Each declared gate's run, as the manager was asked: the order they started in, and whether side by side. */
+        started: [] as { name: string; parallel: boolean }[],
         /** Every pre-agent `runSetup` call's options, in order. */
         setups: [] as GateRunOptions[],
         manager: {
@@ -725,9 +730,11 @@ export function stubGateStack(
                 stack.setups.push(setupOptions);
                 return options.setup ?? null;
             },
-            runGate: async (key: string, name: string) => {
+            runGate: async (key: string, name: string, _command: string, runOptions: GateRunOptions = {}) => {
                 stack.ran = { key, names: [...stack.ran.names, name] };
+                stack.started.push({ name, parallel: runOptions.parallel === true });
                 options.onRun?.(name);
+                await options.hold?.(name);
                 const code = outcomes[name] ?? 0;
                 return { exitCode: code, output: code === 0 ? `${name} ok` : `${name} failed badly` };
             },

@@ -54,6 +54,8 @@ export interface DeclaredGate {
     onDemand?: true;
     /** The ad-hoc endpoint accepts a `filter` for it, passed as env `GATE_FILTER` for that one run. */
     filter?: true;
+    /** The end-of-run pass runs it together with the `parallel` gates declared right beside it. */
+    parallel?: true;
 }
 
 export interface BoardJob extends ClaimSkills {

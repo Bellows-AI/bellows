@@ -1,31 +1,19 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { BoardJob, DeclaredGate } from './board/board.js';
-import type { DriverConfig } from './config.js';
 import { parseGateRequest, type GateRequest } from './gate-request.js';
+import type { GateManager } from './gate-manager.js';
 import { createGateAdmission } from './gate-admission.js';
 import { CONTAINER_GONE } from './exec-codes.js';
-import {
-    GateRecordRefused,
-    measuredRun,
-    recordGateRun,
-    type GateEnd,
-    type GateExecution,
-    type GateLedger,
-    type GateMeasure,
-} from './gate-record.js';
+import { GateRecordRefused, recordGateRun, type GateEnd, type GateLedger } from './gate-record.js';
 
 import type { GateRunNote } from './timeout-note.js';
 import type { ConnectionRelay } from './connection-control.js';
 import type { GateTokenRelay } from './gate-token-control.js';
 import type { InputDelivery } from './input-control.js';
 import { attachersOf, createControlChannel, gateRunAttacher } from './control-channel.js';
-import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
-import { TASK_MOUNT } from './task-volume.js';
-import { type DaemonState, type Read, reportTail } from './runner.js';
+import type { DaemonState, Read } from './runner.js';
 import { withDaemonNote } from './dockerd-loss.js';
-import { StepTokenUnanswered, stepLost, type StepBroker } from './step-control.js';
-import type { GateStepRequest } from './supervised-steps.js';
-import type { StepResult } from './supervisor-contract.js';
+import { stepLost, type StepBroker } from './step-control.js';
 import { respondJson } from './http.js';
 import type { PublishRelay } from './publish/publish-control.js';
 import type { ReviewRelay } from './review/review-control.js';
@@ -41,110 +29,8 @@ const HTTP_CONFLICT = 409;
 const HTTP_UNPROCESSABLE = 422;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
 const HTTP_SERVICE_UNAVAILABLE = 503;
-/** What a gate cancelled before it started answers — discarded by the loop that cancelled it. */
-const CANCELLED_EXIT_CODE = 130;
-/** `timeout(1)`'s status: what a gate the supervisor killed at its deadline answers. */
-const TIMEOUT_EXIT_CODE = 124;
-
-/**
- * The gates of an attempt: every declared gate and the `environment.setup` run in the
- * attempt's own task group — the declared image as a gate container beside the task supervisor, on
- * both executors — as one supervised step each (`Runner.runGate`), which the supervisor hands the
- * gate container through the mailbox only the two of them mount. This module owns what the loop and
- * the ad-hoc endpoint ask of that: the per-checkout queue, the setup ledger, the deadline, and the
- * translation of a step's answer into a gate verdict — or into a harness failure, or a lost
- * supervisor, which are no verdict at all.
- *
- * This module is still a client of nothing but the runner and the loopback interface: it imports no
- * board, no database and no core, per this package's zero-dependency rule.
- */
-
-/** What one gate run came back with. `exitCode` is the gate command's own status. */
-export interface GateRun {
-    exitCode: number | null;
-    output: string;
-    /** True when the environment's `setup` command failed: the gate itself never ran. */
-    setupFailed?: true;
-    /** What the run measured around the gate command; present only for a run given an `execution`. */
-    measure?: GateMeasure;
-}
-
-/**
- * The attempt one `acquire` is for: the job whose task group runs the gates. An aborted `signal` (the
- * attempt's stand-down) refuses the acquire.
- */
-export interface GateAttempt {
-    job: BoardJob;
-    signal?: AbortSignal;
-}
-
-/** How one gate run is bounded: the cancel `signal`, and the gate's own declared `timeoutMs`. */
-export interface GateRunOptions {
-    signal?: AbortSignal | undefined;
-    timeoutMs?: number | undefined;
-    /** The ad-hoc request's narrowing, set as env `GATE_FILTER` for this one run; never part of the command. */
-    filter?: string | undefined;
-    /** Records the run: probes the tree inside the queue around it and writes the running row first. */
-    execution?: GateExecution | undefined;
-}
-
-export interface GateManager {
-    /**
-     * Files the attempt under the checkout key with the env its gates get, validating the key and
-     * the image. Idempotent: a re-acquire of the same attempt keeps whether its setup succeeded and
-     * takes the newer env body. The attempt's `gates.setup` runs before the agent starts
-     * (`runSetup`); a setup still pending after it — it failed — runs again before the next gate,
-     * which answers `setupFailed` when it fails.
-     */
-    acquire(key: string, image: string, envBody?: string, attempt?: GateAttempt): Promise<void>;
-    /**
-     * Runs one declared gate in the attempt's gate container. An abort of `signal` cancels the gate
-     * where it stands — the supervisor has the gate container kill it — and the run answers whatever
-     * the cancellation left; the caller discards it. `timeoutMs` is the gate's own declared budget
-     * (`gateDeadlineMs`); setup always runs under the driver default. A lost supervisor rejects
-     * (`stepLost`): no verdict, the attempt's interruption.
-     */
-    runGate(key: string, name: string, command: string, options?: GateRunOptions): Promise<GateRun>;
-    /**
-     * Runs the attempt's `gates.setup` now, before the agent starts, under `timeoutMs`
-     * rather than the gate default; null when the checkout declares none. Always runs — a new
-     * attempt re-runs it, relying on its idempotency. A success clears the pending setup the first
-     * gate would run; a failure leaves it pending, so that gate retries it.
-     */
-    runSetup(key: string, options?: GateRunOptions): Promise<GateRun | null>;
-    /** Forgets the checkout, unless another attempt has taken it over since (`job` is the releaser). */
-    release(key: string, job: BoardJob): void;
-    /** Forgets every checkout — the driver drain. */
-    stop(): Promise<void>;
-}
-
-/** What the manager needs of the runner: one gate execution in the attempt's task group. */
-export interface GateRunner {
-    runGate(job: BoardJob, gate: GateStepRequest, signal?: AbortSignal): Promise<StepResult>;
-}
-
-/** What a gate cancelled before it started answers — discarded by whoever cancelled it. */
-const cancelledRun = (): GateRun => ({ exitCode: CANCELLED_EXIT_CODE, output: '[driver] gate cancelled' });
-
-/** A harness failure, not a verdict: the gate could not be run at all. */
-const gateHarness = (message: string): Error => Object.assign(new Error(message), { code: CONTAINER_GONE });
-
-/**
- * A Stop while the gate still waits its turn answers at once — the run ahead can hold the queue
- * for the whole gate timeout; the queued work itself bails when it starts.
- */
-function answerOnAbort(queued: Promise<GateRun>, signal: AbortSignal, cancelled: GateRun): Promise<GateRun> {
-    let onAbort = (): void => {};
-    const stoppedWhileQueued = new Promise<GateRun>((resolve) => {
-        onAbort = () => resolve(cancelled);
-        signal.addEventListener('abort', onAbort, { once: true });
-    });
-    return Promise.race([queued, stoppedWhileQueued]).finally(() => signal.removeEventListener('abort', onAbort));
-}
 
 const MS_PER_MINUTE = 60_000;
-/** One tree probe around a gate run: a probe that outlasts it reads as unknown, never as a hang of the gate. */
-export const GATE_RUN_PROBE_MS = 15_000;
 
 /** A declared gate's `timeout:` in ms; undefined when it declares none (or the claim carried no positive number). */
 export const declaredTimeoutMs = (gate: DeclaredGate): number | undefined =>
@@ -157,199 +43,6 @@ export const declaredTimeoutMs = (gate: DeclaredGate): number | undefined =>
  * minutes, and the hangup cancels the run, so a longer gate would be killed every time.
  */
 const AD_HOC_MAX_MINUTES = 10;
-
-/** A gate's deadline: its own timeout, capped by DRIVER_JOB_TIMEOUT_MS, else the driver default. */
-export const gateDeadlineMs = (config: { jobTimeoutMs: number }, defaultMs: number, timeoutMs?: number): number =>
-    timeoutMs === undefined ? defaultMs : Math.min(timeoutMs, config.jobTimeoutMs);
-
-/**
- * The per-checkout serialization point: one gate at a time per checkout — two suites in one worktree
- * give flaky verdicts — and the setup in the same turn as the gates.
- */
-export function keyQueue(): <T>(key: string, work: () => Promise<T>) => Promise<T> {
-    const queues = new Map<string, Promise<unknown>>();
-    return (key, work) => {
-        const chained = (queues.get(key) ?? Promise.resolve()).then(work, work);
-        queues.set(
-            key,
-            chained.catch(() => undefined)
-        );
-        return chained;
-    };
-}
-
-/**
- * The env body (`NAME=value` lines, `gateEnvBody`) as the gate step's env. A line is split at its
- * first `=`; the supervisor refuses a name `sh` cannot export, so nothing here is silently dropped.
- */
-export function envBodyRecord(body: string): Record<string, string> {
-    const env: Record<string, string> = Object.create(null);
-    for (const line of body.split('\n')) {
-        if (!line) continue;
-        const eq = line.indexOf('=');
-        if (eq < 0) env[line] = '';
-        else env[line.slice(0, eq)] = line.slice(eq + 1);
-    }
-    return env;
-}
-
-/**
- * A step's answer as a gate verdict: its status and its output's tail, trimmed like a terminal's —
- * or, for a gate the supervisor killed at its deadline, 124 with the deadline named when it said
- * nothing. No exit at all is a harness failure (the gate container never took the request, or was
- * lost mid-run), which rejects: never a verdict. A gate whose GitHub token ask went unanswered rejects
- * as a lost step (`stepLost`) whatever it exited with.
- */
-function gateRunOf(result: StepResult, deadlineMs: number): GateRun {
-    if (result.tokenAskUnanswered) throw new StepTokenUnanswered();
-    const output = reportTail(`${result.stdout}${result.stderr}`.trim());
-    if (result.timedOut) {
-        return { exitCode: TIMEOUT_EXIT_CODE, output: output || `[driver] gate killed after ${deadlineMs}ms` };
-    }
-    if (result.exitCode === null) throw gateHarness(result.stderr.trim() || 'the gate container answered no exit');
-    return { exitCode: result.exitCode, output };
-}
-
-interface SupervisedEntry {
-    /** The checkout key: the worktree under the mount every request names. */
-    key: string;
-    job: BoardJob;
-    envBody: string;
-    /** The `.bellows.yaml` setup command, until it has succeeded once for this attempt. */
-    pendingSetup: string | null;
-}
-
-/** What a re-acquire of the same attempt keeps — whether its setup succeeded; a different attempt starts over. */
-const pendingSetupOf = (prev: SupervisedEntry | undefined, job: BoardJob): string | null =>
-    prev && prev.job.id === job.id && prev.job.leaseToken === job.leaseToken
-        ? prev.pendingSetup
-        : (job.gates?.setup ?? null);
-
-/** The checks an acquire makes before it files anything: an attempt, and the key and image shapes. */
-function assertAcquirable(key: string, image: string, attempt: GateAttempt | undefined): BoardJob {
-    if (attempt?.signal?.aborted) throw gateHarness(`the gate environment of ${key} was cancelled`);
-    if (!attempt?.job)
-        throw gateHarness('the gate manager runs gates in their attempt’s task group, and no job was given');
-    if (!GATE_KEY.test(key)) {
-        throw gateHarness(`refusing to run a gate in a checkout key that is not <uuid>/<repo segment>: ${key}`);
-    }
-    if (!GATE_IMAGE.test(image)) {
-        throw gateHarness(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);
-    }
-    return attempt.job;
-}
-
-/**
- * The gate manager of both executors: a gate run is one supervised step in the
- * attempt's task group, whose gate container runs it in the checkout. Nothing here starts a
- * container, a Job or a cooldown: the gate container lives and ends with its group.
- */
-export function createSupervisedGateManager({
-    config,
-    runner,
-    gateTimeoutMs = config.gateTimeoutMs,
-    probeTimeoutMs = GATE_RUN_PROBE_MS,
-}: {
-    config: DriverConfig;
-    runner: GateRunner;
-    /** The wall-clock cap on ONE gate. A hung gate must fail the gate, not stall the verdict forever. */
-    gateTimeoutMs?: number;
-    /** The cap on one tree probe around a recorded gate. */
-    probeTimeoutMs?: number;
-}): GateManager {
-    const entries = new Map<string, SupervisedEntry>();
-    const serialize = keyQueue();
-
-    /** One command in the checkout's worktree, under `deadlineMs`, as the attempt's gate step. */
-    const exec = async (
-        entry: SupervisedEntry,
-        run: { command: string; deadlineMs: number; signal: AbortSignal | undefined; filter?: string | undefined },
-        setup = false
-    ): Promise<GateRun> => {
-        const gate = {
-            command: run.command,
-            cwd: `${TASK_MOUNT}/${entry.key.split('/')[1]}`,
-            env: {
-                ...envBodyRecord(entry.envBody),
-                ...(run.filter === undefined ? {} : { [GATE_FILTER_ENV]: run.filter }),
-                ...(setup ? { [GATE_SETUP_ENV]: '1' } : {}),
-            },
-            timeoutMs: run.deadlineMs,
-        };
-        return gateRunOf(await runner.runGate(entry.job, gate, run.signal), run.deadlineMs);
-    };
-
-    /**
-     * The queue and cancel discipline every run in a checkout shares — a gate and the pre-agent
-     * setup alike. The entry is read when the run's turn comes, not when it was asked for: an attempt
-     * that took the key over while it waited is the one whose gate container it uses.
-     */
-    const inQueue = (
-        key: string,
-        signal: AbortSignal | undefined,
-        work: (entry: SupervisedEntry) => Promise<GateRun>
-    ): Promise<GateRun> => {
-        if (!entries.has(key)) return Promise.reject(gateHarness(`no gate environment for ${key}`));
-        const cancelled = cancelledRun();
-        if (signal?.aborted) return Promise.resolve(cancelled);
-        const queued = serialize(key, async (): Promise<GateRun> => {
-            if (signal?.aborted) return cancelled;
-            const entry = entries.get(key);
-            if (!entry) throw gateHarness(`no gate environment for ${key}`);
-            return work(entry);
-        });
-        return signal ? answerOnAbort(queued, signal, cancelled) : queued;
-    };
-
-    return {
-        async acquire(key, image, envBody = '', attempt) {
-            const job = assertAcquirable(key, image, attempt);
-            entries.set(key, { key, job, envBody, pendingSetup: pendingSetupOf(entries.get(key), job) });
-        },
-
-        runGate(key, _name, command, { signal, timeoutMs, filter, execution } = {}) {
-            return inQueue(key, signal, async (entry) => {
-                // The worktree persists across the attempt's gates, so setup runs once, before the
-                // first gate, until it succeeds.
-                const pending = entry.pendingSetup;
-                if (pending) {
-                    const setupRun = await exec(entry, { command: pending, deadlineMs: gateTimeoutMs, signal }, true);
-                    if (setupRun.exitCode !== 0) return { ...setupRun, setupFailed: true as const };
-                    if (entry.pendingSetup === pending) entry.pendingSetup = null;
-                }
-                const run = { command, deadlineMs: gateDeadlineMs(config, gateTimeoutMs, timeoutMs), signal, filter };
-                if (!execution) return exec(entry, run);
-                return (
-                    (await measuredRun(execution, { signal, probeTimeoutMs }, () => exec(entry, run))) ?? cancelledRun()
-                );
-            });
-        },
-
-        runSetup(key, { signal, timeoutMs } = {}) {
-            const owner = entries.get(key);
-            if (!owner) return Promise.reject(gateHarness(`no gate environment for ${key}`));
-            const setup = owner.job.gates?.setup;
-            if (!setup) return Promise.resolve(null);
-            return inQueue(key, signal, async (entry) => {
-                const run = await exec(entry, { command: setup, deadlineMs: timeoutMs ?? gateTimeoutMs, signal }, true);
-                // A setup queued for one attempt never settles another's.
-                const current = entries.get(key);
-                if (current?.job.leaseToken === owner.job.leaseToken) {
-                    current.pendingSetup = run.exitCode === 0 ? null : setup;
-                }
-                return run;
-            });
-        },
-
-        release(key, job) {
-            if (entries.get(key)?.job.leaseToken === job.leaseToken) entries.delete(key);
-        },
-
-        async stop() {
-            entries.clear();
-        },
-    };
-}
 
 /**
  * The ad-hoc channel: a tiny HTTP server the RUNNER's agent calls to run one declared gate and
@@ -468,11 +161,6 @@ export interface GateServer {
     listen(): Promise<number>;
     close(): Promise<void>;
 }
-
-/** The env name a filter reaches the gate command as. */
-const GATE_FILTER_ENV = 'GATE_FILTER';
-/** Tells the gate shell the run is `environment.setup`: see scripts/gate-shell.sh. */
-const GATE_SETUP_ENV = 'FACTORY_GATE_SETUP';
 
 /** Why an ad-hoc call of `gate` answers 422, or null: a timeout past what the call can wait, a filter it did not opt into. */
 const adHocRefusal = (gate: DeclaredGate, filter: string | undefined): string | null => {

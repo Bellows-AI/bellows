@@ -2,7 +2,8 @@ import type { PhaseChain } from './loop-phase-checkpoints.js';
 import type { Board, BoardJob, LeaseState } from '../board/board.js';
 import type { DriverConfig } from '../config.js';
 import type { AdoptedRun, LiveRun, RunSession, Runner } from '../runner.js';
-import type { GateManager, GateServer } from '../gates.js';
+import type { GateManager } from '../gate-manager.js';
+import type { GateServer } from '../gates.js';
 import type { JobState } from './loop-attempt.js';
 import type { GateSession } from './loop-gates.js';
 

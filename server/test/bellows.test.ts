@@ -61,6 +61,14 @@ describe('parseBellows: valid documents', () => {
         expect(() => parseBellows(`${EXAMPLE}\n           filter: yes`)).toThrow(/filter must be "true"/);
     });
 
+    it('reads a parallel gate, omits parallel when a gate declares none, and refuses a non-true value', () => {
+        expect(parseBellows(`${EXAMPLE}\n           parallel: true`)?.gates).toEqual([
+            { name: 'test', command: 'npm test', parallel: true },
+        ]);
+        expect('parallel' in (parseBellows(EXAMPLE)?.gates[0] ?? {})).toBe(false);
+        expect(() => parseBellows(`${EXAMPLE}\n           parallel: yes`)).toThrow(/parallel must be "true"/);
+    });
+
     it.each([
         ['an empty setup', '    setup: ""', /line 3: setup is empty/],
         ['a valueless setup', '    setup:', /line 3: setup takes a value/],
@@ -380,9 +388,9 @@ describe('parseBellows: rejects malformed structure, invalid gates and limits', 
             /line 6: on_demand must be "true"/,
         ]),
         [
-            'an unknown gate field, naming timeout, on_demand and filter among the fields read',
+            'an unknown gate field, naming timeout, on_demand, filter and parallel among the fields read',
             `${EXAMPLE}\n           retries: 2`,
-            /unknown gate field "retries" — only name, command, timeout, on_demand and filter are read/,
+            /unknown gate field "retries" — only name, command, timeout, on_demand, filter and parallel are read/,
         ],
         [
             'duplicate gate names',

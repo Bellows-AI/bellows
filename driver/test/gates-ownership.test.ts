@@ -2,7 +2,8 @@ import { request as httpRequest, IncomingMessage } from 'node:http';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { createGateServer, createSupervisedGateManager, type GateRunner } from '../src/gates.js';
+import { createSupervisedGateManager, type GateRunner } from '../src/gate-manager.js';
+import { createGateServer } from '../src/gates.js';
 import type { StepResult } from '../src/supervisor-contract.js';
 
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { createSupervisedGateManager, type GateManager } from '../src/gates.js';
+import { createSupervisedGateManager, type GateManager } from '../src/gate-manager.js';
 import { newJobState } from '../src/loop/loop-attempt.js';
 import { recordEnding } from '../src/loop/loop-phase.js';
 import { runDeclaredGates, type GateSession } from '../src/loop/loop-gates.js';

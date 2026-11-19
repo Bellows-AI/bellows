@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import type { BoardJob, DeclaredGate } from './board/board.js';
-import { envBodyRecord } from './gates.js';
+import { envBodyRecord } from './gate-manager.js';
 
 /**
  * The identity of one gate run's configuration: the command, its timeout, the image,

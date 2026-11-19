@@ -25,6 +25,7 @@
         "driver/test/executor-images.test.ts",
         "driver/test/factory-wrappers.test.ts",
         "driver/test/fake-model-endpoint.test.ts",
+        "driver/test/gate-loop-run.test.ts",
         "driver/test/git-harden.test.ts",
         "driver/test/github-credential.test.ts",
         "driver/test/helper-receipts.test.ts",
