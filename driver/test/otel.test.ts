@@ -51,8 +51,12 @@ describe('the driver OTEL bootstrap', () => {
     });
 
     it('fails the start rather than export unscrubbed URLs when the tracer provider hides its processors', () => {
-        trace.disable();
+        vi.spyOn(trace, 'getTracerProvider').mockReturnValue({
+            getDelegate: () => ({}),
+            getTracer: () => ({}),
+        } as never);
         expect(() => startOtel({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4318' })).toThrow(/cannot scrub URLs/);
         expect(sdk.constructed).toBe(1);
+        vi.restoreAllMocks();
     });
 });
