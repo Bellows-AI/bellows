@@ -44,7 +44,9 @@ function rendered(pools: (typeof POOL)[], prefixes: string[]): Rendered {
         '{{ printf "!%s.exists(p, request.namespace.startsWith(p))" (toJson $prefixes) | quote }}',
         JSON.stringify(`!${JSON.stringify(prefixes)}.exists(p, request.namespace.startsWith(p))`)
     );
-    out = substitute(out, '{{ toJson $pools | quote }}', JSON.stringify(JSON.stringify(pools)));
+    // The chart's shape: every map value a list(string), the key and value one element each.
+    const literal = pools.map((p) => ({ key: [p.key], names: p.names, value: [p.value] }));
+    out = substitute(out, '{{ toJson $pools | quote }}', JSON.stringify(JSON.stringify(literal)));
     const union = [...new Set(pools.flatMap((p) => p.names))].sort();
     out = substitute(out, '{{ toJson $sandboxRuntimeClasses | quote }}', JSON.stringify(JSON.stringify(union)));
     out = out.replace(/^[ \t]*\{\{[^\n]*\}\}[ \t]*\n/gm, '').replace(/\{\{[^\n]*?\}\}/g, 'x');
@@ -58,6 +60,18 @@ describe('the sandbox-pool admission policy', () => {
     const policy = () => rendered([POOL, OTHER], ['gke-managed-']);
     const refused = (spec: Record<string, unknown>, request: unknown = CREATE, oldObject: unknown = null) =>
         refusals(policy(), pod(spec), request, oldObject);
+
+    // The apiserver type-checks every expression at install: a literal mixing value types (a string
+    // beside a list) fails to compile, and the install with it. Every expression must compile.
+    it('compiles every expression, message and match condition', () => {
+        const spec = policy();
+        const expressions = [
+            ...spec.matchConditions.map((m) => m.expression),
+            ...spec.variables.map((v) => v.expression),
+            ...spec.validations.flatMap((v) => [v.expression, ...(v.messageExpression ? [v.messageExpression] : [])]),
+        ];
+        for (const expression of expressions) expect(() => parse(expression), expression).not.toThrow();
+    });
 
     it('matches pods on create and update, no subresource', () => {
         expect(template).not.toBe('');

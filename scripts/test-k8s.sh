@@ -1489,7 +1489,7 @@ expect_contains 'the sandbox-pool policy matches pods alone, on create and updat
 expect_contains 'the sandbox-pool policy fails closed' "$pool_policy" 'failurePolicy: Fail'
 expect_contains 'the sandbox-pool binding denies' "$pool_policy" 'validationActions: [Deny]'
 expect_contains 'the sandbox-pool policy carries the pools as CEL' "$pool_policy" \
-    'expression: "[{\"key\":\"sandbox.example/runtime\",\"names\":[\"vm\",\"shared\"],\"value\":\"microvm\"}]"'
+    'expression: "[{\"key\":[\"sandbox.example/runtime\"],\"names\":[\"vm\",\"shared\"],\"value\":[\"microvm\"]}]"'
 expect_contains 'the sandbox-pool policy refuses a pinned spec.nodeName without a sandbox RuntimeClass' \
     "$pool_policy" 'variables.runtimeClass in variables.sandboxRuntimeClasses'
 expect_contains 'the default exempt names sit in the binding selector' "$pool_policy" 'operator: NotIn

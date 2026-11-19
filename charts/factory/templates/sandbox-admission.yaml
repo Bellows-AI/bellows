@@ -22,7 +22,7 @@ Kata (driver/src/k8s/k8s-runtime-class.ts). docs/kubernetes-limits.md states the
 {{- $pools := list }}
 {{- $sandboxRuntimeClasses := list }}
 {{- range .Values.isolation.sandboxPools }}
-{{- $pools = append $pools (dict "key" .taint.key "value" (toString (dig "value" "" .taint)) "names" .runtimeClassNames) }}
+{{- $pools = append $pools (dict "key" (list .taint.key) "value" (list (toString (dig "value" "" .taint))) "names" .runtimeClassNames) }}
 {{- $sandboxRuntimeClasses = concat $sandboxRuntimeClasses .runtimeClassNames }}
 {{- end }}
 {{- $sandboxRuntimeClasses = $sandboxRuntimeClasses | uniq | sortAlpha }}
@@ -53,7 +53,9 @@ spec:
         - name: not-exempt
           expression: {{ printf "!%s.exists(p, request.namespace.startsWith(p))" (toJson $prefixes) | quote }}
     variables:
-        # Each pool: its taint key and value ('' for none) and the RuntimeClasses its pods may name.
+        # Each pool: its taint key and value ('' for none), each a one-element list, and the
+        # RuntimeClasses its pods may name. Every value a list(string): the apiserver's type checker
+        # refuses a map literal that mixes a string with a list.
         - name: pools
           expression: {{ toJson $pools | quote }}
         - name: sandboxRuntimeClasses
@@ -66,15 +68,15 @@ spec:
         - name: targeted
           expression: >-
               variables.pools.filter(p, variables.tolerations.exists(t,
-                (has(t.key) && t.key != '' ? t.key == p.key : has(t.operator) && t.operator == 'Exists') &&
-                ((has(t.operator) && t.operator == 'Exists') || (has(t.value) ? t.value : '') == p.value)))
+                (has(t.key) && t.key != '' ? t.key == p.key[0] : has(t.operator) && t.operator == 'Exists') &&
+                ((has(t.operator) && t.operator == 'Exists') || (has(t.value) ? t.value : '') == p.value[0])))
         - name: unsandboxed
           expression: "variables.targeted.filter(p, !(variables.runtimeClass in p.names))"
     validations:
         - expression: "size(variables.unsandboxed) == 0"
           message: 'a pod that tolerates a sandbox pool taint must run under one of its RuntimeClasses (isolation.sandboxPools)'
           messageExpression: >-
-              'a pod that tolerates the sandbox taint ' + variables.unsandboxed[0].key +
+              'a pod that tolerates the sandbox taint ' + variables.unsandboxed[0].key[0] +
               ' must run under one of its RuntimeClasses (isolation.sandboxPools)'
         - expression: >-
               !has(object.spec.nodeName) || object.spec.nodeName == '' ||

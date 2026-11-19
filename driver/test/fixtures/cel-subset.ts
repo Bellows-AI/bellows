@@ -4,7 +4,10 @@
  * `all`/`exists`/`filter`/`map` macros (over a list, or a map's keys) and the string `matches`/`startsWith`/`endsWith`/`contains`.
  * Anything outside it throws at parse time, so a policy rule written in more CEL than this knows
  * fails the suite instead of passing unevaluated. A field that is absent throws when selected, as
- * the apiserver's does, and a throwing validation is a refusal (`failurePolicy: Fail`).
+ * the apiserver's does, and a throwing validation is a refusal (`failurePolicy: Fail`). A list or
+ * map literal whose elements are not one type fails to parse, as the apiserver's type checker fails
+ * it at install ("expected type 'string' but found 'list(string)'"), unless they are wrapped in
+ * `dyn()`.
  */
 
 type Node =
@@ -40,7 +43,51 @@ function tokenize(src: string): string[] {
 
 const MACROS = new Set(['all', 'exists', 'filter', 'map']);
 const METHODS = new Set(['matches', 'startsWith', 'endsWith', 'contains']);
-const FUNCTIONS = new Set(['has', 'size']);
+const FUNCTIONS = new Set(['has', 'size', 'dyn']);
+
+/** A literal's static type, as far as the literal states it: anything else is `dyn`. */
+type CelType =
+    | { k: 'dyn' }
+    | { k: 'prim'; name: string }
+    | { k: 'list'; of: CelType }
+    | { k: 'map'; key: CelType; of: CelType };
+
+const DYN: CelType = { k: 'dyn' };
+
+function typeName(t: CelType): string {
+    if (t.k === 'dyn') return 'dyn';
+    if (t.k === 'prim') return t.name;
+    if (t.k === 'list') return `list(${typeName(t.of)})`;
+    return `map(${typeName(t.key)}, ${typeName(t.of)})`;
+}
+
+/** The one type two elements of a literal share, or the checker's refusal. */
+function join(a: CelType, b: CelType): CelType {
+    if (a.k === 'dyn') return b;
+    if (b.k === 'dyn') return a;
+    if (a.k === 'prim' && b.k === 'prim' && a.name === b.name) return a;
+    if (a.k === 'list' && b.k === 'list') return { k: 'list', of: join(a.of, b.of) };
+    if (a.k === 'map' && b.k === 'map') return { k: 'map', key: join(a.key, b.key), of: join(a.of, b.of) };
+    throw new Error(`cel-subset: expected type '${typeName(a)}' but found '${typeName(b)}'`);
+}
+
+function literalType(node: Node): CelType {
+    if (node.k === 'lit') {
+        if (typeof node.v === 'string') return { k: 'prim', name: 'string' };
+        if (typeof node.v === 'number') return { k: 'prim', name: 'int' };
+        if (typeof node.v === 'boolean') return { k: 'prim', name: 'bool' };
+        return { k: 'prim', name: 'null_type' };
+    }
+    if (node.k === 'list') return { k: 'list', of: node.items.map(literalType).reduce(join, DYN) };
+    if (node.k === 'map') {
+        return {
+            k: 'map',
+            key: node.entries.map(([key]) => literalType(key)).reduce(join, DYN),
+            of: node.entries.map(([, value]) => literalType(value)).reduce(join, DYN),
+        };
+    }
+    return DYN;
+}
 
 export function parse(src: string): Node {
     const tokens = tokenize(src);
@@ -77,7 +124,9 @@ export function parse(src: string): Node {
                 if (peek() === ',') take(',');
             }
             take(']');
-            return { k: 'list', items };
+            const literal: Node = { k: 'list', items };
+            literalType(literal);
+            return literal;
         }
         if (t === '{') {
             const entries: [Node, Node][] = [];
@@ -88,7 +137,9 @@ export function parse(src: string): Node {
                 if (peek() === ',') take(',');
             }
             take('}');
-            return { k: 'map', entries };
+            const literal: Node = { k: 'map', entries };
+            literalType(literal);
+            return literal;
         }
         if (t.startsWith('#')) return { k: 'lit', v: Number(t.slice(1)) };
         if (t.startsWith("'")) return { k: 'lit', v: t.slice(1).replace(/\\(.)/g, '$1') };
@@ -220,6 +271,7 @@ function call(node: Extract<Node, { k: 'call' }>, scope: Scope): unknown {
         const owner = evaluate(target.of, scope);
         return isObject(owner) && owner[target.field] !== undefined;
     }
+    if (fn === 'dyn') return evaluate(args[0]!, scope);
     if (fn === 'size') {
         const v = evaluate(args[0]!, scope);
         if (typeof v === 'string' || Array.isArray(v)) return v.length;
