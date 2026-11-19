@@ -52,3 +52,4 @@ npm run verify:ui
 ```
 
 Every command, the build coupling and the map to the code: [AGENTS.md](AGENTS.md).
+
