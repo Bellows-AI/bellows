@@ -68,9 +68,11 @@ function declaredRefusal(runnerClass: RunnerClass, targeted: readonly SandboxPoo
  * Refuses boot, naming every class that needs a Kata RuntimeClass and is not proven on one: a docker
  * class (it runs dockerd privileged), and any class tolerating a sandbox pool's taint (it lands on
  * the pool, and every pod of the class — runner, gate, service sidecars, reader and export Jobs —
- * runs task code there). A pool class must also name a RuntimeClass the pool lists. Kata only: a
- * gVisor (`runsc`) handler is refused too. Each distinct RuntimeClass is read once; no read without
- * such a class.
+ * runs task code there). A pool class must also name a RuntimeClass the pool lists. And every
+ * RuntimeClass a pool lists, whatever the classes declare: a RuntimeClass's `scheduling` can add the
+ * pool's toleration at admission, and admission admits any listed name, so a listed name reaches
+ * pool pods with no class tolerating anything. Kata only: a gVisor (`runsc`) handler is refused too.
+ * Each distinct RuntimeClass is read once; no read without a docker class or a pool.
  */
 export async function assertRunnerClassRuntimes(
     classes: Readonly<Record<string, RunnerClass>>,
@@ -85,7 +87,7 @@ export async function assertRunnerClassRuntimes(
         reads.set(name, read);
         return read;
     };
-    const refusals = await Promise.all(
+    const classRefusals = Promise.all(
         Object.values(classes).map(async (runnerClass) => {
             const targeted = pools.filter((pool) =>
                 (runnerClass.tolerations ?? []).some((toleration) => toleratesSandbox(toleration, pool.taint))
@@ -106,10 +108,22 @@ export async function assertRunnerClassRuntimes(
             return `runner class ${name}: RuntimeClass "${runtimeClassName ?? ''}" — ${reason} (${why})`;
         })
     );
-    const refused = refusals.filter((line): line is string => line !== null);
+    const listed = [...new Set(pools.flatMap((pool) => pool.runtimeClassNames))];
+    const poolRefusals = Promise.all(
+        listed.map(async (runtimeClassName) => {
+            const reason = await readOnce(runtimeClassName);
+            if (reason === null) return null;
+            const keys = pools
+                .filter((pool) => pool.runtimeClassNames.includes(runtimeClassName))
+                .map((pool) => `"${pool.taint.key}"`)
+                .join(', ');
+            return `sandbox pool tainted ${keys}: RuntimeClass "${runtimeClassName}" — ${reason} (admission admits it on the pool)`;
+        })
+    );
+    const refused = [...(await classRefusals), ...(await poolRefusals)].filter((line): line is string => line !== null);
     if (refused.length > 0) {
         throw new Error(
-            `a docker class or a class that targets a sandbox pool needs a Kata (microVM) RuntimeClass: ${refused.join('; ')}`
+            `a docker class, a class that targets a sandbox pool and every RuntimeClass a pool lists need a Kata (microVM) RuntimeClass: ${refused.join('; ')}`
         );
     }
 }

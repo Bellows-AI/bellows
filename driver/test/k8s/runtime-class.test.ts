@@ -37,6 +37,9 @@ const runtimeClass = (handler: unknown): K8sResponse => ({
     status: 200,
     body: JSON.stringify({ apiVersion: 'node.k8s.io/v1', kind: 'RuntimeClass', metadata: { name: 'x' }, handler }),
 });
+/** Every RuntimeClass POOL lists, proven Kata; and the reads that proves it. */
+const POOL_ON_KATA = { vm: runtimeClass('kata-clh'), shared: runtimeClass('kata') };
+const POOL_READS = POOL.runtimeClassNames.map((name) => `GET /apis/node.k8s.io/v1/runtimeclasses/${name}`).sort();
 /** A fake apiserver answering each RuntimeClass GET from `answers`, recording the paths read. */
 const apiserver = (answers: Record<string, K8sResponse | Error>) => {
     const paths: string[] = [];
@@ -111,36 +114,36 @@ describe('the boot check of a docker class RuntimeClass', () => {
  */
 describe('the boot check of a class that targets a sandbox pool', () => {
     it('refuses a non-docker class that tolerates a sandbox taint and names no RuntimeClass', async () => {
-        const { request, paths } = apiserver({});
+        const { request, paths } = apiserver(POOL_ON_KATA);
         await expect(check(classesOf({ standard: {}, isolated: pooled(null) }, [POOL]), request)).rejects.toThrow(
             /runner class isolated: .*names none.*sandbox\.example\/runtime/
         );
-        expect(paths).toEqual([]);
+        expect(paths.sort()).toEqual(POOL_READS);
     });
 
-    it("refuses a pool class whose RuntimeClass is not in the pool's list, reading nothing", async () => {
-        const { request, paths } = apiserver({ other: runtimeClass('kata-clh') });
+    it("refuses a pool class whose RuntimeClass is not in the pool's list, never reading it", async () => {
+        const { request, paths } = apiserver({ ...POOL_ON_KATA, other: runtimeClass('kata-clh') });
         await expect(check(classesOf({ standard: {}, isolated: pooled('other') }, [POOL]), request)).rejects.toThrow(
             /runner class isolated: RuntimeClass "other" — .*sandbox\.example\/runtime.*admission refuses its pods/
         );
-        expect(paths).toEqual([]);
+        expect(paths.sort()).toEqual(POOL_READS);
     });
 
     it.each(['runc', 'gvisor', 'runsc'])('refuses a pool class whose RuntimeClass handler is %s', async (handler) => {
-        const { request } = apiserver({ vm: runtimeClass(handler) });
+        const { request } = apiserver({ ...POOL_ON_KATA, vm: runtimeClass(handler) });
         await expect(check(classesOf({ standard: {}, isolated: pooled('vm') }, [POOL]), request)).rejects.toThrow(
             new RegExp(`runner class isolated: RuntimeClass "vm" — its handler "${handler}" is not Kata`)
         );
     });
 
-    it('passes a pool class whose RuntimeClass handler is kata-clh, with one read', async () => {
-        const { request, paths } = apiserver({ vm: runtimeClass('kata-clh') });
+    it('passes a pool class whose RuntimeClass handler is kata-clh, reading each pool name once', async () => {
+        const { request, paths } = apiserver(POOL_ON_KATA);
         await check(classesOf({ standard: {}, isolated: pooled('vm') }, [POOL]), request);
-        expect(paths).toEqual(['GET /apis/node.k8s.io/v1/runtimeclasses/vm']);
+        expect(paths.sort()).toEqual(POOL_READS);
     });
 
     it('treats a keyless Exists toleration as tolerating the pool', async () => {
-        const { request } = apiserver({});
+        const { request } = apiserver(POOL_ON_KATA);
         const anything = pooled(null, [{ operator: 'Exists' }]);
         await expect(check(classesOf({ standard: {}, isolated: anything }, [POOL]), request)).rejects.toThrow(
             /runner class isolated: .*names none/
@@ -148,7 +151,7 @@ describe('the boot check of a class that targets a sandbox pool', () => {
     });
 
     it('treats an Exists toleration of the pool key, whatever its value, as tolerating the pool', async () => {
-        const { request } = apiserver({});
+        const { request } = apiserver(POOL_ON_KATA);
         const anyValue = pooled(null, [{ key: POOL.taint.key, operator: 'Exists' }]);
         await expect(check(classesOf({ standard: {}, isolated: anyValue }, [POOL]), request)).rejects.toThrow(
             /runner class isolated: .*names none/
@@ -156,14 +159,14 @@ describe('the boot check of a class that targets a sandbox pool', () => {
     });
 
     it('ignores a toleration of another key or another value (Equal)', async () => {
-        const { request, paths } = apiserver({});
+        const { request, paths } = apiserver(POOL_ON_KATA);
         const elsewhere = [
             { key: 'other.example/pool', operator: 'Exists' },
             { key: POOL.taint.key, operator: 'Equal', value: 'gvisor' },
             { key: POOL.taint.key, value: 'gvisor' },
         ];
         await check(classesOf({ standard: {}, isolated: pooled(null, elsewhere) }, [POOL]), request);
-        expect(paths).toEqual([]);
+        expect(paths.sort()).toEqual(POOL_READS);
     });
 
     it.each([
@@ -178,21 +181,77 @@ describe('the boot check of a class that targets a sandbox pool', () => {
         ['a handler that is not a string', runtimeClass(7), 'unexpected shape'],
         ['a failed read', new Error('connect ECONNREFUSED'), 'ECONNREFUSED'],
     ])('refuses the pool class at boot on %s', async (_, answer, reason) => {
-        const { request } = apiserver({ vm: answer });
+        const { request } = apiserver({ ...POOL_ON_KATA, vm: answer });
         const config = classesOf({ standard: {}, isolated: pooled('vm') }, [POOL]);
         await expect(check(config, request)).rejects.toThrow(/runner class isolated: RuntimeClass "vm"/);
         await expect(check(config, request)).rejects.toThrow(reason);
     });
 
     it('reads each RuntimeClass once when a docker class and a pool class share it', async () => {
-        const { request, paths } = apiserver({ shared: runtimeClass('kata') });
+        const { request, paths } = apiserver(POOL_ON_KATA);
         await check(classesOf({ standard: {}, dind: docker('shared'), isolated: pooled('shared') }, [POOL]), request);
-        expect(paths).toEqual(['GET /apis/node.k8s.io/v1/runtimeclasses/shared']);
+        expect(paths.sort()).toEqual(POOL_READS);
     });
 
     it('reads nothing without pools or docker classes, even for a class that tolerates a taint', async () => {
         const { request, paths } = apiserver({});
         await check(classesOf({ standard: {}, isolated: pooled(null) }), request);
         expect(paths).toEqual([]);
+    });
+});
+
+/*
+ * A RuntimeClass's `scheduling` can add a pool's toleration and nodeSelector at admission, so a pod
+ * can land on a sandbox pool without its class tolerating anything. Admission admits any name the
+ * pool lists, so every listed name must itself be proven Kata at boot, whatever the classes say.
+ */
+describe('the boot check of every RuntimeClass a sandbox pool lists', () => {
+    it('refuses a pool listing a runc RuntimeClass even when no class tolerates its taint', async () => {
+        const { request, paths } = apiserver({ ...POOL_ON_KATA, vm: runtimeClass('runc') });
+        await expect(check(classesOf({ standard: {} }, [POOL]), request)).rejects.toThrow(
+            /sandbox pool tainted "sandbox\.example\/runtime": RuntimeClass "vm" — its handler "runc" is not Kata/
+        );
+        expect(paths.sort()).toEqual(POOL_READS);
+    });
+
+    it('refuses a class naming that RuntimeClass with no tolerations, naming the pool and the RuntimeClass', async () => {
+        const { request } = apiserver({ ...POOL_ON_KATA, vm: runtimeClass('runc') });
+        await expect(
+            check(classesOf({ standard: {}, scheduled: { runtimeClassName: 'vm' } }, [POOL]), request)
+        ).rejects.toThrow(/sandbox pool tainted "sandbox\.example\/runtime": RuntimeClass "vm" — .*not Kata/);
+    });
+
+    it.each([
+        ['a missing RuntimeClass', { status: 404, body: '{"kind":"Status","reason":"NotFound"}' }, 'does not exist'],
+        [
+            'a forbidden read',
+            { status: 403, body: '{"kind":"Status","message":"forbidden","reason":"Forbidden"}' },
+            '403',
+        ],
+        ['a body that is not JSON', { status: 200, body: '<html>' }, 'not JSON'],
+        ['a RuntimeClass without a handler', runtimeClass(undefined), 'unexpected shape'],
+        ['a handler that is not a string', runtimeClass(7), 'unexpected shape'],
+        ['a failed read', new Error('connect ECONNREFUSED'), 'ECONNREFUSED'],
+    ])('refuses a pool name at boot on %s, with no class on the pool', async (_, answer, reason) => {
+        const { request } = apiserver({ ...POOL_ON_KATA, shared: answer });
+        const config = classesOf({ standard: {} }, [POOL]);
+        await expect(check(config, request)).rejects.toThrow(/sandbox pool tainted ".*": RuntimeClass "shared"/);
+        await expect(check(config, request)).rejects.toThrow(reason);
+    });
+
+    it('reads a name two pools list once, and passes when every listed name is Kata', async () => {
+        const other = { taint: { key: 'other.example/pool', value: '' }, runtimeClassNames: ['vm'] };
+        const { request, paths } = apiserver(POOL_ON_KATA);
+        await check(classesOf({ standard: {}, dind: docker('vm') }, [POOL, other]), request);
+        expect(paths.sort()).toEqual(POOL_READS);
+    });
+
+    it("refuses a class naming one pool's RuntimeClass while tolerating another pool that does not list it", async () => {
+        const other = { taint: { key: 'other.example/pool', value: 'microvm' }, runtimeClassNames: ['elsewhere'] };
+        const { request } = apiserver({ ...POOL_ON_KATA, elsewhere: runtimeClass('kata') });
+        const crossed = pooled('elsewhere');
+        await expect(check(classesOf({ standard: {}, crossed }, [POOL, other]), request)).rejects.toThrow(
+            /runner class crossed: RuntimeClass "elsewhere" — the sandbox pool tainted "sandbox\.example\/runtime" does not list it/
+        );
     });
 });
