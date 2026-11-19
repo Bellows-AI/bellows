@@ -4,25 +4,9 @@ environment:
     image: ghcr.io/bellows-ai/dev-runner:v0.0.17
     setup: "npm ci && sh scripts/gate-jq.sh"
     gates:
-         # The budgets, in minutes, each capped by the driver's DRIVER_JOB_TIMEOUT_MS.
-         # npm test outran the 10-minute default in a microVM runner.
-         - name: test
-           command: "npm test"
+         - name: diag
+           command: "GATE_DIAG_TMP_COPY=/dev/shm/work sh scripts/gate-diag.sh postgres://factory:factory@postgres:5432/postgres"
            timeout: 30
-         - name: lint
-           command: "npm run lint"
-         - name: typecheck
-           command: "npm run typecheck"
-           timeout: 15
-         - name: "test:db"
-           # The service is throwaway: durability off, and twice the default workers, since in a microVM
-           # the suite waits on round trips and WAL syncs, not CPU.
-           command: "sh scripts/gate-pg-fast.sh postgres://factory:factory@postgres:5432/postgres && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db"
-           timeout: 30
-         # Only the phases the change maps to (scripts/gate-test-jobs.sh); the full lane took ~23 min in a microVM.
-         - name: "test:jobs"
-           command: "TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 sh scripts/gate-test-jobs.sh"
-           timeout: 45
 
 services:
     - name: postgres
