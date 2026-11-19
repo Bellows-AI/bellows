@@ -35,9 +35,9 @@ ARG TARGETARCH
 
 # The docker CLI alone, from the static bundle (the daemon is the class's sidecar). A newer CLI
 # negotiates the API version down to the sidecar's.
-ARG DOCKER_VERSION=29.9.3
-ARG DOCKER_SHA256_amd64=3fb5d1f13014c18cc54945bc177c58a9056a482dada031e17d12cf2e6922c973
-ARG DOCKER_SHA256_arm64=1b27fd739378ef938401e81ce5afb73b7ad7432d4f598814a9ff5f826bb464d2
+ARG DOCKER_VERSION=29.10.0
+ARG DOCKER_SHA256_amd64=7c1ebadc65c716cdc6d35fc78759ed0e4317debf43c21dd12f066f2006999def
+ARG DOCKER_SHA256_arm64=6e5159e8b5615e0c0c2954a2a1a2a12bc65f5d9b603595dba24a10cb367408cd
 RUN case "$TARGETARCH" in amd64) sha="$DOCKER_SHA256_amd64" arch=x86_64 ;; arm64) sha="$DOCKER_SHA256_arm64" arch=aarch64 ;; *) echo "no docker for $TARGETARCH" >&2; exit 1 ;; esac \
     && curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/docker.tgz \
         "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_VERSION}.tgz" \
@@ -68,9 +68,9 @@ RUN case "$TARGETARCH" in amd64) sha="$BUILDX_SHA256_amd64" ;; arm64) sha="$BUIL
     && chmod 0755 /usr/local/lib/docker/cli-plugins/docker-buildx \
     && docker buildx version
 
-ARG HELM_VERSION=3.22.1
-ARG HELM_SHA256_amd64=896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
-ARG HELM_SHA256_arm64=4c29e286b279d170fa048ddfc3e4e83dcd069ca9c52102766ba672d7149e694d
+ARG HELM_VERSION=4.3.2
+ARG HELM_SHA256_amd64=d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
+ARG HELM_SHA256_arm64=df31cb61680ef728f82c770e5280dd565617bee6b039d37e85c677288be4bbb0
 RUN case "$TARGETARCH" in amd64) sha="$HELM_SHA256_amd64" ;; arm64) sha="$HELM_SHA256_arm64" ;; *) echo "no helm for $TARGETARCH" >&2; exit 1 ;; esac \
     && curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/helm.tar.gz \
         "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${TARGETARCH}.tar.gz" \
