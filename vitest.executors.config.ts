@@ -1,32 +1,17 @@
-import { defineConfig } from 'vitest/config';
+import root from './vitest.config.ts';
 
 /**
- * Focused, offline coverage gate for the board/driver/telemetry control plane. Database lease
- * semantics remain in `npm run test:db`; real Docker and cluster boundaries remain in
- * `npm run test:jobs` and `npm run test:k8s`.
+ * The coverage thresholds of the board/driver/telemetry control plane, over the root config's
+ * projects, pool and fork cap: `npm run test:coverage:executors` passes `test:executors`' files.
+ * Database lease semantics remain in `npm run test:db`; real Docker and cluster boundaries remain
+ * in `npm run test:jobs` and `npm run test:k8s`. Its own pool (shared forks, an unread fork cap,
+ * spawning files beside in-process ones) timed out a different spawn-heavy test in half its runs.
  */
-export default defineConfig({
+export default {
+    ...root,
     test: {
-        include: [
-            'driver/test/**/*.test.ts',
-            'server/test/routes.jobs.test.ts',
-            'server/test/routes.ingest.test.ts',
-            'server/test/routes.telemetry.test.ts',
-            'server/test/telemetry.fixture-client.test.ts',
-            'server/test/telemetry.otlp.test.ts',
-            'core/test/telemetry*.test.ts',
-        ],
-        pool: 'forks',
-        poolOptions: {
-            forks: {
-                minWorkers: 1,
-                maxWorkers: 2,
-            },
-        },
-        testTimeout: 30_000,
-        hookTimeout: 30_000,
-        isolate: false,
-        watchExclude: ['**/node_modules/**', '**/dist/**'],
+        ...root.test,
+        // Replaced, not merged: the root's package-wide include would dilute the thresholds.
         coverage: {
             provider: 'v8',
             reporter: ['text', 'lcov'],
@@ -55,4 +40,4 @@ export default defineConfig({
             },
         },
     },
-});
+};
