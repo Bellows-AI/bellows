@@ -1,24 +1,15 @@
 import { trace } from '@opentelemetry/api';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-
-const sdk = vi.hoisted(() => ({ constructed: 0 }));
-vi.mock('@opentelemetry/sdk-node', () => ({
-    NodeSDK: class {
-        constructor() {
-            sdk.constructed += 1;
-        }
-        start() {}
-        shutdown() {
-            return Promise.resolve();
-        }
-    },
-}));
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 
 const { SERVICE_NAME, otelEnabled, startOtel } = await import('../src/otel.js');
 
+const started = vi.spyOn(NodeSDK.prototype, 'start').mockImplementation(() => undefined);
+
 afterEach(() => {
-    sdk.constructed = 0;
+    started.mockClear();
 });
+afterAll(() => started.mockRestore());
 
 describe('the driver OTEL bootstrap', () => {
     it('names the driver service', () => {
@@ -47,16 +38,16 @@ describe('the driver OTEL bootstrap', () => {
 
     it('starts nothing and constructs no exporter without an endpoint', () => {
         expect(startOtel({})).toBeNull();
-        expect(sdk.constructed).toBe(0);
+        expect(started).not.toHaveBeenCalled();
     });
 
     it('fails the start rather than export unscrubbed URLs when the tracer provider hides its processors', () => {
-        vi.spyOn(trace, 'getTracerProvider').mockReturnValue({
+        const provider = vi.spyOn(trace, 'getTracerProvider').mockReturnValue({
             getDelegate: () => ({}),
             getTracer: () => ({}),
         } as never);
         expect(() => startOtel({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4318' })).toThrow(/cannot scrub URLs/);
-        expect(sdk.constructed).toBe(1);
-        vi.restoreAllMocks();
+        expect(started).toHaveBeenCalledTimes(1);
+        provider.mockRestore();
     });
 });
