@@ -180,7 +180,7 @@ function migrateAsOwner(owner: Sql, config: AppConfig): Promise<void> {
         localUser: config.auth.mode === 'none',
         log: (m) => migrateLog.info(m),
     });
-    ready.catch((e: Error) => migrateLog.error(`giving up: ${e.message}`));
+    ready.catch((e: Error) => migrateLog.error({ err: e }, 'giving up'));
     void ready.then(
         () => owner.end(),
         () => owner.end()
@@ -439,7 +439,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
 
     // Warm every known org's cache at boot so the first visitor does not eat the cold read. Fired,
     // not awaited: a cold database must not hold `listen()`.
-    void ready.then(() => orgs.warmAll()).catch((e: Error) => logger('orgs').error(`warm failed: ${e.message}`));
+    void ready.then(() => orgs.warmAll()).catch((e: Error) => logger('orgs').error({ err: e }, 'warm failed'));
 
     startCollectors({ crossOrg, secrets, artifacts, config, metrics, ...mcp, track: stops.add });
     startRecovery({ config, orgs, metrics, ready, integrations, track: stops.add });

@@ -213,7 +213,7 @@ export function createOriginPlanReader(
             } finally {
                 if (tmp !== null) {
                     await rm(tmp, { recursive: true, force: true }).catch((e: Error) =>
-                        logger('plan').error(`could not remove a temp checkout: ${e.message}`)
+                        logger('plan').error({ err: e }, 'could not remove a temp checkout')
                     );
                 }
             }

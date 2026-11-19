@@ -218,7 +218,7 @@ export function startAttachmentCollector(
         'attachments',
         (signal) => timedPass('attachment_collect', () => collector.collect({ signal })),
         intervalMs,
-        { onError: (e) => logger('attachments').error(`collect failed: ${e.message}`) }
+        { onError: (e) => logger('attachments').error({ err: e }, 'collect failed') }
     );
 }
 

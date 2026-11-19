@@ -1890,7 +1890,8 @@ describe.skipIf(!enabled)('batch report usage', () => {
         });
         const calls = captured.emitted().map((r) => String(r.body));
         captured.stop();
-        expect(calls.some((line) => line.includes('telemetry down'))).toBe(true);
+        expect(calls).toContain('usage read failed');
+        expect(calls.join()).not.toContain('telemetry down');
         expect(failing.totals.tokenUsage.state).toBe('unavailable');
         expect(failing.tasks.every((t) => t.usage.tokenUsageUnavailable === 'telemetry')).toBe(true);
         expect(failing.tasks.map((t) => [t.key, t.execution, t.next])).toEqual(

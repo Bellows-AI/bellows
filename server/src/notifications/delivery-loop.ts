@@ -99,7 +99,7 @@ export function createNotificationDeliverer({
                     );
                 }
             } catch (e) {
-                logger('notifications').error({ orgId: org.id }, `delivery pass failed: ${(e as Error).message}`);
+                logger('notifications').error({ orgId: org.id, err: e }, 'delivery pass failed');
             }
         }
     };

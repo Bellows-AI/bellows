@@ -7,6 +7,7 @@ runners' executors emit, and the metrics instruments, are in [telemetry.md](tele
 | --- | --- | --- |
 | Logs: one pino root, `component` children, `trace_id`/`span_id` from the active span, stdout plus the OTEL LoggerProvider | `server/src/log.ts` | `server/test/log.trace.test.ts`, `server/test/helpers-log.ts` |
 | Log redaction: credential headers and fields blanked, the request serializer logs the route pattern, Fastify's not-found message rewritten | `server/src/log.ts` | `server/test/log.redact.test.ts` |
+| Errors in records: the `err` serializer and `describeError` keep the class, code, kind and status, never the message; shutdown logs before the SDK stops | `server/src/log.ts`, `server/src/shutdown.ts` | `server/test/log.content.test.ts`, `server/test/shutdown.logs.test.ts` |
 | No repository or branch name in a log call | every `logger(...)` call in `server/src` | `server/test/log.content.test.ts` |
 | `console` banned in `server/src`, except the three operator-facing CLIs | `biome.json` | `core/test/biome.test.ts` |
 | SDK start, the logs endpoint variable, the SDK's own diagnostics (stdout, one line a minute) | `server/src/otel.ts`, `server/src/otel-register.ts` | `server/test/otel.test.ts` |
@@ -18,6 +19,9 @@ runners' executors emit, and the metrics instruments, are in [telemetry.md](tele
 - **A log record is JSON with `level`, `time`, `msg` and `component`**; `trace_id` and `span_id` appear only inside a
   span. The OTLP copy maps level 10-60 to severity TRACE-FATAL, `msg` to the body and the other fields to attributes.
 - **Serializers and `redact` run before any destination**, so the OTLP copy is never less redacted than stdout.
+- **A record never carries an error's message, stack or cause**: a client error spells the request it failed on, which
+  names a repository. Log `{ err }` (serialized to its class) or `describeError(e)` in a line.
+- **The close failure is logged before the SDK shuts down**, so it is exported (`closeOnSignal`).
 - **A log call never names a repository or a branch**, in its message or a field: it carries the job, batch or org id.
 - **No URL path or query carries a credential into a span**: `url.full` and `http.url` are `scheme://host`, a server
   span's `url.path` and `http.target` are the route pattern (`<unmatched>` for none), and `url.query` is absent.

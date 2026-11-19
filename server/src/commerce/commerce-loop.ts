@@ -62,7 +62,7 @@ export function createUsageReporter({
                 const store = (await orgs.for(org.id))?.commerce;
                 if (store) await reportOrg({ store, client, now }, org.id, now() + passBudgetMs);
             } catch (e) {
-                logger('commerce').error({ orgId: org.id }, `usage pass failed: ${(e as Error).message}`);
+                logger('commerce').error({ orgId: org.id, err: e }, 'usage pass failed');
             }
         }
     };

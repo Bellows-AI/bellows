@@ -492,7 +492,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                     .catch((e: Error) => {
                         // Do not cache a failure either: the next request retries, and the log
                         // line is what tells the operator which org could not be built.
-                        logger('org').error({ orgId }, `runtime failed: ${e.message}`);
+                        logger('org').error({ orgId, err: e }, 'runtime failed');
                         runtimes.delete(orgId);
                         return null;
                     });
@@ -530,7 +530,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                     try {
                         await (await this.for(org.id))?.batches?.reconcileOpen();
                     } catch (e) {
-                        logger('batches').error({ orgId: org.id }, `reconcile failed: ${(e as Error).message}`);
+                        logger('batches').error({ orgId: org.id, err: e }, 'reconcile failed');
                     }
                 })
             );
@@ -545,7 +545,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                         // Observe first: a merge decision is only as good as the observation it reads.
                         await runtime?.batchObserver?.observeDue().finally(() => runtime?.batchMerger?.mergeDue());
                     } catch (e) {
-                        logger('batches').error({ orgId: org.id }, `observe failed: ${(e as Error).message}`);
+                        logger('batches').error({ orgId: org.id, err: e }, 'observe failed');
                     }
                 })
             );
@@ -565,7 +565,7 @@ async function followOrgPrs(registry: Pick<OrgRegistry, 'list' | 'for'>): Promis
             try {
                 await (await registry.for(org.id))?.prFollower?.observeDue();
             } catch (e) {
-                logger('pr-follow').error({ orgId: org.id }, `pass failed: ${(e as Error).message}`);
+                logger('pr-follow').error({ orgId: org.id, err: e }, 'pass failed');
             }
         })
     );

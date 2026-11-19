@@ -215,7 +215,7 @@ async function verify(run: Run, job: VerificationJob): Promise<void> {
 /** One failed unit of work is logged and left for the next pass; it never stops the others. */
 const guarded = (what: string, fields: Record<string, unknown>, work: () => Promise<void>): Promise<void> =>
     work().catch((e: unknown) => {
-        logger('batches').error(fields, `${what} failed: ${errorMessage(e)}`);
+        logger('batches').error({ ...fields, err: e }, `${what} failed`);
     });
 
 export function createBatchMerger(deps: BatchMergerDeps): BatchMerger {

@@ -74,6 +74,53 @@ const otelDestination: pino.DestinationStream = {
 /** Fastify's own message for a request no route took: it spells the concrete URL, query included. */
 const NOT_FOUND_MESSAGE = /^Route (\w+):.* not found$/;
 
+/** The most of an error's name, code or kind a record keeps. */
+const CLASS_MAX = 64;
+const CLASS_TOKEN = /^[\w.:-]+$/;
+
+const tokenOf = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.length <= CLASS_MAX && CLASS_TOKEN.test(value) ? value : undefined;
+
+export interface ErrorClass {
+    type: string;
+    code?: string | undefined;
+    kind?: string | undefined;
+    status?: number | undefined;
+}
+
+/**
+ * The closed description of an error a record may carry: its class name, and the `code`, `kind` and HTTP status when
+ * it has them as short tokens. Never its message, stack or cause — a GitHub, git or HTTP client error spells the
+ * request it failed on (`/repos/<owner>/<name>/pulls/7`), which is a repository name.
+ */
+export function errorClass(error: unknown): ErrorClass {
+    const source = (typeof error === 'object' && error !== null ? error : {}) as Record<string, unknown>;
+    const status = source.status ?? source.statusCode;
+    return {
+        type: error instanceof Error ? (tokenOf(error.name) ?? 'Error') : 'NonError',
+        ...(tokenOf(source.code) ? { code: tokenOf(source.code) } : {}),
+        ...(tokenOf(source.kind) ? { kind: tokenOf(source.kind) } : {}),
+        ...(typeof status === 'number' ? { status } : {}),
+    };
+}
+
+/** `errorClass` as one token string, for the log seams that take a line. */
+export const describeError = (error: unknown): string => {
+    const { type, code, kind, status } = errorClass(error);
+    return [type, code, kind, status].filter((part) => part !== undefined).join(' ');
+};
+
+/** The message of a record whose only subject is an error: pino would otherwise spell the error's own message. */
+const ERROR_MESSAGE = 'error';
+
+/** `error(err)` and `error({ err })` with no message: name the record without the error's message. */
+function withoutErrorMessage(args: unknown[]): void {
+    const [first] = args;
+    if (first instanceof Error) args.splice(0, 1, { err: first }, ERROR_MESSAGE);
+    else if (typeof first === 'object' && first !== null && 'err' in first && args.length === 1)
+        args.push(ERROR_MESSAGE);
+}
+
 export interface LoggerOptions {
     /** Where the JSON lines go; stdout unless a test captures them. */
     stdout?: pino.DestinationStream;
@@ -93,6 +140,7 @@ export function createLogger({ stdout = pino.destination(1), level = 'info' }: L
             redact: REDACT_PATHS,
             hooks: {
                 logMethod(args, method) {
+                    withoutErrorMessage(args);
                     const at = typeof args[0] === 'string' ? 0 : 1;
                     const message = args[at];
                     if (typeof message === 'string') {
@@ -107,6 +155,7 @@ export function createLogger({ stdout = pino.destination(1), level = 'info' }: L
                     url: request.routeOptions?.url ?? UNMATCHED_ROUTE,
                     id: request.id,
                 }),
+                err: errorClass,
                 res: (reply: FastifyReply) => ({ statusCode: reply.statusCode }),
             },
         },

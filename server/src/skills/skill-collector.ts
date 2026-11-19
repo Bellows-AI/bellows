@@ -208,6 +208,6 @@ export function startSkillSweep({
             await metrics.timedPass('skill_collect', () => collector.collect({ signal }));
         },
         intervalMs,
-        { onError: (e) => logger('skills').error(`collect failed: ${e.message}`) }
+        { onError: (e) => logger('skills').error({ err: e }, 'collect failed') }
     );
 }

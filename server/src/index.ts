@@ -1,7 +1,6 @@
 import { otel } from './otel-register.js';
 import { beforeDeadline, closeOnSignal } from './shutdown.js';
 import { start } from './main.js';
-import { logger } from './log.js';
 
 /*
  * The env entry: the App is the only configuration the environment can produce, so reading
@@ -13,14 +12,6 @@ import { logger } from './log.js';
 const OTEL_FLUSH_MS = 3000;
 
 const { close } = await start();
-closeOnSignal(async () => {
-    try {
-        await close();
-    } finally {
-        if (otel) {
-            await beforeDeadline(otel.shutdown(), Date.now() + OTEL_FLUSH_MS, 'flushing telemetry').catch((e: Error) =>
-                logger('shutdown').error(e.message)
-            );
-        }
-    }
+closeOnSignal(close, async () => {
+    if (otel) await beforeDeadline(otel.shutdown(), Date.now() + OTEL_FLUSH_MS, 'flushing telemetry');
 });

@@ -64,7 +64,8 @@ describe.each([
         const stop = start({ reconcileBatches: fn, observeBatchPrs: fn, followPrs: fn } as never, 1000);
         await vi.advanceTimersByTimeAsync(1500);
         expect(fn).toHaveBeenCalledTimes(2);
-        expect(captured.emitted().map((r) => r.body)).toContainEqual(expect.stringContaining('db down'));
+        expect(captured.emitted().map((r) => r.body)).toContainEqual(expect.stringContaining('failed'));
+        expect(captured.everything()).not.toContain('db down');
         stop();
         captured.stop();
     });

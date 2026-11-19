@@ -46,7 +46,7 @@ describe('startSecretCollector', () => {
         const stop = startSecretCollector({ collect }, 1000);
         await vi.advanceTimersByTimeAsync(1500);
         expect(collect).toHaveBeenCalledTimes(2);
-        expect(captured.of('secrets')).toEqual([['ERROR', 'collect failed: db down']]);
+        expect(captured.of('secrets')).toEqual([['ERROR', 'collect failed']]);
         await stop();
         captured.stop();
     });

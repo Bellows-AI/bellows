@@ -596,7 +596,7 @@ export async function reconcileOpenBatches(deps: ScheduleDeps): Promise<void> {
         try {
             await reconcileBatch(deps, batch.id);
         } catch (e) {
-            logger('batches').error({ batchId: batch.id }, `reconcile failed: ${(e as Error).message}`);
+            logger('batches').error({ batchId: batch.id, err: e }, 'reconcile failed');
         }
     }
 }

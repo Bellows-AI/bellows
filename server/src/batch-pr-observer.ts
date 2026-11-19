@@ -170,8 +170,8 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
                         observeOne(claim).catch((e: Error) => {
                             // The lease expires on its own and the row is read again; nothing is lost.
                             logger('batches').error(
-                                { batchId: claim.batchId, taskKey: claim.taskKey },
-                                `observing a pull request failed: ${e.message}`
+                                { batchId: claim.batchId, taskKey: claim.taskKey, err: e },
+                                'observing a pull request failed'
                             );
                             return false;
                         })
@@ -203,7 +203,7 @@ export function startBatchPrObserver(
     intervalMs = BATCH_OBSERVE_TICK_MS
 ): () => Promise<void> {
     return startIntervalLoop('batches', () => orgs.observeBatchPrs(), intervalMs, {
-        onError: (e) => logger('batches').error(`observe failed: ${e.message}`),
+        onError: (e) => logger('batches').error({ err: e }, 'observe failed'),
     });
 }
 

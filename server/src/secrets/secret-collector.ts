@@ -14,6 +14,6 @@ export function startSecretCollector(
     intervalMs = SECRET_COLLECT_INTERVAL_MS
 ): () => Promise<void> {
     return startIntervalLoop('secrets', () => store.collect(), intervalMs, {
-        onError: (e) => logger('secrets').error(`collect failed: ${e.message}`),
+        onError: (e) => logger('secrets').error({ err: e }, 'collect failed'),
     });
 }

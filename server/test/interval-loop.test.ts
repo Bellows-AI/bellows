@@ -43,7 +43,7 @@ describe('interval loop', () => {
         const stop = startIntervalLoop('test', pass, 10);
         await vi.advanceTimersByTimeAsync(35);
         expect(pass.mock.calls.length).toBeGreaterThanOrEqual(3);
-        expect(captured.of('test')).toContainEqual(['ERROR', 'pass failed: boom']);
+        expect(captured.of('test')).toContainEqual(['ERROR', 'pass failed']);
         captured.stop();
         await stop();
     });

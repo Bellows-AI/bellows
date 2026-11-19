@@ -26,6 +26,6 @@ export function startOAuthSweep(
                 await alsoPurge();
             }),
         intervalMs,
-        { onError: (e) => logger('oauth').error(`purge failed: ${e.message}`) }
+        { onError: (e) => logger('oauth').error({ err: e }, 'purge failed') }
     );
 }

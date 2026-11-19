@@ -24,7 +24,7 @@ export function createStopRegistry() {
         try {
             await stop();
         } catch (e) {
-            logger('shutdown').error(`a stop failed: ${(e as Error).message}`);
+            logger('shutdown').error({ err: e }, 'a stop failed');
         }
     };
     return {
@@ -100,21 +100,31 @@ export async function beforeDeadline<T>(work: Promise<T>, deadlineAt: number, wh
 
 /**
  * Closes on the first SIGTERM or SIGINT and exits 0, or 1 when the close failed or overran its deadline. A second
- * signal while closing is ignored: `close` is not re-entered.
+ * signal while closing is ignored: `close` is not re-entered. A close failure is logged first, then `flush` runs
+ * (the telemetry SDK's shutdown), so the failure record is exported; the exit follows the flush, which never changes it.
  */
-export function closeOnSignal(close: () => Promise<void>): void {
+export function closeOnSignal(close: () => Promise<void>, flush: () => Promise<void> = async () => {}): void {
+    const shutDown = async (signal: NodeJS.Signals): Promise<number> => {
+        logger('shutdown').info({ signal }, 'closing');
+        let code = 0;
+        try {
+            await close();
+        } catch (e) {
+            logger('shutdown').error({ err: e }, 'close failed');
+            code = 1;
+        }
+        try {
+            await flush();
+        } catch (e) {
+            logger('shutdown').error({ err: e }, 'flush failed');
+        }
+        return code;
+    };
     let begun = false;
     const onSignal = (signal: NodeJS.Signals) => {
         if (begun) return;
         begun = true;
-        logger('shutdown').info({ signal }, 'closing');
-        close().then(
-            () => process.exit(0),
-            (e: Error) => {
-                logger('shutdown').error(e.message);
-                process.exit(1);
-            }
-        );
+        void shutDown(signal).then((code) => process.exit(code));
     };
     process.on('SIGTERM', onSignal);
     process.on('SIGINT', onSignal);

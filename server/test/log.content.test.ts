@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { captureLogs } from './helpers-log.js';
 
 const SRC = new URL('../src/', import.meta.url).pathname;
 
@@ -38,5 +39,40 @@ describe('board log content', () => {
         const calls = filesUnder(SRC).flatMap((file) => callsIn(readFileSync(file, 'utf8')));
         expect(calls.length).toBeGreaterThan(30);
         expect(NAMES.test('claim.repo')).toBe(true);
+    });
+});
+
+const REPO_ERROR = 'GET /repos/o-x/n-x/pulls/7 failed with 503';
+
+describe('errors in log records', () => {
+    it('never carry the message, stack or cause of an error that names a repository', () => {
+        const capture = captureLogs();
+        const failure = Object.assign(new Error(REPO_ERROR, { cause: new Error(REPO_ERROR) }), {
+            status: 503,
+            kind: 'transport',
+        });
+        capture.logger.error({ err: failure, batchId: 'b' }, 'a read failed');
+        capture.logger.error(failure);
+        capture.logger.error({ err: failure });
+        capture.logger.warn({ err: REPO_ERROR }, 'a thrown string');
+
+        for (const name of ['o-x', 'n-x']) expect(capture.everything()).not.toContain(name);
+        expect(capture.records()[0]).toMatchObject({ err: { type: 'Error', kind: 'transport', status: 503 } });
+        expect(capture.records().map((r) => r.msg)).toEqual(['a read failed', 'error', 'error', 'a thrown string']);
+        capture.stop();
+    });
+
+    it('is never spelled into a call: no log call or log seam reads an error message', () => {
+        const offenders = filesUnder(SRC)
+            .filter((file) => !/-cli\.ts$|\/cli\.ts$/.test(file))
+            .flatMap((file) =>
+                readFileSync(file, 'utf8')
+                    .split('\n')
+                    .filter(
+                        (line) => /\blog(?:ger\([^)]*\))?\.?\w*\(/.test(line) && /\.message\b|errorMessage\(/.test(line)
+                    )
+                    .map((line) => `${file.slice(SRC.length)}: ${line.trim()}`)
+            );
+        expect(offenders).toEqual([]);
     });
 });

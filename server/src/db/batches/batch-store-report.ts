@@ -324,7 +324,7 @@ async function readBatchUsage(
     try {
         facts = await tx.savepoint((sp) => readFacts(sp, orgId, { taskIds: roots }));
     } catch (e) {
-        logger('batches').error(`usage read failed: ${(e as Error).message}`);
+        logger('batches').error({ err: e }, 'usage read failed');
         return unavailable;
     }
     const { tasks: byRoot, total } = batchUsageOf(facts, roots, at);

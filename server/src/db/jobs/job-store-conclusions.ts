@@ -104,7 +104,7 @@ export async function commitStagedForStop(
  * envelope survives for an operator, and the rest of the org's claims proceed.
  */
 function commitFailed(id: string, e: Error): void {
-    logger('jobs').error({ jobId: id }, `the staged conclusion could not be committed: ${e.message}`);
+    logger('jobs').error({ jobId: id, err: e }, 'the staged conclusion could not be committed');
 }
 
 /**

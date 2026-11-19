@@ -134,8 +134,8 @@ export function createPrFollower(deps: PrFollowerDeps): PrFollower {
                         followOne(claim).catch((e: Error) => {
                             // The lease expires on its own and the PR is read again; nothing is lost.
                             logger('pr-follow').error(
-                                { prNumber: claim.prNumber },
-                                `following a pull request failed: ${e.message}`
+                                { prNumber: claim.prNumber, err: e },
+                                'following a pull request failed'
                             );
                             return false;
                         })

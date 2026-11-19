@@ -13,7 +13,7 @@ export function startIntervalLoop(
     pass: (signal: AbortSignal) => Promise<unknown>,
     intervalMs: number,
     {
-        onError = (e: Error) => logger(label).error(`pass failed: ${e.message}`),
+        onError = (e: Error) => logger(label).error({ err: e }, 'pass failed'),
         immediate = true,
     }: { onError?: (e: Error) => void; immediate?: boolean } = {}
 ): () => Promise<void> {

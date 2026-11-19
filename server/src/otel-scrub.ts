@@ -27,26 +27,21 @@ const originOf = (value: unknown): string | null => {
     }
 };
 
-/** The path of a request target (`/p?q`), query dropped. */
-const pathOf = (target: unknown): string | null =>
-    typeof target === 'string' && target.startsWith('/') ? (target.split('?', 1)[0] ?? null) : null;
-
 /** Rewrites the URL attributes of a span as it starts, before any exporter can read them. */
 export class UrlScrubProcessor implements SpanProcessor {
     onStart(span: Span): void {
         const { attributes, kind } = span as unknown as ReadableSpan & { attributes: Record<string, unknown> };
-        const target = attributes[ATTR_URL_PATH] ?? attributes[ATTR_HTTP_TARGET];
         const origin = originOf(attributes[ATTR_URL_FULL] ?? attributes[ATTR_HTTP_URL]);
         for (const name of URL_ATTRIBUTES) delete attributes[name];
         if (origin !== null) {
             span.setAttribute(ATTR_URL_FULL, origin);
             span.setAttribute(ATTR_HTTP_URL, origin);
         }
-        // Until the `onRequest` hook names the route, a server span carries the path it was asked for, no query.
-        const path = kind === SpanKind.SERVER ? pathOf(target) : null;
-        if (path !== null) {
-            span.setAttribute(ATTR_URL_PATH, path);
-            span.setAttribute(ATTR_HTTP_TARGET, path);
+        // Until the `onRequest` hook names the route a server span names none: a request Fastify rejects before
+        // that hook (a malformed percent-encoding) never carries its concrete path.
+        if (kind === SpanKind.SERVER) {
+            span.setAttribute(ATTR_URL_PATH, UNMATCHED_ROUTE);
+            span.setAttribute(ATTR_HTTP_TARGET, UNMATCHED_ROUTE);
         }
     }
     onEnd(_span: ReadableSpan, _context?: Context): void {}

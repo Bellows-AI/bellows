@@ -223,7 +223,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             lastFailure = e;
             // The driver's text can carry hosts, users and SQL: it goes to the log, and the reason a
             // caller sees is fixed text.
-            logger('stats').error(`telemetry read failed: ${(e as Error).message}`);
+            logger('stats').error({ err: e }, 'telemetry read failed');
             telemetryFailure = { at: now(), reason: TELEMETRY_UNREADABLE };
             fetchState = {
                 ...fetchState,

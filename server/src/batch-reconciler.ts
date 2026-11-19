@@ -14,6 +14,6 @@ export function startBatchReconciler(
     intervalMs = BATCH_RECONCILE_INTERVAL_MS
 ): () => Promise<void> {
     return startIntervalLoop('batches', () => orgs.reconcileBatches(), intervalMs, {
-        onError: (e) => logger('batches').error(`reconcile failed: ${e.message}`),
+        onError: (e) => logger('batches').error({ err: e }, 'reconcile failed'),
     });
 }
