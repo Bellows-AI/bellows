@@ -13,6 +13,10 @@ import { ATTR_POLL, ATTR_POLL_IDLE } from './otel-idle.js';
 export const ATTR_JOB_ID = 'bellows.job.id';
 export const ATTR_CLAIM_SEQ = 'bellows.claim.seq';
 export const ATTR_EXECUTOR = 'bellows.executor';
+export const ATTR_SETTLE_KIND = 'bellows.settle.kind';
+export const ATTR_REAP_OUTCOME = 'bellows.reap.outcome';
+export const ATTR_REAP_VERDICT = 'bellows.reap.verdict';
+export const ATTR_HANDOVER_ATTEMPTS = 'bellows.handover.attempts';
 
 export type ClaimSpanName = 'claim' | 'reclaim.claim';
 
@@ -68,3 +72,24 @@ export function withClaimSpan<T>(
 export function withLifecycleSpan<T>(kind: string, attributes: Attributes, fn: () => Promise<T>): Promise<T> {
     return tracer().startActiveSpan(kind, { root: true, attributes }, (span) => inSpan(span, fn));
 }
+
+/** A part of a step (one group a reaper sweep reaps): a child of the active span, never a root. */
+export function withChildSpan<T>(kind: string, attributes: Attributes, fn: () => Promise<T>): Promise<T> {
+    return tracer().startActiveSpan(kind, { attributes }, (span) => inSpan(span, fn));
+}
+
+/** A step of one attempt names the job, THIS claim's sequence (never an adopted run's) and the executor. */
+export const attemptAttributes = ({
+    rt,
+    job,
+}: {
+    rt: { config: Pick<DriverConfig, 'executor'> };
+    job: { id: string; claimSeq: number };
+}): Attributes => ({ [ATTR_JOB_ID]: job.id, [ATTR_CLAIM_SEQ]: job.claimSeq, [ATTR_EXECUTOR]: rt.config.executor });
+
+/** What a step learned after it began; `failed` marks an outcome that did not throw ERROR, with no message. */
+export const annotateActiveSpan = (attributes: Attributes, { failed = false }: { failed?: boolean } = {}): void => {
+    const span = trace.getActiveSpan();
+    span?.setAttributes(attributes);
+    if (failed) span?.setStatus({ code: SpanStatusCode.ERROR });
+};

@@ -229,6 +229,10 @@ export function leaveDecision(job: BoardJob, reason: string, exitCode: number | 
     return setupDecision(leaveConclusion(job, reason, exitCode, logReason));
 }
 
+/** Why a gate or setup whose supervisor was lost interrupts its attempt. */
+export const gateLossReason = (e: unknown): string =>
+    `infrastructure loss: the task supervisor running the gates was lost (${(e as Error).message})`;
+
 /**
  * Hands an attempt that ended without a verdict back to the board as an interruption (issues #792,
  * #822): refunded and claimable at once, its reason recorded inside the interruption budget, no

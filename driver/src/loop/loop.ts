@@ -12,7 +12,7 @@ import { withBoardRetry } from '../board/board-retry.js';
 import { down } from './loop-attempt.js';
 import { handOver } from './loop-handover.js';
 import { describeError } from '../log.js';
-import { withClaimSpan } from '../lifecycle-span.js';
+import { ATTR_EXECUTOR, ATTR_HANDOVER_ATTEMPTS, withClaimSpan, withLifecycleSpan } from '../lifecycle-span.js';
 
 export interface Loop {
     /**
@@ -165,9 +165,13 @@ export function handoverOf(rt: LoopRuntime, pending: () => Promise<unknown>[] = 
                 ({ state }) =>
                     state.phase !== 'ended' && state.phase !== 'concluding' && !state.endStarted && !down(state)
             );
-            for (const { state } of handing) handOver(state, reason);
-            // `start()` stops waiting only once every handed-over attempt's end has settled.
-            await Promise.all(handing.map(({ over }) => over));
+            // Driver-wide: each handed-over attempt's own `settle` span names its job.
+            const attributes = { [ATTR_EXECUTOR]: rt.config.executor, [ATTR_HANDOVER_ATTEMPTS]: handing.length };
+            await withLifecycleSpan('handover', attributes, async () => {
+                for (const { state } of handing) handOver(state, reason);
+                // `start()` stops waiting only once every handed-over attempt's end has settled.
+                await Promise.all(handing.map(({ over }) => over));
+            });
             rt.log(`handover: ${handing.length} attempt(s) settled in ${Date.now() - began} ms`);
             landed();
         },

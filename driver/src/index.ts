@@ -140,6 +140,7 @@ const reaper = createReaper({
                   boardIdentity(config),
                   { config, ...exporting }
               ),
+    executor: config.executor,
     exportAttempts: config.taskVolumeExportAttempts,
     intervalMs: config.reapIntervalMs,
     graceMs: config.reapGraceMs,

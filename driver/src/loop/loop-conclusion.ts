@@ -16,6 +16,7 @@ import { transition } from './loop-phase.js';
 import { cancelReviews } from './loop-review.js';
 import type { AttemptCtx, EndDecision, LoopRuntime, VerdictBody } from './loop-types.js';
 import { describeError } from '../log.js';
+import { ATTR_SETTLE_KIND, attemptAttributes, withLifecycleSpan } from '../lifecycle-span.js';
 
 const MS_PER_SECOND = 1_000;
 
@@ -54,7 +55,10 @@ export function attemptQuiesce(
  * standing (`JobState.groupDisposition`) for the next claim; one answered `lost` is final, never retried.
  */
 export function end(ctx: AttemptCtx, decision: EndDecision): Promise<LeaseState | null> {
-    ctx.ended ??= conclude(ctx, decision);
+    // One `settle` span per attempt, however many exits ask.
+    ctx.ended ??= withLifecycleSpan('settle', { ...attemptAttributes(ctx), [ATTR_SETTLE_KIND]: decision.kind }, () =>
+        conclude(ctx, decision)
+    );
     return ctx.ended;
 }
 

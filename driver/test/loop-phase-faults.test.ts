@@ -656,7 +656,7 @@ describe('a drain never hands over an attempt whose end already started (#828)',
     it('records no handover on it and leaves it to its own ending', async () => {
         const { handoverOf } = await import('../src/loop/loop.js');
         const { newJobState } = await import('../src/loop/loop-attempt.js');
-        const rt = { log: () => {} } as never;
+        const rt = { log: () => {}, config: { executor: 'docker' } } as never;
         const handoff = handoverOf(rt);
         const state = newJobState();
         state.endStarted = true;
@@ -676,7 +676,7 @@ describe('a drain and two claims of one task in one process', () => {
         const { newJobState } = await import('../src/loop/loop-attempt.js');
         const { registerLive } = await import('../src/loop/loop-handover.js');
         const { attemptQuiesce } = await import('../src/loop/loop-conclusion.js');
-        const rt = { log: () => {} } as never;
+        const rt = { log: () => {}, config: { executor: 'docker' } } as never;
         const handoff = handoverOf(rt);
         const first: BoardJob = { ...gatedJob(1), leaseToken: randomUUID(), claimSeq: 1 };
         const second: BoardJob = { ...first, leaseToken: randomUUID(), claimSeq: 2 };
