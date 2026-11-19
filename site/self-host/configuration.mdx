@@ -187,7 +187,7 @@ The driver reads only the environment. It has no database access and talks to th
 | --- | --- | --- | --- |
 | `CLAUDE_EXECUTOR_IMAGE` | | `claude-executor` | Image for Claude Code tasks. |
 | `OPENCODE_EXECUTOR_IMAGE` | | `opencode-executor` | Image for OpenCode tasks. |
-| `RUNNER_ENV` | | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names of driver environment variables forwarded to runners. Values never appear in a command line. Must not name `GITHUB_TOKEN`, `GH_TOKEN`, `DRIVER_CREDENTIAL`, `DRIVER_CREDENTIAL_FILE` or `DRIVER_METRICS_TOKEN`. |
+| `RUNNER_ENV` | | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names of driver environment variables forwarded to runners. Values never appear in a command line. Must not name `GITHUB_TOKEN`, `GH_TOKEN`, `DRIVER_CREDENTIAL`, `DRIVER_CREDENTIAL_FILE` or any `OTEL_*` variable. |
 | `RUNNER_SKIP_PERMISSIONS` | | off | Adds `--dangerously-skip-permissions`. Without it most headless jobs stall at a permission prompt. With it the agent runs anything inside the runner. |
 | `RUNNER_SERVICES` | | on | Starts the [services](/guides/services) a repo declares. `0` or `false` disables. |
 | `RUNNER_OTEL_ENDPOINT` | | `http://collector:4318` | OTLP endpoint given to runners. |
@@ -221,14 +221,13 @@ The driver reads only the environment. It has no database access and talks to th
 | `TASK_VOLUME_BOUND_MS` | | `604800000` (7 days) | The same, when a checkpoint is truncated or an artifact is pending. |
 | `TASK_VOLUME_EXPORT_ATTEMPTS` | | `3` | Failed transcript exports tolerated before the volume is deleted anyway; the first and the last failure must also be at least 15 minutes apart, so a short outage never costs a transcript. `1` to `100`. |
 
-### Gates and metrics
+### Gates
 
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
 | `GATE_LISTEN_HOST` | | `127.0.0.1` | Bind address of the gate server, which runs shell commands. Compose sets `0.0.0.0`. |
 | `GATE_ADVERTISE_URL` | | `http://host.docker.internal:<port>` | URL runners use to reach the gate server. The bound port is appended if the URL has none. |
-| `DRIVER_METRICS_PORT` | | unset (off) | Port for a Prometheus scrape at `GET /metrics`. Needs `DRIVER_METRICS_TOKEN` when `GATE_LISTEN_HOST` is not loopback. |
-| `DRIVER_METRICS_TOKEN` | | empty | The scrape's bearer. Its own secret, never the driver credential. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (driver) | | none | An OTLP/HTTP collector the driver exports metrics, logs and HTTP spans to. Unset (and no `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` is set), the driver exports nothing. The driver has no metrics scrape endpoint. The other standard `OTEL_*` variables apply, among them `OTEL_SERVICE_NAME` (default `bellows-driver`) and `OTEL_SDK_DISABLED`. Never forwarded to runners or to the commands the driver runs. |
 
 ### Runner classes
 

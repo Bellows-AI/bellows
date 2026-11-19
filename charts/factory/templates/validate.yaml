@@ -273,9 +273,6 @@ with an optional binary (Ki…Ei) or decimal (k…E) suffix. Anything else is re
 {{- fail "driver.credential.sha256 is for an existingSecret; with value the chart computes it" }}
 {{- end }}
 {{- end }}
-{{- if and .Values.driver.metricsPort (not .Values.driver.credential.existingSecret) (lt (len .Values.driver.metricsToken) 32) }}
-{{- fail "driver.metricsToken of at least 32 characters is required with driver.metricsPort (openssl rand -hex 32): the scrape's own bearer, never the driver credential" }}
-{{- end }}
 {{- if not .Values.dashboard.offline }}
 {{- if not .Values.github.appId }}
 {{- fail "github.appId is required: the repo list and the repo-read credential are the GitHub App's (set dashboard.offline=true for the code-only no-fetch entry)" }}

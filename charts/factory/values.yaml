@@ -394,19 +394,12 @@ driver:
         # `echo "drv_$(openssl rand -hex 32)"`. The chart creates the Secret and the dashboard records its SHA-256
         # as a pool credential at boot. Changing it adds a credential; revoke the old one with the CLI.
         value: ''
-        # A Secret you manage, holding `credential` (and `metrics-token` with metricsPort): an operator-issued
+        # A Secret you manage, holding `credential`: an operator-issued
         # credential, or one rotated in place. With it the chart creates no driver Secret.
         existingSecret: ''
         # With existingSecret only: the credential's SHA-256, for the dashboard to record as a pool credential
         # (`printf %s "$credential" | sha256sum`). Empty records none (the operator issued it).
         sha256: ''
-    # The port of the driver's Prometheus scrape (GET /metrics, Authorization: Bearer <metricsToken>),
-    # on the pod IP. '' serves none. No Service and no scrape annotations: point a PodMonitor or a
-    # scrape config at the `metrics` container port (docs/telemetry.md).
-    metricsPort: '9464'
-    # The scrape's own bearer (DRIVER_METRICS_TOKEN), at least 32 characters, never the driver credential:
-    # REQUIRED with metricsPort unless driver.credential.existingSecret holds `metrics-token`.
-    metricsToken: ''
     # One driver serves both task-selected executor types. These values choose image locations —
     # bare repository paths the global.imageRegistry prefix composes with (a tag may be included:
     # `claude-executor:v1.2.3`; tagless reads :latest); the task's executor profile chooses which

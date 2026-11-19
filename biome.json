@@ -180,6 +180,10 @@
     },
     "overrides": [
         {
+            "includes": ["driver/src/**/*.ts", "!driver/src/scripts/**"],
+            "linter": { "rules": { "suspicious": { "noConsole": "error" } } }
+        },
+        {
             "includes": ["web/src/charts/**"],
             "linter": { "rules": { "suspicious": { "noArrayIndexKey": "off" } } }
         },

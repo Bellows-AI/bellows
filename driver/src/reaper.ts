@@ -1,5 +1,6 @@
 import { LEASE_BATCH_MAX, type Board, type BoardLease, type BoardThreadFacts, UUID_SHAPE } from './board/board.js';
-import { secondsSince } from './prometheus.js';
+import { logger } from './log.js';
+import { secondsSince } from './timing.js';
 import {
     createVolumeExportGate,
     isWhole,
@@ -7,6 +8,8 @@ import {
     type VolumeExportAttempt,
     type VolumeExportResult,
 } from './reaper-export.js';
+
+const reaperLog = logger('reaper');
 
 export type { VolumeExport, VolumeExportAttempt, VolumeExportResult };
 
@@ -350,7 +353,7 @@ export function createReaper(deps: {
     start(): void;
     stop(): void;
 } {
-    const log = deps.log ?? ((message: string) => console.log(`[driver] ${message}`));
+    const log = deps.log ?? ((message: string) => reaperLog.info(message));
     const now = deps.now ?? (() => Date.now());
     let sweeping = false;
     // Set when a lookup, listing or re-read the sweep depended on was not proven: the round then

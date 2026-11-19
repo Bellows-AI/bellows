@@ -1,7 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import { readBody } from './http.js';
 import { parseJsonObject } from './json-parse.js';
-import { secondsSince } from './prometheus.js';
+import { secondsSince } from './timing.js';
 import {
     STEP_ANSWER_GRACE_MS,
     STEP_OUTPUT_LIMIT_BYTES,

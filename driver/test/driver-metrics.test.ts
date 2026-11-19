@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { createDriverMetrics, dockerCommandOf, endpointOf, k8sCallOf, statusClassOf } from '../src/driver-metrics.js';
 import type { K8sRequest } from '../src/k8s/k8s-transport.js';
+import { countOf, metricsHarness } from './helpers-metrics.js';
 
 const UUID = '3f1c2a4e-9b7d-4c1a-8e2f-5a6b7c8d9e0f';
-const LABEL_VALUES = /="([^"]*)"/g;
 
-const labelValues = (text: string): string[] => [...text.matchAll(LABEL_VALUES)].map((m) => m[1]!);
+const BOARD_DURATION = 'bellows.driver.board.request.duration';
+const K8S_DURATION = 'bellows.driver.k8s.request.duration';
+const DOCKER_COMMANDS = 'bellows.driver.docker.commands';
+
+/** Every attribute value of every point of a collection, as one string a leak would show in. */
+const attributeText = async (harness: ReturnType<typeof metricsHarness>): Promise<string> =>
+    JSON.stringify((await harness.collect()).flatMap((m) => m.dataPoints.map((p) => p.attributes)));
 
 const BOARD = 'http://board:8080';
 
@@ -35,16 +41,18 @@ describe('endpoint normalisation: a finite allowlist relative to the board base'
         expect(endpointOf('http://board/api/jobs/claim', base)).toBe('other');
     });
 
-    it('never lets a lowercase id or an unlisted segment reach a label', async () => {
+    it('never lets a lowercase id or an unlisted segment reach an attribute', async () => {
         const base = 'http://board/api/private-org';
+        const harness = metricsHarness();
         const metrics = createDriverMetrics({
             boardUrl: base,
             fetch: async () => new Response('', { status: 200 }),
+            meter: harness.meter,
         });
         await metrics.fetch(`${base}/api/jobs/claim`);
         await metrics.fetch(`${base}/api/jobs/deadbeefdeadbeef/surprise`);
-        const text = await metrics.render();
-        expect(text).toContain('endpoint="/api/jobs/claim"');
+        const text = await attributeText(harness);
+        expect(text).toContain('/api/jobs/claim');
         expect(text).not.toContain('private-org');
         expect(text).not.toContain('deadbeef');
     });
@@ -98,39 +106,59 @@ describe('status class', () => {
 
 describe('the board fetch wrapper', () => {
     it('observes a response by endpoint and status class, and hands the response back untouched', async () => {
+        const harness = metricsHarness();
         const response = new Response('{}', { status: 409 });
-        const metrics = createDriverMetrics({ boardUrl: BOARD, fetch: async () => response });
+        const metrics = createDriverMetrics({ boardUrl: BOARD, fetch: async () => response, meter: harness.meter });
         expect(await metrics.fetch(`${BOARD}/api/jobs/${UUID}/heartbeat`, { method: 'POST' })).toBe(response);
-        const text = await metrics.render();
-        expect(text).toContain(
-            'factory_driver_board_request_duration_seconds_count{endpoint="/api/jobs/:id/heartbeat",status_class="4xx"} 1'
-        );
-        expect(labelValues(text).join('\n')).not.toContain(UUID);
+        const points = await harness.points(BOARD_DURATION);
+        expect(countOf(points, { endpoint: '/api/jobs/:id/heartbeat', status_class: '4xx' })).toBe(1);
+        expect(await attributeText(harness)).not.toContain(UUID);
     });
 
     it('records a thrown fetch as error exactly once and rethrows it', async () => {
+        const harness = metricsHarness();
         const failure = new TypeError('fetch failed');
         const metrics = createDriverMetrics({
             boardUrl: BOARD,
             fetch: async () => {
                 throw failure;
             },
+            meter: harness.meter,
         });
         await expect(metrics.fetch(`${BOARD}/api/jobs/claim`)).rejects.toBe(failure);
-        const text = await metrics.render();
-        expect(text).toContain('endpoint="/api/jobs/claim",status_class="error"} 1');
+        expect(
+            countOf(await harness.points(BOARD_DURATION), { endpoint: '/api/jobs/claim', status_class: 'error' })
+        ).toBe(1);
+    });
+
+    it('records seconds, with the carried-over bucket boundaries', async () => {
+        const harness = metricsHarness();
+        const metrics = createDriverMetrics({
+            boardUrl: BOARD,
+            fetch: async () => new Response(''),
+            meter: harness.meter,
+        });
+        await metrics.fetch(`${BOARD}/api/jobs/claim`);
+        const collected = await harness.collect();
+        const metric = collected.find((m) => m.descriptor.name === BOARD_DURATION)!;
+        expect(metric.descriptor.unit).toBe('s');
+        const [point] = metric.dataPoints as unknown as { value: { buckets: { boundaries: number[] } } }[];
+        expect(point!.value.buckets.boundaries).toEqual([
+            0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60,
+        ]);
     });
 });
 
 describe('the kubernetes request wrapper', () => {
     it('forwards method, path, body and the very same options object', async () => {
+        const harness = metricsHarness();
         const seen: unknown[][] = [];
         const reply = { status: 200, body: '{}' };
         const inner: K8sRequest = async (...args) => {
             seen.push(args);
             return reply;
         };
-        const metrics = createDriverMetrics({ boardUrl: BOARD });
+        const metrics = createDriverMetrics({ boardUrl: BOARD, meter: harness.meter });
         const options = { signal: new AbortController().signal, timeoutMs: 5 };
         const body = { a: 1 };
         const wrapped = metrics.k8s(inner, 'runner');
@@ -140,25 +168,37 @@ describe('the kubernetes request wrapper', () => {
         expect(seen[0]![1]).toBe('/api/v1/namespaces/ns/pods/p-1');
         expect(seen[0]![2]).toBe(body);
         expect(seen[0]![3]).toBe(options);
-        const text = await metrics.render();
-        expect(text).toContain(
-            'factory_driver_k8s_request_duration_seconds_count{client="runner",verb="patch",resource="pods",status_class="2xx"} 1'
-        );
+        expect(
+            countOf(await harness.points(K8S_DURATION), {
+                client: 'runner',
+                verb: 'patch',
+                resource: 'pods',
+                status_class: '2xx',
+            })
+        ).toBe(1);
     });
 
     it('records a rejection once as error and rethrows it', async () => {
+        const harness = metricsHarness();
         const failure = new Error('socket hang up');
-        const metrics = createDriverMetrics({ boardUrl: BOARD });
+        const metrics = createDriverMetrics({ boardUrl: BOARD, meter: harness.meter });
         const wrapped = metrics.k8s(async () => {
             throw failure;
         }, 'reaper');
         await expect(wrapped('GET', '/api/v1/namespaces/ns/pods')).rejects.toBe(failure);
-        const text = await metrics.render();
-        expect(text).toContain('client="reaper",verb="list",resource="pods",status_class="error"} 1');
+        expect(
+            countOf(await harness.points(K8S_DURATION), {
+                client: 'reaper',
+                verb: 'list',
+                resource: 'pods',
+                status_class: 'error',
+            })
+        ).toBe(1);
     });
 
     it('records an aborted call as error', async () => {
-        const metrics = createDriverMetrics({ boardUrl: BOARD });
+        const harness = metricsHarness();
+        const metrics = createDriverMetrics({ boardUrl: BOARD, meter: harness.meter });
         const controller = new AbortController();
         controller.abort();
         const wrapped = metrics.k8s(async (_m, _p, _b, options) => {
@@ -168,15 +208,23 @@ describe('the kubernetes request wrapper', () => {
         await expect(
             wrapped('GET', '/api/v1/namespaces/ns/pods/p', undefined, { signal: controller.signal })
         ).rejects.toThrow();
-        expect(await metrics.render()).toContain('status_class="error"} 1');
+        expect(
+            countOf(await harness.points(K8S_DURATION), {
+                client: 'runner',
+                verb: 'get',
+                resource: 'pods',
+                status_class: 'error',
+            })
+        ).toBe(1);
     });
 });
 
 describe('the docker exec wrapper', () => {
     it('counts a command by outcome with a closed vocabulary and forwards its result and options', async () => {
+        const harness = metricsHarness();
         const options = { timeout: 5 };
         let forwarded: unknown;
-        const metrics = createDriverMetrics({ boardUrl: BOARD });
+        const metrics = createDriverMetrics({ boardUrl: BOARD, meter: harness.meter });
         const wrapped = metrics.docker(async (_args, o) => {
             forwarded = o;
             return { stdout: 'ok' };
@@ -187,41 +235,49 @@ describe('the docker exec wrapper', () => {
             throw new Error('exit 1');
         }, 'reaper');
         await expect(failing(['rm', '-f', 'factory-job-x'])).rejects.toThrow('exit 1');
-        const text = await metrics.render();
-        expect(text).toContain('factory_driver_docker_commands_total{client="runner",command="ps",outcome="ok"} 1');
-        expect(text).toContain('factory_driver_docker_commands_total{client="reaper",command="rm",outcome="error"} 1');
-        expect(text).not.toContain('factory-job-x');
+        const points = await harness.points(DOCKER_COMMANDS);
+        expect(countOf(points, { client: 'runner', command: 'ps', outcome: 'ok' })).toBe(1);
+        expect(countOf(points, { client: 'reaper', command: 'rm', outcome: 'error' })).toBe(1);
+        expect(await attributeText(harness)).not.toContain('factory-job-x');
     });
 });
 
 describe('the step and reaper observers', () => {
-    it('exposes step durations by kind and outcome and the reaper sweep series', async () => {
-        const metrics = createDriverMetrics({ boardUrl: BOARD });
+    it('records step durations by kind and outcome and the reaper sweep series', async () => {
+        const harness = metricsHarness();
+        const metrics = createDriverMetrics({ boardUrl: BOARD, meter: harness.meter });
         metrics.step('sync', 'ok', 1.5);
         metrics.reaper.sweep('aborted', 0.2);
         metrics.reaper.scanned('groups', 3);
         metrics.reaper.scanned('groups', 2);
-        const text = await metrics.render();
-        expect(text).toContain('factory_driver_step_seconds_count{kind="sync",outcome="ok"} 1');
-        expect(text).toContain('factory_driver_reaper_sweep_seconds_count{outcome="aborted"} 1');
-        expect(text).toContain('factory_driver_reaper_scanned_total{what="groups"} 5');
+        expect(countOf(await harness.points('bellows.driver.step.duration'), { kind: 'sync', outcome: 'ok' })).toBe(1);
+        expect(countOf(await harness.points('bellows.driver.reaper.sweep.duration'), { outcome: 'aborted' })).toBe(1);
+        expect(countOf(await harness.points('bellows.driver.reaper.scanned'), { what: 'groups' })).toBe(5);
     });
 
     it('counts the reaper volume exports by result, a loss apart from a drain (issue #938)', async () => {
-        const metrics = createDriverMetrics({ boardUrl: BOARD });
+        const harness = metricsHarness();
+        const metrics = createDriverMetrics({ boardUrl: BOARD, meter: harness.meter });
         metrics.reaper.volumeExport?.('drained');
         metrics.reaper.volumeExport?.('inconclusive');
         metrics.reaper.volumeExport?.('lost');
         metrics.reaper.volumeExport?.('lost');
-        const text = await metrics.render();
-        expect(text).toContain('factory_driver_reaper_volume_export_total{result="drained"} 1');
-        expect(text).toContain('factory_driver_reaper_volume_export_total{result="inconclusive"} 1');
-        expect(text).toContain('factory_driver_reaper_volume_export_total{result="lost"} 2');
+        const points = await harness.points('bellows.driver.reaper.volume_export');
+        expect(countOf(points, { result: 'drained' })).toBe(1);
+        expect(countOf(points, { result: 'inconclusive' })).toBe(1);
+        expect(countOf(points, { result: 'lost' })).toBe(2);
     });
 
     it('counts a malformed claim by its first offending field', async () => {
-        const metrics = createDriverMetrics({ boardUrl: BOARD });
+        const harness = metricsHarness();
+        const metrics = createDriverMetrics({ boardUrl: BOARD, meter: harness.meter });
         metrics.malformedClaim(['leaseToken', 'env']);
-        expect(await metrics.render()).toContain('factory_driver_malformed_claims_total{field="leaseToken"} 1');
+        expect(countOf(await harness.points('bellows.driver.claims.malformed'), { field: 'leaseToken' })).toBe(1);
+    });
+});
+
+describe('the retired exposition', () => {
+    it('has no render: the driver serves no scrape', () => {
+        expect(createDriverMetrics({ boardUrl: BOARD, meter: metricsHarness().meter })).not.toHaveProperty('render');
     });
 });

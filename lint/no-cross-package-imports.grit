@@ -6,6 +6,8 @@ language js
 //    board and the CLI is its human-facing twin; sharing types with the server would hand a
 //    process that only needs `fetch` the whole server dependency tree, plus a build order neither
 //    currently has. When a type has to be shared, it is copied — deliberately.
+//    The driver's one exception is a short list of npm packages: the OTEL SDK, its Fastify wrapper and pino.
+//    `cli` stays at zero. A bare specifier in `driver/src` is `node:*` or on that list.
 // 2. `server` and `web` resolve core through `@factory-ai/core`, which maps to `core/dist`, never
 //    `core/src`. Reaching into the sources bypasses the build that `npm run dev` and `npm run
 //    build` sequence first, and produces type errors that read like source bugs.
@@ -28,7 +30,21 @@ language js
             $source <: r"^['\"]@factory-ai/core.*['\"]$",
             register_diagnostic(
                 span = $source,
-                message = "driver and cli depend on nothing, core included — copy the type instead (AGENTS.md)."
+                message = "driver and cli import nothing from other packages, core included — copy the type instead (AGENTS.md)."
+            )
+        },
+        and {
+            $filename <: r".*/driver/src/.*",
+            $source <: r"^['\"][^./].*['\"]$",
+            $source <: not or {
+                r"^['\"]node:.*['\"]$",
+                r"^['\"]@opentelemetry/.*['\"]$",
+                r"^['\"]@fastify/otel.*['\"]$",
+                r"^['\"]pino.*['\"]$"
+            },
+            register_diagnostic(
+                span = $source,
+                message = "driver may depend on @opentelemetry/*, @fastify/otel and pino only (AGENTS.md)."
             )
         },
         and {

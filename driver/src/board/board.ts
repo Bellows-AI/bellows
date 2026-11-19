@@ -18,6 +18,7 @@ import type { ExecutorType } from '../executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from '../http.js';
 import type { HelperPlan } from '../helpers.js';
 import type { ServiceSpec } from '../services.js';
+import { logger } from '../log.js';
 import { isThreadFacts, type BoardThreadFacts } from './board-thread-facts.js';
 
 export type { BoardThreadFacts };
@@ -868,7 +869,7 @@ export function createBoard({
     credential = () => '',
     fetch = globalThis.fetch,
     onMalformedClaim = (fields: string[]) =>
-        console.error(`[driver] the board delivered a malformed claim (${fields.join(', ')}); left to its lease`),
+        logger('driver').error(`the board delivered a malformed claim (${fields.join(', ')}); left to its lease`),
 }: {
     url: string;
     leaseSeconds: number;

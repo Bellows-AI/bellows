@@ -157,14 +157,6 @@ export interface DriverConfig {
      */
     gateListenHost: string;
     /**
-     * The port of the driver's own scrape listener (`GET /metrics`, on `gateListenHost`, behind
-     * `metricsToken`); null serves none. Refused without a token on a non-loopback host — runners can
-     * reach the driver pod on any port and hold no metrics token.
-     */
-    metricsPort: number | null;
-    /** DRIVER_METRICS_TOKEN: the scrape's bearer, its own secret — never the driver credential; '' asks for none. */
-    metricsToken: string;
-    /**
      * The URL the runner is told to reach the gate server by, when loopback will not do — the
      * driver in a container, the runner on the host network, or any split like that. Null builds
      * `http://host.docker.internal:<port>` from the bound port, which the runner reaches through
@@ -279,7 +271,9 @@ const DAYS_PER_YEAR = 365;
 /** Names the runner never takes from the driver's env: its GitHub token is the board's to mint and renew. */
 const RUNNER_ENV_REFUSED = ['GITHUB_TOKEN', 'GH_TOKEN'];
 /** The driver's own secrets: a runner never holds the credential the board authenticates the driver by. */
-const DRIVER_OWN_SECRETS = ['DRIVER_CREDENTIAL', 'DRIVER_CREDENTIAL_FILE', 'DRIVER_METRICS_TOKEN'];
+const DRIVER_OWN_SECRETS = ['DRIVER_CREDENTIAL', 'DRIVER_CREDENTIAL_FILE'];
+/** The driver's own telemetry settings (an exporter header may carry a backend token) are not a runner's to inherit. */
+const RUNNER_ENV_REFUSED_PREFIX = 'OTEL_';
 
 /** RUNNER_ENV's names, refusing the ones a forwarded value would shadow the runner's own credential with. */
 function runnerPassEnv(raw: string | undefined): string[] {
@@ -288,6 +282,9 @@ function runnerPassEnv(raw: string | undefined): string[] {
     if (refused) throw new Error(`RUNNER_ENV must not name ${refused}: the runner's GitHub token comes from the board`);
     const own = names.find((name) => DRIVER_OWN_SECRETS.includes(name));
     if (own) throw new Error(`RUNNER_ENV must not name ${own}: it is the driver's own secret`);
+    const telemetry = names.find((name) => name.startsWith(RUNNER_ENV_REFUSED_PREFIX));
+    if (telemetry)
+        throw new Error(`RUNNER_ENV must not name ${telemetry}: OTEL_* is the driver's own telemetry setting`);
     return names;
 }
 
@@ -363,22 +360,6 @@ function int(raw: string | undefined, label: string, fallback: number, bounds: {
         throw new Error(`${label} must be an integer ${bounds.min}..${bounds.max}, got "${raw}"`);
     }
     return value;
-}
-
-const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'];
-const MAX_PORT = 65_535;
-
-/** DRIVER_METRICS_PORT: unset serves no scrape; a port off loopback needs DRIVER_METRICS_TOKEN to guard it. */
-function metricsPortOf(env: NodeJS.ProcessEnv, host: string, token: string): number | null {
-    const raw = (env.DRIVER_METRICS_PORT ?? '').trim();
-    if (raw === '') return null;
-    const port = int(raw, 'DRIVER_METRICS_PORT', 0, { min: 1, max: MAX_PORT });
-    if (token === '' && !LOOPBACK_HOSTS.includes(host)) {
-        throw new Error(
-            `DRIVER_METRICS_PORT needs DRIVER_METRICS_TOKEN when GATE_LISTEN_HOST is "${host}": runners can reach the port and hold no token`
-        );
-    }
-    return port;
 }
 
 /** DRIVER_CREDENTIAL or DRIVER_CREDENTIAL_FILE, never both; a value the board could not accept is refused unechoed. */
@@ -524,7 +505,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
     assertCacheWatchSupported(cacheWatch, executor);
 
     const network = (env.RUNNER_NETWORK ?? '').trim() || null;
-    const metricsToken = (env.DRIVER_METRICS_TOKEN ?? '').trim();
     const gateHost = text(env.GATE_LISTEN_HOST, 'GATE_LISTEN_HOST', '127.0.0.1');
 
     const { orphanMinMs, stepWaitMs } = loadOrphanBound(env, leaseSeconds);
@@ -569,8 +549,6 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         imagePullSecrets: nameList(env.RUNNER_IMAGE_PULL_SECRETS),
         runnerDoNotDisrupt: flag(env.RUNNER_DO_NOT_DISRUPT),
         gateListenHost: gateHost,
-        metricsPort: metricsPortOf(env, gateHost, metricsToken),
-        metricsToken,
         gateAdvertiseUrl: (env.GATE_ADVERTISE_URL ?? '').trim() || null,
         heartbeatFile: optionalText(env.DRIVER_HEARTBEAT_FILE),
         gateTimeoutMs: int(env.GATE_TIMEOUT_MS, 'GATE_TIMEOUT_MS', DEFAULT_GATE_TIMEOUT_MS, {

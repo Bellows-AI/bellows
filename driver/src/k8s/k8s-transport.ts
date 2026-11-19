@@ -14,6 +14,7 @@ import { StartupRefused } from '../startup-cause.js';
 import type { TaskGroup } from './k8s-group.js';
 import type { TeardownIdentity } from './k8s-teardown.js';
 import { parseJsonObject } from '../json-parse.js';
+import { logger } from '../log.js';
 import { type Bound, type Sleep, timeLeft } from '../poll.js';
 
 /**
@@ -461,7 +462,7 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
     const readFile = deps.readFile ?? readFileSync;
     const request = deps.request ?? httpsRequest;
     const serviceAccountDir = deps.serviceAccountDir ?? SERVICE_ACCOUNT_DIR;
-    const log = deps.log ?? ((message: string) => console.log(`[driver] ${message}`));
+    const log = deps.log ?? ((message: string) => logger('k8s').info(message));
     const host = env.KUBERNETES_SERVICE_HOST;
     const port = env.KUBERNETES_SERVICE_PORT ?? '443';
     if (!host) {

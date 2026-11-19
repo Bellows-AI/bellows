@@ -17,7 +17,7 @@ This page is for a security reviewer. It states what each control does and what 
 | Component | Holds | Does not hold |
 | --- | --- | --- |
 | Dashboard | GitHub App private key, secret-store keys, artifact store credentials, session secret | Agent-written code (it runs in runner pods, never here) |
-| Driver | Its own driver credential (a mounted file), its metrics token, a namespaced Role that creates Jobs | No `get` or `list` on Secrets. It never reads a Secret back. No runner receives its credential |
+| Driver | Its own driver credential (a mounted file), a namespaced Role that creates Jobs | No `get` or `list` on Secrets. It never reads a Secret back. No runner receives its credential |
 | Runner pod | Its per-attempt credentials, model credentials, a memory-only GitHub token cache | No ServiceAccount token, no App key |
 | Agent tool commands | Nothing | No GitHub token, no model credential, no control-channel token |
 
@@ -159,7 +159,7 @@ MCP is off unless you set `mcp.enabled`. It requires an `https` public URL, sinc
 - Runner egress is controlled by a NetworkPolicy. It works only if your CNI enforces it. Check from inside a runner pod that traffic to `169.254.169.254` and to private ranges fails.
 - IPv6 egress is not covered. Every rule is IPv4.
 - A NetworkPolicy does not restrict HTTP routes. A runner can call any public URL.
-- The driver's metrics port (`driver.metricsPort`, default `9464`) answers only with `Authorization: Bearer <driver.metricsToken>`, never the driver credential. It has no Service. The driver refuses a metrics port with no token off loopback.
+- Neither the dashboard nor the driver serves a metrics scrape; both export over OTLP. The driver's `OTEL_*` variables (an exporter header may hold a backend token) reach no runner and no command it runs.
 - With `AUTH_MODE=github` the dashboard accepts a runner's telemetry only under that task attempt's own credential, which the driver writes into the runner and the collector forwards. A laptop exporter sends a personal access token instead (`OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <token>`). Each point is stored under the organization of the credential that sent it, and usage figures count only an organization's own points. A point or branch report for a session that belongs to another task attempt or organization is refused.
 - On EKS, also set the node's metadata hop limit to 1 so a pod cannot reach node credentials. See [Kubernetes and Helm](/self-host/kubernetes).
 

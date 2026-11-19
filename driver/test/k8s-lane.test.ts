@@ -808,10 +808,9 @@ describe('kind lane bench phase (issue #831)', () => {
         expect(bench).toContain('scripts/bench-summary.mjs');
     });
 
-    it('keeps every scrape bearer out of every argv and pod environment: the scrape reads it from stdin', () => {
-        expect(bench).toContain('readFileSync(0, "utf8")');
-        expect(bench).toContain('<<<"$bearer"');
-        expect(bench).not.toMatch(/node -e "\$BENCH_SCRAPE_JS" [^<\n]*\$\{?(CREDENTIAL|METRICS_TOKEN|bearer)/);
+    it('has no scrape: no bearer, no metrics token, no exec into a pod for series', () => {
+        expect(bench).not.toContain('bench_scrape');
+        expect(bench).not.toContain('METRICS_TOKEN');
         expect(bench).not.toContain('JOB_BOARD_TOKEN');
     });
 
@@ -843,13 +842,9 @@ describe('kind lane bench phase (issue #831)', () => {
     });
 
     // Codex round 1 on S6: evidence from an earlier run or an unconfirmed kill is never evidence.
-    it('starts from a fresh directory and drops every destination file before a scrape', () => {
+    it('starts from a fresh directory, so no evidence of an earlier run survives', () => {
         expect(bench).toContain('rm -rf -- "${BENCH_DIR:?}" "${BENCH_TSV:?}"');
         expect(bench.indexOf('rm -rf -- "${BENCH_DIR:?}"')).toBeLessThan(bench.indexOf('mkdir -p "$BENCH_DIR"'));
-        const scrape = bench.slice(bench.indexOf('bench_scrape() {'), bench.indexOf('bench_count() {'));
-        expect(scrape.indexOf('rm -f -- "${list:?}"')).toBeLessThan(scrape.indexOf('bench_pods "$comp"'));
-        expect(scrape.indexOf('rm -f -- "${file:?}.prom" "${file:?}.at"')).toBeLessThan(scrape.indexOf('kubectl exec'));
-        expect(scrape).toContain('date +%s >"$file.at"');
     });
 
     it('records each pod answer time and no shared window', () => {

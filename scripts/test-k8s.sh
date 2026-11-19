@@ -88,13 +88,10 @@ auth_sets() { # auth_sets <publicUrl> <sessionSecret> <driverCredential> — (re
         --set secret.oauthClientSecret=secret
         --set "secret.sessionSecret=$2"
         --set "driver.credential.value=$3"
-        --set "driver.metricsToken=$METRICS_TOKEN"
     )
 }
 # The driver's own credential (`drv_` + 64 hex) and the SHA-256 the dashboard records it by.
 CREDENTIAL="drv_$(printf '%064d' 7)"
-# The driver scrape's own bearer, never the credential.
-METRICS_TOKEN="$(printf '%032d' 9)"
 CREDENTIAL_SHA256="$(printf %s "$CREDENTIAL" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)"
 auth_sets https://factory.example "$SECRET32" "$CREDENTIAL"
 # The local profile as the cluster phase installs it: no App, so the code-only no-fetch entry.
@@ -449,7 +446,7 @@ driver_secret="$(awk '/^# Source: factory\/templates\/driver-secret.yaml/,/^---/
 expect_not_contains 'the dashboard Secret holds no driver credential' "$dashboard_secret" "$CREDENTIAL"
 expect_not_contains 'no shared board secret is rendered' "$(cat "$work/rendered.yaml")" 'job-board-token'
 expect_contains 'the driver Secret holds the driver credential' "$driver_secret" "credential: \"$CREDENTIAL\""
-expect_contains 'the driver Secret holds the scrape token' "$driver_secret" 'metrics-token:'
+expect_not_contains 'the driver Secret holds no scrape token' "$driver_secret" 'metrics-token'
 expect_contains 'the dashboard records the credential by its SHA-256' \
     "$(grep -A1 'name: DRIVER_CREDENTIAL_SHA256' "$work/rendered.yaml")" "value: \"$CREDENTIAL_SHA256\""
 [ "$(grep -c "$CREDENTIAL" "$work/rendered.yaml")" -eq 1 ] && ok 'the credential appears once, in the driver Secret' ||
@@ -795,15 +792,10 @@ gh_dashboard_otel="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---
 expect_not_contains 'the dashboard exports no OTEL by default' "$gh_dashboard" 'OTEL_EXPORTER_OTLP_ENDPOINT'
 expect_contains 'dashboard.otel.endpoint renders the board OTLP endpoint' \
     "$(grep -A1 'name: OTEL_EXPORTER_OTLP_ENDPOINT' <<<"$gh_dashboard_otel")" 'value: "http://otel.example:4318"'
-# The driver's scrape listener: on by default behind its own token, and '' turns it off.
-expect_contains 'the driver scrape port defaults to 9464' "$(grep -A1 'name: DRIVER_METRICS_PORT' <<<"$gh_driver")" 'value: "9464"'
-expect_contains 'the scrape token is the driver Secret’s metrics-token' \
-    "$(grep -A4 'name: DRIVER_METRICS_TOKEN' <<<"$gh_driver")" 'key: metrics-token'
-expect_contains 'the driver names its scrape container port' "$(grep -B1 -A1 'name: metrics' <<<"$gh_driver")" 'containerPort: 9464'
-gh_driver_off="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$(gh_render --set driver.metricsPort='')")"
-expect_not_contains 'an empty scrape port renders no listener env' "$gh_driver_off" 'DRIVER_METRICS_PORT'
-expect_not_contains 'an empty scrape port renders no scrape token' "$gh_driver_off" 'DRIVER_METRICS_TOKEN'
-expect_not_contains 'an empty scrape port renders no container port' "$gh_driver_off" 'name: metrics'
+# The driver serves no scrape: no listener env, no scrape token, no container port.
+expect_not_contains 'the driver renders no scrape listener env' "$gh_driver" 'DRIVER_METRICS_PORT'
+expect_not_contains 'the driver renders no scrape token' "$gh_driver" 'DRIVER_METRICS_TOKEN'
+expect_not_contains 'the driver names no container port' "$gh_driver" 'containerPort'
 
 # Selectors hold only name/instance/component: they are immutable, so a chart-version label in
 # one would make every upgrade an apiserver refusal.
@@ -974,8 +966,6 @@ refuses 'a credential named twice is refused' 'set value or existingSecret, not 
     "${GH_SETS[@]}" --set driver.credential.existingSecret=mine
 refuses 'a malformed bootstrap hash is refused' 'driver.credential.sha256 must be the 64-hex' \
     "${GH_SETS[@]}" --set driver.credential.value= --set driver.credential.existingSecret=mine --set driver.credential.sha256=abc
-refuses 'a scrape port with no scrape token is refused' 'driver.metricsToken of at least 32 characters is required' \
-    "${GH_SETS[@]}" --set driver.metricsToken=
 refuses 'a missing App id is refused unless offline' 'github.appId is required' "${GH_SETS[@]}" --set github.appId=
 # Offline waives the App, never the wall: the no-fetch entry still needs every auth value.
 refuses 'offline still refuses a missing OAuth client id' 'auth.oauthClientId is required' \
@@ -2246,7 +2236,6 @@ PORT=18080
 BASE="http://127.0.0.1:$PORT"
 secret_store_sets "$(openssl rand -base64 32)" "$(openssl rand -base64 32)" "$(openssl rand -base64 32)"
 CREDENTIAL="drv_$(openssl rand -hex 32)"
-METRICS_TOKEN="$(openssl rand -hex 32)"
 auth_sets "$BASE" "$(openssl rand -hex 32)" "$CREDENTIAL"
 REPLICA_SETS=()
 if [ "$PHASE" = replicas ]; then

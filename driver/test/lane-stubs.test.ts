@@ -256,7 +256,7 @@ describe('test-jobs: every host listener a container dials binds LANE_HOST', () 
         expect(lane).toContain('BASE="http://$LANE_HOST:$PORT"');
     });
 
-    it('no host driver opens its metrics port, which off loopback needs a token', () => {
+    it('no host driver has a metrics port: the driver serves no scrape', () => {
         expect(lane).not.toContain('DRIVER_METRICS_PORT');
     });
 });
