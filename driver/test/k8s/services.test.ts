@@ -98,10 +98,10 @@ describe('the service sidecars (issue #773)', () => {
         ]);
     });
 
-    it('probes liveness every two seconds with a 10 s timeout, restarting only after three misses in a row', () => {
+    it('probes liveness every 15 s with a 10 s timeout, restarting only after three misses in a row', () => {
         expect(sidecarOf('cache').livenessProbe).toEqual({
             exec: { command: serviceProbeArgv('cache') },
-            periodSeconds: 2,
+            periodSeconds: 15,
             timeoutSeconds: 10,
             failureThreshold: 3,
         });
@@ -112,6 +112,7 @@ describe('the service sidecars (issue #773)', () => {
         if (!probe) throw new Error('the service sidecar has no liveness probe');
         expect(probe.failureThreshold).toBeGreaterThanOrEqual(2);
         expect(probe.timeoutSeconds).toBeGreaterThan(1);
+        expect(probe.periodSeconds).toBeGreaterThan(probe.timeoutSeconds);
         expect(probe.failureThreshold * (probe.periodSeconds + probe.timeoutSeconds)).toBeLessThan(
             SERVICE_RESTART_TIMEOUT_S
         );

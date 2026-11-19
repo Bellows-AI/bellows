@@ -331,10 +331,11 @@ const serviceRestartMounts = (services: readonly ServiceSpec[]): RunnerMount[] =
  * How often the kubelet runs a service sidecar's generation probe, how long one exec may take, and the
  * misses in a row it restarts it on. A timed-out exec counts as a miss, and in a loaded microVM one exec
  * can outrun the kubelet's 1 s default — so a timeout alone never restarts a healthy service mid-gate.
- * A real generation bump fails every probe at once: the restart lands about 3 × 2 s after it, and at
- * worst, every exec timing out, 3 × (2 + 10) s — inside the supervisor's `SERVICE_RESTART_TIMEOUT_S`.
+ * The period leaves room for the timeout, so a slow exec never overlaps the next. A real generation
+ * bump fails every probe at once: the restart lands 30–45 s after it (three misses 15 s apart), and at
+ * worst, every exec timing out, 3 × (15 + 10) s — inside the supervisor's `SERVICE_RESTART_TIMEOUT_S`.
  */
-const SERVICE_PROBE_PERIOD_SECONDS = 2;
+const SERVICE_PROBE_PERIOD_SECONDS = 15;
 const SERVICE_PROBE_TIMEOUT_SECONDS = 10;
 const SERVICE_PROBE_FAILURES = 3;
 
