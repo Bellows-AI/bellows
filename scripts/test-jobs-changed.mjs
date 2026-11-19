@@ -58,6 +58,7 @@ export const RULES = [
     [/^scripts\/lanes\/k8s\/[a-z-]+\.sh$/, NONE, 'kubernetes lane phases, covered by test:k8s'],
     [/^scripts\/secrets-init\.mjs$/, NONE, 'writes secrets.env for a development checkout; pinned by server/test/secrets.environment.test.ts'],
     [/^scripts\/gate-pg-fast\.sh$/, NONE, "this repository's test:db gate postgres tuning; pinned by server/test/bellows.test.ts"],
+    [/^scripts\/gate-diag(-pod)?\.sh$/, NONE, 'the gate diagnostic pass; pinned by server/test/gate-diag.test.ts'],
     [/^scripts\/gate-test-jobs\.sh$/, NONE, "this repository's test:jobs gate wrapper; pinned by server/test/gate-test-jobs.test.ts"],
     [/^scripts\/gate-test-changed\.sh$/, NONE, "this repository's test and test:db gate wrapper; pinned by server/test/gate-test-changed.test.ts"],
     [/^scripts\/gate-base\.sh$/, NONE, "this repository's gate base resolution; pinned by server/test/gate-test-jobs.test.ts and gate-test-changed.test.ts"],
