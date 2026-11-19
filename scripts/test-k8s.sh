@@ -37,10 +37,10 @@ while [ "$#" -gt 0 ]; do
         phase_requested=1
         shift
         PHASE="${1:-}"
-        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|drain|replicas|bench) ;; *) echo 'invalid --phase'; exit 2 ;; esac
+        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|observability|drain|replicas|bench) ;; *) echo 'invalid --phase'; exit 2 ;; esac
         ;;
     --help)
-        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|drain|replicas|bench] | --netpol]'
+        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|observability|drain|replicas|bench] | --netpol]'
         echo 'All cluster phases run smoke prerequisites. The default cluster phase is all, which leaves out drain and replicas (both need a LAYOUT=drain cluster) and bench (an hour or more on an idle host; writes <timings>.bench.tsv).'
         echo 'TIMINGS_FILE overrides artifacts/k8s/<release>.tsv (includes cleanup).'
         exit 0
@@ -2059,6 +2059,76 @@ EOF
     dns="$(kn exec attempt-a -n "$NETPOL_NS" -- sh -c 'nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1 && echo resolves || echo broken' 2>/dev/null)"
     expect_contains 'a runner still resolves cluster DNS' "$dns" 'resolves'
 
+    # The ops collector's ingress policy (observability.enabled): only this release's dashboard and driver
+    # pods reach it, and only on 4318. Two probe pods stand in for it and for the driver; `dashboard` above
+    # already stands in for the board. Same honest-probe rule: every target is reached BEFORE the policy.
+    OPS_LISTEN='while :; do nc -l -p 4318 >/dev/null 2>&1; done & while :; do nc -l -p 9999 >/dev/null 2>&1; done & sleep 3600'
+    netpol_pod ops \
+        "{\"app.kubernetes.io/name\":\"factory\",\"app.kubernetes.io/instance\":\"$RELEASE\",\"app.kubernetes.io/component\":\"ops-collector\"}" \
+        "$OPS_LISTEN"
+    netpol_pod driver \
+        "{\"app.kubernetes.io/name\":\"factory\",\"app.kubernetes.io/instance\":\"$RELEASE\",\"app.kubernetes.io/component\":\"driver\"}"
+    for p in ops driver; do
+        kn wait --for=condition=Ready "pod/$p" -n "$NETPOL_NS" --timeout=180s >/dev/null 2>&1 || {
+            echo "test-k8s: probe pod $p never became Ready"
+            exit 1
+        }
+    done
+    IP_OPS="$(ip_of ops)"
+    # The runner policy is already applied, and its egress exclusions may deny a runner the ops pod on their
+    # own, which would make the later denial prove nothing: an additive egress policy lets the runner out to
+    # the ops collector, so what the ingress policy then denies is the ingress policy's own doing.
+    kn apply -n "$NETPOL_NS" -f - >/dev/null 2>&1 <<EOF || {
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: lane-runner-egress-to-ops
+spec:
+    podSelector:
+        matchLabels:
+            factory.job: aaaa
+    policyTypes: [Egress]
+    egress:
+        - to:
+              - podSelector:
+                    matchLabels:
+                        app.kubernetes.io/component: ops-collector
+          ports:
+              - protocol: TCP
+                port: 4318
+EOF
+        echo 'test-k8s: the lane egress NetworkPolicy would not apply'
+        exit 1
+    }
+    sleep 5
+    # Ready means ANSWERING: every prober waits for the listener, not for the pod.
+    for ops_probe in unrelated dashboard driver attempt-a; do
+        for _ in $(seq 1 30); do
+            [ "$(reaches "$ops_probe" "$IP_OPS" 4318)" = 'reachable' ] && break
+            sleep 2
+        done
+    done
+    expect_contains 'before the ops policy, an unrelated pod reaches the ops collector (so the probe is honest)' \
+        "$(reaches unrelated "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'before the ops policy, the dashboard reaches the ops collector' "$(reaches dashboard "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'before the ops policy, the driver reaches the ops collector' "$(reaches driver "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'before the ops policy, a runner reaches the ops collector (the lane egress policy lets it out)' \
+        "$(reaches attempt-a "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'before the ops policy, the dashboard reaches the ops collector on 9999' "$(reaches dashboard "$IP_OPS" 9999)" 'reachable'
+
+    gh_render --set observability.enabled=true --set-string observability.endpoint=http://otlp.example |
+        awk '/^# Source: factory\/templates\/ops-collector-networkpolicy.yaml/,/^---/' |
+        grep -v '^---$' | kn apply -n "$NETPOL_NS" -f - >/dev/null 2>&1 || {
+        echo 'test-k8s: the rendered ops collector NetworkPolicy would not apply'
+        exit 1
+    }
+    sleep 5
+    expect_contains 'an unrelated pod may not reach the ops collector' "$(reaches unrelated "$IP_OPS" 4318)" 'denied'
+    expect_contains 'a runner may not reach the ops collector' "$(reaches attempt-a "$IP_OPS" 4318)" 'denied'
+    expect_contains 'the dashboard reaches the ops collector on 4318' "$(reaches dashboard "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'the driver reaches the ops collector on 4318' "$(reaches driver "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'the dashboard may not reach the ops collector on another port' "$(reaches dashboard "$IP_OPS" 9999)" 'denied'
+
     netpol_cleanup
     trap cleanup EXIT
     printf '\n%d passed, %d failed\n' "$pass" "$fail"
@@ -3156,6 +3226,8 @@ driver_logs() { kubectl logs -l "$DRIVER_SEL" -n "$NAMESPACE" --tail=-1 --reques
 . "$REPO/scripts/lanes/k8s/capacity.sh"
 
 . "$REPO/scripts/lanes/k8s/mcp.sh"
+
+. "$REPO/scripts/lanes/k8s/observability.sh"
 
 . "$REPO/scripts/lanes/k8s/bench.sh"
 
