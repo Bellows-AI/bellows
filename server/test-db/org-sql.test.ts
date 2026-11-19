@@ -105,8 +105,8 @@ describe.skipIf(!enabled)('orgSql', () => {
 });
 
 /**
- * The policies exempt the owner (151 enables, a later release forces), so no request may run as it: the board's request
- * and secrets pools take the request role, the cross-org pool its own, and only the migration connection is the owner.
+ * The owner is bound by the forced policies (161) and runs only the migrations: the board's request and secrets pools
+ * take the request role, the cross-org pool its own, and only the migration connection is the owner.
  */
 describe.skipIf(!enabled)("the board's pools", () => {
     it('run requests and secrets as the request role, the cross-org paths as the cross-org role', async () => {
