@@ -16,7 +16,8 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
-OWNER=gate-diag
+# Unique per run: a namespace another launcher created under the same name is never this run's to delete.
+OWNER="gate-diag-$(date +%s)-$$"
 POD=gate-diag
 
 usage() {

@@ -211,8 +211,16 @@ bench() {
     q 'drop table if exists gate_diag' >/dev/null || echo 'could not drop the gate_diag table' >&2
 }
 
-need pg_settings_durable "$(q "$SETTINGS")"
-bench durable
+DURABLE='fsync=on synchronous_commit=on full_page_writes=on'
+settings=$(q "$SETTINGS")
+need pg_settings_durable "$settings"
+# A service a gate already tuned (a rerun on the same service) is not durable: never report it as such.
+if [ "$settings" = "$DURABLE" ]; then
+    bench durable
+else
+    echo "durability is not on ($settings): the durable set is unmeasured" >&2
+    for key in pg_durable_write_c1_tps pg_durable_read_c1_tps pg_durable_write_c4_tps; do need "$key" ''; done
+fi
 
 sh "$here/gate-pg-fast.sh" "$url" || echo 'gate-pg-fast.sh failed' >&2
 # The reload is asynchronous: trust the fast set only once a fresh read shows durability off.

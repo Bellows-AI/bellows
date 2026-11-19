@@ -108,6 +108,7 @@ async function runPass(
         'psql',
         `${pg}
 [ "\${FAKE_PSQL_STATUS:-0}" = 0 ] || exit "$FAKE_PSQL_STATUS"
+[ -z "\${FAKE_PSQL_TUNED:-}" ] || : > "${root}/fast"
 file= prev=
 for arg in "$@"; do [ "$prev" = -f ] && file=$arg; prev=$arg; done
 if [ -n "$file" ]; then
@@ -259,6 +260,14 @@ describe('scripts/gate-diag.sh', { timeout: 60_000 }, () => {
         expect(run.value('pg_settings_fast')).toBe('fsync=on synchronous_commit=on full_page_writes=on');
         for (const key of TPS('fast')) expect(run.value(key), key).toBe('unmeasured');
         for (const key of TPS('durable')) expect(run.value(key), key).toMatch(NUMBER);
+    });
+
+    it('a service already tuned by an earlier pass leaves the durable set unmeasured', async () => {
+        const run = await runPass({ env: { FAKE_PSQL_TUNED: '1' } });
+        expect(run.status).toBe(1);
+        expect(run.value('pg_settings_durable')).toBe('fsync=off synchronous_commit=off full_page_writes=off');
+        for (const key of TPS('durable')) expect(run.value(key), key).toBe('unmeasured');
+        for (const key of TPS('fast')) expect(run.value(key), key).toMatch(NUMBER);
     });
 
     it("reads the service's own mounts through the server", async () => {
@@ -427,13 +436,21 @@ function kubectl(): { root: string; bin: string; log: string } {
         `printf 'kubectl %s\\n' "$*" >> "${fx.log}"
 case "$*" in
 *' get namespace '*)
-    if [ -f "${fx.root}/ns" ]; then printf gate-diag; exit 0; fi
+    if [ -f "${fx.root}/ns" ]; then sed -n 's/^ *app.kubernetes.io\\/managed-by: //p' "${fx.root}/namespace.yaml" | tr -d '\\n'; exit 0; fi
+    if [ -f "${fx.root}/raced" ]; then printf gate-diag; exit 0; fi
     case \${FAKE_NS:-absent} in
     absent) echo 'Error from server (NotFound): namespaces "ns-a" not found' >&2; exit 1 ;;
     foreign) printf someone-else ;;
     error) echo 'Unable to connect to the server: dial tcp: i/o timeout' >&2; exit 1 ;;
     esac ;;
-*' create -f -'*) cat > "${fx.root}/namespace.yaml"; : > "${fx.root}/ns" ;;
+*' create -f -'*)
+    cat > "${fx.root}/namespace.yaml"
+    if [ -n "\${FAKE_RACE:-}" ]; then
+        # Another launcher created the same namespace between this one's read and its create.
+        : > "${fx.root}/raced"
+        echo 'Error from server (AlreadyExists): namespaces "ns-a" already exists' >&2; exit 1
+    fi
+    : > "${fx.root}/ns" ;;
 *' apply -f -'*)
     cat > "${fx.root}/manifest.yaml"
     [ -z "\${FAKE_REJECT:-}" ] || { echo 'Error from server (Forbidden): pods "gate-diag" is forbidden: violates PodSecurity' >&2; exit 1; } ;;
@@ -557,8 +574,15 @@ describe('scripts/gate-diag-pod.sh', () => {
         expect(run.stdout).toContain('nproc\t4\n');
         expect(run.stdout).toContain('diag_exit\t0\n');
         const ns = readFileSync(join(run.root, 'namespace.yaml'), 'utf8');
-        expect(ns).toContain('app.kubernetes.io/managed-by: gate-diag');
+        expect(ns).toMatch(/app\.kubernetes\.io\/managed-by: gate-diag-\d+-\d+\n/);
         expect(deletes(run.calls)).toHaveLength(1);
+    });
+
+    it('never deletes a namespace another launcher created first', async () => {
+        const run = await launch([...ARGS, '--mode', 'microvm'], { FAKE_RACE: '1' });
+        expect(run.status).toBe(3);
+        expect(deletes(run.calls)).toEqual([]);
+        expect(run.stderr).toContain('its owner could not be confirmed');
     });
 
     it('refuses a namespace it does not own', async () => {
