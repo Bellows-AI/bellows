@@ -271,9 +271,16 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         const gates = parseBellows(text)?.gates ?? [];
         expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db', 'test:jobs']);
         expect(gates.slice(0, 2)).toEqual([
-            { name: 'test', command: 'npm test', timeoutMinutes: 30 },
+            { name: 'test', command: 'sh scripts/gate-test-changed.sh', timeoutMinutes: 30 },
             { name: 'lint', command: 'npm run lint' },
         ]);
+    });
+
+    // The test and test:db gates run only the suites the change reaches; the full suites stay CI's merge
+    // gate, and the file says so where the gates are declared.
+    it('names CI as the merge gate beside the changed-only gates', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        expect(text).toMatch(/# CI's npm test and npm run test:db stay the merge gate/);
     });
 
     // The gates run in the dev runner image a release publishes, pinned to one release tag: a moving
@@ -294,7 +301,8 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         expect(gates.get('typecheck')?.command).toBe('npm run typecheck');
         expect(gates.get('test:db')?.command).toBe(
             'sh scripts/gate-pg-fast.sh postgres://factory:factory@postgres:5432/postgres' +
-                ' && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db'
+                ' && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test' +
+                ' sh scripts/gate-test-changed.sh --db'
         );
     });
 
