@@ -37,6 +37,15 @@ jobs:
                   tar -xzf /tmp/helm.tar.gz -C /tmp linux-amd64/helm
                   install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
                   helm version --short
+            # The mcp phase's client (scripts/mcp-kind-client.mjs) resolves its SDK from node_modules.
+            - if: matrix.phase == 'mcp'
+              uses: actions/setup-node@v4
+              with:
+                  node-version: '24'
+                  cache: npm
+            - if: matrix.phase == 'mcp'
+              name: npm ci
+              run: npm ci
             # kind and kubectl ship on ubuntu-latest; the drain and replicas phases need the three-worker layout.
             - name: scripts/kind-cluster.sh create
               env:
