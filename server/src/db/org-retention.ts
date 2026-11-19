@@ -11,6 +11,7 @@ import { REQUEST_ROLE } from './org-sql.js';
 import { type OrgPurgeDeps, ownerOrg, type PurgeError, retireSecrets } from './org-purge.js';
 import { type PlanLimits, planChangeLockKey, planLimits } from './plan-limits.js';
 import { waitAdvisoryXactLock } from './pool.js';
+import { logger } from '../log.js';
 
 /**
  * Plan-based retention (docs/retention.md): an interval loop on every replica, on the cross-org pool, that deletes every
@@ -665,7 +666,7 @@ async function retainOrg(
 
 /** One pass over every active org, least recently served first; never throws for one org's failure. */
 export async function runRetentionPass(deps: OrgRetentionDeps, signal?: AbortSignal): Promise<void> {
-    const log = deps.log ?? ((line: string) => console.log(line));
+    const log = deps.log ?? ((line: string) => logger('org-retention').info(line));
     const until = Date.now() + (deps.passMs ?? RETENTION_PASS_MS);
     const expired = () => signal?.aborted === true || Date.now() > until;
     // The pass reads absence: under the request role a missing setting reads no rows, so it never runs there.

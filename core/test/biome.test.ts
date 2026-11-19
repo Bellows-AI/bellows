@@ -108,7 +108,28 @@ const lintScratch = async (files: Record<string, string>, lintDir = join(root, '
     }
 };
 
+/** The server's user-facing stdout: CLIs that print to the operator, not the log. */
+const SERVER_CONSOLE_CLIS = [
+    'server/src/seed/cli.ts',
+    'server/src/secrets/rotate-cli.ts',
+    'server/src/auth/driver-credential-cli.ts',
+];
+
 describe('biome', () => {
+    it('bans console in server/src except the three CLIs that write to the operator', () => {
+        const { overrides } = JSON.parse(readFileSync(join(root, 'biome.json'), 'utf8')) as {
+            overrides: { includes: string[]; linter?: { rules?: { suspicious?: { noConsole?: string } } } }[];
+        };
+        const consoleRule = (includes: string[]) =>
+            overrides.find((o) => o.linter?.rules?.suspicious?.noConsole && o.includes.join() === includes.join())
+                ?.linter?.rules?.suspicious?.noConsole;
+        expect(consoleRule(['server/src/**'])).toBe('error');
+        expect(consoleRule(SERVER_CONSOLE_CLIS)).toBe('off');
+        // The off override comes later, so it wins over the ban.
+        const at = (includes: string[]) => overrides.findIndex((o) => o.includes.join() === includes.join());
+        expect(at(SERVER_CONSOLE_CLIS)).toBeGreaterThan(at(['server/src/**']));
+    });
+
     it('is configured at the root with the style the tree is written in', () => {
         expect(existsSync(join(root, 'biome.json')), 'biome.json missing at the repo root').toBe(true);
         const config = JSON.parse(readFileSync(join(root, 'biome.json'), 'utf8'));

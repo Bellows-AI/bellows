@@ -10,6 +10,7 @@ import {
     type PutResult,
 } from './object-store.js';
 import { startIntervalLoop } from '../interval-loop.js';
+import { describeError } from '../log.js';
 
 const NOT_FOUND = 'ENOENT';
 const ALREADY_EXISTS = 'EEXIST';
@@ -96,7 +97,7 @@ export function startTempSweep(
             if (r.removed > 0) log(`swept ${r.removed} stale temp files`);
         },
         intervalMs,
-        { onError: (e) => log(`temp sweep failed: ${e.message}`), immediate: false }
+        { onError: (e) => log(`temp sweep failed: ${describeError(e)}`), immediate: false }
     );
 }
 

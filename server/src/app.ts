@@ -1,6 +1,6 @@
 import type { IntegrationProvider } from '@factory-ai/core';
 import Fastify from 'fastify';
-import type { FastifyInstance, FastifyServerOptions } from 'fastify';
+import type { FastifyBaseLogger, FastifyInstance, FastifyServerOptions } from 'fastify';
 import type { DriverCredentialStore } from './auth/driver-credentials.js';
 import type { GitHubIdentityClient } from './auth/github.js';
 import { registerAuth } from './auth/plugin.js';
@@ -14,6 +14,8 @@ import { createCimdFetcher } from './oauth/cimd-fetch.js';
 import { createClientResolver } from './oauth/client-resolver.js';
 import { oauthRoutes } from './routes/oauth.js';
 import type { InstallationRepo } from './github/app-client.js';
+import { UNMATCHED_ROUTE } from './log.js';
+import { registerRouteSpanHook } from './otel-scrub.js';
 import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
 import type { AgentTitle } from './db/agent-title.js';
@@ -69,7 +71,13 @@ import { readVersion } from './version.js';
 
 const HTTP_NOT_FOUND = 404;
 const MS_PER_SECOND = 1000;
-const UNMATCHED_ROUTE = '<unmatched>';
+
+/** Fastify takes a logger instance or logger options, never both. */
+const loggingOf = (
+    instance: FastifyBaseLogger | undefined,
+    options: NonNullable<FastifyServerOptions['logger']>
+): Pick<FastifyServerOptions, 'logger' | 'loggerInstance'> =>
+    instance ? { loggerInstance: instance } : { logger: options };
 
 declare module 'fastify' {
     interface FastifyRequest {
@@ -180,7 +188,9 @@ export interface AppDeps {
      * tests) nothing is. main.ts builds it once.
      */
     metrics?: ServerMetrics | undefined;
-    /** `true` for the server's own log; a destination object is the tests' capture of every line. */
+    /** The board's root logger (`log.ts`), which main.ts supplies. */
+    loggerInstance?: FastifyBaseLogger;
+    /** Tests' logging options: a destination object is the capture of every line. Ignored beside `loggerInstance`. */
     logger?: FastifyServerOptions['logger'];
     /** The secret-storage seam (docs/secrets.md). main.ts supplies the PostgreSQL backend; consumers read it. */
     secrets?: SecretStore | undefined;
@@ -384,9 +394,10 @@ export async function buildApp({
     version = readVersion(),
     now = Date.now,
     metrics,
+    loggerInstance,
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
-    const app = Fastify({ logger, trustProxy: trustProxyOf(config.trustedProxies) });
+    const app = Fastify({ ...loggingOf(loggerInstance, logger), trustProxy: trustProxyOf(config.trustedProxies) });
     app.setErrorHandler(errorHandler);
 
     // Aborted the moment `app.close()` begins, before it waits for the open requests: the long-polls (settle, batch
@@ -403,6 +414,8 @@ export async function buildApp({
         reply.header('X-Content-Type-Options', 'nosniff');
         reply.header('Referrer-Policy', 'no-referrer');
     });
+
+    registerRouteSpanHook(app);
 
     // On the root instance, before any route: a hook inside an encapsulated plugin would miss every
     // route registered beside it. The pattern is the label, so a raw id never becomes a series.

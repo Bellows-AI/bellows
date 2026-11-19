@@ -52,6 +52,7 @@ import {
     nodeOf,
     nodeSkipsGates,
 } from '../workflows/workflow-schema.js';
+import { logger } from '../../log.js';
 
 /** The worker claim of the next queued job. */
 export interface JobClaimStore {
@@ -95,9 +96,7 @@ async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql)
         returning id, root_job_id, ${spentRule(tx)} as rule
     `;
     // Which rule ended each row: a poison job and a platform thrashing one read the same on the row.
-    for (const r of retired) {
-        console.warn(`[jobs] job ${r.id} retired dead: its ${r.rule ?? 'interruption bound'} is spent`);
-    }
+    for (const r of retired) logger('jobs').warn({ jobId: r.id, rule: r.rule ?? 'interruption bound' }, 'retired dead');
     // A retired caller's separate reviews have no one left to read them.
     await stopReviewsOf(
         tx,

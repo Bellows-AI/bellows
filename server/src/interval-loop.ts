@@ -6,12 +6,14 @@
  * handed so it ends between items, and resolves once that pass has settled, so the pool is never closed under it.
  * A stop called twice is the same promise. `immediate: false` skips the startup pass.
  */
+import { logger } from './log.js';
+
 export function startIntervalLoop(
     label: string,
     pass: (signal: AbortSignal) => Promise<unknown>,
     intervalMs: number,
     {
-        onError = (e: Error) => console.error(`[${label}] pass failed: ${e.message}`),
+        onError = (e: Error) => logger(label).error({ err: e }, 'pass failed'),
         immediate = true,
     }: { onError?: (e: Error) => void; immediate?: boolean } = {}
 ): () => Promise<void> {

@@ -12,6 +12,7 @@ import { exists } from './job-store-rows.js';
 import { stagedUnderLease } from './job-store-staged.js';
 import type { JobStore, JobStoreContext } from './job-store-types.js';
 import { type CompleteOutcome, type CompleteResult, completeInTx } from './job-store-worker.js';
+import { logger } from '../../log.js';
 
 /** The staged conclusion an agent leaves under its lease. */
 export interface JobConclusionStore {
@@ -103,7 +104,7 @@ export async function commitStagedForStop(
  * envelope survives for an operator, and the rest of the org's claims proceed.
  */
 function commitFailed(id: string, e: Error): void {
-    console.error(`[jobs] the staged conclusion of job ${id} could not be committed: ${e.message}`);
+    logger('jobs').error({ jobId: id, err: e }, 'the staged conclusion could not be committed');
 }
 
 /**

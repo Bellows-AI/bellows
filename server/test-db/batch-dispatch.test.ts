@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { resolveBatchPlan, taskUsageOf, type BatchPlan, type TokenType } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
@@ -26,6 +26,7 @@ import {
     rootOf,
     startBatch,
 } from './batch-fixtures.js';
+import { captureLogs } from '../test/helpers-log.js';
 
 /**
  * Dispatch against a real database (docs/batches.md): the scheduler's transactions, the unique
@@ -1881,15 +1882,16 @@ describe.skipIf(!enabled)('batch report usage', () => {
     it('reports usage unavailable, not zero, and still explains scheduling, when telemetry cannot be read', async () => {
         const { id } = await build();
         const healthy = await report(id);
-        const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+        const captured = captureLogs();
         const failing = await report(id, {
             readFacts: async () => {
                 throw new Error('telemetry down');
             },
         });
-        const calls = logged.mock.calls.map((call) => String(call[0]));
-        logged.mockRestore();
-        expect(calls.some((line) => line.includes('telemetry down'))).toBe(true);
+        const calls = captured.emitted().map((r) => String(r.body));
+        captured.stop();
+        expect(calls).toContain('usage read failed');
+        expect(calls.join()).not.toContain('telemetry down');
         expect(failing.totals.tokenUsage.state).toBe('unavailable');
         expect(failing.tasks.every((t) => t.usage.tokenUsageUnavailable === 'telemetry')).toBe(true);
         expect(failing.tasks.map((t) => [t.key, t.execution, t.next])).toEqual(

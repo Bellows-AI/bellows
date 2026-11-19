@@ -67,6 +67,7 @@ commit message needs a force-push to fix.
 | EKS installs, the EFS storage class, the pre-release cloud walk | [docs/eks-runbook.md](docs/eks-runbook.md) |
 | Executor/runner tests, coverage gates, `scripts/test-jobs.sh` | [docs/executor-testing.md](docs/executor-testing.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
+| `server/src/log.ts`, `server/src/otel*.ts`, `server/src/pg-trace.ts`, `driver/src/otel*.ts`, `driver/src/log.ts` | [docs/observability.md](docs/observability.md) |
 | `server/src/routes/jobs/*`, `db/jobs/*`, `006_jobs.sql`, `driver/*`, `cli/*` | [docs/jobs.md](docs/jobs.md) |
 | `core/src/batch-plan.ts`, `059_batches.sql`, `db/batches/*`, `routes/batches/*` | [docs/batches.md](docs/batches.md) |
 | `workflow`, `027_workflows.sql`, `db/workflows/*`, `routes/workflows.ts` | [docs/workflows.md](docs/workflows.md) |

@@ -7,6 +7,7 @@ import { type CredentialResolver, createCredentialResolver } from './credential-
 import { createGrantLineage, type DestroyResult, type GrantLineage, type LineageTiming } from './grant-lineage.js';
 import type { OAuthProviderLookup } from './oauth-provider.js';
 import { startIntervalLoop } from '../interval-loop.js';
+import { logger } from '../log.js';
 
 /**
  * The composition of the outbound OAuth runtime and the background pass that adopts what a lost board pod left
@@ -203,9 +204,9 @@ export async function recoverIntegrations(
 export function startIntegrationRecovery(
     pass: (signal: AbortSignal) => Promise<unknown>,
     intervalMs = INTEGRATION_RECOVERY_INTERVAL_MS,
-    log: (line: string) => void = (line) => console.error(line)
+    log: (line: string) => void = (line) => logger('integrations').error(line)
 ): () => Promise<void> {
     return startIntervalLoop('integrations', pass, intervalMs, {
-        onError: () => log('[integrations] recovery pass failed'),
+        onError: () => log('recovery pass failed'),
     });
 }
