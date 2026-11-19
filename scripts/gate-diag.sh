@@ -201,8 +201,14 @@ bench() {
         for w in write_c1 read_c1 write_c4; do need "pg_$1_${w}_tps" ''; done
         return 0
     fi
-    need "pg_$1_write_c1_tps" "$(rate "$rows" "$(secs 300 "$PSQL -f '$sql/write_c1.sql'")")"
-    need "pg_$1_read_c1_tps" "$(rate "$rows" "$(secs 300 "$PSQL -f '$sql/read_c1.sql' -o /dev/null")")"
+    written=$(rate "$rows" "$(secs 300 "$PSQL -f '$sql/write_c1.sql'")")
+    need "pg_$1_write_c1_tps" "$written"
+    # The reads select the rows write_c1 inserted: without them they would time an empty table.
+    if [ -n "$written" ]; then
+        need "pg_$1_read_c1_tps" "$(rate "$rows" "$(secs 300 "$PSQL -f '$sql/read_c1.sql' -o /dev/null")")"
+    else
+        need "pg_$1_read_c1_tps" ''
+    fi
     # Four sessions at once; the clock stops when the last one ends, and any failed session fails it.
     c4=
     for k in 0 1 2 3; do c4="$c4$PSQL -f '$sql/write_c4_$k.sql' & p$k=\$!; "; done

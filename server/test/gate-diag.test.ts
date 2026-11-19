@@ -294,10 +294,12 @@ describe('scripts/gate-diag.sh', { timeout: 60_000 }, () => {
             const run = await runPass({ env: { FAKE_PSQL_FAIL: name } });
             expect(run.status).toBe(1);
             const failed = name.replace(/_\d$/, '');
+            // Reads run against the rows write_c1 inserted: a failed write leaves them unmeasured too.
+            const unmeasured = failed === 'write_c1' ? ['write_c1', 'read_c1'] : [failed];
             for (const set of ['durable', 'fast']) {
                 for (const workload of WORKLOADS) {
                     const key = `pg_${set}_${workload}_tps`;
-                    expect(run.value(key), key).toMatch(workload === failed ? /^unmeasured$/ : NUMBER);
+                    expect(run.value(key), key).toMatch(unmeasured.includes(workload) ? /^unmeasured$/ : NUMBER);
                 }
             }
             // The later measures still print.
