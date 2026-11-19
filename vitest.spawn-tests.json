@@ -83,6 +83,7 @@
         "driver/test/tree-fingerprint.test.ts",
         "driver/test/turn-context-hook.test.ts",
         "server/test/bench-summary.test.ts",
+        "server/test/gate-test-changed.test.ts",
         "server/test/gate-test-jobs.test.ts",
         "server/test/lane-capacity-samples.test.ts",
         "server/test/lane-slow-jobs.test.ts",

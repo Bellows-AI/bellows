@@ -5,15 +5,8 @@
 # that cannot answer fails the gate, never skips it. Pinned by server/test/gate-test-jobs.test.ts.
 set -eu
 cd "$(dirname -- "$0")/.."
-branch=${BELLOWS_BASE_BRANCH:-main}
-base=origin/$branch
-
-# The task checkout fetches every branch, so this is the fallback; a full fetch, not a shallow one,
-# keeps the merge base the map diffs from.
-if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
-    git fetch --quiet origin "+refs/heads/$branch:refs/remotes/$base" ||
-        { echo "gate-test-jobs: could not fetch $base" >&2; exit 2; }
-fi
+gate=gate-test-jobs
+. scripts/gate-base.sh
 
 selection=$(node scripts/test-jobs-changed.mjs "$base") ||
     { echo "gate-test-jobs: could not map the changes since $base" >&2; exit 2; }
