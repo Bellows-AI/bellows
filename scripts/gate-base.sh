@@ -1,4 +1,4 @@
-# Sourced by this repository's gate scripts (scripts/gate-test-jobs.sh, scripts/gate-test-changed.sh)
+# Sourced by this repository's gate script (scripts/gate-test-changed.sh)
 # from the repo root, after the caller sets gate=<its name>. Sets branch and base=origin/$branch for the
 # claim's base (BELLOWS_BASE_BRANCH, in the gate env), fetching it when the checkout lacks it. A base that
 # cannot be fetched fails the gate with exit 2, never reads as "nothing changed".

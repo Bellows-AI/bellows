@@ -384,7 +384,7 @@ describe("this repository's own .bellows.yaml", () => {
             'lint',
             'typecheck',
             'test:db',
-            'test:jobs',
+            'test:executors',
         ]);
     });
 

@@ -131,6 +131,16 @@ describe('ci workflows', () => {
         const run = runs(doc.jobs.jobs!).find((r) => r.includes('npm run test:jobs'))!;
         const named = run.split(/\s+/).at(-1)!.split(',');
         expect(named).toEqual(jobsPhases.filter((phase) => !hostNetworking.includes(phase)));
+        // The mcp phase's client resolves its SDK from the server package: that cell alone installs.
+        const install = doc.jobs.kind!.steps!.find((s) => s.run?.trim() === 'npm ci')!;
+        expect(install.if).toBe("matrix.phase == 'mcp'");
+        expect(runs(doc.jobs.kind!).indexOf('npm ci')).toBeLessThan(
+            runs(doc.jobs.kind!).findIndex((r) => r.startsWith('scripts/test-k8s.sh'))
+        );
+        // The lane refuses to start without the runner images its real-CLI phases use, and never builds them.
+        const order = runs(doc.jobs.jobs!);
+        expect(order.indexOf('make runners')).toBeGreaterThan(order.indexOf('npm ci'));
+        expect(order.indexOf('make runners')).toBeLessThan(order.indexOf(run));
     });
 
     it('uploads the lane evidence bundles and alerts through one issue on a red night, with no secret', () => {

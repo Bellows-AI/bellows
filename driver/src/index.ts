@@ -11,7 +11,7 @@ import { createSupervisedGateManager } from './gate-manager.js';
 import { createGateServer } from './gates.js';
 import { createKubernetesReaper } from './k8s/k8s-reaper.js';
 import { createKubernetesRunner } from './k8s/k8s-runner.js';
-import { assertDockerClassesOnKata } from './k8s/k8s-runtime-class.js';
+import { assertRunnerClassRuntimes } from './k8s/k8s-runtime-class.js';
 import { inClusterRequest } from './k8s/k8s-transport.js';
 import { createStepBroker, type SupervisorEndpoint } from './step-control.js';
 import { createLoop } from './loop/loop.js';
@@ -62,9 +62,10 @@ const board = createBoard({
 // EXECUTOR picks the platform runners run on. `inClusterRequest()` is fatal here rather than on
 // the first claim: a driver asked for kubernetes outside a cluster should say so at startup.
 const request = config.executor === 'kubernetes' ? inClusterRequest() : null;
-// A docker class runs dockerd privileged: refuse to boot, before anything claims or reaps, unless
-// each docker class's RuntimeClass is read and its handler is Kata.
-if (request) await assertDockerClassesOnKata(config.runnerClasses, request);
+// A docker class runs dockerd privileged, and a class tolerating a sandbox pool's taint lands on
+// that pool: refuse to boot, before anything claims or reaps, unless each such class names a
+// RuntimeClass its pools list, read and proven Kata.
+if (request) await assertRunnerClassRuntimes(config.runnerClasses, config.sandboxPools, request);
 // The supervised-step channel: the broker the runners submit steps to and the gate server's control
 // endpoint serves them from, and the endpoint a runner opens a supervisor-only token on
 // for a group with no attempt (a terminal reclaim). `gates` is bound below; both read it lazily.

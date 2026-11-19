@@ -263,6 +263,8 @@ export interface DriverConfig {
     runnerDockerImage: string | null;
     /** The daemons' registry mirrors (RUNNER_DOCKER_MIRRORS), each `https://`; empty pulls directly. */
     runnerDockerMirrors: string[];
+    /** The sandbox node pools (RUNNER_SANDBOX_POOLS) every class tolerating one is held to; kubernetes only. */
+    sandboxPools: RunnerClasses['sandboxPools'];
 }
 
 /** The deployment image paired with one task-selected executor type. */

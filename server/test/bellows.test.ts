@@ -269,7 +269,7 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     it('parses under the strict grammar', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const gates = parseBellows(text)?.gates ?? [];
-        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db', 'test:jobs']);
+        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db', 'test:executors']);
         expect(gates.slice(0, 2)).toEqual([
             { name: 'test', command: 'sh scripts/gate-test-changed.sh', timeoutMinutes: 30 },
             { name: 'lint', command: 'npm run lint' },
@@ -306,17 +306,19 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         );
     });
 
-    // The jobs lane is a required gate: it runs the phases the change maps to (an empty map passes
-    // before the runner images are built), on run databases on the declared `postgres` service, within
-    // a budget sized for the full lane in a docker class's microVM.
-    it('declares a required test:jobs gate through the mapping wrapper', async () => {
+    // The executor gate needs no docker daemon: the in-process driver, supervisor and job-route
+    // suites, under the root vitest config and its spawn tier (the script's pretest builds core).
+    // The docker lane, npm run test:jobs, runs nightly (.github/workflows/lanes-nightly.yml), as
+    // the kind lane does.
+    it('declares the executor suites as its docker-free gate, and no test:jobs gate', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
-        const gate = (parseBellows(text)?.gates ?? []).find((g) => g.name === 'test:jobs');
-        expect(gate).toEqual({
-            name: 'test:jobs',
-            command: 'TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 sh scripts/gate-test-jobs.sh',
-            timeoutMinutes: 45,
+        const gates = parseBellows(text)?.gates ?? [];
+        expect(gates.find((g) => g.name === 'test:executors')).toEqual({
+            name: 'test:executors',
+            command: 'npm run test:executors',
+            timeoutMinutes: 15,
         });
+        expect(gates.filter((g) => /test:jobs|make runners|docker/.test(`${g.name} ${g.command}`))).toEqual([]);
     });
 
     // The gate image ships no jq and runs as a non-root user; the pr-land suite needs one.
