@@ -53,6 +53,9 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
   task volume mount is whole or at the reviewer's home (`REVIEWER_TREE_DIR`), `hostAliases` map only to
   `127.0.0.1` and only the `gate`, `reviewer`, `svc-` and a docker class's `dockerd` sidecars restart — or admission refuses it;
   only that `dockerd`, under its class's RuntimeClass, runs privileged, with no added capability and no `drop: ALL`. `driver/test/k8s-admission.test.ts`.
+- **A microVM class's guest gets its vCPUs from the containers' limits when the pod starts**; an in-place resize
+  changes a container's quota, never the guest's vCPU count. So the gate's limits are set at creation and only its
+  requests are resized (`gateResourcesField` in `driver/src/k8s/k8s-podfields.ts`, `driver/test/k8s/gates-and-reviewer.test.ts`).
 - **The agent container's env holds no GitHub token and no route to the step channel**; the claim env and the
   board's GitHub token are a step's own `env`. `driver/test/supervised-steps.test.ts`, `driver/test/github-credential.test.ts`.
 - **The fence orders contenders by `claim_seq`, never by a clock or the refundable attempt counter.**

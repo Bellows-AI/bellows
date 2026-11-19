@@ -6,8 +6,11 @@ environment:
     gates:
          # The budgets, in minutes, each capped by the driver's DRIVER_JOB_TIMEOUT_MS.
          # npm test outran the 10-minute default in a microVM runner.
+         # test and test:db run only the suites the change since origin/$BELLOWS_BASE_BRANCH reaches
+         # (scripts/gate-test-changed.sh); a shared file still runs everything in the test gate.
+         # CI's npm test and npm run test:db stay the merge gate.
          - name: test
-           command: "npm test"
+           command: "sh scripts/gate-test-changed.sh"
            timeout: 30
          - name: lint
            command: "npm run lint"
@@ -17,7 +20,7 @@ environment:
          - name: "test:db"
            # The service is throwaway: durability off, and twice the default workers, since in a microVM
            # the suite waits on round trips and WAL syncs, not CPU.
-           command: "sh scripts/gate-pg-fast.sh postgres://factory:factory@postgres:5432/postgres && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db"
+           command: "sh scripts/gate-pg-fast.sh postgres://factory:factory@postgres:5432/postgres && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test sh scripts/gate-test-changed.sh --db"
            timeout: 30
          # Only the phases the change maps to (scripts/gate-test-jobs.sh); the full lane took ~23 min in a microVM.
          - name: "test:jobs"

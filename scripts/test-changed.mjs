@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // `npm run test:changed [<base>]` — the tests a branch can reach, not the whole suite.
+// `--db` plans the `server/test-db` suites instead, as one `npm run test:db` run.
 //
 // Vitest's `--changed` follows imports only. This adds the two couplings it cannot see: `server`
 // and `web` import `@factory-ai/core` from `core/dist`, and tests read docs, shell scripts,
-// migrations, charts and skills by path. `npm test` and the lanes stay the gate before shipping.
+// migrations, charts and skills by path. `npm test` and `npm run test:db` on CI stay the merge gate.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -29,6 +30,28 @@ const SOURCE_SCANNERS = {
     driver: [POLLING, 'driver/test/loop-fence.test.ts', 'driver/test/k8s/pod-spec.test.ts'],
     web: ['web/test/styles.test.ts'],
 };
+
+// The DB suites (`vitest.db.config.ts` includes `server/test-db/**/*.test.ts`).
+const DB_ROOT = 'server/test-db';
+// The DB config's globalSetup and setupFiles, and the modules they load: every DB suite runs under them.
+const DB_SETUP = [
+    'global-setup',
+    'setup-worker',
+    'workers',
+    'harness',
+    'database-names',
+    'database-guard',
+    'run-databases',
+    'run-lock',
+].map((name) => `${DB_ROOT}/${name}.ts`);
+// The only paths that guarantee the whole DB suite. Shared store code is reached through the import
+// graph instead: the harness imports it, so a change there selects the suites that import the harness.
+const DB_FULL = [
+    [(file) => file.startsWith('server/migrations/'), 'a migration'],
+    [(file) => file === 'vitest.db.config.ts' || DB_SETUP.includes(file), 'the DB suite setup'],
+    [(file) => SHARED_NAME.test(baseName(file)), 'shared by every package'],
+    [(file) => file.startsWith('core/src/'), 'server imports core/dist, which no import graph sees'],
+];
 
 const projectArgs = (projects) => projects.flatMap((name) => ['--project', name]);
 const baseName = (file) => file.slice(file.lastIndexOf('/') + 1);
@@ -141,6 +164,51 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
     return steps;
 }
 
+/**
+ * The DB suites a set of changed files reaches: `{ full: [why] }` for the whole suite, or
+ * `{ tests }`, possibly empty. Unlike `plan`, a path nothing names selects nothing: CI's full
+ * `test:db` run is the backstop.
+ *
+ * - `dbTests`: every DB test file. `namedByDb(names)`: files under `server/test-db` naming any of `names`.
+ * - `namedInSource` and `importers`: as for `plan`.
+ */
+export function planDb({ changed, dbTests, namedByDb, namedInSource, importers }) {
+    const isDbTest = new Set(dbTests);
+    const full = [];
+    const tests = new Set();
+    const select = (files) => {
+        for (const file of files) if (isDbTest.has(file)) tests.add(file);
+    };
+    // DB suites that name one of `names`, or import a test-db helper that does.
+    const naming = (names) => {
+        const hits = namedByDb(names);
+        select(hits);
+        select(importers(hits.filter((hit) => hit.startsWith(`${DB_ROOT}/`) && !isDbTest.has(hit))));
+    };
+    // DB suites that import a source, or name it or a non-test importer of it (launched by path).
+    const reach = (files) => {
+        const above = importers(files);
+        select(above);
+        const names = [...files, ...above.filter((file) => !/\.test\.tsx?$/.test(file))]
+            .map(baseName)
+            .filter((name) => !SHARED_NAME.test(name));
+        naming([...new Set(names)]);
+    };
+    for (const file of changed) {
+        const rule = DB_FULL.find(([matches]) => matches(file));
+        if (rule) full.push(`${file}: ${rule[1]}`);
+        if (full.length > 0) continue;
+        if (isDbTest.has(file)) tests.add(file);
+        else if (GRAPH_FILE.test(file)) reach([file]);
+        else {
+            naming([baseName(file)]);
+            const loaders = namedInSource([baseName(file)]);
+            if (loaders.length > 0) reach(loaders);
+        }
+    }
+    return full.length > 0 ? { full } : { tests: [...tests].sort() };
+}
+
 /** `importers` over `texts` ({ path: source }): the relative imports of TypeScript files, reversed. */
 export function reverseImports(texts) {
     const paths = new Set(Object.keys(texts));
@@ -181,20 +249,39 @@ function changedFiles(mergeBase) {
     };
 }
 
-function namedBy(names) {
+/** Files under `pathspecs` that mention any of `names`. Only git grep's exit 1 means none; any other failure throws. */
+export function gitGrep(pathspecs, names, exec = execFileSync) {
+    if (names.length === 0) return [];
     try {
-        return git('grep', '-l', '-F', ...names.flatMap((name) => ['-e', name]), '--', '*/test/*');
-    } catch {
-        return []; // git grep exits 1 on no match
+        const args = ['grep', '-l', '-F', ...names.flatMap((name) => ['-e', name]), '--', ...pathspecs];
+        return exec('git', args, { encoding: 'utf8' }).split('\n').filter(Boolean);
+    } catch (error) {
+        if (error?.status === 1) return [];
+        throw error;
     }
 }
 
-function namedInSource(names) {
-    try {
-        return git('grep', '-l', '-F', ...names.flatMap((name) => ['-e', name]), '--', '*.ts', '*.tsx', ':(exclude)*/test/*');
-    } catch {
-        return [];
+const namedBy = (names) => gitGrep(['*/test/*'], names);
+const namedByDb = (names) => gitGrep([`${DB_ROOT}/*`], names);
+const namedInSource = (names) => gitGrep(['*.ts', '*.tsx', ':(exclude)*/test/*'], names);
+
+/** Every DB test file. A missing directory throws: the DB project always exists. */
+const listDbTests = () =>
+    readdirSync(DB_ROOT, { recursive: true })
+        .map((file) => `${DB_ROOT}/${file}`)
+        .filter((file) => file.endsWith('.test.ts'))
+        .sort();
+
+/** The DB plan as runnable steps: none when no DB suite is reached. */
+function dbSteps(planned, passthrough) {
+    if ('full' in planned) {
+        const extra = passthrough.length > 0 ? ['--', ...passthrough] : [];
+        return [{ label: `the whole DB suite: ${planned.full.join('; ')}`, run: ['npm', 'run', 'test:db', ...extra] }];
     }
+    if (planned.tests.length === 0) return [];
+    return [
+        { label: 'DB suites the change reaches', run: ['npm', 'run', 'test:db', '--', ...planned.tests, ...passthrough] },
+    ];
 }
 
 function main(argv) {
@@ -203,9 +290,10 @@ function main(argv) {
     const args = dash === -1 ? argv : argv.slice(0, dash);
     const show = args.includes('--plan');
     const fromStdin = args.includes('--files');
+    const db = args.includes('--db');
     const positional = args.filter((arg) => !arg.startsWith('--'));
     if (positional.length > 1) {
-        console.error('usage: test-changed.mjs [<base>] [--plan] [--files] [-- <vitest args>]');
+        console.error('usage: test-changed.mjs [<base>] [--db] [--plan] [--files] [-- <vitest args>]');
         return 2;
     }
     const base = positional[0] ?? process.env.TEST_CHANGED_BASE ?? DEFAULT_BASE;
@@ -223,17 +311,22 @@ function main(argv) {
         git('ls-files', '*.ts', '*.tsx').map((file) => {
             try {
                 return [file, readFileSync(file, 'utf8')];
-            } catch {
-                return [file, '']; // listed but deleted in the working tree
+            } catch (error) {
+                if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return [file, '']; // deleted in the tree
+                throw error;
             }
         })
     );
-    const steps = plan({ base: mergeBase, changed, added, spawn, namedBy, namedInSource, importers: reverseImports(texts) });
+    const importers = reverseImports(texts);
+    const steps = db
+        ? dbSteps(planDb({ changed, dbTests: listDbTests(), namedByDb, namedInSource, importers }), passthrough)
+        : plan({ base: mergeBase, changed, added, spawn, namedBy, namedInSource, importers });
     if (show) {
         process.stdout.write(`${JSON.stringify({ changed, steps }, null, 2)}\n`);
         return 0;
     }
     console.error(`[test:changed] ${changed.length} changed file(s) since ${base}`);
+    if (steps.length === 0) console.error('[test:changed] no test:db suite reached; nothing to run');
     for (const step of steps) {
         const argvOf = step.run ?? ['npx', 'vitest', ...step.vitest, ...passthrough];
         console.error(`[test:changed] ${step.label}: ${argvOf.join(' ')}`);
