@@ -1,3 +1,4 @@
+import { describeError } from '../log.js';
 /** How many times a board call that must land is tried: the verdict and a question report. */
 export const BOARD_CALL_ATTEMPTS = 5;
 const BOARD_CALL_BACKOFF_MS = 1_000;
@@ -148,12 +149,12 @@ export async function withBoardRetry<T>(
         } catch (e) {
             if (e instanceof LeaseLapsedError) throw e;
             if (!retryable(e)) {
-                io.log(`${what}, not retried: ${(e as Error).message}`);
+                io.log(`${what}, not retried: ${describeError(e)}`);
                 throw e;
             }
             const delayMs = nextDelayMs(attempt, waitedMs, budgetMs);
             if (delayMs === null) throw e;
-            io.log(`${what}, retrying in ${delayMs}ms: ${(e as Error).message}`);
+            io.log(`${what}, retrying in ${delayMs}ms: ${describeError(e)}`);
             await fenced(leaseLapsed, () => io.sleep(delayMs));
             waitedMs += delayMs;
         }

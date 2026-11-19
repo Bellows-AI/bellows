@@ -11,6 +11,16 @@ export const LOGGER_NAME = 'bellows-driver';
 export const COMPONENTS = ['driver', 'reaper', 'k8s', 'loop', 'drain', 'export'] as const;
 export type Component = (typeof COMPONENTS)[number];
 
+export const REDACT_PATHS = [
+    'req.headers.authorization',
+    'req.headers.cookie',
+    'res.headers["set-cookie"]',
+    '*.token',
+    '*.accessToken',
+    '*.refreshToken',
+    '*.password',
+];
+
 /** pino's numeric levels to the OTLP severity they ship as. */
 const SEVERITIES: Record<number, { number: SeverityNumber; text: string }> = {
     10: { number: SeverityNumber.TRACE, text: 'TRACE' },
@@ -25,6 +35,53 @@ const NOT_ATTRIBUTES = new Set(['time', 'level', 'pid', 'hostname', 'msg']);
 const DIAG_INTERVAL_MS = 60_000;
 const LEVEL_WARN = 40;
 const LEVEL_ERROR = 50;
+
+/** The most of an error's name, code or kind a record keeps. */
+const CLASS_MAX = 64;
+const CLASS_TOKEN = /^[\w.:-]+$/;
+
+const tokenOf = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.length <= CLASS_MAX && CLASS_TOKEN.test(value) ? value : undefined;
+
+export interface ErrorClass {
+    type: string;
+    code?: string | undefined;
+    kind?: string | undefined;
+    status?: number | undefined;
+}
+
+/**
+ * The closed description of an error a record may carry: its class name, and the `code`, `kind` and HTTP status when
+ * it has them as short tokens. Never its message, stack or cause — a git, gh or HTTP client error spells the request
+ * or output it failed on, which is a repository or branch name.
+ */
+export function errorClass(error: unknown): ErrorClass {
+    const source = (typeof error === 'object' && error !== null ? error : {}) as Record<string, unknown>;
+    const status = source.status ?? source.statusCode;
+    return {
+        type: error instanceof Error ? (tokenOf(error.name) ?? 'Error') : 'NonError',
+        ...(tokenOf(source.code) ? { code: tokenOf(source.code) } : {}),
+        ...(tokenOf(source.kind) ? { kind: tokenOf(source.kind) } : {}),
+        ...(typeof status === 'number' ? { status } : {}),
+    };
+}
+
+/** `errorClass` as one token string, for the log seams that take a line. */
+export const describeError = (error: unknown): string => {
+    const { type, code, kind, status } = errorClass(error);
+    return [type, code, kind, status].filter((part) => part !== undefined).join(' ');
+};
+
+/** The message of a record whose only subject is an error: pino would otherwise spell the error's own message. */
+const ERROR_MESSAGE = 'error';
+
+/** `error(err)` and `error({ err })` with no message: name the record without the error's message. */
+function withoutErrorMessage(args: unknown[]): void {
+    const [first] = args;
+    if (first instanceof Error) args.splice(0, 1, { err: first }, ERROR_MESSAGE);
+    else if (typeof first === 'object' && first !== null && 'err' in first && args.length === 1)
+        args.push(ERROR_MESSAGE);
+}
 
 interface Sink {
     write(line: string): unknown;
@@ -67,6 +124,14 @@ export function createLogRoot(deps: LogDeps = {}): pino.Logger {
     const logger = deps.logger ?? (() => logs.getLogger(LOGGER_NAME));
     return pino(
         {
+            redact: REDACT_PATHS,
+            hooks: {
+                logMethod(args, method) {
+                    withoutErrorMessage(args);
+                    method.apply(this, args);
+                },
+            },
+            serializers: { err: errorClass },
             mixin() {
                 const context = trace.getActiveSpan()?.spanContext();
                 return context && trace.isSpanContextValid(context)

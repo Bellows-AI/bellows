@@ -14,6 +14,7 @@ import { StartupRefused } from '../startup-cause.js';
 import type { TaskGroup } from './k8s-group.js';
 import type { TeardownIdentity } from './k8s-teardown.js';
 import { parseJsonObject } from '../json-parse.js';
+import { k8sCallOf } from '../driver-metrics.js';
 import { logger } from '../log.js';
 import { type Bound, type Sleep, timeLeft } from '../poll.js';
 
@@ -147,8 +148,8 @@ const readStatus = (body: string): { message: string; reason?: string } | null =
  * expected startup refusals: a 404 on the
  * PodMetrics read (no sample, or no metrics-server) and a 400 `Status` on the pod log read that
  * names the container as `ContainerCreating`. Matched on method, path, status AND content — any
- * other 404 or 400 is still a diagnosis. A `Status` is reduced to its message (and reason); a
- * body that is not one rides as a bounded preview. Headers are never logged.
+ * other 404 or 400 is still a diagnosis. The line names the verb, the resource kind, the status and the `Status`
+ * reason word — never the path, the body or a header.
  */
 export function refusalDiagnosis(method: string, path: string, status: number, body: string): string | null {
     if (status < HTTP_ERROR_STATUS) return null;
@@ -163,12 +164,11 @@ export function refusalDiagnosis(method: string, path: string, status: number, b
     ) {
         return null;
     }
-    const head = `${method} ${path} answered ${status}`;
-    if (parsed) {
-        const detail = parsed.reason ? `${parsed.message} (${parsed.reason})` : parsed.message;
-        return `${head}: ${detail.slice(0, DIAGNOSIS_BODY_CHARS)}`;
-    }
-    return `${head} body=${body.slice(0, DIAGNOSIS_BODY_CHARS)}`;
+    // Closed words only: the path names a namespace and an object, the body quotes them, and either may name a
+    // repository, a branch or a token. The cluster's own `reason` (NotFound, Forbidden, ...) is a short enum word.
+    const { verb, resource } = k8sCallOf(method as K8sMethod, path);
+    const reason = parsed?.reason && /^\w{1,40}$/.test(parsed.reason) ? ` (${parsed.reason})` : '';
+    return `k8s ${verb} ${resource} answered ${status}${reason}`;
 }
 
 /** The shell convention for a killed process — the docker manager's timeout shape, matched here. */

@@ -7,6 +7,7 @@ import { type DeadService, Inconclusive, type RunOutcome } from '../runner.js';
 import { ServicesNotRunning } from '../service-restart.js';
 import { StartupRefused } from '../startup-cause.js';
 import { stepLost } from '../step-control.js';
+import { describeError } from '../log.js';
 
 /**
  * The setup step that starts the attempt's `.bellows.yaml` services, on both executors, before the
@@ -28,7 +29,7 @@ export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusio
         if (e instanceof ServicesNotRunning) {
             ctx.servicesStarted = true;
             return faultHalt(
-                `its services never ran, failing: ${e.message}`,
+                'its services never ran, failing',
                 `[driver] the declared services did not come up before the run: ${e.message}`,
                 'services'
             );
@@ -78,7 +79,7 @@ export async function restartDeadServices(
     try {
         return (await raceStep(signal, rt.runner.restartServices(job, signal))) === null ? STOOD_DOWN : null;
     } catch (e) {
-        rt.log(`job ${job.id}: the service restart failed: ${(e as Error).message}`);
+        rt.log(`job ${job.id}: the service restart failed: ${describeError(e)}`);
         if (servicesLost(e)) throw e;
         return (e as Error).message;
     }

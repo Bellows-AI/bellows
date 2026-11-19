@@ -15,6 +15,7 @@ import { handBackFence, leaveDecision, standDown } from './loop-fence.js';
 import { transition } from './loop-phase.js';
 import { cancelReviews } from './loop-review.js';
 import type { AttemptCtx, EndDecision, LoopRuntime, VerdictBody } from './loop-types.js';
+import { describeError } from '../log.js';
 
 const MS_PER_SECOND = 1_000;
 
@@ -138,7 +139,7 @@ function settleGroup(state: JobState): void {
 const releaseServices = ({ rt, job }: AttemptCtx): Promise<void> =>
     rt.runner
         .releaseServices(job)
-        .catch((e: Error) => rt.log(`job ${job.id}: could not tear down the services: ${e.message}`));
+        .catch((e: Error) => rt.log(`job ${job.id}: could not tear down the services: ${describeError(e)}`));
 
 /** The destructive half, once the board knows: the group, then the control channel it is served on, then the rest. */
 async function teardown(ctx: AttemptCtx): Promise<void> {
@@ -178,13 +179,13 @@ async function stageAndReport(ctx: AttemptCtx, verdict: VerdictBody, after: Prom
         () => rt.board.stageConclusion(job, verdict),
         { budgetMs: rt.config.leaseSeconds * MS_PER_SECOND, leaseLapsed: state.leaseExpiry.signal }
     ).catch((e: Error) => {
-        rt.log(`job ${job.id}: the ${verdict.status} verdict could not be staged: ${e.message}`);
+        rt.log(`job ${job.id}: the ${verdict.status} verdict could not be staged: ${describeError(e)}`);
         return null;
     });
     if (staged !== null && staged !== 'held') return unstaged(ctx, staged);
     const answer = await rt.report(job, verdict, { after, leaseLapsed: state.leaseExpiry.signal }).catch((e: Error) => {
         rt.log(
-            `job ${job.id}: the ${verdict.status} verdict was not delivered, left to the lease unrewritten: ${e.message}`
+            `job ${job.id}: the ${verdict.status} verdict was not delivered, left to the lease unrewritten: ${describeError(e)}`
         );
         return null;
     });
@@ -225,14 +226,16 @@ async function park(ctx: AttemptCtx, decision: Extract<EndDecision, { kind: 'par
     const { rt, job, state } = ctx;
     await decision
         .beforePark?.()
-        .catch((e: Error) => rt.log(`job ${job.id}: the work before the park failed, parking anyway: ${e.message}`));
+        .catch((e: Error) =>
+            rt.log(`job ${job.id}: the work before the park failed, parking anyway: ${describeError(e)}`)
+        );
     // Every park waits out the output pump: a write the park overtook would be refused, its tail lost.
     await state.drainOutput();
     const verdict = await withBoardRetry(rt, `job ${job.id}: the stop was not accepted`, () => rt.board.suspend(job), {
         budgetMs: rt.config.leaseSeconds * MS_PER_SECOND,
         leaseLapsed: state.leaseExpiry.signal,
     }).catch((e: Error) => {
-        rt.log(`job ${job.id}: the board did not take the stop, left to the lease: ${e.message}`);
+        rt.log(`job ${job.id}: the board did not take the stop, left to the lease: ${describeError(e)}`);
         return null;
     });
     if (verdict === null) {
@@ -261,8 +264,17 @@ async function interrupt(
     const { reason, exitCode, refused, blocked, requirement, nodeLoss, daemonLoss, orgSuspended, beforeInterrupt } =
         decision;
     await beforeInterrupt?.().catch((e: Error) =>
-        rt.log(`job ${job.id}: the work before the hand-back failed, handing back anyway: ${e.message}`)
+        rt.log(`job ${job.id}: the work before the hand-back failed, handing back anyway: ${describeError(e)}`)
     );
+    // The reason is the board's record and may name a repository or a path: the log keeps the closed kind.
+    const interruptionKind =
+        (refused && 'refused') ||
+        (blocked && 'blocked') ||
+        (requirement && 'requirement') ||
+        (nodeLoss && 'node loss') ||
+        (daemonLoss && 'daemon loss') ||
+        (orgSuspended && 'organization suspended') ||
+        'interrupted';
     const recorded =
         reason.length > INTERRUPTION_REASON_MAX ? `${reason.slice(0, INTERRUPTION_REASON_MAX - 1)}…` : reason;
     const answer = await withBoardRetry(
@@ -281,15 +293,15 @@ async function interrupt(
             }),
         { budgetMs: rt.config.leaseSeconds * MS_PER_SECOND, leaseLapsed: state.leaseExpiry.signal }
     ).catch((e: Error) => {
-        rt.log(`job ${job.id}: could not report the interruption: ${e.message}`);
+        rt.log(`job ${job.id}: could not report the interruption: ${describeError(e)}`);
         return null;
     });
     if (answer === 'held') {
-        rt.log(`job ${job.id}: ${reason}, handed back as an interruption`);
+        rt.log(`job ${job.id}: ${interruptionKind}, handed back as an interruption`);
         return null;
     }
     if (answer === 'lost') {
-        rt.log(`job ${job.id}: ${reason}, and the lease was already lost`);
+        rt.log(`job ${job.id}: ${interruptionKind}, and the lease was already lost`);
         retainForNewHolder(state);
         return null;
     }
@@ -301,5 +313,7 @@ async function interrupt(
     }
     if (answer === null) state.groupDisposition = 'keep';
     const why = answer === 'exhausted' ? `${reason}, and the interruption budget is spent` : reason;
-    return land(ctx, leaveDecision(job, why, exitCode), after);
+    const closed =
+        answer === 'exhausted' ? `${interruptionKind}, and the interruption budget is spent` : interruptionKind;
+    return land(ctx, leaveDecision(job, why, exitCode, closed), after);
 }

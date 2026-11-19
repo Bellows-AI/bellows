@@ -12,6 +12,9 @@ runners' executors emit, and the metrics instruments, are in [telemetry.md](tele
 | `console` banned in `server/src`, except the three operator-facing CLIs | `biome.json` | `core/test/biome.test.ts` |
 | SDK start, the logs endpoint variable, the SDK's own diagnostics (stdout, one line a minute) | `server/src/otel.ts`, `server/src/otel-register.ts` | `server/test/otel.test.ts` |
 | URL scrubbing on spans: server spans keep the route pattern, client spans keep `scheme://host` | `server/src/otel-scrub.ts` | `server/test/otel.scrub.test.ts` |
+| Driver: the same logger, redaction, `errorClass`/`describeError` and client-span URL scrubber, copied (the driver imports nothing from the server) | `driver/src/log.ts`, `driver/src/otel.ts`, `driver/src/otel-scrub.ts` | `driver/test/log.test.ts`, `driver/test/otel.test.ts`, `driver/test/otel.scrub.test.ts` |
+| Driver log content: no interpolated error message, tool output, token, repository or branch in any log call | every log seam in `driver/src` | `driver/test/log.content.test.ts` |
+| Driver exit: the SDK is flushed (raced against 2 s) on every normal drain end and on a handover | `driver/src/shutdown.ts`, `driver/src/index.ts` | `driver/test/shutdown.test.ts` |
 | Postgres spans: the verb only | `server/src/pg-trace.ts` | `server/test/pg-trace.test.ts` |
 
 ## Invariants
@@ -30,3 +33,4 @@ runners' executors emit, and the metrics instruments, are in [telemetry.md](tele
 - **Logging never blocks or fails a request**: stdout is synchronous, the OTLP side only enqueues into the SDK's
   bounded batch processor, and a throwing emit is swallowed.
 - **The SDK's diagnostics go to stdout only**, never through the LoggerProvider, at most one line a minute.
+- **The driver's log lines carry closed words only**: an error as `describeError(e)`, an object by kind (never its name, which carries ids and lease tokens), a cluster refusal as verb, resource kind, status and reason word. The board-bound reason or output text is separate and keeps its detail.

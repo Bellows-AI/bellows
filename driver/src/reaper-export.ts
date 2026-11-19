@@ -100,10 +100,10 @@ export function createVolumeExportGate(deps: {
         return same;
     };
 
-    const lost = (root: string, last: string): void => {
+    const lost = (root: string): void => {
         deps.observe?.volumeExport?.('lost');
         log(
-            `reaper: LOST transcript bytes — thread ${root}: ${failures.get(root)?.count ?? 0} export attempts failed over ${Math.round((now() - (failures.get(root)?.firstAt ?? now())) / MS_PER_MINUTE)} min (last: ${last}); deleting its task volumes, whatever they held unacknowledged is gone`
+            `reaper: LOST transcript bytes — thread ${root}: ${failures.get(root)?.count ?? 0} export attempts failed over ${Math.round((now() - (failures.get(root)?.firstAt ?? now())) / MS_PER_MINUTE)} min; deleting its task volumes, whatever they held unacknowledged is gone`
         );
     };
 
@@ -116,7 +116,7 @@ export function createVolumeExportGate(deps: {
         failures.set(root, { count, firstAt: failures.get(root)?.firstAt ?? now() });
         onUnproven();
         log(
-            `reaper: thread ${root} — the transcript export did not drain (${outcome.result}, attempt ${count} of ${attempts}): ${outcome.why}`
+            `reaper: thread ${root} — the transcript export did not drain (${outcome.result}, attempt ${count} of ${attempts})`
         );
         return exhausted(root);
     };
@@ -128,7 +128,7 @@ export function createVolumeExportGate(deps: {
         last: string | null
     ): Promise<ExportVerdict> => {
         if (!(await unchanged(thread, attempt))) return 'keep';
-        if (last !== null) lost(thread.root, last);
+        if (last !== null) lost(thread.root);
         return 'delete';
     };
 
@@ -147,7 +147,7 @@ export function createVolumeExportGate(deps: {
         if (outcome.result === 'drained' || outcome.result === 'gone') return finish(thread, attempt, null);
         if (outcome.result === 'contended') {
             onUnproven();
-            log(`reaper: thread ${thread.root} — ${outcome.why}, keeping its volumes`);
+            log(`reaper: thread ${thread.root} — the transcript export is ${outcome.result}, keeping its volumes`);
             return 'keep';
         }
         return failed(thread.root, outcome) ? finish(thread, attempt, outcome.why) : 'keep';

@@ -40,9 +40,7 @@ describe('withBoardRetry: what is retried', () => {
         );
 
         expect(call.calls()).toBe(1);
-        expect(logs).toEqual([
-            `job x: the verdict was not accepted, not retried: /api/jobs/x/complete answered ${status}: no`,
-        ]);
+        expect(logs).toEqual([`job x: the verdict was not accepted, not retried: BoardHttpError ${status}`]);
     });
 
     it.each([408, 425, 429, 500, 502, 503])('retries a transient %i up to the attempt bound', async (status) => {

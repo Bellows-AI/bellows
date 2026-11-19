@@ -1,7 +1,6 @@
 import { otel } from './otel-register.js';
 import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
-import { setTimeout as delay } from 'node:timers/promises';
 import { createBoard } from './board/board.js';
 import { boardCredentialOf } from './board-credential.js';
 import { gateAdvertiseUrlFor, loadDriverConfig } from './config.js';
@@ -23,10 +22,13 @@ import { run } from './docker/docker-runner-support.js';
 import { stripSecretStoreEnv } from './strip-secret-store-env.js';
 import { createDrain } from './drain.js';
 import { logger } from './log.js';
+import { createFlushThenExit } from './shutdown.js';
 
 stripSecretStoreEnv(process.env);
 
 const config = loadDriverConfig(process.env);
+// The one exit path, on a drain's normal end and on a handover alike (src/shutdown.ts).
+const flushThenExit = createFlushThenExit({ otel, exit: (code) => process.exit(code) });
 const log = {
     driver: logger('driver'),
     loop: logger('loop'),
@@ -35,7 +37,6 @@ const log = {
     export: logger('export'),
 };
 const HEARTBEAT_INTERVAL_MS = 10_000;
-const OTEL_FLUSH_MS = 2_000;
 
 // Timer-driven, not poll-driven: a drain stops polling for as long as its jobs take, and a probe
 // that read that as death would kill the drain it is waiting on. What it proves is a turning
@@ -147,14 +148,6 @@ const reaper = createReaper({
 });
 if (config.reapIntervalMs > 0) reaper.start();
 
-// The exit path: what the SDK has buffered is flushed first, inside a deadline, and a flush that is late or fails
-// never holds the exit, and one more signal ends it at once.
-async function flushThenExit(code: number): Promise<never> {
-    for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => process.exit(code));
-    await Promise.race([otel?.shutdown().catch(() => undefined), delay(OTEL_FLUSH_MS)]);
-    return process.exit(code);
-}
-
 // Stop claiming, then hand over. A second signal is the escape hatch. The runs in flight go back
 // to the board as interruptions — claimable at once, runners left up for the next claim — at
 // DRIVER_HANDOVER_MS (0: inside the signal), not with every lease held when the SIGKILL lands.
@@ -173,5 +166,7 @@ await gates.manager.stop();
 // The ad-hoc socket holds the event loop open; without this the process never exits after a
 // graceful drain once any gated job has run.
 await gates.server.close();
-// A handed-over run's poll is still pending in this process, and is no longer this driver's.
-if (drain.handedOver()) await flushThenExit(0);
+// A handed-over run's poll is still pending in this process, and is no longer this driver's: it exits at once. A
+// drain that ended with no handover (no task running, or every one finished first) flushes the SDK all the same,
+// or its buffered logs, spans and last metrics are lost.
+await flushThenExit(0);

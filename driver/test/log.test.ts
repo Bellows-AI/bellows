@@ -3,7 +3,7 @@ import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-ho
 import { InMemoryLogRecordExporter, LoggerProvider, SimpleLogRecordProcessor } from '@opentelemetry/sdk-logs';
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createLogRoot, diagLogger } from '../src/log.js';
+import { createLogRoot, describeError, diagLogger } from '../src/log.js';
 
 const spans = new InMemorySpanExporter();
 const tracerProvider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter: spans })] });
@@ -79,6 +79,49 @@ describe('the driver logger', () => {
         });
         expect(() => root.info('still here')).not.toThrow();
         expect(lines).toHaveLength(1);
+    });
+});
+
+describe('what a record may hold', () => {
+    /** Everything either destination received, as one string to search. */
+    const everything = (lines: string[]) =>
+        lines.join('') +
+        JSON.stringify(records.getFinishedLogRecords().map((r) => ({ body: r.body, attributes: r.attributes })));
+
+    it('blanks credentials before both stdout and OTLP', () => {
+        records.reset();
+        const { root, lines } = capture();
+        root.info(
+            {
+                req: { headers: { authorization: 'Bearer secret_a', cookie: 'sid=secret_b' } },
+                auth: { token: 'secret_c', password: 'secret_d' },
+            },
+            'request'
+        );
+        const text = everything(lines);
+        for (const secret of ['secret_a', 'secret_b', 'secret_c', 'secret_d']) expect(text).not.toContain(secret);
+        expect(text).toContain('[Redacted]');
+    });
+
+    it('describes an error by class only: never its message, stack or cause, in either destination', () => {
+        records.reset();
+        const { root, lines, record } = capture();
+        const failure = Object.assign(new Error('failed for owner/private-repo branch feature/private'), {
+            kind: 'transport',
+            status: 503,
+        });
+        root.error({ err: failure }, 'publish failed');
+        root.error(failure);
+        root.error({ err: failure });
+        const text = everything(lines);
+        for (const leak of ['private-repo', 'feature/private', 'owner/']) expect(text).not.toContain(leak);
+        expect(record(0)).toMatchObject({ err: { type: 'Error', kind: 'transport', status: 503 } });
+        expect(lines.map((l) => (JSON.parse(l) as { msg: string }).msg)).toEqual(['publish failed', 'error', 'error']);
+    });
+
+    it('describes an error as one token string for the seams that take a line', () => {
+        expect(describeError(Object.assign(new Error('owner/private-repo'), { code: 'ENOENT' }))).toBe('Error ENOENT');
+        expect(describeError('owner/private-repo')).toBe('NonError');
     });
 });
 

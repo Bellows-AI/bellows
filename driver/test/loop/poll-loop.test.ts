@@ -772,7 +772,7 @@ describe('the poll loop', () => {
             'reports the verdict untouched when the reclaim throws, and logs the error',
             undefined,
             new Error('daemon refused'),
-            'daemon refused',
+            'could not be reclaimed: Error',
         ],
     ] as const)('%s', async (_label, reclaim, thrown, logged) => {
         const logs: string[] = [];
@@ -1492,7 +1492,7 @@ describe('the poll loop', () => {
         // No ack: the row survives its lease and is offered again (and to other workers), while
         // the refusal is said out loud exactly as a refused terminal reclaim is.
         expect(board.board.reclaimAcks).toEqual([]);
-        expect(logs.some((m) => m.includes('could not be reclaimed: the checkout is held'))).toBe(true);
+        expect(logs.some((m) => m.includes('could not be reclaimed'))).toBe(true);
     });
 
     // A transient board error after the tree is already down must not take the driver with it:
@@ -2050,7 +2050,7 @@ describe('the poll loop', () => {
         await drive({ ...board, runner, log: (m) => logs.push(m) });
 
         expect(board.board.completed).toEqual([]);
-        expect(logs.some((m) => m.includes('never started: docker: Error response from daemon: Conflict'))).toBe(true);
+        expect(logs.some((m) => m.includes('refused, handed back'))).toBe(true);
     });
 
     // The board retires a job whose attempts ran out with no output, so the attempt that burns the
@@ -2067,7 +2067,8 @@ describe('the poll loop', () => {
 
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
         expect(board.board.completed[0]?.output).toContain(reason);
-        expect(logs.some((m) => m.includes(reason))).toBe(true);
+        expect(logs.some((m) => m.includes('refused'))).toBe(true);
+        expect(logs.join('\n')).not.toContain(reason);
     });
 
     // Issue #822: a run that threw may still have a runner — a force-deleted driver pod keeps
@@ -2086,7 +2087,7 @@ describe('the poll loop', () => {
 
         expect(board.board.completed).toEqual([]);
         expect(board.board.interrupted).toEqual([]);
-        expect(logs.some((m) => m.includes('could not run: reading the runner job answered 401'))).toBe(true);
+        expect(logs.some((m) => m.includes('could not run: Error'))).toBe(true);
         expect(logs.some((m) => m.includes('leaving it to the lease'))).toBe(true);
     });
 
@@ -2140,9 +2141,7 @@ describe('the poll loop', () => {
         ]);
         expect(stack.stack.ran.names).toEqual([]);
         expect(runner.published).toEqual([]);
-        expect(
-            logs.some((m) => m.includes('infrastructure loss: the runner pod was deleted before it exited (Evicted)'))
-        ).toBe(true);
+        expect(logs.some((m) => m.includes('interrupted, handed back'))).toBe(true);
     });
 
     // Issue #792: a draining driver whose grace runs short hands its running attempts over —
@@ -2509,7 +2508,7 @@ describe('the poll loop', () => {
         expect(launched).toBe(0);
         expect(runner.synced).toHaveLength(0);
         expect(board.board.completed).toEqual([]);
-        expect(logs.some((m) => m.includes('confirmed gone'))).toBe(true);
+        expect(logs.some((m) => m.includes('could not adopt the finished runner'))).toBe(true);
     });
 
     // A spent interruption budget falls back to the lease, and the last attempt reports the loss.

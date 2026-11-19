@@ -1,3 +1,4 @@
+import { trace } from '@opentelemetry/api';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const sdk = vi.hoisted(() => ({ constructed: 0 }));
@@ -13,7 +14,7 @@ vi.mock('@opentelemetry/sdk-node', () => ({
     },
 }));
 
-const { SERVICE_NAME, otelEnabled, scrubbedUrlAttributes, startOtel } = await import('../src/otel.js');
+const { SERVICE_NAME, otelEnabled, startOtel } = await import('../src/otel.js');
 
 afterEach(() => {
     sdk.constructed = 0;
@@ -49,19 +50,9 @@ describe('the driver OTEL bootstrap', () => {
         expect(sdk.constructed).toBe(0);
     });
 
-    it('starts the SDK with an endpoint, and shuts it down on request', async () => {
-        const otel = startOtel({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4318' });
+    it('fails the start rather than export unscrubbed URLs when the tracer provider hides its processors', () => {
+        trace.disable();
+        expect(() => startOtel({ OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel:4318' })).toThrow(/cannot scrub URLs/);
         expect(sdk.constructed).toBe(1);
-        await expect(otel?.shutdown()).resolves.toBeUndefined();
-    });
-});
-
-describe('the URL a client span may carry', () => {
-    it('is the origin alone: no path, no query', () => {
-        const attributes = scrubbedUrlAttributes({ origin: 'https://api.github.com' });
-        expect(Object.values(attributes).join(' ')).not.toMatch(/repos|token|\?/);
-        expect(attributes['url.full']).toBe('https://api.github.com');
-        expect(attributes['http.url']).toBe('https://api.github.com');
-        expect(attributes['url.query']).toBe('');
     });
 });

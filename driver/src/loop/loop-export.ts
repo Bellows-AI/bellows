@@ -12,6 +12,7 @@ import { killAgent } from './loop-attempt.js';
 import { attachTaskInputs } from './loop-inputs.js';
 import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
 import { EXPORT_PRODUCER, EXPORT_SCHEMA_VERSION, SPOOL_FULL_CAUSE } from '../transcript-export.js';
+import { describeError } from '../log.js';
 
 /**
  * The loop's half of the continuous transcript export: the relay the exporter's calls reach (they
@@ -198,7 +199,7 @@ export function openReviewExport(
             // and recording it on the review row is what lets a re-leased review resume it.
             if (outcome.sessionId) {
                 await rt.board.session(review, outcome.sessionId, true).catch((e: Error) => {
-                    rt.log(`review ${review.id}: the session was not recorded: ${e.message}`);
+                    rt.log(`review ${review.id}: the session was not recorded: ${describeError(e)}`);
                 });
             }
             await uploadRunArtifacts(
