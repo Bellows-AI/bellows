@@ -81,6 +81,84 @@ describe('parseServices', () => {
     ])('refuses %s', (_label, text, message) => {
         expect(() => parseServices(text)).toThrow(message);
     });
+
+    const tmpfs = (value: string) => `services:\n    - name: db\n      image: postgres\n      tmpfs: ${value}\n`;
+
+    it('reads a tmpfs mount with its size', () => {
+        expect(parseServices(tmpfs('[/var/lib/postgresql/data:2Gi]'))).toEqual([
+            {
+                name: 'db',
+                image: 'postgres',
+                environment: [],
+                tmpfs: [{ path: '/var/lib/postgresql/data', size: '2Gi' }],
+            },
+        ]);
+    });
+
+    it('reads several tmpfs mounts, quoted or not, and leaves tmpfs off a service that declares none', () => {
+        const text = `${tmpfs(`["/data:512Mi", '/cache:1Gi', /scratch:16Mi]`)}    - name: cache\n      image: redis\n`;
+        expect(parseServices(text)).toEqual([
+            {
+                name: 'db',
+                image: 'postgres',
+                environment: [],
+                tmpfs: [
+                    { path: '/data', size: '512Mi' },
+                    { path: '/cache', size: '1Gi' },
+                    { path: '/scratch', size: '16Mi' },
+                ],
+            },
+            { name: 'cache', image: 'redis', environment: [] },
+        ]);
+    });
+
+    it.each([
+        [
+            'a tmpfs block list',
+            'services:\n    - name: db\n      image: postgres\n      tmpfs:\n        - /data:1Gi\n',
+            /"tmpfs" must be an inline list of "<absolute path>:<size>" entries, e\.g\. tmpfs: \[/,
+        ],
+        ['a tmpfs entry with no size', tmpfs('[/data]'), /tmpfs entry "\/data" must be "<absolute path>:<size>"/],
+        ['a zero tmpfs size', tmpfs('[/data:0Mi]'), /tmpfs size "0Mi" must be a whole number of Mi or Gi/],
+        ['a decimal tmpfs unit', tmpfs('[/data:2G]'), /tmpfs size "2G" must be a whole number of Mi or Gi/],
+        ['a tmpfs size in GB', tmpfs('[/data:2GB]'), /tmpfs size "2GB" must be a whole number of Mi or Gi/],
+        ['a tmpfs size with no unit', tmpfs('[/data:2]'), /tmpfs size "2" must be a whole number of Mi or Gi/],
+        ['a relative tmpfs path', tmpfs('[data:1Gi]'), /tmpfs path "data" must be an absolute path/],
+        ['a tmpfs path with a ".." segment', tmpfs('[/data/../etc:1Gi]'), /tmpfs path "\/data\/\.\.\/etc" must not/],
+        ['the root as a tmpfs path', tmpfs('[/:1Gi]'), /tmpfs path "\/" is reserved/],
+        ['/proc as a tmpfs path', tmpfs('[/proc:1Gi]'), /tmpfs path "\/proc" is reserved/],
+        ['a tmpfs path under /dev', tmpfs('[/dev/shm:1Gi]'), /tmpfs path "\/dev\/shm" is reserved/],
+        ['a tmpfs path under /factory', tmpfs('[/factory/x:1Gi]'), /tmpfs path "\/factory\/x" is reserved/],
+        [
+            'a tmpfs entry that smuggles a mount option',
+            tmpfs('[/data:2Gi,uid=0]'),
+            /tmpfs entry "uid=0" must be "<absolute path>:<size>"/,
+        ],
+        ['a tmpfs path listed twice', tmpfs('[/data:1Gi, /data:2Gi]'), /a service lists one tmpfs path twice/],
+        [
+            'five tmpfs mounts',
+            tmpfs('[/a:1Mi, /b:1Mi, /c:1Mi, /d:1Mi, /e:1Mi]'),
+            /a service declares at most 4 tmpfs mounts/,
+        ],
+    ])('refuses %s', (_label, text, message) => {
+        expect(() => parseServices(text)).toThrow(message);
+    });
+
+    // The kubernetes restart's liveness probe records the generation it saw in
+    // /tmp/.factory-generation; a memory emptyDir over it would survive the restart and keep the
+    // stale record, so every probe after a bump would fail.
+    it.each([
+        ['/tmp', '[/tmp:64Mi]'],
+        ['the probe record itself', '[/tmp/.factory-generation:1Mi]'],
+    ])('refuses a tmpfs over %s, naming the restart record and the alternative', (_label, value) => {
+        expect(() => parseServices(tmpfs(value))).toThrow(
+            /would hide the record the service restart keeps under \/tmp — mount a subdirectory of \/tmp instead/
+        );
+    });
+
+    it('accepts a tmpfs on a subdirectory of /tmp', () => {
+        expect(parseServices(tmpfs('[/tmp/cache:64Mi]'))[0]?.tmpfs).toEqual([{ path: '/tmp/cache', size: '64Mi' }]);
+    });
 });
 
 describe('planProblems: what cannot share one pod', () => {
@@ -114,6 +192,17 @@ describe('planProblems: what cannot share one pod', () => {
         ]);
         const many = Array.from({ length: 11 }, (_, i) => service(`s${i}`));
         expect(planProblems(many)).toEqual(['at most 10 services fit one task pod, got 11']);
+    });
+
+    it('refuses tmpfs mounts past 8Gi across the plan, naming the services that declare them', () => {
+        const withTmpfs = (name: string, ...sizes: string[]) => ({
+            ...service(name),
+            tmpfs: sizes.map((size, i) => ({ path: `/d${i}`, size })),
+        });
+        expect(planProblems([withTmpfs('a', '4Gi', '2Gi'), withTmpfs('b', '2Gi'), service('c')])).toEqual([]);
+        expect(planProblems([withTmpfs('a', '4Gi', '2Gi'), withTmpfs('b', '2Gi', '1Mi'), service('c')])).toEqual([
+            'services "a" and "b" declare 8193Mi of tmpfs — at most 8Gi of tmpfs fits one task pod',
+        ]);
     });
 });
 
@@ -297,6 +386,15 @@ describe("this repository's own .bellows.yaml", () => {
             'test:db',
             'test:jobs',
         ]);
+    });
+
+    it('keeps the postgres data directory in a subdirectory of a memory-backed tmpfs', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        const postgres = resolveExecutionPlan(text).services.find((service) => service.name === 'postgres');
+        expect(postgres?.tmpfs).toEqual([{ path: '/var/lib/postgresql/data', size: '2Gi' }]);
+        expect(postgres?.environment.find((entry) => entry.key === 'PGDATA')?.value).toMatch(
+            /^\/var\/lib\/postgresql\/data\/[^/]+/
+        );
     });
 });
 

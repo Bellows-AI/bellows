@@ -89,6 +89,7 @@ import {
     resourcesField,
     runnerVolumesField,
     schedulingField,
+    serviceResourcesField,
     type ContainerSecurityContext,
     type PrivilegedSecurityContext,
     type PodResources,
@@ -331,7 +332,8 @@ const SERVICE_PROBE_FAILURES = 1;
  * Hardened like every container — the declared `user:` is its uid:gid, an image default otherwise —
  * with the claim's environment as literals: those were already world-readable in the author's
  * `.bellows.yaml`. It mounts nothing of the task: the generations read-only and its own
- * acknowledgement directory, for the liveness probe that is its restart (`serviceProbeArgv`).
+ * acknowledgement directory, for the liveness probe that is its restart (`serviceProbeArgv`), and
+ * its declared tmpfs mounts — memory emptyDirs whose size is added to its memory request and limit.
  */
 function serviceSidecar(config: DriverConfig, job: BoardJob, spec: ServiceSpec): RunnerPodContainer {
     assertServiceSpec(job, spec);
@@ -341,7 +343,7 @@ function serviceSidecar(config: DriverConfig, job: BoardJob, spec: ServiceSpec):
         image: spec.image,
         imagePullPolicy: config.imagePullPolicy,
         restartPolicy: 'Always',
-        ...resourcesField(jobClassOf(config, job).runnerResources),
+        ...serviceResourcesField(jobClassOf(config, job).runnerResources, spec.tmpfs),
         securityContext: {
             ...hardened,
             ...(spec.user ? { runAsNonRoot: true as const, runAsUser: spec.user.uid, runAsGroup: spec.user.gid } : {}),
@@ -355,11 +357,18 @@ function serviceSidecar(config: DriverConfig, job: BoardJob, spec: ServiceSpec):
         volumeMounts: [
             { name: SERVICE_GENERATIONS.volume, mountPath: SERVICE_GENERATIONS.path, readOnly: true },
             { name: serviceAckVolume(spec.name), mountPath: SERVICE_GENERATIONS.ackPath },
+            ...(spec.tmpfs ?? []).map(({ path }, index) => ({
+                name: serviceTmpfsVolume(spec.name, index),
+                mountPath: path,
+            })),
         ],
     };
 }
 
-/** The pod fields the declared services add: their names on loopback, and the restart's volumes. */
+/** The memory emptyDir behind a service's `index`-th declared tmpfs. */
+const serviceTmpfsVolume = (service: string, index: number): string => `svc-tmp-${service}-${index}`;
+
+/** The pod fields the declared services add: their names on loopback, the restart's volumes and the tmpfs mounts. */
 function servicesPodFields(services: readonly ServiceSpec[]): {
     hostAliases?: { ip: string; hostnames: string[] }[];
     volumes: RunnerVolume[];
@@ -367,10 +376,18 @@ function servicesPodFields(services: readonly ServiceSpec[]): {
     if (services.length === 0) return { volumes: [] };
     return {
         hostAliases: [{ ip: SERVICE_ADDRESS, hostnames: services.map(({ name }) => name) }],
-        volumes: [SERVICE_GENERATIONS.volume, ...services.map(({ name }) => serviceAckVolume(name))].map((name) => ({
-            name,
-            emptyDir: {},
-        })),
+        volumes: [
+            ...[SERVICE_GENERATIONS.volume, ...services.map(({ name }) => serviceAckVolume(name))].map((name) => ({
+                name,
+                emptyDir: {},
+            })),
+            ...services.flatMap(({ name, tmpfs }) =>
+                (tmpfs ?? []).map(({ size }, index) => ({
+                    name: serviceTmpfsVolume(name, index),
+                    emptyDir: { medium: 'Memory' as const, sizeLimit: size },
+                }))
+            ),
+        ],
     };
 }
 

@@ -26,6 +26,34 @@ export const BELLOWS_FILE = '.bellows.yaml';
 /** A service named like this would shadow the loopback address its siblings reach each other on. */
 const RESERVED_SERVICE_NAMES: readonly string[] = ['localhost'];
 
+/**
+ * The most tmpfs one plan may declare, in Mi. Each mount is memory added to its service's request
+ * and limit in the task pod, so an oversized total would leave the pod unschedulable.
+ */
+const MAX_TMPFS_TOTAL_MI = 8192;
+const MI_PER_GI = 1024;
+
+/** A grammar-checked `<n>Mi` or `<n>Gi` size, in Mi. */
+function tmpfsMi(size: string): number {
+    const count = Number(size.slice(0, -2));
+    return size.endsWith('Gi') ? count * MI_PER_GI : count;
+}
+
+/** The plan's tmpfs total past the cap, naming the services that declare one; nothing within it. */
+function tmpfsOverCap(services: readonly ServiceSpec[]): string[] {
+    const declaring = services.filter((service) => (service.tmpfs ?? []).length > 0);
+    const total = declaring.reduce(
+        (sum, service) => sum + (service.tmpfs ?? []).reduce((acc, mount) => acc + tmpfsMi(mount.size), 0),
+        0
+    );
+    if (total <= MAX_TMPFS_TOTAL_MI) return [];
+    const names = declaring.map((service) => `"${service.name}"`).join(' and ');
+    return [
+        `${declaring.length === 1 ? `service ${names} declares` : `services ${names} declare`} ${total}Mi of tmpfs — ` +
+            'at most 8Gi of tmpfs fits one task pod',
+    ];
+}
+
 export interface ExecutionPlan {
     readonly config: BellowsConfig | null;
     readonly services: readonly ServiceSpec[];
@@ -60,7 +88,7 @@ export function planProblems(services: readonly ServiceSpec[]): string[] {
             problems.push(`service name "${service.name}" is reserved — pick another name`);
         }
     }
-    return [...problems, ...portCollisions(services)];
+    return [...problems, ...portCollisions(services), ...tmpfsOverCap(services)];
 }
 
 /**

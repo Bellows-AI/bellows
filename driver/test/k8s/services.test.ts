@@ -154,6 +154,51 @@ describe('the service sidecars (issue #773)', () => {
         const bad = { ...declared, services: [{ ...cache, environment: [{ key: 'not a key', value: 'x' }] }] };
         expect(() => podOf(bad)).toThrow(/not a valid environment variable name/);
     });
+
+    const memoryDb: ServiceSpec = { ...db, tmpfs: [{ path: '/var/lib/postgresql/data', size: '2Gi' }] };
+    const inMemory: BoardJob = { ...declared, services: [memoryDb, cache] };
+    const classConfig = (resources: Record<string, Record<string, string>>) => ({
+        ...loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            K8S_NAMESPACE: namespace,
+            RUNNER_CLASSES: JSON.stringify({ standard: { resources } }),
+            RUNNER_DEFAULT_CLASS: 'standard',
+        }),
+        servicesEnabled: true,
+    });
+    const sidecarIn = (pod: ReturnType<typeof podOf>, name: string) =>
+        pod.initContainers?.find((container) => container.name === `svc-${name}`);
+
+    it('mounts each declared tmpfs as a memory emptyDir on that sidecar alone', () => {
+        const pod = podOf(inMemory);
+        expect(pod.volumes).toContainEqual({ name: 'svc-tmp-db-0', emptyDir: { medium: 'Memory', sizeLimit: '2Gi' } });
+        expect(sidecarIn(pod, 'db')?.volumeMounts).toContainEqual({
+            name: 'svc-tmp-db-0',
+            mountPath: '/var/lib/postgresql/data',
+        });
+        for (const container of [...pod.containers, ...(pod.initContainers ?? [])]) {
+            if (container.name === 'svc-db') continue;
+            expect(JSON.stringify(container.volumeMounts), container.name).not.toMatch(/svc-tmp-/);
+        }
+    });
+
+    it('adds the tmpfs total to the sidecar’s memory request and limit, never to cpu', () => {
+        const config = classConfig({ requests: { cpu: '1', memory: '1Gi' }, limits: { cpu: '2', memory: '3Gi' } });
+        const pod = podOf(inMemory, config);
+        expect(sidecarIn(pod, 'db')?.resources).toEqual({
+            requests: { cpu: '1', memory: '3221225472' },
+            limits: { cpu: '2', memory: '5368709120' },
+        });
+        expect(sidecarIn(pod, 'cache')?.resources).toEqual({
+            requests: { cpu: '1', memory: '1Gi' },
+            limits: { cpu: '2', memory: '3Gi' },
+        });
+    });
+
+    it('leaves an unset memory slot unset', () => {
+        const pod = podOf(inMemory, classConfig({ requests: { cpu: '1' } }));
+        expect(sidecarIn(pod, 'db')?.resources).toEqual({ requests: { cpu: '1' } });
+    });
 });
 
 describe('the kubernetes services flow (issue #773)', () => {

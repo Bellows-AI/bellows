@@ -43,8 +43,9 @@ The service is reachable by its `name`. Here the tests connect to host `db`, por
 | `user`        | no       | Numeric `"uid:gid"` the container runs as. The uid cannot be 0                                      |
 | `ports`       | no       | Inline list of TCP ports the service listens on, for example `[5432]`. Up to 16, each 1 to 65535, no repeats |
 | `environment` | no       | Map of `KEY: value`. Names match `[A-Za-z_][A-Za-z0-9_]*`, up to 256 chars. Values up to 8192 chars |
+| `tmpfs`       | no       | Inline list of memory-backed mounts, `<absolute path>:<size>`, for example `[/var/lib/postgresql/data:2Gi]`. Size is a whole number of `Mi` or `Gi`. Up to 4 per service, no repeats |
 
-Other keys are errors. A block list for `ports` is also an error: write `ports: [5432]`.
+Other keys are errors. A block list for `ports` or `tmpfs` is also an error: write `ports: [5432]`.
 
 <Warning>
   Environment values sit in your repo in plain text. Use throwaway credentials for test databases. Never put real secrets here.
@@ -61,11 +62,43 @@ Services share one network namespace, so two services cannot listen on the same 
 - At most 10 services per file.
 - Service names must be unique.
 - Every service runs hardened: all Linux capabilities dropped, no privilege escalation, and no way to turn that off. Declaring `unhardened` is an error.
-- There are no volumes, health checks, `depends_on` or restart policies.
+- There are no volumes but `tmpfs`, and no health checks, `depends_on` or restart policies.
+- A `tmpfs` can't cover `/tmp` itself, because Bellows keeps its service-restart record there. Mount a subdirectory such as `/tmp/cache` instead.
+- All services together declare at most 8Gi of `tmpfs`.
 
 ## Why Postgres needs `user`
 
 Stock Postgres starts as root, changes ownership of its data directory, then drops to its own user. A hardened container can't do that, so it crash-loops. Set `user: "999:999"` so the image starts as the `postgres` user from the start. This is the uid of the Debian-based images. Check the uid your image uses if you pick another one. Redis and similar images that don't need root usually need no `user`.
+
+## Keep a database in memory
+
+A database writes its data directory on every test. Mount that directory as `tmpfs` so it lives in memory, not on the container's disk:
+
+```yaml .bellows.yaml
+services:
+    - name: db
+      image: postgres:17
+      user: "999:999"
+      ports: [5432]
+      tmpfs: [/var/lib/postgresql/data:2Gi]
+      environment:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app
+          POSTGRES_DB: app_test
+          PGDATA: /var/lib/postgresql/data/pgdata
+
+environment:
+    image: golang:1.25
+    setup: "go mod download"
+    gates:
+        - name: integration
+          command: 'DATABASE_URL="postgres://app:app@db:5432/app_test?sslmode=disable" go test -count=1 ./...'
+          timeout: 10
+```
+
+- Point `PGDATA` at a subdirectory of the mount. The mount itself belongs to root, and Postgres running as `999` cannot make it private, so it refuses to start there. It can create and own a subdirectory.
+- The size counts against the service's memory. Writing past it fails the write or kills the service, so leave headroom over the data you expect.
+- The data is gone whenever the service is recreated. On Kubernetes a restart inside the task keeps it; on Docker a restart starts empty. Don't rely on data surviving a restart: have your tests create what they need.
 
 ## Startup and readiness
 

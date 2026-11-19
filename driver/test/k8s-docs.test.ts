@@ -284,6 +284,17 @@ describe('the executor isolation record (#382)', () => {
         );
     });
 
+    // A service `tmpfs` is a memory emptyDir on its sidecar: it outlives an in-pod restart, which
+    // docker's re-run does not, and a microVM guest ignores its sizeLimit.
+    it('states that a service tmpfs survives an in-pod restart and that a microVM does not enforce its size', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            'Stated limit: a service `tmpfs` survives an in-pod sidecar restart (the pre-gate restart, a kubelet restart) and is empty only in a recreated pod'
+        );
+        expect(prose(kubernetesDocs)).toContain(
+            'under a microVM RuntimeClass the guest does not enforce the emptyDir `sizeLimit`, so overflowing it is an OOM kill of the sidecar, bounded by its memory limit'
+        );
+    });
+
     // Issue #792: a runner that outlived its driver is adopted only once it finished; the running
     // case is redone, and the bound on a finished one is the Job's TTL.
     it('states that only a finished runner is adopted, and for how long', () => {

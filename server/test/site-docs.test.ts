@@ -67,6 +67,28 @@ describe('site/ .bellows.yaml examples', () => {
         }
         expect(missing).toEqual([]);
     });
+
+    // A tmpfs mount root is root-owned and world-writable on both executors; postgres as uid 999
+    // cannot chmod it 0700, so a copied example must point PGDATA at a subdirectory of the mount.
+    it('every postgres service with a tmpfs keeps PGDATA in a subdirectory of it', () => {
+        const wrong: string[] = [];
+        for (const file of mdxFiles()) {
+            const src = readFileSync(file, 'utf8');
+            for (const m of src.matchAll(/^([ \t]*)```ya?ml([^\n]*)\n([\s\S]*?)\n\1```/gm)) {
+                const [, , meta = '', body = ''] = m;
+                if (!/\.bellows\.yaml/.test(meta) || /excerpt/.test(meta) || !/^services:/m.test(body)) continue;
+                for (const service of parseServices(body)) {
+                    if (!/(^|\/)postgres(:|@|$)/.test(service.image) || !service.tmpfs) continue;
+                    const pgdata = service.environment.find((e) => e.key === 'PGDATA')?.value;
+                    if (!service.tmpfs.some((t) => pgdata?.startsWith(`${t.path}/`)))
+                        wrong.push(
+                            `${relative(site, file)}:${src.slice(0, m.index).split('\n').length} ${service.name}`
+                        );
+                }
+            }
+        }
+        expect(wrong).toEqual([]);
+    });
 });
 
 describe('site/mcp/tools.mdx', () => {
