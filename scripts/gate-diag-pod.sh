@@ -241,6 +241,9 @@ $runtime
         - name: POSTGRES_DB
           value: factory_test
       resources:
+        requests:
+          cpu: 500m
+          memory: 1Gi
         limits:
           cpu: "$service_cpu"
           memory: "$service_mem"
@@ -280,6 +283,9 @@ $(printf '%s\n' "$run" | sed 's/^/          /')
         runAsUser: 1000
         runAsGroup: 1000
       resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
         limits:
           cpu: "$gate_cpu"
           memory: "$gate_mem"

@@ -520,7 +520,12 @@ describe('scripts/gate-diag-pod.sh', () => {
         expect(postgres.restartPolicy).toBe('Always');
         expect(postgres.securityContext.runAsUser).toBe(999);
         expect(postgres.volumeMounts).toBeUndefined();
-        expect(postgres.resources.limits).toEqual({ cpu: '1', memory: '1Gi' });
+        // Requests are the real pod's, never defaulted to the limits: limits summed past one node's
+        // allocatable would leave the pod unschedulable, while the guest is sized from the limits.
+        expect(postgres.resources).toEqual({
+            requests: { cpu: '500m', memory: '1Gi' },
+            limits: { cpu: '1', memory: '1Gi' },
+        });
 
         const containers = Object.fromEntries(spec.containers.map((c: { name: string }) => [c.name, c]));
         expect(Object.keys(containers).sort()).toEqual(['diag', 'pad']);
@@ -533,7 +538,10 @@ describe('scripts/gate-diag-pod.sh', () => {
             requests: { cpu: '10m', memory: '16Mi' },
             limits: { cpu: '500m', memory: '512Mi' },
         });
-        expect(containers.diag.resources.limits).toEqual({ cpu: '2', memory: '4Gi' });
+        expect(containers.diag.resources).toEqual({
+            requests: { cpu: '100m', memory: '128Mi' },
+            limits: { cpu: '2', memory: '4Gi' },
+        });
         const mounts = Object.fromEntries(
             containers.diag.volumeMounts.map((m: { name: string; mountPath: string }) => [m.mountPath, m.name])
         );
