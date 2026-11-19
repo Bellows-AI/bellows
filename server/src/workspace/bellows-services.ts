@@ -17,6 +17,12 @@ export interface ServiceSpec {
      * the plan refuses a collision before launch. Never published to the host.
      */
     ports?: number[];
+    /**
+     * Memory-backed mounts from `tmpfs: [/var/lib/postgresql/data:2Gi]`, each `size` an integer of
+     * `Mi` or `Gi`. Empty at every container (docker) or pod (kubernetes) creation, and the size
+     * counts against the service's memory.
+     */
+    tmpfs?: { path: string; size: string }[];
 }
 
 /**
@@ -51,6 +57,18 @@ export const MAX_SERVICES = 10;
 const MAX_PORTS_PER_SERVICE = 16;
 const MIN_PORT = 1;
 const MAX_PORT = 65_535;
+
+/**
+ * A tmpfs mount path: absolute, segments of letters, digits, `.`, `_` and `-`. No `:` and no `,`,
+ * so the docker `--tmpfs <path>:<options>` value never carries an option the author did not declare.
+ */
+const TMPFS_PATH = /^\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+const MAX_TMPFS_PATH = 256;
+/** The root, the kernel's filesystems and the driver's control root (`CTL_ROOT`) are never mounted over. */
+const RESERVED_TMPFS_ROOTS = ['/proc', '/sys', '/dev', '/factory'];
+/** A tmpfs size: a whole number of binary megabytes or gigabytes, both executors convert it. */
+const TMPFS_SIZE = /^[1-9][0-9]{0,4}(Mi|Gi)$/;
+const MAX_TMPFS_PER_SERVICE = 4;
 
 /**
  * Cuts a comment. A `#` opens one at line start or after whitespace, never inside quotes — which
@@ -246,8 +264,8 @@ const MAX_ENV_VALUE = 8192;
  * Strictness is the point. The file was written by a repo author against a syntax they half-know
  * from CI; every construct this parser does not understand is refused with a message that names
  * the key, because the alternative is a pasted Drone pipeline that silently does nothing.
- * `ports:` is the one inline list, and it DECLARES the container's listening ports for the plan's
- * collision check; it never publishes anything to the host. A file without a `services` key parses
+ * `ports:` and `tmpfs:` are the inline lists. `ports:` DECLARES the container's listening ports for
+ * the plan's collision check; it never publishes anything to the host. A file without a `services` key parses
  * to no services — a checkout carries the file only when it wants services, so nothing is an error
  * until a service is actually being defined.
  *
@@ -265,6 +283,7 @@ interface BellowsItem {
     environment: { key: string; value: string }[];
     user: { uid: number; gid: number } | null;
     ports: number[];
+    tmpfs: { path: string; size: string }[];
     inEnvironment: boolean;
     keys: Set<string>;
     envKeys: Set<string>;
@@ -273,7 +292,7 @@ interface BellowsItem {
 /** Validates and files the just-finished item, when there is one. A no-op on a null item. */
 function finishItem(item: BellowsItem | null, specs: ServiceSpec[]): void {
     if (!item) return;
-    const { name, image, environment, user, ports } = item;
+    const { name, image, environment, user, ports, tmpfs } = item;
     if (!name) throw new Error('.bellows.yaml: a service is missing "name"');
     if (!image) throw new Error('.bellows.yaml: a service is missing "image"');
     if (!SERVICE_NAME.test(name)) {
@@ -294,6 +313,7 @@ function finishItem(item: BellowsItem | null, specs: ServiceSpec[]): void {
         environment,
         ...(user ? { user } : {}),
         ...(ports.length > 0 ? { ports } : {}),
+        ...(tmpfs.length > 0 ? { tmpfs } : {}),
     });
 }
 
@@ -312,6 +332,54 @@ function readPorts(value: string): number[] {
     }
     if (new Set(ports).size !== ports.length) throw new Error('.bellows.yaml: a service lists one port twice');
     return ports;
+}
+
+/** One `<absolute path>:<size>` entry, split at its last `:`. */
+function readTmpfsEntry(entry: string): { path: string; size: string } {
+    const at = entry.lastIndexOf(':');
+    if (at === -1) {
+        throw new Error(
+            `.bellows.yaml: tmpfs entry "${entry}" must be "<absolute path>:<size>", e.g. /var/lib/postgresql/data:2Gi`
+        );
+    }
+    const path = entry.slice(0, at);
+    const size = entry.slice(at + 1);
+    if (path === '/' || RESERVED_TMPFS_ROOTS.some((root) => path === root || path.startsWith(`${root}/`))) {
+        throw new Error(`.bellows.yaml: tmpfs path "${path}" is reserved — mount it under another directory`);
+    }
+    if (!TMPFS_PATH.test(path) || path.length > MAX_TMPFS_PATH) {
+        throw new Error(
+            `.bellows.yaml: tmpfs path "${path}" must be an absolute path of letters, digits, ".", "_" and "-" ` +
+                `segments, at most ${MAX_TMPFS_PATH} characters`
+        );
+    }
+    if (path.split('/').some((segment) => segment === '.' || segment === '..')) {
+        throw new Error(`.bellows.yaml: tmpfs path "${path}" must not contain a "." or ".." segment`);
+    }
+    if (!TMPFS_SIZE.test(size)) {
+        throw new Error(`.bellows.yaml: tmpfs size "${size}" must be a whole number of Mi or Gi, e.g. 2Gi`);
+    }
+    return { path, size };
+}
+
+/** `[/var/lib/postgresql/data:2Gi]` — an inline list of memory-backed mounts. A block list is refused with the spelling to use. */
+function readTmpfs(value: string): { path: string; size: string }[] {
+    const list = value.match(/^\[(.*)\]$/);
+    if (!list) {
+        throw new Error(
+            '.bellows.yaml: "tmpfs" must be an inline list of "<absolute path>:<size>" entries, ' +
+                'e.g. tmpfs: [/var/lib/postgresql/data:2Gi]'
+        );
+    }
+    const items = (list[1] ?? '').trim() === '' ? [] : (list[1] ?? '').split(',').map((item) => scalar(item));
+    if (items.length > MAX_TMPFS_PER_SERVICE) {
+        throw new Error(`.bellows.yaml: a service declares at most ${MAX_TMPFS_PER_SERVICE} tmpfs mounts`);
+    }
+    const mounts = items.map(readTmpfsEntry);
+    if (new Set(mounts.map((mount) => mount.path)).size !== mounts.length) {
+        throw new Error('.bellows.yaml: a service lists one tmpfs path twice');
+    }
+    return mounts;
 }
 
 /** Applies one `name:`/`image:`/`environment:` field to the item mid-parse. */
@@ -348,7 +416,13 @@ function applyServiceField(item: BellowsItem, key: string, value: string): void 
         item.ports = readPorts(value);
         return;
     }
-    throw new Error(`.bellows.yaml: unknown service key "${key}" — supported: name, image, ports, environment, user`);
+    if (key === 'tmpfs') {
+        item.tmpfs = readTmpfs(value);
+        return;
+    }
+    throw new Error(
+        `.bellows.yaml: unknown service key "${key}" — supported: name, image, ports, environment, user, tmpfs`
+    );
 }
 
 function applyField(item: BellowsItem, chunk: string): void {
@@ -484,6 +558,7 @@ export function parseServices(text: string): ServiceSpec[] {
                 environment: [],
                 user: null,
                 ports: [],
+                tmpfs: [],
                 inEnvironment: false,
                 keys: new Set(),
                 envKeys: new Set(),

@@ -16,6 +16,7 @@ import { boardLabelArgs } from './docker/docker-mailbox.js';
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { BoardJob, ServiceStatus } from './board/board.js';
 import { type DriverConfig, gateAdvertiseUrlFor } from './config.js';
+import { memoryQuantityToBytes } from './quantities.js';
 
 /** One service of the claim's plan, as the board resolved it. `environment` preserves the file's order. */
 export interface ServiceSpec {
@@ -34,6 +35,11 @@ export interface ServiceSpec {
      * is published to the host.
      */
     ports?: number[];
+    /**
+     * Memory-backed mounts, each `size` an integer of `Mi` or `Gi`: empty at every container
+     * creation (docker) or pod creation (kubernetes), and the size counts against the service's memory.
+     */
+    tmpfs?: { path: string; size: string }[];
 }
 
 /** The services the claim's plan declares: what both executors start, and nothing the driver read itself. */
@@ -73,6 +79,23 @@ const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * clear author-facing refusal; the reverse trade is flag injection waiting for an append.
  */
 const IMAGE = /^[a-z0-9][a-z0-9._-]*(?::[0-9]+)?(?:\/[a-z0-9._/-]+)?(?::[a-z0-9._-]+)?(?:@sha256:[a-f0-9]{64})?$/i;
+
+/**
+ * What a tmpfs mount path may be (the board's grammar, copied): absolute, no `:` and no `,` — so
+ * the `--tmpfs <path>:<options>` value carries no option the author did not declare — at most 256
+ * characters, no `.`/`..` segment, and never the root, the kernel's filesystems or `CTL_ROOT`.
+ */
+const TMPFS_PATH = /^\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*$/;
+const RESERVED_TMPFS_ROOTS = ['/proc', '/sys', '/dev', '/factory'];
+/** What a tmpfs size may be: a whole number of binary megabytes or gigabytes. */
+const TMPFS_SIZE = /^[1-9][0-9]{0,4}(Mi|Gi)$/;
+const MAX_TMPFS_PATH = 256;
+
+const isSafeTmpfsPath = (path: string): boolean =>
+    TMPFS_PATH.test(path) &&
+    path.length <= MAX_TMPFS_PATH &&
+    !path.split('/').some((segment) => segment === '.' || segment === '..') &&
+    !RESERVED_TMPFS_ROOTS.some((root) => path === root || path.startsWith(`${root}/`));
 
 /** The state a declared service reports when the executor lists nothing for it: gone, not failed. */
 export const MISSING_SERVICE_STATE = 'missing';
@@ -177,7 +200,7 @@ export function servicePlanRefusal(
 
 /**
  * Re-asserts what of a service reaches a container spec — its name (a container name, a hosts entry,
- * a volume name), its image and its env keys — before either executor puts it there: the board is
+ * a volume name), its image, its env keys and its tmpfs mounts — before either executor puts it there: the board is
  * not something this process trusts with any of them.
  */
 export function assertServiceSpec(job: BoardJob, spec: ServiceSpec): void {
@@ -190,6 +213,14 @@ export function assertServiceSpec(job: BoardJob, spec: ServiceSpec): void {
     for (const { key } of spec.environment) {
         if (!ENV_KEY.test(key)) {
             throw new Error(`refusing to run job ${job.id}: "${key}" is not a valid environment variable name`);
+        }
+    }
+    for (const { path, size } of spec.tmpfs ?? []) {
+        if (!isSafeTmpfsPath(path)) {
+            throw new Error(`refusing to run job ${job.id}: "${path}" is not a safe tmpfs path`);
+        }
+        if (!TMPFS_SIZE.test(size)) {
+            throw new Error(`refusing to run job ${job.id}: "${size}" is not a safe tmpfs size`);
         }
     }
 }
@@ -227,6 +258,10 @@ export function serviceRunArgs(job: BoardJob, spec: ServiceSpec, holder: string,
         `container:${holder}`,
     ];
     for (const { key, value } of spec.environment) args.push('-e', `${key}=${value}`);
+    // Bounded by `size=` (ENOSPC past it) and charged to this container's cgroup; a re-run starts it empty.
+    for (const { path, size } of spec.tmpfs ?? []) {
+        args.push('--tmpfs', `${path}:rw,size=${memoryQuantityToBytes(size)}`);
+    }
     args.push(spec.image);
     return args;
 }

@@ -32,7 +32,8 @@ import { SERVICE_NOT_ACKED_EXIT, serviceContainerOf } from '../supervisor-contra
  * Nothing here creates or deletes an object: readiness and death are read off the pod's
  * `initContainerStatuses`, and a restart is the supervisor's bump of the service's generation
  * (`scripts/service-generation-bump.sh`, a `restart` step), which the sidecar's liveness probe
- * turns into a kubelet restart with a fresh writable layer. The services end with the pod.
+ * turns into a kubelet restart with a fresh writable layer — a declared `tmpfs` is a pod volume and
+ * keeps its contents across that restart. The services end with the pod.
  */
 
 /** Why the kubelet restarted a sidecar the driver never asked to: the candidates, in the operator's words. */

@@ -145,6 +145,45 @@ describe('the service container arguments', () => {
         expect(() =>
             serviceRunArgs(job, { name: 'db', image: '--privileged', environment: [] }, supervisorName(job), BOARD)
         ).toThrow(/not a safe image reference/);
+        const withTmpfs = (path: string, size: string) => () =>
+            serviceRunArgs(
+                job,
+                { name: 'db', image: 'postgres', environment: [], tmpfs: [{ path, size }] },
+                supervisorName(job),
+                BOARD
+            );
+        expect(withTmpfs('/factory/ctl', '1Gi')).toThrow(/refusing to run job .*"\/factory\/ctl" is not a safe tmpfs/);
+        expect(withTmpfs('/data,uid=0', '1Gi')).toThrow(/refusing to run job .*"\/data,uid=0" is not a safe tmpfs/);
+        expect(withTmpfs('/data', '2G')).toThrow(/refusing to run job .*"2G" is not a safe tmpfs size/);
+    });
+
+    it('mounts each declared tmpfs with its size in bytes, before the image', () => {
+        const line = serviceRunArgs(
+            job,
+            {
+                name: 'db',
+                image: 'postgres:17',
+                environment: [{ key: 'PGDATA', value: '/var/lib/postgresql/data/pgdata' }],
+                tmpfs: [
+                    { path: '/var/lib/postgresql/data', size: '2Gi' },
+                    { path: '/scratch', size: '64Mi' },
+                ],
+            },
+            supervisorName(job),
+            BOARD
+        );
+        expect(line.slice(-7)).toEqual([
+            '-e',
+            'PGDATA=/var/lib/postgresql/data/pgdata',
+            '--tmpfs',
+            '/var/lib/postgresql/data:rw,size=2147483648',
+            '--tmpfs',
+            '/scratch:rw,size=67108864',
+            'postgres:17',
+        ]);
+        expect(
+            serviceRunArgs(job, { name: 'db', image: 'postgres', environment: [] }, supervisorName(job), BOARD)
+        ).not.toContain('--tmpfs');
     });
 });
 
