@@ -231,6 +231,10 @@ cleanup() {
     if [ "${runtimeclass_created:-}" = '1' ]; then
         kubectl delete runtimeclass "$KATA_RC" --ignore-not-found --wait=false >/dev/null 2>&1
     fi
+    # The admission phase's sandbox-pool probe namespaces (scripts/lanes/k8s/admission.sh).
+    if [ "${sandbox_namespaces_created:-}" = '1' ]; then
+        kubectl delete namespace "$RELEASE-sandbox" "lane-exempt-$RELEASE" --ignore-not-found --wait=false >/dev/null 2>&1
+    fi
     if [ "${state_installed:-}" = '1' ]; then
         helm uninstall "$STATE_RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
         kubectl delete pvc -l "app.kubernetes.io/instance=$STATE_RELEASE" -n "$NAMESPACE" --wait=false >/dev/null 2>&1
@@ -1462,6 +1466,75 @@ printf '%s\n' 'runner:' '    nodeSelector: {}' >"$work/retired-empty.yaml"
 refuses 'an empty retired runner value is refused too' 'runner.nodeSelector is retired' \
     "${GH_SETS[@]}" -f "$work/retired-empty.yaml"
 
+# Sandbox node pools (isolation.sandboxPools): off by default; declared, a cluster-wide policy refuses
+# a pod that tolerates a pool's taint without one of its RuntimeClasses, or pins spec.nodeName without
+# a sandbox one, outside the exempt namespaces (exact names in the binding, `*` prefixes in its
+# matchCondition). The driver gets the pools whole and may read their RuntimeClasses.
+sandbox_doc() { awk '/^# Source: /{p=($0 ~ /templates\/sandbox-admission.yaml$/)} p' <<<"$1"; }
+expect_not_contains 'no sandbox pool renders no sandbox-pool policy' "$gh" 'sandbox-admission.yaml'
+expect_not_contains 'no sandbox pool hands the driver no pools' "$gh" 'name: RUNNER_SANDBOX_POOLS'
+printf '%s\n' 'isolation:' '    sandboxPools:' '        - taint: {key: sandbox.example/runtime, value: microvm}' \
+    '          runtimeClassNames: [vm, shared]' >"$work/sandbox-pool.yaml"
+pool_render="$(gh_render -f "$work/sandbox-pool.yaml")"
+pool_policy="$(sandbox_doc "$pool_render")"
+[ "$(grep -c '^kind: ValidatingAdmissionPolicy$' <<<"$pool_policy")" = 1 ] &&
+    [ "$(grep -c '^kind: ValidatingAdmissionPolicyBinding$' <<<"$pool_policy")" = 1 ] &&
+    ok 'a sandbox pool renders exactly one policy and its binding' ||
+    bad 'a sandbox pool renders exactly one policy and its binding' "$pool_policy"
+expect_contains 'the sandbox-pool policy is named for its namespace and release' "$pool_policy" \
+    "name: $NAMESPACE-$RELEASE-factory-sandbox-pools"
+expect_contains 'the sandbox-pool policy matches pods alone, on create and update' "$pool_policy" \
+    "operations: ['CREATE', 'UPDATE']
+              resources: ['pods']"
+expect_contains 'the sandbox-pool policy fails closed' "$pool_policy" 'failurePolicy: Fail'
+expect_contains 'the sandbox-pool binding denies' "$pool_policy" 'validationActions: [Deny]'
+expect_contains 'the sandbox-pool policy carries the pools as CEL' "$pool_policy" \
+    'expression: "[{\"key\":\"sandbox.example/runtime\",\"names\":[\"vm\",\"shared\"],\"value\":\"microvm\"}]"'
+expect_contains 'the sandbox-pool policy refuses a pinned spec.nodeName without a sandbox RuntimeClass' \
+    "$pool_policy" 'variables.runtimeClass in variables.sandboxRuntimeClasses'
+expect_contains 'the default exempt names sit in the binding selector' "$pool_policy" 'operator: NotIn
+                  values: ["kube-system","gmp-system"]'
+expect_contains 'the default exempt prefix sits in the matchCondition' "$pool_policy" \
+    'expression: "![\"gke-managed-\"].exists(p, request.namespace.startsWith(p))"'
+expect_contains 'the driver gets the sandbox pools whole' "$pool_render" '- name: RUNNER_SANDBOX_POOLS
+                        value: "[{\"runtimeClassNames\":[\"vm\",\"shared\"],\"taint\":{\"key\":\"sandbox.example/runtime\",\"value\":\"microvm\"}}]"'
+expect_contains 'the driver may read the sandbox pools RuntimeClasses' "$(runtimeclass_rbac "$pool_render")" \
+    'resourceNames: ["shared","vm"]'
+# A values file per shape: one JSON value (YAML's flow subset) at isolation.<key>.
+isolation_values() { # isolation_values <file> <key> <json>
+    printf 'isolation:\n    %s: %s\n' "$2" "$3" >"$work/$1.yaml"
+    printf '%s\n' "$work/$1.yaml"
+}
+no_exempt="$(sandbox_doc "$(gh_render -f "$work/sandbox-pool.yaml" \
+    -f "$(isolation_values no-exempt sandboxExemptNamespaces '[]')")")"
+expect_not_contains 'no exempt namespace renders no binding selector' "$no_exempt" 'namespaceSelector'
+expect_contains 'no exempt namespace renders an empty prefix list' "$no_exempt" \
+    'expression: "![].exists(p, request.namespace.startsWith(p))"'
+prefix_only="$(sandbox_doc "$(gh_render -f "$work/sandbox-pool.yaml" \
+    -f "$(isolation_values prefix-only sandboxExemptNamespaces '["team-*"]')")")"
+expect_not_contains 'prefix-only exemptions render no binding selector' "$prefix_only" 'namespaceSelector'
+expect_contains 'prefix-only exemptions render the prefix' "$prefix_only" \
+    'expression: "![\"team-\"].exists(p, request.namespace.startsWith(p))"'
+refuses 'a sandbox pool without a taint key is refused' 'isolation.sandboxPools[0].taint.key is required' \
+    "${GH_SETS[@]}" -f "$(isolation_values pool-keyless sandboxPools '[{"taint":{"value":"x"},"runtimeClassNames":["vm"]}]')"
+refuses 'a sandbox pool with no RuntimeClass is refused' \
+    'isolation.sandboxPools[0].runtimeClassNames must list at least one RuntimeClass' \
+    "${GH_SETS[@]}" -f "$(isolation_values pool-empty sandboxPools '[{"taint":{"key":"k"},"runtimeClassNames":[]}]')"
+refuses 'a sandbox pool RuntimeClass that is no name is refused' \
+    'isolation.sandboxPools[0].runtimeClassNames entries must be RuntimeClass names' \
+    "${GH_SETS[@]}" -f "$(isolation_values pool-badname sandboxPools '[{"taint":{"key":"k"},"runtimeClassNames":["Bad_Name"]}]')"
+refuses 'a sandbox pool taint effect is refused, as the driver refuses it' \
+    'isolation.sandboxPools[0].taint.effect is not a key the driver knows' \
+    "${GH_SETS[@]}" -f "$(isolation_values pool-effect sandboxPools '[{"taint":{"key":"k","effect":"NoSchedule"},"runtimeClassNames":["vm"]}]')"
+for entry in 'a*b' '*a' '**'; do
+    refuses "an exempt namespace $entry with a star before its end is refused" 'may carry "*" only as its last character' \
+        "${GH_SETS[@]}" -f "$work/sandbox-pool.yaml" -f "$(isolation_values exempt-star sandboxExemptNamespaces "[\"$entry\"]")"
+done
+refuses 'a bare * exempt namespace is refused' 'may not hold a bare "*"' \
+    "${GH_SETS[@]}" -f "$work/sandbox-pool.yaml" -f "$(isolation_values exempt-bare sandboxExemptNamespaces '["*"]')"
+refuses 'an exempt namespace that is no name is refused' 'must be a namespace name' \
+    "${GH_SETS[@]}" -f "$work/sandbox-pool.yaml" -f "$(isolation_values exempt-bad sandboxExemptNamespaces '["Kube_System"]')"
+
 # Dashboard Service annotations: a load balancer's per-Service knobs (a GKE BackendConfig for Cloud
 # Armor, NEG settings). None by default.
 service_doc() { awk '/^# Source: factory\/templates\/service.yaml/,/^---/' <<<"$1"; }
@@ -2303,7 +2376,10 @@ fi
 # The `dind` class is a docker class the admission phase dry-runs its dockerd probes against
 # (scripts/lanes/k8s/admission.sh); no task names it. Its RuntimeClass is a real object with a Kata
 # handler, because the driver reads it at boot and refuses a docker class whose handler is not
-# Kata; kind runs no Kata, and no pod ever resolves it.
+# Kata; kind runs no Kata, and no pod ever resolves it. It is also the one RuntimeClass of the
+# install's sandbox pool (isolation.sandboxPools), whose cluster-wide policy the admission phase
+# probes; no node carries the pool's taint and no class tolerates it, and kind's own pods live in
+# the exempt kube-system and local-path-storage.
 KATA_RC="$RELEASE-kata"
 kubectl apply -f - >/dev/null <<RC || {
 apiVersion: node.k8s.io/v1
@@ -2333,6 +2409,9 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" ${RE
     --set-string runner.classes.dind.resources.limits.cpu=1 --set runner.classes.dind.resources.limits.memory=1Gi \
     --set-string runner.classes.dind.dockerResources.limits.cpu=1 \
     --set runner.classes.dind.dockerResources.limits.memory=1Gi --set runner.classes.dind.dockerStorage=512Mi \
+    --set 'isolation.sandboxPools[0].taint.key=factory.test/sandbox' \
+    --set 'isolation.sandboxPools[0].taint.value=kata' --set "isolation.sandboxPools[0].runtimeClassNames={$KATA_RC}" \
+    --set 'isolation.sandboxExemptNamespaces={kube-system,local-path-storage,lane-exempt-*}' \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
     exit 1

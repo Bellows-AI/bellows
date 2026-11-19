@@ -306,17 +306,18 @@ export function evaluate(node: Node, scope: Scope): unknown {
 /** One ValidatingAdmissionPolicy's `variables` and `validations`, as written in its spec. */
 export interface CelPolicy {
     variables: { name: string; expression: string }[];
-    validations: { expression: string; message: string }[];
+    validations: { expression: string; message: string; messageExpression?: string }[];
 }
 
 /**
  * The messages of every validation `policy` refuses `object` with, `[]` when it admits it. The
  * variables resolve in order, each seeing those before it; a throwing one fails only the validations
- * that read it.
+ * that read it. `oldObject` is null on a create, as the apiserver's is. A `messageExpression` wins
+ * over `message` unless it throws or yields no string, as the apiserver's does.
  */
-export function refusals(policy: CelPolicy, object: unknown, request: unknown): string[] {
+export function refusals(policy: CelPolicy, object: unknown, request: unknown, oldObject: unknown = null): string[] {
     const variables: Record<string, unknown> = {};
-    const scope: Scope = { object, request, variables };
+    const scope: Scope = { object, oldObject, request, variables };
     for (const { name, expression } of policy.variables) {
         const node = parse(expression);
         Object.defineProperty(variables, name, { enumerable: true, get: () => evaluate(node, scope) });
@@ -329,5 +330,13 @@ export function refusals(policy: CelPolicy, object: unknown, request: unknown): 
                 return true;
             }
         })
-        .map(({ message }) => message);
+        .map(({ message, messageExpression }) => {
+            if (messageExpression === undefined) return message;
+            try {
+                const text = evaluate(parse(messageExpression), scope);
+                return typeof text === 'string' && text !== '' ? text : message;
+            } catch {
+                return message;
+            }
+        });
 }

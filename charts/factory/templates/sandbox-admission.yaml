@@ -1,0 +1,102 @@
+{{- if .Values.isolation.sandboxPools }}
+{{/*
+The sandbox node pools' cluster guard (isolation.sandboxPools). A sandbox pool's only fence is its
+taint, and nothing on the apiserver ties "tolerates the taint" to "names a sandbox RuntimeClass", so
+any pod with the toleration would run under runc on a pool node. One ValidatingAdmissionPolicy,
+cluster-wide, on every pod create and update outside the exempt namespaces:
+  - a pod whose tolerations tolerate a pool's taint (its key, or a keyless `Exists`; `Exists` or the
+    same value, an absent value being '') runs under one of that pool's RuntimeClasses. The effect
+    is not read: a guard errs toward refusing.
+  - a pod pinned by `spec.nodeName` skips the scheduler and so every taint, and CEL cannot read the
+    Node, so on a create, or an update that sets it, such a pod runs under some pool's RuntimeClass.
+    A scheduler-bound pod gets its nodeName through `pods/binding`, a subresource not matched here,
+    and its later updates are admitted.
+Exempt namespaces (isolation.sandboxExemptNamespaces): exact names in the binding's
+namespaceSelector, `*`-suffixed prefixes in the `not-exempt` matchCondition. `failurePolicy: Fail`
+refuses a pod whose CEL errors, so every field is read behind has(). Admission trusts the
+RuntimeClass name; the driver reads each pool class's handler at boot and refuses one that is not
+Kata (driver/src/k8s/k8s-runtime-class.ts). docs/kubernetes-limits.md states the limits.
+*/}}
+{{- $fullname := include "factory.fullname" . }}
+{{- $name := printf "%s-%s-sandbox-pools" .Release.Namespace $fullname | trunc 253 | trimSuffix "-" }}
+{{- $pools := list }}
+{{- $sandboxRuntimeClasses := list }}
+{{- range .Values.isolation.sandboxPools }}
+{{- $pools = append $pools (dict "key" .taint.key "value" (toString (dig "value" "" .taint)) "names" .runtimeClassNames) }}
+{{- $sandboxRuntimeClasses = concat $sandboxRuntimeClasses .runtimeClassNames }}
+{{- end }}
+{{- $sandboxRuntimeClasses = $sandboxRuntimeClasses | uniq | sortAlpha }}
+{{- $exact := list }}
+{{- $prefixes := list }}
+{{- range .Values.isolation.sandboxExemptNamespaces }}
+{{- if hasSuffix "*" . }}
+{{- $prefixes = append $prefixes (trimSuffix "*" .) }}
+{{- else }}
+{{- $exact = append $exact . }}
+{{- end }}
+{{- end }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+    name: {{ $name }}
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    failurePolicy: Fail
+    matchConstraints:
+        resourceRules:
+            - apiGroups: ['']
+              apiVersions: ['v1']
+              operations: ['CREATE', 'UPDATE']
+              resources: ['pods']
+    matchConditions:
+        - name: not-exempt
+          expression: {{ printf "!%s.exists(p, request.namespace.startsWith(p))" (toJson $prefixes) | quote }}
+    variables:
+        # Each pool: its taint key and value ('' for none) and the RuntimeClasses its pods may name.
+        - name: pools
+          expression: {{ toJson $pools | quote }}
+        - name: sandboxRuntimeClasses
+          expression: {{ toJson $sandboxRuntimeClasses | quote }}
+        - name: tolerations
+          expression: "has(object.spec.tolerations) ? object.spec.tolerations : []"
+        - name: runtimeClass
+          expression: "has(object.spec.runtimeClassName) ? object.spec.runtimeClassName : ''"
+        # The pools whose taint some toleration tolerates, and those this pod's RuntimeClass misses.
+        - name: targeted
+          expression: >-
+              variables.pools.filter(p, variables.tolerations.exists(t,
+                (has(t.key) && t.key != '' ? t.key == p.key : has(t.operator) && t.operator == 'Exists') &&
+                ((has(t.operator) && t.operator == 'Exists') || (has(t.value) ? t.value : '') == p.value)))
+        - name: unsandboxed
+          expression: "variables.targeted.filter(p, !(variables.runtimeClass in p.names))"
+    validations:
+        - expression: "size(variables.unsandboxed) == 0"
+          message: 'a pod that tolerates a sandbox pool taint must run under one of its RuntimeClasses (isolation.sandboxPools)'
+          messageExpression: >-
+              'a pod that tolerates the sandbox taint ' + variables.unsandboxed[0].key +
+              ' must run under one of its RuntimeClasses (isolation.sandboxPools)'
+        - expression: >-
+              !has(object.spec.nodeName) || object.spec.nodeName == '' ||
+              (request.operation == 'UPDATE' && has(oldObject.spec.nodeName) && oldObject.spec.nodeName != '') ||
+              variables.runtimeClass in variables.sandboxRuntimeClasses
+          message: 'a pod that sets spec.nodeName skips the sandbox pool taints, so it must run under a sandbox RuntimeClass (isolation.sandboxPools)'
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+    name: {{ $name }}
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+spec:
+    policyName: {{ $name }}
+    validationActions: [Deny]
+    {{- with $exact }}
+    matchResources:
+        namespaceSelector:
+            matchExpressions:
+                - key: kubernetes.io/metadata.name
+                  operator: NotIn
+                  values: {{ toJson . }}
+    {{- end }}
+{{- end }}
