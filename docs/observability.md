@@ -16,6 +16,7 @@ runners' executors emit, and the metrics instruments, are in [telemetry.md](tele
 | Driver log content: no interpolated error message, tool output, token, repository or branch in any log call | every log seam in `driver/src` | `driver/test/log.content.test.ts` |
 | Driver exit: the SDK is flushed (raced against 2 s) on every normal drain end and on a handover | `driver/src/shutdown.ts`, `driver/src/index.ts` | `driver/test/shutdown.test.ts` |
 | Postgres spans: the verb only | `server/src/pg-trace.ts` | `server/test/pg-trace.test.ts` |
+| Ops collector: board and driver export to it, tail-sampled, forwarded to any OTLP backend; ingress from board and driver pods only | `charts/factory/files/ops-collector.yaml`, `charts/factory/templates/ops-collector.yaml`, `charts/factory/templates/ops-collector-networkpolicy.yaml`, `docker-compose.yml` | `driver/test/ops-collector.test.ts`, `driver/test/compose.test.ts`, `scripts/test-k8s.sh` |
 
 ## Invariants
 
@@ -34,3 +35,5 @@ runners' executors emit, and the metrics instruments, are in [telemetry.md](tele
   bounded batch processor, and a throwing emit is swallowed.
 - **The SDK's diagnostics go to stdout only**, never through the LoggerProvider, at most one line a minute.
 - **The driver's log lines carry closed words only**: an error as `describeError(e)`, an object by kind (never its name, which carries ids and lease tokens), a cluster refusal as verb, resource kind, status and reason word. The board-bound reason or output text is separate and keeps its detail.
+- **The ops collector never exports to the board's `/api/otlp`**: its one exporter is the operator's backend.
+- **Runner pods never reach the ops collector**: its ingress policy admits board and driver pods only, and compose keeps it on the `ops` network runners never join. Compose has no lane that boots the `observability` profile; its proof is static.

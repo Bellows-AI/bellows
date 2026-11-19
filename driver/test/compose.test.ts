@@ -147,11 +147,16 @@ type ComposeService = {
     environment?: Record<string, string>;
 };
 const services = (parse(compose) as { services: Record<string, ComposeService> }).services;
+const service = (name: string): ComposeService => {
+    const found = services[name];
+    if (found === undefined) throw new Error(`no compose service ${name}`);
+    return found;
+};
 const OPS_SERVICES = ['dashboard', 'driver', 'ops-collector', 'lgtm'];
 
 describe('the compose ops collector', () => {
     it("mounts the chart's config and joins only the ops network", () => {
-        const ops = services['ops-collector'];
+        const ops = service('ops-collector');
         expect(ops.volumes?.[0]?.startsWith('./charts/factory/files/ops-collector.yaml:')).toBe(true);
         expect(ops.networks).toEqual(['ops']);
         expect(ops).not.toHaveProperty('ports');
@@ -161,21 +166,21 @@ describe('the compose ops collector', () => {
     it("runs the chart's pinned collector image", () => {
         const chartTag = /collector:[\s\S]*?tag: '([^']+)'/.exec(read('charts/factory/values.yaml'))?.[1];
         expect(chartTag).toBeDefined();
-        expect(services['ops-collector'].image).toBe(`otel/opentelemetry-collector-contrib:${chartTag}`);
+        expect(service('ops-collector').image).toBe(`otel/opentelemetry-collector-contrib:${chartTag}`);
         expect(chartTag).not.toBe('latest');
     });
 
     it('lets the board and the driver reach the ops network and keep the default one', () => {
         for (const name of ['dashboard', 'driver']) {
-            expect(services[name].networks, name).toEqual(['default', 'ops']);
-            expect(services[name].environment?.OTEL_EXPORTER_OTLP_ENDPOINT, name).toBe(
-                '${OTEL_EXPORTER_OTLP_ENDPOINT:-}'
+            expect(service(name).networks, name).toEqual(['default', 'ops']);
+            expect(service(name).environment?.OTEL_EXPORTER_OTLP_ENDPOINT, name).toBe(
+                '$' + '{OTEL_EXPORTER_OTLP_ENDPOINT:-}'
             );
         }
     });
 
     it('never lets a runner join the ops network', () => {
-        expect(services.driver.environment?.RUNNER_NETWORK).toMatch(/_default}$/);
+        expect(service('driver').environment?.RUNNER_NETWORK).toMatch(/_default}$/);
         const onOps = Object.entries(services)
             .filter(([, service]) => service.networks?.includes('ops'))
             .map(([name]) => name);
@@ -183,7 +188,7 @@ describe('the compose ops collector', () => {
     });
 
     it('runs a local backend under the observability profile', () => {
-        const lgtm = services.lgtm;
+        const lgtm = service('lgtm');
         expect(lgtm.image).toMatch(/^grafana\/otel-lgtm:(?!latest$)\S+$/);
         expect(lgtm.profiles).toEqual(['observability']);
         expect(lgtm.ports?.every((port) => port.startsWith('127.0.0.1:'))).toBe(true);

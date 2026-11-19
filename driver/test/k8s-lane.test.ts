@@ -874,7 +874,10 @@ describe('kind lane observability phase', () => {
     const raw = readRepoFile('scripts/test-k8s.sh');
     const phaseStart = script.indexOf('if selected_phase observability; then');
     const phase = script.slice(phaseStart, script.indexOf('if [ "$PHASE" = bench ]; then'));
-    const netpol = script.slice(script.indexOf("if [ \"$MODE\" = '--netpol' ]; then"), script.indexOf('# --- Phase two'));
+    const netpol = script.slice(
+        script.indexOf('if [ "$MODE" = \'--netpol\' ]; then'),
+        script.indexOf('# --- Phase two')
+    );
 
     it('is a valid --phase, sourced between mcp and bench', async () => {
         const result = await runAsync('bash', ['scripts/test-k8s.sh', '--help'], { cwd: REPO_ROOT });
