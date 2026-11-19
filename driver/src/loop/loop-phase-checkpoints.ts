@@ -14,6 +14,7 @@ import type { GateFailure, GateReport } from './loop-gates.js';
 import type { AttemptCtx } from './loop-types.js';
 import type { PublishResult } from '../publish/publish.js';
 import type { DeadService } from '../runner.js';
+import { describeError } from '../log.js';
 
 /** The longest the one read of an adopted run's checkpoints may take. */
 export const PHASE_CHECKPOINT_READ_MS = 10_000;
@@ -256,6 +257,6 @@ export async function replayGates(ctx: AttemptCtx, gates: GatesCheckpoint): Prom
     try {
         await rt.board.gates(job, [...gates.reports]);
     } catch (e) {
-        rt.log(`job ${job.id}: could not report gate state, continuing: ${(e as Error).message}`);
+        rt.log(`job ${job.id}: could not report gate state, continuing: ${describeError(e)}`);
     }
 }

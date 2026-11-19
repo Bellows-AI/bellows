@@ -1,21 +1,24 @@
 /**
- * The driver's Prometheus series: what it spends on the board, the cluster API, the
- * docker daemon, its supervised steps and its orphan reaper, on either executor. Every label value is
+ * The driver's instruments, on the OTEL Meter: what it spends on the board, the cluster API, the
+ * docker daemon, its supervised steps and its orphan reaper, on either executor. Every attribute value is
  * from a closed vocabulary (an endpoint pattern, a verb, a resource kind, a docker command, an
- * outcome) — never a job, lease, pod, org or repo id. docs/telemetry.md.
+ * outcome) — never a job, lease, pod, org or repo id. Each cluster API call and docker command is also a
+ * CLIENT span carrying only that vocabulary. docs/telemetry.md.
  */
+import { type Meter, metrics, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 
 import type { ExecDocker } from './docker/docker-runner-support.js';
 import type { K8sMethod, K8sRequest } from './k8s/k8s-transport.js';
-import { buckets, createRegistry, secondsSince, type Registry } from './prometheus.js';
 import type { ReaperObserver } from './reaper.js';
 import type { StepOutcome } from './step-control.js';
 import type { StepKind } from './supervisor-contract.js';
+import { secondsSince } from './timing.js';
+
+export const METER_NAME = 'bellows-driver';
 
 export type Client = 'runner' | 'reaper';
 
 export interface DriverMetrics {
-    render(): Promise<string>;
     /** The board client's `fetch`, observing each call by endpoint pattern and status class. */
     fetch: typeof globalThis.fetch;
     k8s(request: K8sRequest, client: Client): K8sRequest;
@@ -28,6 +31,8 @@ export interface DriverMetrics {
 
 const OTHER = 'other';
 const HTTP_CLASS_DIVISOR = 100;
+/** Histogram bounds written as one readable string: `buckets('0.1 0.5 1')`. */
+const buckets = (spec: string): number[] => spec.split(' ').map(Number);
 const HTTP_BUCKETS = buckets('0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10 30 60');
 const STEP_BUCKETS = buckets('0.1 0.5 1 5 15 30 60 300 900 1800 3600 7200');
 const SWEEP_BUCKETS = buckets('0.01 0.05 0.1 0.5 1 5 15 60 300');
@@ -171,63 +176,51 @@ async function observed<T>(
     }
 }
 
-function instruments(registry: Registry) {
+function instruments(meter: Meter) {
+    const seconds = (name: string, description: string, boundaries: number[]) =>
+        meter.createHistogram(name, { description, unit: 's', advice: { explicitBucketBoundaries: boundaries } });
     return {
-        board: registry.histogram(
-            'factory_driver_board_request_duration_seconds',
-            'Driver requests to the board.',
-            ['endpoint', 'status_class'],
-            HTTP_BUCKETS
-        ),
-        k8s: registry.histogram(
-            'factory_driver_k8s_request_duration_seconds',
-            'Driver requests to the cluster API.',
-            ['client', 'verb', 'resource', 'status_class'],
-            HTTP_BUCKETS
-        ),
-        docker: registry.counter('factory_driver_docker_commands_total', 'Docker CLI commands the driver ran.', [
-            'client',
-            'command',
-            'outcome',
-        ]),
-        step: registry.histogram(
-            'factory_driver_step_seconds',
+        board: seconds('bellows.driver.board.request.duration', 'Driver requests to the board.', HTTP_BUCKETS),
+        k8s: seconds('bellows.driver.k8s.request.duration', 'Driver requests to the cluster API.', HTTP_BUCKETS),
+        docker: meter.createCounter('bellows.driver.docker.commands', {
+            description: 'Docker CLI commands the driver ran.',
+        }),
+        step: seconds(
+            'bellows.driver.step.duration',
             'Supervised steps from submission to answer; sync is the per-thread checkout cost.',
-            ['kind', 'outcome'],
             STEP_BUCKETS
         ),
-        sweep: registry.histogram(
-            'factory_driver_reaper_sweep_seconds',
+        sweep: seconds(
+            'bellows.driver.reaper.sweep.duration',
             'One orphan reaper sweep; aborted means a lookup or listing was not proven.',
-            ['outcome'],
             SWEEP_BUCKETS
         ),
-        scanned: registry.counter('factory_driver_reaper_scanned_total', 'Objects the reaper scanned.', ['what']),
-        malformedClaim: registry.counter(
-            'factory_driver_malformed_claims_total',
-            'Claims the board delivered that failed validation and were left to their lease.',
-            ['field']
-        ),
-        volumeExport: registry.counter(
-            'factory_driver_reaper_volume_export_total',
-            'Reaper re-exports of a not-whole thread before its volume is deleted; lost is a volume deleted after its last attempt failed.',
-            ['result']
-        ),
+        scanned: meter.createCounter('bellows.driver.reaper.scanned', { description: 'Objects the reaper scanned.' }),
+        malformedClaim: meter.createCounter('bellows.driver.claims.malformed', {
+            description: 'Claims the board delivered that failed validation and were left to their lease.',
+        }),
+        volumeExport: meter.createCounter('bellows.driver.reaper.volume_export', {
+            description:
+                'Reaper re-exports of a not-whole thread before its volume is deleted; lost is a volume deleted after its last attempt failed.',
+        }),
     };
 }
 
-export function createDriverMetrics(deps: { boardUrl: string; fetch?: typeof globalThis.fetch }): DriverMetrics {
-    const registry = createRegistry();
-    const m = instruments(registry);
+export function createDriverMetrics(deps: {
+    boardUrl: string;
+    fetch?: typeof globalThis.fetch;
+    meter?: Meter;
+}): DriverMetrics {
+    const m = instruments(deps.meter ?? metrics.getMeter(METER_NAME));
+    const tracer = trace.getTracer(METER_NAME);
     const underlying = deps.fetch ?? globalThis.fetch;
     return {
-        render: () => registry.render(),
         fetch: (input, init) =>
             observed(
                 () => underlying(input, init),
                 (response) => response.status,
-                (status, seconds) =>
-                    m.board.observe(seconds, {
+                (status, elapsed) =>
+                    m.board.record(elapsed, {
                         endpoint: endpointOf(
                             typeof input === 'string' || input instanceof URL ? String(input) : input.url,
                             deps.boardUrl
@@ -235,30 +228,57 @@ export function createDriverMetrics(deps: { boardUrl: string; fetch?: typeof glo
                         status_class: statusClassOf(status),
                     })
             ),
-        k8s: (request, client) => (method, path, body, options) =>
-            observed(
-                () => request(method, path, body, options),
-                (response) => response.status,
-                (status, seconds) =>
-                    m.k8s.observe(seconds, { client, ...k8sCallOf(method, path), status_class: statusClassOf(status) })
-            ),
+        k8s: (request, client) => (method, path, body, options) => {
+            const call = k8sCallOf(method, path);
+            return tracer.startActiveSpan(
+                `k8s ${call.verb} ${call.resource}`,
+                { kind: SpanKind.CLIENT, attributes: { 'k8s.verb': call.verb, 'k8s.resource': call.resource } },
+                async (span) => {
+                    try {
+                        return await observed(
+                            () => request(method, path, body, options),
+                            (response) => {
+                                span.setAttribute('http.response.status_code', response.status);
+                                return response.status;
+                            },
+                            (status, elapsed) =>
+                                m.k8s.record(elapsed, { client, ...call, status_class: statusClassOf(status) })
+                        );
+                    } catch (e) {
+                        span.setStatus({ code: SpanStatusCode.ERROR });
+                        throw e;
+                    } finally {
+                        span.end();
+                    }
+                }
+            );
+        },
         docker: (exec, client) => async (args, options) => {
             const command = dockerCommandOf(args);
-            try {
-                const result = await exec(args, options);
-                m.docker.inc({ client, command, outcome: 'ok' });
-                return result;
-            } catch (e) {
-                m.docker.inc({ client, command, outcome: 'error' });
-                throw e;
-            }
+            return tracer.startActiveSpan(
+                `docker ${command}`,
+                { kind: SpanKind.CLIENT, attributes: { 'docker.command': command } },
+                async (span) => {
+                    try {
+                        const result = await exec(args, options);
+                        m.docker.add(1, { client, command, outcome: 'ok' });
+                        return result;
+                    } catch (e) {
+                        m.docker.add(1, { client, command, outcome: 'error' });
+                        span.setStatus({ code: SpanStatusCode.ERROR });
+                        throw e;
+                    } finally {
+                        span.end();
+                    }
+                }
+            );
         },
-        malformedClaim: (fields) => m.malformedClaim.inc({ field: fields[0] ?? OTHER }),
-        step: (kind, outcome, seconds) => m.step.observe(seconds, { kind, outcome }),
+        malformedClaim: (fields) => m.malformedClaim.add(1, { field: fields[0] ?? OTHER }),
+        step: (kind, outcome, elapsed) => m.step.record(elapsed, { kind, outcome }),
         reaper: {
-            sweep: (outcome, seconds) => m.sweep.observe(seconds, { outcome }),
-            scanned: (what, count) => m.scanned.inc({ what }, count),
-            volumeExport: (result) => m.volumeExport.inc({ result }),
+            sweep: (outcome, elapsed) => m.sweep.record(elapsed, { outcome }),
+            scanned: (what, count) => m.scanned.add(count, { what }),
+            volumeExport: (result) => m.volumeExport.add(1, { result }),
         },
     };
 }

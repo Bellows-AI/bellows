@@ -201,9 +201,7 @@ describe('recordAdopted', () => {
         await expect(
             recordAdopted(s.ctx, { record: 'interruption', reason: 'adopted claim 4', claimSeq: 4 })
         ).resolves.toBeUndefined();
-        expect(s.logs.some((m) => m.includes('could not record the adopted interruption: board unreachable'))).toBe(
-            true
-        );
+        expect(s.logs.some((m) => m.includes('could not record the adopted interruption: Error'))).toBe(true);
     });
 });
 

@@ -14,6 +14,7 @@ import { stepLost } from '../step-control.js';
 import { InputsUnconfirmed } from '../task-inputs.js';
 import { controlTokenOf, type ReviewExporter } from '../supervised-steps.js';
 import type { StepResult } from '../supervisor-contract.js';
+import { describeError } from '../log.js';
 
 /**
  * The agent's named-reviewer invocation: `POST /review` and `GET /review/<key>` on the
@@ -66,7 +67,7 @@ async function verdictOf(
 ): Promise<ReviewVerdict> {
     const answer = await withBoardRetry(rt, `job ${job.id}: the review call was not accepted`, ask).catch(
         (e: Error) => {
-            rt.log(`job ${job.id}: the review call failed: ${e.message}`);
+            rt.log(`job ${job.id}: the review call failed: ${describeError(e)}`);
             return null;
         }
     );
@@ -159,7 +160,7 @@ async function superviseOne(
         } as const;
         await withBoardRetry(rt, `review ${review.id}: the review refusal was not accepted`, () =>
             rt.board.complete(review, body)
-        ).catch((e: Error) => log(`review ${review.id}: the review could not be settled: ${e.message}`));
+        ).catch((e: Error) => log(`review ${review.id}: the review could not be settled: ${describeError(e)}`));
         return;
     }
     let over = (): void => {};
@@ -178,7 +179,7 @@ async function superviseOne(
         // A lost supervisor is no verdict on the review; anything else that stopped it ends the row.
         lost = stepLost(e) || e instanceof InputsUnconfirmed;
         if (!lost && !stop.signal.aborted) result = failedStep((e as Error).message);
-        else log(`review ${review.id}: the review step ended without an answer: ${(e as Error).message}`);
+        else log(`review ${review.id}: the review step ended without an answer: ${describeError(e)}`);
     } finally {
         exporting?.close();
         over();
@@ -220,7 +221,7 @@ async function runUntilAnswered(
         // one is reported again so the board's claim-time inference becomes a report.
         if (session) {
             await rt.board.session(review, session.id).catch((e: Error) => {
-                rt.log(`review ${review.id}: the session was not recorded: ${e.message}`);
+                rt.log(`review ${review.id}: the session was not recorded: ${describeError(e)}`);
             });
         }
         const final = round >= MAX_RUNS || Date.now() - startedAt >= budgetMs;
@@ -264,7 +265,7 @@ async function beatReview(
             rt.board.heartbeat(review, AbortSignal.timeout(heartbeatPeriodMs(rt.config)))
         ).catch((e: Error) => {
             // A beat that errors or times out is retried on the next one, within the lease.
-            rt.log(`review ${review.id}: the heartbeat failed: ${e.message}`);
+            rt.log(`review ${review.id}: the heartbeat failed: ${describeError(e)}`);
             return null;
         });
         if (verdict === null) continue;
@@ -290,7 +291,7 @@ async function settleReview(
     if (body === null) return;
     await withBoardRetry(rt, `review ${review.id}: the review verdict was not accepted`, () =>
         rt.board.complete(review, body)
-    ).catch((e: Error) => rt.log(`review ${review.id}: the review could not be settled: ${e.message}`));
+    ).catch((e: Error) => rt.log(`review ${review.id}: the review could not be settled: ${describeError(e)}`));
 }
 
 function completionOf(

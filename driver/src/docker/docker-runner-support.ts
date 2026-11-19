@@ -7,7 +7,7 @@
 
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from '../labels.js';
 import type { KillLedger } from '../kill-ledger.js';
-import { execFile, type spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import type { writeFile, rm } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
@@ -39,10 +39,15 @@ import type { StepSink } from '../step-control.js';
 import { controlTokenOf } from '../supervised-steps.js';
 import { nodeLossField, type SettledEnd } from '../termination.js';
 import { abortableSleep, anyOf, type Bound, type Sleep, timeLeft } from '../poll.js';
+import { withoutOtelEnv } from '../child-env.js';
 import { awaitServicesRunning, throwIfStoodDown } from '../service-restart.js';
 import { type HeldContainer, heldWords, type StartupCause, startupCauseOf, StartupRefused } from '../startup-cause.js';
 
-export const run = promisify(execFile);
+const execFileAsync = promisify(execFile);
+
+/** `execFile` as a promise, its child given no `OTEL_*` (src/child-env.ts). */
+export const run = ((file: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv } = {}) =>
+    execFileAsync(file, args, { ...options, env: withoutOtelEnv(options.env) })) as typeof execFileAsync;
 
 /**
  * A group start the daemon refused, typed by the cause its own stderr proves (#824 D11); anything
@@ -63,6 +68,10 @@ export function startupRefusalOf(e: unknown, held?: HeldContainer & { image: str
 }
 
 export type Spawn = typeof spawn;
+
+/** `spawn`, its child given no `OTEL_*` (src/child-env.ts): the attached `docker start` is the driver's child too. */
+export const spawnWithoutOtelEnv = ((command: string, args: readonly string[], options: { env?: NodeJS.ProcessEnv }) =>
+    spawn(command, args, { ...options, env: withoutOtelEnv(options.env) })) as Spawn;
 
 /**
  * One child stream read as text, through a decoder of its own: a multibyte character

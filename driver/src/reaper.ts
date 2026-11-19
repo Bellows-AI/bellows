@@ -1,5 +1,6 @@
 import { LEASE_BATCH_MAX, type Board, type BoardLease, type BoardThreadFacts, UUID_SHAPE } from './board/board.js';
-import { secondsSince } from './prometheus.js';
+import { describeError, logger } from './log.js';
+import { secondsSince } from './timing.js';
 import {
     createVolumeExportGate,
     isWhole,
@@ -7,6 +8,8 @@ import {
     type VolumeExportAttempt,
     type VolumeExportResult,
 } from './reaper-export.js';
+
+const reaperLog = logger('reaper');
 
 export type { VolumeExport, VolumeExportAttempt, VolumeExportResult };
 
@@ -232,6 +235,9 @@ const lookupAll = async (
     return leases;
 };
 
+/** The object kind of a removed-object line (`container <name>`): the name carries ids and tokens, so it is not logged. */
+const kindOf = (line: string): string => line.split(' ')[0] ?? 'object';
+
 /** What a reap removed; an inconclusive one is logged and told to `onUnproven`, so the sweep is never ok. */
 function settleReap(
     result: readonly string[] | ReapInconclusive,
@@ -239,19 +245,20 @@ function settleReap(
     ctx: { log: (message: string) => void; onUnproven: () => void }
 ): readonly string[] {
     if (Array.isArray(result)) return result;
-    const { removed, inconclusive } = result as ReapInconclusive;
+    const { removed } = result as ReapInconclusive;
     ctx.onUnproven();
-    ctx.log(`reaper: ${what} — cleanup unconfirmed: ${inconclusive}`);
+    ctx.log(`reaper: ${what} — cleanup unconfirmed, ${removed.length} object(s) removed`);
     return removed;
 }
 
 /** The listed task volume threads that name a board job, the rest logged and skipped. */
 const threadsOfVolumes = (listed: VolumeListing, log: (message: string) => void): VolumeThread[] => {
-    for (const line of listed.skipped) log(`reaper: skipping ${line}`);
+    if (listed.skipped.length > 0)
+        log(`reaper: skipping ${listed.skipped.length} object(s) that are no thread's volume`);
     const threads: VolumeThread[] = [];
     for (const thread of listed.threads) {
         if (UUID_SHAPE.test(thread.root)) threads.push(thread);
-        else log(`reaper: skipping task volumes whose root label is not a uuid: ${thread.root}`);
+        else log('reaper: skipping task volumes whose root label is not a uuid');
     }
     return threads;
 };
@@ -274,7 +281,7 @@ const reapOne = async (
     if (verdict === 'superseded' && group.objects.some((object) => object.unread || object.runner)) return;
     const removed = settleReap(await arm.reap(group, verdict), `job ${group.jobId}`, ctx);
     for (const line of removed) {
-        ctx.log(`reaper: job ${group.jobId} lease ${group.leaseToken ?? 'none'} (${verdict}) — removed ${line}`);
+        ctx.log(`reaper: job ${group.jobId} (${verdict}) — removed ${kindOf(line)}`);
     }
 };
 
@@ -287,7 +294,7 @@ const reapThread = async (
     const { log, onUnproven, exporter } = ctx;
     const result = await arm.reapVolumes!(thread);
     for (const removed of settleReap(result, `thread ${thread.root}`, { log, onUnproven }))
-        log(`reaper: thread ${thread.root} — removed ${removed}`);
+        log(`reaper: thread ${thread.root} — removed ${kindOf(removed)}`);
     // An unconfirmed delete leaves the volume: its export attempts still count.
     if (Array.isArray(result)) exporter.deleted(thread.root);
 };
@@ -310,9 +317,9 @@ const proveVolumes = async (
         return null;
     }
     const threads = threadsOfVolumes(listed, log);
-    for (const line of listed.inconclusive ?? []) {
+    for (const _line of listed.inconclusive ?? []) {
         onUnproven();
-        log(`reaper: ${line}`);
+        log('reaper: a task volume read proved nothing — deleting none of its threads');
     }
     observe?.scanned('volume_threads', threads.length);
     const roots = [...new Set(threads.map((thread) => thread.root))];
@@ -350,7 +357,7 @@ export function createReaper(deps: {
     start(): void;
     stop(): void;
 } {
-    const log = deps.log ?? ((message: string) => console.log(`[driver] ${message}`));
+    const log = deps.log ?? ((message: string) => reaperLog.info(message));
     const now = deps.now ?? (() => Date.now());
     let sweeping = false;
     // Set when a lookup, listing or re-read the sweep depended on was not proven: the round then
@@ -388,7 +395,7 @@ export function createReaper(deps: {
         const reapable: OrphanGroup[] = [];
         for (const group of groups) {
             if (UUID_SHAPE.test(group.jobId)) reapable.push(group);
-            else log(`reaper: skipping a group whose factory.job label is not a uuid: ${group.jobId}`);
+            else log('reaper: skipping a group whose factory.job label is not a uuid');
         }
         const ids = [...new Set(reapable.map((group) => group.jobId))];
         const leases = await lookupAll(deps.board, ids, log);
@@ -465,7 +472,7 @@ export function createReaper(deps: {
             if (unproven) outcome = 'aborted';
         } catch (e) {
             outcome = 'error';
-            log(`reaper: sweep failed, the next round retries: ${(e as Error).message}`);
+            log(`reaper: sweep failed, the next round retries: ${describeError(e)}`);
         } finally {
             sweeping = false;
             deps.observe?.sweep(outcome, secondsSince(start));

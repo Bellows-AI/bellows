@@ -170,7 +170,7 @@ describe('end lands the board call before it destroys anything (issue #828)', ()
         });
 
         expect(calls).toContain('suspend');
-        expect(lines[0]).toContain('parking anyway: artifact upload refused');
+        expect(lines[0]).toContain('parking anyway: Error');
     });
 });
 

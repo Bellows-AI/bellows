@@ -5,6 +5,7 @@
  * #472, steps 3 and 4 of #433).
  */
 
+import { describeError } from '../log.js';
 import { down, type JobState, raceStep } from './loop-attempt.js';
 import { lostOf, ORG_SUSPENDED_REASON } from './loop-phase.js';
 import type { BoardJob } from '../board/board.js';
@@ -43,11 +44,7 @@ function startupHalt(cause: StartupCause, detail: string, nodeLoss?: true): Setu
             ...(nodeLoss ? { nodeLoss } : {}),
         };
     }
-    return faultHalt(
-        `the runner could not start (${cause}): ${detail}`,
-        `The runner could not start: ${detail}`,
-        'config'
-    );
+    return faultHalt(`the runner could not start (${cause})`, `The runner could not start: ${detail}`, 'config');
 }
 
 /**
@@ -69,7 +66,7 @@ export const blockedHalt = (e: LeftoverTerminating): Extract<SetupHalt, { halt: 
 export function syncThrewHalt(e: unknown): SetupHalt {
     if (e instanceof StartupRefused) return startupHaltOf(e);
     if (e instanceof LeftoverTerminating) return blockedHalt(e);
-    return { halt: 'leave', log: `checkout sync threw, leaving it to the lease: ${(e as Error).message}` };
+    return { halt: 'leave', log: `checkout sync threw, leaving it to the lease: ${describeError(e)}` };
 }
 
 /**
@@ -80,7 +77,7 @@ export function syncThrewHalt(e: unknown): SetupHalt {
 export function thrownRunDecision(job: BoardJob, e: unknown): EndDecision {
     if (e instanceof StartupRefused) return setupDecision(startupHaltOf(e));
     if (e instanceof LeftoverTerminating) return setupDecision(blockedHalt(e));
-    return leaveDecision(job, `could not run: ${(e as Error).message}`, null);
+    return leaveDecision(job, `could not run: ${(e as Error).message}`, null, `could not run: ${describeError(e)}`);
 }
 
 /**
@@ -228,8 +225,8 @@ export function setupDecision(halt: SetupHalt): EndDecision {
  * the claim) reports a failed verdict carrying `reason` instead: the reason is what `job
  * investigate`, the web and a batch report show.
  */
-export function leaveDecision(job: BoardJob, reason: string, exitCode: number | null): EndDecision {
-    return setupDecision(leaveConclusion(job, reason, exitCode));
+export function leaveDecision(job: BoardJob, reason: string, exitCode: number | null, logReason: string): EndDecision {
+    return setupDecision(leaveConclusion(job, reason, exitCode, logReason));
 }
 
 /**
@@ -321,11 +318,13 @@ export function unreportedDecision(outcome: RunOutcome): EndDecision | null {
 function leaveConclusion(
     job: BoardJob,
     reason: string,
-    exitCode: number | null
+    exitCode: number | null,
+    logReason: string
 ): Extract<SetupHalt, { halt: 'leave' | 'fault' }> {
-    if (!job.lastAttempt) return { halt: 'leave', log: `${reason}, leaving it to the lease` };
+    // The reason is the board's record and the run's output; the log keeps the closed words of `logReason`.
+    if (!job.lastAttempt) return { halt: 'leave', log: `${logReason}, leaving it to the lease` };
     return faultHalt(
-        `${reason}, and no attempts are left: reporting it`,
+        `${logReason}, and no attempts are left: reporting it`,
         `[driver] ${reason} (attempt ${job.attempts} of ${job.maxAttempts})`,
         'runner_error',
         exitCode
@@ -337,7 +336,7 @@ export function syncFailureHalt(synced: SyncResult): SetupHalt {
     // A thread whose task volume is gone and whose checkpoint cannot rebuild it: its own kind, for a person.
     if (synced.kind === 'checkpoint_unrestorable') {
         return faultHalt(
-            `checkout restore failed: ${synced.reason}`,
+            'checkout restore failed',
             `The task's checkout could not be restored before the run: ${synced.reason}`,
             'checkpoint_unrestorable'
         );
@@ -345,7 +344,7 @@ export function syncFailureHalt(synced: SyncResult): SetupHalt {
     // An attached file the board will never deliver again: its own kind, a person re-attaches or drops it.
     if (synced.kind === 'attachment_unavailable') {
         return faultHalt(
-            `task inputs unavailable: ${synced.reason}`,
+            'task inputs unavailable',
             `The task's attached files could not be delivered before the run: ${synced.reason}`,
             'attachment_unavailable'
         );
@@ -353,7 +352,7 @@ export function syncFailureHalt(synced: SyncResult): SetupHalt {
     // A pinned org or workspace skill the board will never deliver again: its own kind, an admin republishes or drops it.
     if (synced.kind === 'skill_unavailable') {
         return faultHalt(
-            `skills unavailable: ${synced.reason}`,
+            'skills unavailable',
             `The task's org and workspace skills could not be installed before the run: ${synced.reason}`,
             'skill_unavailable'
         );
@@ -361,7 +360,7 @@ export function syncFailureHalt(synced: SyncResult): SetupHalt {
     // A kind the script named is a refusal no retry fixes: a person acts on it, so it is config.
     const deterministic = synced.kind !== undefined && (SYNC_FAILURE_KINDS as readonly string[]).includes(synced.kind);
     return faultHalt(
-        `checkout sync failed: ${synced.reason}`,
+        `checkout sync failed (${synced.kind ?? 'unknown'})`,
         `The checkout could not be synced with the remote before the run: ${synced.reason}`,
         deterministic ? 'config' : 'runner_error'
     );

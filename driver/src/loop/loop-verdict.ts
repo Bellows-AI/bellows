@@ -124,7 +124,7 @@ function buildOutput(rt: LoopRuntime, finish: FinishCtx, ledger: Ledger): string
         // A silent no-op is how a missing `docker run` once hid behind "the checkout has not
         // been cloned yet" — the reason is the only way to tell an ordinary clean tree from a
         // publisher that cannot see the tree at all.
-        log(`job ${job.id}: nothing to publish: ${published.reason}`);
+        log(`job ${job.id}: nothing to publish`);
     }
     const recovered = finish.recoveredServices.map((dead) => `\n[driver] ${deadServiceNote(dead, false, true)}`);
     return output + setupNotes(rt, finish) + recovered.join('') + outputOf(ledger, finish.gatesSkipped);

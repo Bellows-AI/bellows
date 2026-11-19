@@ -11,6 +11,7 @@ import { CLAUDE_CODE } from '../executors.js';
 import { withBoardRetry } from '../board/board-retry.js';
 import { down } from './loop-attempt.js';
 import { handOver } from './loop-handover.js';
+import { describeError } from '../log.js';
 
 export interface Loop {
     /**
@@ -302,7 +303,7 @@ export function createLoop({
     function track(job: BoardJob): void {
         // As its class runs it: a docker class's platform DOCKER_HOST wins in every env the attempt renders.
         const promise = runJob(rt, classClaimOf(config, job))
-            .catch((e: Error) => log(`job ${job.id}: the attempt threw, leaving it to the lease: ${e.message}`))
+            .catch((e: Error) => log(`job ${job.id}: the attempt threw, leaving it to the lease: ${describeError(e)}`))
             .finally(() => active.delete(promise));
         active.add(promise);
     }
@@ -338,7 +339,7 @@ export function createLoop({
             try {
                 reclaim = await board.claimReclaim(config.worker);
             } catch (e) {
-                log(`reclaim claim failed, retrying: ${(e as Error).message}`);
+                log(`reclaim claim failed, retrying: ${describeError(e)}`);
                 await sleep(config.pollMs);
                 continue;
             }
@@ -364,7 +365,7 @@ export function createLoop({
         try {
             job = await board.claim(config.worker);
         } catch (e) {
-            log(`claim failed, retrying: ${(e as Error).message}`);
+            log(`claim failed, retrying: ${describeError(e)}`);
             await sleep(config.pollMs);
             return;
         }
@@ -384,7 +385,7 @@ export function createLoop({
                 exitCode: null,
                 output: refusal.output,
                 failureKind: refusal.config ? 'config' : 'runner_error',
-            }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${e.message}`));
+            }).catch((e: Error) => log(`job ${job.id}: could not report the failure: ${describeError(e)}`));
             return;
         }
         track(job);

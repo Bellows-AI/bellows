@@ -2,6 +2,7 @@ import type { BoardJob } from '../board/board.js';
 import { raceStep } from './loop-attempt.js';
 import type { GateReport, GateSession } from './loop-gates.js';
 import type { LoopRuntime } from './loop-types.js';
+import { describeError } from '../log.js';
 
 /** The output a gate carries when the task changed nothing and the gate was not launched. */
 export const NO_CHANGES = 'no changes';
@@ -38,7 +39,7 @@ export async function noChangeSkip(ctx: {
         await raceStep(
             state.signal,
             rt.board.gates(job, [...reports]).catch((e: unknown) => {
-                rt.log(`job ${job.id}: could not report skipped gates, continuing: ${(e as Error).message}`);
+                rt.log(`job ${job.id}: could not report skipped gates, continuing: ${describeError(e)}`);
             })
         );
     }

@@ -202,8 +202,9 @@ cannot tell you:
   `npm run build -w core`.
 - **A new `core/src` file must be re-exported from `core/src/index.ts`** or the server reports
   "module has no exported member". `core/test/core-index.test.ts`.
-- **`driver/` and `cli/` depend on nothing, `core` included.** They are HTTP clients; a shared type
-  is copied, never imported. `lint/no-cross-package-imports.grit`.
+- **`driver/` and `cli/` import nothing from other packages, `core` included.** They are HTTP clients; a shared type
+  is copied, never imported. `driver/` may depend on `@opentelemetry/*`, `@fastify/otel` and `pino`
+  only; `cli/` depends on nothing. `lint/no-cross-package-imports.grit`, `driver/test/deps.test.ts`.
 - All five packages are ESM with `verbatimModuleSyntax`: relative imports carry `.js`, even in
   `.tsx`.
 - **Container scripts are files under `driver/src/scripts/`, never inline strings** — read via

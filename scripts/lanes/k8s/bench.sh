@@ -66,36 +66,8 @@ process.stdin.on("data", (c) => (s += c)).on("end", () => {
 });'
 }
 
-# The scrape runs inside the pod and reads its bearer from stdin — the driver's metrics token: it is in no argv
-# here, and no pod's environment holds it. The board exports over OTLP and has no scrape, so every board figure of
-# the summary reads `?`; `scripts/bench-summary.mjs` still parses the retired series names.
-BENCH_SCRAPE_JS='const bearer = require("fs").readFileSync(0, "utf8").trim();
-fetch(process.argv[1], { headers: { authorization: "Bearer " + bearer }, signal: AbortSignal.timeout(8000) })
-    .then(async (r) => { if (r.status !== 200) process.exit(3); process.stdout.write(await r.text()); })
-    .catch(() => process.exit(4));'
-
-bench_scrape() { # bench_scrape <cell> <s|a|b|c> -> the pods listed (<cell>.<board|driver>.<stage>.list) and each one's metrics (<pod>.prom) with the epoch second it answered (<pod>.at); every file is dropped first, so a scrape that fails leaves none
-    local spec comp name container port path pod pods file list bearer
-    for spec in driver:driver:driver:9464:/metrics; do
-        IFS=: read -r comp name container port path <<<"$spec"
-        bearer="$METRICS_TOKEN"
-        list="$BENCH_DIR/$1.$name.$2.list"
-        rm -f -- "${list:?}"
-        pods="$(bench_pods "$comp")" || continue
-        printf '%s\n' "$pods" >"$list"
-        for pod in $pods; do
-            file="$BENCH_DIR/$1.$name-$pod.$2"
-            rm -f -- "${file:?}.prom" "${file:?}.at" "${file:?}.prom.tmp"
-            if bounded 30 kubectl exec -i "$pod" -c "$container" -n "$NAMESPACE" --request-timeout=10s -- node -e "$BENCH_SCRAPE_JS" "http://127.0.0.1:$port$path" <<<"$bearer" >"$file.prom.tmp" 2>/dev/null &&
-                [ -s "$file.prom.tmp" ]; then
-                date +%s >"$file.at"
-                mv "$file.prom.tmp" "$file.prom"
-            else
-                rm -f -- "${file:?}.prom.tmp" "${file:?}.at"
-            fi
-        done
-    done
-}
+# Neither the board nor the driver serves a scrape: both export over OTLP, so every figure of the summary that read
+# a scrape reads `?`; `scripts/bench-summary.mjs` still parses the retired series names.
 
 bench_count() { # bench_count <ids sql> <condition> -> how many of the tasks match; non-zero when the read failed
     local out
@@ -174,7 +146,6 @@ bench_cell() { # bench_cell <throughput|recovery> <n> <r>
         return 1
     }
     since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    bench_scrape "$cell" s
     bench_stop_sampler
     : >"$BENCH_DIR/$cell.sampler.tsv"
     deadline=$(($(date +%s) + 1500))
@@ -198,11 +169,9 @@ bench_cell() { # bench_cell <throughput|recovery> <n> <r>
     if [ "$kind" = throughput ]; then
         bench_wait 300 "$ids_sql" "status = 'running'" "$n" && running=yes || running=no
         a_at="$(date +%s)"
-        bench_scrape "$cell" a
         until=$((a_at + BENCH_STEADY_S))
         while [ "$(date +%s)" -lt "$until" ]; do sleep 1; done
         b_at="$(date +%s)"
-        bench_scrape "$cell" b
         running_at_b="$(bench_count "$ids_sql" "status = 'running'")" || running_at_b=''
         bench_meta "$cell" running_at_b "$running_at_b"
         [ "$running" = yes ] && ok "bench $cell: all $n tasks run at once" || bad "bench $cell: all $n tasks run at once" "$running_at_b of $n running at the steady scrape"
@@ -279,7 +248,6 @@ bench_cell() { # bench_cell <throughput|recovery> <n> <r>
         for id in $(bench_psql "select id from job where id in ($ids_sql) and finished_at is null limit 3"); do kind_dump_stall "$id"; done
     fi
     bench_stop_sampler
-    bench_scrape "$cell" c
     bench_dump "$cell" "$ids_sql"
     if bounded 40 kubectl get events -n "$NAMESPACE" -o json --request-timeout=20s 2>/dev/null |
         node scripts/k8s-pod-timeline.mjs "$since" '^factory-runner-' >"$BENCH_DIR/$cell.pods.tsv.tmp" 2>/dev/null; then

@@ -199,27 +199,25 @@ describe('refusalDiagnosis', () => {
         ];
         for (const [method, path, code, body] of cases) {
             expect(refusalDiagnosis(method, path, code, body), `${method} ${path} ${code}`).toContain(
-                `${method} ${path} answered ${code}`
+                `answered ${code}`
             );
         }
     });
 
-    it('reduces a Status to its message and reason, without the raw JSON', () => {
-        const line = refusalDiagnosis('GET', '/api/v1/pods', 403, status('pods is forbidden', 'Forbidden'));
-
-        expect(line).toBe('GET /api/v1/pods answered 403: pods is forbidden (Forbidden)');
-    });
-
-    it('previews plain text and invalid JSON, bounded', () => {
-        const long = `{"kind":"Status","message":"${'z'.repeat(2 * DIAGNOSIS_BODY_CHARS)}`;
-        const hugeMessage = status('m'.repeat(2 * DIAGNOSIS_BODY_CHARS));
-
-        expect(refusalDiagnosis('GET', '/x', 502, 'bad gateway')).toBe('GET /x answered 502 body=bad gateway');
-        expect(refusalDiagnosis('GET', '/x', 502, long)).toHaveLength(
-            'GET /x answered 502 body='.length + DIAGNOSIS_BODY_CHARS
+    it('names the verb, the resource kind, the status and the Status reason word — never the path or the body', () => {
+        const line = refusalDiagnosis(
+            'GET',
+            '/api/v1/namespaces/team-ns/pods/secret-pod',
+            403,
+            status('pods "secret-pod" is forbidden for owner/private-repo', 'Forbidden')
         );
-        expect(refusalDiagnosis('GET', '/x', 400, hugeMessage)).toHaveLength(
-            'GET /x answered 400: '.length + DIAGNOSIS_BODY_CHARS
+
+        expect(line).toBe('k8s get pods answered 403 (Forbidden)');
+        expect(refusalDiagnosis('GET', '/x', 502, 'owner/private-repo says bad gateway')).toBe(
+            'k8s get other answered 502'
+        );
+        expect(refusalDiagnosis('POST', '/apis/batch/v1/namespaces/ns/jobs', 500, status('x', 'a b c'))).toBe(
+            'k8s create batch/jobs answered 500'
         );
     });
 });
@@ -568,7 +566,8 @@ describe('the in-cluster kubernetes transport', () => {
         expect(isMalformedRequest400(response.status, response.body)).toBe(true);
         expect(response).toEqual({ status: 400, body: refusal });
         expect(logs).toHaveLength(1);
-        expect(logs[0]).toContain(refusal.slice(0, DIAGNOSIS_BODY_CHARS));
+        expect(logs[0]).toMatch(/answered 400/);
+        expect(logs[0]).not.toContain('Bad Request');
     });
 
     it('keeps the 400 Bad Request start ahead of the tail of a pod-log refusal it cut, flagged', async () => {
@@ -637,16 +636,11 @@ describe('the in-cluster kubernetes transport', () => {
         await request('GET', '/version');
         await request('POST', '/apis/batch/v1/namespaces/default/jobs');
 
-        expect(logs).toHaveLength(2);
-        expect(logs[0]).toContain('GET');
-        expect(logs[0]).toContain('/apis/batch/v1/namespaces/default/jobs/factory-sync-x');
-        expect(logs[0]).toContain('400');
-        expect(logs[0]).toContain('400 Bad Request');
-        expect(logs[0]).not.toContain('headers');
-        expect(logs[1]).toContain('POST');
-        expect(logs[1]).toContain('500');
-        expect(logs[1]).toContain(oversized.slice(0, DIAGNOSIS_BODY_CHARS));
-        expect(logs[1]).not.toContain(oversized.slice(0, DIAGNOSIS_BODY_CHARS + 1));
+        expect(logs).toEqual(['k8s get batch/jobs answered 400', 'k8s create batch/jobs answered 500']);
+        for (const line of logs) {
+            expect(line).not.toContain('factory-sync-x');
+            expect(line).not.toContain('boom');
+        }
     });
 });
 

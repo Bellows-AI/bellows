@@ -13,6 +13,7 @@ import { RUN_CONTROL_POLL_MS } from '../supervisor-contract.js';
 import { heartbeatPeriodMs } from '../supervisor-plan.js';
 import type { KillRecord } from '../termination.js';
 import type { TimeoutActivity } from '../timeout-note.js';
+import { describeError } from '../log.js';
 
 /** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
 const PROGRESS_MS = 2_000;
@@ -352,7 +353,7 @@ async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, co
     }
     // Retry a failed restoration on the next stop heartbeat; the grace timer remains armed.
     await updateQuestionDeadline(rt, job, state).catch((error: Error) => {
-        rt.log(`job ${job.id}: could not resume the draining runtime budget: ${error.message}`);
+        rt.log(`job ${job.id}: could not resume the draining runtime budget: ${describeError(error)}`);
     });
 }
 
@@ -428,7 +429,7 @@ async function deliverVerdictAnswers(
         (state.pendingQuestions.size > 0 || state.questionPausedAt !== null || verdict.answeredQuestions?.length)
     ) {
         await deliverAnswers(rt, job, state, verdict.answeredQuestions ?? []).catch((error: Error) => {
-            rt.log(`job ${job.id}: could not update the question runtime budget: ${error.message}`);
+            rt.log(`job ${job.id}: could not update the question runtime budget: ${describeError(error)}`);
         });
     }
 }
@@ -526,7 +527,7 @@ async function beat(rt: LoopRuntime, job: BoardJob, state: JobState, complained:
         // seconds.
         if (!complained) {
             complained = true;
-            log(`job ${job.id}: heartbeat failed, continuing: ${(e as Error).message}`);
+            log(`job ${job.id}: heartbeat failed, continuing: ${describeError(e)}`);
         }
     }
     if (verdict !== undefined) await applyHeartbeatVerdict(rt, job, state, verdict);
@@ -681,7 +682,7 @@ export function launchConfirmer(rt: LoopRuntime, job: BoardJob, sessionId: strin
             .session(job, sessionId, true)
             .then(() => true)
             .catch((e: Error) => {
-                rt.log(`job ${job.id}: could not report the launch, continuing: ${e.message}`);
+                rt.log(`job ${job.id}: could not report the launch, continuing: ${describeError(e)}`);
                 // Cleared, so the next round or the tail retries: a failed report must not stand for the run.
                 sent = null;
                 return false;
@@ -756,7 +757,7 @@ async function flushIfChanged(rt: LoopRuntime, job: BoardJob, pump: OutputPump):
         // three-hour session must not write a log line every two seconds.
         if (!pump.complained) {
             pump.complained = true;
-            log(`job ${job.id}: could not stream output, continuing: ${(e as Error).message}`);
+            log(`job ${job.id}: could not stream output, continuing: ${describeError(e)}`);
         }
         return 'skip';
     }

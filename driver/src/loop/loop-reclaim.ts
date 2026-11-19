@@ -5,6 +5,7 @@ import type { DriverConfig } from '../config.js';
 import type { Runner } from '../runner.js';
 import type { ReclaimResult } from '../publish/publish.js';
 import { CLAUDE_CODE } from '../executors.js';
+import { describeError } from '../log.js';
 
 const MS_PER_SECOND = 1_000;
 /** The heartbeat's pace (`loop-attempt.ts`): a third of the lease, never under a second. */
@@ -83,7 +84,7 @@ async function renewOnce(
     try {
         return await ctx.board.renewReclaim(owned.id, owned.token, AbortSignal.timeout(timeoutMs));
     } catch (e) {
-        ctx.log(`reclaim ${owned.id}: the renew threw: ${(e as Error).message}`);
+        ctx.log(`reclaim ${owned.id}: the renew threw: ${describeError(e)}`);
         return 'threw';
     }
 }
@@ -223,13 +224,13 @@ export async function processVerdictReclaim(
         const renewed = await whileReclaimRenewed(ctx, owned, () => ctx.runner.reclaimWorktree(job));
         if (!renewed.held) return;
         if (!renewed.value.ok) {
-            ctx.log(`job ${job.id}: the task worktree could not be reclaimed: ${renewed.value.reason}`);
+            ctx.log(`job ${job.id}: the task worktree could not be reclaimed`);
             return;
         }
         const ack = await ackOwned(ctx, `job ${job.id}`, owned);
         if (ack !== 'ok') ctx.log(`job ${job.id}: the reclaim ack answered ${ack}`);
     } catch (e) {
-        ctx.log(`job ${job.id}: the task worktree could not be reclaimed: ${(e as Error).message}`);
+        ctx.log(`job ${job.id}: the task worktree could not be reclaimed: ${describeError(e)}`);
     }
 }
 
@@ -239,7 +240,7 @@ async function ackSettledReclaim(ctx: ReclaimContext, reclaim: Reclaim): Promise
     try {
         ack = await ackOwned(ctx, `reclaim ${reclaim.id}`, reclaim);
     } catch (e) {
-        ctx.log(`reclaim ${reclaim.id}: the ack threw, leaving it to the lease: ${(e as Error).message}`);
+        ctx.log(`reclaim ${reclaim.id}: the ack threw, leaving it to the lease: ${describeError(e)}`);
         return;
     }
     if (ack === 'lost') {
@@ -273,8 +274,8 @@ export async function processReclaim(ctx: ReclaimContext, reclaim: Reclaim): Pro
         logReclaimFailure(
             ctx,
             reclaim,
-            `throw: ${(e as Error).message}`,
-            `reclaim ${reclaim.id}: the worktree reclaim threw, leaving it to the lease: ${(e as Error).message}`
+            `throw: ${describeError(e)}`,
+            `reclaim ${reclaim.id}: the worktree reclaim threw, leaving it to the lease: ${describeError(e)}`
         );
         return;
     }
@@ -283,7 +284,7 @@ export async function processReclaim(ctx: ReclaimContext, reclaim: Reclaim): Pro
             ctx,
             reclaim,
             outcome.reason ?? '',
-            `reclaim ${reclaim.id}: the task worktree could not be reclaimed: ${outcome.reason}`
+            `reclaim ${reclaim.id}: the task worktree could not be reclaimed`
         );
         return;
     }

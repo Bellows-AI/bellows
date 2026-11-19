@@ -143,7 +143,7 @@ once, at container start, so without this a rotated credential waits for the nex
 */}}
 {{/*
 The driver's own Secret: `credential` (its `drv_` credential, mounted as a file the driver re-reads for every
-call) and `metrics-token` (its scrape's bearer). Never the dashboard's Secret: the dashboard holds only the
+call). Never the dashboard's Secret: the dashboard holds only the
 credential's SHA-256 (`factory.driverCredentialSha256`), and no other pod references this one.
 */}}
 {{- define "factory.driverSecretName" -}}
