@@ -373,7 +373,7 @@ describe.skipIf(!enabled)('the batch tools — database', () => {
     it('wait_batch ends in timeout while the tasks run, and leaving the wait cancels nothing', async () => {
         const { url } = await boot();
         const id = await started(url, `timeout ${randomUUID()}`);
-        const waited = await call(url, 'alice', 'wait_batch', { batchId: id, budgetSeconds: 4 });
+        const waited = await call(url, 'alice', 'wait_batch', { batchId: id, budgetSeconds: 5 });
         expect(waited.isError, JSON.stringify(waited.data)).toBeFalsy();
         expect(waited.data).toMatchObject({ result: 'timeout', verdict: 'running' });
         expect((await batches.get(id))!.cancelledAt).toBeNull();
