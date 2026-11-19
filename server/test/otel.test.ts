@@ -6,6 +6,7 @@ describe('otelEnabled', () => {
         'OTEL_EXPORTER_OTLP_ENDPOINT',
         'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
         'OTEL_EXPORTER_OTLP_METRICS_ENDPOINT',
+        'OTEL_EXPORTER_OTLP_LOGS_ENDPOINT',
     ])('is on when %s names a collector', (name) => {
         expect(otelEnabled({ [name]: 'http://collector:4318' })).toBe(true);
     });

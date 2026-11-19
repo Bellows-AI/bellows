@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startBatchPrObserver, startPrFollower } from '../src/batch-pr-observer.js';
 import { startBatchReconciler } from '../src/batch-reconciler.js';
+import { captureLogs } from './helpers-log.js';
 
 afterEach(() => {
     vi.useRealTimers();
@@ -55,7 +56,7 @@ describe.each([
 
     it('survives a failing pass: the next tick is the retry', async () => {
         vi.useFakeTimers();
-        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const captured = captureLogs();
         const fn = vi
             .fn<() => Promise<void>>()
             .mockRejectedValueOnce(new Error('db down'))
@@ -63,8 +64,8 @@ describe.each([
         const stop = start({ reconcileBatches: fn, observeBatchPrs: fn, followPrs: fn } as never, 1000);
         await vi.advanceTimersByTimeAsync(1500);
         expect(fn).toHaveBeenCalledTimes(2);
-        expect(error).toHaveBeenCalledWith(expect.stringContaining('db down'));
+        expect(captured.emitted().map((r) => r.body)).toContainEqual(expect.stringContaining('db down'));
         stop();
-        error.mockRestore();
+        captured.stop();
     });
 });

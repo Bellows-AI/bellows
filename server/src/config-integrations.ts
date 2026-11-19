@@ -3,6 +3,8 @@
  * parsed by `loadConfig`; the chart's `integrations.<provider>.clientId` and `secret.*ClientSecret` render to exactly
  * these variables.
  */
+import { logger } from './log.js';
+
 export interface JiraOAuthConfig {
     readonly clientId: string;
     readonly clientSecret: string;
@@ -59,7 +61,7 @@ export function loadJiraOAuth(env: NodeJS.ProcessEnv): JiraOAuthConfig | null {
     const token = overrideUrl(env, 'ATLASSIAN_TOKEN_URL', ATLASSIAN_DEFAULTS);
     const api = overrideUrl(env, 'ATLASSIAN_API_URL', ATLASSIAN_DEFAULTS);
     if (authorize.set || token.set || api.set) {
-        console.warn('[config] NOT using the Atlassian endpoints: an ATLASSIAN_*_URL override is set');
+        logger('config').warn('NOT using the Atlassian endpoints: an ATLASSIAN_*_URL override is set');
     }
     return Object.freeze({
         clientId: clientId!,
@@ -98,7 +100,7 @@ export function loadLinearOAuth(env: NodeJS.ProcessEnv): LinearOAuthConfig | nul
     const authorize = overrideUrl(env, 'LINEAR_AUTHORIZE_URL', LINEAR_DEFAULTS);
     const api = overrideUrl(env, 'LINEAR_API_URL', LINEAR_DEFAULTS);
     if (authorize.set || api.set) {
-        console.warn('[config] NOT using the Linear endpoints: a LINEAR_*_URL override is set');
+        logger('config').warn('NOT using the Linear endpoints: a LINEAR_*_URL override is set');
     }
     return Object.freeze({
         clientId: clientId!,

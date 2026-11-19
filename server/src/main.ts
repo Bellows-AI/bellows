@@ -54,6 +54,7 @@ import { productionConnectors } from './notifications/registry.js';
 import { createCommercePlanWriter } from './db/commerce-plan-writer.js';
 import { createSecretStore, loadSecretBackend } from './secrets/secret-backend.js';
 import type { SecretDiagnostic } from './secrets/secret-store.js';
+import { logger, root } from './log.js';
 import { createClose, createStopRegistry, type Track } from './shutdown.js';
 
 /** One registry: the subscription routes validate against it and delivery sends through it. */
@@ -124,7 +125,7 @@ function startCollectors({
         )
     );
     const { sweepTemps } = artifacts;
-    if (sweepTemps) track(() => startTempSweep(sweepTemps, { log: (m) => console.log(`[artifacts] ${m}`) }));
+    if (sweepTemps) track(() => startTempSweep(sweepTemps, { log: (m) => artifactsLog.info(m) }));
     void ready.then(() =>
         track(() => startAttachmentSweep({ ...crossOrg, artifacts, config: config.artifacts, metrics }))
     );
@@ -177,9 +178,9 @@ function startCollectors({
 function migrateAsOwner(owner: Sql, config: AppConfig): Promise<void> {
     const ready = migrate(owner, {
         localUser: config.auth.mode === 'none',
-        log: (m) => console.log(`[migrate] ${m}`),
+        log: (m) => migrateLog.info(m),
     });
-    ready.catch((e: Error) => console.error(`[migrate] giving up: ${e.message}`));
+    ready.catch((e: Error) => migrateLog.error(`giving up: ${e.message}`));
     void ready.then(
         () => owner.end(),
         () => owner.end()
@@ -257,6 +258,12 @@ interface StartOptions {
     githubRevoke?: GithubRevoke;
 }
 
+const artifactsLog = logger('artifacts');
+const authLog = logger('auth');
+const fetchLog = logger('fetch');
+const migrateLog = logger('migrate');
+const orgLog = logger('org');
+
 /** Every outbound OAuth provider: Jira by ATLASSIAN_CLIENT_ID/SECRET, Linear by LINEAR_CLIENT_ID/SECRET. */
 const providerRegistry = ({ callbackOrigin, jira, linear }: AppConfig['integrations']): ProviderRegistry =>
     combineRegistrations([jiraProvider(jira, callbackOrigin), linearProvider(linear, callbackOrigin)]);
@@ -272,22 +279,22 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     const { config } = resolveConfig({ env: process.env, ...(options.github ? { github: options.github } : {}) });
     // The orgs are the App's installations now — the process is bound to none of them, which
     // is the point. The mode is what a boot should say out loud.
-    console.log(
+    orgLog.info(
         config.auth.mode === 'github'
-            ? '[org] organizations are GitHub App installations, materialized at sign-in'
-            : `[org] ${LOCAL_ORG_ID} (local — AUTH_MODE=none)`
+            ? 'organizations are GitHub App installations, materialized at sign-in'
+            : `${LOCAL_ORG_ID} (local — AUTH_MODE=none)`
     );
 
     if (config.github.mode === 'app') {
-        console.log(`[fetch] GitHub App ${config.github.appId}; installation tokens are minted per organization`);
+        fetchLog.info(`GitHub App ${config.github.appId}; installation tokens are minted per organization`);
         // Loud, for the reason the OAuth authorize URL is: an API host that could be redirected in a
         // file shipping with a deployment is somewhere to send a private key, so the only defence is
         // that using one is impossible to miss in the log.
         if (config.github.apiUrl !== 'https://api.github.com') {
-            console.warn(`[fetch] NOT using api.github.com: API URL is ${config.github.apiUrl}`);
+            fetchLog.warn(`NOT using api.github.com: API URL is ${config.github.apiUrl}`);
         }
     } else {
-        console.log('[fetch] no GitHub credential: serving stored data only, nothing will be fetched or cloned');
+        fetchLog.info('no GitHub credential: serving stored data only, nothing will be fetched or cloned');
     }
 
     // Required on every boot, offline included: a dashboard that cannot decrypt must not come up and
@@ -315,7 +322,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     // pooled connection of its own: on a shared pool, `dbPoolMax` concurrent claims would each hold the
     // connection another's store call is waiting for. A pool of its own (connections open lazily, so an
     // idle one costs nothing) means a store call never borrows a claim's pool (docs/secrets.md).
-    const secretLog = (d: SecretDiagnostic) => console.log(`[secrets] ${JSON.stringify(d)}`);
+    const secretLog = (d: SecretDiagnostic) => logger('secrets').info(d, 'secret store diagnostic');
     const secrets = createSecretStore({
         sql: secretSql,
         ready,
@@ -330,13 +337,13 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     // telemetry (CWE-862).
     const store = config.telemetrySource === 'postgres' ? createPostgresStore({ sql }) : undefined;
 
-    console.log(`[persist] ${config.databaseUrl.replace(/\/\/[^@]*@/, '//')}`);
+    logger('persist').info(config.databaseUrl.replace(/\/\/[^@]*@/, '//'));
 
     // Everything per-org is built lazily from here, on the first request that names an org.
     // The workflow definitions (027) ride the same per-org runtimes, created with the org's id.
     //
     const artifacts = createArtifactBackend(config.artifacts);
-    void prepareArtifactBackend(artifacts, (m) => console.log(`[artifacts] ${m}`));
+    void prepareArtifactBackend(artifacts, (m) => artifactsLog.info(m));
     // OTEL instruments for the board: the claim reports into them, the SDK exports them, and the
     // background loops below are wrapped with `metrics.timedPass`.
     const metrics = createServerMetrics({
@@ -363,25 +370,23 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     const identity = config.auth.mode === 'github' ? createGitHubIdentityClient(config.auth) : undefined;
 
     if (config.auth.mode === 'github') {
-        console.log(`[auth] GitHub sign-in, callback ${config.auth.publicUrl}${callbackPath}`);
-        console.log('[auth] worker routes take a driver credential (drv_…) the board issued; it keeps only the hash');
-        console.log(
-            '[auth] the App setup URL must point at the /api/auth/github/setup route for the install round trip'
-        );
+        authLog.info(`GitHub sign-in, callback ${config.auth.publicUrl}${callbackPath}`);
+        authLog.info('worker routes take a driver credential (drv_…) the board issued; it keeps only the hash');
+        authLog.info('the App setup URL must point at the /api/auth/github/setup route for the install round trip');
         if (!config.auth.cookieSecure) {
-            console.log('[auth] cookie_secure is off: the session cookie will travel over plain http');
+            authLog.info('cookie_secure is off: the session cookie will travel over plain http');
         }
         // Loud, because a configurable authorize URL that reached a real deployment would be a phishing
         // vector, and the only defence against that is it being impossible to miss in the log.
         if (config.auth.authorizeUrl !== 'https://github.com/login/oauth/authorize') {
-            console.warn(`[auth] NOT using github.com: authorize URL is ${config.auth.authorizeUrl}`);
+            authLog.warn(`NOT using github.com: authorize URL is ${config.auth.authorizeUrl}`);
         }
     } else {
-        // Unconditional and blunt, in the register of the "[fetch] no GitHub credential" line above:
+        // Unconditional and blunt, in the register of the "no GitHub credential" line above:
         // the whole point of AUTH_MODE being an explicit enum is that nobody arrives here by accident,
         // and the line is what makes staying here a choice too.
-        console.log(
-            '[auth] AUTH_MODE=none: every route is open to anyone who can reach this port, including POST /api/jobs, which runs shell commands'
+        authLog.info(
+            'AUTH_MODE=none: every route is open to anyone who can reach this port, including POST /api/jobs, which runs shell commands'
         );
     }
 
@@ -396,11 +401,11 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         providers: registry.providers,
         clients: registry.clients,
         callbackOrigin: config.integrations.callbackOrigin,
-        log: (d) => console.log(`[integrations] ${JSON.stringify(d)}`),
+        log: (d) => logger('integrations').info(d, 'integration diagnostic'),
     });
 
     const mcp = mcpStores(crossOrg);
-    const driverCredentials = bootstrappedDriverCredentials(crossOrg, config, (m) => console.log(m));
+    const driverCredentials = bootstrappedDriverCredentials(crossOrg, config, (m) => logger('auth').info(m));
     const app = await buildApp({
         config,
         orgs,
@@ -429,12 +434,12 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
         providerKeys: createProviderKeys({ deploymentMode: config.deploymentMode }),
         metrics,
-        logger: true,
+        loggerInstance: root,
     });
 
     // Warm every known org's cache at boot so the first visitor does not eat the cold read. Fired,
     // not awaited: a cold database must not hold `listen()`.
-    void ready.then(() => orgs.warmAll()).catch((e: Error) => console.error(`[orgs] warm failed: ${e.message}`));
+    void ready.then(() => orgs.warmAll()).catch((e: Error) => logger('orgs').error(`warm failed: ${e.message}`));
 
     startCollectors({ crossOrg, secrets, artifacts, config, metrics, ...mcp, track: stops.add });
     startRecovery({ config, orgs, metrics, ready, integrations, track: stops.add });

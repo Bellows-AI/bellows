@@ -13,6 +13,7 @@ import {
 } from './db/batches/batch-store-observation.js';
 import { startIntervalLoop } from './interval-loop.js';
 import { GitHubReadError } from './github/pr-read.js';
+import { logger } from './log.js';
 
 /**
  * The batch PR observer (docs/batches.md): reads each eligible task's PR from GitHub on a steady
@@ -168,7 +169,10 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
                     claims.map((claim) =>
                         observeOne(claim).catch((e: Error) => {
                             // The lease expires on its own and the row is read again; nothing is lost.
-                            console.error(`[batches] observing ${claim.repo}#${claim.prNumber} failed: ${e.message}`);
+                            logger('batches').error(
+                                { batchId: claim.batchId, taskKey: claim.taskKey },
+                                `observing a pull request failed: ${e.message}`
+                            );
                             return false;
                         })
                     )
@@ -199,7 +203,7 @@ export function startBatchPrObserver(
     intervalMs = BATCH_OBSERVE_TICK_MS
 ): () => Promise<void> {
     return startIntervalLoop('batches', () => orgs.observeBatchPrs(), intervalMs, {
-        onError: (e) => console.error(`[batches] observe failed: ${e.message}`),
+        onError: (e) => logger('batches').error(`observe failed: ${e.message}`),
     });
 }
 

@@ -14,6 +14,7 @@ import type { AppConfig } from './config.js';
 import type { RepoSource } from './github/repo-source.js';
 import type { TelemetryClient, TelemetryFetch, TelemetrySource } from './telemetry/client.js';
 import { TelemetryError } from './telemetry/errors.js';
+import { logger } from './log.js';
 
 /**
  * Who the figures are computed for: the whole organization, or one member. The route resolves
@@ -222,7 +223,7 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             lastFailure = e;
             // The driver's text can carry hosts, users and SQL: it goes to the log, and the reason a
             // caller sees is fixed text.
-            console.error(`[stats] telemetry read failed: ${(e as Error).message}`);
+            logger('stats').error(`telemetry read failed: ${(e as Error).message}`);
             telemetryFailure = { at: now(), reason: TELEMETRY_UNREADABLE };
             fetchState = {
                 ...fetchState,

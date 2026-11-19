@@ -19,6 +19,7 @@ import {
     type PrFollowClaim,
     type PrFollowResult,
 } from './db/pr-follow-store.js';
+import { logger } from './log.js';
 
 /**
  * The PR follower (docs/workflows.md): the periodic PR read behind the two paths that only a
@@ -132,7 +133,10 @@ export function createPrFollower(deps: PrFollowerDeps): PrFollower {
                     claims.map((claim) =>
                         followOne(claim).catch((e: Error) => {
                             // The lease expires on its own and the PR is read again; nothing is lost.
-                            console.error(`[pr-follow] following ${claim.repo}#${claim.prNumber} failed: ${e.message}`);
+                            logger('pr-follow').error(
+                                { prNumber: claim.prNumber },
+                                `following a pull request failed: ${e.message}`
+                            );
                             return false;
                         })
                     )

@@ -6,6 +6,7 @@ import { type FencedWindow, lockedRetentionWindow } from '../db/org-retention.js
 import type { PlanLimits } from '../db/plan-limits.js';
 import { lockObjectKey, skillKeyNamespace } from '../db/skill-store.js';
 import { startIntervalLoop } from '../interval-loop.js';
+import { logger } from '../log.js';
 
 /**
  * The skill retention sweep (docs/skills.md). A version is removed only when (a) its skill was soft-deleted at least
@@ -207,6 +208,6 @@ export function startSkillSweep({
             await metrics.timedPass('skill_collect', () => collector.collect({ signal }));
         },
         intervalMs,
-        { onError: (e) => console.error(`[skills] collect failed: ${e.message}`) }
+        { onError: (e) => logger('skills').error(`collect failed: ${e.message}`) }
     );
 }

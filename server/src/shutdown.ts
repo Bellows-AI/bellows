@@ -2,6 +2,8 @@
  * The one wall-clock budget of a graceful close. Under the 10 s `docker stop` grace of compose and well under the
  * chart's `terminationGracePeriodSeconds` (preStopSeconds + 15), so the process exits on its own before a SIGKILL.
  */
+import { logger } from './log.js';
+
 export const SHUTDOWN_DEADLINE_MS = 10_000;
 
 /** Stops one background loop: clears its timer and settles once the pass in flight has. */
@@ -22,7 +24,7 @@ export function createStopRegistry() {
         try {
             await stop();
         } catch (e) {
-            console.error(`[shutdown] a stop failed: ${(e as Error).message}`);
+            logger('shutdown').error(`a stop failed: ${(e as Error).message}`);
         }
     };
     return {
@@ -105,11 +107,11 @@ export function closeOnSignal(close: () => Promise<void>): void {
     const onSignal = (signal: NodeJS.Signals) => {
         if (begun) return;
         begun = true;
-        console.log(`[shutdown] ${signal}: closing`);
+        logger('shutdown').info({ signal }, 'closing');
         close().then(
             () => process.exit(0),
             (e: Error) => {
-                console.error(`[shutdown] ${e.message}`);
+                logger('shutdown').error(e.message);
                 process.exit(1);
             }
         );

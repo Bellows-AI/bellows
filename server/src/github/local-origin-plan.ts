@@ -6,6 +6,7 @@ import { BELLOWS_FILE, createPlanReader, type PlanRead, type PlanReader } from '
 import { READ_BINDING, READ_TRANSPORT } from '@factory-ai/core';
 import { MAX_FILE_BYTES, type RepoFileRead } from './file-read.js';
 import { GitHubReadError } from './pr-read.js';
+import { logger } from '../log.js';
 
 /** `owner/name`, each a plain path segment — a label never resolves outside the origins dir. */
 const REPO_LABEL = /^(?!\.{1,2}\/)[A-Za-z0-9_.-]+\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;
@@ -212,7 +213,7 @@ export function createOriginPlanReader(
             } finally {
                 if (tmp !== null) {
                     await rm(tmp, { recursive: true, force: true }).catch((e: Error) =>
-                        console.error(`[plan] could not remove ${tmp}: ${e.message}`)
+                        logger('plan').error(`could not remove a temp checkout: ${e.message}`)
                     );
                 }
             }

@@ -31,6 +31,7 @@ import {
     type BatchReportTask,
     type BatchUsageUnavailable,
 } from './batch-store-types.js';
+import { logger } from '../../log.js';
 
 /**
  * The morning report (docs/batches.md): assembled from durable rows on every read — the plan, the
@@ -323,7 +324,7 @@ async function readBatchUsage(
     try {
         facts = await tx.savepoint((sp) => readFacts(sp, orgId, { taskIds: roots }));
     } catch (e) {
-        console.error(`[batches] usage read failed: ${(e as Error).message}`);
+        logger('batches').error(`usage read failed: ${(e as Error).message}`);
         return unavailable;
     }
     const { tasks: byRoot, total } = batchUsageOf(facts, roots, at);

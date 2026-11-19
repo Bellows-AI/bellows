@@ -59,6 +59,7 @@ import {
     type BatchProgress,
     type BatchRetryRefusal,
 } from './batch-store-types.js';
+import { logger } from '../../log.js';
 
 /**
  * The scheduler's transactions (docs/batches.md). Every write runs under the batch row's
@@ -595,7 +596,7 @@ export async function reconcileOpenBatches(deps: ScheduleDeps): Promise<void> {
         try {
             await reconcileBatch(deps, batch.id);
         } catch (e) {
-            console.error(`[batches] reconcile of ${batch.id} failed: ${(e as Error).message}`);
+            logger('batches').error({ batchId: batch.id }, `reconcile failed: ${(e as Error).message}`);
         }
     }
 }

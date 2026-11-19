@@ -42,6 +42,7 @@ import { createFixtureTelemetryClient, createNullTelemetryClient } from './telem
 import type { TelemetryClient } from './telemetry/client.js';
 import { createPlanReader } from './workspace/bellows-plan.js';
 import { createOriginPlanReader } from './github/local-origin-plan.js';
+import { logger } from './log.js';
 
 /**
  * Everything one organization needs at runtime, built lazily and cached.
@@ -434,7 +435,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                 ? createNullTelemetryClient()
                 : config.telemetrySource === 'fixture'
                   ? createFixtureTelemetryClient()
-                  : createPostgresTelemetryClient({ sql, orgId, ready, log: (m) => console.log(`[telemetry] ${m}`) });
+                  : createPostgresTelemetryClient({ sql, orgId, ready, log: (m) => logger('telemetry').info(m) });
 
         const runtime: OrgRuntime = {
             orgId,
@@ -491,7 +492,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                     .catch((e: Error) => {
                         // Do not cache a failure either: the next request retries, and the log
                         // line is what tells the operator which org could not be built.
-                        console.error(`[org] runtime for "${orgId}" failed: ${e.message}`);
+                        logger('org').error({ orgId }, `runtime failed: ${e.message}`);
                         runtimes.delete(orgId);
                         return null;
                     });
@@ -529,7 +530,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                     try {
                         await (await this.for(org.id))?.batches?.reconcileOpen();
                     } catch (e) {
-                        console.error(`[batches] reconcile for "${org.id}" failed: ${(e as Error).message}`);
+                        logger('batches').error({ orgId: org.id }, `reconcile failed: ${(e as Error).message}`);
                     }
                 })
             );
@@ -544,7 +545,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                         // Observe first: a merge decision is only as good as the observation it reads.
                         await runtime?.batchObserver?.observeDue().finally(() => runtime?.batchMerger?.mergeDue());
                     } catch (e) {
-                        console.error(`[batches] observe for "${org.id}" failed: ${(e as Error).message}`);
+                        logger('batches').error({ orgId: org.id }, `observe failed: ${(e as Error).message}`);
                     }
                 })
             );
@@ -564,7 +565,7 @@ async function followOrgPrs(registry: Pick<OrgRegistry, 'list' | 'for'>): Promis
             try {
                 await (await registry.for(org.id))?.prFollower?.observeDue();
             } catch (e) {
-                console.error(`[pr-follow] pass for "${org.id}" failed: ${(e as Error).message}`);
+                logger('pr-follow').error({ orgId: org.id }, `pass failed: ${(e as Error).message}`);
             }
         })
     );

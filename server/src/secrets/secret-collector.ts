@@ -1,4 +1,5 @@
 import { startIntervalLoop } from '../interval-loop.js';
+import { logger } from '../log.js';
 
 /** How often a replica sweeps unreferenced secret versions and prunes finished operations (docs/secrets.md). */
 export const SECRET_COLLECT_INTERVAL_MS = 600_000;
@@ -13,6 +14,6 @@ export function startSecretCollector(
     intervalMs = SECRET_COLLECT_INTERVAL_MS
 ): () => Promise<void> {
     return startIntervalLoop('secrets', () => store.collect(), intervalMs, {
-        onError: (e) => console.error(`[secrets] collect failed: ${e.message}`),
+        onError: (e) => logger('secrets').error(`collect failed: ${e.message}`),
     });
 }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startSecretCollector } from '../src/secrets/secret-collector.js';
+import { captureLogs } from './helpers-log.js';
 
 afterEach(() => {
     vi.useRealTimers();
@@ -37,7 +38,7 @@ describe('startSecretCollector', () => {
 
     it('survives a failing pass and logs the message only', async () => {
         vi.useFakeTimers();
-        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const captured = captureLogs();
         const collect = vi
             .fn<() => Promise<void>>()
             .mockRejectedValueOnce(new Error('db down'))
@@ -45,9 +46,8 @@ describe('startSecretCollector', () => {
         const stop = startSecretCollector({ collect }, 1000);
         await vi.advanceTimersByTimeAsync(1500);
         expect(collect).toHaveBeenCalledTimes(2);
-        expect(error).toHaveBeenCalledTimes(1);
-        expect(String(error.mock.calls[0]?.[0])).toContain('db down');
+        expect(captured.of('secrets')).toEqual([['ERROR', 'collect failed: db down']]);
         await stop();
-        error.mockRestore();
+        captured.stop();
     });
 });
