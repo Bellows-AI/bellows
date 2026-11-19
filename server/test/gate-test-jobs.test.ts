@@ -1,11 +1,5 @@
-import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
-
-const SCRIPT = fileURLToPath(new URL('../../scripts/gate-test-jobs.sh', import.meta.url));
+import { describe, expect, it } from 'vitest';
+import { FAKE_GIT, type GateRun, gateScript } from './fixtures/gate-script.js';
 
 interface Fake {
     /** What the path-to-phase map prints on stdout, and its exit status. */
@@ -18,49 +12,27 @@ interface Fake {
     env?: Record<string, string>;
 }
 
-const dirs: string[] = [];
-afterEach(() => {
-    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
+const run = gateScript('gate-test-jobs.sh');
 
-// The gate script against fake git, node, make and npm on PATH: each logs its argv, so a case reads
-// what ran and in what order without a docker daemon or a real lane.
-function runGate(fake: Fake): { status: number | null; stdout: string; stderr: string; calls: string[] } {
-    const dir = mkdtempSync(join(tmpdir(), 'gate-test-jobs-'));
-    dirs.push(dir);
-    const log = join(dir, 'calls.log');
-    const tool = (name: string, body: string) => {
-        const path = join(dir, name);
-        writeFileSync(path, `#!/bin/sh\necho "${name} $*" >> "${log}"\n${body}\n`);
-        chmodSync(path, 0o755);
-    };
-    tool('node', `printf '%s' "$FAKE_MAP"\nexit "$FAKE_MAP_STATUS"`);
-    tool(
-        'git',
-        'case "$1" in rev-parse) [ "$FAKE_HAS_BASE" = 1 ] ;; fetch) exit "$FAKE_FETCH_STATUS" ;; *) exit 0 ;; esac'
-    );
-    tool('make', 'exit "$FAKE_MAKE_STATUS"');
-    tool('npm', 'exit 0');
-    const out = spawnSync('sh', [SCRIPT], {
-        encoding: 'utf8',
-        env: {
-            PATH: `${dir}:/usr/bin:/bin`,
+// The gate script against fake git, node, make and npm on PATH (server/test/fixtures/gate-script.ts).
+const runGate = (fake: Fake): GateRun =>
+    run(
+        {
+            node: `printf '%s' "$FAKE_MAP"\nexit "$FAKE_MAP_STATUS"`,
+            git: FAKE_GIT,
+            make: 'exit "$FAKE_MAKE_STATUS"',
+            npm: 'exit 0',
+        },
+        [],
+        {
             FAKE_MAP: fake.map ?? '',
             FAKE_MAP_STATUS: String(fake.mapStatus ?? 0),
             FAKE_HAS_BASE: fake.hasBase === false ? '0' : '1',
             FAKE_FETCH_STATUS: String(fake.fetchStatus ?? 0),
             FAKE_MAKE_STATUS: String(fake.makeStatus ?? 0),
             ...fake.env,
-        },
-    });
-    let calls: string[] = [];
-    try {
-        calls = readFileSync(log, 'utf8').split('\n').filter(Boolean);
-    } catch {
-        // No tool ran at all.
-    }
-    return { status: out.status, stdout: out.stdout, stderr: out.stderr, calls };
-}
+        }
+    );
 
 const lane = (calls: string[]) => calls.filter((call) => !call.startsWith('git '));
 

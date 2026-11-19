@@ -16,8 +16,19 @@ interface PlanInput {
     importers: (files: string[]) => string[];
 }
 const SCRIPT = new URL('../../scripts/test-changed.mjs', import.meta.url).href;
-const { plan, reverseImports } = (await import(/* @vite-ignore */ SCRIPT)) as {
+interface DbPlanInput {
+    changed: string[];
+    dbTests: string[];
+    namedByDb: (names: string[]) => string[];
+    namedInSource: (names: string[]) => string[];
+    importers: (files: string[]) => string[];
+}
+type DbPlan = { full: string[] } | { tests: string[] };
+type Exec = (cmd: string, args: string[], options: { encoding: 'utf8' }) => string;
+const { plan, planDb, gitGrep, reverseImports } = (await import(/* @vite-ignore */ SCRIPT)) as {
     plan: (input: PlanInput) => Step[];
+    planDb: (input: DbPlanInput) => DbPlan;
+    gitGrep: (pathspecs: string[], names: string[], exec?: Exec) => string[];
     reverseImports: (texts: Record<string, string>) => (files: string[]) => string[];
 };
 
@@ -173,5 +184,140 @@ describe('test:changed plan', () => {
 
     it('plans only the graph step for an empty change', () => {
         expect(vitestArgs(run([]))).toHaveLength(1);
+    });
+});
+
+describe('test:db changed plan', () => {
+    const DB_TESTS = [
+        'server/test-db/commerce-store.test.ts',
+        'server/test-db/job-store.test.ts',
+        'server/test-db/run-lock.test.ts',
+        'server/test-db/seed-cli.test.ts',
+    ];
+    const runDb = (changed: string[], over: Partial<DbPlanInput> = {}): DbPlan =>
+        planDb({ changed, dbTests: DB_TESTS, namedByDb: none, namedInSource: none, importers: none, ...over });
+
+    it('runs the whole DB suite for a migration', () => {
+        const result = runDb(['server/migrations/170_x.sql']);
+        expect('full' in result && result.full.join(' ')).toContain('server/migrations/170_x.sql');
+    });
+
+    it.each([
+        'server/test-db/global-setup.ts',
+        'server/test-db/setup-worker.ts',
+        'server/test-db/workers.ts',
+        'server/test-db/harness.ts',
+        'server/test-db/database-names.ts',
+        'server/test-db/database-guard.ts',
+        'server/test-db/run-databases.ts',
+        'server/test-db/run-lock.ts',
+        'vitest.db.config.ts',
+    ])('runs the whole DB suite for the harness and the global setup: %s', (file) => {
+        expect(runDb([file])).toHaveProperty('full');
+    });
+
+    it('runs the whole DB suite when core/src changed', () => {
+        expect(runDb(['core/src/metrics.ts'])).toHaveProperty('full');
+    });
+
+    it('runs the whole DB suite for a file every package builds from', () => {
+        expect(runDb(['package.json'])).toHaveProperty('full');
+    });
+
+    it('selects the suites that import a changed store module, through any depth', () => {
+        const importers = reverseImports({
+            'server/src/db/commerce-store.ts': '',
+            'server/src/db/x.ts': "import { store } from './commerce-store.js';",
+            'server/test-db/commerce-store.test.ts': "import { x } from '../src/db/x.js';",
+        });
+        expect(runDb(['server/src/db/commerce-store.ts'], { importers })).toEqual({
+            tests: ['server/test-db/commerce-store.test.ts'],
+        });
+    });
+
+    it('selects the harness importers, not the full suite, for a module the harness imports', () => {
+        const reached = ['server/test-db/commerce-store.test.ts', 'server/test-db/job-store.test.ts'];
+        const result = runDb(['server/src/db/pool.ts'], {
+            dbTests: [...reached, 'server/test-db/run-lock.test.ts'],
+            importers: (files) =>
+                files.includes('server/src/db/pool.ts') ? ['server/test-db/harness.ts', ...reached] : [],
+        });
+        expect(result).toEqual({ tests: reached });
+    });
+
+    it('selects a changed DB test itself', () => {
+        expect(runDb(['server/test-db/job-store.test.ts'])).toEqual({ tests: ['server/test-db/job-store.test.ts'] });
+    });
+
+    it('selects a suite that launches a changed source by path', () => {
+        const result = runDb(['server/src/seed/x.ts'], {
+            importers: (files) => (files.includes('server/src/seed/x.ts') ? ['server/src/seed/cli.ts'] : []),
+            namedByDb: (names) =>
+                names.includes('cli.ts') && names.includes('x.ts') ? ['server/test-db/seed-cli.test.ts'] : [],
+        });
+        expect(result).toEqual({ tests: ['server/test-db/seed-cli.test.ts'] });
+    });
+
+    it('selects nothing for a web-only change', () => {
+        expect(runDb(['web/src/panels/Foo.tsx'])).toEqual({ tests: [] });
+    });
+
+    it('selects nothing for a doc no DB suite names', () => {
+        expect(runDb(['docs/metrics.md'])).toEqual({ tests: [] });
+    });
+
+    it('selects nothing for an unnamed config file in DB mode, where unit mode still widens', () => {
+        expect(runDb(['docker/x/unknown.conf'])).toEqual({ tests: [] });
+        expect(run(['docker/x/unknown.conf']).at(-1)?.label).toContain('widened to everything');
+    });
+
+    it('selects nothing for a path only a unit test names', () => {
+        // The unit suite that reads it is in no DB project: `namedByDb` greps server/test-db only.
+        const result = runDb(['.github/workflows/ci.yml'], {
+            namedByDb: (names) => (names.includes('ci.yml') ? ['core/test/ci-workflows.test.ts'] : []),
+        });
+        expect(result).toEqual({ tests: [] });
+    });
+
+    it('selects the suites that import a test-db helper naming a changed file', () => {
+        const result = runDb(['server/src/seed/data.json'], {
+            namedByDb: (names) => (names.includes('data.json') ? ['server/test-db/fixtures.ts'] : []),
+            importers: (files) =>
+                files.includes('server/test-db/fixtures.ts') ? ['server/test-db/job-store.test.ts'] : [],
+        });
+        expect(result).toEqual({ tests: ['server/test-db/job-store.test.ts'] });
+    });
+
+    it('selects the suites that import a source loading a changed file', () => {
+        const result = runDb(['server/src/skills/catalog.yaml'], {
+            namedInSource: (names) => (names.includes('catalog.yaml') ? ['server/src/skill-catalog.ts'] : []),
+            importers: (files) =>
+                files.includes('server/src/skill-catalog.ts') ? ['server/test-db/commerce-store.test.ts'] : [],
+        });
+        expect(result).toEqual({ tests: ['server/test-db/commerce-store.test.ts'] });
+    });
+});
+
+describe('gitGrep', () => {
+    const failing =
+        (status: number): Exec =>
+        () => {
+            throw Object.assign(new Error(`git grep exited ${status}`), { status });
+        };
+
+    it('lists the matching files', () => {
+        const exec: Exec = () => 'server/test-db/a.test.ts\nserver/test-db/b.test.ts\n';
+        expect(gitGrep(['server/test-db/*'], ['a.ts'], exec)).toEqual([
+            'server/test-db/a.test.ts',
+            'server/test-db/b.test.ts',
+        ]);
+    });
+
+    it('returns [] when git grep exits 1', () => {
+        expect(gitGrep(['server/test-db/*'], ['a.ts'], failing(1))).toEqual([]);
+    });
+
+    it('throws when git grep fails otherwise (status 128)', () => {
+        expect(() => gitGrep(['server/test-db/*'], ['a.ts'], failing(128))).toThrow(/exited 128/);
     });
 });
