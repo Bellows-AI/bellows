@@ -10,7 +10,7 @@ import {
 } from '../../src/supervisor-contract.js';
 import { StepChannelClosed, type StepSink } from '../../src/step-control.js';
 import { serviceProbeArgv, serviceRestartArgv } from '../../src/container-scripts.js';
-import { Inconclusive, SERVICE_LOG_TAIL_LINES } from '../../src/runner.js';
+import { Inconclusive, SERVICE_LOG_TAIL_LINES, SERVICE_RESTART_TIMEOUT_S } from '../../src/runner.js';
 import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { jobsPath, runnerJobName, runnerJobSpec } from '../../src/k8s/k8s-podspec.js';
 import { podLogPath } from '../../src/k8s/k8s-auxspec.js';
@@ -98,12 +98,23 @@ describe('the service sidecars (issue #773)', () => {
         ]);
     });
 
-    it('probes liveness with the generation probe every two seconds, failing at the first miss', () => {
+    it('probes liveness every two seconds with a 10 s timeout, restarting only after three misses in a row', () => {
         expect(sidecarOf('cache').livenessProbe).toEqual({
             exec: { command: serviceProbeArgv('cache') },
             periodSeconds: 2,
-            failureThreshold: 1,
+            timeoutSeconds: 10,
+            failureThreshold: 3,
         });
+    });
+
+    it('a single timed-out probe cannot restart a service, and a bump still restarts it within the restart bound', () => {
+        const probe = sidecarOf('cache').livenessProbe;
+        if (!probe) throw new Error('the service sidecar has no liveness probe');
+        expect(probe.failureThreshold).toBeGreaterThanOrEqual(2);
+        expect(probe.timeoutSeconds).toBeGreaterThan(1);
+        expect(probe.failureThreshold * (probe.periodSeconds + probe.timeoutSeconds)).toBeLessThan(
+            SERVICE_RESTART_TIMEOUT_S
+        );
     });
 
     it('gives the supervisor the generations and every acknowledgement, and no other container any of them', () => {

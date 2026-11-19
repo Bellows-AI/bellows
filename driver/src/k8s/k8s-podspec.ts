@@ -124,7 +124,12 @@ export interface RunnerPodContainer {
     /** `Always` makes an init container a native sidecar: the gate and the services, up beside the main containers. */
     restartPolicy?: 'Always';
     /** A service sidecar's generation probe: what the kubelet restarts it on. */
-    livenessProbe?: { exec: { command: string[] }; periodSeconds: number; failureThreshold: number };
+    livenessProbe?: {
+        exec: { command: string[] };
+        periodSeconds: number;
+        timeoutSeconds: number;
+        failureThreshold: number;
+    };
     /** The `dockerd` sidecar's socket probe: the init containers after it start once it passes. */
     startupProbe?: { exec: { command: string[] }; periodSeconds: number; failureThreshold: number };
     resources?: PodResources;
@@ -322,9 +327,16 @@ const serviceRestartMounts = (services: readonly ServiceSpec[]): RunnerMount[] =
               })),
           ];
 
-/** How often the kubelet runs a service sidecar's generation probe, and the misses it restarts it on. */
+/**
+ * How often the kubelet runs a service sidecar's generation probe, how long one exec may take, and the
+ * misses in a row it restarts it on. A timed-out exec counts as a miss, and in a loaded microVM one exec
+ * can outrun the kubelet's 1 s default — so a timeout alone never restarts a healthy service mid-gate.
+ * A real generation bump fails every probe at once: the restart lands about 3 × 2 s after it, and at
+ * worst, every exec timing out, 3 × (2 + 10) s — inside the supervisor's `SERVICE_RESTART_TIMEOUT_S`.
+ */
 const SERVICE_PROBE_PERIOD_SECONDS = 2;
-const SERVICE_PROBE_FAILURES = 1;
+const SERVICE_PROBE_TIMEOUT_SECONDS = 10;
+const SERVICE_PROBE_FAILURES = 3;
 
 /**
  * One declared service as a native sidecar of the task pod: up beside the supervisor
@@ -352,6 +364,7 @@ function serviceSidecar(config: DriverConfig, job: BoardJob, spec: ServiceSpec):
         livenessProbe: {
             exec: { command: serviceProbeArgv(spec.name) },
             periodSeconds: SERVICE_PROBE_PERIOD_SECONDS,
+            timeoutSeconds: SERVICE_PROBE_TIMEOUT_SECONDS,
             failureThreshold: SERVICE_PROBE_FAILURES,
         },
         volumeMounts: [
