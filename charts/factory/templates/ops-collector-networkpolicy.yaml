@@ -1,0 +1,36 @@
+{{- if .Values.observability.enabled }}
+{{/*
+Who may dial the ops collector: this release's dashboard and driver pods, on 4318 only. This
+ingress policy is the guarantee that runner pods never reach it — the runner egress policy admits
+everything outside isolation.blockedCidrs, and a pod CIDR may lie outside it, so the runner side
+alone cannot promise it. Inert without an enforcing CNI (scripts/test-k8s.sh --netpol proves it
+where one runs). No egress policy: the backend is anywhere.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: {{ include "factory.opsCollectorName" . }}
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: ops-collector
+spec:
+    podSelector:
+        matchLabels:
+            {{- include "factory.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: ops-collector
+    policyTypes:
+        - Ingress
+    ingress:
+        - from:
+              - podSelector:
+                    matchLabels:
+                        {{- include "factory.selectorLabels" . | nindent 24 }}
+                        app.kubernetes.io/component: dashboard
+              - podSelector:
+                    matchLabels:
+                        {{- include "factory.selectorLabels" . | nindent 24 }}
+                        app.kubernetes.io/component: driver
+          ports:
+              - protocol: TCP
+                port: 4318
+{{- end }}

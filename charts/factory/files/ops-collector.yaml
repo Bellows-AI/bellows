@@ -1,0 +1,82 @@
+# The ops collector: receives the board's and the driver's own telemetry (never a runner's) and
+# forwards it to any OTLP backend the operator names. Compose mounts these exact bytes and the
+# chart reads them with .Files.Get, so this file is static — no template syntax, every knob is a
+# `${env:…}` the collector resolves at boot: OPS_BACKEND_ENDPOINT, OPS_BACKEND_HEADERS (a YAML or
+# JSON map of header name → value, or `null` for none), OPS_TAIL_PERCENT, OPS_LATENCY_THRESHOLD_MS.
+#
+# HTTP only: the board and driver SDKs export http/protobuf, and a second port is a second thing
+# to admit in the ingress policy. It never exports to the board: its OTLP ingest route is the
+# runners' and ops data does not belong in a session's telemetry.
+extensions:
+    # The pod's liveness and readiness probes read this.
+    health_check:
+        endpoint: 0.0.0.0:13133
+
+receivers:
+    otlp:
+        protocols:
+            http:
+                endpoint: 0.0.0.0:4318
+    # The collector's own metrics (otelcol_exporter_send_failed_*) ride the metrics pipeline to the
+    # backend, so an export failure is visible where the rest of the telemetry is.
+    prometheus:
+        config:
+            scrape_configs:
+                - job_name: ops-collector
+                  scrape_interval: 30s
+                  static_configs:
+                      - targets: ['127.0.0.1:8888']
+
+processors:
+    # First in every pipeline: under a burst the collector refuses data instead of growing until
+    # the container's memory limit kills it.
+    memory_limiter:
+        check_interval: 1s
+        limit_percentage: 80
+        spike_limit_percentage: 25
+    batch: {}
+    # A trace is kept when ANY policy matches: it errored, it ran longer than the threshold, or it
+    # falls in the sampled share of the rest.
+    tail_sampling:
+        policies:
+            - name: errors
+              type: status_code
+              status_code:
+                  status_codes: [ERROR]
+            - name: slow
+              type: latency
+              latency:
+                  threshold_ms: ${env:OPS_LATENCY_THRESHOLD_MS}
+            - name: share
+              type: probabilistic
+              probabilistic:
+                  sampling_percentage: ${env:OPS_TAIL_PERCENT}
+
+exporters:
+    otlp_http:
+        endpoint: ${env:OPS_BACKEND_ENDPOINT}
+        headers: ${env:OPS_BACKEND_HEADERS}
+
+service:
+    extensions: [health_check]
+    telemetry:
+        metrics:
+            readers:
+                - pull:
+                      exporter:
+                          prometheus:
+                              host: 127.0.0.1
+                              port: 8888
+    pipelines:
+        traces:
+            receivers: [otlp]
+            processors: [memory_limiter, batch, tail_sampling]
+            exporters: [otlp_http]
+        metrics:
+            receivers: [otlp, prometheus]
+            processors: [memory_limiter, batch]
+            exporters: [otlp_http]
+        logs:
+            receivers: [otlp]
+            processors: [memory_limiter, batch]
+            exporters: [otlp_http]
