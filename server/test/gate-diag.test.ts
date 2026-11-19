@@ -82,7 +82,7 @@ interface Pass {
     root: string;
 }
 
-// scripts/gate-diag.sh against fake psql, pgbench, nproc, mount, npm and npx on PATH and the real node.
+// scripts/gate-diag.sh against fake psql, nproc, mount, npm and npx on PATH and the real node.
 // The checkout is a temp dir with a small node_modules; each fake logs its argv (and the postgres
 // clients their env) so a case reads what ran, in what order.
 async function runPass(
@@ -101,34 +101,31 @@ async function runPass(
         writeFileSync(join(work, 'node_modules', 'left-pad', 'index.js'), 'module.exports = 1;\n');
     }
     const pg = `printf '%s PGCONNECT_TIMEOUT=%s PGOPTIONS=%s %s\\n' "$(basename "$0")" "\${PGCONNECT_TIMEOUT:-}" "\${PGOPTIONS:-}" "$*" >> "${log}"`;
+    // `-f <file>`: logs the workload's name, its first-last id and its statement count instead of running
+    // it; FAKE_PSQL_FAIL names one workload (or `create`, the table setup) that fails.
     tool(
         bin,
         'psql',
         `${pg}
 [ "\${FAKE_PSQL_STATUS:-0}" = 0 ] || exit "$FAKE_PSQL_STATUS"
+file= prev=
+for arg in "$@"; do [ "$prev" = -f ] && file=$arg; prev=$arg; done
+if [ -n "$file" ]; then
+    name=$(basename "$file" .sql)
+    first=$(head -n 1 "$file" | tr -cd 0-9); last=$(tail -n 1 "$file" | tr -cd 0-9); n=$(wc -l < "$file" | tr -d ' ')
+    echo "psql-file $name $first-$last $n" >> "${log}"
+    [ "$name" != "\${FAKE_PSQL_FAIL:-}" ] || exit 3
+    exit 0
+fi
 case "$*" in
 *'alter system'*) [ -n "\${FAKE_PSQL_STUCK:-}" ] || : > "${root}/fast" ;;
+*'create table gate_diag'*) [ "\${FAKE_PSQL_FAIL:-}" != create ] || exit 3 ;;
 *server_version*) echo 17.2 ;;
 *data_directory*) echo /var/lib/postgresql/data ;;
 *pg_read_file*) printf '%s\\n' '61 1 0:40 / / rw - virtiofs none rw' '62 61 0:41 / /dev/shm rw - tmpfs shm rw' ;;
 *current_setting*)
     if [ -f "${root}/fast" ]; then echo 'fsync=off synchronous_commit=off full_page_writes=off'
     else echo 'fsync=on synchronous_commit=on full_page_writes=on'; fi ;;
-esac`
-    );
-    tool(
-        bin,
-        'pgbench',
-        `${pg}
-case \${FAKE_PGBENCH:-ok} in
-fail) exit 1 ;;
-notps) echo 'starting vacuum...end.'; exit 0 ;;
-esac
-case "$*" in -i*) exit 0 ;; esac
-if [ -f "${root}/fast" ]; then s=222.5 rw=88.75; else s=111.5 rw=44.25; fi
-case "$*" in
-*-S*) echo "tps = $s (without initial connection time)" ;;
-*) echo "tps = $rw (without initial connection time)" ;;
 esac`
     );
     tool(bin, 'nproc', `[ -z "\${FAKE_NO_NPROC:-}" ] || { echo 'nproc: not found' >&2; exit 127; }\necho 4`);
@@ -148,8 +145,8 @@ echo '${DURATION}'
 exit "\${FAKE_NPX_STATUS:-0}"`
     );
     const args = [join('scripts', 'gate-diag.sh'), ...(opts.url === false ? [] : [URL_ARG])];
-    // A short CPU loop: its value is not under test, only that it is timed three times.
-    const extra = { GATE_DIAG_LOOP: '1000', ...opts.env };
+    // A short CPU loop and 8 rows: their values are not under test, only how they are run and timed.
+    const extra = { GATE_DIAG_LOOP: '1000', GATE_DIAG_PG_ROWS: '8', ...opts.env };
     const run = await exec(args, { cwd: work, env: env(bin, extra) });
     const out = lines(run.stdout).map((line) => line.split('\t'));
     const values = (key: string) => out.filter(([k]) => k === key).map(([, v]) => v ?? '');
@@ -184,14 +181,16 @@ const REQUIRED = [
     'pg_version',
     'pg_data_directory',
     'pg_settings_durable',
-    'pgbench_durable_init_seconds',
-    'pgbench_durable_select_c1_tps',
-    'pgbench_durable_rw_c4_tps',
+    'pg_durable_write_c1_tps',
+    'pg_durable_read_c1_tps',
+    'pg_durable_write_c4_tps',
     'pg_settings_fast',
-    'pgbench_fast_init_seconds',
-    'pgbench_fast_select_c1_tps',
-    'pgbench_fast_rw_c4_tps',
+    'pg_fast_write_c1_tps',
+    'pg_fast_read_c1_tps',
+    'pg_fast_write_c4_tps',
 ];
+const WORKLOADS = ['write_c1', 'read_c1', 'write_c4'];
+const TPS = (set: string) => WORKLOADS.map((w) => `pg_${set}_${w}_tps`);
 const INFORMATIONAL = ['mem_total', 'cgroup_cpu_max', 'cpu_model', 'hypervisor', 'fs_cwd', 'fs_root'];
 const PG = REQUIRED.filter((key) => key.startsWith('pg'));
 const VITEST = ['vitest_seconds', 'vitest_transform', 'vitest_setup', 'vitest_collect', 'vitest_tests'];
@@ -217,24 +216,36 @@ describe('scripts/gate-diag.sh', { timeout: 60_000 }, () => {
     it('measures postgres durable, applies gate-pg-fast, then measures fast', async () => {
         const run = await runPass();
         expect(run.status).toBe(0);
-        const pg = run.calls.filter((call) => /^(psql|pgbench) /.test(call));
-        const settings = (call: string) => call.startsWith('psql') && call.includes("current_setting('fsync')");
-        const order = pg
+        const pg = run.calls.filter((call) => call.startsWith('psql '));
+        const settings = (call: string) => call.includes("current_setting('fsync')");
+        const steps = run.calls
             .map((call) => {
+                if (call.startsWith('psql-file ')) return call.slice('psql-file '.length);
+                if (!call.startsWith('psql ')) return null;
                 if (settings(call)) return 'settings';
                 if (call.includes('alter system set fsync = off')) return 'gate-pg-fast';
-                if (call.startsWith('pgbench')) return `pgbench ${call.match(/ (-i|-S -c1 -T10|-c4 -T10) /)?.[1]}`;
+                if (call.includes('create table gate_diag')) return 'setup';
+                if (call.includes('drop table if exists gate_diag')) return 'drop';
                 return null;
             })
             .filter((step) => step !== null);
-        const bench = ['pgbench -i', 'pgbench -S -c1 -T10', 'pgbench -c4 -T10'];
-        expect(order).toEqual(['settings', ...bench, 'gate-pg-fast', 'settings', ...bench]);
+        // The four concurrent sessions log in any order.
+        const order = steps.map((step, i) => (step.startsWith('write_c4_') ? `c4:${i}` : step));
+        const c4 = steps.filter((step) => step.startsWith('write_c4_'));
+        const set = ['setup', 'write_c1 1-8 8', 'read_c1 1-8 8', ...['c4', 'c4', 'c4', 'c4'], 'drop'];
+        expect(order.map((step) => (step.startsWith('c4:') ? 'c4' : step))).toEqual([
+            'settings',
+            ...set,
+            'gate-pg-fast',
+            'settings',
+            ...set,
+        ]);
+        // Each session inserts its own quarter of fresh ids, after the single session's.
+        const quarters = ['write_c4_0 9-10 2', 'write_c4_1 11-12 2', 'write_c4_2 13-14 2', 'write_c4_3 15-16 2'];
+        expect([...c4].sort()).toEqual([...quarters, ...quarters].sort());
         expect(run.value('pg_settings_durable')).toBe('fsync=on synchronous_commit=on full_page_writes=on');
         expect(run.value('pg_settings_fast')).toBe('fsync=off synchronous_commit=off full_page_writes=off');
-        expect(run.value('pgbench_durable_select_c1_tps')).toBe('111.5');
-        expect(run.value('pgbench_durable_rw_c4_tps')).toBe('44.25');
-        expect(run.value('pgbench_fast_select_c1_tps')).toBe('222.5');
-        expect(run.value('pgbench_fast_rw_c4_tps')).toBe('88.75');
+        for (const key of [...TPS('durable'), ...TPS('fast')]) expect(run.value(key), key).toMatch(NUMBER);
         expect(pg.length).toBeGreaterThan(0);
         for (const call of pg) {
             expect(call, call).toContain(' PGCONNECT_TIMEOUT=10 ');
@@ -246,10 +257,8 @@ describe('scripts/gate-diag.sh', { timeout: 60_000 }, () => {
         const run = await runPass({ env: { FAKE_PSQL_STUCK: '1' } });
         expect(run.status).toBe(1);
         expect(run.value('pg_settings_fast')).toBe('fsync=on synchronous_commit=on full_page_writes=on');
-        for (const key of ['pgbench_fast_init_seconds', 'pgbench_fast_select_c1_tps', 'pgbench_fast_rw_c4_tps']) {
-            expect(run.value(key), key).toBe('unmeasured');
-        }
-        expect(run.value('pgbench_durable_select_c1_tps')).toBe('111.5');
+        for (const key of TPS('fast')) expect(run.value(key), key).toBe('unmeasured');
+        for (const key of TPS('durable')) expect(run.value(key), key).toMatch(NUMBER);
     });
 
     it("reads the service's own mounts through the server", async () => {
@@ -267,18 +276,32 @@ describe('scripts/gate-diag.sh', { timeout: 60_000 }, () => {
         const run = await runPass({ url: false });
         expect(run.status).toBe(0);
         for (const key of PG) expect(run.value(key), key).toBe('unmeasured');
-        expect(run.calls.filter((call) => call.startsWith('pgbench'))).toEqual([]);
         expect(run.calls.filter((call) => call.startsWith('psql'))).toEqual([]);
     });
 
-    it.each(['fail', 'notps'])('a failing or tps-less pgbench (%s) is unmeasured and fails the pass', async (mode) => {
-        const run = await runPass({ env: { FAKE_PGBENCH: mode } });
-        expect(run.status).toBe(1);
-        for (const key of ['pgbench_durable_select_c1_tps', 'pgbench_durable_rw_c4_tps', 'pgbench_fast_rw_c4_tps']) {
-            expect(run.value(key), key).toBe('unmeasured');
+    it.each(['write_c1', 'read_c1', 'write_c4_2'])(
+        'a failing %s session is unmeasured and fails the pass',
+        async (name) => {
+            const run = await runPass({ env: { FAKE_PSQL_FAIL: name } });
+            expect(run.status).toBe(1);
+            const failed = name.replace(/_\d$/, '');
+            for (const set of ['durable', 'fast']) {
+                for (const workload of WORKLOADS) {
+                    const key = `pg_${set}_${workload}_tps`;
+                    expect(run.value(key), key).toMatch(workload === failed ? /^unmeasured$/ : NUMBER);
+                }
+            }
+            // The later measures still print.
+            expect(run.value('pg_settings_fast')).toBe('fsync=off synchronous_commit=off full_page_writes=off');
         }
-        // The later measures still print.
-        expect(run.value('pg_settings_fast')).toBe('fsync=off synchronous_commit=off full_page_writes=off');
+    );
+
+    it('a table that cannot be created leaves its set unmeasured', async () => {
+        const run = await runPass({ env: { FAKE_PSQL_FAIL: 'create' } });
+        expect(run.status).toBe(1);
+        for (const key of [...TPS('durable'), ...TPS('fast')]) expect(run.value(key), key).toBe('unmeasured');
+        expect(run.calls.filter((call) => call.startsWith('psql-file '))).toEqual([]);
+        expect(run.stderr).toContain('could not create the gate_diag table');
     });
 
     it('an unreachable server is unmeasured', async () => {

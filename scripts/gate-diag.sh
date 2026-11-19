@@ -10,8 +10,8 @@
 # require and vitest measures there as `*_tmp`, so the workspace filesystem's share can be split out.
 #
 # With a URL it also measures postgres, durable first, then runs scripts/gate-pg-fast.sh (the gate's own
-# tuning) and measures again. Never point it at a server holding data you keep: it drops and recreates
-# the pgbench_* tables, and it turns durability off server-wide.
+# tuning) and measures again, with psql alone. Never point it at a server holding data you keep: it
+# drops and recreates the table gate_diag, and it turns durability off server-wide.
 set -u
 
 here=$(dirname "$0")
@@ -152,9 +152,12 @@ if [ -n "${GATE_DIAG_TMP_COPY:-}" ]; then
 fi
 
 # --- postgres -----------------------------------------------------------------------------------
-PG_KEYS='pg_version pg_data_directory pg_mounts pg_settings_durable pgbench_durable_init_seconds
-pgbench_durable_select_c1_tps pgbench_durable_rw_c4_tps pg_settings_fast pgbench_fast_init_seconds
-pgbench_fast_select_c1_tps pgbench_fast_rw_c4_tps'
+# psql only, since the gate image ships no pgbench: one disposable table, ROWS single-row autocommit
+# INSERTs from one session, ROWS primary-key SELECTs from one session, then ROWS more INSERTs split over
+# four concurrent sessions. GATE_DIAG_PG_ROWS shrinks it for the script's own tests only: a sample taken
+# with another count is not comparable.
+PG_KEYS='pg_version pg_data_directory pg_mounts pg_settings_durable pg_durable_write_c1_tps pg_durable_read_c1_tps
+pg_durable_write_c4_tps pg_settings_fast pg_fast_write_c1_tps pg_fast_read_c1_tps pg_fast_write_c4_tps'
 if [ -z "$url" ]; then
     for key in $PG_KEYS; do emit "$key" unmeasured; done
     exit "$failed"
@@ -174,22 +177,38 @@ else
     need pg_mounts ''
 fi
 
-pgbench=$(command -v pgbench) || pgbench=$(ls /usr/lib/postgresql/*/bin/pgbench 2>/dev/null | tail -n 1)
-[ -n "$pgbench" ] || echo 'no pgbench on PATH or under /usr/lib/postgresql' >&2
+rows=${GATE_DIAG_PG_ROWS:-2000}
+case $rows in '' | *[!0-9]*) rows=2000 ;; esac
+quarter=$((rows / 4))
+sql=$(mktemp -d) || exit 1
+trap 'rm -f "$out"; rm -rf "$sql"' EXIT
+# ids <first> <last> <statement with %d for the id>: one statement per id.
+ids() { awk -v a="$1" -v b="$2" -v f="$3" 'BEGIN { for (i = a; i <= b; i++) printf f "\n", i }'; }
+ids 1 "$rows" "insert into gate_diag values (%d, 'v');" >"$sql/write_c1.sql"
+ids 1 "$rows" 'select v from gate_diag where id = %d;' >"$sql/read_c1.sql"
+for k in 0 1 2 3; do
+    ids $((rows + 1 + k * quarter)) $((rows + (k + 1) * quarter)) "insert into gate_diag values (%d, 'v');" >"$sql/write_c4_$k.sql"
+done
+PSQL="psql '$url' -Xq -v ON_ERROR_STOP=1"
 
-# tps <seconds> <pgbench arguments>: the tps pgbench reports without the initial connection time.
-tps() {
-    [ -n "$pgbench" ] || return 0
-    timed "$1" "$out" "'$pgbench' $2 '$url'" >/dev/null || return 0
-    sed -n 's/^tps = \([0-9.]*\) (without initial connection time).*/\1/p' "$out" | tail -n 1
-}
-# bench <set>: initialise the pgbench tables, then a read-only single client and a read-write four.
+# rate <statements> <seconds>: statements per second; nothing for an elapsed time that is not positive.
+rate() { [ -n "$2" ] && awk -v n="$1" -v s="$2" 'BEGIN { if (s > 0) printf "%.1f", n / s }'; }
+# bench <set>: the three workloads on a fresh table, dropped afterwards. A table that could not be
+# created leaves the whole set unmeasured.
 bench() {
-    init=
-    [ -z "$pgbench" ] || init=$(secs 300 "'$pgbench' -i -q '$url'")
-    need "pgbench_$1_init_seconds" "$init"
-    need "pgbench_$1_select_c1_tps" "$(tps 60 '-S -c1 -T10')"
-    need "pgbench_$1_rw_c4_tps" "$(tps 60 '-c4 -T10')"
+    if ! q 'drop table if exists gate_diag; create table gate_diag (id int primary key, v text)' >/dev/null; then
+        echo "could not create the gate_diag table: the $1 set is unmeasured" >&2
+        for w in write_c1 read_c1 write_c4; do need "pg_$1_${w}_tps" ''; done
+        return 0
+    fi
+    need "pg_$1_write_c1_tps" "$(rate "$rows" "$(secs 300 "$PSQL -f '$sql/write_c1.sql'")")"
+    need "pg_$1_read_c1_tps" "$(rate "$rows" "$(secs 300 "$PSQL -f '$sql/read_c1.sql' -o /dev/null")")"
+    # Four sessions at once; the clock stops when the last one ends, and any failed session fails it.
+    c4=
+    for k in 0 1 2 3; do c4="$c4$PSQL -f '$sql/write_c4_$k.sql' & p$k=\$!; "; done
+    c4="${c4}r=0; wait \$p0 || r=1; wait \$p1 || r=1; wait \$p2 || r=1; wait \$p3 || r=1; exit \$r"
+    need "pg_$1_write_c4_tps" "$(rate $((quarter * 4)) "$(secs 300 "$c4")")"
+    q 'drop table if exists gate_diag' >/dev/null || echo 'could not drop the gate_diag table' >&2
 }
 
 need pg_settings_durable "$(q "$SETTINGS")"
@@ -208,6 +227,6 @@ if [ "$settings" = "$FAST" ]; then
     bench fast
 else
     echo "durability is still on after gate-pg-fast.sh ($settings): the fast set is unmeasured" >&2
-    for key in pgbench_fast_init_seconds pgbench_fast_select_c1_tps pgbench_fast_rw_c4_tps; do need "$key" ''; done
+    for key in pg_fast_write_c1_tps pg_fast_read_c1_tps pg_fast_write_c4_tps; do need "$key" ''; done
 fi
 exit "$failed"
