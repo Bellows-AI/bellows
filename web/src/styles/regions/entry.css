@@ -797,6 +797,7 @@
         .setup-tool > button,
         .setup-back,
         .setup-steps a,
+        button.primary.token-new,
         .onboarding-org-summary {
             align-items: center;
             display: inline-flex;

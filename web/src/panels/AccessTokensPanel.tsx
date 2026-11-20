@@ -55,7 +55,7 @@ function TokenList({
         return (
             <div className="token-empty">
                 <p className="muted">{emptyText}</p>
-                <button type="button" className="primary" onClick={onNew}>
+                <button type="button" className="primary token-new" onClick={onNew}>
                     New token
                 </button>
             </div>
@@ -203,7 +203,7 @@ export function AccessTokensPanel({
                 <h2 ref={headingRef} tabIndex={-1}>
                     {title}
                 </h2>
-                <button ref={newRef} type="button" className="primary" onClick={() => setCreating(true)}>
+                <button ref={newRef} type="button" className="primary token-new" onClick={() => setCreating(true)}>
                     New token
                 </button>
             </div>
