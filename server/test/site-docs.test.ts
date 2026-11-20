@@ -141,9 +141,10 @@ describe('site/self-host/monitoring.mdx', () => {
             unknown
         >;
         const block = values.observability;
-        expect(block && typeof block === 'object' && !Array.isArray(block), 'values.yaml has no observability map').toBe(
-            true
-        );
+        expect(
+            block && typeof block === 'object' && !Array.isArray(block),
+            'values.yaml has no observability map'
+        ).toBe(true);
         const keys = keyPaths(block as Record<string, unknown>, 'observability', 'resources');
         expect(keys.length).toBeGreaterThanOrEqual(8);
         expect(keys.filter((key) => !documented(key))).toEqual([]);
@@ -159,6 +160,18 @@ describe('site/self-host/monitoring.mdx', () => {
             ...rules.map((f) => `observability/alerts/${f}`),
         ];
         expect(paths.filter((path) => !documented(path))).toEqual([]);
+    });
+
+    // The Kubernetes guide installs release `bellows` into namespace `bellows`; a copied command must hit it.
+    it('its helm and kubectl commands target the release and namespace the Kubernetes guide installs', () => {
+        const commands = page.replace(/\\\n/g, ' ').match(/^\s*(helm|kubectl) .*$/gm) ?? [];
+        expect(commands.length).toBeGreaterThan(0);
+        const wrong = commands.filter(
+            (c) =>
+                !/(-n|--namespace) bellows\b/.test(c) ||
+                (c.includes('helm') && !/helm upgrade bellows oci:\/\//.test(c))
+        );
+        expect(wrong).toEqual([]);
     });
 
     it('kubernetes.mdx carries no Prometheus scrape instruction', () => {

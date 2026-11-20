@@ -27,10 +27,11 @@ The chart runs an ops collector between your pods and your backend. Set these va
 | `observability.resources` | 50m CPU and 128Mi request, 512Mi limit | Kubernetes resource requests and limits for the ops collector. |
 
 ```bash
-kubectl create secret generic otlp-headers \
+kubectl -n bellows create secret generic otlp-headers \
   --from-literal=headers='{"Authorization":"Basic …"}'
 
-helm upgrade --install factory <chart> --reuse-values \
+helm upgrade bellows oci://ghcr.io/<owner>/charts/factory \
+  --version 1.2.4 --namespace bellows --reuse-values \
   --set observability.enabled=true \
   --set observability.endpoint=https://otlp.example.com \
   --set observability.headersSecret.name=otlp-headers \
