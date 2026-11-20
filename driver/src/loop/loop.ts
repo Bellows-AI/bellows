@@ -12,6 +12,7 @@ import { withBoardRetry } from '../board/board-retry.js';
 import { down } from './loop-attempt.js';
 import { handOver } from './loop-handover.js';
 import { describeError } from '../log.js';
+import { ATTR_EXECUTOR, ATTR_HANDOVER_ATTEMPTS, withClaimSpan, withLifecycleSpan } from '../lifecycle-span.js';
 
 export interface Loop {
     /**
@@ -164,9 +165,13 @@ export function handoverOf(rt: LoopRuntime, pending: () => Promise<unknown>[] = 
                 ({ state }) =>
                     state.phase !== 'ended' && state.phase !== 'concluding' && !state.endStarted && !down(state)
             );
-            for (const { state } of handing) handOver(state, reason);
-            // `start()` stops waiting only once every handed-over attempt's end has settled.
-            await Promise.all(handing.map(({ over }) => over));
+            // Driver-wide: each handed-over attempt's own `settle` span names its job.
+            const attributes = { [ATTR_EXECUTOR]: rt.config.executor, [ATTR_HANDOVER_ATTEMPTS]: handing.length };
+            await withLifecycleSpan('handover', attributes, async () => {
+                for (const { state } of handing) handOver(state, reason);
+                // `start()` stops waiting only once every handed-over attempt's end has settled.
+                await Promise.all(handing.map(({ over }) => over));
+            });
             rt.log(`handover: ${handing.length} attempt(s) settled in ${Date.now() - began} ms`);
             landed();
         },
@@ -337,7 +342,9 @@ export function createLoop({
         while (running) {
             let reclaim: Reclaim | null;
             try {
-                reclaim = await board.claimReclaim(config.worker);
+                reclaim = await withClaimSpan('reclaim.claim', config.executor, () =>
+                    board.claimReclaim(config.worker)
+                );
             } catch (e) {
                 log(`reclaim claim failed, retrying: ${describeError(e)}`);
                 await sleep(config.pollMs);
@@ -363,7 +370,8 @@ export function createLoop({
     async function claimAndTrack(): Promise<void> {
         let job: BoardJob | null;
         try {
-            job = await board.claim(config.worker);
+            // The span wraps only the board call: `track` below runs outside it, so no trace spans the attempt.
+            job = await withClaimSpan('claim', config.executor, () => board.claim(config.worker));
         } catch (e) {
             log(`claim failed, retrying: ${describeError(e)}`);
             await sleep(config.pollMs);

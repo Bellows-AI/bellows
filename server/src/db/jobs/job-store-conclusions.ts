@@ -13,6 +13,7 @@ import { stagedUnderLease } from './job-store-staged.js';
 import type { JobStore, JobStoreContext } from './job-store-types.js';
 import { type CompleteOutcome, type CompleteResult, completeInTx } from './job-store-worker.js';
 import { logger } from '../../log.js';
+import { createTally, type OutcomeTally } from './job-store-outcome-tally.js';
 
 /** The staged conclusion an agent leaves under its lease. */
 export interface JobConclusionStore {
@@ -83,7 +84,8 @@ interface CommitStop {
 export async function commitStagedForStop(
     ctx: JobStoreContext,
     tx: TransactionSql,
-    stop: { id: string; stoppedBy: string | null }
+    stop: { id: string; stoppedBy: string | null },
+    tally: OutcomeTally
 ): Promise<void> {
     const [row] = await tx<{ lease_token: string }[]>`
         select lease_token from job
@@ -92,10 +94,14 @@ export async function commitStagedForStop(
     `;
     if (!row) return;
     // A conclusion the board cannot commit rolls back alone and stays guarded: the Stop then finds
-    // nothing it may settle, and answers the row's status as the conflict.
+    // nothing it may settle, and answers the row's status as the conflict — and counts nothing.
+    const committed = createTally();
     await tx
-        .savepoint((sp) => commitOne(ctx, sp, { id: stop.id, leaseToken: row.lease_token, stop }))
-        .catch((e: Error) => commitFailed(stop.id, e));
+        .savepoint((sp) => commitOne(ctx, sp, { id: stop.id, leaseToken: row.lease_token, stop }, committed))
+        .then(
+            () => tally.merge(committed),
+            (e: Error) => commitFailed(stop.id, e)
+        );
 }
 
 /**
@@ -123,16 +129,21 @@ export async function commitStagedConclusions(ctx: JobStoreContext): Promise<voi
     `;
     for (const row of due) {
         // Its own transaction, so one that cannot commit rolls back alone and blocks no other row.
+        const tally = createTally();
         await sql
-            .begin((tx) => commitOne(ctx, tx, { id: row.id, leaseToken: row.lease_token }))
-            .catch((e: Error) => commitFailed(row.id, e));
+            .begin((tx) => commitOne(ctx, tx, { id: row.id, leaseToken: row.lease_token }, tally))
+            .then(
+                () => tally.report(ctx.metrics),
+                (e: Error) => commitFailed(row.id, e)
+            );
     }
 }
 
 async function commitOne(
     ctx: JobStoreContext,
     tx: TransactionSql,
-    attempt: { id: string; leaseToken: string; stop?: CommitStop }
+    attempt: { id: string; leaseToken: string; stop?: CommitStop },
+    tally: OutcomeTally
 ): Promise<CompleteOutcome | null> {
     const { orgId } = ctx;
     const { id, leaseToken, stop } = attempt;
@@ -148,9 +159,10 @@ async function commitOne(
         returning id
     `;
     if (!taken[0]) return null;
+    tally.interrupted('staged_commit', false);
     const [staged] = await tx<{ result: CompleteResult; policy: EvidencePolicy | null }[]>`
         select result, policy from job_conclusion
         where org_id = ${orgId} and job_id = ${id} and lease_token = ${leaseToken}
     `;
-    return completeInTx(tx, ctx, { id, leaseToken, result: staged!.result, staged: { policy: staged!.policy } });
+    return completeInTx(tx, ctx, { id, leaseToken, result: staged!.result, staged: { policy: staged!.policy } }, tally);
 }

@@ -36,6 +36,7 @@ import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclu
 import type { GateRunNote } from '../timeout-note.js';
 import {
     faultHalt,
+    gateLossReason,
     syncFailureHalt,
     handBackFence,
     handOverConflict,
@@ -58,6 +59,7 @@ import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 import { stepLost } from '../step-control.js';
 import { restartDeadServices, servicesLost, startServicesStep } from './loop-services.js';
 import { servicePlanRefusal } from '../services.js';
+import { attemptAttributes, withLifecycleSpan } from '../lifecycle-span.js';
 import { DaemonLost } from '../dockerd-loss.js';
 import { describeError } from '../log.js';
 
@@ -212,10 +214,6 @@ async function recordSetup(ctx: AttemptCtx): Promise<void> {
     // A chain of its own: a setup write the board refused must not silence the later phases' records.
     await (await openChain(ctx)).record('setup', null, { failure: job.setupFailure ?? null });
 }
-
-/** Why a gate or setup whose supervisor was lost interrupts its attempt. */
-const gateLossReason = (e: unknown): string =>
-    `infrastructure loss: the task supervisor running the gates was lost (${(e as Error).message})`;
 
 /** One setup step: `null` to continue, or the conclusion that ends the attempt here. */
 type SetupStep = (ctx: AttemptCtx) => Promise<SetupConclusion | AdoptedRecord | null>;
@@ -568,7 +566,7 @@ async function gatesOrLoss(
     if (!gateSession)
         return { failure: null, deadServices: [], gatesSkipped: null, recoveredServices: [], reports: [] };
     try {
-        return await runGatesPhase(ctx, gateSession, outcome);
+        return await withLifecycleSpan('gate', attemptAttributes(ctx), () => runGatesPhase(ctx, gateSession, outcome));
     } catch (e) {
         if (!servicesLost(e) && !(e instanceof DaemonLost)) throw e;
         const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
@@ -726,7 +724,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     try {
         log(`job ${job.id}: attempt ${job.attempts} ${sessionNote(session)}`);
 
-        const gateSession = await runPhases(ctx);
+        const gateSession = await withLifecycleSpan('provision', attemptAttributes(ctx), () => runPhases(ctx));
         if (gateSession === STOOD_DOWN) return;
         state.gateToken = gateSession?.token ?? null;
         // A stand-down kills the runner, but not a gate its agent asked for: the token dies and

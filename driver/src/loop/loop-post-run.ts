@@ -16,6 +16,7 @@ import { publishModeOf, publishOptionsOf } from './loop-verdict.js';
 import { publishWithRetry } from './loop-publish-retry.js';
 import { type AttemptCtx, STOOD_DOWN } from './loop-types.js';
 import type { PublishOptions, PublishResult } from '../publish/publish.js';
+import { attemptAttributes, withLifecycleSpan } from '../lifecycle-span.js';
 
 /** The post-helpers' failure, or `STOOD_DOWN` once they ended the attempt: it is down, or a lost supervisor interrupted it. */
 async function endingPostHelpers(
@@ -119,7 +120,9 @@ export async function runPostHelpersAndPublish(
     if (!decision.ok) {
         return { helperFailure, published: null, policyRefusal: mode === 'draft' ? null : decision.reason };
     }
-    const published = await publishPhase(ctx, phases, publishOptionsOf(mode, decision.revision), decision.revision);
+    const published = await withLifecycleSpan('publish', attemptAttributes(ctx), () =>
+        publishPhase(ctx, phases, publishOptionsOf(mode, decision.revision), decision.revision)
+    );
     if (published === STOOD_DOWN) return null;
     return { helperFailure, published, policyRefusal: null };
 }

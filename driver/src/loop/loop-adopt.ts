@@ -7,15 +7,21 @@ import { awaitFirstContact, controlTokenOf } from '../supervised-steps.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../supervisor-contract.js';
 import { runnerClassRefusal } from '../runner-classes.js';
 import { describeError } from '../log.js';
+import { attemptAttributes, withLifecycleSpan } from '../lifecycle-span.js';
 
 /**
  * Adopts the finished runner an earlier claim left behind — before the sync, which
  * would rewrite the tree that run left. A read that fails is no verdict: the attempt is left to its
  * lease, and the next claim adopts what survived. The earlier attempt is recorded as an interruption
  * under this claim's lease, best-effort (`recordAdopted`): the step answers it as data and
- * performs nothing, and the verdict does not wait on it.
+ * performs nothing, and the verdict does not wait on it. One `adopt` span covers it, a take-over and its retry
+ * included.
  */
-export async function adoptStep(
+export function adoptStep(ctx: AttemptCtx): Promise<SetupConclusion | AdoptedRecord | null> {
+    return withLifecycleSpan('adopt', attemptAttributes(ctx), () => adopt(ctx));
+}
+
+async function adopt(
     ctx: AttemptCtx,
     { retaken = false }: { retaken?: boolean } = {}
 ): Promise<SetupConclusion | AdoptedRecord | null> {
@@ -126,7 +132,7 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
             run.forget();
             delete ctx.takeover;
             state.groupDisposition = 'end';
-            return adoptStep(ctx, { retaken: true });
+            return adopt(ctx, { retaken: true });
         }
         return leave(`could not reach the running agent: ${describeError(e)}`);
     }

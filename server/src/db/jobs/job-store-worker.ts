@@ -13,6 +13,7 @@ import { planLimits, type StopCause } from '../plan-limits.js';
 import type { EvidencePolicy } from '../evidence-policy.js';
 import type { RequireConnectionResult } from './job-store-connections.js';
 import { enforceCompletionPolicy } from './job-store-evidence.js';
+import { createTally, type OutcomeTally } from './job-store-outcome-tally.js';
 import { recordReportedSession, type SessionEvidence } from './job-store-provenance.js';
 import { answeredQuestionsOf } from './job-store-questions.js';
 import { fingerprintOf, missedSettle, recordReceipt, type SettleKey } from './job-store-receipts.js';
@@ -377,7 +378,10 @@ export async function completeJob(
     // One transaction, because the terminality answer must describe the thread AS THE VERDICT
     // lands: the walk runs on the same connection, where the just-updated row's new status is
     // visible and no follow-up inserted after the commit can be.
-    return ctx.sql.begin((tx) => completeInTx(tx, ctx, { id, leaseToken, result }));
+    const tally = createTally();
+    const outcome = await ctx.sql.begin((tx) => completeInTx(tx, ctx, { id, leaseToken, result }, tally));
+    tally.report(ctx.metrics);
+    return outcome;
 }
 
 /** Whether the attempt staged a conclusion other than this request under its lease. */
@@ -439,7 +443,8 @@ function verdictPatchOf(tx: TransactionSql, result: CompleteResult) {
 export async function completeInTx(
     tx: TransactionSql,
     ctx: JobStoreContext,
-    attempt: { id: string; leaseToken: string; result: CompleteResult; staged?: { policy: EvidencePolicy | null } }
+    attempt: { id: string; leaseToken: string; result: CompleteResult; staged?: { policy: EvidencePolicy | null } },
+    tally: OutcomeTally
 ): Promise<CompleteOutcome> {
     const { orgId, wallTick } = ctx;
     const { id, leaseToken, result, staged } = attempt;
@@ -512,7 +517,7 @@ export async function completeInTx(
     // other report from a worker whose lease was concluded or reclaimed is refused, not
     // merged: the job is someone else's now, and the two runs did different work.
     if (!rows[0]) return replayComplete(tx, key);
-    return settleVerdict(tx, ctx, { row: rows[0], key, result, staged });
+    return settleVerdict(tx, ctx, { row: rows[0], key, result, staged }, tally);
 }
 
 /** The verdict's settle row: the columns the walk after the update reads, off the row it landed on. */
@@ -539,7 +544,8 @@ async function settleVerdict(
         key: SettleKey;
         result: CompleteResult;
         staged: { policy: EvidencePolicy | null } | undefined;
-    }
+    },
+    tally: OutcomeTally
 ): Promise<CompleteOutcome> {
     const { orgId, wallTick, prs } = ctx;
     const { row, key, result, staged } = landed;
@@ -586,6 +592,8 @@ async function settleVerdict(
         },
         { status: status as JobOutcome, output, failureKind: failureKindPatch }
     );
+    // The verdict as it landed: a success the policy refused counts as the failed `policy` one.
+    tally.settled(verdict.status, verdict.failureKind ?? 'none');
 
     // A Stop the verdict outran is honored: the thread stays where the Stop left it.
     if (root && !stopPending) {

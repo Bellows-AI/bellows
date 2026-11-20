@@ -18,6 +18,9 @@ export const METER_NAME = 'bellows-driver';
 
 export type Client = 'runner' | 'reaper';
 
+/** A job claim poll: a job, a 204, a claim that failed validation, or a call that threw. */
+export type ClaimPollOutcome = 'claimed' | 'idle' | 'malformed' | 'error';
+
 export interface DriverMetrics {
     /** The board client's `fetch`, observing each call by endpoint pattern and status class. */
     fetch: typeof globalThis.fetch;
@@ -25,6 +28,8 @@ export interface DriverMetrics {
     docker(exec: ExecDocker, client: Client): ExecDocker;
     /** A claim the board delivered that failed validation; the label is the first offending field. */
     malformedClaim(fields: readonly string[]): void;
+    /** One job claim poll by its outcome; an idle poll is counted here and never traced. */
+    claimPoll(outcome: ClaimPollOutcome): void;
     step(kind: StepKind, outcome: StepOutcome, seconds: number): void;
     reaper: ReaperObserver;
 }
@@ -199,6 +204,9 @@ function instruments(meter: Meter) {
         malformedClaim: meter.createCounter('bellows.driver.claims.malformed', {
             description: 'Claims the board delivered that failed validation and were left to their lease.',
         }),
+        claimPolls: meter.createCounter('bellows.driver.claim.polls', {
+            description: 'Job claim polls by outcome; idle polls are counted, never traced.',
+        }),
         volumeExport: meter.createCounter('bellows.driver.reaper.volume_export', {
             description:
                 'Reaper re-exports of a not-whole thread before its volume is deleted; lost is a volume deleted after its last attempt failed.',
@@ -274,6 +282,7 @@ export function createDriverMetrics(deps: {
             );
         },
         malformedClaim: (fields) => m.malformedClaim.add(1, { field: fields[0] ?? OTHER }),
+        claimPoll: (outcome) => m.claimPolls.add(1, { outcome }),
         step: (kind, outcome, elapsed) => m.step.record(elapsed, { kind, outcome }),
         reaper: {
             sweep: (outcome, elapsed) => m.sweep.record(elapsed, { outcome }),

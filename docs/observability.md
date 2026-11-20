@@ -16,6 +16,11 @@ runners' executors emit, and the metrics instruments, are in [telemetry.md](tele
 | Driver log content: no interpolated error message, tool output, token, repository or branch in any log call | every log seam in `driver/src` | `driver/test/log.content.test.ts` |
 | Driver exit: the SDK is flushed (raced against 2 s) on every normal drain end and on a handover | `driver/src/shutdown.ts`, `driver/src/index.ts` | `driver/test/shutdown.test.ts` |
 | Postgres spans: the verb only | `server/src/pg-trace.ts` | `server/test/pg-trace.test.ts` |
+| Idle-trace deferral: a trace rooted at a SERVER or `bellows.poll` span is held until its root ends, dropped when the root is `bellows.poll.idle`; bounded 256 spans / 1,024 traces; flush forwards | `server/src/otel-idle.ts`, `driver/src/otel-idle.ts` | `server/test/otel-idle.test.ts` |
+| Driver claim span (only a returned job is exported; idle and reclaim 204s are dropped) and its `traceparent` to the board | `driver/src/lifecycle-span.ts`, `driver/src/board/board.ts`, `driver/src/reclaim-calls.ts` | `driver/test/otel.idle-poll.test.ts` |
+| Driver lifecycle spans, each its own trace root with `bellows.job.id`, `bellows.claim.seq`, `bellows.executor`: provision, adopt, gate, publish, settle, reap.sweep, reap (no claim seq), handover | `driver/src/lifecycle-span.ts`, `driver/src/loop/`, `driver/src/reaper.ts` | `driver/test/otel.steps.test.ts`, `driver/test/otel.scan.test.ts` |
+| Board claim spans (`claim.sweep`, `claim.acquire`, `claim.lock_wait`), idle claim marking, `background.pass` root spans | `server/src/board-span.ts`, `server/src/db/jobs/job-store-claim.ts`, `server/src/metrics.ts` | `server/test-db/otel.claim.test.ts`, `server/test-db/otel.trace-join.test.ts` |
+| Outcome counters `bellows.job.interruptions`, `bellows.job.settled`, `bellows.driver.claim.polls`; tallied in the transaction, reported after commit. Not counted: stops, suspend parks, cancelled continuations, merge closes | `server/src/db/jobs/job-store-outcome-tally.ts`, `driver/src/driver-metrics.ts` | `server/test-db/job-store.outcome-metrics.test.ts`, `server/test-db/job-store.claim-metrics.test.ts` |
 | Ops collector: board and driver export to it, tail-sampled, forwarded to any OTLP backend; ingress from board and driver pods only | `charts/factory/files/ops-collector.yaml`, `charts/factory/templates/ops-collector.yaml`, `charts/factory/templates/ops-collector-networkpolicy.yaml`, `docker-compose.yml` | `driver/test/ops-collector.test.ts`, `driver/test/compose.test.ts`, `scripts/test-k8s.sh` |
 
 ## Invariants
@@ -37,3 +42,6 @@ runners' executors emit, and the metrics instruments, are in [telemetry.md](tele
 - **The driver's log lines carry closed words only**: an error as `describeError(e)`, an object by kind (never its name, which carries ids and lease tokens), a cluster refusal as verb, resource kind, status and reason word. The board-bound reason or output text is separate and keeps its detail.
 - **The ops collector never exports to the board's `/api/otlp`**: its one exporter is the operator's backend.
 - **Runner pods never reach the ops collector**: its ingress policy admits board and driver pods only, and compose keeps it on the `ops` network runners never join. Compose has no lane that boots the `observability` profile; its proof is static.
+- **An idle poll exports no span on either side**: it is counted, and the deferring processor drops its whole trace.
+- **No span covers a task**: find one by `bellows.job.id`. A step span is its own trace root; board and driver spans join by `traceparent`.
+- **No span attribute, name or status carries a repository, branch, prompt, token or email**, and no span records an exception.

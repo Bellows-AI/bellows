@@ -14,6 +14,8 @@ const ALLOWED: Record<string, string[]> = {
     'bellows.claim.lock_wait': [],
     'bellows.claim.acquire': [],
     'bellows.claim.sweep': [],
+    'bellows.job.interruptions': ['cause', 'refunded'],
+    'bellows.job.settled': ['outcome', 'cause'],
     'bellows.background.pass.duration': ['loop', 'outcome'],
     'bellows.mcp.tool.duration': ['tool', 'outcome'],
     'bellows.metrics.read.failures': ['source'],
@@ -39,6 +41,8 @@ describe('board metric attributes', () => {
         metrics.claim.lockWait(0.1);
         metrics.claim.acquire(0.1);
         metrics.claim.sweep(0.1);
+        metrics.claim.interrupted('lease_expired', true);
+        metrics.claim.settled('dead', 'poison_budget');
         await metrics.timedPass('sweep', async () => undefined);
         const failing = createServerMetrics({
             admission: {},

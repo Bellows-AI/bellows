@@ -14,6 +14,7 @@ const ALLOWED: Record<string, string[]> = {
     'bellows.driver.reaper.sweep.duration': ['outcome'],
     'bellows.driver.reaper.scanned': ['what'],
     'bellows.driver.claims.malformed': ['field'],
+    'bellows.driver.claim.polls': ['outcome'],
     'bellows.driver.reaper.volume_export': ['result'],
 };
 const FORBIDDEN_NAME = /(^|[._])(org|repo|job|lease|user|pod|session|token)([._]|$)/;
@@ -34,6 +35,7 @@ describe('driver metric attributes', () => {
         metrics.reaper.sweep('ok', 1);
         metrics.reaper.scanned('groups', 1);
         metrics.malformedClaim(['env']);
+        metrics.claimPoll('idle');
         metrics.reaper.volumeExport?.('drained');
 
         const collected = await harness.collect();

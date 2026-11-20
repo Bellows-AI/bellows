@@ -68,6 +68,7 @@ const board = createBoard({
         log.driver.error(`the board delivered a malformed claim (${fields.join(', ')}); left to its lease`);
         metrics.malformedClaim(fields);
     },
+    onPoll: metrics.claimPoll,
 });
 // EXECUTOR picks the platform runners run on. `inClusterRequest()` is fatal here rather than on
 // the first claim: a driver asked for kubernetes outside a cluster should say so at startup.
@@ -139,6 +140,7 @@ const reaper = createReaper({
                   boardIdentity(config),
                   { config, ...exporting }
               ),
+    executor: config.executor,
     exportAttempts: config.taskVolumeExportAttempts,
     intervalMs: config.reapIntervalMs,
     graceMs: config.reapGraceMs,

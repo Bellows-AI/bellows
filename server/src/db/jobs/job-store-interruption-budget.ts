@@ -1,5 +1,6 @@
 /** The interruption budgets; `job-store.ts` re-exports them. */
 import type { Fragment, Sql, TransactionSql } from 'postgres';
+import type { RetirementCause } from './job-store-outcome-tally.js';
 
 /**
  * How many attempts the infrastructure may interrupt before an interruption is refused (issue
@@ -52,9 +53,22 @@ export const nodeLossSpent = (q: Sql | TransactionSql): Fragment => q`(
 /** Whether the row is out of interruptions of either kind. */
 export const interruptionsSpent = (q: Sql | TransactionSql): Fragment => q`(${poisonSpent(q)} or ${nodeLossSpent(q)})`;
 
+const POISON_RULE = 'poison budget';
+const NODE_LOSS_RULE = 'node-loss bound';
+export type SpentRule = typeof POISON_RULE | typeof NODE_LOSS_RULE;
+
 /** The rule a row out of interruptions ran into, for the retirement's log line; null while neither is spent. */
 export const spentRule = (q: Sql | TransactionSql): Fragment =>
-    q`(case when ${poisonSpent(q)} then 'poison budget' when ${nodeLossSpent(q)} then 'node-loss bound' end)`;
+    q`(case when ${poisonSpent(q)} then ${POISON_RULE}::text when ${nodeLossSpent(q)} then ${NODE_LOSS_RULE}::text end)`;
+
+const RETIREMENT_CAUSE: Record<SpentRule, RetirementCause> = {
+    [POISON_RULE]: 'poison_budget',
+    [NODE_LOSS_RULE]: 'node_loss_bound',
+};
+
+/** A dead retirement's rule in the settle counter's vocabulary: null, neither rule named, is the interruption bound. */
+export const retirementCause = (rule: SpentRule | null): RetirementCause =>
+    rule === null ? 'interruption_bound' : RETIREMENT_CAUSE[rule];
 
 /**
  * Whether an interrupt may still be recorded. A blocked, requirement or org-suspended release spends no budget and is accepted

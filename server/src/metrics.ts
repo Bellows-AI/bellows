@@ -8,6 +8,7 @@
 
 import { metrics, type Attributes, type Histogram, type Meter } from '@opentelemetry/api';
 import type { AdmissionBudgets, AdmissionOccupancy, ClaimObserver } from './db/jobs/job-store-admission.js';
+import { BOARD_SCOPE, inBoardSpan } from './board-span.js';
 import { secondsSince } from './timing.js';
 
 export type { AdmissionOccupancy } from './db/jobs/job-store-admission.js';
@@ -17,7 +18,9 @@ export type ClaimPollOutcome = 'claimed' | 'idle' | 'error';
 type PassOutcome = 'ok' | 'error';
 
 /** The Meter's instrumentation scope. */
-export const METER_NAME = 'bellows-board';
+export const METER_NAME = BOARD_SCOPE;
+
+const ATTR_PASS_OUTCOME = 'bellows.pass.outcome';
 
 const SECONDS = 's';
 
@@ -158,6 +161,12 @@ export function createServerMetrics(deps: ServerMetricsDeps): ServerMetrics {
         'The settle passes a claim runs before it looks for a candidate.',
         DB_BUCKETS
     );
+    const interruptions = meter.createCounter('bellows.job.interruptions', {
+        description: 'Interruptions recorded on an attempt, by cause and whether the attempt was refunded.',
+    });
+    const settled = meter.createCounter('bellows.job.settled', {
+        description: 'Attempts settled by a verdict or a dead retirement, by outcome and failure kind or rule.',
+    });
     const passes = histogram('bellows.background.pass.duration', 'One pass of a board background loop.', PASS_BUCKETS);
     const mcpCalls = histogram(
         'bellows.mcp.tool.duration',
@@ -183,7 +192,23 @@ export function createServerMetrics(deps: ServerMetricsDeps): ServerMetrics {
             lockWait: (seconds) => lockWait.record(seconds),
             acquire: (seconds) => acquire.record(seconds),
             sweep: (seconds) => sweep.record(seconds),
+            interrupted: (cause, refunded) => interruptions.add(1, { cause, refunded }),
+            settled: (outcome, cause) => settled.add(1, { outcome, cause }),
         },
-        timedPass: (loop, fn) => timed(passes, (outcome) => ({ loop, outcome }), fn),
+        // Each pass is its own trace root, whatever span its loop was started under.
+        timedPass: (loop, fn) =>
+            inBoardSpan(
+                'background.pass',
+                (span) =>
+                    timed(
+                        passes,
+                        (outcome) => {
+                            span.setAttribute(ATTR_PASS_OUTCOME, outcome);
+                            return { loop, outcome };
+                        },
+                        fn
+                    ),
+                { root: true, attributes: { loop } }
+            ),
     };
 }

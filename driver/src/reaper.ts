@@ -1,6 +1,16 @@
 import { LEASE_BATCH_MAX, type Board, type BoardLease, type BoardThreadFacts, UUID_SHAPE } from './board/board.js';
 import { describeError, logger } from './log.js';
 import { secondsSince } from './timing.js';
+import type { DriverConfig } from './config.js';
+import {
+    ATTR_EXECUTOR,
+    ATTR_JOB_ID,
+    ATTR_REAP_OUTCOME,
+    ATTR_REAP_VERDICT,
+    annotateActiveSpan,
+    withChildSpan,
+    withLifecycleSpan,
+} from './lifecycle-span.js';
 import {
     createVolumeExportGate,
     isWhole,
@@ -271,6 +281,7 @@ const reapOne = async (
         lease: BoardLease | undefined;
         graceMs: number;
         nowMs: number;
+        executor: DriverConfig['executor'] | undefined;
         log: (message: string) => void;
         onUnproven: () => void;
     }
@@ -279,10 +290,18 @@ const reapOne = async (
     if (verdict === null) return;
     // A live job's next claim adopts it, or its fence sweeps it: never deleted from a scan.
     if (verdict === 'superseded' && group.objects.some((object) => object.unread || object.runner)) return;
-    const removed = settleReap(await arm.reap(group, verdict), `job ${group.jobId}`, ctx);
-    for (const line of removed) {
-        ctx.log(`reaper: job ${group.jobId} (${verdict}) — removed ${kindOf(line)}`);
-    }
+    // No claim sequence: a group is keyed by its lease token, a credential that is never an attribute.
+    const attributes = { [ATTR_JOB_ID]: group.jobId, [ATTR_EXECUTOR]: ctx.executor, [ATTR_REAP_VERDICT]: verdict };
+    await withChildSpan('reap', attributes, async () => {
+        const onUnproven = () => {
+            annotateActiveSpan({}, { failed: true });
+            ctx.onUnproven();
+        };
+        const removed = settleReap(await arm.reap(group, verdict), `job ${group.jobId}`, { log: ctx.log, onUnproven });
+        for (const line of removed) {
+            ctx.log(`reaper: job ${group.jobId} (${verdict}) — removed ${kindOf(line)}`);
+        }
+    });
 };
 
 /** Deletes every generation of one thread, logging a line per volume actually removed. */
@@ -339,6 +358,8 @@ const proveVolumes = async (
 export function createReaper(deps: {
     board: Pick<Board, 'leases'>;
     arm: ReaperArm;
+    /** Named on the sweep's spans; absent leaves the attribute off. */
+    executor?: DriverConfig['executor'];
     intervalMs: number;
     graceMs: number;
     log?: (message: string) => void;
@@ -408,6 +429,7 @@ export function createReaper(deps: {
                 lease: leases.get(group.jobId),
                 graceMs: deps.graceMs,
                 nowMs: now(),
+                executor: deps.executor,
                 log,
                 onUnproven,
             });
@@ -460,23 +482,27 @@ export function createReaper(deps: {
             : null;
     };
 
+    // A driver-wide root: it names no job; each group it reaps is a `reap` child that does.
     const sweep = async (): Promise<void> => {
         if (sweeping) return;
         sweeping = true;
         unproven = false;
         const start = performance.now();
         let outcome: 'ok' | 'aborted' | 'error' = 'ok';
-        try {
-            await sweepGroups();
-            await sweepVolumes();
-            if (unproven) outcome = 'aborted';
-        } catch (e) {
-            outcome = 'error';
-            log(`reaper: sweep failed, the next round retries: ${describeError(e)}`);
-        } finally {
-            sweeping = false;
-            deps.observe?.sweep(outcome, secondsSince(start));
-        }
+        await withLifecycleSpan('reap.sweep', { [ATTR_EXECUTOR]: deps.executor }, async () => {
+            try {
+                await sweepGroups();
+                await sweepVolumes();
+                if (unproven) outcome = 'aborted';
+            } catch (e) {
+                outcome = 'error';
+                log(`reaper: sweep failed, the next round retries: ${describeError(e)}`);
+            } finally {
+                sweeping = false;
+                deps.observe?.sweep(outcome, secondsSince(start));
+                annotateActiveSpan({ [ATTR_REAP_OUTCOME]: outcome }, { failed: outcome === 'error' });
+            }
+        });
     };
 
     return {
