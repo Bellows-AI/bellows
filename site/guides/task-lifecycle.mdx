@@ -37,13 +37,13 @@ A job whose runner vanished (for example a lost node) shows as **Failed**. Infra
 Queued -> Running -> Succeeded · Needs review -> Done
               |  \-> Needs answer -> (you answer) -> Running
               |  \-> Stopping -> Stopped · Needs review
-              \----> Failed · Needs review -> (Retry) -> Queued
+              \----> Failed · Needs review -> (retry) -> Queued
 ```
 
 - Sending the first prompt (`Enter`, or the round **Start task** arrow on a narrow screen) creates the first job. It is **Queued**, then **Running** when a runner picks it up.
 - When the agent asks a question, the task shows **Needs answer** until you answer. Your answer starts a new job.
-- **Stop** moves a running task to **Stopping**, then **Stopped · Needs review**.
-- A finished run waits for you. **Follow up**, **Retry** or **Edit** start a new job. **Mark done** closes the task. **Reopen** brings it back.
+- **Stop run** moves a running task to **Stopping**, then **Stopped · Needs review**.
+- A finished run waits for you. A follow-up, or a retry from the CLI or MCP, starts a new job. **Mark done** closes the task. `bellows job reopen` brings it back.
 - When review on the pull request is pending, the task shows **Waiting for review**. Once that wait ends, the reason is added to the label.
 
 <Tip>
@@ -97,7 +97,7 @@ A failed run shows a red pill with the reason. Open the run to read the output, 
 </AccordionGroup>
 
 <Note>
-Retry is for failures that are not your prompt's fault: runner error, cache lost, a flaky service. For gate, evidence and blocked failures, a **Follow up** with the details works better. See [Writing good tasks](/guides/writing-good-tasks).
+Retry is for failures that are not your prompt's fault: runner error, cache lost, a flaky service. For gate, evidence and blocked failures, a **Follow up** with the details works better. In the app, a failed run offers **Ask for another pass**; **Retry** is `bellows job retry` or the `retry_task` MCP tool. See [Writing good tasks](/guides/writing-good-tasks).
 </Note>
 
 Stuck? See [FAQ and troubleshooting](/reference/faq).

@@ -79,7 +79,7 @@ Each entry reads symptom, cause, fix. For every failure badge, see [Task lifecyc
     **Fix.** Under **Settings → Executors**, **Resume** the profile or add one with **Add executor**. Organization profiles are managed by admins. See [Executors](/guides/executors#defaults-and-suspending).
   </Accordion>
   <Accordion title="Bellows Cloud refuses a task with “NO_MODEL”">
-    **Cause.** In Bellows Cloud, a task needs a model key its agent can use, and none was found. Claude Code runs on `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`. OpenCode runs on `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`. The key can sit in your variables, the organization's or the repository's, or in the executor profile. The task is refused before it starts, and a key removed after you start it fails the task the same way. Preflight shows it as the `model` check. A self-hosted server does not check this.
+    **Cause.** In Bellows Cloud, a task needs a model key its agent can use, and none was found. Claude Code runs on `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `OPENROUTER_API_KEY`. OpenCode runs on `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`. The key can sit in your variables, the organization's or the repository's, or in the executor profile. The task is refused before it starts, and a key removed after you start it fails the task the same way. Preflight shows it as the `model` check. A self-hosted server does not check this.
     **Fix.** Connect a model in **Settings → Model**, or ask an admin to connect one for the organization. Then start the task again. See [Variables and secrets](/guides/env-and-secrets).
   </Accordion>
   <Accordion title="The task says it needs a Jira or Linear connection">
