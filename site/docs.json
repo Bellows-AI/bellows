@@ -151,6 +151,13 @@
                         "pages": [
                             "reference/changelog"
                         ]
+                    },
+                    {
+                        "group": "Legal",
+                        "pages": [
+                            "legal/privacy",
+                            "legal/terms"
+                        ]
                     }
                 ]
             }
@@ -159,6 +166,15 @@
     "footer": {
         "socials": {
             "github": "https://github.com/Bellows-AI/bellows"
-        }
+        },
+        "links": [
+            {
+                "header": "Legal",
+                "items": [
+                    { "label": "Privacy policy", "href": "/legal/privacy" },
+                    { "label": "Terms of use", "href": "/legal/terms" }
+                ]
+            }
+        ]
     }
 }
