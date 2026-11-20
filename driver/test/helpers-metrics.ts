@@ -1,4 +1,5 @@
 import type { Meter } from '@opentelemetry/api';
+import { createDriverMetrics } from '../src/driver-metrics.js';
 import {
     MeterProvider,
     MetricReader,
@@ -54,3 +55,23 @@ export const countOf = (points: Points, attributes: Record<string, string | numb
     );
     return point && (typeof point.value === 'number' ? point.value : point.value.count);
 };
+
+/** Records one point on every driver instrument, so a test reads the whole set an SDK would export. */
+export async function recordEveryDriverInstrument(meter: Meter): Promise<void> {
+    const board = 'http://board:8080';
+    const metrics = createDriverMetrics({
+        boardUrl: board,
+        fetch: async () => new Response('', { status: 200 }),
+        meter,
+    });
+    await metrics.fetch(`${board}/api/jobs/claim`);
+    await metrics.k8s(async () => ({ status: 200, body: '' }), 'runner')('GET', '/api/v1/namespaces/ns/pods');
+    await metrics.docker(async () => ({ stdout: '' }), 'reaper')(['ps']);
+    metrics.step('sync', 'ok', 1);
+    metrics.reaper.sweep('ok', 1);
+    metrics.reaper.scanned('groups', 1);
+    metrics.malformedClaim(['env']);
+    metrics.claimPoll('idle');
+    metrics.reaper.volumeExport?.('drained');
+    metrics.observeSlots(() => ({ busy: 1, open: 1 }));
+}

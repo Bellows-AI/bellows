@@ -21,6 +21,8 @@ export interface Loop {
      */
     start(): Promise<void>;
     stop(): void;
+    /** Busy attempts and the room the claim loop would claim into now: 0 while full or stopped. */
+    slots(): { busy: number; open: number };
     /**
      * Hands every attempt still in flight back to the board as an interruption: each
      * reads as lost from here — nothing parked, reported or killed — and its runner is left alive
@@ -403,6 +405,8 @@ export function createLoop({
         stop() {
             running = false;
         },
+
+        slots: () => ({ busy: active.size, open: running ? Math.max(0, config.concurrency - active.size) : 0 }),
 
         handover: (reason) => handoff.run(reason),
 
