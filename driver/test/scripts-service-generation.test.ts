@@ -154,7 +154,7 @@ describe('the service generation bump', () => {
     });
 });
 
-// BEL-492: the ack lives on the pod's volume and outlives the container that wrote it, so the
+// A stale acknowledgement: the ack lives on the pod's volume and outlives the container that wrote it, so the
 // supervisor re-arms the acks before a bump and only a probe of the container running now re-writes them.
 describe('the service acknowledgement re-arm', () => {
     it('reset removes every named acknowledgement, so a dead container’s ack never licenses a bump', () => {

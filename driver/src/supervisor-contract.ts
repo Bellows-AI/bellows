@@ -132,7 +132,7 @@ export const GATE_LOST_MS = 30_000;
  * probe (`scripts/service-generation-probe.sh`) fails once the generation moves past the one its
  * writable layer recorded, so the kubelet restarts it; the restarted one acknowledges the new one.
  * An ack outlives the container that wrote it, so the supervisor deletes them (`reset`) before a bump
- * and bumps only once the containers running now acknowledged again (BEL-492).
+ * and bumps only once the containers running now acknowledged again.
  */
 export const SERVICE_GENERATIONS = {
     volume: 'ctl-services',

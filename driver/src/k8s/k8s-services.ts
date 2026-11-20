@@ -252,7 +252,7 @@ export async function deadServices(deps: K8sDeps, job: BoardJob): Promise<DeadSe
  * they stood at the bump. An ack lives on the pod's volume and outlives the container that wrote it,
  * so a kubelet restart just before this leaves the dead one's ack standing while the new one's first
  * probe is still up to a probe period off; a bump licensed by it lets that probe record the bumped
- * generation as its own, and the sidecar is never restarted (BEL-492). So the acks are re-armed first
+ * generation as its own, and the sidecar is never restarted. So the acks are re-armed first
  * (`reset`), on the first poll and again whenever a restart count moved since, and the bump then waits
  * for the containers running now to acknowledge. A re-arm that throws leaves the acks deleted, which
  * the next probe rewrites. A pod that cannot be read is read again; one unread, or a re-arm or bump
@@ -323,7 +323,7 @@ async function bumpWhenAcked(
 /**
  * The pre-gate restart (#773 D9): EVERY declared service is restarted, as the fleet it
  * is (R1-4). The bump waits until each has acknowledged its current generation, the acks re-armed
- * first so only the containers running now count (BEL-492); then each sidecar's
+ * first so only the containers running now count, never a stale one from a dead container; then each sidecar's
  * restart count must grow past what it was at the bump, and each run and acknowledge the new one —
  * the bump and the waits sharing one SERVICE_RESTART_TIMEOUT_MS budget. One that restarts again
  * after that crashed on its way up. The baselines reset for all of them. A lost supervisor is thrown

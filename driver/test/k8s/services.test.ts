@@ -458,7 +458,7 @@ describe('the kubernetes services flow (issue #773)', () => {
 
         await k8s.restartServices(job, live);
 
-        // BEL-492: the acks are re-armed first, then the bump is asked until each is acknowledged again.
+        // The acks are re-armed first, then the bump is asked until each is acknowledged again.
         expect(modes(steps).slice(0, 4)).toEqual(['reset', 'bump', 'bump', 'bump']);
         expect(bumps).toBe(3);
     });
@@ -519,7 +519,7 @@ describe('the kubernetes services flow (issue #773)', () => {
             await k8s.syncCheckout(job, undefined, SESSION_RUN);
             timeouts.length = 0;
             await expect(k8s.restartServices(job, live)).rejects.toBeInstanceOf(ServicesNotRunning);
-            // BEL-492: the first read is the re-arm's; the bump's reads follow it.
+            // The first read is the re-arm's; the bump's reads follow it.
             expect(timeouts[1]).toBeGreaterThan(0);
             expect(timeouts[2]).toBeLessThanOrEqual(1_000);
         } finally {
@@ -578,7 +578,7 @@ describe('the kubernetes services flow (issue #773)', () => {
     });
 
     /**
-     * BEL-492: the kubelet as the pre-gate restart meets it, running the real probe and bump scripts
+     * A stale acknowledgement from a dead container: the kubelet as the pre-gate restart meets it, running the real probe and bump scripts
      * against a temp pod volume. Each container instance has its own writable layer; its probe runs
      * every 15 s from a full period after it started, and three misses in a row start the next
      * instance, as a kill does. Time is the fake Date, moved on by the runner's sleep.
@@ -667,7 +667,7 @@ describe('the kubernetes services flow (issue #773)', () => {
         }
     };
 
-    it('restarts a sidecar the kubelet restarted before the gates, though its first probe has not run yet (BEL-492)', () =>
+    it('restarts a sidecar the kubelet restarted before the gates, though its first probe has not run yet', () =>
         withFakeDate(async () => {
             const model = kubelet(['cache']);
             const api = podFake(model.sidecars);
