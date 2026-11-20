@@ -920,7 +920,7 @@ describe('kind lane observability phase', () => {
         expect(phase.slice(0, last)).not.toMatch(/^\s*exit\b/m);
     });
 
-    // BEL-493: the board this phase rolls keeps no object written before the roll, so a skill pinned by an earlier
+    // The board this phase rolls keeps no object written before the roll, so a skill pinned by an earlier
     // phase is unavailable to the lane member. The phase queues as a member of its own.
     const runObsTask = async (obsToken: string) => {
         const fn = phase.match(/^obs_run_task\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
