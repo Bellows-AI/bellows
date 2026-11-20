@@ -1,0 +1,39 @@
+groups:
+  - name: bellows-board
+    rules:
+      - alert: BellowsBoard5xxRatio
+        expr: >-
+          sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
+          / sum(rate(http_server_request_duration_seconds_count[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 5% of board requests answer 5xx.
+          description: The board answered 5xx to more than 5% of requests over the last 5 minutes, sustained for 10 minutes.
+      - alert: BellowsBoardLatencyP95
+        # The two excluded patterns carry the settle long-poll, which holds a request for its timeout.
+        expr: >-
+          histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{http_route!~"/api/jobs/:id|/api/batches/:id"}[5m]))) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Board p95 request latency is above 2 seconds.
+          description: The p95 of board request duration, long-poll routes excluded, has been above 2 seconds for 10 minutes.
+      - alert: BellowsClaimLockWaitP95
+        expr: histogram_quantile(0.95, sum by (le) (rate(bellows_claim_lock_wait_seconds_bucket[5m]))) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Claims wait more than 0.5 seconds for the claim lock at p95.
+          description: Board claims contend for the claim lock; the p95 wait has been above 0.5 seconds for 10 minutes.
+      - alert: BellowsMetricReadFailures
+        expr: sum by (source) (increase(bellows_metrics_read_failures_total[15m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: A board metric read failed.
+          description: A collection-time read of the board (the source label) failed in the last 15 minutes; its gauges show a gap, not zero.
