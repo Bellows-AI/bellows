@@ -1,4 +1,5 @@
 import type { Meter } from '@opentelemetry/api';
+import { createServerMetrics, type ServerMetrics } from '../src/metrics.js';
 import {
     MeterProvider,
     MetricReader,
@@ -46,7 +47,7 @@ export function metricsHarness(): MetricsHarness {
 }
 
 /** The value of the data point carrying exactly these attributes, or undefined. */
-export const countOf = (points: Points, attributes: Record<string, string | number>) => {
+export const countOf = (points: Points, attributes: Record<string, string | number | boolean>) => {
     const point = points.find(
         (p) =>
             Object.keys(p.attributes).length === Object.keys(attributes).length &&
@@ -54,3 +55,14 @@ export const countOf = (points: Points, attributes: Record<string, string | numb
     );
     return point && (typeof point.value === 'number' ? point.value : point.value.count);
 };
+
+/** The board's instruments on a fresh in-memory meter, with no admission budget and a fixed occupancy read. */
+export function boardMetrics(): { metrics: ServerMetrics; harness: MetricsHarness } {
+    const harness = metricsHarness();
+    const metrics = createServerMetrics({
+        admission: {},
+        occupancy: async () => ({ global: 0, orgMax: 0, repoMax: 0 }),
+        meter: harness.meter,
+    });
+    return { metrics, harness };
+}

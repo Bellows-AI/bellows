@@ -161,6 +161,12 @@ export function createServerMetrics(deps: ServerMetricsDeps): ServerMetrics {
         'The settle passes a claim runs before it looks for a candidate.',
         DB_BUCKETS
     );
+    const interruptions = meter.createCounter('bellows.job.interruptions', {
+        description: 'Interruptions recorded on an attempt, by cause and whether the attempt was refunded.',
+    });
+    const settled = meter.createCounter('bellows.job.settled', {
+        description: 'Attempts settled by a verdict or a dead retirement, by outcome and failure kind or rule.',
+    });
     const passes = histogram('bellows.background.pass.duration', 'One pass of a board background loop.', PASS_BUCKETS);
     const mcpCalls = histogram(
         'bellows.mcp.tool.duration',
@@ -186,6 +192,8 @@ export function createServerMetrics(deps: ServerMetricsDeps): ServerMetrics {
             lockWait: (seconds) => lockWait.record(seconds),
             acquire: (seconds) => acquire.record(seconds),
             sweep: (seconds) => sweep.record(seconds),
+            interrupted: (cause, refunded) => interruptions.add(1, { cause, refunded }),
+            settled: (outcome, cause) => settled.add(1, { outcome, cause }),
         },
         // Each pass is its own trace root, whatever span its loop was started under.
         timedPass: (loop, fn) =>

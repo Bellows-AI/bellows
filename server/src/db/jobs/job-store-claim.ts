@@ -11,7 +11,7 @@ import type { BellowsConfig } from '../../workspace/bellows.js';
 import type { ServiceSpec } from '../../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from '../evidence-policy.js';
 import { LEASE_EXPIRED_REASON } from './job-store-run-control.js';
-import { interruptionsSpent, spentRule } from './job-store-interruption-budget.js';
+import { interruptionsSpent, retirementCause, type SpentRule, spentRule } from './job-store-interruption-budget.js';
 import { resolveClaimSkills } from './job-store-claim-skills.js';
 import {
     admitInTx,
@@ -76,6 +76,9 @@ async function lockedCandidates(tx: TransactionSql, due: Fragment): Promise<stri
     return rows.map((row) => row.id);
 }
 
+/** A row the retirement ended dead: its thread, and the rule it ran out of (null: neither rule named). */
+type RetiredRow = { root_job_id: string; rule: SpentRule | null };
+
 /**
  * Retire what has burned its attempts, before looking for work. Without this a command that kills
  * its worker is reclaimed every time its lease expires, forever. An expired lease is first an
@@ -85,12 +88,12 @@ async function lockedCandidates(tx: TransactionSql, due: Fragment): Promise<stri
  * stamped row never reaches this sweep — the settle in `claimJob` has already landed it `stopped`,
  * which is the verdict a stop is: dead is for attempts that failed on their own.
  */
-async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql): Promise<string[]> {
+async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql): Promise<RetiredRow[]> {
     const { orgId, wallTick } = ctx;
     const due = dueRows(ctx, tx, claimRules(ctx).exhausted);
     const ids = await lockedCandidates(tx, due);
     if (ids.length === 0) return [];
-    const retired = await tx<{ id: string; root_job_id: string; rule: string | null }[]>`
+    const retired = await tx<(RetiredRow & { id: string })[]>`
         update job set status = 'dead', finished_at = now(), lease_token = null,
                        wall_clock_ms = ${wallTick}
         where id = any(${ids}::uuid[]) and ${due}
@@ -105,8 +108,8 @@ async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql)
         { orgId, wallTick, stoppedBy: null },
         retired.map((r) => r.id)
     );
-    // The distinct retired roots, sorted: the caller settles each merge-marked thread after this commit.
-    return [...new Set(retired.map((r) => r.root_job_id))].sort();
+    // The caller counts each retirement and settles each merge-marked thread after this commit.
+    return retired;
 }
 
 /**
@@ -399,6 +402,7 @@ async function acquireCandidate(
             (ClaimCandidateRow & {
                 executor_scope: string | null;
                 queue_age: number;
+                takeover_refunded: boolean | null;
             })[]
         >`
             update job set
@@ -487,7 +491,8 @@ async function acquireCandidate(
                        join connector_connection c on c.org_id = b.org_id and c.id = b.connection_id
                        where b.org_id = job.org_id and b.root_job_id = job.root_job_id and c.status = 'active')
                           as live_providers,
-                      ${baseBranch} as base_branch
+                      ${baseBranch} as base_branch,
+                      (interruptions -> -1 ->> 'refunded')::boolean as takeover_refunded
         `;
         const row = rows[0];
         // Moved while this claim prepared — claimed, stopped, its lease renewed, its thread busy: the
@@ -498,7 +503,7 @@ async function acquireCandidate(
                      where org_id = ${orgId} and id = ${reserved.id}`;
             return NEXT_CANDIDATE;
         }
-        probe.aged(locked.status === 'queued' ? 'new' : 'takeover', row.queue_age);
+        probe.aged(locked.status === 'queued' ? 'new' : 'takeover', row.queue_age, row.takeover_refunded);
         if (await settleCancelledContinuation(ctx, tx, row, rootJobId)) return NEXT_CANDIDATE;
         await recordExecution(tx, orgId, row.id);
         const connections = await claimConnectionsInTx(tx, { orgId, rootJobId }, row, locked.status === 'running');
@@ -649,14 +654,15 @@ async function sweepBeforeClaim(ctx: JobStoreContext): Promise<void> {
     }
     // The dead retirement commits on its own for the same reason: a preparation that
     // keeps failing must not keep an exhausted row `running` across every poll.
-    const retiredRoots = await sql.begin((tx) => retireExhaustedAttempts(ctx, tx));
+    const retired = await sql.begin((tx) => retireExhaustedAttempts(ctx, tx));
+    for (const r of retired) ctx.metrics?.settled('dead', retirementCause(r.rule));
     // A merge-marked thread whose last moving member just retired is closed by it, per root in its own
     // transaction after the commit: the sweep holds retired rows of SEVERAL threads, and locking another root's row
     // while holding them would invert against an ascending multi-root holder (the merge webhook, a disconnect). A
     // crash between the commit and a settle leaves the marked, all-terminal thread without its done stamp or
     // reclaim, the same exposure the stamped stops above already accept: the task is not lost, only its tree is left
     // unreclaimed.
-    for (const root of retiredRoots) await settleIfMergeClosed(ctx, root);
+    for (const root of [...new Set(retired.map((r) => r.root_job_id))].sort()) await settleIfMergeClosed(ctx, root);
 }
 
 export async function claimJob(
