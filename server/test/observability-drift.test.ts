@@ -60,7 +60,9 @@ describe('the dashboards and alert rules', () => {
                 file
             ).not.toHaveLength(0);
         }
-        const names = new Set(queries.flatMap((q) => metricNamesIn(q.expr)).filter((n) => !n.startsWith(DRIVER_PREFIX)));
+        const names = new Set(
+            queries.flatMap((q) => metricNamesIn(q.expr)).filter((n) => !n.startsWith(DRIVER_PREFIX))
+        );
         expect(names.size).toBeGreaterThanOrEqual(20);
     });
 
@@ -70,7 +72,8 @@ describe('the dashboards and alert rules', () => {
 
     const ADMISSION = /bellows_admission_(limit|running|running_max)\b/;
     const reads = (expr: string) => ADMISSION.test(expr);
-    const readsWithMax = (expr: string) => /\bmax\s*(by\s*\([^)]*\)\s*)?\(/.test(expr) && !/\b(sum|avg|count|min)\b/.test(expr);
+    const readsWithMax = (expr: string) =>
+        /\bmax\s*(by\s*\([^)]*\)\s*)?\(/.test(expr) && !/\b(sum|avg|count|min)\b/.test(expr);
 
     it('reads DB-derived replica gauges with max, never sum', () => {
         const gauges = queriesIn().filter((q) => reads(q.expr));
@@ -133,7 +136,10 @@ describe('importing into a stock Grafana', () => {
         for (const { file, json } of dashboards) {
             expect(json.id, file).toBeNull();
             expect(json.uid, file).toMatch(/^bellows-[a-z-]+$/);
-            expect(json.__inputs.map((i: { name: string }) => i.name), file).toEqual(['DS_PROMETHEUS']);
+            expect(
+                json.__inputs.map((i: { name: string }) => i.name),
+                file
+            ).toEqual(['DS_PROMETHEUS']);
             const ids: unknown[] = [];
             for (const [key, value] of walk(json)) {
                 if (key === 'datasource') expect(value, file).toEqual(DATASOURCE);
