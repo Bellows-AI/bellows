@@ -185,7 +185,14 @@ export const detailOf = (result: StepResult, timeoutMs: number): string => {
 export const stepRequest = (
     job: BoardJob,
     kind: StepKind,
-    parts: { id: string; argv?: string[]; cwd?: string | null; env?: Record<string, string>; timeoutMs: number }
+    parts: {
+        id: string;
+        argv?: string[];
+        cwd?: string | null;
+        env?: Record<string, string>;
+        timeoutMs: number;
+        parallel?: true;
+    }
 ): StepRequest => ({
     id: `${kind}-${attemptKey(job)}-${parts.id}`,
     // One call: the deliveries `submitStep` makes of this request share it, and nothing else does.
@@ -195,6 +202,7 @@ export const stepRequest = (
     ...(parts.cwd ? { cwd: parts.cwd } : {}),
     env: parts.env ?? {},
     timeoutMs: parts.timeoutMs,
+    ...(parts.parallel ? { parallel: true as const } : {}),
 });
 
 /**
@@ -392,6 +400,8 @@ export interface GateStepRequest {
     cwd: string;
     env: Record<string, string>;
     timeoutMs: number;
+    /** Runs beside the other parallel gates in the gate container instead of waiting its turn (`StepRequest.parallel`). */
+    parallel?: true;
 }
 
 /**
@@ -416,6 +426,7 @@ export async function runGateStep(
         cwd: gate.cwd,
         env: gate.env,
         timeoutMs: gate.timeoutMs,
+        ...(gate.parallel ? { parallel: true as const } : {}),
     });
     const cancel = (): void => host.sink.cancel(token, step.id);
     signal?.addEventListener('abort', cancel, { once: true });

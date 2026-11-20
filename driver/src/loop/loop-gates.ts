@@ -4,21 +4,15 @@ import type { GateRunRecord } from '../board/board-gate-runs.js';
 import { envFileBody, setupTimeoutMs } from '../claim.js';
 import { tailBytes, type DeadService } from '../runner.js';
 import { stepLost } from '../step-control.js';
-import { declaredTimeoutMs, type GateLedger, type GateRun } from '../gates.js';
+import type { GateRun } from '../gate-manager.js';
+import { declaredTimeoutMs, type GateLedger } from '../gates.js';
 import { gateIdentity, orgKeyOf } from '../gate-identity.js';
 import { recordGateRun, type GateEnd } from '../gate-record.js';
 import { SETUP_FAILED_PREFIX } from '../gate-cause.js';
 import { GATE_RUNS_READ_MS, reusableRun, reusedReport } from './gate-reuse.js';
-import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
+import { down, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from '../supervisor-contract.js';
-import { takeoverBoundMs } from '../supervisor-plan.js';
 import type { JobState } from './loop-attempt.js';
-import { createGateTokenRelay } from './loop-github.js';
-import { createPublishRelay } from './loop-publish.js';
-import { createQuestionRelay } from './loop-questions.js';
-import { createReviewRelay } from './loop-review.js';
-import { attachConnection } from './loop-connection.js';
-import { attachCheckpoint, attachTranscriptExport } from './loop-export.js';
 import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
 import { checkoutKey } from '../publish/publish.js';
 import { gatesUnderDaemon, readDaemon } from '../dockerd-loss.js';
@@ -79,7 +73,7 @@ const declaresGateEnvironment = (job: BoardJob): boolean =>
     Boolean(job.gates && (job.gates.gates.length || job.gates.setup));
 
 /** Whether the agent can ask for a gate: a declared one, in a checkout the gate environment is keyed by. */
-const declaresGates = (job: BoardJob): boolean => Boolean(job.gates?.gates.length && checkoutKey(job));
+export const declaresGates = (job: BoardJob): boolean => Boolean(job.gates?.gates.length && checkoutKey(job));
 
 /**
  * Puts the gate server's registration key onto `job.gateEnv`, once. It is the driver's own handle on
@@ -251,77 +245,6 @@ async function runEnvironmentSetup(rt: LoopRuntime, job: BoardJob, key: string, 
     job.turnContext = withSetupFailureContext(job.turnContext, job.setupFailure);
 }
 
-/**
- * Opens the run-control channel for one attempt about to launch, gated or not: three
- * tokens scoped to this lease. The supervisor's goes to the task supervisor alone
- * (`job.supervisorEnv`) so it can read a Stop the board raised, relay the agent's questions and run
- * the supervised steps; the exporter's and the agent's, beside it in `job.supervisorEnv`, open only
- * the transcript export and only the publish and review routes. Neither leaves the supervisor: it
- * relays the agent's and the exporter's requests, attaching the role's token. Best-effort — a driver whose endpoint cannot bind keeps today's immediate-kill
- * Stop, said out loud, instead of refusing every job over a feature.
- */
-export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
-    const { gates } = rt;
-    if (!gates) return;
-    try {
-        const port = await gates.server.listen();
-        // Three tokens of one lease: the supervisor's (stop, kill, questions, steps) never leaves
-        // the supervisor; the exporter's opens only the transcript export; the agent's only publish
-        // and review.
-        const token = randomUUID();
-        const agentToken = randomUUID();
-        const exporterToken = randomUUID();
-        gates.server.openControl(
-            token,
-            createQuestionRelay(rt, job, state),
-            createPublishRelay(rt, job, state),
-            createReviewRelay(rt, job, state)
-        );
-        attachConnection({ rt, job, state }, token);
-        gates.server.attachGateToken(token, createGateTokenRelay(rt, job, state));
-        // A job with no gate to ask for answers its agent's `POST /gate/run` "no gates"; a gated one 503s until `beginGates`.
-        if (!declaresGates(job)) gates.server.attachGateRun(token, null);
-        gates.server.grantAgent(token, agentToken);
-        gates.server.grantExporter(token, exporterToken);
-        attachTranscriptExport({ rt, job, state }, token);
-        attachCheckpoint({ rt, job }, token);
-        const url = gates.advertiseUrl(port);
-        job.supervisorEnv = {
-            [SUPERVISOR_ENV.controlUrl]: url,
-            [SUPERVISOR_ENV.controlToken]: token,
-            [SUPERVISOR_ENV.agentToken]: agentToken,
-            [SUPERVISOR_ENV.exportToken]: exporterToken,
-        };
-        state.control = token;
-    } catch (e) {
-        rt.log(`job ${job.id}: could not open the run-control endpoint, a Stop will kill at once: ${describeError(e)}`);
-    }
-}
-
-/**
- * Closes the attempt's control token, if one was opened: the token's questions go with it and the
- * bridge gets 401 from here on.
- */
-export function closeRunControl(rt: LoopRuntime, state: JobState): void {
-    clearPendingQuestions(state);
-    if (state.control === null) return;
-    rt.gates?.server.closeControl(state.control);
-    // Closed once: `end` (`loop-conclusion.ts`) closes it after the group's `finish`.
-    state.control = null;
-}
-
-/**
- * Leaves the attempt's control token to a newer holder: its group is retained, so the token
- * is hung up on — never answered 401, which the group's supervisor reads as the end of its attempt —
- * until the group's takeover bound passes and the holder it waits for has named itself.
- */
-export function departRunControl(rt: LoopRuntime, state: JobState): void {
-    clearPendingQuestions(state);
-    if (state.control === null) return;
-    rt.gates?.server.departControl(state.control, takeoverBoundMs(rt.config));
-    state.control = null;
-}
-
 /** What the declared-gates pass runs against: the attempt's state, and the tree the run left (null when unread). */
 export interface GatesPass {
     state: JobState;
@@ -388,7 +311,11 @@ const GATE_SERVER_PAIR: readonly string[] = ['BELLOWS_GATE_URL', 'BELLOWS_GATE_T
  * The run is recorded as a `completion` execution: best-effort, since a board hiccup
  * costs the record, never the gating; exactly one terminal row is written on every exit.
  */
-async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<{ run: GateRun; executionId: string } | null> {
+async function runOneGate(
+    ctx: GatesRunCtx,
+    gate: DeclaredGate,
+    parallel: boolean
+): Promise<{ run: GateRun; executionId: string } | null> {
     const { rt, job, gateSession, state, signal } = ctx;
     const { gates } = rt;
     if (!gates) return null;
@@ -414,6 +341,7 @@ async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<{ run: 
                     signal,
                     timeoutMs: declaredTimeoutMs(gate),
                     execution: record.execution,
+                    parallel,
                 });
             })
             .catch((e: Error) => {
@@ -509,7 +437,10 @@ export async function runDeclaredGates(
     if (gateSession.declared.length === 0) return retryFailedSetup(runCtx);
     const results: GateReport[] = [];
     gateSession.lastReports = results;
-    const report = async (): Promise<void> => {
+    // One report at a time, each sending the list as it stands when its turn comes: gates running side by
+    // side settle in any order, and the last report written must be the newest state, never an older copy.
+    let reporting: Promise<void> = Promise.resolve();
+    const send = async (): Promise<void> => {
         try {
             // A copy, not the live array: the report is a state-at-a-moment, and a reader
             // (or stub) holding it must not see gates move after the fact.
@@ -519,6 +450,10 @@ export async function runDeclaredGates(
         } catch (e) {
             log(`job ${job.id}: could not report gate state, continuing: ${describeError(e)}`);
         }
+    };
+    const report = (): Promise<void> => {
+        reporting = reporting.then(send);
+        return reporting;
     };
     // The report must fit the board's 128 KiB body however many gates declared and however
     // verbose they were — JSON escaping can inflate bytes six-fold, so the raw budget per
@@ -598,7 +533,8 @@ async function contentOf(ctx: GatesRunCtx, treeAfter: string | null): Promise<st
 async function executeGate(
     w: GateWalk,
     gate: DeclaredGate,
-    index: number
+    index: number,
+    parallel: boolean
 ): Promise<GateFailure | null | typeof GATE_PASSED> {
     const { state, results, perGate, report } = w;
     results[index] = {
@@ -613,7 +549,7 @@ async function executeGate(
     // gate that cannot run at all — the same failed-gate shape, never a crash of the run.
     // Raced against the stand-down: the re-acquire (an image pull, a cluster request) has no
     // timeout of its own, and the heartbeat keeps the lease while a Stop waits on it.
-    const raced = await raceStep(state.signal, runOneGate(w, gate));
+    const raced = await raceStep(state.signal, runOneGate(w, gate, parallel));
     const outcome = raced?.value?.run;
     // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
     // and a cancelled gate is never reported failed — `gate-failed` must not read it.
@@ -658,27 +594,21 @@ async function passOver(
     w: GateWalk,
     earlier: GateRunRecord[] | null
 ): Promise<GateFailure | null | typeof STALE_REUSE> {
-    const { rt, job, state, gateSession, results, report } = w;
+    const { job, state, gateSession } = w;
     let pool = earlier;
     let executed = false;
     let reusedAny = false;
-    for (const [index, gate] of gateSession.declared.entries()) {
+    for (const segment of segmentsOf(gateSession.declared)) {
         // The lease can be reclaimed — or the task stopped or removed — mid-gates. Everything
         // after that is dead work, and the attempt settles without a gate verdict.
         if (down(state)) return null;
-        const eligible = await reusableAfterWalk(w, gate, pool, executed);
-        if (!eligible) return null;
-        pool = eligible.pool;
-        const { reused } = eligible;
-        if (reused) {
-            reusedAny = true;
-            rt.log(`job ${job.id}: gate ${gate.name} reused from execution ${reused.executionId}, not run again`);
-            results[index] = reusedReport(gate, reused);
-            await report();
-            continue;
-        }
+        const judged = await judgeSegment(w, segment, { pool, executed });
+        if (!judged) return null;
+        ({ pool } = judged);
+        reusedAny ||= judged.reusedAny;
+        if (judged.toRun.length === 0) continue;
         executed = true;
-        const ran = await executeGate(w, gate, index);
+        const ran = await runSegment(w, judged.toRun);
         if (ran !== GATE_PASSED) return ran;
     }
     if (executed && reusedAny) {
@@ -689,6 +619,74 @@ async function passOver(
     // Every gate ran after its setup succeeded: a failed pre-agent setup was fixed.
     job.setupFailure = null;
     return null;
+}
+
+/** One gate of a segment that is to run, with its place in the declared list. */
+interface SegmentGate {
+    gate: DeclaredGate;
+    index: number;
+}
+
+/**
+ * Every gate of a segment judged before any of it runs: a reuse is certified for the tree the segment starts
+ * on, which gates running side by side cannot be told apart on once they have begun. The reused ones are
+ * reported at once; the rest are `toRun`. Null when stood down.
+ */
+async function judgeSegment(
+    w: GateWalk,
+    segment: [DeclaredGate, number][],
+    from: { pool: GateRunRecord[] | null; executed: boolean }
+): Promise<{ toRun: SegmentGate[]; pool: GateRunRecord[] | null; reusedAny: boolean } | null> {
+    let { pool } = from;
+    const toRun: SegmentGate[] = [];
+    let reusedAny = false;
+    for (const [gate, index] of segment) {
+        const eligible = await reusableAfterWalk(w, gate, pool, from.executed);
+        if (!eligible) return null;
+        pool = eligible.pool;
+        const { reused } = eligible;
+        if (!reused) {
+            toRun.push({ gate, index });
+            continue;
+        }
+        reusedAny = true;
+        w.rt.log(`job ${w.job.id}: gate ${gate.name} reused from execution ${reused.executionId}, not run again`);
+        w.results[index] = reusedReport(gate, reused);
+        await w.report();
+    }
+    return { toRun, pool, reusedAny };
+}
+
+/**
+ * The declared gates in the order they run, as segments: a run of consecutive `parallel` gates is one
+ * segment, and every other gate is a segment of its own. Each entry keeps its place in the declared list.
+ */
+function segmentsOf(declared: readonly DeclaredGate[]): [DeclaredGate, number][][] {
+    const segments: [DeclaredGate, number][][] = [];
+    for (const [index, gate] of declared.entries()) {
+        const open = segments.at(-1);
+        if (gate.parallel && declared[index - 1]?.parallel && open) open.push([gate, index]);
+        else segments.push([[gate, index]]);
+    }
+    return segments;
+}
+
+/**
+ * One segment's gates that are to run, together when there are several: the pass goes on only once every one
+ * has answered, and the failure it answers is the first in declared order. A stand-down in any of them is null.
+ * A gate that threw — a lost supervisor — is rethrown only after the rest have settled, so every gate of the
+ * group has written its terminal record by the time the attempt is handed back.
+ */
+async function runSegment(w: GateWalk, toRun: SegmentGate[]): Promise<GateFailure | null | typeof GATE_PASSED> {
+    const together = toRun.length > 1;
+    const settled = await Promise.allSettled(toRun.map(({ gate, index }) => executeGate(w, gate, index, together)));
+    const outcomes: (GateFailure | null | typeof GATE_PASSED)[] = [];
+    for (const result of settled) {
+        if (result.status === 'rejected') throw result.reason;
+        outcomes.push(result.value);
+    }
+    if (outcomes.includes(null)) return null;
+    return outcomes.find((outcome) => outcome !== GATE_PASSED) ?? GATE_PASSED;
 }
 
 /**

@@ -12,11 +12,11 @@ import {
     type GateReport,
     beginGates,
     mintGateCredentials,
-    openRunControl,
     probeDeadServices,
     runVerdictGates,
     sizeGateForVerify,
 } from './loop-gates.js';
+import { openRunControl } from './loop-run-control.js';
 import { armLeaseClock } from './loop-lease.js';
 import { drainTranscriptExport, uploadRunTail } from './loop-export.js';
 import { openChain, replayGates, runClaimSeqOf } from './loop-phase-checkpoints.js';

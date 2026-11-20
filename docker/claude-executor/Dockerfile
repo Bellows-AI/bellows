@@ -92,11 +92,11 @@ RUN case "$TARGETARCH" in amd64) sha="$ACLI_SHA256_amd64" ;; arm64) sha="$ACLI_S
 # GitHub CLI. The github skill and CLAUDE.md both instruct agents to reach GitHub through `gh`, and
 # without it every one of those instructions ends in "command not found". Static release tarball
 # rather than apt, for the same proxy reason as the base image choice.
-ARG GH_VERSION=2.103.0
+ARG GH_VERSION=2.105.0
 # From the release's own gh_<version>_checksums.txt:
-# https://github.com/cli/cli/releases/download/v2.103.0/gh_2.103.0_checksums.txt
-ARG GH_SHA256_amd64=fdd768eb70f6409f80fcfa9f3a1c0adf0fc98d827ab3ce0bed2ac22762c5d786
-ARG GH_SHA256_arm64=7f322df34e624d14f5ec0c4acb121fd6dfa14392fdbbd1066aa8e0a05ac3721e
+# https://github.com/cli/cli/releases/download/v2.105.0/gh_2.105.0_checksums.txt
+ARG GH_SHA256_amd64=79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f
+ARG GH_SHA256_arm64=b1278c75107423d818f1937fd92cafc9e5e9b606631568f68d7fb816f5885a02
 RUN case "$TARGETARCH" in amd64) sha="$GH_SHA256_amd64" ;; arm64) sha="$GH_SHA256_arm64" ;; *) echo "no gh for $TARGETARCH" >&2; exit 1 ;; esac \
     && curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/gh.tar.gz \
         "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \

@@ -157,16 +157,20 @@ driver is handed the daemon image (RUNNER_DOCKER_IMAGE).
 {{- end -}}
 
 {{/*
-The RuntimeClass names of the docker classes, sorted and once each, as a JSON list: the names the
-driver's one ClusterRole may `get` (driver-runtimeclass-rbac.yaml), so it reads each one's handler
-at boot. Empty without a docker class.
+The RuntimeClass names the driver reads at boot, sorted and once each, as a JSON list: the docker
+classes' and every sandbox pool's (isolation.sandboxPools), the names the driver's one ClusterRole
+may `get` (driver-runtimeclass-rbac.yaml) to check each one's handler is Kata. Empty without a
+docker class or a sandbox pool.
 */}}
-{{- define "factory.runnerDockerRuntimeClasses" -}}
+{{- define "factory.driverRuntimeClassReads" -}}
 {{- $names := list }}
 {{- range $name, $class := .Values.runner.classes }}
 {{- if dig "docker" false ($class | default dict) }}
 {{- $names = append $names (dig "runtimeClassName" "" $class) }}
 {{- end }}
+{{- end }}
+{{- range .Values.isolation.sandboxPools }}
+{{- $names = concat $names .runtimeClassNames }}
 {{- end }}
 {{- toJson ($names | uniq | sortAlpha) -}}
 {{- end -}}

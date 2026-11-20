@@ -49,6 +49,19 @@ export interface RunnerClasses {
     runnerDockerImage: string | null;
     /** The daemons' registry mirrors (RUNNER_DOCKER_MIRRORS), one global list of `https://` URLs; empty pulls directly. */
     runnerDockerMirrors: string[];
+    /** The sandbox (microVM) node pools (RUNNER_SANDBOX_POOLS); empty when none is declared. */
+    sandboxPools: SandboxPool[];
+}
+
+/**
+ * A sandbox node pool, identified by its taint alone: a class tolerating that taint lands there,
+ * so it must name one of `runtimeClassNames` (admission refuses any other) and that RuntimeClass
+ * must be Kata (the boot check, `k8s/k8s-runtime-class.ts`).
+ */
+export interface SandboxPool {
+    /** The pool's taint; an absent value is `''`, as kubernetes reads it. */
+    taint: { key: string; value: string };
+    runtimeClassNames: string[];
 }
 
 /** The name of the class a driver with no RUNNER_CLASSES runs every claim in: no fields at all. */
@@ -364,14 +377,60 @@ export function loadRunnerClasses(env: NodeJS.ProcessEnv, executor: 'docker' | '
             `RUNNER_DEFAULT_CLASS "${defaultRunnerClass.slice(0, ERROR_PREVIEW_CHARS)}" is not a class RUNNER_CLASSES declares (${Object.keys(runnerClasses).join(', ') || 'none'})`
         );
     }
-    if (executor === 'docker') Object.values(runnerClasses).forEach(assertDockerClass);
-    else Object.values(runnerClasses).forEach(assertDaemonClassSized);
+    if (executor === 'docker') {
+        Object.values(runnerClasses).forEach(assertDockerClass);
+        if (optionalText(env.RUNNER_SANDBOX_POOLS) !== null) {
+            throw new Error(
+                'RUNNER_SANDBOX_POOLS is set, which the docker executor cannot honor: sandbox node pools are a kubernetes placement (docs/kubernetes-limits.md)'
+            );
+        }
+    } else Object.values(runnerClasses).forEach(assertDaemonClassSized);
     return {
         runnerClasses,
         defaultRunnerClass,
         runnerDockerImage: dockerImage(env, runnerClasses),
         runnerDockerMirrors: dockerMirrors(env),
+        sandboxPools: sandboxPools(env),
     };
+}
+
+/**
+ * The sandbox pools (RUNNER_SANDBOX_POOLS, the chart's `isolation.sandboxPools` as JSON): an array
+ * of `{ taint: { key, value? }, runtimeClassNames: [..] }`. Unset or blank is none; anything
+ * malformed, or an unknown key, refuses boot rather than dropping a pool the boot check needs.
+ */
+function sandboxPools(env: NodeJS.ProcessEnv): SandboxPool[] {
+    const parsed = parsedJsonValue(env.RUNNER_SANDBOX_POOLS, 'RUNNER_SANDBOX_POOLS') ?? [];
+    if (!Array.isArray(parsed)) {
+        throw new Error(`RUNNER_SANDBOX_POOLS must be a JSON array of pools, got ${preview(parsed)}`);
+    }
+    return parsed.map((entry: unknown, index) => {
+        const label = `RUNNER_SANDBOX_POOLS[${index}]`;
+        const pool = jsonObject(entry, label);
+        if (pool === null) throw new Error(`${label} must be a pool object, got ${preview(entry)}`);
+        assertKnownKeys(pool, ['taint', 'runtimeClassNames'], label);
+        const taint = jsonObject(pool.taint, `${label}.taint`);
+        if (taint === null) throw new Error(`${label}.taint must be an object with a key, got ${preview(pool.taint)}`);
+        assertKnownKeys(taint, ['key', 'value'], `${label}.taint`);
+        if (typeof taint.key !== 'string' || taint.key.trim() === '') {
+            throw new Error(`${label}.taint.key must be a non-empty string, got ${preview(taint.key)}`);
+        }
+        const value = taint.value ?? '';
+        if (typeof value !== 'string') {
+            throw new Error(`${label}.taint.value must be a string, got ${preview(taint.value)}`);
+        }
+        const names = pool.runtimeClassNames;
+        if (!Array.isArray(names) || names.length === 0) {
+            throw new Error(`${label}.runtimeClassNames must be a non-empty JSON array, got ${preview(names)}`);
+        }
+        const runtimeClassNames = names.map((name: unknown, at) => {
+            const nameLabel = `${label}.runtimeClassNames[${at}]`;
+            const parsedName = runtimeClassName(name, nameLabel);
+            if (parsedName === null) throw new Error(`${nameLabel} must be a RuntimeClass name, got ${preview(name)}`);
+            return parsedName;
+        });
+        return { taint: { key: taint.key, value }, runtimeClassNames };
+    });
 }
 
 /**

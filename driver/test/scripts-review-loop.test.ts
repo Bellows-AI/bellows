@@ -27,7 +27,9 @@ describe('the review loop script', () => {
 
     it('serves the review mailbox the contract names, by the file names the contract spells', () => {
         expect(code).toContain(`\${FACTORY_REVIEW_DIR:-${MAILBOXES.review.path}}`);
-        for (const name of Object.values(REVIEW_FILES).filter((file) => file !== 'staging')) {
+        for (const name of Object.values(REVIEW_FILES).filter(
+            (file) => file !== 'staging' && file !== REVIEW_FILES.parallel
+        )) {
             expect(code, name).toContain(`/${name}`);
         }
     });

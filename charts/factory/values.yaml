@@ -554,6 +554,24 @@ isolation:
         - 100.64.0.0/10
         - 169.254.0.0/16
     allowedCidrs: []
+    # Sandbox (microVM) node pools, each named by its taint: a pod that tolerates the taint must run
+    # under one of the pool's RuntimeClasses, and a pod that pins `spec.nodeName` under one of any
+    # pool's. Non-empty renders a cluster-wide ValidatingAdmissionPolicy (failurePolicy: Fail) over
+    # every pod outside `sandboxExemptNamespaces` (templates/sandbox-admission.yaml), and hands the
+    # driver RUNNER_SANDBOX_POOLS: it refuses to boot a runner class that tolerates a pool's taint
+    # without one of its RuntimeClasses, or whose RuntimeClass handler is not Kata. Off by default.
+    #   sandboxPools:
+    #     - taint: {key: sandbox.example/runtime, value: microvm}   # value optional; no effect key
+    #       runtimeClassNames: [kata-vm]
+    sandboxPools: []
+    # Namespaces the sandbox-pool policy never reads: an exact name, or a prefix ending in `*` (a bare
+    # `*` is refused). The defaults hold a GKE cluster's node DaemonSets, which tolerate every taint
+    # and run unsandboxed; a cluster whose DaemonSets live elsewhere lists those namespaces, or their
+    # pods are refused.
+    sandboxExemptNamespaces:
+        - kube-system
+        - gmp-system
+        - gke-managed-*
 
 runner:
     # Names forwarded to the runner; the VALUES live in the Secret below, one key per name.

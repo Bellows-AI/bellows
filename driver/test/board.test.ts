@@ -230,6 +230,12 @@ describe('the claimed job', () => {
         ['reads a missing planRefusal as null', {}, 'planRefusal', null],
         ['carries the board’s plan refusal', { planRefusal: 'bad plan' }, 'planRefusal', 'bad plan'],
         ['drops a malformed services value', { services: [{ name: 1 }] }, 'services', ABSENT],
+        [
+            'carries a service’s tmpfs mounts intact',
+            { services: [{ name: 'db', image: 'postgres:17', environment: [], tmpfs: [{ path: '/d', size: '2Gi' }] }] },
+            'services',
+            [{ name: 'db', image: 'postgres:17', environment: [], tmpfs: [{ path: '/d', size: '2Gi' }] }],
+        ],
         // Issue #244: the board-owned Factory execution context. Read defensively like every other
         // field added after launch — a board that predates it, or a malformed value, both read as
         // null, which the loop refuses the launch for explicitly (loop-run.test.ts) rather than
@@ -266,6 +272,21 @@ describe('the claimed job', () => {
         expect(job).not.toHaveProperty('services');
         expect(typeof job?.planRefusal).toBe('string');
         expect(job?.planRefusal).not.toBe('');
+    });
+
+    // A dropped mount would run the service on its rootfs and look healthy: a tmpfs that is not a
+    // list of { path, size } strings is the board breaking its contract, so the whole plan is refused.
+    it.each<[string, unknown]>([
+        ['a non-list tmpfs', 'x'],
+        ['a tmpfs entry with no size', [{ path: '/d' }]],
+        ['a tmpfs entry with a numeric path', [{ path: 1, size: '1Gi' }]],
+    ])('turns %s into the malformed-plan refusal', async (_label, tmpfs) => {
+        const { fetch } = recorder(() =>
+            claimed({ services: [{ name: 'db', image: 'postgres:17', environment: [], tmpfs }] })
+        );
+        const job = await boardOn(fetch).claim('driver-1');
+        expect(job).not.toHaveProperty('services');
+        expect(job?.planRefusal).toMatch(/malformed service list/);
     });
 });
 

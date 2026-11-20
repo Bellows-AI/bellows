@@ -6,7 +6,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
-import type { GateRun } from '../src/gates.js';
+import type { GateRun } from '../src/gate-manager.js';
 import type { PhaseCheckpoint } from '../src/board/board-phase-checkpoints.js';
 import { PHASE_CHECKPOINT_READ_MS } from '../src/loop/loop-phase-checkpoints.js';
 import type { HelperPlan } from '../src/helpers.js';

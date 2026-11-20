@@ -3,11 +3,11 @@ import { gateGithubScript, gateLoopArgv, gateLoopScript, gateShellScript } from 
 import { GATE_ASK_FILES, GATE_FILES, MAILBOXES } from '../src/supervisor-contract.js';
 
 /*
- * The gate container's loop (`scripts/gate-loop.sh`), pinned by its bytes ONLY. It is never executed
- * here, nor by hand: after every request and on a cancel it runs `kill -KILL -1`, which in a test
- * process would end every process of the user running the suite — the agent CLI among them. Its
- * behaviour is the kind lane's and test:jobs' to show (scripts/test-k8s.sh, scripts/test-jobs.sh);
- * the supervisor's half of the protocol is played against a JS loop in supervisor.test.ts.
+ * The gate container's loop (`scripts/gate-loop.sh`), pinned by its bytes. It is never executed here, nor
+ * by hand, outside a pid namespace: after a request and on a cancel it runs `kill -KILL -1`, which in a test
+ * process would end every process of the user running the suite — the agent CLI among them. It runs in
+ * `gate-loop-run.test.ts`, inside `unshare`'s own pid namespace; the supervisor's half of the protocol is
+ * played against a JS loop in supervisor.test.ts.
  */
 
 /** The script without its comment lines: what the shell runs. */
@@ -39,15 +39,30 @@ describe('the gate loop script', () => {
         }
     });
 
-    it('kills what a gate left behind before it writes the exit, and kills a cancelled gate', () => {
-        const kill = 'kill -KILL -1';
-        const cancelBranch = code.slice(code.indexOf('/cancel" ]; then'));
-        expect(cancelBranch.slice(0, cancelBranch.indexOf('fi'))).toContain(kill);
+    it('kills what a gate left behind before it writes the exit, and settles a cancelled gate through the same path', () => {
+        const sweep = 'kill -KILL -1';
+        const finish = code.slice(code.indexOf('finish() {'), code.indexOf('\n}\n', code.indexOf('finish() {')));
         // The last kill of a request comes after its gate ended and before its answer exists, so
         // nothing a gate left running can write into the answer or the next request.
-        const exitWrite = code.indexOf('/exit.tmp');
+        const exitWrite = finish.indexOf('/exit.tmp');
         expect(exitWrite).toBeGreaterThan(-1);
-        expect(code.lastIndexOf(kill, exitWrite)).toBeGreaterThan(code.indexOf('wait "$pid"'));
+        expect(finish.lastIndexOf(sweep, exitWrite)).toBeGreaterThan(-1);
+        // While another request runs only the finished gate's own process group is killed.
+        expect(finish.lastIndexOf('kill -KILL "-$group"', exitWrite)).toBeGreaterThan(-1);
+        expect(finish.indexOf('others "$1"')).toBeLessThan(finish.indexOf(sweep));
+        // A cancel ends in `finish` as well, once there is a group to kill or nothing else runs.
+        const cancelBranch = code.slice(code.indexOf('/cancel" ]'));
+        expect(cancelBranch.slice(0, cancelBranch.indexOf('\n        fi'))).toContain('finish "$held"');
+    });
+
+    it('serves requests side by side only when setsid exists, and says so in the parallel file', () => {
+        expect(code).toContain('/usr/bin/setsid');
+        expect(code).toContain(`: > "$box/${GATE_FILES.parallel}"`);
+        expect(code).toContain(`/bin/rm -f "$box/${GATE_FILES.parallel}"`);
+        // A request is taken beside a running one only with setsid, and only when it and every running one is marked.
+        expect(code).toContain('others "" && { [ -z "$setsid" ] || [ ! -e "$request/parallel" ] || ! allparallel; }');
+        // Each gate is a session of its own and records its process group where the loop reads it.
+        expect(code).toContain('echo $$ > "$FACTORY_GATE_RUN/pgid"');
     });
 
     it('applies a request’s env inside its own subshell, and drops the env file before the command', () => {
@@ -69,8 +84,9 @@ describe('the gate loop script', () => {
         expect(code).toContain('printf \'%s\\n\' "$github" > "$box/bin/gh"');
         expect(code).toContain('/bin/chmod 0700 "$box/bin/gh"');
         // Given to the gate shell alone, as the assignments of its own `exec`.
-        const subshell = code.slice(code.indexOf('serve() {'), code.indexOf('pid=$!'));
+        const subshell = code.slice(code.indexOf('start() {'), code.indexOf('\n}\n', code.indexOf('start() {')));
         expect(subshell).toContain('FACTORY_GATE_RUN="$1" FACTORY_GATE_BIN="$box/bin" exec /bin/sh -c "$shell" gate');
+        expect(subshell).toContain('FACTORY_GATE_RUN="$1" FACTORY_GATE_BIN="$box/bin" exec "$setsid" /bin/sh -c');
         expect(code.replace(subshell, '')).not.toContain('FACTORY_GATE_RUN');
     });
 

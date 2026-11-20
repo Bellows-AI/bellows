@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import { DOCKERD_RESTART_NOTE } from '../src/dockerd-loss.js';
-import { createGateServer, type GateManager } from '../src/gates.js';
+import type { GateManager } from '../src/gate-manager.js';
+import { createGateServer } from '../src/gates.js';
 import type { DaemonState, Read } from '../src/runner.js';
 
 /**

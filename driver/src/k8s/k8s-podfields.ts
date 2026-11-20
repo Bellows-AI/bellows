@@ -54,6 +54,27 @@ export function resourcesField(block: RunnerResources): { resources?: PodResourc
     return Object.keys(resources).length > 0 ? { resources } : {};
 }
 
+/**
+ * A service sidecar's resources: the class's runner block with the service's tmpfs total added to
+ * each memory slot the class sets, as a plain byte count. A memory emptyDir's pages are charged to
+ * the writer's memory cgroup, and a microVM guest ignores `sizeLimit`, so the limit is the only bound
+ * and must hold the data on top of the process. An unset slot stays unset; cpu is untouched.
+ */
+export function serviceResourcesField(
+    block: RunnerResources,
+    tmpfs: readonly { size: string }[] | undefined
+): { resources?: PodResources } {
+    const total = (tmpfs ?? []).reduce((sum, { size }) => sum + BigInt(memoryQuantityToBytes(size)), 0n);
+    if (total === 0n) return resourcesField(block);
+    const plus = (quantity: string | null) =>
+        quantity ? (BigInt(memoryQuantityToBytes(quantity)) + total).toString() : quantity;
+    return resourcesField({
+        ...block,
+        memoryRequest: plus(block.memoryRequest),
+        memoryLimit: plus(block.memoryLimit),
+    });
+}
+
 /** What the gate container asks for while the agent runs: the measured idle loop, no more. */
 const GATE_IDLE_REQUESTS = { cpu: '100m', memory: '128Mi' } as const;
 

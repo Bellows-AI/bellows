@@ -61,6 +61,14 @@ describe('parseBellows: valid documents', () => {
         expect(() => parseBellows(`${EXAMPLE}\n           filter: yes`)).toThrow(/filter must be "true"/);
     });
 
+    it('reads a parallel gate, omits parallel when a gate declares none, and refuses a non-true value', () => {
+        expect(parseBellows(`${EXAMPLE}\n           parallel: true`)?.gates).toEqual([
+            { name: 'test', command: 'npm test', parallel: true },
+        ]);
+        expect('parallel' in (parseBellows(EXAMPLE)?.gates[0] ?? {})).toBe(false);
+        expect(() => parseBellows(`${EXAMPLE}\n           parallel: yes`)).toThrow(/parallel must be "true"/);
+    });
+
     it.each([
         ['an empty setup', '    setup: ""', /line 3: setup is empty/],
         ['a valueless setup', '    setup:', /line 3: setup takes a value/],
@@ -261,11 +269,18 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     it('parses under the strict grammar', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const gates = parseBellows(text)?.gates ?? [];
-        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db', 'test:jobs']);
+        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db', 'test:executors']);
         expect(gates.slice(0, 2)).toEqual([
-            { name: 'test', command: 'npm test', timeoutMinutes: 30 },
+            { name: 'test', command: 'sh scripts/gate-test-changed.sh', timeoutMinutes: 30 },
             { name: 'lint', command: 'npm run lint' },
         ]);
+    });
+
+    // The test and test:db gates run only the suites the change reaches; the full suites stay CI's merge
+    // gate, and the file says so where the gates are declared.
+    it('names CI as the merge gate beside the changed-only gates', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        expect(text).toMatch(/# CI's npm test and npm run test:db stay the merge gate/);
     });
 
     // The gates run in the dev runner image a release publishes, pinned to one release tag: a moving
@@ -276,28 +291,34 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     });
 
     // The suites that need more than `npm test`: each states its own budget, and test:db points at
-    // the declared `postgres` service, never at a server of its own.
+    // the declared `postgres` service, never at a server of its own. In a microVM the suite waits on
+    // round trips and WAL syncs, not CPU: test:db first turns the throwaway service's durability off,
+    // then runs eight workers instead of four.
     it('declares typecheck and test:db, each with a timeout', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const gates = new Map((parseBellows(text)?.gates ?? []).map((gate) => [gate.name, gate]));
         for (const name of ['typecheck', 'test:db']) expect(gates.get(name)?.timeoutMinutes, name).toBeGreaterThan(0);
         expect(gates.get('typecheck')?.command).toBe('npm run typecheck');
         expect(gates.get('test:db')?.command).toBe(
-            'DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db'
+            'sh scripts/gate-pg-fast.sh postgres://factory:factory@postgres:5432/postgres' +
+                ' && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test' +
+                ' sh scripts/gate-test-changed.sh --db'
         );
     });
 
-    // The jobs lane is a required gate: it runs the phases the change maps to (an empty map passes
-    // before the runner images are built), on run databases on the declared `postgres` service, within
-    // a budget sized for the full lane in a docker class's microVM.
-    it('declares a required test:jobs gate through the mapping wrapper', async () => {
+    // The executor gate needs no docker daemon: the in-process driver, supervisor and job-route
+    // suites, under the root vitest config and its spawn tier (the script's pretest builds core).
+    // The docker lane, npm run test:jobs, runs nightly (.github/workflows/lanes-nightly.yml), as
+    // the kind lane does.
+    it('declares the executor suites as its docker-free gate, and no test:jobs gate', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
-        const gate = (parseBellows(text)?.gates ?? []).find((g) => g.name === 'test:jobs');
-        expect(gate).toEqual({
-            name: 'test:jobs',
-            command: 'TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 sh scripts/gate-test-jobs.sh',
-            timeoutMinutes: 45,
+        const gates = parseBellows(text)?.gates ?? [];
+        expect(gates.find((g) => g.name === 'test:executors')).toEqual({
+            name: 'test:executors',
+            command: 'npm run test:executors',
+            timeoutMinutes: 15,
         });
+        expect(gates.filter((g) => /test:jobs|make runners|docker/.test(`${g.name} ${g.command}`))).toEqual([]);
     });
 
     // The gate image ships no jq and runs as a non-root user; the pr-land suite needs one.
@@ -380,9 +401,9 @@ describe('parseBellows: rejects malformed structure, invalid gates and limits', 
             /line 6: on_demand must be "true"/,
         ]),
         [
-            'an unknown gate field, naming timeout, on_demand and filter among the fields read',
+            'an unknown gate field, naming timeout, on_demand, filter and parallel among the fields read',
             `${EXAMPLE}\n           retries: 2`,
-            /unknown gate field "retries" — only name, command, timeout, on_demand and filter are read/,
+            /unknown gate field "retries" — only name, command, timeout, on_demand, filter and parallel are read/,
         ],
         [
             'duplicate gate names',

@@ -89,6 +89,62 @@ with an optional binary (Ki…Ei) or decimal (k…E) suffix. Anything else is re
 {{- fail (printf "runner.docker.registryMirrors entries must be https:// URLs (no credentials, query or whitespace): a plain-http mirror needs an insecure registry, got %q" (toString .)) }}
 {{- end }}
 {{- end }}
+{{- /* Sandbox pools: the driver's RUNNER_SANDBOX_POOLS checks (driver/src/runner-classes.ts), and
+the exempt namespaces the admission policy reads (templates/sandbox-admission.yaml). */}}
+{{- $sandboxPools := .Values.isolation.sandboxPools | default list }}
+{{- if not (kindIs "slice" $sandboxPools) }}
+{{- fail "isolation.sandboxPools must be a list of {taint: {key, value}, runtimeClassNames: [...]}" }}
+{{- end }}
+{{- range $i, $pool := $sandboxPools }}
+{{- if not (kindIs "map" $pool) }}
+{{- fail (printf "isolation.sandboxPools[%d] must be a map {taint, runtimeClassNames}" $i) }}
+{{- end }}
+{{- range $key, $_ := $pool }}
+{{- if not (has $key (list "taint" "runtimeClassNames")) }}
+{{- fail (printf "isolation.sandboxPools[%d].%s is not a key the driver knows (taint, runtimeClassNames)" $i $key) }}
+{{- end }}
+{{- end }}
+{{- $taint := $pool.taint }}
+{{- if not (kindIs "map" $taint) }}
+{{- fail (printf "isolation.sandboxPools[%d].taint is required: the pool is named by its taint {key, value}" $i) }}
+{{- end }}
+{{- range $key, $_ := $taint }}
+{{- if not (has $key (list "key" "value")) }}
+{{- fail (printf "isolation.sandboxPools[%d].taint.%s is not a key the driver knows (key, value): the effect is not read" $i $key) }}
+{{- end }}
+{{- end }}
+{{- if or (not (kindIs "string" $taint.key)) (eq (toString $taint.key) "") }}
+{{- fail (printf "isolation.sandboxPools[%d].taint.key is required" $i) }}
+{{- end }}
+{{- if and (hasKey $taint "value") (not (kindIs "string" $taint.value)) }}
+{{- fail (printf "isolation.sandboxPools[%d].taint.value must be a string" $i) }}
+{{- end }}
+{{- if or (not (kindIs "slice" $pool.runtimeClassNames)) (eq (len ($pool.runtimeClassNames | default list)) 0) }}
+{{- fail (printf "isolation.sandboxPools[%d].runtimeClassNames must list at least one RuntimeClass" $i) }}
+{{- end }}
+{{- range $pool.runtimeClassNames }}
+{{- if or (not (kindIs "string" .)) (gt (len (toString .)) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" (toString .))) }}
+{{- fail (printf "isolation.sandboxPools[%d].runtimeClassNames entries must be RuntimeClass names (DNS-1123 subdomains), got %q" $i (toString .)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range .Values.isolation.sandboxExemptNamespaces | default list }}
+{{- $entry := toString . }}
+{{- if or (eq $entry "*") (eq (trimSuffix "*" $entry) "") }}
+{{- fail "isolation.sandboxExemptNamespaces may not hold a bare \"*\": it would exempt every namespace and disable the sandbox-pool guard" }}
+{{- end }}
+{{- $stem := trimSuffix "*" $entry }}
+{{- if contains "*" $stem }}
+{{- fail (printf "isolation.sandboxExemptNamespaces entry %q may carry \"*\" only as its last character (a prefix)" $entry) }}
+{{- end }}
+{{- if hasSuffix "*" $entry }}
+{{- if or (gt (len $stem) 62) (not (regexMatch "^[a-z0-9][-a-z0-9]*$" $stem)) }}
+{{- fail (printf "isolation.sandboxExemptNamespaces prefix %q must start a namespace name (DNS-1123 label characters)" $entry) }}
+{{- end }}
+{{- else if or (gt (len $entry) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $entry)) }}
+{{- fail (printf "isolation.sandboxExemptNamespaces entry %q must be a namespace name (a DNS-1123 label)" $entry) }}
+{{- end }}
+{{- end }}
 {{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}
 {{- fail "secret.create is false but secret.existingSecret is empty: the pods would reference a Secret nothing creates" }}
 {{- end }}

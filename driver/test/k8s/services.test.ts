@@ -10,7 +10,7 @@ import {
 } from '../../src/supervisor-contract.js';
 import { StepChannelClosed, type StepSink } from '../../src/step-control.js';
 import { serviceProbeArgv, serviceRestartArgv } from '../../src/container-scripts.js';
-import { Inconclusive, SERVICE_LOG_TAIL_LINES } from '../../src/runner.js';
+import { Inconclusive, SERVICE_LOG_TAIL_LINES, SERVICE_RESTART_TIMEOUT_S } from '../../src/runner.js';
 import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { jobsPath, runnerJobName, runnerJobSpec } from '../../src/k8s/k8s-podspec.js';
 import { podLogPath } from '../../src/k8s/k8s-auxspec.js';
@@ -98,12 +98,24 @@ describe('the service sidecars (issue #773)', () => {
         ]);
     });
 
-    it('probes liveness with the generation probe every two seconds, failing at the first miss', () => {
+    it('probes liveness every 15 s with a 10 s timeout, restarting only after three misses in a row', () => {
         expect(sidecarOf('cache').livenessProbe).toEqual({
             exec: { command: serviceProbeArgv('cache') },
-            periodSeconds: 2,
-            failureThreshold: 1,
+            periodSeconds: 15,
+            timeoutSeconds: 10,
+            failureThreshold: 3,
         });
+    });
+
+    it('a single timed-out probe cannot restart a service, and a bump still restarts it within the restart bound', () => {
+        const probe = sidecarOf('cache').livenessProbe;
+        if (!probe) throw new Error('the service sidecar has no liveness probe');
+        expect(probe.failureThreshold).toBeGreaterThanOrEqual(2);
+        expect(probe.timeoutSeconds).toBeGreaterThan(1);
+        expect(probe.periodSeconds).toBeGreaterThan(probe.timeoutSeconds);
+        expect(probe.failureThreshold * (probe.periodSeconds + probe.timeoutSeconds)).toBeLessThan(
+            SERVICE_RESTART_TIMEOUT_S
+        );
     });
 
     it('gives the supervisor the generations and every acknowledgement, and no other container any of them', () => {
@@ -153,6 +165,51 @@ describe('the service sidecars (issue #773)', () => {
     it('refuses a service env key that is not a name, before the spec exists', () => {
         const bad = { ...declared, services: [{ ...cache, environment: [{ key: 'not a key', value: 'x' }] }] };
         expect(() => podOf(bad)).toThrow(/not a valid environment variable name/);
+    });
+
+    const memoryDb: ServiceSpec = { ...db, tmpfs: [{ path: '/var/lib/postgresql/data', size: '2Gi' }] };
+    const inMemory: BoardJob = { ...declared, services: [memoryDb, cache] };
+    const classConfig = (resources: Record<string, Record<string, string>>) => ({
+        ...loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            K8S_NAMESPACE: namespace,
+            RUNNER_CLASSES: JSON.stringify({ standard: { resources } }),
+            RUNNER_DEFAULT_CLASS: 'standard',
+        }),
+        servicesEnabled: true,
+    });
+    const sidecarIn = (pod: ReturnType<typeof podOf>, name: string) =>
+        pod.initContainers?.find((container) => container.name === `svc-${name}`);
+
+    it('mounts each declared tmpfs as a memory emptyDir on that sidecar alone', () => {
+        const pod = podOf(inMemory);
+        expect(pod.volumes).toContainEqual({ name: 'svc-tmp-db-0', emptyDir: { medium: 'Memory', sizeLimit: '2Gi' } });
+        expect(sidecarIn(pod, 'db')?.volumeMounts).toContainEqual({
+            name: 'svc-tmp-db-0',
+            mountPath: '/var/lib/postgresql/data',
+        });
+        for (const container of [...pod.containers, ...(pod.initContainers ?? [])]) {
+            if (container.name === 'svc-db') continue;
+            expect(JSON.stringify(container.volumeMounts), container.name).not.toMatch(/svc-tmp-/);
+        }
+    });
+
+    it('adds the tmpfs total to the sidecar’s memory request and limit, never to cpu', () => {
+        const config = classConfig({ requests: { cpu: '1', memory: '1Gi' }, limits: { cpu: '2', memory: '3Gi' } });
+        const pod = podOf(inMemory, config);
+        expect(sidecarIn(pod, 'db')?.resources).toEqual({
+            requests: { cpu: '1', memory: '3221225472' },
+            limits: { cpu: '2', memory: '5368709120' },
+        });
+        expect(sidecarIn(pod, 'cache')?.resources).toEqual({
+            requests: { cpu: '1', memory: '1Gi' },
+            limits: { cpu: '2', memory: '3Gi' },
+        });
+    });
+
+    it('leaves an unset memory slot unset', () => {
+        const pod = podOf(inMemory, classConfig({ requests: { cpu: '1' } }));
+        expect(sidecarIn(pod, 'db')?.resources).toEqual({ requests: { cpu: '1' } });
     });
 });
 

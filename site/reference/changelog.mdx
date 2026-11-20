@@ -5,6 +5,24 @@ description: "What changed in each Bellows release, in plain words."
 
 User-facing changes only. Self-hosting upgrade notes live in the release notes on [GitHub](https://github.com/Bellows-AI/bellows/releases).
 
+<Update label="v0.1.4" description="2026-11-19">
+  **Fixed**
+  - On Kubernetes, a slow health check no longer restarts a running service such as a throwaway database in the middle of a gate. Before this fix, one slow check on a busy microVM runner could drop the gate's database connections. See [Services](/guides/services).
+</Update>
+
+<Update label="v0.1.2" description="2026-11-19">
+  **New**
+  - **In-memory service data.** A service in `.bellows.yaml` can keep its data in memory with `tmpfs`, which makes a throwaway database much faster in a microVM runner class. See [Keep a database in memory](/guides/services#keep-a-database-in-memory).
+
+  **Improved**
+  - Gates marked `parallel` that are declared next to each other run at the same time in the end-of-run pass. See [Parallel gates](/guides/gates#parallel-gates).
+  - The task composer's repository, executor, workflow, branch and skill pickers share one searchable dropdown.
+
+  **Fixed**
+  - A repository in the composer's dropdown is announced as one name, such as `acme/notes-api`, to assistive technology.
+  - The Copy button stays on one line beside a long branch name.
+</Update>
+
 <Update label="v0.0.17" description="2026-11-17">
   **New**
   - **Linear.** Connect Linear and work Linear issues from a task, alongside Jira and GitHub. See [Connections](/guides/connections#linear).

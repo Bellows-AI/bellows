@@ -8,7 +8,7 @@ import { cancelReviews, createReviewRelay, superviseReview } from '../src/loop/l
 import { StepChannelClosed } from '../src/step-control.js';
 import { InputsUnconfirmed } from '../src/task-inputs.js';
 import type { StepResult } from '../src/supervisor-contract.js';
-import { openRunControl } from '../src/loop/loop-gates.js';
+import { openRunControl } from '../src/loop/loop-run-control.js';
 import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import type { LoopRuntime } from '../src/loop/loop-types.js';
 import { config, job, ok, sleep, stubBoard, stubGateStack, stubRunner } from './fixtures/loop-stubs.js';

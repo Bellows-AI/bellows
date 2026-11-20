@@ -93,7 +93,8 @@ export const MAILBOXES = { in: IN, out: OUT, export: EXPORT, supervisor: OWN, ga
  * the supervisor stages a request (`command`, `cwd`, `env`) and renames it into `requests/<step id>`;
  * the gate loop claims it by renaming it to `running/<id>`, and answers by writing `output` and,
  * atomically, `exit`, then renaming it to `done/<id>`. `cancel` inside a running request is the
- * supervisor's order to kill it; `alive` is the loop's heartbeat.
+ * supervisor's order to kill it; `alive` is the loop's heartbeat; `parallel` exists while the loop
+ * can run requests side by side, which is what lets the supervisor post `parallel` gates together.
  */
 export const GATE_FILES = {
     staging: 'staging',
@@ -101,6 +102,7 @@ export const GATE_FILES = {
     running: 'running',
     done: 'done',
     alive: 'alive',
+    parallel: 'parallel',
     command: 'command',
     cwd: 'cwd',
     env: 'env',
@@ -252,6 +254,8 @@ export interface StepRequest {
     /** The step's own environment: literals, and — only for a step that needs it — the claim env or publish token. */
     env: Record<string, string>;
     timeoutMs: number;
+    /** A `gate` step only: it runs beside the other parallel gates instead of waiting its turn in the gate lane. */
+    parallel?: true;
 }
 
 /** What the supervisor answers a step with. `replayed` marks an answer read back from its ledger. */

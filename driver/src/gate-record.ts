@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DeclaredGate } from './board/board.js';
 import type { GateRunOutcome, GateRunRow, GateRunSource } from './board/board-gate-runs.js';
-import type { GateRun } from './gates.js';
+import type { GateRun } from './gate-manager.js';
 import type { TreeProbe } from './publish/publish.js';
 
 /** The longest the running row's write may take: awaited before the gate starts, so bounded. */

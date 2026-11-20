@@ -20,6 +20,8 @@
  * `filter: true` lets the agent narrow an ad-hoc run (`{"gate":"<name>","filter":"<string>"}`): the
  * string reaches the command as env `GATE_FILTER` for that one run, and the end-of-run gates pass
  * never sets it.
+ * `parallel: true` runs the gate beside the gates next to it: consecutive `parallel` gates of the
+ * end-of-run pass start together, and the pass goes on once every one of them has answered.
  *
  * `environment:` may also carry `setup: <command>` — run in the worktree before the agent starts
  * and retried before the first gate while it fails (an install step); its failure is a setup
@@ -73,6 +75,8 @@ export interface GateDef {
     readonly onDemand?: true;
     /** The ad-hoc endpoint may narrow a run of it: the request's `filter` becomes env `GATE_FILTER`. */
     readonly filter?: true;
+    /** The end-of-run pass runs it together with the `parallel` gates declared right beside it. */
+    readonly parallel?: true;
 }
 
 /** The evidence a repository requires; an absent key requires nothing. */
@@ -123,6 +127,7 @@ interface RawGate {
     timeoutMinutes?: number;
     onDemand?: true;
     filter?: true;
+    parallel?: true;
 }
 
 interface BellowsState {
@@ -171,6 +176,7 @@ function finishGate(state: BellowsState): void {
         ...(current.timeoutMinutes === undefined ? {} : { timeoutMinutes: current.timeoutMinutes }),
         ...(current.onDemand ? { onDemand: true as const } : {}),
         ...(current.filter ? { filter: true as const } : {}),
+        ...(current.parallel ? { parallel: true as const } : {}),
     });
     state.current = null;
 }
@@ -248,12 +254,13 @@ function readGateCommand(line: number, raw: string | undefined): string {
 }
 
 /** The `true`-only gate fields, by their YAML key. */
-const GATE_FLAGS = new Map<string, 'onDemand' | 'filter'>([
+const GATE_FLAGS = new Map<string, 'onDemand' | 'filter' | 'parallel'>([
     ['on_demand', 'onDemand'],
     ['filter', 'filter'],
+    ['parallel', 'parallel'],
 ]);
 
-/** A field indented under the open gate item (`name:` / `command:` / `timeout:` / `on_demand:` / `filter:`). */
+/** A field indented under the open gate item (`name:` / `command:` / `timeout:` / `on_demand:` / `filter:` / `parallel:`). */
 function handleGateField({
     state,
     line,
@@ -283,7 +290,10 @@ function handleGateField({
     } else if (key === 'timeout') {
         state.current.timeoutMinutes = readTimeoutMinutes(line, match[3] ?? '');
     } else {
-        fail(line, `unknown gate field "${key}" — only name, command, timeout, on_demand and filter are read`);
+        fail(
+            line,
+            `unknown gate field "${key}" — only name, command, timeout, on_demand, filter and parallel are read`
+        );
     }
 }
 

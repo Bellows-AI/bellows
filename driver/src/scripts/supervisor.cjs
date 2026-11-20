@@ -99,7 +99,7 @@ const { pipeline, Transform } = require('node:stream');
 /** @typedef {{ body?: any, bytes?: Uint8Array, holdMs?: number, abort?: AbortSignal | null, onContact?: (() => void) | null }} CallOptions */
 /** @typedef {'gate' | 'review'} LaneKind */
 /** @typedef {'sync' | 'reclaim' | 'probe' | 'snapshot' | 'publish' | 'helper' | 'gate' | 'review' | 'restart' | 'go' | 'finish'} StepKind */
-/** @typedef {{ argv: string[], cwd?: string, env?: Record<string, string>, timeoutMs: number }} SpawnSpec */
+/** @typedef {{ argv: string[], cwd?: string, env?: Record<string, string>, timeoutMs: number, parallel?: boolean }} SpawnSpec */
 /** @typedef {SpawnSpec & { id: string, invocation: string, kind: StepKind }} Step */
 /** @typedef {Step & { kind: LaneKind }} GateStep */
 /** @typedef {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean, replayed?: boolean, tokenAskUnanswered?: boolean }} StepResult */
@@ -228,6 +228,7 @@ const GATE_FILES = {
     running: 'running',
     done: 'done',
     alive: 'alive',
+    parallel: 'parallel',
     command: 'command',
     cwd: 'cwd',
     env: 'env',
@@ -1129,6 +1130,9 @@ function postGateRequest(run, step, name) {
     }
     fs.writeFileSync(path.join(staged, GATE_FILES.command), laneCommand(step));
     fs.writeFileSync(path.join(staged, GATE_FILES.cwd), /** @type {string} */ (step.cwd));
+    // The loop takes this request beside a running one only when both carry this marker: it is the loop, not
+    // this supervisor's memory, that keeps two serial gates from sharing a worktree after a supervisor restart.
+    if (isAlongside(run, step)) fs.writeFileSync(path.join(staged, GATE_FILES.parallel), '');
     const env = Object.entries(step.env ?? {}).map(([n, v]) => `${n}=${v}\n`);
     fs.writeFileSync(path.join(staged, GATE_FILES.env), env.join(''), {
         mode: reviewing ? REVIEW_ENV_MODE : GATE_ENV_MODE,
@@ -1444,9 +1448,20 @@ async function execGate(run, step) {
 }
 
 /**
- * A gate or review in its turn: one at a time per lane, whatever the driver sends. The turn re-reads
- * the ledger and settles the call inside itself: the call ahead of this one in the lane may have
- * landed the effect, and the next turn must see it.
+ * Whether a gate runs beside the others: the driver marked it `parallel` and the gate loop says it can.
+ * @param {Run} run
+ * @param {Step} step
+ */
+const isAlongside = (run, step) =>
+    step.kind === 'gate' && step.parallel === true && fs.existsSync(run.file.gate.parallel);
+
+/**
+ * A gate or review in its turn: one at a time per lane, whatever the driver sends — except a gate
+ * the driver marked `parallel`, which takes no turn and runs beside the others when the gate loop says
+ * it can (its `parallel` file): the driver decided those gates may share the gate container, and holds
+ * the gates after them until all have answered. A loop that cannot gets them one at a time, as any gate.
+ * The turn re-reads the ledger and settles the call inside itself: the call ahead of this one in the
+ * lane may have landed the effect, and the next turn must see it.
  * @param {Run} run
  * @param {GateStep} step
  * @param {Entry} entry
@@ -1454,7 +1469,7 @@ async function execGate(run, step) {
  */
 function runGate(run, step, entry) {
     const lane = run.lanes[step.kind];
-    const turn = lane.turn.then(async () => {
+    const perform = async () => {
         Object.assign(entry, ledgerOf(run, step));
         // The re-read is the disk's: a call ahead in the lane rewrote it from its own entry, without this call's record.
         if (!entry.effect) recordCall(run, entry, step.invocation, { state: 'running' });
@@ -1462,8 +1477,10 @@ function runGate(run, step, entry) {
             ? { result: { ...entry.effect, replayed: true }, interrupted: false }
             : await execGate(run, step);
         return settleCall(run, entry, step, outcome);
-    });
-    lane.turn = turn.catch(() => undefined);
+    };
+    const alongside = isAlongside(run, step);
+    const turn = alongside ? perform() : lane.turn.then(perform);
+    if (!alongside) lane.turn = turn.catch(() => undefined);
     lane.inFlight += 1;
     return turn.finally(() => {
         lane.inFlight -= 1;

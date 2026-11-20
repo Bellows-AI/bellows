@@ -43,10 +43,3 @@ CVE-2026-78661
 # the repository's executor images from its own Dockerfiles, never an untrusted archive. Revisit
 # 2026-12-01, or when a buildx release vendors go-archive v0.3.0: bump BUILDX_VERSION and drop this.
 CVE-2026-17106
-
-# CVE-2026-111943 — Go crypto/x509 man-in-the-middle, in the helm binary of the dev-runner image
-# (/usr/local/bin/helm, built with Go 1.26.9; fixed in 1.26.10). helm v3.22.1 is the newest 3.x
-# release; the lanes use helm 3, and helm 4 is a major version. helm there talks only to the lane's
-# local kind cluster and chart directories. Revisit 2026-12-01, or when a helm 3.x release builds
-# with Go 1.26.10 or later: bump HELM_VERSION and drop this line.
-CVE-2026-111943

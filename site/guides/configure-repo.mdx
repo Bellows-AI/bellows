@@ -95,6 +95,7 @@ How gates run, fail and get repaired: [Gates](/guides/gates). Env vars and secre
 | `timeout`   | Whole minutes, 1–120                                                                         |
 | `on_demand` | `true`: the agent can run it while working, and the end-of-run gate pass skips it            |
 | `filter`    | `true`: the agent can narrow the run; the value arrives as `$GATE_FILTER`                    |
+| `parallel`  | `true`: the end-of-run pass runs it together with the `parallel` gates next to it            |
 
 ## Common errors
 

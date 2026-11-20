@@ -116,6 +116,12 @@ spec:
                         value: {{ include "factory.runnerClasses" $ | quote }}
                       - name: RUNNER_DEFAULT_CLASS
                         value: {{ $.Values.runner.defaultClass | quote }}
+                      {{- with $.Values.isolation.sandboxPools }}
+                      # The sandbox node pools, one JSON array: the driver refuses to boot a class
+                      # that tolerates a pool's taint without a Kata RuntimeClass the pool lists.
+                      - name: RUNNER_SANDBOX_POOLS
+                        value: {{ toJson . | quote }}
+                      {{- end }}
                       {{- if ne (include "factory.runnerDockerClasses" $) "[]" }}
                       # The docker classes' daemon image, digest-pinned: the driver refuses to
                       # boot a docker class without it.

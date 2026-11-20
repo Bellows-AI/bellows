@@ -89,6 +89,7 @@ import {
     resourcesField,
     runnerVolumesField,
     schedulingField,
+    serviceResourcesField,
     type ContainerSecurityContext,
     type PrivilegedSecurityContext,
     type PodResources,
@@ -123,7 +124,12 @@ export interface RunnerPodContainer {
     /** `Always` makes an init container a native sidecar: the gate and the services, up beside the main containers. */
     restartPolicy?: 'Always';
     /** A service sidecar's generation probe: what the kubelet restarts it on. */
-    livenessProbe?: { exec: { command: string[] }; periodSeconds: number; failureThreshold: number };
+    livenessProbe?: {
+        exec: { command: string[] };
+        periodSeconds: number;
+        timeoutSeconds: number;
+        failureThreshold: number;
+    };
     /** The `dockerd` sidecar's socket probe: the init containers after it start once it passes. */
     startupProbe?: { exec: { command: string[] }; periodSeconds: number; failureThreshold: number };
     resources?: PodResources;
@@ -321,9 +327,17 @@ const serviceRestartMounts = (services: readonly ServiceSpec[]): RunnerMount[] =
               })),
           ];
 
-/** How often the kubelet runs a service sidecar's generation probe, and the misses it restarts it on. */
-const SERVICE_PROBE_PERIOD_SECONDS = 2;
-const SERVICE_PROBE_FAILURES = 1;
+/**
+ * How often the kubelet runs a service sidecar's generation probe, how long one exec may take, and the
+ * misses in a row it restarts it on. A timed-out exec counts as a miss, and in a loaded microVM one exec
+ * can outrun the kubelet's 1 s default — so a timeout alone never restarts a healthy service mid-gate.
+ * The period leaves room for the timeout, so a slow exec never overlaps the next. A real generation
+ * bump fails every probe at once: the restart lands 30–45 s after it (three misses 15 s apart), and at
+ * worst, every exec timing out, 3 × (15 + 10) s — inside the supervisor's `SERVICE_RESTART_TIMEOUT_S`.
+ */
+const SERVICE_PROBE_PERIOD_SECONDS = 15;
+const SERVICE_PROBE_TIMEOUT_SECONDS = 10;
+const SERVICE_PROBE_FAILURES = 3;
 
 /**
  * One declared service as a native sidecar of the task pod: up beside the supervisor
@@ -331,7 +345,8 @@ const SERVICE_PROBE_FAILURES = 1;
  * Hardened like every container — the declared `user:` is its uid:gid, an image default otherwise —
  * with the claim's environment as literals: those were already world-readable in the author's
  * `.bellows.yaml`. It mounts nothing of the task: the generations read-only and its own
- * acknowledgement directory, for the liveness probe that is its restart (`serviceProbeArgv`).
+ * acknowledgement directory, for the liveness probe that is its restart (`serviceProbeArgv`), and
+ * its declared tmpfs mounts — memory emptyDirs whose size is added to its memory request and limit.
  */
 function serviceSidecar(config: DriverConfig, job: BoardJob, spec: ServiceSpec): RunnerPodContainer {
     assertServiceSpec(job, spec);
@@ -341,7 +356,7 @@ function serviceSidecar(config: DriverConfig, job: BoardJob, spec: ServiceSpec):
         image: spec.image,
         imagePullPolicy: config.imagePullPolicy,
         restartPolicy: 'Always',
-        ...resourcesField(jobClassOf(config, job).runnerResources),
+        ...serviceResourcesField(jobClassOf(config, job).runnerResources, spec.tmpfs),
         securityContext: {
             ...hardened,
             ...(spec.user ? { runAsNonRoot: true as const, runAsUser: spec.user.uid, runAsGroup: spec.user.gid } : {}),
@@ -350,16 +365,24 @@ function serviceSidecar(config: DriverConfig, job: BoardJob, spec: ServiceSpec):
         livenessProbe: {
             exec: { command: serviceProbeArgv(spec.name) },
             periodSeconds: SERVICE_PROBE_PERIOD_SECONDS,
+            timeoutSeconds: SERVICE_PROBE_TIMEOUT_SECONDS,
             failureThreshold: SERVICE_PROBE_FAILURES,
         },
         volumeMounts: [
             { name: SERVICE_GENERATIONS.volume, mountPath: SERVICE_GENERATIONS.path, readOnly: true },
             { name: serviceAckVolume(spec.name), mountPath: SERVICE_GENERATIONS.ackPath },
+            ...(spec.tmpfs ?? []).map(({ path }, index) => ({
+                name: serviceTmpfsVolume(spec.name, index),
+                mountPath: path,
+            })),
         ],
     };
 }
 
-/** The pod fields the declared services add: their names on loopback, and the restart's volumes. */
+/** The memory emptyDir behind a service's `index`-th declared tmpfs. */
+const serviceTmpfsVolume = (service: string, index: number): string => `svc-tmp-${service}-${index}`;
+
+/** The pod fields the declared services add: their names on loopback, the restart's volumes and the tmpfs mounts. */
 function servicesPodFields(services: readonly ServiceSpec[]): {
     hostAliases?: { ip: string; hostnames: string[] }[];
     volumes: RunnerVolume[];
@@ -367,10 +390,18 @@ function servicesPodFields(services: readonly ServiceSpec[]): {
     if (services.length === 0) return { volumes: [] };
     return {
         hostAliases: [{ ip: SERVICE_ADDRESS, hostnames: services.map(({ name }) => name) }],
-        volumes: [SERVICE_GENERATIONS.volume, ...services.map(({ name }) => serviceAckVolume(name))].map((name) => ({
-            name,
-            emptyDir: {},
-        })),
+        volumes: [
+            ...[SERVICE_GENERATIONS.volume, ...services.map(({ name }) => serviceAckVolume(name))].map((name) => ({
+                name,
+                emptyDir: {},
+            })),
+            ...services.flatMap(({ name, tmpfs }) =>
+                (tmpfs ?? []).map(({ size }, index) => ({
+                    name: serviceTmpfsVolume(name, index),
+                    emptyDir: { medium: 'Memory' as const, sizeLimit: size },
+                }))
+            ),
+        ],
     };
 }
 

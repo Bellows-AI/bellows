@@ -1,13 +1,16 @@
 # The gates run in the dev runner image (docker/dev-runner), pinned to the release that published it.
-# test:jobs needs a docker daemon: it runs under a docker runner class (a Kata microVM RuntimeClass).
+# No gate needs a docker daemon: the docker lane (npm run test:jobs) runs nightly, as the kind lane does.
 environment:
     image: ghcr.io/bellows-ai/dev-runner:v0.0.17
     setup: "npm ci && sh scripts/gate-jq.sh"
     gates:
          # The budgets, in minutes, each capped by the driver's DRIVER_JOB_TIMEOUT_MS.
          # npm test outran the 10-minute default in a microVM runner.
+         # test and test:db run only the suites the change since origin/$BELLOWS_BASE_BRANCH reaches
+         # (scripts/gate-test-changed.sh); a shared file still runs everything in the test gate.
+         # CI's npm test and npm run test:db stay the merge gate.
          - name: test
-           command: "npm test"
+           command: "sh scripts/gate-test-changed.sh"
            timeout: 30
          - name: lint
            command: "npm run lint"
@@ -15,22 +18,29 @@ environment:
            command: "npm run typecheck"
            timeout: 15
          - name: "test:db"
-           command: "DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test npm run test:db"
+           # The service is throwaway: durability off, and twice the default workers, since in a microVM
+           # the suite waits on round trips and WAL syncs, not CPU.
+           command: "sh scripts/gate-pg-fast.sh postgres://factory:factory@postgres:5432/postgres && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test sh scripts/gate-test-changed.sh --db"
            timeout: 30
-         # Only the phases the change maps to (scripts/gate-test-jobs.sh); the full lane took ~23 min in a microVM.
-         - name: "test:jobs"
-           command: "TEST_JOBS_PG_URL=postgres://factory:factory@postgres:5432 sh scripts/gate-test-jobs.sh"
-           timeout: 45
+         # The in-process driver, supervisor and job-route suites, whatever the change touched: no daemon.
+         - name: "test:executors"
+           command: "npm run test:executors"
+           timeout: 15
 
 services:
     - name: postgres
       image: postgres:17
       user: "999:999"
       ports: [5432]
+      # The data directory lives in memory (the test:db data is ~1.2 GiB): on a microVM's virtiofs
+      # rootfs test:db ran over four times slower. PGDATA is a subdirectory because the mount root is
+      # root-owned, and postgres (uid 999) can own only what it creates.
+      tmpfs: [/var/lib/postgresql/data:2Gi]
       environment:
           POSTGRES_USER: factory
           POSTGRES_PASSWORD: factory
           POSTGRES_DB: factory_test
+          PGDATA: /var/lib/postgresql/data/pgdata
     - name: s3
       image: rustfs/rustfs:1.0.1
       user: "10001:10001"
