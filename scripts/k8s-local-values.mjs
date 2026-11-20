@@ -82,12 +82,8 @@ const values = {
         operationKey: secretStoreRequired.SECRETS_OPERATION_KEY,
         fingerprintKey: secretStoreRequired.SECRETS_FINGERPRINT_KEY,
     },
-    // The driver's scrape is served only with its own token: DRIVER_METRICS_TOKEN from .env, else no scrape port.
     driver: {
         credential: { value: required.DRIVER_CREDENTIAL },
-        ...(env.DRIVER_METRICS_TOKEN?.trim()
-            ? { metricsToken: env.DRIVER_METRICS_TOKEN.trim() }
-            : { metricsPort: '' }),
     },
     // The model credential the real runner images need, into the chart's runner Secret. Optional:
     // a board env var can carry it instead, and an unset one stays the chart's empty value.

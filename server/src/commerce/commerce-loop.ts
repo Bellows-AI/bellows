@@ -5,6 +5,7 @@ import type { Track } from '../shutdown.js';
 import type { ServerMetrics } from '../metrics.js';
 import type { OrgRegistry } from '../orgs.js';
 import { type CommerceClient, createCommerceClient } from './commerce-client.js';
+import { logger } from '../log.js';
 
 /**
  * Usage delivery (docs/commerce.md): every org's closed claims are queued, leased in batches, POSTed and
@@ -61,7 +62,7 @@ export function createUsageReporter({
                 const store = (await orgs.for(org.id))?.commerce;
                 if (store) await reportOrg({ store, client, now }, org.id, now() + passBudgetMs);
             } catch (e) {
-                console.error(`[commerce] usage pass for "${org.id}" failed: ${(e as Error).message}`);
+                logger('commerce').error({ orgId: org.id, err: e }, 'usage pass failed');
             }
         }
     };

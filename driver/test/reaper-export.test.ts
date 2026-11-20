@@ -285,7 +285,8 @@ describe('the reaper re-exports a killed exporter’s unacknowledged records bef
         await s.reaper.sweep();
         expect(s.events).toEqual(['export']);
         expect(s.outcomes).toEqual(['aborted']);
-        expect(s.logs.join('\n')).toContain('refused');
+        expect(s.logs.join('\n')).toContain('the transcript export did not drain');
+        expect(s.logs.join('\n')).not.toContain('refused');
         expect(s.uploaded()).toBe(s.acked);
     });
 
@@ -329,7 +330,8 @@ describe('the reaper re-exports a killed exporter’s unacknowledged records bef
         // The dead exporter's saved state says the stream stopped; the new exporter closes it as such.
         await s.reaper.sweep();
         expect(s.events).toEqual(['export', 'export']);
-        expect(s.logs.join('\n')).toContain('upload_rejected');
+        expect(s.logs.join('\n')).toContain('the transcript export did not drain');
+        expect(s.logs.join('\n')).not.toContain('upload_rejected');
         expect(s.uploaded()).toBe(s.acked);
     });
 });

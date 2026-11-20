@@ -7,6 +7,7 @@ import type { NotificationOutboxStore, OutboxItem, OutboxKey } from '../src/noti
 import type { ServerMetrics } from '../src/metrics.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 import { fakeConnector } from './notifications-fake-connector.js';
+import { captureLogs } from './helpers-log.js';
 
 /** the deliverer takes one lease at a time, settles each send and releases the lease on every exit. */
 const PUBLIC_URL = 'https://board.example.test';
@@ -113,7 +114,6 @@ describe('notification deliverer', () => {
     });
 
     it('a settle that throws still releases the lease exactly once and the next org runs', async () => {
-        vi.spyOn(console, 'error').mockImplementation(() => {});
         const broken = fakeStore([[item(1)]], { settleThrows: true });
         const healthy = fakeStore([[item(2)]]);
 
@@ -226,7 +226,7 @@ describe('startNotificationDelivery', () => {
 
     it('starts nothing without a public URL, and warns', async () => {
         vi.useFakeTimers();
-        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const captured = captureLogs();
         const orgs = { list: vi.fn(async () => []), for: vi.fn() };
         const m = metrics();
 
@@ -240,7 +240,8 @@ describe('startNotificationDelivery', () => {
         });
         await vi.advanceTimersByTimeAsync(120_000);
 
-        expect(warn).toHaveBeenCalledWith('[notifications] PUBLIC_URL unset: delivery off');
+        expect(captured.of('notifications')).toEqual([['WARN', 'PUBLIC_URL unset: delivery off']]);
+        captured.stop();
         expect(orgs.list).not.toHaveBeenCalled();
         expect(m.spy).not.toHaveBeenCalled();
     });

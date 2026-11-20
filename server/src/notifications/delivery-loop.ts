@@ -5,6 +5,7 @@ import type { ServerMetrics } from '../metrics.js';
 import type { OrgRegistry } from '../orgs.js';
 import { type ConnectorRegistry, deliver } from './connector.js';
 import type { NotificationOutboxStore } from './outbox-store.js';
+import { logger } from '../log.js';
 
 /**
  * Notification delivery (docs/notifications.md): every org's due outbox rows are leased in batches, sent
@@ -64,8 +65,9 @@ async function deliverOrg(
                 await store.settle(lease.token, item, result);
                 if (result.status === 'permanent') {
                     // Ids and the closed reason only: the config can carry a destination.
-                    console.warn(
-                        `[notifications] parked ${orgId}/${item.eventId}/${item.subscriptionId}: ${result.reason}`
+                    logger('notifications').warn(
+                        { orgId, eventId: item.eventId, subscriptionId: item.subscriptionId, reason: result.reason },
+                        'notification parked'
                     );
                 }
             }
@@ -97,7 +99,7 @@ export function createNotificationDeliverer({
                     );
                 }
             } catch (e) {
-                console.error(`[notifications] delivery pass for "${org.id}" failed: ${(e as Error).message}`);
+                logger('notifications').error({ orgId: org.id, err: e }, 'delivery pass failed');
             }
         }
     };
@@ -124,7 +126,7 @@ export function startNotificationDelivery({
 }): void {
     if (connectors.size === 0) return;
     if (publicUrl === null) {
-        console.warn('[notifications] PUBLIC_URL unset: delivery off');
+        logger('notifications').warn('PUBLIC_URL unset: delivery off');
         return;
     }
     const pass = createNotificationDeliverer({ orgs, connectors, publicUrl });

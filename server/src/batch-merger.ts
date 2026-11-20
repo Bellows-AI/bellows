@@ -34,6 +34,7 @@ import {
 } from './db/batches/batch-store-merge.js';
 import { GitHubMergeError, type MergeResult } from './github/pr-merge.js';
 import type { BranchState } from './github/pr-read.js';
+import { logger } from './log.js';
 
 /**
  * The batch merger (docs/batches.md): merges the PRs of automerge stages the observer found ready,
@@ -212,9 +213,9 @@ async function verify(run: Run, job: VerificationJob): Promise<void> {
 }
 
 /** One failed unit of work is logged and left for the next pass; it never stops the others. */
-const guarded = (what: string, work: () => Promise<void>): Promise<void> =>
+const guarded = (what: string, fields: Record<string, unknown>, work: () => Promise<void>): Promise<void> =>
     work().catch((e: unknown) => {
-        console.error(`[batches] ${what} failed: ${errorMessage(e)}`);
+        logger('batches').error({ ...fields, err: e }, `${what} failed`);
     });
 
 export function createBatchMerger(deps: BatchMergerDeps): BatchMerger {
@@ -236,18 +237,24 @@ export function createBatchMerger(deps: BatchMergerDeps): BatchMerger {
             const unresolved = await unresolvedMerges(store, concurrency);
             await Promise.all(
                 unresolved.map((intent) =>
-                    guarded(`reconciling merge of ${intent.repo}#${intent.prNumber}`, () => reconcileOne(run, intent))
+                    guarded('reconciling a merge', { batchId: intent.batchId, taskKey: intent.taskKey }, () =>
+                        reconcileOne(run, intent)
+                    )
                 )
             );
             const intents = await claimMerges(store, concurrency);
             await Promise.all(
                 intents.map((intent) =>
-                    guarded(`merging ${intent.repo}#${intent.prNumber}`, () => dispatch(run, intent))
+                    guarded('merging', { batchId: intent.batchId, taskKey: intent.taskKey }, () =>
+                        dispatch(run, intent)
+                    )
                 )
             );
             const jobs = await dueVerifications(store, VERIFY_BATCH);
             for (const job of jobs) {
-                await guarded(`verifying stage ${job.stageKey} of ${job.batchId}`, () => verify(run, job));
+                await guarded('verifying a stage', { batchId: job.batchId, stageKey: job.stageKey }, () =>
+                    verify(run, job)
+                );
             }
             return unresolved.length + intents.length + jobs.length;
         },

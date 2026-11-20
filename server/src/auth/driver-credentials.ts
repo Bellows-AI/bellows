@@ -7,6 +7,7 @@
  */
 import { randomBytes } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
+import { describeError } from '../log.js';
 import { hashToken } from './session.js';
 
 export const DRIVER_CREDENTIAL_PREFIX = 'drv_';
@@ -249,7 +250,7 @@ export async function bootstrapDriverCredential(
                 : '[auth] the DRIVER_CREDENTIAL_SHA256 credential is already recorded; left as it is'
         );
     } catch (e) {
-        log(`[auth] could not record the DRIVER_CREDENTIAL_SHA256 credential: ${(e as Error).message}`);
+        log(`[auth] could not record the DRIVER_CREDENTIAL_SHA256 credential: ${describeError(e)}`);
     }
 }
 

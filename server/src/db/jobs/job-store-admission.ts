@@ -8,6 +8,7 @@
 
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { type PlanLimits, planLimits } from '../plan-limits.js';
+import type { OutcomeObserver } from './job-store-outcome-tally.js';
 
 /** The org's queue demand the shared admission budgets read. */
 export interface JobAdmissionStore {
@@ -277,7 +278,7 @@ export async function admissionOccupancy(
 /** A row waiting for its first claim (`new`) or for the takeover of an attempt that was lost (`takeover`). */
 export type ClaimWaitKind = 'new' | 'takeover';
 
-export interface ClaimObserver {
+export interface ClaimObserver extends OutcomeObserver {
     /** A candidate a full budget refused, by the scope that was full. */
     refusal(scope: AdmissionScope): void;
     /** Queued to claimed, in seconds. */

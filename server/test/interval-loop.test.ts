@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startIntervalLoop } from '../src/interval-loop.js';
+import { captureLogs } from './helpers-log.js';
 
 /** The shared outbox loop (commerce, notifications): a pass never overlaps itself and a throw never stops it. */
 afterEach(() => {
@@ -35,14 +36,15 @@ describe('interval loop', () => {
 
     it('a throwing pass does not stop the loop and is logged under its label', async () => {
         vi.useFakeTimers();
-        const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const captured = captureLogs();
         const pass = vi.fn(async () => {
             throw new Error('boom');
         });
         const stop = startIntervalLoop('test', pass, 10);
         await vi.advanceTimersByTimeAsync(35);
         expect(pass.mock.calls.length).toBeGreaterThanOrEqual(3);
-        expect(error).toHaveBeenCalledWith('[test] pass failed: boom');
+        expect(captured.of('test')).toContainEqual(['ERROR', 'pass failed']);
+        captured.stop();
         await stop();
     });
 

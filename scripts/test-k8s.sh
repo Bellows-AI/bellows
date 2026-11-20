@@ -37,10 +37,10 @@ while [ "$#" -gt 0 ]; do
         phase_requested=1
         shift
         PHASE="${1:-}"
-        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|drain|replicas|bench) ;; *) echo 'invalid --phase'; exit 2 ;; esac
+        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|observability|drain|replicas|bench) ;; *) echo 'invalid --phase'; exit 2 ;; esac
         ;;
     --help)
-        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|drain|replicas|bench] | --netpol]'
+        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|observability|drain|replicas|bench] | --netpol]'
         echo 'All cluster phases run smoke prerequisites. The default cluster phase is all, which leaves out drain and replicas (both need a LAYOUT=drain cluster) and bench (an hour or more on an idle host; writes <timings>.bench.tsv).'
         echo 'TIMINGS_FILE overrides artifacts/k8s/<release>.tsv (includes cleanup).'
         exit 0
@@ -88,13 +88,10 @@ auth_sets() { # auth_sets <publicUrl> <sessionSecret> <driverCredential> — (re
         --set secret.oauthClientSecret=secret
         --set "secret.sessionSecret=$2"
         --set "driver.credential.value=$3"
-        --set "driver.metricsToken=$METRICS_TOKEN"
     )
 }
 # The driver's own credential (`drv_` + 64 hex) and the SHA-256 the dashboard records it by.
 CREDENTIAL="drv_$(printf '%064d' 7)"
-# The driver scrape's own bearer, never the credential.
-METRICS_TOKEN="$(printf '%032d' 9)"
 CREDENTIAL_SHA256="$(printf %s "$CREDENTIAL" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)"
 auth_sets https://factory.example "$SECRET32" "$CREDENTIAL"
 # The local profile as the cluster phase installs it: no App, so the code-only no-fetch entry.
@@ -453,7 +450,7 @@ driver_secret="$(awk '/^# Source: factory\/templates\/driver-secret.yaml/,/^---/
 expect_not_contains 'the dashboard Secret holds no driver credential' "$dashboard_secret" "$CREDENTIAL"
 expect_not_contains 'no shared board secret is rendered' "$(cat "$work/rendered.yaml")" 'job-board-token'
 expect_contains 'the driver Secret holds the driver credential' "$driver_secret" "credential: \"$CREDENTIAL\""
-expect_contains 'the driver Secret holds the scrape token' "$driver_secret" 'metrics-token:'
+expect_not_contains 'the driver Secret holds no scrape token' "$driver_secret" 'metrics-token'
 expect_contains 'the dashboard records the credential by its SHA-256' \
     "$(grep -A1 'name: DRIVER_CREDENTIAL_SHA256' "$work/rendered.yaml")" "value: \"$CREDENTIAL_SHA256\""
 [ "$(grep -c "$CREDENTIAL" "$work/rendered.yaml")" -eq 1 ] && ok 'the credential appears once, in the driver Secret' ||
@@ -794,20 +791,74 @@ expect_contains 'the driver keeps the production step long poll' "$(grep -A1 'na
 gh_driver_lane="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$(gh_render --set-string driver.orphanMinMs=10000 --set-string driver.stepWaitMs=2000)")"
 expect_contains 'a lane lowers the orphan floor' "$(grep -A1 'name: DRIVER_ORPHAN_MIN_MS' <<<"$gh_driver_lane")" 'value: "10000"'
 expect_contains 'a lane lowers the step long poll' "$(grep -A1 'name: DRIVER_STEP_WAIT_MS' <<<"$gh_driver_lane")" 'value: "2000"'
-# The board's own OTEL export: off by default, and an endpoint names it.
-gh_dashboard_otel="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' <<<"$(gh_render --set-string dashboard.otel.endpoint=http://otel.example:4318)")"
-expect_not_contains 'the dashboard exports no OTEL by default' "$gh_dashboard" 'OTEL_EXPORTER_OTLP_ENDPOINT'
-expect_contains 'dashboard.otel.endpoint renders the board OTLP endpoint' \
-    "$(grep -A1 'name: OTEL_EXPORTER_OTLP_ENDPOINT' <<<"$gh_dashboard_otel")" 'value: "http://otel.example:4318"'
-# The driver's scrape listener: on by default behind its own token, and '' turns it off.
-expect_contains 'the driver scrape port defaults to 9464' "$(grep -A1 'name: DRIVER_METRICS_PORT' <<<"$gh_driver")" 'value: "9464"'
-expect_contains 'the scrape token is the driver Secret’s metrics-token' \
-    "$(grep -A4 'name: DRIVER_METRICS_TOKEN' <<<"$gh_driver")" 'key: metrics-token'
-expect_contains 'the driver names its scrape container port' "$(grep -B1 -A1 'name: metrics' <<<"$gh_driver")" 'containerPort: 9464'
-gh_driver_off="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$(gh_render --set driver.metricsPort='')")"
-expect_not_contains 'an empty scrape port renders no listener env' "$gh_driver_off" 'DRIVER_METRICS_PORT'
-expect_not_contains 'an empty scrape port renders no scrape token' "$gh_driver_off" 'DRIVER_METRICS_TOKEN'
-expect_not_contains 'an empty scrape port renders no container port' "$gh_driver_off" 'name: metrics'
+# The ops collector and the OTEL env of the board and the driver: all off by default.
+gh_runner_np="$(awk '/^# Source: factory\/templates\/runner-networkpolicy.yaml/,/^---/' <<<"$gh")"
+expect_not_contains 'the default runner policy never names the ops collector' "$gh_runner_np" 'ops-collector'
+expect_not_contains 'no ops collector renders by default' "$gh" 'ops-collector'
+for needle in OTEL_EXPORTER_OTLP_ENDPOINT OTEL_RESOURCE_ATTRIBUTES POD_NAME; do
+    expect_not_contains "the dashboard sets no $needle by default" "$gh_dashboard" "$needle"
+    expect_not_contains "the driver sets no $needle by default" "$gh_driver" "$needle"
+done
+obs="$(gh_render --set observability.enabled=true --set-string observability.endpoint=https://otlp.example \
+    --set observability.headersSecret.name=ops-headers --set observability.headersSecret.key=headers)"
+obs_ops="$(awk '/^# Source: factory\/templates\/ops-collector.yaml/,/^# Source: factory\/templates\/ops-collector-networkpolicy.yaml/' <<<"$obs")"
+obs_dashboard="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' <<<"$obs")"
+obs_driver="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$obs")"
+obs_netpol="$(awk '/^# Source: factory\/templates\/ops-collector-networkpolicy.yaml/,/^---/' <<<"$obs")"
+obs_runner_np="$(awk '/^# Source: factory\/templates\/runner-networkpolicy.yaml/,/^---/' <<<"$obs")"
+expect_contains 'the ops collector Deployment is named for the release' \
+    "$(awk '/kind: Deployment/,/spec:/' <<<"$obs_ops")" "name: $RELEASE-factory-ops-collector"
+expect_contains 'the ops collector runs the runners collector image' "$obs_ops" "image: $gh_collector"
+expect_contains 'the ops collector config holds tail sampling' "$obs_ops" 'tail_sampling'
+expect_not_contains 'the ops collector never targets the board ingest route' "$obs_ops" '/api/otlp'
+expect_contains 'the ops collector restarts on a config change' "$obs_ops" 'checksum/config'
+expect_contains 'the backend headers come from the named Secret' \
+    "$(grep -A5 'name: OPS_BACKEND_HEADERS' <<<"$obs_ops")" $'name: "ops-headers"\n                                key: "headers"'
+expect_contains 'the tail percent defaults to 25' "$(grep -A1 'name: OPS_TAIL_PERCENT' <<<"$obs_ops")" 'value: "25"'
+expect_contains 'the latency threshold defaults to 2000' "$(grep -A1 'name: OPS_LATENCY_THRESHOLD_MS' <<<"$obs_ops")" 'value: "2000"'
+expect_contains 'the ops collector mounts no ServiceAccount token' "$obs_ops" 'automountServiceAccountToken: false'
+expect_contains 'the ops collector runs non-root' "$obs_ops" 'runAsNonRoot: true'
+expect_contains 'the ops collector has a read-only root filesystem' "$obs_ops" 'readOnlyRootFilesystem: true'
+expect_not_contains 'the ops collector has no debug reader by default' "$obs_ops" 'debug-reader'
+expect_not_contains 'the ops collector has no debug overlay by default' "$obs_ops" '--config=/etc/otel/debug.yaml'
+for pair in dashboard:"$obs_dashboard" driver:"$obs_driver"; do
+    who="${pair%%:*}"
+    doc="${pair#*:}"
+    expect_contains "the $who exports to the ops collector" "$(grep -A1 'name: OTEL_EXPORTER_OTLP_ENDPOINT' <<<"$doc")" \
+        "value: \"http://$RELEASE-factory-ops-collector:4318\""
+    expect_contains "the $who exports http/protobuf" "$(grep -A1 'name: OTEL_EXPORTER_OTLP_PROTOCOL' <<<"$doc")" 'value: http/protobuf'
+    resource_attributes="$(grep -A1 'name: OTEL_RESOURCE_ATTRIBUTES' <<<"$doc")"
+    expect_contains "the $who names its pod" "$resource_attributes" 'k8s.pod.name=$(POD_NAME)'
+    expect_contains "the $who names its namespace" "$resource_attributes" 'k8s.namespace.name=$(POD_NAMESPACE)'
+    expect_contains "the $who names its instance" "$resource_attributes" 'service.instance.id=$(POD_NAME)'
+    pod_line="$(grep -n -m1 'name: POD_NAME' <<<"$doc" | cut -d: -f1)"
+    attributes_line="$(grep -n -m1 'name: OTEL_RESOURCE_ATTRIBUTES' <<<"$doc" | cut -d: -f1)"
+    [ -n "$pod_line" ] && [ -n "$attributes_line" ] && [ "$pod_line" -lt "$attributes_line" ] &&
+        ok "the $who declares POD_NAME before it is referenced" ||
+        bad "the $who declares POD_NAME before it is referenced" "POD_NAME line '$pod_line', attributes line '$attributes_line'"
+    for secret_needle in ops-headers OPS_BACKEND_HEADERS OTEL_EXPORTER_OTLP_HEADERS; do
+        expect_not_contains "the $who carries no $secret_needle" "$doc" "$secret_needle"
+    done
+done
+expect_contains 'the ops policy selects the ops collector pods' "$obs_netpol" 'component: ops-collector'
+expect_contains 'the ops policy is ingress only' "$obs_netpol" '- Ingress'
+expect_contains 'the ops policy admits the dashboard' "$obs_netpol" 'component: dashboard'
+expect_contains 'the ops policy admits the driver' "$obs_netpol" 'component: driver'
+expect_contains 'the ops policy admits 4318 only' "$obs_netpol" 'port: 4318'
+expect_not_contains 'the ops policy does not admit the runners collector' "$obs_netpol" 'component: collector'
+expect_not_contains 'the ops policy does not admit runner pods' "$obs_netpol" 'factory.job'
+expect_not_contains 'the runner policy never names the ops collector' "$obs_runner_np" 'ops-collector'
+obs_debug="$(gh_render --set observability.enabled=true --set-string observability.endpoint=https://otlp.example \
+    --set observability.debugFile=true --set observability.sampling.tailPercent=100)"
+expect_contains 'debugFile merges the overlay config' "$obs_debug" '--config=/etc/otel/debug.yaml'
+expect_contains 'debugFile adds a reader sidecar' "$obs_debug" 'name: debug-reader'
+expect_contains 'the reader runs the wait image' "$obs_debug" 'image: postgres:17-alpine'
+expect_contains 'debugFile shares an emptyDir' "$obs_debug" 'emptyDir: {}'
+expect_contains 'the tail percent is a value' "$(grep -A1 'name: OPS_TAIL_PERCENT' <<<"$obs_debug")" 'value: "100"'
+# The driver serves no scrape: no listener env, no scrape token, no container port.
+expect_not_contains 'the driver renders no scrape listener env' "$gh_driver" 'DRIVER_METRICS_PORT'
+expect_not_contains 'the driver renders no scrape token' "$gh_driver" 'DRIVER_METRICS_TOKEN'
+expect_not_contains 'the driver names no container port' "$gh_driver" 'containerPort'
 
 # Selectors hold only name/instance/component: they are immutable, so a chart-version label in
 # one would make every upgrade an apiserver refusal.
@@ -845,6 +896,12 @@ refuses() { # refuses <name> <needle> <helm args...>
         expect_contains "$name" "$out" "$needle"
     fi
 }
+refuses 'the retired dashboard.otel is refused' 'observability.' "${GH_SETS[@]}" --set-string dashboard.otel.endpoint=http://otel.example:4318
+refuses 'an enabled collector with no endpoint is refused' 'observability.endpoint' "${GH_SETS[@]}" --set observability.enabled=true
+refuses 'a headers Secret name without a key is refused' 'observability.headersSecret' "${GH_SETS[@]}" \
+    --set observability.headersSecret.name=ops-headers
+refuses 'a tail percent over 100 is refused' 'observability.sampling.tailPercent' "${GH_SETS[@]}" \
+    --set observability.sampling.tailPercent=101
 refuses 'a missing publicUrl is refused' 'auth.publicUrl is required' "${GH_SETS[@]}" --set auth.publicUrl=
 # The board-hosted MCP server: off by default, https-only when on, origins rendered as one comma list.
 mcp_off="$(gh_render)"
@@ -978,8 +1035,6 @@ refuses 'a credential named twice is refused' 'set value or existingSecret, not 
     "${GH_SETS[@]}" --set driver.credential.existingSecret=mine
 refuses 'a malformed bootstrap hash is refused' 'driver.credential.sha256 must be the 64-hex' \
     "${GH_SETS[@]}" --set driver.credential.value= --set driver.credential.existingSecret=mine --set driver.credential.sha256=abc
-refuses 'a scrape port with no scrape token is refused' 'driver.metricsToken of at least 32 characters is required' \
-    "${GH_SETS[@]}" --set driver.metricsToken=
 refuses 'a missing App id is refused unless offline' 'github.appId is required' "${GH_SETS[@]}" --set github.appId=
 # Offline waives the App, never the wall: the no-fetch entry still needs every auth value.
 refuses 'offline still refuses a missing OAuth client id' 'auth.oauthClientId is required' \
@@ -1297,7 +1352,7 @@ refuses 'a localhost repository is refused under the prefix' 'already names a re
 
 # Names stay valid DNS labels however long the release name: truncation leaves room for suffixes.
 long="$(helm template "release-name-that-is-deliberately-far-too-long-for-a-dns-label" charts/factory \
-    "${GH_SETS[@]}" 2>&1)"
+    "${GH_SETS[@]}" --set observability.enabled=true --set-string observability.endpoint=https://otlp.example 2>&1)"
 too_long="$(grep -E '^    name: ' <<<"$long" | awk '{ if (length($2) > 63) print $2 }' | grep -v 'admission' || true)"
 [ -z "$too_long" ] && ok 'every object name fits a DNS label' || bad 'every object name fits a DNS label' "$too_long"
 
@@ -1841,6 +1896,13 @@ expect_contains 'the EKS shape keeps the collector OTLP port scoping' "$eks_netp
 # gate run on EKS while every port-scoping assertion still passed.
 expect_contains 'the EKS shape keeps the driver egress portless for the ephemeral gate endpoint' \
     "$eks_netpol" $'app.kubernetes.io/component: driver\n        - to:'
+if eks_obs="$(eks_render --set observability.enabled=true --set-string observability.endpoint=https://otlp.example)"; then
+    ok 'the EKS shape renders with the ops collector on'
+    expect_not_contains 'the EKS runner policy never names the ops collector' \
+        "$(awk '/^# Source: factory\/templates\/runner-networkpolicy.yaml/,/^---/' <<<"$eks_obs")" 'ops-collector'
+else
+    bad 'the EKS shape renders with the ops collector on' "${eks_obs:0:400}"
+fi
 helm lint charts/factory "${EKS_SETS[@]}" >/dev/null 2>&1 && ok 'helm lint passes on the EKS shape' \
     || bad 'helm lint passes on the EKS shape' 'lint failed'
 
@@ -2069,6 +2131,76 @@ EOF
     # does not work, and an isolation change that breaks them has not hardened anything.
     dns="$(kn exec attempt-a -n "$NETPOL_NS" -- sh -c 'nslookup kubernetes.default.svc.cluster.local >/dev/null 2>&1 && echo resolves || echo broken' 2>/dev/null)"
     expect_contains 'a runner still resolves cluster DNS' "$dns" 'resolves'
+
+    # The ops collector's ingress policy (observability.enabled): only this release's dashboard and driver
+    # pods reach it, and only on 4318. Two probe pods stand in for it and for the driver; `dashboard` above
+    # already stands in for the board. Same honest-probe rule: every target is reached BEFORE the policy.
+    OPS_LISTEN='while :; do nc -l -p 4318 >/dev/null 2>&1; done & while :; do nc -l -p 9999 >/dev/null 2>&1; done & sleep 3600'
+    netpol_pod ops \
+        "{\"app.kubernetes.io/name\":\"factory\",\"app.kubernetes.io/instance\":\"$RELEASE\",\"app.kubernetes.io/component\":\"ops-collector\"}" \
+        "$OPS_LISTEN"
+    netpol_pod driver \
+        "{\"app.kubernetes.io/name\":\"factory\",\"app.kubernetes.io/instance\":\"$RELEASE\",\"app.kubernetes.io/component\":\"driver\"}"
+    for p in ops driver; do
+        kn wait --for=condition=Ready "pod/$p" -n "$NETPOL_NS" --timeout=180s >/dev/null 2>&1 || {
+            echo "test-k8s: probe pod $p never became Ready"
+            exit 1
+        }
+    done
+    IP_OPS="$(ip_of ops)"
+    # The runner policy is already applied, and its egress exclusions may deny a runner the ops pod on their
+    # own, which would make the later denial prove nothing: an additive egress policy lets the runner out to
+    # the ops collector, so what the ingress policy then denies is the ingress policy's own doing.
+    kn apply -n "$NETPOL_NS" -f - >/dev/null 2>&1 <<EOF || {
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: lane-runner-egress-to-ops
+spec:
+    podSelector:
+        matchLabels:
+            factory.job: aaaa
+    policyTypes: [Egress]
+    egress:
+        - to:
+              - podSelector:
+                    matchLabels:
+                        app.kubernetes.io/component: ops-collector
+          ports:
+              - protocol: TCP
+                port: 4318
+EOF
+        echo 'test-k8s: the lane egress NetworkPolicy would not apply'
+        exit 1
+    }
+    sleep 5
+    # Ready means ANSWERING: every prober waits for the listener, not for the pod.
+    for ops_probe in unrelated dashboard driver attempt-a; do
+        for _ in $(seq 1 30); do
+            [ "$(reaches "$ops_probe" "$IP_OPS" 4318)" = 'reachable' ] && break
+            sleep 2
+        done
+    done
+    expect_contains 'before the ops policy, an unrelated pod reaches the ops collector (so the probe is honest)' \
+        "$(reaches unrelated "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'before the ops policy, the dashboard reaches the ops collector' "$(reaches dashboard "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'before the ops policy, the driver reaches the ops collector' "$(reaches driver "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'before the ops policy, a runner reaches the ops collector (the lane egress policy lets it out)' \
+        "$(reaches attempt-a "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'before the ops policy, the dashboard reaches the ops collector on 9999' "$(reaches dashboard "$IP_OPS" 9999)" 'reachable'
+
+    gh_render --set observability.enabled=true --set-string observability.endpoint=http://otlp.example |
+        awk '/^# Source: factory\/templates\/ops-collector-networkpolicy.yaml/,/^---/' |
+        grep -v '^---$' | kn apply -n "$NETPOL_NS" -f - >/dev/null 2>&1 || {
+        echo 'test-k8s: the rendered ops collector NetworkPolicy would not apply'
+        exit 1
+    }
+    sleep 5
+    expect_contains 'an unrelated pod may not reach the ops collector' "$(reaches unrelated "$IP_OPS" 4318)" 'denied'
+    expect_contains 'a runner may not reach the ops collector' "$(reaches attempt-a "$IP_OPS" 4318)" 'denied'
+    expect_contains 'the dashboard reaches the ops collector on 4318' "$(reaches dashboard "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'the driver reaches the ops collector on 4318' "$(reaches driver "$IP_OPS" 4318)" 'reachable'
+    expect_contains 'the dashboard may not reach the ops collector on another port' "$(reaches dashboard "$IP_OPS" 9999)" 'denied'
 
     netpol_cleanup
     trap cleanup EXIT
@@ -2319,7 +2451,6 @@ PORT=18080
 BASE="http://127.0.0.1:$PORT"
 secret_store_sets "$(openssl rand -base64 32)" "$(openssl rand -base64 32)" "$(openssl rand -base64 32)"
 CREDENTIAL="drv_$(openssl rand -hex 32)"
-METRICS_TOKEN="$(openssl rand -hex 32)"
 auth_sets "$BASE" "$(openssl rand -hex 32)" "$CREDENTIAL"
 REPLICA_SETS=()
 if [ "$PHASE" = replicas ]; then
@@ -3071,6 +3202,47 @@ queue_job() { # queue_job <command> -> the new job's id, empty when the board re
     case "$id" in unread:* | refused:*) ;; *) printf '%s' "$id" ;; esac
 }
 
+mint_member() { # mint_member <login> -> MINTED_TOKEN of a new org member tracking $SMOKE_REPO; non-zero with psql's answer
+    local hash out
+    # The token is made here, not inside bounded: bounded backgrounds its command and a variable set there is lost.
+    read -r MINTED_TOKEN hash < <(node -e '
+const c = require("node:crypto");
+const t = "fat_" + c.randomBytes(32).toString("base64url");
+process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
+')
+    out="$(bounded 40 kubectl exec -i -n "$NAMESPACE" --request-timeout=20s "statefulset/$STATE_RELEASE-postgres" -- \
+        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -q -v ON_ERROR_STOP=1 -v "login=$1" -v "hash=$hash" -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" \
+        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+with o as (
+    insert into organization (id, name) values (:'login', :'login') returning id
+), u as (
+    insert into app_user (github_user_id, github_login)
+    values ((1000000000 + floor(random() * 1000000000000))::bigint, :'login') returning id
+), m as (
+    insert into org_membership (org_id, github_login, user_id, role, claimed_at)
+    select o.id, :'login', u.id, 'member', now() from o, u
+)
+insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
+select o.id, 'personal', u.id, u.id, 'test-k8s', decode(:'hash', 'hex') from o, u;
+insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+values (:'login', 'claude-code', 'test-k8s-capacity', :'owner' || '/' || :'name', 'main', now(), now());
+SQL
+    )" || {
+        printf '%s' "$out"
+        return 1
+    }
+}
+
+store_executor() { # store_executor -> the current FACTORY_TOKEN's member stores the executor its tasks run under
+    local until=$(($(date +%s) + 60))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        [ "$(http_status PUT "$BASE/api/workspace/executors" \
+            '{"executors":[{"name":"claude","type":"claude-code","config":{}}]}')" = '200' ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
 job_brief() { # job_brief <id> -> "status|attempts|interruptions|first claimSeq|first reason"; "unread: ..." for a failed or misshapen read
     # scripts/acceptance-job.mjs validates the shape; a body without its fields is never a brief a check can pass on.
     ACC_AUTH="${FACTORY_TOKEN:+Bearer $FACTORY_TOKEN}" node "$REPO/scripts/acceptance-job.mjs" GET "$BASE/api/jobs/$1" brief
@@ -3174,6 +3346,8 @@ driver_logs() { kubectl logs -l "$DRIVER_SEL" -n "$NAMESPACE" --tail=-1 --reques
 . "$REPO/scripts/lanes/k8s/capacity.sh"
 
 . "$REPO/scripts/lanes/k8s/mcp.sh"
+
+. "$REPO/scripts/lanes/k8s/observability.sh"
 
 . "$REPO/scripts/lanes/k8s/bench.sh"
 

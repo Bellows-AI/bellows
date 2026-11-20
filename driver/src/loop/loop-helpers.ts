@@ -128,7 +128,7 @@ export async function runPostHelperPhase(
         if (result === STOOD_DOWN) return STOOD_DOWN;
         if ('halt' in result) return result;
         if (!result.ok) {
-            log(`job ${job.id}: post-run helper "${plan.helperId}" failed: ${result.reason} — ${result.message}`);
+            log(`job ${job.id}: post-run helper "${plan.helperId}" failed: ${result.reason}`);
             return { helperId: plan.helperId, result };
         }
         if (result.control === 'conclude') {

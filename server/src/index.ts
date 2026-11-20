@@ -12,14 +12,6 @@ import { start } from './main.js';
 const OTEL_FLUSH_MS = 3000;
 
 const { close } = await start();
-closeOnSignal(async () => {
-    try {
-        await close();
-    } finally {
-        if (otel) {
-            await beforeDeadline(otel.shutdown(), Date.now() + OTEL_FLUSH_MS, 'flushing telemetry').catch((e: Error) =>
-                console.error(`[shutdown] ${e.message}`)
-            );
-        }
-    }
+closeOnSignal(close, async () => {
+    if (otel) await beforeDeadline(otel.shutdown(), Date.now() + OTEL_FLUSH_MS, 'flushing telemetry');
 });

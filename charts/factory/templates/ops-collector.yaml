@@ -1,0 +1,156 @@
+{{- if .Values.observability.enabled }}
+{{/*
+The ops collector: a second collector, apart from the runners' one (templates/collector.yaml). The
+board and the driver export their own telemetry to it over OTLP/HTTP (factory.otelEnv); it
+tail-samples traces and forwards all three signals to observability.endpoint. It never exports to
+the board's /api/otlp, and runner pods never reach it (ops-collector-networkpolicy.yaml).
+files/ops-collector.yaml is static and shared byte for byte with docker-compose.yml; every knob
+reaches it as an OPS_* env var. Stateless, no ServiceAccount token.
+*/}}
+{{- $name := include "factory.opsCollectorName" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+    name: {{ $name }}
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: ops-collector
+spec:
+    replicas: 1
+    selector:
+        matchLabels:
+            {{- include "factory.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: ops-collector
+    template:
+        metadata:
+            labels:
+                {{- include "factory.labels" . | nindent 16 }}
+                app.kubernetes.io/component: ops-collector
+            annotations:
+                # The config is a ConfigMap the collector reads once at boot: without this, an
+                # upgrade that changes it leaves the running collector on the old one.
+                checksum/config: {{ print (.Files.Get "files/ops-collector.yaml") (.Files.Get "files/ops-collector-debug.yaml") | sha256sum }}
+                {{- with .Values.podAnnotations }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+        spec:
+            automountServiceAccountToken: false
+            securityContext:
+                # The upstream image's own non-root user.
+                runAsNonRoot: true
+                runAsUser: 10001
+                runAsGroup: 10001
+                seccompProfile:
+                    type: RuntimeDefault
+            {{- include "factory.podScheduling" . | nindent 12 }}
+            containers:
+                - name: ops-collector
+                  image: {{ include "factory.image" (list . .Values.collector.image) }}
+                  imagePullPolicy: {{ .Values.collector.imagePullPolicy }}
+                  args:
+                      - --config=/etc/otel/config.yaml
+                      {{- if .Values.observability.debugFile }}
+                      - --config=/etc/otel/debug.yaml
+                      {{- end }}
+                  ports:
+                      - name: otlp-http
+                        containerPort: 4318
+                      - name: health
+                        containerPort: 13133
+                  env:
+                      - name: OPS_BACKEND_ENDPOINT
+                        value: {{ .Values.observability.endpoint | quote }}
+                      # A map of header name → value, or YAML null for none: the collector types a
+                      # whole-value ${env:…} as YAML.
+                      - name: OPS_BACKEND_HEADERS
+                        {{- if .Values.observability.headersSecret.name }}
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ .Values.observability.headersSecret.name | quote }}
+                                key: {{ .Values.observability.headersSecret.key | quote }}
+                        {{- else }}
+                        value: "null"
+                        {{- end }}
+                      - name: OPS_TAIL_PERCENT
+                        value: {{ .Values.observability.sampling.tailPercent | quote }}
+                      - name: OPS_LATENCY_THRESHOLD_MS
+                        value: {{ .Values.observability.sampling.latencyThresholdMs | quote }}
+                  {{- with .Values.observability.resources }}
+                  resources:
+                      {{- toYaml . | nindent 22 }}
+                  {{- end }}
+                  {{- include "factory.containerSecurityContext" . | nindent 18 }}
+                  readinessProbe:
+                      httpGet:
+                          path: /
+                          port: health
+                      periodSeconds: 10
+                  livenessProbe:
+                      httpGet:
+                          path: /
+                          port: health
+                      initialDelaySeconds: 10
+                      periodSeconds: 30
+                  volumeMounts:
+                      - name: config
+                        mountPath: /etc/otel
+                      {{- if .Values.observability.debugFile }}
+                      - name: ops-debug
+                        mountPath: /var/ops-debug
+                      {{- end }}
+                {{- if .Values.observability.debugFile }}
+                # The collector image has no shell, so the lane reads the trace file through this
+                # sidecar (the image the database wait already pulls).
+                - name: debug-reader
+                  image: {{ .Values.database.waitImage }}
+                  imagePullPolicy: {{ .Values.collector.imagePullPolicy }}
+                  command: ['sh', '-c', 'while :; do sleep 3600; done']
+                  {{- include "factory.containerSecurityContext" . | nindent 18 }}
+                  volumeMounts:
+                      - name: ops-debug
+                        mountPath: /var/ops-debug
+                        readOnly: true
+                {{- end }}
+            volumes:
+                - name: config
+                  configMap:
+                      name: {{ $name }}-config
+                {{- if .Values.observability.debugFile }}
+                - name: ops-debug
+                  emptyDir: {}
+                {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+    name: {{ $name }}
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+        app.kubernetes.io/component: ops-collector
+spec:
+    # ClusterIP, OTLP/HTTP only: the board and the driver are the only clients.
+    type: ClusterIP
+    ports:
+        - name: otlp-http
+          port: 4318
+          targetPort: otlp-http
+    selector:
+        {{- include "factory.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ops-collector
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: {{ $name }}-config
+    labels:
+        {{- include "factory.labels" . | nindent 8 }}
+data:
+    # Static files, read verbatim (never tpl). Indented to 8, deeper than this mapping's children
+    # at 4, or the block scalar absorbs nothing — see templates/collector.yaml.
+    config.yaml: |
+{{ .Files.Get "files/ops-collector.yaml" | indent 8 }}
+    {{- if .Values.observability.debugFile }}
+    debug.yaml: |
+{{ .Files.Get "files/ops-collector-debug.yaml" | indent 8 }}
+    {{- end }}
+{{- end }}

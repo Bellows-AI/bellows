@@ -58,6 +58,7 @@ const K8S_PHASES = [
     'acceptance',
     'capacity',
     'mcp',
+    'observability',
     'drain',
     'replicas',
     'bench',

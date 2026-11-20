@@ -16,6 +16,19 @@ code out of its sandbox and node pool. Each names its runner class twin. */}}
 {{- fail (printf "runner.%s is retired: set runner.classes.<name>.%s on each runner class instead (runner.classes, runner.defaultClass)" $retired $retired) }}
 {{- end }}
 {{- end }}
+{{- /* The retired board-only OTEL endpoint: its replacement also covers the driver. */}}
+{{- if hasKey .Values.dashboard "otel" }}
+{{- fail "dashboard.otel is retired: set observability.enabled and observability.endpoint (the ops collector) instead" }}
+{{- end }}
+{{- if and .Values.observability.enabled (not .Values.observability.endpoint) }}
+{{- fail "observability.enabled needs observability.endpoint: the OTLP/HTTP backend the ops collector forwards to" }}
+{{- end }}
+{{- if ne (empty .Values.observability.headersSecret.name) (empty .Values.observability.headersSecret.key) }}
+{{- fail "observability.headersSecret.name and observability.headersSecret.key are set together or not at all" }}
+{{- end }}
+{{- if or (lt (float64 .Values.observability.sampling.tailPercent) 0.0) (gt (float64 .Values.observability.sampling.tailPercent) 100.0) }}
+{{- fail "observability.sampling.tailPercent must be between 0 and 100" }}
+{{- end }}
 {{- if not (hasKey (.Values.runner.classes | default dict) (toString .Values.runner.defaultClass)) }}
 {{- fail (printf "runner.defaultClass %q is not a class runner.classes declares" (toString .Values.runner.defaultClass)) }}
 {{- end }}
@@ -328,9 +341,6 @@ the exempt namespaces the admission policy reads (templates/sandbox-admission.ya
 {{- if and .value .sha256 }}
 {{- fail "driver.credential.sha256 is for an existingSecret; with value the chart computes it" }}
 {{- end }}
-{{- end }}
-{{- if and .Values.driver.metricsPort (not .Values.driver.credential.existingSecret) (lt (len .Values.driver.metricsToken) 32) }}
-{{- fail "driver.metricsToken of at least 32 characters is required with driver.metricsPort (openssl rand -hex 32): the scrape's own bearer, never the driver credential" }}
 {{- end }}
 {{- if not .Values.dashboard.offline }}
 {{- if not .Values.github.appId }}

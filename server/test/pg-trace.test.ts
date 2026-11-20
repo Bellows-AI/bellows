@@ -3,13 +3,16 @@ import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from '@open
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { installPostgresTracing, operationOf } from '../src/pg-trace.js';
+import { countOf, metricsHarness } from './helpers-metrics.js';
 
 const exporter = new InMemorySpanExporter();
 const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+const harness = metricsHarness();
+const DB_ATTRIBUTES = { 'db.system.name': 'postgresql', 'db.operation.name': 'SELECT' };
 
 beforeAll(() => {
     trace.setGlobalTracerProvider(provider);
-    installPostgresTracing();
+    installPostgresTracing(harness.meter);
 });
 afterAll(async () => {
     trace.disable();
@@ -49,8 +52,27 @@ describe('postgres tracing', () => {
         expect(JSON.stringify(spans[0]!.attributes)).not.toMatch(/order-9f1c|secret|token/);
     });
 
+    it('records db.client.operation.duration once per statement, by verb only', async () => {
+        installPostgresTracing(harness.meter);
+        const before = countOfSelect(await harness.points('db.client.operation.duration'));
+        const sql = postgres('postgres://nobody:secret@127.0.0.1:1/none', { max: 1, connect_timeout: 1 });
+        const id = 'order-9f1c';
+        await expect(sql`select ${id}::text as token`).rejects.toBeDefined();
+        await sql.end({ timeout: 1 });
+
+        const collected = await harness.collect();
+        const metric = collected.find((m) => m.descriptor.name === 'db.client.operation.duration')!;
+        expect(metric.descriptor.unit).toBe('s');
+        const points = metric.dataPoints as { attributes: object; value: { count: number } }[];
+        // Only the verb labels the series, so every statement lands in one point.
+        expect(points).toHaveLength(1);
+        expect(points[0]!.value.count - before).toBe(1);
+        expect(points[0]!.attributes).toEqual(DB_ATTRIBUTES);
+        expect(JSON.stringify(points)).not.toMatch(/order-9f1c|secret|token/);
+    });
+
     it('is installed once: a second install does not nest a second span', async () => {
-        installPostgresTracing();
+        installPostgresTracing(harness.meter);
         exporter.reset();
         const sql = postgres('postgres://nobody@127.0.0.1:1/none', { max: 1, connect_timeout: 1 });
         await expect(sql`select 1`).rejects.toBeDefined();
@@ -60,6 +82,8 @@ describe('postgres tracing', () => {
 
     it('still ends the span when the query reassigns resolve after it started, as a cursor does', async () => {
         exporter.reset();
+        installPostgresTracing(harness.meter);
+        const before = countOfSelect(await harness.points('db.client.operation.duration'));
         const sql = postgres({ max: 0 });
         const query = sql`select 1` as unknown as {
             handler: (q: { resolve: (v: unknown) => void }) => void;
@@ -77,5 +101,10 @@ describe('postgres tracing', () => {
         await new Promise((r) => setTimeout(r, 0));
         expect(delivered).toEqual(['row', 'done']);
         expect(exporter.getFinishedSpans().map((s) => s.name)).toEqual(['postgres SELECT']);
+        // Recorded once, though resolve ran twice.
+        expect(countOfSelect(await harness.points('db.client.operation.duration')) - before).toBe(1);
     });
 });
+
+const countOfSelect = (points: Awaited<ReturnType<typeof harness.points>>): number =>
+    countOf(points, DB_ATTRIBUTES) ?? 0;

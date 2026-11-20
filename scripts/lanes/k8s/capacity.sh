@@ -36,46 +36,6 @@ cap_board_ready() { # cap_board_ready <seconds> -> success once the board answer
     return 1
 }
 
-cap_mint() { # cap_mint <login> -> CAP_MEMBER_TOKEN of a new org member tracking $SMOKE_REPO; non-zero with psql's answer
-    local hash out
-    read -r CAP_MEMBER_TOKEN hash < <(node -e '
-const c = require("node:crypto");
-const t = "fat_" + c.randomBytes(32).toString("base64url");
-process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
-')
-    out="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -q -v ON_ERROR_STOP=1 -v "login=$1" -v "hash=$hash" -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" \
-        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
-with o as (
-    insert into organization (id, name) values (:'login', :'login') returning id
-), u as (
-    insert into app_user (github_user_id, github_login)
-    values ((1000000000 + floor(random() * 1000000000000))::bigint, :'login') returning id
-), m as (
-    insert into org_membership (org_id, github_login, user_id, role, claimed_at)
-    select o.id, :'login', u.id, 'member', now() from o, u
-)
-insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
-select o.id, 'personal', u.id, u.id, 'test-k8s', decode(:'hash', 'hex') from o, u;
-insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
-values (:'login', 'claude-code', 'test-k8s-capacity', :'owner' || '/' || :'name', 'main', now(), now());
-SQL
-    )" || {
-        printf '%s' "$out"
-        return 1
-    }
-}
-
-cap_executors() { # cap_executors <function wrapper> -> the member stores the executor its tasks run under
-    local until=$(($(date +%s) + 60))
-    while [ "$(date +%s)" -lt "$until" ]; do
-        [ "$("$1" http_status PUT "$BASE/api/workspace/executors" \
-            '{"executors":[{"name":"claude","type":"claude-code","config":{}}]}')" = '200' ] && return 0
-        sleep 1
-    done
-    return 1
-}
-
 cap_rows() { # cap_rows -> the four tasks' scheduling rows, for a check that failed (diagnostics only)
     lane_psql "select id, status, claimed_by, claim_seq, lease_expires_at, org_id from job where id in ('$h1', '$h2', '$h3', '$l1') order by created_at" | tr '\n' ';'
 }
@@ -209,18 +169,18 @@ cap_run() {
 
     heavy="cap-heavy-$(openssl rand -hex 4)"
     light="cap-light-$(openssl rand -hex 4)"
-    cap_mint "$heavy" >"$work/capacity-mint.log" || {
+    mint_member "$heavy" >"$work/capacity-mint.log" || {
         bad 'capacity: the heavy member is minted' "$(cat "$work/capacity-mint.log")"
         return 1
     }
-    cap_heavy_token="$CAP_MEMBER_TOKEN"
-    cap_mint "$light" >"$work/capacity-mint.log" || {
+    cap_heavy_token="$MINTED_TOKEN"
+    mint_member "$light" >"$work/capacity-mint.log" || {
         bad 'capacity: the light member is minted' "$(cat "$work/capacity-mint.log")"
         return 1
     }
-    cap_light_token="$CAP_MEMBER_TOKEN"
+    cap_light_token="$MINTED_TOKEN"
     ok 'capacity: two members are minted'
-    cap_executors cap_heavy && cap_executors cap_light && ok 'capacity: both members store the task executor' || {
+    cap_heavy store_executor && cap_light store_executor && ok 'capacity: both members store the task executor' || {
         bad 'capacity: both members store the task executor' 'PUT /api/workspace/executors never answered 200'
         return 1
     }

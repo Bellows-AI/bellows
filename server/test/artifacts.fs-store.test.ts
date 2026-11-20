@@ -177,7 +177,7 @@ describe('boot and periodic sweep', () => {
         await vi.advanceTimersByTimeAsync(2500);
         await stop();
         expect(sweep).toHaveBeenCalledTimes(2);
-        expect(log.mock.calls.flat().join(' ')).toContain('boom');
+        expect(log.mock.calls.flat().join(' ')).toBe('temp sweep failed: Error');
     });
 });
 

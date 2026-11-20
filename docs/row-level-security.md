@@ -29,7 +29,7 @@ Each call `main.ts` hands the cross-org pool, pinned by `server/test/cross-org-p
 Definer functions, inside the caller's transaction, answering a count, a slot or one boolean per id passed:
 
 - `bellows_global_running` and `bellows_global_admission_slot`: the claim's global budget, under the claim's advisory keys.
-- `bellows_admission_occupancy`: the metrics scrape's counts.
+- `bellows_admission_occupancy`: the metrics collection's counts.
 - `bellows_sessions_refused` (ingest), `bellows_sessions_foreign` (the stats read) and `bellows_session_owned_elsewhere` (a claim's or report's session evidence, `server/src/db/jobs/job-store-provenance.ts`): the org asked about is the caller's setting, never an argument, and no setting raises.
 
 Everything else is single-org: the stores `orgs.ts` builds (the claim, lease retirement, outbox, batch and delivery loops, export), ingest's writes, the plan writer, operation receipts, agent titles and the runner connection list (`orgSql` per call).

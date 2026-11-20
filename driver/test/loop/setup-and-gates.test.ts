@@ -304,9 +304,7 @@ describe('environment.setup before the agent starts', () => {
                 release: true,
             },
         ]);
-        expect(
-            logs.some((line) => line.includes('could not start the services') && line.includes('interruption'))
-        ).toBe(true);
+        expect(logs.some((line) => line.includes('handed back as an interruption'))).toBe(true);
     });
 
     // R2-1: readiness whose listing never answered proves nothing about the services.

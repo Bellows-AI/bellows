@@ -859,41 +859,19 @@ describe('the driver config: no service search domain (#773)', () => {
         expect(config).not.toHaveProperty('k8sClusterDomain');
     });
 
-    describe('DRIVER_METRICS_PORT (issue #831)', () => {
-        it('is off unless set', () => {
-            expect(loadDriverConfig({}).metricsPort).toBeNull();
-            expect(loadDriverConfig({ DRIVER_METRICS_PORT: '' }).metricsPort).toBeNull();
-        });
-
-        it('takes a port, bound to the gate host', () => {
+    describe('no metrics listener', () => {
+        it('reads neither DRIVER_METRICS_PORT nor DRIVER_METRICS_TOKEN', () => {
             const config = loadDriverConfig({ DRIVER_METRICS_PORT: '9464', DRIVER_METRICS_TOKEN: 't' });
-            expect(config.metricsPort).toBe(9464);
-            expect(config.metricsToken).toBe('t');
+            expect(config).not.toHaveProperty('metricsPort');
+            expect(config).not.toHaveProperty('metricsToken');
         });
 
-        it.each(['0', '70000', 'abc', '-1', '1.5'])('refuses %s', (port) => {
-            expect(() => loadDriverConfig({ DRIVER_METRICS_PORT: port })).toThrow(/DRIVER_METRICS_PORT/);
-        });
-
-        it('refuses a port with no metrics token on a non-loopback host: runners can reach it and hold no token', () => {
-            expect(() => loadDriverConfig({ DRIVER_METRICS_PORT: '9464', GATE_LISTEN_HOST: '0.0.0.0' })).toThrow(
-                /DRIVER_METRICS_TOKEN/
-            );
-        });
-
-        it('is not guarded by the driver credential: the scrape token is its own', () => {
-            const env = { DRIVER_METRICS_PORT: '9464', GATE_LISTEN_HOST: '0.0.0.0', DRIVER_CREDENTIAL: CREDENTIAL };
-            expect(() => loadDriverConfig(env)).toThrow(/DRIVER_METRICS_TOKEN/);
-        });
-
-        it.each(['127.0.0.1', 'localhost', '::1'])('allows a port with no token on loopback %s', (host) => {
-            expect(loadDriverConfig({ DRIVER_METRICS_PORT: '9464', GATE_LISTEN_HOST: host }).metricsPort).toBe(9464);
-        });
-
-        it('allows a non-loopback host when the token is set', () => {
-            const env = { DRIVER_METRICS_PORT: '9464', GATE_LISTEN_HOST: '0.0.0.0', DRIVER_METRICS_TOKEN: 't' };
-            expect(loadDriverConfig(env).metricsPort).toBe(9464);
-        });
+        it.each(['OTEL_EXPORTER_OTLP_HEADERS', 'OTEL_SERVICE_NAME'])(
+            'refuses %s in RUNNER_ENV: the driver’s telemetry settings are not a runner’s',
+            (name) => {
+                expect(() => loadDriverConfig({ RUNNER_ENV: `A,${name}` })).toThrow(`RUNNER_ENV must not name ${name}`);
+            }
+        );
     });
 
     describe('the driver credential', () => {
@@ -920,7 +898,7 @@ describe('the driver config: no service search domain (#773)', () => {
             ).toThrow(/DRIVER_CREDENTIAL_FILE/);
         });
 
-        it.each(['DRIVER_CREDENTIAL', 'DRIVER_CREDENTIAL_FILE', 'DRIVER_METRICS_TOKEN'])(
+        it.each(['DRIVER_CREDENTIAL', 'DRIVER_CREDENTIAL_FILE'])(
             'refuses %s in RUNNER_ENV: a runner never holds the driver’s own secrets',
             (name) => {
                 expect(() => loadDriverConfig({ RUNNER_ENV: `A,${name}` })).toThrow(`RUNNER_ENV must not name ${name}`);

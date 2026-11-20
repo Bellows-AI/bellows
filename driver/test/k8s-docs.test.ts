@@ -435,10 +435,9 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(kubernetesDocs)).toContain('a `k8s-*.ts` importing from `docker*.ts` belongs in a neutral file');
     });
 
-    it('documents the driver scrape port the chart ships, behind its own token', () => {
-        expect(chartValues).toMatch(/metricsPort: '9464'/);
-        expect(kubernetesDocs).toContain('`driver.metricsPort` (`DRIVER_METRICS_PORT`, default `9464`)');
-        expect(kubernetesDocs).toContain('Authorization: Bearer $DRIVER_METRICS_TOKEN');
+    it('ships no driver scrape port: the chart and the docs name none', () => {
+        expect(chartValues).not.toMatch(/metricsPort|metricsToken/);
+        expect(kubernetesDocs).not.toContain('DRIVER_METRICS');
     });
 
     it('documents the driver credential as a file the driver re-reads, so a rotation needs no restart', () => {

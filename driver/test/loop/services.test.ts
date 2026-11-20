@@ -182,7 +182,7 @@ describe('a dead declared service (issue #423)', () => {
 
         expect(stack.stack.ran.names).toEqual(['test', 'lint']);
         expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
-        expect(logs.some((m) => m.includes('the API server is away'))).toBe(true);
+        expect(logs.some((m) => m.includes('could not read the service fleet') && m.includes('Error'))).toBe(true);
     });
 
     it('never probes a refused run or an ungated job', async () => {

@@ -256,7 +256,7 @@ describe('how a run ends', () => {
 
         expect(r.board.completed).toEqual([]);
         expect(r.board.interrupted).toEqual([]);
-        expect(r.logs.some((m) => m.includes('could not run: apiserver said 401'))).toBe(true);
+        expect(r.logs.some((m) => m.includes('could not run: Error'))).toBe(true);
     });
 
     it('fails a throw from the last attempt as runner_error, saying the driver could not run it', async () => {

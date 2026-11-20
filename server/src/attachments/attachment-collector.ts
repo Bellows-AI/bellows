@@ -5,6 +5,7 @@ import type { ArtifactsConfig } from '../config-artifacts.js';
 import type { ServerMetrics } from '../metrics.js';
 import { UPLOAD_WRITE_BOUND_MS } from './attachment-store.js';
 import { startIntervalLoop } from '../interval-loop.js';
+import { logger } from '../log.js';
 
 /**
  * The attachment sweep (docs/persistence.md): abandoned drafts expire, files whose task is gone are
@@ -217,7 +218,7 @@ export function startAttachmentCollector(
         'attachments',
         (signal) => timedPass('attachment_collect', () => collector.collect({ signal })),
         intervalMs,
-        { onError: (e) => console.error(`[attachments] collect failed: ${e.message}`) }
+        { onError: (e) => logger('attachments').error({ err: e }, 'collect failed') }
     );
 }
 

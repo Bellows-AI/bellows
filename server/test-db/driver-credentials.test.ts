@@ -407,9 +407,7 @@ describe.skipIf(!enabled)('the bootstrap pool credential (DRIVER_CREDENTIAL_SHA2
             hashToken(token),
             (line) => lines.push(line)
         );
-        expect(lines).toEqual([
-            '[auth] could not record the DRIVER_CREDENTIAL_SHA256 credential: connect ECONNREFUSED',
-        ]);
+        expect(lines).toEqual(['[auth] could not record the DRIVER_CREDENTIAL_SHA256 credential: Error']);
         expect(lines.join('')).not.toContain(hashToken(token).toString('hex'));
     });
 });

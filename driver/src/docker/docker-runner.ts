@@ -28,7 +28,6 @@ import { StartupRefused } from '../startup-cause.js';
 import { createKillLedger, type KillLedger } from '../kill-ledger.js';
 import { SUPERVISOR_CHECKPOINT_MS, SUPERVISOR_EXIT } from '../supervisor-contract.js';
 import { agentBackstopMs, spentMs } from '../supervisor-plan.js';
-import { spawn } from 'node:child_process';
 import { rm, writeFile } from 'node:fs/promises';
 import type { Board, BoardJob } from '../board/board.js';
 import type { DriverConfig } from '../config.js';
@@ -90,6 +89,7 @@ import {
     lostOutcome,
     supervisorRemoved,
     type Spawn,
+    spawnWithoutOtelEnv,
     type ExecDocker,
     readUtf8,
     dockerAgentStarted,
@@ -679,7 +679,7 @@ async function dockerRun(
  */
 export function createDockerRunner(
     config: DriverConfig,
-    spawnFn: Spawn = spawn,
+    spawnFn: Spawn = spawnWithoutOtelEnv,
     execDocker: ExecDocker = defaultExecDocker,
     extras: {
         files?: RunnerFiles;

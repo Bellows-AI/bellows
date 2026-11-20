@@ -1,0 +1,11 @@
+# A second --config merged over ops-collector.yaml by the kind lane (observability.debugFile): the
+# collector merges maps and replaces lists, so the traces exporter list is restated whole. Traces
+# also land in a file the lane reads back; nothing else changes.
+exporters:
+    file:
+        path: /var/ops-debug/traces.jsonl
+
+service:
+    pipelines:
+        traces:
+            exporters: [otlp_http, file]

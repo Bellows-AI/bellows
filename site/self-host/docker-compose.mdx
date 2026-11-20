@@ -92,8 +92,12 @@ The repository ships a `docker-compose.yml` that starts the board, the driver, P
 | `postgres` | 5432 | PostgreSQL 17. Database `factory_dev`, user and password `factory`. |
 | `s3` | 9000 | RustFS object store. Bucket `factory-artifacts`, created on boot. |
 | `collector` | 4317, 4318 | OpenTelemetry collector. Forwards to the board. |
+| `ops-collector` | none | Profile `observability`. Forwards the board's and the driver's own telemetry, tail-sampled, to `OPS_BACKEND_ENDPOINT`. Runners cannot reach it. |
+| `lgtm` | 3000 | Profile `observability`. A local Grafana backend for that telemetry. |
 | `moto` | 5099 | Optional AWS emulator. Profile `secrets-aws`. |
 | `vault` | 8200 | Optional Vault in dev mode. Profile `secrets-vault`. |
+
+To see the board's and the driver's own telemetry locally, set `COMPOSE_PROFILES=observability` and `OTEL_EXPORTER_OTLP_ENDPOINT=http://ops-collector:4318` in `.env`, then open Grafana on `http://127.0.0.1:3000`. See [Monitoring](/self-host/monitoring).
 
 ## Authentication for a local trial
 

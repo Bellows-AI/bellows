@@ -1,0 +1,85 @@
+# promtool rule tests for driver.yaml: `promtool test rules observability/alerts/driver.test.yaml`.
+# Evaluated at project end; the vitest drift suite only checks this file's shape and series names.
+rule_files:
+  - driver.yaml
+evaluation_interval: 1m
+tests:
+  - name: only error samples fire
+    interval: 1m
+    input_series:
+      - series: 'bellows_driver_claim_polls_total{outcome="error",instance="d-1"}'
+        values: '0+1x40'
+      - series: 'bellows_driver_slots{state="open",instance="d-1"}'
+        values: '1+0x40'
+      - series: 'bellows_driver_slots{state="busy",instance="d-1"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: BellowsDriverNoSuccessfulPoll
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: d-1
+            exp_annotations:
+              summary: A driver has had no successful job claim poll for 15 minutes.
+              description: The driver (instance label) has made no claim poll that reached the board for 15 minutes while it had an open claim slot.
+  - name: failed job claims fire beside successful reclaim polls
+    interval: 1m
+    input_series:
+      - series: 'bellows_driver_claim_polls_total{outcome="error",instance="d-1"}'
+        values: '0+1x40'
+      - series: 'bellows_driver_board_request_duration_seconds_count{endpoint="/api/reclaims/claim",status_class="2xx",instance="d-1"}'
+        values: '0+1x40'
+      - series: 'bellows_driver_slots{state="open",instance="d-1"}'
+        values: '1+0x40'
+      - series: 'bellows_driver_slots{state="busy",instance="d-1"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: BellowsDriverNoSuccessfulPoll
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              instance: d-1
+            exp_annotations:
+              summary: A driver has had no successful job claim poll for 15 minutes.
+              description: The driver (instance label) has made no claim poll that reached the board for 15 minutes while it had an open claim slot.
+  - name: a driver with every slot busy is exempt
+    interval: 1m
+    input_series:
+      - series: 'bellows_driver_claim_polls_total{outcome="idle",instance="d-1"}'
+        values: '5+0x40'
+      - series: 'bellows_driver_slots{state="open",instance="d-1"}'
+        values: '0+0x40'
+      - series: 'bellows_driver_slots{state="busy",instance="d-1"}'
+        values: '2+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: BellowsDriverNoSuccessfulPoll
+        exp_alerts: []
+  - name: a polling driver is quiet
+    interval: 1m
+    input_series:
+      - series: 'bellows_driver_claim_polls_total{outcome="idle",instance="d-1"}'
+        values: '0+1x40'
+      - series: 'bellows_driver_slots{state="open",instance="d-1"}'
+        values: '1+0x40'
+      - series: 'bellows_driver_slots{state="busy",instance="d-1"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: BellowsDriverNoSuccessfulPoll
+        exp_alerts: []
+  - name: a departed driver is quiet
+    interval: 1m
+    input_series:
+      - series: 'bellows_driver_claim_polls_total{outcome="idle",instance="d-1"}'
+        values: '0+1x10 stale'
+      - series: 'bellows_driver_slots{state="open",instance="d-1"}'
+        values: '1+0x10 stale'
+      - series: 'bellows_driver_slots{state="busy",instance="d-1"}'
+        values: '0+0x10 stale'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: BellowsDriverNoSuccessfulPoll
+        exp_alerts: []

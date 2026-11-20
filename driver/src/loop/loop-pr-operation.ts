@@ -12,7 +12,7 @@ export function prOperationRecorder(rt: LoopRuntime, job: BoardJob): PrOperation
     return async (note) => {
         const answer = await rt.board.prOperation(job, note).catch(() => 'rejected' as const);
         if (answer !== 'ok') {
-            rt.log(`job ${job.id}: the PR operation ${note.operation} of ${note.prUrl} is unrecorded (${answer})`);
+            rt.log(`job ${job.id}: the PR operation ${note.operation} is unrecorded (${answer})`);
         }
     };
 }

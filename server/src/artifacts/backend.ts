@@ -3,6 +3,7 @@ import type { ArtifactsConfig } from '../config-artifacts.js';
 import { createFilesystemStore, sweepStaleTemps, type TempSweepResult } from './fs-store.js';
 import { createGcsTokenProvider } from './gcs-credentials.js';
 import { createGcsStore } from './gcs-store.js';
+import { describeError } from '../log.js';
 import type { ObjectStore } from './object-store.js';
 import { createCredentialProvider } from './s3-credentials.js';
 import { createS3Store } from './s3-store.js';
@@ -36,7 +37,7 @@ export async function prepareArtifactBackend(
             log(await backend.prepare());
             return;
         } catch (e) {
-            log(`prepare failed (${attempt}/${PREPARE_ATTEMPTS}): ${(e as Error).message}`);
+            log(`prepare failed (${attempt}/${PREPARE_ATTEMPTS}): ${describeError(e)}`);
             if (attempt < PREPARE_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, backoffMs));
         }
     }

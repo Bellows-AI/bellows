@@ -180,12 +180,28 @@
     },
     "overrides": [
         {
+            "includes": ["driver/src/**/*.ts", "!driver/src/scripts/**"],
+            "linter": { "rules": { "suspicious": { "noConsole": "error" } } }
+        },
+        {
             "includes": ["web/src/charts/**"],
             "linter": { "rules": { "suspicious": { "noArrayIndexKey": "off" } } }
         },
         {
             "includes": ["driver/src/runner.ts"],
             "linter": { "rules": { "suspicious": { "noControlCharactersInRegex": "off" } } }
+        },
+        {
+            "includes": ["server/src/**"],
+            "linter": { "rules": { "suspicious": { "noConsole": "error" } } }
+        },
+        {
+            "includes": [
+                "server/src/seed/cli.ts",
+                "server/src/secrets/rotate-cli.ts",
+                "server/src/auth/driver-credential-cli.ts"
+            ],
+            "linter": { "rules": { "suspicious": { "noConsole": "off" } } }
         },
         {
             "includes": ["server/src/seed/usage-specimen.ts"],
