@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -54,7 +54,7 @@ const probe = (box: ReturnType<typeof sandbox>, name: string, record: string) =>
     );
 };
 
-const restart = (box: ReturnType<typeof sandbox>, mode: 'acked' | 'bump', names: string[]) => {
+const restart = (box: ReturnType<typeof sandbox>, mode: 'acked' | 'bump' | 'reset', names: string[]) => {
     const argv = serviceRestartArgv(mode, names);
     expect(argv.slice(0, 7)).toEqual([
         'sh',
@@ -151,5 +151,52 @@ describe('the service generation bump', () => {
             expect(restart(box, 'bump', [name]).status, JSON.stringify(name)).toBe(2);
         }
         expect(readdirSync(box.generations)).toEqual([]);
+    });
+});
+
+// BEL-492: the ack lives on the pod's volume and outlives the container that wrote it, so the
+// supervisor re-arms the acks before a bump and only a probe of the container running now re-writes them.
+describe('the service acknowledgement re-arm', () => {
+    it('reset removes every named acknowledgement, so a dead container’s ack never licenses a bump', () => {
+        const box = sandbox();
+        expect(probe(box, 'db', join(box.root, 'layer-1')).status).toBe(0);
+        expect(restart(box, 'reset', ['db']).status).toBe(0);
+        expect(existsSync(join(box.acks, 'db', 'ack'))).toBe(false);
+        expect(restart(box, 'bump', ['db']).status).toBe(SERVICE_NOT_ACKED_EXIT);
+        expect(readdirSync(box.generations)).toEqual([]);
+        // The container running now acknowledges: the bump is licensed again.
+        expect(probe(box, 'db', join(box.root, 'layer-2')).status).toBe(0);
+        expect(restart(box, 'bump', ['db']).status).toBe(0);
+        expect(read(join(box.generations, 'db'))).toBe('1');
+    });
+
+    it('the stale-ack race end to end', () => {
+        const box = sandbox();
+        expect(probe(box, 'db', join(box.root, 'layer-1')).status).toBe(0);
+        // The kubelet restarted the container: layer-2 has run no probe yet, layer-1's ack is still there.
+        expect(restart(box, 'reset', ['db']).status).toBe(0);
+        expect(restart(box, 'bump', ['db']).status).toBe(SERVICE_NOT_ACKED_EXIT);
+        expect(probe(box, 'db', join(box.root, 'layer-2')).status).toBe(0);
+        expect(read(join(box.root, 'layer-2'))).toBe('0');
+        expect(restart(box, 'bump', ['db']).status).toBe(0);
+        // Layer-2 recorded the generation before the bump, so its next probe fails: the kubelet restarts it.
+        expect(probe(box, 'db', join(box.root, 'layer-2')).status).not.toBe(0);
+
+        // Characterisation of the bug, not a red test: without the re-arm, layer-1's stale ack licenses
+        // the bump, and layer-2's first probe records the bumped generation and passes for good.
+        const stale = sandbox();
+        expect(probe(stale, 'db', join(stale.root, 'layer-1')).status).toBe(0);
+        expect(restart(stale, 'bump', ['db']).status).toBe(0);
+        expect(probe(stale, 'db', join(stale.root, 'layer-2')).status).toBe(0);
+        expect(probe(stale, 'db', join(stale.root, 'layer-2')).status).toBe(0);
+    });
+
+    it('reset refuses a name that is not a plain DNS label, deleting nothing', () => {
+        const box = sandbox();
+        expect(probe(box, 'db', join(box.root, 'layer-1')).status).toBe(0);
+        for (const name of ['../db', 'db x', '']) {
+            expect(restart(box, 'reset', ['db', name]).status, JSON.stringify(name)).toBe(2);
+        }
+        expect(read(join(box.acks, 'db', 'ack'))).toBe('0');
     });
 });

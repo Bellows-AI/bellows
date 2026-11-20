@@ -334,6 +334,9 @@ const serviceRestartMounts = (services: readonly ServiceSpec[]): RunnerMount[] =
  * The period leaves room for the timeout, so a slow exec never overlaps the next. A real generation
  * bump fails every probe at once: the restart lands 30–45 s after it (three misses 15 s apart), and at
  * worst, every exec timing out, 3 × (15 + 10) s — inside the supervisor's `SERVICE_RESTART_TIMEOUT_S`.
+ * The 15 s period (2 s before BEL-483) leaves a restarted container up to a period without its first
+ * probe, so the bump first re-arms the acks and waits for a fresh one (BEL-492): at most one more
+ * period, ≈ 25 + 75 + kubelet back-off + 25 s, still well inside the 300 s budget.
  */
 const SERVICE_PROBE_PERIOD_SECONDS = 15;
 const SERVICE_PROBE_TIMEOUT_SECONDS = 10;

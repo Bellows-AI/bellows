@@ -113,8 +113,11 @@ export const serviceProbeArgv = (name: string): string[] => [
     SERVICE_GENERATIONS.ackPath,
 ];
 
-/** A `restart` step's argv: which services have not acknowledged (`acked`), or the bump of every one named. */
-export const serviceRestartArgv = (mode: 'acked' | 'bump', names: readonly string[]): string[] => [
+/**
+ * A `restart` step's argv: which services have not acknowledged (`acked`), the bump of every one named,
+ * or the re-arm that deletes their acks before it (`reset`).
+ */
+export const serviceRestartArgv = (mode: 'acked' | 'bump' | 'reset', names: readonly string[]): string[] => [
     'sh',
     '-c',
     serviceGenerationBumpScript,
