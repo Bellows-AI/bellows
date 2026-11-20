@@ -51,6 +51,8 @@ spec:
                   image: {{ include "factory.image" (list $ $.Values.driver.image) }}
                   imagePullPolicy: {{ $.Values.driver.imagePullPolicy }}
                   env:
+                      # The driver's own OTEL export, to the ops collector. Unset, no SDK starts.
+                      {{- include "factory.otelEnv" $ | nindent 22 }}
                       # The board, by its in-cluster service name. The driver is a client of the HTTP
                       # board, never of the database — which is the whole reason it can run here
                       # with nothing but this URL and its namespace.

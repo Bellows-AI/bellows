@@ -121,11 +121,8 @@ spec:
                   # what it can see, and for a bring-your-own Secret the server's boot error names
                   # what is missing — clearer than a CreateContainerConfigError naming only a key.
                   env:
-                      {{- if .Values.dashboard.otel.endpoint }}
-                      # The board's own OTEL export (traces and metrics). Unset, no SDK starts.
-                      - name: OTEL_EXPORTER_OTLP_ENDPOINT
-                        value: {{ .Values.dashboard.otel.endpoint | quote }}
-                      {{- end }}
+                      # The board's own OTEL export, to the ops collector. Unset, no SDK starts.
+                      {{- include "factory.otelEnv" . | nindent 22 }}
                       # The repo-read credential AND the repo list, both from one GitHub App
                       # installation. Required unless offline.
                       - name: GITHUB_APP_ID

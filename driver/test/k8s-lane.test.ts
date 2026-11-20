@@ -68,7 +68,7 @@ exec ${JSON.stringify(realDirname)} "$@"
         const result = await runAsync('bash', ['scripts/test-k8s.sh', '--help'], { cwd: REPO_ROOT });
         expect(result.status).toBe(0);
         expect(result.stdout).toContain(
-            '|recovery|services|takeover|control|acceptance|capacity|mcp|drain|replicas|bench]'
+            '|recovery|services|takeover|control|acceptance|capacity|mcp|observability|drain|replicas|bench]'
         );
     });
 
@@ -525,7 +525,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         );
         expect(script).not.toMatch(/selected_phase drain/);
         expect(script).toMatch(
-            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|capacity\|mcp\|drain\|replicas\|bench\)/
+            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|capacity\|mcp\|observability\|drain\|replicas\|bench\)/
         );
     });
 
@@ -866,5 +866,68 @@ describe('kind lane bench phase (issue #831)', () => {
         expect(bench).toContain('select floor(extract(epoch from max(finished_at))) from job');
         expect(bench).not.toContain('settled_s "$(($(date +%s) - a_at))"');
         expect(bench).toContain('settled_s "$((last - a_at))"');
+    });
+});
+
+describe('kind lane observability phase', () => {
+    const script = readLaneScript('scripts/test-k8s.sh');
+    const raw = readRepoFile('scripts/test-k8s.sh');
+    const phaseStart = script.indexOf('if selected_phase observability; then');
+    const phase = script.slice(phaseStart, script.indexOf('if [ "$PHASE" = bench ]; then'));
+    const netpol = script.slice(
+        script.indexOf('if [ "$MODE" = \'--netpol\' ]; then'),
+        script.indexOf('# --- Phase two')
+    );
+
+    it('is a valid --phase, sourced between mcp and bench', async () => {
+        const result = await runAsync('bash', ['scripts/test-k8s.sh', '--help'], { cwd: REPO_ROOT });
+        expect(result.stdout).toContain('|mcp|observability|drain|replicas|bench]');
+        expect(raw).toMatch(/all\|[a-z|]*\|observability\|[a-z|]*\)/);
+        const mcp = raw.indexOf('. "$REPO/scripts/lanes/k8s/mcp.sh"');
+        const observability = raw.indexOf('. "$REPO/scripts/lanes/k8s/observability.sh"');
+        const bench = raw.indexOf('. "$REPO/scripts/lanes/k8s/bench.sh"');
+        expect(mcp).toBeGreaterThan(-1);
+        expect(observability).toBeGreaterThan(mcp);
+        expect(bench).toBeGreaterThan(observability);
+    });
+
+    it('reads the trace file through the verdict script and bounds every kubectl and helm call', () => {
+        expect(phaseStart).toBeGreaterThan(-1);
+        expect(phase).toContain('scripts/k8s-ops-spans.mjs');
+        const calls = phase
+            .split('\n')
+            .filter((line) => !/^\s*(#|bad |ok )/.test(line))
+            .filter((line) => /\b(kubectl|helm) (exec|scale|upgrade|get|rollout|create|delete|port-forward)/.test(line))
+            .filter((line) => !line.includes('port-forward') || !line.includes('start_port_forward'));
+        expect(calls.length).toBeGreaterThan(0);
+        for (const line of calls) expect(line, line).toMatch(/bounded|\$\(\(|--request-timeout/);
+    });
+
+    it('scales the ops collector to zero before a second task must succeed', () => {
+        const scale = phase.indexOf('--replicas=0');
+        expect(scale).toBeGreaterThan(-1);
+        // The helper settles a task on `succeeded*`; each call after the scale is a task that must still run.
+        expect(phase).toMatch(/obs_run_task\(\)[^\n]*\n(?:[^\n]*\n)*?[^\n]*await_brief "\$id" 'succeeded\*'/);
+        const awaits = [...phase.matchAll(/^\s*obs_run_task '/gm)].map((match) => match.index ?? 0);
+        expect(awaits.length).toBeGreaterThanOrEqual(2);
+        expect(awaits.some((at) => at > scale)).toBe(true);
+    });
+
+    it('restores observability off on every path: the last helm upgrade, with no exit after it', () => {
+        const last = phase.lastIndexOf('helm upgrade');
+        expect(phase.slice(last)).toContain('observability.enabled=false');
+        expect(phase.slice(last)).not.toMatch(/\bexit\b/);
+        expect(phase.slice(0, last)).not.toMatch(/^\s*exit\b/m);
+    });
+
+    it('proves the ops ingress policy in the netpol lane, with the honest probe before the apply', () => {
+        const apply = netpol.indexOf('ops-collector-networkpolicy.yaml');
+        expect(apply).toBeGreaterThan(-1);
+        const honest = netpol.indexOf('reaches unrelated "$IP_OPS" 4318');
+        expect(honest).toBeGreaterThan(-1);
+        expect(honest).toBeLessThan(apply);
+        expect(netpol).toMatch(/denied[\s\S]*unrelated[\s\S]*IP_OPS/);
+        expect(netpol.slice(apply)).toMatch(/reaches dashboard "\$IP_OPS" 4318/);
+        expect(netpol.slice(apply)).toMatch(/reaches unrelated "\$IP_OPS" 4318/);
     });
 });

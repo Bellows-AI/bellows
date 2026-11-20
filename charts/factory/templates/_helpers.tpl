@@ -10,6 +10,40 @@ truncation applied before the suffix would let a long release name render an inv
 {{- end -}}
 
 {{/*
+The ops collector's object name. The fullname is cut to 49 first so the `-ops-collector` suffix
+(14) keeps the Service name inside the 63-character DNS label.
+*/}}
+{{- define "factory.opsCollectorName" -}}
+{{- printf "%s-ops-collector" (include "factory.fullname" . | trunc 49 | trimSuffix "-") -}}
+{{- end -}}
+
+{{/*
+The board's and driver's OTEL env, emitted only when the ops collector is on: the standard
+OTEL_* names the SDKs read, and the pod identity as resource attributes. $(VAR) resolves only
+against variables declared earlier in the list, so POD_NAME and POD_NAMESPACE come first. No
+headers: the collector is in-cluster and its ingress policy is the access control.
+Usage: include "factory.otelEnv" . | nindent N
+*/}}
+{{- define "factory.otelEnv" -}}
+{{- if .Values.observability.enabled -}}
+- name: POD_NAME
+  valueFrom:
+      fieldRef:
+          fieldPath: metadata.name
+- name: POD_NAMESPACE
+  valueFrom:
+      fieldRef:
+          fieldPath: metadata.namespace
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: {{ printf "http://%s:4318" (include "factory.opsCollectorName" .) | quote }}
+- name: OTEL_EXPORTER_OTLP_PROTOCOL
+  value: http/protobuf
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE),service.instance.id=$(POD_NAME)
+{{- end -}}
+{{- end -}}
+
+{{/*
 What a selector matches on: name and instance only. Selectors are immutable, so nothing that can
 change between chart versions (the chart version, the app version) may ever appear in one — each
 template appends its own `app.kubernetes.io/component` line.
