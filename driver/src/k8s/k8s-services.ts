@@ -24,7 +24,7 @@ import { awaitServicesRunning, ServicesNotRunning, stoodDown } from '../service-
 import { groupServices, type ServiceSpec } from '../services.js';
 import { stepLost } from '../step-control.js';
 import { runServiceGenerationStep, type StepHost, stepHostOf } from '../supervised-steps.js';
-import { SERVICE_NOT_ACKED_EXIT, serviceContainerOf } from '../supervisor-contract.js';
+import { SERVICE_NOT_ACKED_EXIT, serviceContainerOf, type StepResult } from '../supervisor-contract.js';
 
 /**
  * A declared service under kubernetes: a native sidecar of the attempt's task pod,
@@ -249,8 +249,14 @@ export async function deadServices(deps: K8sDeps, job: BoardJob): Promise<DeadSe
 /**
  * Bumps every service's generation once each has acknowledged its current one (R2-4), waiting out
  * the bump's refusal meanwhile for up to SERVICE_RESTART_TIMEOUT_MS, and answers the sidecars as
- * they stood at the bump. A pod that cannot be read is read again; one unread, or a bump unanswered, at the
- * bound throws `Inconclusive`.
+ * they stood at the bump. An ack lives on the pod's volume and outlives the container that wrote it,
+ * so a kubelet restart just before this leaves the dead one's ack standing while the new one's first
+ * probe is still up to a probe period off; a bump licensed by it lets that probe record the bumped
+ * generation as its own, and the sidecar is never restarted. So the acks are re-armed first
+ * (`reset`), on the first poll and again whenever a restart count moved since, and the bump then waits
+ * for the containers running now to acknowledge. A re-arm that throws leaves the acks deleted, which
+ * the next probe rewrites. A pod that cannot be read is read again; one unread, or a re-arm or bump
+ * unanswered, at the bound throws `Inconclusive`.
  */
 async function bumpWhenAcked(
     deps: K8sDeps,
@@ -262,7 +268,24 @@ async function bumpWhenAcked(
     let readError: Error | null = null;
     let bumpError: Error | null = null;
     let unackedNames: string[] = [];
+    let rearmedAt: Map<string, number> | null = null;
     const live = withSignal(deps, signal);
+    /** One re-arm or bump: a refusal other than "not acknowledged" throws, an unanswered one is null. */
+    const ask = async (mode: 'reset' | 'bump', deadline: number): Promise<StepResult | null> => {
+        const result = await runServiceGenerationStep(host, job, { mode, names }, { deadline, signal }).catch(
+            (e: Error) => {
+                // A lost supervisor or a stand-down is thrown; a step the deadline cut off proves nothing.
+                if (stepLost(e) || signal.aborted) throw e;
+                bumpError = e;
+                return null;
+            }
+        );
+        if (result && result.exitCode !== 0 && result.exitCode !== SERVICE_NOT_ACKED_EXIT) {
+            const what = mode === 'bump' ? 'generations could not be bumped' : 'acknowledgements could not be re-armed';
+            throw new Error(`the services' ${what}: ${(result.stderr || result.stdout).trim()}`);
+        }
+        return result;
+    };
     const counts = await pollFor<SidecarStatus[]>(
         { ...waitOf(live, SERVICE_RESTART_TIMEOUT_MS), everyMs: SERVICE_READY_POLL_MS, abandoned: stoodDown },
         async (deadline) => {
@@ -272,22 +295,17 @@ async function bumpWhenAcked(
                 readError = e;
                 return null;
             });
-            const bumped = counts
-                ? await runServiceGenerationStep(host, job, { mode: 'bump', names }, { deadline, signal }).catch(
-                      (e: Error) => {
-                          // A lost supervisor or a stand-down is thrown; a bump the deadline cut off proves nothing.
-                          if (stepLost(e) || signal.aborted) throw e;
-                          bumpError = e;
-                          return null;
-                      }
-                  )
-                : null;
-            if (counts && bumped?.exitCode === 0) return counts;
-            if (bumped && bumped.exitCode !== SERVICE_NOT_ACKED_EXIT) {
-                throw new Error(
-                    `the services' generations could not be bumped: ${(bumped.stderr || bumped.stdout).trim()}`
-                );
+            if (!counts) return;
+            const armed = rearmedAt;
+            if (!armed || counts.some((status) => armed.get(status.name) !== status.restartCount)) {
+                // Re-armed at these counts: the next poll bumps unless one of them moved meanwhile.
+                if ((await ask('reset', deadline))?.exitCode === 0) {
+                    rearmedAt = new Map(counts.map((status) => [status.name, status.restartCount]));
+                }
+                return;
             }
+            const bumped = await ask('bump', deadline);
+            if (bumped?.exitCode === 0) return counts;
             if (bumped) unackedNames = bumped.stdout.split('\n').filter(Boolean);
         }
     );
@@ -304,7 +322,8 @@ async function bumpWhenAcked(
 
 /**
  * The pre-gate restart (#773 D9): EVERY declared service is restarted, as the fleet it
- * is (R1-4). The bump waits until each has acknowledged its current generation; then each sidecar's
+ * is (R1-4). The bump waits until each has acknowledged its current generation, the acks re-armed
+ * first so only the containers running now count, never a stale one from a dead container; then each sidecar's
  * restart count must grow past what it was at the bump, and each run and acknowledge the new one —
  * the bump and the waits sharing one SERVICE_RESTART_TIMEOUT_MS budget. One that restarts again
  * after that crashed on its way up. The baselines reset for all of them. A lost supervisor is thrown

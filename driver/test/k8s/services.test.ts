@@ -1,3 +1,7 @@
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../../src/board/board.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
@@ -9,7 +13,12 @@ import {
     type StepResult,
 } from '../../src/supervisor-contract.js';
 import { StepChannelClosed, type StepSink } from '../../src/step-control.js';
-import { serviceProbeArgv, serviceRestartArgv } from '../../src/container-scripts.js';
+import {
+    serviceGenerationBumpScript,
+    serviceGenerationProbeScript,
+    serviceProbeArgv,
+    serviceRestartArgv,
+} from '../../src/container-scripts.js';
 import { Inconclusive, SERVICE_LOG_TAIL_LINES, SERVICE_RESTART_TIMEOUT_S } from '../../src/runner.js';
 import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { jobsPath, runnerJobName, runnerJobSpec } from '../../src/k8s/k8s-podspec.js';
@@ -29,6 +38,7 @@ import {
     defaultStepAnswer,
     fakeSteps,
     runner,
+    supervisedRunner,
     NEW_TOKEN,
 } from '../fixtures/k8s-suite.js';
 
@@ -448,7 +458,8 @@ describe('the kubernetes services flow (issue #773)', () => {
 
         await k8s.restartServices(job, live);
 
-        expect(modes(steps).slice(0, 3)).toEqual(['bump', 'bump', 'bump']);
+        // The acks are re-armed first, then the bump is asked until each is acknowledged again.
+        expect(modes(steps).slice(0, 4)).toEqual(['reset', 'bump', 'bump', 'bump']);
         expect(bumps).toBe(3);
     });
 
@@ -508,8 +519,9 @@ describe('the kubernetes services flow (issue #773)', () => {
             await k8s.syncCheckout(job, undefined, SESSION_RUN);
             timeouts.length = 0;
             await expect(k8s.restartServices(job, live)).rejects.toBeInstanceOf(ServicesNotRunning);
-            expect(timeouts[0]).toBeGreaterThan(0);
-            expect(timeouts[1]).toBeLessThanOrEqual(1_000);
+            // The first read is the re-arm's; the bump's reads follow it.
+            expect(timeouts[1]).toBeGreaterThan(0);
+            expect(timeouts[2]).toBeLessThanOrEqual(1_000);
         } finally {
             vi.useRealTimers();
         }
@@ -563,6 +575,194 @@ describe('the kubernetes services flow (issue #773)', () => {
         stand.abort();
         await expect(k8s.restartServices(job, stand.signal)).rejects.toThrow('the attempt stood down');
         expect(modes(steps)).toEqual([]);
+    });
+
+    /**
+     * A stale acknowledgement from a dead container: the kubelet as the pre-gate restart meets it, running the real probe and bump scripts
+     * against a temp pod volume. Each container instance has its own writable layer; its probe runs
+     * every 15 s from a full period after it started, and three misses in a row start the next
+     * instance, as a kill does. Time is the fake Date, moved on by the runner's sleep.
+     */
+    const PROBE_PERIOD_MS = 15_000;
+    const kubelet = (names: readonly string[]) => {
+        const root = mkdtempSync(join(tmpdir(), 'kubelet-'));
+        const generations = join(root, 'generations');
+        const acks = join(root, 'acks');
+        mkdirSync(generations);
+        for (const name of names) mkdirSync(join(acks, name), { recursive: true });
+        const sidecars: Record<string, Sidecar> = {};
+        const instances = new Map(
+            names.map((name) => [name, { instance: 1, nextProbeAt: Date.now() + PROBE_PERIOD_MS, misses: 0 }])
+        );
+        const publish = () => {
+            for (const [name, at] of instances) sidecars[name] = running(at.instance - 1);
+        };
+        const start = (name: string, at: number) => {
+            const container = instances.get(name)!;
+            container.instance += 1;
+            container.misses = 0;
+            container.nextProbeAt = at + PROBE_PERIOD_MS;
+            publish();
+        };
+        const layer = (name: string) => join(root, `${name}-layer-${instances.get(name)!.instance}`);
+        const probe = (name: string) =>
+            spawnSync(
+                'sh',
+                ['-c', serviceGenerationProbeScript, 'service-probe', generations, name, join(acks, name), layer(name)],
+                { encoding: 'utf8', timeout: 10_000 }
+            ).status;
+        publish();
+        return {
+            sidecars,
+            /** The runner's sleep: time moves on, and every probe due by then runs. */
+            sleep: async (ms: number) => {
+                vi.setSystemTime(Date.now() + ms);
+                for (const [name, container] of instances) {
+                    while (container.nextProbeAt <= Date.now()) {
+                        const at = container.nextProbeAt;
+                        container.nextProbeAt += PROBE_PERIOD_MS;
+                        if (probe(name) === 0) container.misses = 0;
+                        else if (++container.misses === 3) start(name, at);
+                    }
+                }
+            },
+            /** A `restart` step, answered by the real bump script. */
+            step: (mode: string, stepNames: string[]): StepResult => {
+                const done = spawnSync(
+                    'sh',
+                    ['-c', serviceGenerationBumpScript, 'service-generation', mode, generations, acks, ...stepNames],
+                    { encoding: 'utf8', timeout: 10_000 }
+                );
+                return { exitCode: done.status, stdout: done.stdout, stderr: done.stderr, timedOut: false };
+            },
+            kill: (name: string) => start(name, Date.now()),
+            restartCount: (name: string) => instances.get(name)!.instance - 1,
+            generation: (name: string) => readFileSync(join(generations, name), 'utf8').trim(),
+            ack: (name: string) => readFileSync(join(acks, name, 'ack'), 'utf8').trim(),
+        };
+    };
+    type Kubelet = ReturnType<typeof kubelet>;
+    /** Every `restart` step reaches the model's real script, `after` seeing each mode once it ran. */
+    const kubeletSteps = (model: Kubelet, after: (mode: string) => void = () => undefined) =>
+        fakeSteps((step) => {
+            if (step.kind !== 'restart') return defaultStepAnswer(step);
+            const [mode, , , ...names] = step.argv.slice(4);
+            const result = model.step(mode!, names);
+            after(mode!);
+            return result;
+        });
+    const kubeletRunner = (request: K8sRequest, model: Kubelet, steps: StepSink) =>
+        supervisedRunner(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
+            request,
+            model.sleep,
+            { steps }
+        );
+    const withFakeDate = async (body: () => Promise<void>) => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+            await body();
+        } finally {
+            vi.useRealTimers();
+        }
+    };
+
+    it('restarts a sidecar the kubelet restarted before the gates, though its first probe has not run yet', () =>
+        withFakeDate(async () => {
+            const model = kubelet(['cache']);
+            const api = podFake(model.sidecars);
+            const steps = kubeletSteps(model);
+            const k8s = kubeletRunner(api.request, model, steps.sink);
+            await k8s.syncCheckout(job, undefined, SESSION_RUN);
+            expect(await k8s.startServices(job)).toBeNull();
+            expect(model.ack('cache')).toBe('0');
+            // The kubelet restarts it: instance 2 runs, its first probe a period off, instance 1's ack still there.
+            model.kill('cache');
+            expect(await k8s.deadServices(job)).toMatchObject([{ name: 'cache', state: 'restarted' }]);
+
+            await k8s.restartServices(job, live);
+
+            expect(model.restartCount('cache')).toBe(2);
+            expect(model.generation('cache')).toBe('1');
+            const order = modes(steps).filter((mode) => mode !== 'acked');
+            expect(order[0]).toBe('reset');
+            expect(order.indexOf('reset')).toBeLessThan(order.indexOf('bump'));
+            expect(await k8s.deadServices(job)).toEqual([]);
+        }));
+
+    it('re-arms again when the kubelet restarts a sidecar between the re-arm and the bump', () =>
+        withFakeDate(async () => {
+            const model = kubelet(['cache']);
+            const api = podFake(model.sidecars);
+            let restarted = false;
+            const steps = kubeletSteps(model, (mode) => {
+                if (mode !== 'reset' || restarted) return;
+                restarted = true;
+                model.kill('cache');
+            });
+            const k8s = kubeletRunner(api.request, model, steps.sink);
+            await k8s.syncCheckout(job, undefined, SESSION_RUN);
+            expect(await k8s.startServices(job)).toBeNull();
+
+            await k8s.restartServices(job, live);
+
+            expect(
+                modes(steps)
+                    .filter((mode) => mode !== 'acked')
+                    .slice(0, 3)
+            ).toEqual(['reset', 'reset', 'bump']);
+            // Past the count the second re-arm saw (1): the bump restarted the sidecar once more.
+            expect(model.restartCount('cache')).toBe(2);
+            expect(model.generation('cache')).toBe('1');
+        }));
+
+    it('a re-arm step the deadline cuts off is inconclusive; a lost supervisor is thrown as it is', async () => {
+        await withFakeDate(async () => {
+            const api = podFake({ cache: running() });
+            const steps = restartSteps();
+            const sink: StepSink = {
+                ...steps.sink,
+                submit: async (token, step, signal) => {
+                    if (step.kind === 'restart' && step.argv[4] === 'reset') {
+                        vi.setSystemTime(Date.now() + 301_000);
+                        throw new Error('the step was cancelled');
+                    }
+                    return steps.sink.submit(token, step, signal);
+                },
+            };
+            const k8s = runner(api.request, servicesOn, undefined, sink);
+            await k8s.syncCheckout(job, undefined, SESSION_RUN);
+            await expect(k8s.restartServices(job, live)).rejects.toBeInstanceOf(Inconclusive);
+        });
+        const api = podFake({ cache: running() });
+        const steps = fakeSteps((step) => {
+            if (step.kind === 'restart' && step.argv[4] === 'reset') throw new StepChannelClosed('the service re-arm');
+            return defaultStepAnswer(step);
+        });
+        const k8s = runner(api.request, servicesOn, undefined, steps.sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
+        await expect(k8s.restartServices(job, live)).rejects.toBeInstanceOf(StepChannelClosed);
+    });
+
+    it('a stood-down attempt ends the re-arm at once', async () => {
+        const api = podFake({ cache: running() });
+        const stand = new AbortController();
+        const steps = restartSteps();
+        const sink: StepSink = {
+            ...steps.sink,
+            submit: async (token, step, signal) => {
+                if (step.kind === 'restart' && step.argv[4] === 'reset') {
+                    stand.abort();
+                    throw new Error('the step was cancelled');
+                }
+                return steps.sink.submit(token, step, signal);
+            },
+        };
+        const k8s = runner(api.request, servicesOn, undefined, sink);
+        await k8s.syncCheckout(job, undefined, SESSION_RUN);
+        // Thrown as it is, as a bump the stand-down cuts off is: never waited out into a verdict.
+        await expect(k8s.restartServices(job, stand.signal)).rejects.toThrow('the step was cancelled');
+        expect(modes(steps)).not.toContain('bump');
     });
 
     it('samples the services off the task pod’s sidecars', async () => {

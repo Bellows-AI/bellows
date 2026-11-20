@@ -630,6 +630,11 @@ describe('the services’ generations over the supervisor (issue #773 D9)', () =
         // A few files: well inside the broker's grace, never holding a step behind it for long.
         expect(read?.timeoutMs).toBeLessThanOrEqual(30_000);
         expect(s.tokens).toEqual([CONTROL_TOKEN, CONTROL_TOKEN]);
+        // The re-arm before a bump is a `restart` step of the same shape.
+        await runServiceGenerationStep(s.host, job, { mode: 'reset', names: ['db', 'cache'] });
+        const reset = s.submitted[2];
+        expect(reset).toMatchObject({ kind: 'restart', argv: serviceRestartArgv('reset', ['db', 'cache']) });
+        expect(reset?.id).not.toBe(bump?.id);
     });
 });
 

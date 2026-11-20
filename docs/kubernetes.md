@@ -60,6 +60,8 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
   requests are resized (`gateResourcesField` in `driver/src/k8s/k8s-podfields.ts`, `driver/test/k8s/gates-and-reviewer.test.ts`).
 - **The agent container's env holds no GitHub token and no route to the step channel**; the claim env and the
   board's GitHub token are a step's own `env`. `driver/test/supervised-steps.test.ts`, `driver/test/github-credential.test.ts`.
+- **A stale acknowledgement never licenses a bump**: the acks are re-armed and re-acknowledged first
+  (`bumpWhenAcked` in `driver/src/k8s/k8s-services.ts`, `driver/test/k8s/services.test.ts`).
 - **The fence orders contenders by `claim_seq`, never by a clock or the refundable attempt counter.**
   `driver/test/k8s/` (`after its attempt was refunded`, `no claim sequence`).
 - **`make start` refuses a state claim initialised without `PGDATA`** and a pre-StatefulSet state release; both name
