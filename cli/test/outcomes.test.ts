@@ -165,6 +165,8 @@ const USAGE: { label: string; argv: string[]; stderr: string | null }[] = [
     },
     { label: 'repo list with a stray argument', argv: ['repo', 'list', 'acme/api'], stderr: 'usage:' },
     { label: 'auth status with a stray argument', argv: ['auth', 'status', 'extra'], stderr: 'usage:' },
+    { label: 'auth login with a stray argument', argv: ['auth', 'login', 'extra'], stderr: 'usage:' },
+    { label: 'auth logout with a stray argument', argv: ['auth', 'logout', 'extra'], stderr: 'usage:' },
     { label: 'batch retry missing its task', argv: ['batch', 'retry', BATCH], stderr: 'usage:' },
     { label: 'batch report with no id', argv: ['batch', 'report'], stderr: 'usage:' },
 ];

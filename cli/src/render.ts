@@ -394,6 +394,11 @@ export function renderAnswered(question: QuestionRecord): string {
     return `${question.status} ${question.id}`;
 }
 
+function tokenLine(token: ConfigSummary['token']): string {
+    if (!token.set) return 'not set';
+    return token.expiresAt ? `set (${token.kind}, expires ${token.expiresAt})` : `set (${token.kind})`;
+}
+
 /** `auth status`: where the CLI points, whether a token is set (never its value), and who it acts as. */
 export function renderAuthStatus(status: {
     config: ConfigSummary;
@@ -404,7 +409,7 @@ export function renderAuthStatus(status: {
     const { sources } = config;
     return [
         `board    ${config.url} (version ${board.version}) [${sources.url}]`,
-        `token    ${config.token.set ? `set (${config.token.kind})` : 'not set'} [${sources.token}]`,
+        `token    ${tokenLine(config.token)} [${sources.token}]`,
         `requests ${config.requestTimeoutSeconds}s deadline [${sources.requestTimeoutS}], ${config.readRetries} read retries [${sources.readRetries}]`,
         `identity ${identity.login} in ${identity.organization.name} (${identity.role}), board auth ${identity.authMode}`,
     ].join('\n');

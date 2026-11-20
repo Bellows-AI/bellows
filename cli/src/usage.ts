@@ -49,6 +49,9 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
                                                      a new token; the old one works for the overlap (default 3600)
        bellows auth status [--json]      the configuration and each value's source, the board's version,
                                          and who the token acts as
+       bellows auth login [--json]       sign in through the browser (the board must have MCP enabled);
+                                         saves an oauth sign-in in the settings file
+       bellows auth logout [--json]      revoke that sign-in, then remove it from the settings file
        bellows help | --help | -h          this text; bellows --version prints the CLI's version
                                            (neither reads any configuration)
 
@@ -84,6 +87,8 @@ config:
   FACTORY_READ_RETRIES       re-issues of a failed read or keyed write, never an unkeyed write (default 3; 0 = off)
   ~/.bellows/settings.json   the same four as JSON keys url, token, requestTimeoutS, readRetries;
                              a set variable wins over its key. A file holding a token must be mode 600.
+                             auth login adds an oauth key; FACTORY_TOKEN, then token, win over it,
+                             and it is sent only to the board it was issued by.
   --config <path>            on any command: read that settings file instead (it must exist)
 
 exit codes: 0 ok (a wait: the run succeeded), 1 the board refused, 2 usage or configuration,

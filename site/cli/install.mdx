@@ -1,6 +1,6 @@
 ---
 title: "Install and sign in"
-description: "Install the bellows CLI, point it at your Bellows server with a personal token, and check that it works."
+description: "Install the bellows CLI, sign in to your Bellows server through the browser or with a personal token, and check that it works."
 ---
 
 The `bellows` CLI queues tasks, waits on them, follows up and answers questions from your terminal or from CI. It talks to the Bellows server over HTTP.
@@ -9,7 +9,7 @@ The `bellows` CLI queues tasks, waits on them, follows up and answers questions 
 
 - Node.js 22 or newer.
 - A Bellows server URL (Bellows Cloud or your own).
-- A personal access token (`fat_...`) for that server.
+- A browser to sign in with, or a personal access token (`fat_...`) for that server.
 
 ## Install
 
@@ -24,7 +24,23 @@ bellows --version
 
 ## Sign in
 
-The CLI has no login command. You give it a server URL and a token.
+### With your browser
+
+`bellows auth login` opens your browser on the server's consent page. Approve it, and the CLI saves the sign-in in the settings file (mode 600). It renews itself while you use it, so you sign in once.
+
+```bash Terminal
+export FACTORY_URL="https://bellows.cloud"
+bellows auth login
+bellows auth status
+```
+
+The URL is also printed, in case the browser does not open. The sign-in acts as you everywhere you can act, the same as a personal token. It appears under **Connected apps** on your account page, where you can end it. `bellows auth logout` ends it from the terminal.
+
+Browser sign-in needs a server with MCP enabled. On a server without it, `bellows auth login` stops before opening the browser. Use a personal token instead.
+
+### With a personal token
+
+You give the CLI a server URL and a token.
 
 <Steps>
   <Step title="Mint a personal access token">
@@ -68,11 +84,11 @@ Settings come from environment variables first, then the settings file. A set va
 | Environment variable | File key | Default | Meaning |
 | --- | --- | --- | --- |
 | `FACTORY_URL` | `url` | none (required) | The server's base URL. |
-| `FACTORY_TOKEN` | `token` | none | Personal access token (`fat_...`). |
+| `FACTORY_TOKEN` | `token` | none | Personal access token (`fat_...`). It wins over a browser sign-in. |
 | `FACTORY_REQUEST_TIMEOUT_S` | `requestTimeoutS` | `30` | Deadline for one request, 1 to 3600 seconds. |
 | `FACTORY_READ_RETRIES` | `readRetries` | `3` | Retries of a failed read or keyed write, 0 to 10. `0` turns retries off. Writes without an idempotency key are never retried. |
 
-The file must be a JSON object with only these four keys.
+The file must be a JSON object with only these four keys, plus `oauth`, which `bellows auth login` writes. Do not edit `oauth` by hand. The CLI sends it only to the server that issued it, and only when no token is set.
 
 To read a different file, add `--config <path>` to any command. That file must exist.
 

@@ -12,8 +12,11 @@ import type { Transport } from './transport.js';
 /** The effective configuration with the credential reduced to whether it is set, and of which kind. */
 export interface ConfigSummary {
     url: string;
-    /** Never a character of the token: `kind` is read from its public prefix, for display only. */
-    token: { set: boolean; kind: 'personal' | 'org' | 'unrecognized' | null };
+    /**
+     * Never a character of the token: `kind` is read from its public prefix, for display only. A
+     * stored sign-in (`oauth`) adds the access token's expiry; it renews on use until the grant ends.
+     */
+    token: { set: boolean; kind: 'personal' | 'org' | 'oauth' | 'unrecognized' | null; expiresAt?: string };
     requestTimeoutSeconds: number;
     readRetries: number;
     /** Where each value came from: `env`, the settings file's path, or `default`. */
@@ -29,10 +32,17 @@ function tokenKind(token: string): ConfigSummary['token']['kind'] {
     return 'unrecognized';
 }
 
+function tokenOf(config: CliConfig): ConfigSummary['token'] {
+    if (config.credential === 'oauth' && config.oauth) {
+        return { set: true, kind: 'oauth', expiresAt: config.oauth.expiresAt };
+    }
+    return { set: config.token !== '', kind: tokenKind(config.token) };
+}
+
 export function configSummary(config: CliConfig): ConfigSummary {
     return {
         url: config.url,
-        token: { set: config.token !== '', kind: tokenKind(config.token) },
+        token: tokenOf(config),
         requestTimeoutSeconds: config.requestTimeoutMs / MS_PER_SECOND,
         readRetries: config.readRetries,
         sources: config.sources,
