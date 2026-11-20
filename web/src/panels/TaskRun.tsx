@@ -207,6 +207,7 @@ function RunNotes({ job }: { job: Job }) {
     const quiet =
         job.failureKind == null &&
         job.workflowNode === null &&
+        (job.gateFixRound ?? null) === null &&
         job.actingFor === null &&
         job.stoppedBy === null &&
         job.doneAt === null &&
@@ -220,6 +221,12 @@ function RunNotes({ job }: { job: Job }) {
                 <span className="pill pill-bad">{FAILURE_KIND_LABEL[job.failureKind]}</span>
             ) : null}
             {job.workflowNode !== null ? <span className="muted">node {job.workflowNode}</span> : null}
+            {job.gateFixRound != null ? (
+                <span className="pill">
+                    automatic gate fix · round {job.gateFixRound}
+                    {job.gateFixLimit != null ? ` of ${job.gateFixLimit}` : ''}
+                </span>
+            ) : null}
             <ActingForNote job={job} />
             {job.stoppedBy !== null ? (
                 <span className="pill chat-stop">

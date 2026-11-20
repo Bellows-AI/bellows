@@ -226,6 +226,15 @@ describe('TaskRun — gates, publication and metadata', () => {
         const bare = articleOf(renderDetail({ jobs: [job()] }), 'fix the flaky login test');
         expect(bare).not.toContain('msg-meta');
     });
+
+    it('labels a follow-up the board queued to repair a gate with its round, and says nothing on other runs', () => {
+        const fix = child({ command: 'the gate failed', gateFixRound: 2, gateFixLimit: 3 });
+        const html = renderDetail({ jobs: [root, fix] });
+        expect(articleOf(html, 'the gate failed')).toContain('automatic gate fix · round 2 of 3');
+        expect(articleOf(html, 'first command')).not.toContain('automatic gate fix');
+        const unbounded = renderDetail({ jobs: [root, child({ command: 'again', gateFixRound: 1 })] });
+        expect(articleOf(unbounded, 'again')).toContain('automatic gate fix · round 1<');
+    });
 });
 
 describe('TaskRun — footer attribution, prompt and output wells', () => {

@@ -33,6 +33,27 @@ async function queueObjective(command = 'scaffold the project'): Promise<string>
     return created.id;
 }
 
+const redGate = (output = 'red'): GateReport[] => [{ name: 'test', status: 'failed', exitCode: 1, output }];
+
+/** Claims the queued row and settles it as a run that failed on its declared gate. */
+async function failOnGate(
+    over: { treeChanged?: boolean; failureKind?: 'gate' | 'blocked' | 'services'; output?: string } = {}
+): Promise<Claim> {
+    const claimed = await claim();
+    await store.gates(claimed.id, claimed.leaseToken, redGate(over.output));
+    await store.complete(claimed.id, claimed.leaseToken, {
+        status: 'failed',
+        exitCode: 1,
+        output: 'red',
+        failureKind: over.failureKind ?? 'gate',
+        treeChanged: over.treeChanged ?? true,
+    });
+    return claimed;
+}
+
+const gateFixRowsOf = async (): Promise<{ id: string; gate_fix_round: number | null; status: string }[]> =>
+    sql`select id, gate_fix_round, status from job where gate_fix_round is not null order by created_at, id`;
+
 const claim = async (): Promise<Claim> => {
     const claimed = (await store.claim(WORKER, 60)) as Claim | null;
     expect(claimed).not.toBeNull();
@@ -76,17 +97,10 @@ describe.skipIf(!enabled)('objective mode — database', () => {
 
     it.each([
         ['succeeded', { status: 'succeeded' as const, exitCode: 0, output: 'done' }],
-        [
-            'failed',
-            { status: 'failed' as const, exitCode: 1, output: 'red', failureKind: 'gate' as const, treeChanged: true },
-        ],
         ['failed', { status: 'failed' as const, exitCode: 1, output: 'stuck', failureKind: 'blocked' as const }],
     ])('a %s verdict leaves a one-row thread — no successor, no wait', async (status, verdict) => {
         const root = await queueObjective();
         const claimed = await claim();
-        if (verdict.status === 'failed' && verdict.failureKind === 'gate') {
-            await store.gates(claimed.id, claimed.leaseToken, failedGate);
-        }
         await store.complete(claimed.id, claimed.leaseToken, verdict);
         const rows = (await store.thread(root))!;
         expect(rows).toHaveLength(1);
@@ -178,5 +192,80 @@ describe.skipIf(!enabled)('objective mode — database', () => {
             sql`insert into job (org_id, id, root_job_id, command, mode)
                 select ${ORG}, x, x, 'x', 'freeform' from (select gen_random_uuid() as x) s`
         ).rejects.toMatchObject({ constraint_name: 'job_mode_ck' });
+    });
+
+    describe('automatic gate repair', () => {
+        it('a red gate over a changed tree queues a follow-up naming the gate, in the same thread and session', async () => {
+            const root = await queueObjective();
+            const first = await failOnGate({ output: 'expected 1 to equal 2' });
+            const rows = (await store.thread(root))!;
+            expect(rows).toHaveLength(2);
+            const fix = rows[1]!;
+            expect(fix).toMatchObject({ status: 'queued', mode: OBJECTIVE_MODE, parentId: first.id });
+            expect(fix.command).toContain('test');
+            expect(fix.command).toContain('expected 1 to equal 2');
+            expect(await gateFixRowsOf()).toEqual([expect.objectContaining({ id: fix.id, gate_fix_round: 1 })]);
+            const [session] = await sql<{ a: string | null; b: string | null }[]>`
+                select (select session_id from job where id = ${first.id}) as a,
+                       (select session_id from job where id = ${fix.id}) as b`;
+            expect(session!.b).toBe(session!.a);
+        });
+
+        it('rests after the executor limit: three red rounds, then no fourth follow-up', async () => {
+            const root = await queueObjective();
+            await failOnGate();
+            await failOnGate();
+            await failOnGate();
+            expect((await gateFixRowsOf()).map((row) => row.gate_fix_round)).toEqual([1, 2, 3]);
+            await failOnGate();
+            expect(await gateFixRowsOf()).toHaveLength(3);
+            expect((await store.thread(root))!).toHaveLength(4);
+        });
+
+        it('freezes the limit from the executor at launch: 0 turns repair off, a later edit changes nothing', async () => {
+            await sql`
+                insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds)
+                values (${ORG}, null, 'strict', 'claude-code', '{}'::jsonb, 0)`;
+            const created = await store.create('scaffold', null, {
+                repo: null,
+                executor: 'strict',
+                executorScope: 'org',
+            });
+            if (typeof created === 'string') throw new Error(created);
+            await sql`update executor_profile set gate_fix_rounds = 5 where name = 'strict'`;
+            const [root] = await sql<{ gate_fix_rounds: number | null }[]>`
+                select gate_fix_rounds from job where id = ${created.id}`;
+            expect(root!.gate_fix_rounds).toBe(0);
+            await failOnGate();
+            expect(await gateFixRowsOf()).toEqual([]);
+            expect((await store.thread(created.id))!).toHaveLength(1);
+        });
+
+        it('rests when the run left the tree unchanged', async () => {
+            const root = await queueObjective();
+            await failOnGate({ treeChanged: false });
+            expect((await store.thread(root))!).toHaveLength(1);
+        });
+
+        it.each(['blocked', 'services'] as const)('rests on a %s failure', async (failureKind) => {
+            const root = await queueObjective();
+            await failOnGate({ failureKind });
+            expect((await store.thread(root))!).toHaveLength(1);
+        });
+
+        it('rests once the thread is marked done', async () => {
+            const root = await queueObjective();
+            const claimed = await claim();
+            await store.gates(claimed.id, claimed.leaseToken, redGate());
+            await sql`update job set done_at = now() where id = ${root}`;
+            await store.complete(claimed.id, claimed.leaseToken, {
+                status: 'failed',
+                exitCode: 1,
+                output: 'red',
+                failureKind: 'gate',
+                treeChanged: true,
+            });
+            expect((await store.thread(root))!).toHaveLength(1);
+        });
     });
 });
