@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { AccessTokenView, MintResult } from '../api/useAccessTokens.js';
 import { useAccessTokens } from '../api/useAccessTokens.js';
+import { AccessTokenDialog } from './AccessTokenDialog.js';
 import { ConfirmDialog } from '../components/ConfirmDialog.js';
 import { taskTime } from '../format.js';
 import { StateNote } from '../components/StateNote.js';
@@ -8,9 +9,9 @@ import { StateNote } from '../components/StateNote.js';
 /** One token row: its label and timestamps, and Revoke — or the fact that it already is one.
  * Split out of `AccessTokensPanel` so its own conditional cell does not add to the panel's
  * cognitive complexity. */
-function AccessTokenRow({ token, busy, onRevoke }: { token: AccessTokenView; busy: boolean; onRevoke: () => void }) {
+function AccessTokenRow({ token, flash, onRevoke }: { token: AccessTokenView; flash: boolean; onRevoke: () => void }) {
     return (
-        <tr>
+        <tr className={flash ? 'token-flash' : undefined}>
             <td>{token.label}</td>
             <td>{taskTime(token.createdAt)}</td>
             <td>{taskTime(token.lastUsedAt)}</td>
@@ -18,7 +19,12 @@ function AccessTokenRow({ token, busy, onRevoke }: { token: AccessTokenView; bus
                 {token.revokedAt !== null ? (
                     <span className="muted">revoked</span>
                 ) : (
-                    <button type="button" disabled={busy} aria-label={`Revoke ${token.label}`} onClick={onRevoke}>
+                    <button
+                        type="button"
+                        className="chat-remove"
+                        aria-label={`Revoke ${token.label}`}
+                        onClick={onRevoke}
+                    >
                         Revoke
                     </button>
                 )}
@@ -27,103 +33,64 @@ function AccessTokenRow({ token, busy, onRevoke }: { token: AccessTokenView; bus
     );
 }
 
-/** The printed-once moment: the plaintext, Copy, and Done. Split out of `AccessTokensPanel` so
- * its own markup does not add to the panel's cognitive complexity. */
-function MintedTokenOnce({
-    token,
-    copied,
-    onCopy,
-    onDone,
-}: {
-    token: string;
-    copied: boolean;
-    onCopy: () => void;
-    onDone: () => void;
-}) {
-    return (
-        <div className="token-once">
-            <p>
-                Shown once — copy it now. Only its hash is stored, and it cannot be read again; a lost token is revoked
-                and reissued.
-            </p>
-            <code>{token}</code>{' '}
-            <button type="button" className="primary" onClick={onCopy}>
-                {copied ? 'Copied' : 'Copy'}
-            </button>{' '}
-            <button type="button" onClick={onDone}>
-                Done
-            </button>
-        </div>
-    );
-}
-
-/** The create form and the list. Split out of `AccessTokensPanel` for the same reason as
- * `MintedTokenOnce`. */
-function TokenCreateAndList({
-    label,
-    busy,
-    onLabelChange,
-    onSubmit,
-    loading,
+/** The token table, or the dashed empty state with its own New token button. Split out of
+ * `AccessTokensPanel` so its conditionals do not add to the panel's cognitive complexity. */
+function TokenList({
     tokens,
+    loading,
+    emptyText,
+    flash,
+    onNew,
     onRevoke,
 }: {
-    label: string;
-    busy: boolean;
-    onLabelChange: (value: string) => void;
-    onSubmit: () => void;
-    loading: boolean;
     tokens: readonly AccessTokenView[];
+    loading: boolean;
+    emptyText: string;
+    flash: ReadonlySet<string>;
+    onNew: () => void;
     onRevoke: (id: string) => void;
 }) {
-    return (
-        <>
-            <p className="token-create">
-                <input
-                    aria-label="Token label"
-                    placeholder="what this token is for"
-                    value={label}
-                    disabled={busy}
-                    onChange={(e) => onLabelChange(e.target.value)}
-                />{' '}
-                <button type="button" className="primary" disabled={busy || label.trim() === ''} onClick={onSubmit}>
-                    {busy ? 'Creating…' : 'Create token'}
+    if (loading) return <p className="muted">Loading…</p>;
+    if (tokens.length === 0) {
+        return (
+            <div className="token-empty">
+                <p className="muted">{emptyText}</p>
+                <button type="button" className="primary" onClick={onNew}>
+                    New token
                 </button>
-            </p>
-
-            {loading ? <p className="muted">Loading…</p> : null}
-            {!loading && tokens.length === 0 ? <p className="muted">No tokens.</p> : null}
-            {tokens.length > 0 ? (
-                <table className="access-tokens">
-                    <thead>
-                        <tr>
-                            <th scope="col">Label</th>
-                            <th scope="col">Created</th>
-                            <th scope="col">Last used</th>
-                            <th scope="col">
-                                <span className="visually-hidden">Revoke</span>
-                            </th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {tokens.map((token) => (
-                            <AccessTokenRow
-                                key={token.id}
-                                token={token}
-                                busy={busy}
-                                onRevoke={() => onRevoke(token.id)}
-                            />
-                        ))}
-                    </tbody>
-                </table>
-            ) : null}
-        </>
+            </div>
+        );
+    }
+    return (
+        <table className="data">
+            <thead>
+                <tr>
+                    <th scope="col">Label</th>
+                    <th scope="col">Created</th>
+                    <th scope="col">Last used</th>
+                    <th scope="col">
+                        <span className="visually-hidden">Revoke</span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                {tokens.map((token) => (
+                    <AccessTokenRow
+                        key={token.id}
+                        token={token}
+                        flash={flash.has(token.id)}
+                        onRevoke={() => onRevoke(token.id)}
+                    />
+                ))}
+            </tbody>
+        </table>
     );
 }
 
 export interface AccessTokensPanelProps {
+    scope: 'personal' | 'org';
     title: string;
-    /** One sentence on what this scope is for; rendered under the heading. */
+    /** One sentence on what this scope is for; rendered under the heading and in the create dialog. */
     hint: string;
     tokens: AccessTokenView[];
     loading: boolean;
@@ -132,37 +99,70 @@ export interface AccessTokensPanelProps {
     onRevoke: (id: string) => Promise<string | null>;
 }
 
+/** How long a freshly created row wears its `--ok-wash`. */
+const FLASH_MS = 1600;
+
 /**
- * One access-token scope: the create form, the list, and the printed-once moment.
+ * One access-token scope: the list, a New token button, and the create dialog.
  *
  * The list shows labels and last use, never a token — the plaintext exists exactly once, in the
- * mint response, and `minted` is the state that keeps it on screen until Done is pressed. No
- * `<form>`: the CSP sends `form-action 'none'`, the same trap that makes LoginGate an anchor.
+ * mint response, and `AccessTokenDialog` keeps it on screen until Done is pressed. The list stays
+ * mounted behind the dialog for the whole flow. No `<form>`: the CSP sends `form-action 'none'`,
+ * the same trap that makes LoginGate an anchor.
  */
-export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreate, onRevoke }: AccessTokensPanelProps) {
-    const [label, setLabel] = useState('');
-    const [minted, setMinted] = useState<string | null>(null);
-    const [copied, setCopied] = useState(false);
+export function AccessTokensPanel({
+    scope,
+    title,
+    hint,
+    tokens,
+    loading,
+    error,
+    onCreate,
+    onRevoke,
+}: AccessTokensPanelProps) {
+    const [creating, setCreating] = useState(false);
     const [failure, setFailure] = useState<string | null>(null);
-    const [busy, setBusy] = useState(false);
     const [pending, setPending] = useState<AccessTokenView | null>(null);
     const [revoking, setRevoking] = useState(false);
+    // The ids on screen when the token was minted: after Done, the rows not in it are the new ones.
+    const [before, setBefore] = useState<ReadonlySet<string> | null>(null);
+    const [flash, setFlash] = useState<ReadonlySet<string>>(new Set());
+    const newRef = useRef<HTMLButtonElement>(null);
 
-    const submit = async () => {
-        setBusy(true);
-        setFailure(null);
-        try {
-            const result = await onCreate(label.trim());
-            if (!result.ok) {
-                setFailure(result.error);
-            } else {
-                setMinted(result.token);
-                setCopied(false);
-                setLabel('');
-            }
-        } finally {
-            setBusy(false);
-        }
+    const create = async (label: string): Promise<MintResult> => {
+        const result = await onCreate(label);
+        if (result.ok) setBefore(new Set(tokens.map((t) => t.id)));
+        return result;
+    };
+
+    // After the dialog closes focus goes to the panel's New token button (the empty state's own
+    // button unmounts with the first row), and a created row flashes once.
+    const [closed, setClosed] = useState(false);
+    useEffect(() => {
+        if (!closed) return;
+        const timer = setTimeout(() => {
+            newRef.current?.focus();
+            setClosed(false);
+        }, 0);
+        return () => clearTimeout(timer);
+    }, [closed]);
+    useEffect(() => {
+        if (flash.size === 0) return;
+        const timer = setTimeout(() => setFlash(new Set()), FLASH_MS);
+        return () => clearTimeout(timer);
+    }, [flash]);
+    useEffect(() => {
+        // The refetch can land after Done: keep waiting on `before` until a new row shows.
+        if (before === null || creating) return;
+        const fresh = tokens.filter((t) => !before.has(t.id)).map((t) => t.id);
+        if (fresh.length === 0) return;
+        setFlash(new Set(fresh));
+        setBefore(null);
+    }, [before, creating, tokens]);
+
+    const close = () => {
+        setCreating(false);
+        setClosed(true);
     };
 
     const revoke = async (id: string): Promise<boolean> => {
@@ -197,46 +197,36 @@ export function AccessTokensPanel({ title, hint, tokens, loading, error, onCreat
         }
     };
 
-    const copy = async () => {
-        if (minted === null) return;
-        try {
-            await navigator.clipboard.writeText(minted);
-            setCopied(true);
-        } catch {
-            // Clipboard access can be refused; the token stays on screen to copy by hand.
-            setCopied(false);
-        }
-    };
-
     return (
         <section className="panel">
             <div className="panel-head">
                 <h2 ref={headingRef} tabIndex={-1}>
                     {title}
                 </h2>
+                <button ref={newRef} type="button" className="primary" onClick={() => setCreating(true)}>
+                    New token
+                </button>
             </div>
             {hint ? <p className="muted">{hint}</p> : null}
             {error ? <StateNote state="error">{error}</StateNote> : null}
             {failure ? <StateNote state="error">{failure}</StateNote> : null}
 
-            {minted !== null ? (
-                <MintedTokenOnce
-                    token={minted}
-                    copied={copied}
-                    onCopy={() => void copy()}
-                    onDone={() => setMinted(null)}
-                />
-            ) : (
-                <TokenCreateAndList
-                    label={label}
-                    busy={busy}
-                    onLabelChange={setLabel}
-                    onSubmit={() => void submit()}
-                    loading={loading}
-                    tokens={tokens}
-                    onRevoke={(id) => setPending(tokens.find((t) => t.id === id) ?? null)}
-                />
-            )}
+            <TokenList
+                tokens={tokens}
+                loading={loading}
+                emptyText={scope === 'org' ? 'No organization tokens yet.' : 'No tokens yet.'}
+                flash={flash}
+                onNew={() => setCreating(true)}
+                onRevoke={(id) => setPending(tokens.find((t) => t.id === id) ?? null)}
+            />
+            <AccessTokenDialog
+                open={creating}
+                scope={scope}
+                purpose={hint}
+                onCreate={create}
+                onCancel={close}
+                onDone={close}
+            />
             <ConfirmDialog
                 open={pending !== null}
                 busy={revoking}
@@ -263,6 +253,7 @@ export function AccessTokensSection({ scope }: { scope: 'personal' | 'org' }) {
     const access = useAccessTokens(scope);
     return (
         <AccessTokensPanel
+            scope={scope}
             title={scope === 'org' ? 'Organization access tokens' : 'Personal access tokens'}
             hint={
                 scope === 'org'
