@@ -442,14 +442,15 @@ const SERVICE_STEP_TIMEOUT_MS = 30_000;
 
 /**
  * One `restart` step (issue #773 D9): the supervisor reads which of `names` have not acknowledged
- * their generation (`acked`), or bumps every one's (`bump`, refused unless all have) — instant
- * either way, so it never holds the steps behind it. A fresh id each time: a read must read now, and
- * a bump the caller asks again is a new one. A lost supervisor rejects (`stepLost`).
+ * their generation (`acked`), bumps every one's (`bump`, refused unless all have), or deletes their
+ * acks so the containers running now must acknowledge again (`reset`) — instant every way,
+ * so it never holds the steps behind it. A fresh id each time: a read must read now, and a bump the
+ * caller asks again is a new one. A lost supervisor rejects (`stepLost`).
  */
 export const runServiceGenerationStep = (
     host: Pick<StepHost, 'sink'>,
     job: BoardJob,
-    { mode, names }: { mode: 'acked' | 'bump'; names: readonly string[] },
+    { mode, names }: { mode: 'acked' | 'bump' | 'reset'; names: readonly string[] },
     bound?: Bound
 ): Promise<StepResult> => {
     // Inside a wait, the step ends at its deadline and on its kill, and is not even sent past it.
