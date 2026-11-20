@@ -64,13 +64,18 @@ export function pkceChallenge(verifier: string): string {
 }
 
 /** The platform's URL opener; resolves once it started, rejects when it could not be spawned. */
+/**
+ * The platform's URL opener and its argv, the URL one argument that no shell parses: on Windows
+ * `cmd /c start` would split the query string at every `&`, so `rundll32` hands it to the handler.
+ */
+export function browserCommand(platform: NodeJS.Platform, url: string): [string, string[]] {
+    if (platform === 'darwin') return ['open', [url]];
+    if (platform === 'win32') return ['rundll32', ['url.dll,FileProtocolHandler', url]];
+    return ['xdg-open', [url]];
+}
+
 export function openInBrowser(url: string): Promise<void> {
-    const [command, args] =
-        process.platform === 'darwin'
-            ? ['open', [url]]
-            : process.platform === 'win32'
-              ? ['cmd', ['/c', 'start', '""', url]]
-              : ['xdg-open', [url]];
+    const [command, args] = browserCommand(process.platform, url);
     return new Promise((resolve, reject) => {
         const child = spawn(command, args, { stdio: 'ignore', detached: true });
         child.once('error', reject);

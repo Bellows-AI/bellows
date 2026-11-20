@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { LoginError, pkceChallenge, signIn } from '../src/login.js';
+import { browserCommand, LoginError, pkceChallenge, signIn } from '../src/login.js';
 import { run } from '../src/run.js';
 import { BoardError, NO_RESPONSE_STATUS } from '../src/transport.js';
 
@@ -84,6 +84,21 @@ describe('pkceChallenge', () => {
         expect(pkceChallenge('dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk')).toBe(
             'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM'
         );
+    });
+});
+
+describe('browserCommand', () => {
+    const url = 'http://board/api/oauth/authorize?a=1&b=2&state=x';
+
+    it.each([
+        ['win32', 'rundll32', ['url.dll,FileProtocolHandler', url]],
+        ['darwin', 'open', [url]],
+        ['linux', 'xdg-open', [url]],
+    ] as const)('on %s opens the URL with no shell parsing it, as one argument', (platform, command, args) => {
+        const [actual, actualArgs] = browserCommand(platform, url);
+        expect(actual).toBe(command);
+        expect(actual).not.toBe('cmd');
+        expect(actualArgs).toEqual(args);
     });
 });
 
