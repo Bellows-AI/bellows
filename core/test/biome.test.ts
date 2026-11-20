@@ -73,6 +73,8 @@ const runBiome = (args: string[], options: { cwd?: string; input?: string } = {}
 interface PluginDiagnostics {
     messages: string[];
     errored: string[];
+    /** Every diagnostic's category, plugin or rule: `lint/suspicious/noConsole` and the like. */
+    categories: string[];
 }
 
 /**
@@ -97,6 +99,7 @@ const lintScratch = async (files: Record<string, string>, lintDir = join(root, '
         const report = JSON.parse(result.stdout) as { diagnostics?: { category?: string; message?: string }[] };
         const plugin = (report.diagnostics ?? []).filter((d) => d.category === 'plugin');
         return {
+            categories: (report.diagnostics ?? []).map((d) => `${d.category}:${d.message ?? ''}`),
             messages: plugin.map((d) => d.message ?? ''),
             errored: plugin.filter((d) => /errored:/.test(d.message ?? '')).map((d) => d.message ?? ''),
         };
@@ -105,7 +108,28 @@ const lintScratch = async (files: Record<string, string>, lintDir = join(root, '
     }
 };
 
+/** The server's user-facing stdout: CLIs that print to the operator, not the log. */
+const SERVER_CONSOLE_CLIS = [
+    'server/src/seed/cli.ts',
+    'server/src/secrets/rotate-cli.ts',
+    'server/src/auth/driver-credential-cli.ts',
+];
+
 describe('biome', () => {
+    it('bans console in server/src except the three CLIs that write to the operator', () => {
+        const { overrides } = JSON.parse(readFileSync(join(root, 'biome.json'), 'utf8')) as {
+            overrides: { includes: string[]; linter?: { rules?: { suspicious?: { noConsole?: string } } } }[];
+        };
+        const consoleRule = (includes: string[]) =>
+            overrides.find((o) => o.linter?.rules?.suspicious?.noConsole && o.includes.join() === includes.join())
+                ?.linter?.rules?.suspicious?.noConsole;
+        expect(consoleRule(['server/src/**'])).toBe('error');
+        expect(consoleRule(SERVER_CONSOLE_CLIS)).toBe('off');
+        // The off override comes later, so it wins over the ban.
+        const at = (includes: string[]) => overrides.findIndex((o) => o.includes.join() === includes.join());
+        expect(at(SERVER_CONSOLE_CLIS)).toBeGreaterThan(at(['server/src/**']));
+    });
+
     it('is configured at the root with the style the tree is written in', () => {
         expect(existsSync(join(root, 'biome.json')), 'biome.json missing at the repo root').toBe(true);
         const config = JSON.parse(readFileSync(join(root, 'biome.json'), 'utf8'));
@@ -178,6 +202,7 @@ describe('biome', () => {
                 "export const d = 'factory.job';",
                 "export const e = 'NOT_FOUND';",
             ].join('\n'),
+            'driver/src/probe-npm.ts': "import leftPad from 'left-pad';",
             'driver/src/probe-script.ts': "export const v = ['node', '-e', 'x'];",
             'driver/test/probe-script.ts': "export const v = ['node', '-e', 'x'];",
             'core/src/executors.ts': "export const w = 'claude-code';",
@@ -219,6 +244,42 @@ describe('biome', () => {
                 const found = await lintScratch(FIXTURES);
                 expect(found.messages.some((m) => /copy the type instead/.test(m))).toBe(true);
                 expect(found.messages.some((m) => /core imports nothing from server/.test(m))).toBe(true);
+            },
+            BIOME_CHECK_TIMEOUT_MS
+        );
+
+        it(
+            'the driver may import node:*, @opentelemetry/*, @fastify/otel and pino, and no other package',
+            async () => {
+                const found = await lintScratch({
+                    'driver/src/allowed.ts': [
+                        "import { readFileSync } from 'node:fs';",
+                        "import { trace } from '@opentelemetry/api';",
+                        "import { NodeSDK } from '@opentelemetry/sdk-node';",
+                        "import fastifyOtel from '@fastify/otel';",
+                        "import pino from 'pino';",
+                        "import { x } from './x.js';",
+                        'export const all = [readFileSync, trace, NodeSDK, fastifyOtel, pino, x];',
+                    ].join('\n'),
+                    'driver/src/refused.ts': "import leftPad from 'left-pad';\nexport const y = leftPad;",
+                    'cli/src/refused.ts': "import pino from 'pino';\nexport const z = pino;",
+                });
+                expect(found.errored).toEqual([]);
+                const npm = found.messages.filter((m) => /@opentelemetry\/\*, @fastify\/otel and pino only/.test(m));
+                expect(npm).toHaveLength(1);
+            },
+            BIOME_CHECK_TIMEOUT_MS
+        );
+
+        it(
+            'noConsole holds the driver sources, never its container scripts',
+            async () => {
+                const found = await lintScratch({
+                    'driver/src/loud.ts': "console.log('x');",
+                    'driver/src/scripts/probe.ts': "console.log('x');",
+                });
+                const hits = found.categories.filter((c) => c.startsWith('lint/suspicious/noConsole'));
+                expect(hits).toHaveLength(1);
             },
             BIOME_CHECK_TIMEOUT_MS
         );

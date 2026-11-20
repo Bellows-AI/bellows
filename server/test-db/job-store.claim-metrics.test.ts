@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { createServerMetrics } from '../src/metrics.js';
-import { metricsHarness, pointsIn, countOf } from '../test/helpers-metrics.js';
+import { boardMetrics, metricsHarness, pointsIn, countOf } from '../test/helpers-metrics.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import {
     admissionLockKey,
@@ -10,7 +10,7 @@ import {
     type ClaimObserver,
 } from '../src/db/jobs/job-store-admission.js';
 import { useTestDb } from './harness.js';
-import { craftJob, testOrg } from './fixtures.js';
+import { craftJob, spendInterruptionBudget, testOrg } from './fixtures.js';
 import { holder, parkedReader, pool, waitForLockWait } from './lock-order-harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -34,10 +34,20 @@ interface Seen {
     lockWaits: number[];
     acquires: number[];
     sweeps: number[];
+    interruptions: { cause: string; refunded: boolean }[];
+    settles: { outcome: string; cause: string }[];
 }
 
 const observer = (): { seen: Seen; metrics: ClaimObserver } => {
-    const seen: Seen = { refusals: [], waits: [], lockWaits: [], acquires: [], sweeps: [] };
+    const seen: Seen = {
+        refusals: [],
+        waits: [],
+        lockWaits: [],
+        acquires: [],
+        sweeps: [],
+        interruptions: [],
+        settles: [],
+    };
     return {
         seen,
         metrics: {
@@ -46,6 +56,8 @@ const observer = (): { seen: Seen; metrics: ClaimObserver } => {
             lockWait: (s) => void seen.lockWaits.push(s),
             acquire: (s) => void seen.acquires.push(s),
             sweep: (s) => void seen.sweeps.push(s),
+            interrupted: (cause, refunded) => void seen.interruptions.push({ cause, refunded }),
+            settled: (outcome, cause) => void seen.settles.push({ outcome, cause }),
         },
     };
 };
@@ -128,9 +140,71 @@ describe.skipIf(!enabled)('claim observations', () => {
             },
         });
         await expect(store.claim('w1', LEASE_SECONDS)).rejects.toThrow('env store down');
+        expect(seen.interruptions).toEqual([]);
         expect(seen.waits).toEqual([]);
         expect(seen.acquires).toEqual([]);
         expect(seen.lockWaits).toEqual([]);
+    });
+});
+
+/** A root whose attempt ran and whose lease lapsed five minutes ago: the next claim takes it over. */
+const expiredAttempt = async (): Promise<string> => {
+    const id = await waiting(60);
+    await sql`update job set status = 'running', started_at = now(), attempts = 1, lease_token = gen_random_uuid(),
+              lease_expires_at = now() - interval '5 minutes' where id = ${id}`;
+    return id;
+};
+
+const INTERRUPTIONS = 'bellows.job.interruptions';
+const SETTLED = 'bellows.job.settled';
+
+describe.skipIf(!enabled)('claim outcome counters', () => {
+    it('counts a takeover of an expired attempt as one refunded lease expiry', async () => {
+        const { metrics, harness } = boardMetrics();
+        const id = await expiredAttempt();
+        expect((await storeWith(metrics.claim).claim('w1', LEASE_SECONDS))?.id).toBe(id);
+        const points = await harness.points(INTERRUPTIONS);
+        expect(countOf(points, { cause: 'lease_expired', refunded: true })).toBe(1);
+        expect(points).toHaveLength(1);
+    });
+
+    it('counts the takeover unrefunded once the interruption budget is spent', async () => {
+        const { metrics, harness } = boardMetrics();
+        const id = await expiredAttempt();
+        await spendInterruptionBudget(sql, id);
+        expect((await storeWith(metrics.claim).claim('w1', LEASE_SECONDS))?.id).toBe(id);
+        const points = await harness.points(INTERRUPTIONS);
+        expect(countOf(points, { cause: 'lease_expired', refunded: false })).toBe(1);
+        expect(points).toHaveLength(1);
+    });
+
+    it('counts nothing for a takeover whose assembly threw and rolled back', async () => {
+        const { metrics, harness } = boardMetrics();
+        await expiredAttempt();
+        const store = createJobStore({
+            sql,
+            orgId: ORG,
+            metrics: metrics.claim,
+            env: {
+                resolveFor: async () => {
+                    throw new Error('env store down');
+                },
+            },
+        });
+        await expect(store.claim('w1', LEASE_SECONDS)).rejects.toThrow('env store down');
+        expect(await harness.points(INTERRUPTIONS)).toEqual([]);
+    });
+
+    it('counts a dead retirement by the rule that ended the row', async () => {
+        const { metrics, harness } = boardMetrics();
+        const id = await expiredAttempt();
+        await sql`update job set max_attempts = 1 where id = ${id}`;
+        await spendInterruptionBudget(sql, id);
+        expect(await storeWith(metrics.claim).claim('w1', LEASE_SECONDS)).toBeNull();
+        const points = await harness.points(SETTLED);
+        expect(countOf(points, { outcome: 'dead', cause: 'poison_budget' })).toBe(1);
+        expect(points).toHaveLength(1);
+        expect(await harness.points(INTERRUPTIONS)).toEqual([]);
     });
 });
 

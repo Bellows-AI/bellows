@@ -138,7 +138,7 @@ describe('the reaper sweep', () => {
 
         expect(leaseCalls).toEqual([[JOB_A, JOB_B]]);
         expect(calls).toEqual([{ group: terminal, verdict: 'gone' }]);
-        expect(logs).toEqual([`reaper: job ${JOB_A} lease ${LEASE_OLD} (gone) — removed pod svc-postgres`]);
+        expect(logs).toEqual([`reaper: job ${JOB_A} (gone) — removed pod`]);
     });
 
     it('reaps nothing — not even a scan-condemned group — when the board cannot answer', async () => {
@@ -521,7 +521,7 @@ describe('the volume sweep: the board decides each thread, the arm deletes every
             skipped: ['task volume junk: root label is not a uuid'],
             answer: [root(ROOT_A, thread())],
         });
-        expect(out.logs.join('\n')).toContain('task volume junk');
+        expect(out.logs.join('\n')).toContain('skipping 1 object(s)');
         expect(out.reaped).toEqual([volumes(ROOT_A)]);
     });
 
@@ -675,7 +675,8 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
         await h.reaper.sweep();
         expect(h.events).toEqual([`export ${ROOT_A}`]);
         expect(h.outcomes).toEqual(['aborted']);
-        expect(h.logs.join('\n')).toContain(answer.why);
+        expect(h.logs.join('\n')).toContain(answer.result);
+        expect(h.logs.join('\n')).not.toContain(answer.why);
     });
 
     it('keeps the volumes when the re-export throws', async () => {
@@ -689,7 +690,8 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
         await h.reaper.sweep();
         expect(h.events).toEqual([`export ${ROOT_A}`]);
         expect(h.outcomes).toEqual(['aborted']);
-        expect(h.logs.join('\n')).toContain('the daemon went away');
+        expect(h.logs.join('\n')).toContain('inconclusive');
+        expect(h.logs.join('\n')).not.toContain('the daemon went away');
     });
 
     it('keeps a thread that was claimed while it was exporting', async () => {
@@ -781,7 +783,7 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
             const loud = h.logs.find((line) => line.includes('LOST'));
             expect(loud).toContain(ROOT_A);
             expect(loud).toContain('3 export attempts');
-            expect(loud).toContain('the board refused a chunk');
+            expect(loud).not.toContain('the board refused a chunk');
         });
 
         it('counts a never-started attempt as a failed one', async () => {

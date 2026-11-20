@@ -34,6 +34,7 @@ import type {
 import { reviewerPrompts } from '../review-prompt.js';
 import { tailMatches } from '../workflows/workflow-schema.js';
 import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../workflows/workflow-templates.js';
+import { createTally, type OutcomeTally } from './job-store-outcome-tally.js';
 
 /** Named-profile reviews an agent requests and reads back. */
 export interface JobReviewStore {
@@ -148,7 +149,8 @@ export async function requestReviewFor(
     const { sql, orgId } = ctx;
     // Before the transaction: the profiles' conversion takes pool connections of its own.
     await ctx.executorConfig?.ready?.();
-    return sql.begin(async (tx): Promise<RequestReviewResult> => {
+    const tally = createTally();
+    const answer = await sql.begin(async (tx): Promise<RequestReviewResult> => {
         const caller = await lockedCaller(tx, orgId, id, leaseToken);
         if (!caller) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
         // A workflow thread's graph owns its review node; a profile review belongs to the
@@ -156,7 +158,7 @@ export async function requestReviewFor(
         if (caller.mode !== OBJECTIVE_MODE) return { result: 'unsupported' };
         const evidence = () => readReviewEvidence(tx, { orgId, rootJobId: caller.root_job_id }, null);
         const stored = await reviewByKey(tx, orgId, id, request.key);
-        if (stored) return storedAnswer(ctx, tx, caller, { stored, evidence: await evidence() });
+        if (stored) return storedAnswer(ctx, tx, caller, { stored, evidence: await evidence(), tally });
         const spec = caller.reviewers?.find((profile) => profile.name === request.profile);
         const refusal = refusalOf(caller, request, spec);
         if (refusal) return { result: refusal };
@@ -167,6 +169,8 @@ export async function requestReviewFor(
         const claim = await reviewClaim(ctx, tx, created.id);
         return { result: 'created', review: viewOf(created, await evidence()), claim };
     });
+    tally.report(ctx.metrics);
+    return answer;
 }
 
 /** A finished review is answered from its row; a live one is leased to THIS caller claim. */
@@ -174,11 +178,11 @@ async function storedAnswer(
     ctx: JobStoreContext,
     tx: TransactionSql,
     caller: CallerRow,
-    found: { stored: ReviewRow; evidence: ReviewEvidence }
+    found: { stored: ReviewRow; evidence: ReviewEvidence; tally: OutcomeTally }
 ): Promise<RequestReviewResult> {
-    const { stored, evidence } = found;
+    const { stored, evidence, tally } = found;
     if (stored.status !== 'running') return { result: 'existing', review: viewOf(stored, evidence) };
-    return { result: 'existing', ...(await leasedView(ctx, tx, caller, { row: stored, evidence })) };
+    return { result: 'existing', ...(await leasedView(ctx, tx, caller, { row: stored, evidence, tally })) };
 }
 
 async function runningReview(tx: TransactionSql, orgId: string, callerId: string): Promise<ReviewRow | undefined> {
@@ -246,16 +250,17 @@ async function leaseRunning(
     ctx: JobStoreContext,
     tx: TransactionSql,
     caller: CallerRow,
-    reviewId: string
+    review: { id: string; tally: OutcomeTally }
 ): Promise<Claim | undefined> {
     const { orgId, wallTick } = ctx;
+    const { id: reviewId, tally } = review;
     // The old lease may have finished the review since the caller read it `running`: lock the row
     // and hand out a claim only for a review that still is.
     const [live] =
         await tx`select 1 from job where org_id = ${orgId} and id = ${reviewId} and status = 'running' for update`;
     if (!live) return undefined;
     const expiry = tx.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString(), leaseExpired: true });
-    await tx`
+    const released = await tx`
         update job set
             lease_token = gen_random_uuid(),
             -- Never rotated (144); minted only for a review row from before the column.
@@ -270,7 +275,10 @@ async function leaseRunning(
             runtime = null
         where org_id = ${orgId} and id = ${reviewId} and status = 'running'
           and review_caller_seq is distinct from ${caller.claim_seq}
+        returning id
     `;
+    // The same caller claim asking again matches no row: its lease was handed out once.
+    if (released.length === 1) tally.interrupted('review_lease_expired', true);
     return reviewClaim(ctx, tx, reviewId);
 }
 
@@ -279,10 +287,10 @@ async function leasedView(
     ctx: JobStoreContext,
     tx: TransactionSql,
     caller: CallerRow,
-    read: { row: ReviewRow; evidence: ReviewEvidence }
+    read: { row: ReviewRow; evidence: ReviewEvidence; tally: OutcomeTally }
 ): Promise<{ review: ReviewView; claim?: Claim }> {
-    const { row, evidence } = read;
-    const claim = await leaseRunning(ctx, tx, caller, row.id);
+    const { row, evidence, tally } = read;
+    const claim = await leaseRunning(ctx, tx, caller, { id: row.id, tally });
     if (claim) return { review: viewOf(row, evidence), claim };
     const fresh = (await reviewByKey(tx, ctx.orgId, caller.id, row.review_key))!;
     return { review: viewOf(fresh, evidence) };
@@ -388,7 +396,8 @@ export async function readReviewFor(
 ): Promise<ReadReviewResult> {
     const { sql, orgId } = ctx;
     await ctx.executorConfig?.ready?.();
-    return sql.begin(async (tx): Promise<ReadReviewResult> => {
+    const tally = createTally();
+    const answer = await sql.begin(async (tx): Promise<ReadReviewResult> => {
         const caller = await lockedCaller(tx, orgId, id, leaseToken);
         if (!caller) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
         const row = await reviewByKey(tx, orgId, id, key);
@@ -397,7 +406,9 @@ export async function readReviewFor(
         // A running review is the caller claim's to supervise: a re-claimed caller that reads it
         // (a different key's request answers `running`) takes the lease over here.
         if (row.status === 'running')
-            return { result: 'ok', ...(await leasedView(ctx, tx, caller, { row, evidence })) };
+            return { result: 'ok', ...(await leasedView(ctx, tx, caller, { row, evidence, tally })) };
         return { result: 'ok', review: viewOf(row, evidence) };
     });
+    tally.report(ctx.metrics);
+    return answer;
 }

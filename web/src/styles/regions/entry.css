@@ -797,8 +797,7 @@
         .setup-tool > button,
         .setup-back,
         .setup-steps a,
-        .token-create input,
-        .token-create button,
+        button.primary.token-new,
         .onboarding-org-summary {
             align-items: center;
             display: inline-flex;

@@ -6,15 +6,22 @@ import { AdoptionBlocked, LeftoverTerminating, type AdoptedRun, type LiveRun, ty
 import { awaitFirstContact, controlTokenOf } from '../supervised-steps.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../supervisor-contract.js';
 import { runnerClassRefusal } from '../runner-classes.js';
+import { describeError } from '../log.js';
+import { attemptAttributes, withLifecycleSpan } from '../lifecycle-span.js';
 
 /**
  * Adopts the finished runner an earlier claim left behind — before the sync, which
  * would rewrite the tree that run left. A read that fails is no verdict: the attempt is left to its
  * lease, and the next claim adopts what survived. The earlier attempt is recorded as an interruption
  * under this claim's lease, best-effort (`recordAdopted`): the step answers it as data and
- * performs nothing, and the verdict does not wait on it.
+ * performs nothing, and the verdict does not wait on it. One `adopt` span covers it, a take-over and its retry
+ * included.
  */
-export async function adoptStep(
+export function adoptStep(ctx: AttemptCtx): Promise<SetupConclusion | AdoptedRecord | null> {
+    return withLifecycleSpan('adopt', attemptAttributes(ctx), () => adopt(ctx));
+}
+
+async function adopt(
     ctx: AttemptCtx,
     { retaken = false }: { retaken?: boolean } = {}
 ): Promise<SetupConclusion | AdoptedRecord | null> {
@@ -35,7 +42,7 @@ export async function adoptStep(
         // all, is no reason to run afresh over its tree: an unconfirmed read never licenses the sweep.
         const why =
             e instanceof AdoptionBlocked ? 'could not adopt the finished runner' : 'could not read an earlier runner';
-        return { halt: 'leave', log: `${why}, leaving it to the lease: ${(e as Error).message}` };
+        return { halt: 'leave', log: `${why}, leaving it to the lease: ${describeError(e)}` };
     }
     if (adoptedOut === null) {
         releaseAbandonedAdoption(rt, job, adopting);
@@ -62,7 +69,7 @@ export async function recordAdopted(ctx: AttemptCtx, { reason, claimSeq }: Adopt
     const { rt, job } = ctx;
     await rt.board
         .interrupt(job, { reason, release: false, claimSeq })
-        .catch((e: Error) => rt.log(`job ${job.id}: could not record the adopted interruption: ${e.message}`));
+        .catch((e: Error) => rt.log(`job ${job.id}: could not record the adopted interruption: ${describeError(e)}`));
 }
 
 /** The wait for the rebound supervisor ended because the earlier group is confirmed finished. */
@@ -97,7 +104,7 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
         const rebound = await raceStep(state.signal, rt.runner.rebind(run.prior, binding, state.signal));
         if (rebound === null) return STOOD_DOWN;
     } catch (e) {
-        return leave(`could not rebind the running agent: ${(e as Error).message}`);
+        return leave(`could not rebind the running agent: ${describeError(e)}`);
     }
     let contacted: boolean;
     try {
@@ -125,9 +132,9 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
             run.forget();
             delete ctx.takeover;
             state.groupDisposition = 'end';
-            return adoptStep(ctx, { retaken: true });
+            return adopt(ctx, { retaken: true });
         }
-        return leave(`could not reach the running agent: ${(e as Error).message}`);
+        return leave(`could not reach the running agent: ${describeError(e)}`);
     }
     if (state.signal.aborted) return STOOD_DOWN;
     if (!contacted) return leave('the running agent did not poll the new endpoint');

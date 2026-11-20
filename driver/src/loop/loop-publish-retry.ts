@@ -108,7 +108,7 @@ export async function publishWithRetry(
         if (n === PUBLISH_TRIES || !publishRetryable(result, token === null)) return result;
         const wait = PUBLISH_BACKOFF_MS[n - 1] ?? 0;
         rt.log(
-            `job ${job.id}: ${publish.what} failed (try ${n} of ${PUBLISH_TRIES}): ${result.reason} — asking for a new GitHub token and retrying in ${wait} ms`
+            `job ${job.id}: ${publish.what} failed (try ${n} of ${PUBLISH_TRIES}, ${result.cause ?? 'unknown'}) — asking for a new GitHub token and retrying in ${wait} ms`
         );
         await raceStep(state.signal, rt.sleep(wait));
     }

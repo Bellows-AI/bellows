@@ -106,6 +106,7 @@ describe('AccessTokensPanel', () => {
     it('lists labels and last use, and never a token or a hash', () => {
         const html = renderToStaticMarkup(
             <AccessTokensPanel
+                scope="personal"
                 title="Personal access tokens"
                 hint=""
                 tokens={tokenRows}
@@ -127,6 +128,7 @@ describe('AccessTokensPanel', () => {
     it('renders a dash for a token never used, and revoked instead of a revoke button', () => {
         const html = renderToStaticMarkup(
             <AccessTokensPanel
+                scope="personal"
                 title="Personal access tokens"
                 hint=""
                 tokens={tokenRows}
@@ -143,9 +145,10 @@ describe('AccessTokensPanel', () => {
         expect(html).not.toContain('Revoke old laptop');
     });
 
-    it('offers the create form and the empty state, with no printed-once block until a mint', () => {
+    it('offers New token in the head and the empty state, with no inline form and no printed-once block', () => {
         const html = renderToStaticMarkup(
             <AccessTokensPanel
+                scope="org"
                 title="Organization access tokens"
                 hint="Acts for the organization."
                 tokens={[]}
@@ -155,8 +158,10 @@ describe('AccessTokensPanel', () => {
                 onRevoke={noopRevoke}
             />
         );
-        expect(html).toContain('No tokens');
-        expect(html).toContain('Create token');
+        expect(html).toContain('No organization tokens yet.');
+        expect(html.match(/New token/g)?.length).toBe(2);
+        expect(html).not.toContain('Token label');
+        expect(html).not.toContain('Create token');
         expect(html).toContain('Acts for the organization.');
         expect(html).not.toContain('Shown once');
     });
@@ -187,7 +192,7 @@ describe('AccountSections (issue 284)', () => {
         const html = render(local);
         expect(html).toContain('Not available with authentication off');
         expect(html).toContain('Access tokens and tracked organizations need GitHub sign-in');
-        expect(html).not.toContain('Create token');
+        expect(html).not.toContain('New token');
         expect(html).not.toContain('Tracked organizations</h2>');
         expectNoPlaceholder(html);
     });
@@ -198,12 +203,12 @@ describe('AccountSections (issue 284)', () => {
         expect(html).toContain('Tracked organizations');
         expect(html).toContain('Personal access tokens');
         expect(html).toContain('Organization access tokens');
-        expect(html.match(/Create token/g)?.length).toBe(2);
+        expect(html.match(/New token/g)?.length).toBe(2);
     });
 
     it('a member sees who mints organization tokens instead of an editor', () => {
         const html = render({ ...session, role: 'member' });
         expect(html).toContain('Organization tokens are minted by an administrator.');
-        expect(html.match(/Create token/g)?.length).toBe(1);
+        expect(html.match(/New token/g)?.length).toBe(1);
     });
 });

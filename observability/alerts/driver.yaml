@@ -1,0 +1,39 @@
+groups:
+  - name: bellows-driver
+    rules:
+      - alert: BellowsDriverNoSuccessfulPoll
+        # Job claim polls only. The `or on (instance)` anchor gives a driver whose polls all failed a value of 0 (it has
+        # no non-error series). `unless` exempts a driver whose open slots were 0 all window (every slot busy or
+        # draining: it does not poll); the freshness term keeps a departed driver's stale samples from firing.
+        expr: |-
+          (
+            sum by (instance) (increase(bellows_driver_claim_polls_total{outcome!="error"}[15m]))
+            or on (instance)
+            0 * sum by (instance) (increase(bellows_driver_claim_polls_total[15m]))
+          ) == 0
+          unless on (instance)
+          (max by (instance) (max_over_time(bellows_driver_slots{state="open"}[15m])) == 0)
+          and on (instance)
+          (max by (instance) (timestamp(bellows_driver_slots)) > time() - 180)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A driver has had no successful job claim poll for 15 minutes.
+          description: The driver (instance label) has made no claim poll that reached the board for 15 minutes while it had an open claim slot.
+      - alert: BellowsDriverNoPolls
+        expr: absent_over_time(bellows_driver_claim_polls_total[15m])
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: No driver has polled for jobs in 15 minutes.
+          description: No driver exports a job claim poll series; no driver is running or none reaches the collector.
+      - alert: BellowsReaperSweepFailures
+        expr: sum by (instance) (increase(bellows_driver_reaper_sweep_duration_seconds_count{outcome!="ok"}[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The driver's orphan reaper keeps failing or aborting sweeps.
+          description: The reaper on this driver (instance label) ended sweeps as aborted or error for 15 minutes running.

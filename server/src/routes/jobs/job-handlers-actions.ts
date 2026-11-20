@@ -16,6 +16,7 @@ import {
 import { bad, body, guard } from '../helpers.js';
 import { resolveLeasedRoute, resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
 import { UUID } from '../../identifiers.js';
+import { markIdlePoll } from '../../board-span.js';
 import { adminOf } from './job-handlers-follow-up.js';
 import type { Job, SettleOutcome } from '../../db/jobs/job-store-types.js';
 import {
@@ -378,7 +379,10 @@ export async function handleReclaimsClaim(
         firstReclaimClaim(boards, reclaimFailed, (board) => board.claimReclaim(worker, lease))
     );
     if (!claim.ok) return reply;
-    if (claim.value === null) return reply.code(HTTP_NO_CONTENT).send();
+    if (claim.value === null) {
+        markIdlePoll();
+        return reply.code(HTTP_NO_CONTENT).send();
+    }
     return reply.code(HTTP_OK).send(claim.value);
 }
 

@@ -7,6 +7,7 @@ import type { OperationId, SecretIdentity, SecretRef, SecretStore, SecretVersion
 import { recordAudit } from './audit-log.js';
 import { OBJECT_WRITE_DRAIN_MS } from './object-write-fence.js';
 import { liftStatementTimeout } from './pool.js';
+import { describeError, logger } from '../log.js';
 
 const MS_PER_SECOND = 1000;
 
@@ -338,7 +339,7 @@ async function queueExpired(sql: Sql): Promise<void> {
 
 /** One pass over every queued purge; never throws for one org's failure, which is recorded on its row. */
 export async function runOrgPurgePass(deps: OrgPurgeDeps, signal?: AbortSignal): Promise<void> {
-    const log = deps.log ?? ((line: string) => console.log(line));
+    const log = deps.log ?? ((line: string) => logger('org-purge').info(line));
     const until = Date.now() + (deps.passMs ?? ORG_PURGE_PASS_MS);
     const expired = () => signal?.aborted === true || Date.now() > until;
     if (deps.deploymentMode === CLOUD) await queueExpired(deps.sql);
@@ -349,7 +350,7 @@ export async function runOrgPurgePass(deps: OrgPurgeDeps, signal?: AbortSignal):
         try {
             outcome = await purgeOne(deps, orgId, expired, signal);
         } catch (e) {
-            log(`[org-purge] ${orgId} pass failed: ${(e as Error).message}`);
+            log(`[org-purge] ${orgId} pass failed: ${describeError(e)}`);
             await recordPassFailure(deps.sql, orgId);
             continue;
         }

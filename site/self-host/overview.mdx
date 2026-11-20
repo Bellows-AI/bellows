@@ -19,6 +19,7 @@ Bellows is open source. You can run the whole platform on your own machine or cl
 | **Secret store** | Holds environment secrets and connection credentials. Backend is `database`, `aws`, `vault` or `gcp`. | Yes |
 | **Object store** | Holds task artifacts and uploaded attachments. S3-compatible, or a local directory on a single replica. | Yes (defaults to the filesystem) |
 | **Telemetry collector** | An OpenTelemetry collector. Receives metrics from runners and forwards them to the board. | Recommended |
+| **Ops collector** | Optional. Forwards the board's and the driver's own telemetry to your OTLP backend. See [Monitoring](/self-host/monitoring). | Optional |
 | **Jira app** | An Atlassian OAuth app that powers **Connect Jira**. | Optional |
 | **Linear app** | A Linear OAuth application that powers **Connect Linear**. | Optional |
 
@@ -99,6 +100,9 @@ flowchart LR
   </Card>
   <Card title="Configuration" icon="sliders" href="/self-host/configuration">
     Every server and driver environment variable.
+  </Card>
+  <Card title="Monitoring" icon="chart-line" href="/self-host/monitoring">
+    Export the board's and the driver's own telemetry, and import the dashboards and alert rules.
   </Card>
   <Card title="Security" icon="shield" href="/self-host/security">
     What each credential grants and where the boundaries are.

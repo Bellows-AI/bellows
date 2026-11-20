@@ -21,7 +21,7 @@ Bellows is configured with environment variables only. Locally they come from `.
 | `DB_POOL_MAX` | | `50` | Maximum Postgres connections in each of the server's three pools (requests, secrets, cross-org), per replica, beside one migration connection at boot. Keep replicas × (3 × this + 1) under the database's connection limit. Helm computes it from `dashboard.dbConnections` (default `100`) less the replicas, divided by 3 × `dashboard.replicas`. |
 | `DB_STATEMENT_TIMEOUT_MS` | | `60000` | Longest a single database statement may run before Postgres cancels it. Migrations, advisory-lock waits, the organization purge and the telemetry org backfill are exempt. Helm: `dashboard.limits.statementTimeoutMs`. |
 | `PORT` | | `8080` | Port the server listens on. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | | none | An OTLP/HTTP collector the server exports traces and metrics to. Unset (and neither `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` nor `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` is set), the server exports nothing. The server has no metrics scrape endpoint. The other standard `OTEL_*` variables apply, among them `OTEL_SERVICE_NAME` (default `bellows-board`) and `OTEL_SDK_DISABLED`. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | | none | An OTLP/HTTP collector the server exports traces, metrics and logs to. Unset (and none of `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` and `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` is set), the server exports nothing. Spans for claims and background passes join the driver's lifecycle spans by `traceparent`; idle claim polls are counted, never traced. The server has no metrics scrape endpoint. Its logs are JSON lines on stdout either way, carrying the `trace_id` and `span_id` of the request they belong to; credentials, query strings and repository or branch names never appear in them. The other standard `OTEL_*` variables apply, among them `OTEL_SERVICE_NAME` (default `bellows-board`) and `OTEL_SDK_DISABLED`. See [Monitoring](/self-host/monitoring). |
 | `HOST` | | `127.0.0.1` | Bind address. The container image sets `0.0.0.0`. |
 | `TRUSTED_PROXIES` | | none | Addresses or CIDRs of the load balancer or ingress in front, comma-separated. Only a request from one of them has its `X-Forwarded-For` read as the client address. Empty trusts none. Helm: `dashboard.limits.trustedProxies`. |
 | `RATE_LIMIT_PER_CREDENTIAL` | | `600` | Requests per minute one sign-in session or token may make, per replica. Over it the server answers `429` with `Retry-After`. Helm: `dashboard.limits.requestsPerCredential`. |
@@ -187,7 +187,7 @@ The driver reads only the environment. It has no database access and talks to th
 | --- | --- | --- | --- |
 | `CLAUDE_EXECUTOR_IMAGE` | | `claude-executor` | Image for Claude Code tasks. |
 | `OPENCODE_EXECUTOR_IMAGE` | | `opencode-executor` | Image for OpenCode tasks. |
-| `RUNNER_ENV` | | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names of driver environment variables forwarded to runners. Values never appear in a command line. Must not name `GITHUB_TOKEN`, `GH_TOKEN`, `DRIVER_CREDENTIAL`, `DRIVER_CREDENTIAL_FILE` or `DRIVER_METRICS_TOKEN`. |
+| `RUNNER_ENV` | | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names of driver environment variables forwarded to runners. Values never appear in a command line. Must not name `GITHUB_TOKEN`, `GH_TOKEN`, `DRIVER_CREDENTIAL`, `DRIVER_CREDENTIAL_FILE` or any `OTEL_*` variable. |
 | `RUNNER_SKIP_PERMISSIONS` | | off | Adds `--dangerously-skip-permissions`. Without it most headless jobs stall at a permission prompt. With it the agent runs anything inside the runner. |
 | `RUNNER_SERVICES` | | on | Starts the [services](/guides/services) a repo declares. `0` or `false` disables. |
 | `RUNNER_OTEL_ENDPOINT` | | `http://collector:4318` | OTLP endpoint given to runners. |
@@ -221,14 +221,13 @@ The driver reads only the environment. It has no database access and talks to th
 | `TASK_VOLUME_BOUND_MS` | | `604800000` (7 days) | The same, when a checkpoint is truncated or an artifact is pending. |
 | `TASK_VOLUME_EXPORT_ATTEMPTS` | | `3` | Failed transcript exports tolerated before the volume is deleted anyway; the first and the last failure must also be at least 15 minutes apart, so a short outage never costs a transcript. `1` to `100`. |
 
-### Gates and metrics
+### Gates
 
 | Variable | Req | Default | Meaning |
 | --- | --- | --- | --- |
 | `GATE_LISTEN_HOST` | | `127.0.0.1` | Bind address of the gate server, which runs shell commands. Compose sets `0.0.0.0`. |
 | `GATE_ADVERTISE_URL` | | `http://host.docker.internal:<port>` | URL runners use to reach the gate server. The bound port is appended if the URL has none. |
-| `DRIVER_METRICS_PORT` | | unset (off) | Port for a Prometheus scrape at `GET /metrics`. Needs `DRIVER_METRICS_TOKEN` when `GATE_LISTEN_HOST` is not loopback. |
-| `DRIVER_METRICS_TOKEN` | | empty | The scrape's bearer. Its own secret, never the driver credential. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (driver) | | none | An OTLP/HTTP collector the driver exports metrics, logs and HTTP spans to. Unset (and no `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` or `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` is set), the driver exports nothing. Its lifecycle spans (claim, provision, gate, publish, settle, reap, handover) are joined to the board's by `traceparent`; idle claim polls are counted, never traced. The driver has no metrics scrape endpoint. The other standard `OTEL_*` variables apply, among them `OTEL_SERVICE_NAME` (default `bellows-driver`) and `OTEL_SDK_DISABLED`. Never forwarded to runners or to the commands the driver runs. See [Monitoring](/self-host/monitoring). |
 
 ### Runner classes
 

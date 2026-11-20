@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob } from '../board/board.js';
+import { describeError } from '../log.js';
 import { SUPERVISOR_ENV } from '../supervisor-contract.js';
 import { takeoverBoundMs } from '../supervisor-plan.js';
 import { clearPendingQuestions } from './loop-attempt.js';
@@ -56,9 +57,7 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         };
         state.control = token;
     } catch (e) {
-        rt.log(
-            `job ${job.id}: could not open the run-control endpoint, a Stop will kill at once: ${(e as Error).message}`
-        );
+        rt.log(`job ${job.id}: could not open the run-control endpoint, a Stop will kill at once: ${describeError(e)}`);
     }
 }
 

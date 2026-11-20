@@ -11,6 +11,7 @@ import { commitStagedForStop } from './job-store-conclusions.js';
 import { stagedFingerprint } from './job-store-staged.js';
 import type { JobStatus, JobStore, JobStoreContext, SuspendResult } from './job-store-types.js';
 import { recordLaunchOutcome } from './job-store-provenance.js';
+import { createTally, type InterruptionCause } from './job-store-outcome-tally.js';
 
 export type StopJobResult = Awaited<ReturnType<JobStore['stop']>>;
 
@@ -34,11 +35,13 @@ export async function stopJob(ctx: JobStoreContext, id: string, stoppedBy: strin
     // first asker is the actor that survives. Under the row's lock, an expired attempt that staged its
     // conclusion is committed first, its Stop stamped with it: the verdict stands, and
     // the row the statement then finds terminal answers the conflict below with the committed status.
+    const tally = createTally();
     const rows = await sql.begin(async (tx) => {
         await tx`select id from job where org_id = ${orgId} and id = ${id} for update`;
-        await commitStagedForStop(ctx, tx, { id, stoppedBy });
+        await commitStagedForStop(ctx, tx, { id, stoppedBy }, tally);
         return stopRows(tx, { orgId, wallTick, stoppedBy, where: tx`id = ${id}` });
     });
+    tally.report(ctx.metrics);
     const row = rows[0];
     if (!row) {
         // Nothing settled or moving — a task that already ended has no turn to stop, and
@@ -202,11 +205,13 @@ export async function interruptJob(
             ...(orgSuspended ? { orgSuspended } : {}),
         }),
     };
-    return sql.begin(async (tx) => {
+    const tally = createTally();
+    const cause = interruptionCause({ release, nodeLoss, daemonLoss, blocked, requirement, orgSuspended, refused });
+    const outcome = await sql.begin(async (tx): ReturnType<JobStore['interrupt']> => {
         // A staged conclusion is the attempt's outcome: nothing hands it back instead.
         if (release && (await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
         await recordInterruptLaunch(tx, { orgId, id, leaseToken }, { release, refused, claimSeq, open }, recorded);
-        const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
+        const rows = await tx<{ status: JobStatus; root_job_id: string; refunded: boolean }[]>`
             update job set
                 status           = case when not ${release} then status
                                         when cancel_requested_at is null then 'queued' else 'stopped' end,
@@ -229,10 +234,11 @@ export async function interruptJob(
               and status = 'running' and lease_token = ${leaseToken}
               and ${open}
               and not ${recorded}
-            returning status, root_job_id
+            returning status, root_job_id, (interruptions -> -1 ->> 'refunded')::boolean as refunded
         `;
         const row = rows[0];
         if (row) {
+            tally.interrupted(cause, row.refunded);
             if (row.status === 'stopped') await settleIfMergeClosed(ctx, row.root_job_id, tx);
             await settleHandBack(tx, { orgId, id, handedBack: release && requirement });
             const answer = { result: 'ok', status: row.status } as const;
@@ -241,6 +247,29 @@ export async function interruptJob(
         }
         return missedInterrupt(tx, key, recorded);
     });
+    tally.report(ctx.metrics);
+    return outcome;
+}
+
+/** What an interrupt records, in the counter's vocabulary: an adoption first, then the narrowest flag the release carried. */
+function interruptionCause(flags: {
+    release: boolean;
+    nodeLoss: boolean;
+    daemonLoss: boolean;
+    blocked: boolean;
+    requirement: boolean;
+    orgSuspended: boolean;
+    refused: boolean;
+}): InterruptionCause {
+    if (!flags.release) return 'adopted';
+    // A dockerd loss is sent beside `nodeLoss`: the narrower flag names it.
+    if (flags.daemonLoss) return 'daemon_loss';
+    if (flags.nodeLoss) return 'node_loss';
+    if (flags.blocked) return 'blocked';
+    if (flags.requirement) return 'requirement';
+    if (flags.orgSuspended) return 'org_suspended';
+    if (flags.refused) return 'refused';
+    return 'handback';
 }
 
 /**

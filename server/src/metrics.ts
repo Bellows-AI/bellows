@@ -8,6 +8,7 @@
 
 import { metrics, type Attributes, type Histogram, type Meter } from '@opentelemetry/api';
 import type { AdmissionBudgets, AdmissionOccupancy, ClaimObserver } from './db/jobs/job-store-admission.js';
+import { BOARD_SCOPE, inBoardSpan } from './board-span.js';
 import { secondsSince } from './timing.js';
 
 export type { AdmissionOccupancy } from './db/jobs/job-store-admission.js';
@@ -17,7 +18,9 @@ export type ClaimPollOutcome = 'claimed' | 'idle' | 'error';
 type PassOutcome = 'ok' | 'error';
 
 /** The Meter's instrumentation scope. */
-export const METER_NAME = 'bellows-board';
+export const METER_NAME = BOARD_SCOPE;
+
+const ATTR_PASS_OUTCOME = 'bellows.pass.outcome';
 
 const SECONDS = 's';
 
@@ -25,7 +28,7 @@ const SECONDS = 's';
 const buckets = (spec: string): number[] => spec.split(' ').map(Number);
 
 const HTTP_BUCKETS = buckets('0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10 30');
-const DB_BUCKETS = buckets('0.001 0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 15');
+export const DB_BUCKETS = buckets('0.001 0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 15');
 /** A queued row can wait for a free slot for hours; the buckets reach past a shift. */
 const WAIT_BUCKETS = buckets('0.1 0.5 1 5 15 30 60 300 900 1800 3600 14400 86400');
 const PASS_BUCKETS = buckets('0.01 0.05 0.1 0.5 1 2.5 5 15 30 60');
@@ -158,6 +161,12 @@ export function createServerMetrics(deps: ServerMetricsDeps): ServerMetrics {
         'The settle passes a claim runs before it looks for a candidate.',
         DB_BUCKETS
     );
+    const interruptions = meter.createCounter('bellows.job.interruptions', {
+        description: 'Interruptions recorded on an attempt, by cause and whether the attempt was refunded.',
+    });
+    const settled = meter.createCounter('bellows.job.settled', {
+        description: 'Attempts settled by a verdict or a dead retirement, by outcome and failure kind or rule.',
+    });
     const passes = histogram('bellows.background.pass.duration', 'One pass of a board background loop.', PASS_BUCKETS);
     const mcpCalls = histogram(
         'bellows.mcp.tool.duration',
@@ -183,7 +192,23 @@ export function createServerMetrics(deps: ServerMetricsDeps): ServerMetrics {
             lockWait: (seconds) => lockWait.record(seconds),
             acquire: (seconds) => acquire.record(seconds),
             sweep: (seconds) => sweep.record(seconds),
+            interrupted: (cause, refunded) => interruptions.add(1, { cause, refunded }),
+            settled: (outcome, cause) => settled.add(1, { outcome, cause }),
         },
-        timedPass: (loop, fn) => timed(passes, (outcome) => ({ loop, outcome }), fn),
+        // Each pass is its own trace root, whatever span its loop was started under.
+        timedPass: (loop, fn) =>
+            inBoardSpan(
+                'background.pass',
+                (span) =>
+                    timed(
+                        passes,
+                        (outcome) => {
+                            span.setAttribute(ATTR_PASS_OUTCOME, outcome);
+                            return { loop, outcome };
+                        },
+                        fn
+                    ),
+                { root: true, attributes: { loop } }
+            ),
     };
 }

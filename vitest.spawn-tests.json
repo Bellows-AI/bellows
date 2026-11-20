@@ -31,6 +31,7 @@
         "driver/test/github-credential.test.ts",
         "driver/test/helper-receipts.test.ts",
         "driver/test/k8s-lane.test.ts",
+        "driver/test/k8s-ops-spans.test.ts",
         "driver/test/k8s/services.test.ts",
         "driver/test/lane-last-attempt.test.ts",
         "driver/test/lane-lib.test.ts",

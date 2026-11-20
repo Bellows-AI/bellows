@@ -219,7 +219,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         expect(await endIfDown(ctx, 'its run', hook)).toBe(true);
 
         expect(calls).toEqual(['log', 'suspend', 'log', ...TEARDOWN]);
-        expect(lines[0]).toContain('parking anyway: artifact upload refused');
+        expect(lines[0]).toContain('parking anyway: Error');
     });
 
     it('concludes a leave with the board told nothing before the claim goes back', async () => {
@@ -280,9 +280,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         await end(ctx, setupDecision({ halt: 'interrupt', reason: 'could not start the services: daemon refused' }));
 
         expect(calls).toEqual(['interrupt:job-1', 'log', ...TEARDOWN]);
-        expect(lines.join('\n')).toContain(
-            'could not start the services: daemon refused, handed back as an interruption'
-        );
+        expect(lines.join('\n')).toContain('interrupted, handed back as an interruption');
     });
 
     it('releases the claim from one loop file only', () => {

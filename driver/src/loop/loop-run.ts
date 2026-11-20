@@ -36,6 +36,7 @@ import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclu
 import type { GateRunNote } from '../timeout-note.js';
 import {
     faultHalt,
+    gateLossReason,
     syncFailureHalt,
     handBackFence,
     handOverConflict,
@@ -58,7 +59,9 @@ import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 import { stepLost } from '../step-control.js';
 import { restartDeadServices, servicesLost, startServicesStep } from './loop-services.js';
 import { servicePlanRefusal } from '../services.js';
+import { attemptAttributes, withLifecycleSpan } from '../lifecycle-span.js';
 import { DaemonLost } from '../dockerd-loss.js';
+import { describeError } from '../log.js';
 
 /** How the attempt's log line names the session it runs under. */
 const sessionNote = (session: RunSession | null): string =>
@@ -89,11 +92,11 @@ async function reportScrapedSession(
             await board.session(job, outcome.sessionId, outcome.started && !outcome.refused);
             log(`job ${job.id}: session ${outcome.sessionId}`);
         } catch (e) {
-            log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
+            log(`job ${job.id}: could not report the session, continuing: ${describeError(e)}`);
         }
     } else if (executorType === OPENCODE) {
         log(
-            `job ${job.id}: the session readout came up empty (${outcome.readoutError ?? 'no session in the database'}) — ` +
+            `job ${job.id}: the session readout came up empty — ` +
                 'no session to follow up, finish reason and context stats unread'
         );
     }
@@ -191,7 +194,7 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
         // The setup's supervisor was lost: the attempt's loss, never a config verdict.
         if (stepLost(e)) return { halt: 'interrupt', reason: gateLossReason(e), ...(await supervisorLossFlag(ctx, e)) };
         return faultHalt(
-            `gate environment failed, failing with a reason: ${(e as Error).message}`,
+            'gate environment failed, failing with a reason',
             `The gate environment declared in .bellows.yaml could not be started: ${(e as Error).message}`,
             'runner_error'
         );
@@ -211,10 +214,6 @@ async function recordSetup(ctx: AttemptCtx): Promise<void> {
     // A chain of its own: a setup write the board refused must not silence the later phases' records.
     await (await openChain(ctx)).record('setup', null, { failure: job.setupFailure ?? null });
 }
-
-/** Why a gate or setup whose supervisor was lost interrupts its attempt. */
-const gateLossReason = (e: unknown): string =>
-    `infrastructure loss: the task supervisor running the gates was lost (${(e as Error).message})`;
 
 /** One setup step: `null` to continue, or the conclusion that ends the attempt here. */
 type SetupStep = (ctx: AttemptCtx) => Promise<SetupConclusion | AdoptedRecord | null>;
@@ -437,7 +436,7 @@ async function clearUnusedSession(ctx: AttemptCtx, session: RunSession | null, o
     if (!outcome.refused || !session || session.resume || ctx.adopted) return;
     await rt.board
         .session(job, null)
-        .catch((e: Error) => rt.log(`job ${job.id}: could not clear the unused session: ${e.message}`));
+        .catch((e: Error) => rt.log(`job ${job.id}: could not clear the unused session: ${describeError(e)}`));
 }
 
 /** What verifying a run found beyond the gates phase itself. */
@@ -567,7 +566,7 @@ async function gatesOrLoss(
     if (!gateSession)
         return { failure: null, deadServices: [], gatesSkipped: null, recoveredServices: [], reports: [] };
     try {
-        return await runGatesPhase(ctx, gateSession, outcome);
+        return await withLifecycleSpan('gate', attemptAttributes(ctx), () => runGatesPhase(ctx, gateSession, outcome));
     } catch (e) {
         if (!servicesLost(e) && !(e instanceof DaemonLost)) throw e;
         const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
@@ -639,7 +638,7 @@ async function reportNewSession(
     try {
         await rt.board.session(job, session.id);
     } catch (e) {
-        rt.log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
+        rt.log(`job ${job.id}: could not report the session, continuing: ${describeError(e)}`);
     }
 }
 
@@ -663,7 +662,7 @@ async function failOnClaimRefusal(rt: LoopRuntime, job: BoardJob): Promise<boole
     const [reason, failureKind, what] = refusal;
     logRefusal(rt.log, job, `job ${job.id}: ${what} is not runnable, failing`);
     await report(rt, job, { status: 'failed', exitCode: null, output: reason, failureKind }).catch((e: Error) =>
-        rt.log(`job ${job.id}: could not report the ${what} failure: ${e.message}`)
+        rt.log(`job ${job.id}: could not report the ${what} failure: ${describeError(e)}`)
     );
     return true;
 }
@@ -725,7 +724,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     try {
         log(`job ${job.id}: attempt ${job.attempts} ${sessionNote(session)}`);
 
-        const gateSession = await runPhases(ctx);
+        const gateSession = await withLifecycleSpan('provision', attemptAttributes(ctx), () => runPhases(ctx));
         if (gateSession === STOOD_DOWN) return;
         state.gateToken = gateSession?.token ?? null;
         // A stand-down kills the runner, but not a gate its agent asked for: the token dies and

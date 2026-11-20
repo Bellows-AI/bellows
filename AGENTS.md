@@ -67,6 +67,7 @@ commit message needs a force-push to fix.
 | EKS installs, the EFS storage class, the pre-release cloud walk | [docs/eks-runbook.md](docs/eks-runbook.md) |
 | Executor/runner tests, coverage gates, `scripts/test-jobs.sh` | [docs/executor-testing.md](docs/executor-testing.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
+| `server/src/log.ts`, `server/src/otel*.ts`, `server/src/pg-trace.ts`, `driver/src/otel*.ts`, `driver/src/log.ts` | [docs/observability.md](docs/observability.md) |
 | `server/src/routes/jobs/*`, `db/jobs/*`, `006_jobs.sql`, `driver/*`, `cli/*` | [docs/jobs.md](docs/jobs.md) |
 | `core/src/batch-plan.ts`, `059_batches.sql`, `db/batches/*`, `routes/batches/*` | [docs/batches.md](docs/batches.md) |
 | `workflow`, `027_workflows.sql`, `db/workflows/*`, `routes/workflows.ts` | [docs/workflows.md](docs/workflows.md) |
@@ -201,8 +202,9 @@ cannot tell you:
   `npm run build -w core`.
 - **A new `core/src` file must be re-exported from `core/src/index.ts`** or the server reports
   "module has no exported member". `core/test/core-index.test.ts`.
-- **`driver/` and `cli/` depend on nothing, `core` included.** They are HTTP clients; a shared type
-  is copied, never imported. `lint/no-cross-package-imports.grit`.
+- **`driver/` and `cli/` import nothing from other packages, `core` included.** They are HTTP clients; a shared type
+  is copied, never imported. `driver/` may depend on `@opentelemetry/*`, `@fastify/otel` and `pino`
+  only; `cli/` depends on nothing. `lint/no-cross-package-imports.grit`, `driver/test/deps.test.ts`.
 - All five packages are ESM with `verbatimModuleSyntax`: relative imports carry `.js`, even in
   `.tsx`.
 - **Container scripts are files under `driver/src/scripts/`, never inline strings** — read via

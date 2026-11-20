@@ -1,4 +1,5 @@
 import type { Board } from './board/board.js';
+import { markIdlePoll } from './lifecycle-span.js';
 
 /**
  * One row of the board's removed-thread queue: a Remove deleted the thread and left
@@ -47,7 +48,10 @@ export function reclaimCalls(
     return {
         async claimReclaim(worker) {
             const response = await post('/api/reclaims/claim', { worker, leaseSeconds });
-            if (response.status === HTTP_NO_CONTENT) return null;
+            if (response.status === HTTP_NO_CONTENT) {
+                markIdlePoll();
+                return null;
+            }
             return (await response.json()) as Reclaim;
         },
 

@@ -50,7 +50,12 @@ services:
         # it to node --env-file-if-exists. That does not undo the paragraph above: node lets a real
         # environment variable win over the file, and every variable that matters is set here — so
         # the host's DATABASE_URL, pointing at a different database, cannot take hold.
+        # Listing `networks` drops the implicit default, so it is listed too.
+        networks: [default, ops]
         environment:
+            # The board's own telemetry, to the ops collector (set it to http://ops-collector:4318
+            # under the `observability` profile). Empty starts no SDK.
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
             # The repo-read credential AND the repo list, both from one GitHub App installation.
             # There is no mode to select: the id and the key are required, and a stack without them
             # refuses to boot saying which one is missing.
@@ -192,7 +197,10 @@ services:
         # install`) rather than letting a container reconcile it first — a root-owned rewrite
         # would wedge the dashboard's node-uid install.
         command: sh -c 'npm install && npm run dev -w driver'
+        networks: [default, ops]
         environment:
+            # The driver's own telemetry, to the ops collector. Never forwarded to a runner.
+            OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
             JOB_BOARD_URL: http://dashboard:8080
             # This driver's own credential (drv_…), whose SHA-256 the dashboard above records; the
             # dashboard never sees it. A rotation is a new .env value and `docker compose up -d driver`
@@ -378,6 +386,35 @@ services:
         depends_on:
             - dashboard
         restart: unless-stopped
+
+    # The ops collector: the board's and the driver's own telemetry, tail-sampled and forwarded to
+    # any OTLP backend. The same bytes the chart ships, on the `ops` network only: runners join
+    # RUNNER_NETWORK (the default network) and never resolve it. No host port.
+    ops-collector:
+        image: otel/opentelemetry-collector-contrib:0.161.0
+        profiles: [observability]
+        command: ['--config=/etc/otel/config.yaml']
+        volumes:
+            - ./charts/factory/files/ops-collector.yaml:/etc/otel/config.yaml:ro
+        environment:
+            OPS_BACKEND_ENDPOINT: ${OPS_BACKEND_ENDPOINT:-http://lgtm:4318}
+            OPS_BACKEND_HEADERS: ${OPS_BACKEND_HEADERS:-null}
+            OPS_TAIL_PERCENT: ${OPS_TAIL_PERCENT:-25}
+            OPS_LATENCY_THRESHOLD_MS: ${OPS_LATENCY_THRESHOLD_MS:-2000}
+        networks: [ops]
+        restart: unless-stopped
+
+    # A local OTLP backend with Grafana for development; the default OPS_BACKEND_ENDPOINT points here.
+    # Grafana is on the loopback only (docs/security.md).
+    lgtm:
+        image: grafana/otel-lgtm:0.41.0
+        profiles: [observability]
+        networks: [ops]
+        ports:
+            - '127.0.0.1:3000:3000'
+
+networks:
+    ops: {}
 
 volumes:
     postgres-data:

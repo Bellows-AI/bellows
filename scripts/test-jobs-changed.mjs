@@ -82,7 +82,7 @@ export const RULES = [
     // to an area marked NONE or to one phase moves its rule here in the same change. Unproven stays full.
     [/^server\/migrations\//, FULL, 'the schema every board migrates at boot'],
     [/^core\/src\//, FULL, 'shared with the board through the core index re-export; a path cannot show which board module uses it'],
-    [/^server\/src\/(main|app|index|offline|orgs|shutdown|cache|interval-loop|abortable-sleep|identifiers|metrics|otel|otel-register|pg-trace|timing|version|tar|config(-[a-z-]+)?)\.ts$/, FULL, 'board boot, configuration and wiring'],
+    [/^server\/src\/(main|app|index|offline|orgs|shutdown|cache|interval-loop|abortable-sleep|identifiers|metrics|log|otel|otel-register|otel-scrub|otel-idle|board-span|pg-trace|timing|version|tar|config(-[a-z-]+)?)\.ts$/, FULL, 'board boot, configuration and wiring'],
     [/^server\/src\/(routes\/jobs|db\/jobs|db\/workflows)\//, FULL, 'the job, claim and workflow path every phase runs'],
     [/^server\/src\/(workspace|github|artifacts|telemetry|notifications)\//, FULL, 'plan reads, GitHub reads, artifacts, runner telemetry and the notification outbox every board runs'],
     [/^server\/src\/secrets\/rotate-(cli|args)\.ts$/, NONE, 'the rotation command line, not called by any jobs phase'],
@@ -137,7 +137,7 @@ export const RULES = [
     [/^driver\/src\/(master-prompt|continuation|transcript-export|loop\/loop-export|export-control|evidence-policy|helper-receipts|verdict-budget|loop\/loop-verdict|loop\/loop-attempt|loop\/loop-handover|telemetry-config)\.ts$/, ['driver', 'cooperative-stop'], 'agent run and its readout'],
     [/^driver\/src\/scripts\/(claude-export|claude-turns|opencode-cache-probe|opencode-readout)\.cjs$/, ['cooperative-stop', 'tool-isolation'], 'agent transcript readout'],
     [/^driver\/src\/scripts\/helper-noop\.cjs$/, ['driver'], 'helper receipts'],
-    [/^driver\/src\/(board\/board|board\/board-[a-z-]+|board-credential|poll|artifact-calls|artifact-upload|driver-metrics|metrics-server|prometheus)\.ts$/, ['board', 'driver'], 'board client'],
+    [/^driver\/src\/(board\/board|board\/board-[a-z-]+|board-credential|poll|artifact-calls|artifact-upload|driver-metrics|otel|otel-register|log|timing|child-env|otel-scrub|otel-idle|lifecycle-span|shutdown)\.ts$/, ['board', 'driver'], 'board client'],
     // The kubernetes executor: scripts/test-k8s.sh covers it, the docker lane never loads it.
     [/^driver\/src\/k8s\/k8s-[a-z-]+\.ts$/, NONE, 'kubernetes executor, covered by test:k8s'],
     // A docker class's daemon sidecar: kubernetes only, the docker executor refuses a docker class at boot.

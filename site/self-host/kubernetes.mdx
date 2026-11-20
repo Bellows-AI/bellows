@@ -36,7 +36,6 @@ The render refuses to start without them, and names the missing value.
 | `secret.oauthClientSecret` | Client secret of that OAuth App. |
 | `secret.sessionSecret` | At least 32 characters. Signs the session cookie. `openssl rand -hex 32`. |
 | `driver.credential.value` | The driver's own credential, `echo "drv_$(openssl rand -hex 32)"`. Only the driver pod mounts it. The dashboard records its SHA-256 and never sees it. |
-| `driver.metricsToken` | At least 32 characters. Bearer for the driver's scrape port. Not needed with `driver.metricsPort: ''`. |
 | `github.appId` | Id of the GitHub App. |
 | `github.appPrivateKey` | The App's private key, as the PEM or its base64. |
 | `database.url` | PostgreSQL connection URL. It carries the password, so the chart stores it in the Secret. |
@@ -51,7 +50,7 @@ The render refuses to start without them, and names the missing value.
 | --- | --- | --- |
 | `global.imageRegistry` | `''` | Prefixes every image the chart renders, both executor images included, for example `ghcr.io/<owner>`. Empty means bare names, which only work with side-loaded images. |
 | `dashboard.image.tag`, `driver.image.tag` | `''` | Empty uses the chart's `appVersion`, so a chart version names the exact build. |
-| `dashboard.otel.endpoint` | empty | An OTLP/HTTP collector the server exports its own traces and metrics to. Empty exports nothing. |
+| `observability.*` | `disabled` | Exports the board's and the driver's own telemetry through an ops collector. See [Monitoring](/self-host/monitoring). |
 | `dashboard.replicas` | `1` | Above 1 needs `artifacts.backend: s3` or `gcs` and at least two schedulable nodes. The pods spread over nodes (never two on one) and zones, and the PodDisruptionBudget keeps one pod through a drain. |
 | `dashboard.topologySpreadConstraints` | `[]` | Empty uses the default spread above one replica; a list replaces it, at any replica count. |
 | `artifacts.backend` | `s3` | `s3`, `gcs` or `filesystem`. `filesystem` keeps objects in the dashboard pod's `/tmp`. One replica only, and lost with the pod. Trials only. |
@@ -113,7 +112,7 @@ By default the chart creates its Secrets from your values. For production, creat
     | `commerce-token` | Optional |
   </Step>
   <Step title="Create the driver Secret">
-    Set `driver.credential.existingSecret` to its name, and `driver.credential.sha256` to the credential's SHA-256 so the dashboard records it. Leave `sha256` empty for a credential the operator issued. Keys: `credential`, and `metrics-token` when `driver.metricsPort` is set. Only the driver pod mounts it.
+    Set `driver.credential.existingSecret` to its name, and `driver.credential.sha256` to the credential's SHA-256 so the dashboard records it. Leave `sha256` empty for a credential the operator issued. Key: `credential`. Only the driver pod mounts it.
   </Step>
   <Step title="Create the secret-store Secret">
     Set `secretStore.existingSecret` to its name. It holds `operation-key`, `fingerprint-key`, and with the `database` backend also `data-keys`. `secretStore.activeKeyId` is not secret and always comes from values.
@@ -461,7 +460,7 @@ helm upgrade bellows oci://ghcr.io/<owner>/charts/factory \
 
 The chart refuses to render, or silently ignores a value, in these cases:
 
-- `secret.jobBoardToken` and `telemetry.ingestToken` no longer exist and are ignored. The driver authenticates with its own credential: set `driver.credential.value`, or `driver.credential.existingSecret` with `driver.credential.sha256`. The render fails without one. With `driver.metricsPort` set (the default is `9464`), also set `driver.metricsToken` of at least 32 characters, or put `metrics-token` in the driver Secret.
+- `secret.jobBoardToken` and `telemetry.ingestToken` no longer exist and are ignored. The driver authenticates with its own credential: set `driver.credential.value`, or `driver.credential.existingSecret` with `driver.credential.sha256`. The render fails without one.
 - `runner.runtimeClassName`, `runner.nodeSelector`, `runner.tolerations`, `runner.affinity`, `runner.resources` and `runner.gateResources` are retired, and the render fails if any of them is present, even empty. Move each into `runner.classes.<name>`, as in the production example above, and set `runner.defaultClass` if you name more than one class.
 - On Docker Compose, `JOB_BOARD_TOKEN` is ignored. Set `DRIVER_CREDENTIAL` (or `DRIVER_CREDENTIAL_FILE`) and `DRIVER_CREDENTIAL_SHA256`.
 

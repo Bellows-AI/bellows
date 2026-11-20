@@ -1,6 +1,7 @@
 import type { ArtifactManifest, ArtifactStreamRef, Board, BoardJob } from './board/board.js';
 import { withBoardRetry } from './board/board-retry.js';
 import type { RunOutcome } from './runner.js';
+import { describeError } from './log.js';
 
 /**
  * Uploads a finished run's log and transcript to the board as chunked, immutable artifact streams
@@ -153,7 +154,7 @@ async function putChunks(
                 return UPLOAD_CAUSE.uploadFailed;
             }
         } catch (e) {
-            io.log(`${where} at ${offset} failed: ${(e as Error).message}`);
+            io.log(`${where} at ${offset} failed: ${describeError(e)}`);
             return UPLOAD_CAUSE.uploadFailed;
         }
     }
@@ -195,7 +196,7 @@ export async function uploadStream(
             retryWithin(deadline)
         );
     } catch (e) {
-        io.log(`job ${job.id}: ${ref.stream} artifact manifest failed: ${(e as Error).message}`);
+        io.log(`job ${job.id}: ${ref.stream} artifact manifest failed: ${describeError(e)}`);
         return false;
     }
     return manifest.state === 'complete';
@@ -244,7 +245,7 @@ export async function uploadRunArtifacts(
             try {
                 await uploadStream({ board, job, ref }, source, io, deadline);
             } catch (e) {
-                io.log(`job ${job.id}: the ${source.stream} artifact upload failed: ${(e as Error).message}`);
+                io.log(`job ${job.id}: the ${source.stream} artifact upload failed: ${describeError(e)}`);
             }
         }
     } finally {

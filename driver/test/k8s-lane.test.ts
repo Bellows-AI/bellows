@@ -68,7 +68,7 @@ exec ${JSON.stringify(realDirname)} "$@"
         const result = await runAsync('bash', ['scripts/test-k8s.sh', '--help'], { cwd: REPO_ROOT });
         expect(result.status).toBe(0);
         expect(result.stdout).toContain(
-            '|recovery|services|takeover|control|acceptance|capacity|mcp|drain|replicas|bench]'
+            '|recovery|services|takeover|control|acceptance|capacity|mcp|observability|drain|replicas|bench]'
         );
     });
 
@@ -525,7 +525,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         );
         expect(script).not.toMatch(/selected_phase drain/);
         expect(script).toMatch(
-            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|capacity\|mcp\|drain\|replicas\|bench\)/
+            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|capacity\|mcp\|observability\|drain\|replicas\|bench\)/
         );
     });
 
@@ -808,10 +808,9 @@ describe('kind lane bench phase (issue #831)', () => {
         expect(bench).toContain('scripts/bench-summary.mjs');
     });
 
-    it('keeps every scrape bearer out of every argv and pod environment: the scrape reads it from stdin', () => {
-        expect(bench).toContain('readFileSync(0, "utf8")');
-        expect(bench).toContain('<<<"$bearer"');
-        expect(bench).not.toMatch(/node -e "\$BENCH_SCRAPE_JS" [^<\n]*\$\{?(CREDENTIAL|METRICS_TOKEN|bearer)/);
+    it('has no scrape: no bearer, no metrics token, no exec into a pod for series', () => {
+        expect(bench).not.toContain('bench_scrape');
+        expect(bench).not.toContain('METRICS_TOKEN');
         expect(bench).not.toContain('JOB_BOARD_TOKEN');
     });
 
@@ -843,13 +842,9 @@ describe('kind lane bench phase (issue #831)', () => {
     });
 
     // Codex round 1 on S6: evidence from an earlier run or an unconfirmed kill is never evidence.
-    it('starts from a fresh directory and drops every destination file before a scrape', () => {
+    it('starts from a fresh directory, so no evidence of an earlier run survives', () => {
         expect(bench).toContain('rm -rf -- "${BENCH_DIR:?}" "${BENCH_TSV:?}"');
         expect(bench.indexOf('rm -rf -- "${BENCH_DIR:?}"')).toBeLessThan(bench.indexOf('mkdir -p "$BENCH_DIR"'));
-        const scrape = bench.slice(bench.indexOf('bench_scrape() {'), bench.indexOf('bench_count() {'));
-        expect(scrape.indexOf('rm -f -- "${list:?}"')).toBeLessThan(scrape.indexOf('bench_pods "$comp"'));
-        expect(scrape.indexOf('rm -f -- "${file:?}.prom" "${file:?}.at"')).toBeLessThan(scrape.indexOf('kubectl exec'));
-        expect(scrape).toContain('date +%s >"$file.at"');
     });
 
     it('records each pod answer time and no shared window', () => {
@@ -871,5 +866,133 @@ describe('kind lane bench phase (issue #831)', () => {
         expect(bench).toContain('select floor(extract(epoch from max(finished_at))) from job');
         expect(bench).not.toContain('settled_s "$(($(date +%s) - a_at))"');
         expect(bench).toContain('settled_s "$((last - a_at))"');
+    });
+});
+
+describe('kind lane observability phase', () => {
+    const script = readLaneScript('scripts/test-k8s.sh');
+    const raw = readRepoFile('scripts/test-k8s.sh');
+    const phaseStart = script.indexOf('if selected_phase observability; then');
+    const phase = script.slice(phaseStart, script.indexOf('if [ "$PHASE" = bench ]; then'));
+    const netpol = script.slice(
+        script.indexOf('if [ "$MODE" = \'--netpol\' ]; then'),
+        script.indexOf('# --- Phase two')
+    );
+
+    it('is a valid --phase, sourced between mcp and bench', async () => {
+        const result = await runAsync('bash', ['scripts/test-k8s.sh', '--help'], { cwd: REPO_ROOT });
+        expect(result.stdout).toContain('|mcp|observability|drain|replicas|bench]');
+        expect(raw).toMatch(/all\|[a-z|]*\|observability\|[a-z|]*\)/);
+        const mcp = raw.indexOf('. "$REPO/scripts/lanes/k8s/mcp.sh"');
+        const observability = raw.indexOf('. "$REPO/scripts/lanes/k8s/observability.sh"');
+        const bench = raw.indexOf('. "$REPO/scripts/lanes/k8s/bench.sh"');
+        expect(mcp).toBeGreaterThan(-1);
+        expect(observability).toBeGreaterThan(mcp);
+        expect(bench).toBeGreaterThan(observability);
+    });
+
+    it('reads the trace file through the verdict script and bounds every kubectl and helm call', () => {
+        expect(phaseStart).toBeGreaterThan(-1);
+        expect(phase).toContain('scripts/k8s-ops-spans.mjs');
+        const calls = phase
+            .split('\n')
+            .filter((line) => !/^\s*(#|bad |ok )/.test(line))
+            .filter((line) => /\b(kubectl|helm) (exec|scale|upgrade|get|rollout|create|delete|port-forward)/.test(line))
+            .filter((line) => !line.includes('port-forward') || !line.includes('start_port_forward'));
+        expect(calls.length).toBeGreaterThan(0);
+        for (const line of calls) expect(line, line).toMatch(/bounded|\$\(\(|--request-timeout/);
+    });
+
+    it('scales the ops collector to zero before a second task must succeed', () => {
+        const scale = phase.indexOf('--replicas=0');
+        expect(scale).toBeGreaterThan(-1);
+        // The helper settles a task on `succeeded*`; each call after the scale is a task that must still run.
+        expect(phase).toMatch(/obs_run_task\(\)[^\n]*\n(?:[^\n]*\n)*?[^\n]*await_brief "\$id" 'succeeded\*'/);
+        const awaits = [...phase.matchAll(/^\s*obs_run_task '/gm)].map((match) => match.index ?? 0);
+        expect(awaits.length).toBeGreaterThanOrEqual(2);
+        expect(awaits.some((at) => at > scale)).toBe(true);
+    });
+
+    it('restores observability off on every path: the last helm upgrade, with no exit after it', () => {
+        const last = phase.lastIndexOf('helm upgrade');
+        expect(phase.slice(last)).toContain('observability.enabled=false');
+        expect(phase.slice(last)).not.toMatch(/\bexit\b/);
+        expect(phase.slice(0, last)).not.toMatch(/^\s*exit\b/m);
+    });
+
+    // The board this phase rolls keeps no object written before the roll, so a skill pinned by an earlier
+    // phase is unavailable to the lane member. The phase queues as a member of its own.
+    const runObsTask = async (obsToken: string) => {
+        const fn = phase.match(/^obs_run_task\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
+        const dir = mkdtempSync(join(tmpdir(), 'k8s-lane-obs-'));
+        stubDirs.push(dir);
+        const log = join(dir, 'calls.log');
+        const harness = [
+            'ok() { :; }',
+            `bad() { echo "bad $1" >>"${log}"; }`,
+            `queue_job() { echo "queue $FACTORY_TOKEN" >>"${log}"; printf job-1; }`,
+            `await_brief() { echo "await $FACTORY_TOKEN" >>"${log}"; printf 'succeeded|1|0||'; }`,
+            fn,
+            `obs_token='${obsToken}'`,
+            'obs_run_task t cmd',
+        ].join('\n');
+        const result = await runAsync('bash', ['-c', harness], {
+            cwd: REPO_ROOT,
+            env: { ...process.env, FACTORY_TOKEN: 'lane-token' },
+        });
+        let calls = '';
+        try {
+            calls = readFileSync(log, 'utf8');
+        } catch {}
+        return { status: result.status, calls };
+    };
+
+    it('queues and awaits its tasks as a member of its own, never the lane member', async () => {
+        const { status, calls } = await runObsTask('obs-token');
+        expect(status).toBe(0);
+        expect(calls).toBe('queue obs-token\nawait obs-token\n');
+    });
+
+    it('refuses to queue when it has no member of its own', async () => {
+        const { status, calls } = await runObsTask('');
+        expect(status).not.toBe(0);
+        expect(calls).not.toMatch(/^queue /m);
+        expect(calls.split('\n').filter((line) => line.startsWith('bad '))).toHaveLength(1);
+    });
+
+    it('mints its member and stores its executor before the first task, and never names the lane member', () => {
+        const mint = phase.indexOf('mint_member "obs-');
+        const store = phase.indexOf('FACTORY_TOKEN="$obs_token" store_executor');
+        const first = phase.indexOf("obs_run_task '");
+        expect(mint).toBeGreaterThan(-1);
+        expect(store).toBeGreaterThan(mint);
+        expect(first).toBeGreaterThan(store);
+        expect(phase).not.toMatch(/\$member\b/);
+    });
+
+    it('mints a lane member through one bounded psql call shared with capacity', () => {
+        const body = script.match(/^mint_member\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
+        const exec = body.split('\n').find((line) => line.includes('kubectl exec')) ?? '';
+        expect(exec).toContain('bounded');
+        expect(exec).toContain('--request-timeout');
+        expect(script).not.toContain('cap_mint()');
+        expect(script).not.toContain('cap_executors()');
+        const capacity = script.slice(
+            script.indexOf('if selected_phase capacity; then'),
+            script.indexOf('if selected_phase mcp; then')
+        );
+        expect(capacity).toContain('mint_member "$heavy"');
+        expect(capacity).toContain('mint_member "$light"');
+    });
+
+    it('proves the ops ingress policy in the netpol lane, with the honest probe before the apply', () => {
+        const apply = netpol.indexOf('ops-collector-networkpolicy.yaml');
+        expect(apply).toBeGreaterThan(-1);
+        const honest = netpol.indexOf('reaches unrelated "$IP_OPS" 4318');
+        expect(honest).toBeGreaterThan(-1);
+        expect(honest).toBeLessThan(apply);
+        expect(netpol).toMatch(/denied[\s\S]*unrelated[\s\S]*IP_OPS/);
+        expect(netpol.slice(apply)).toMatch(/reaches dashboard "\$IP_OPS" 4318/);
+        expect(netpol.slice(apply)).toMatch(/reaches unrelated "\$IP_OPS" 4318/);
     });
 });

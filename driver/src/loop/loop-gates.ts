@@ -16,6 +16,7 @@ import type { JobState } from './loop-attempt.js';
 import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
 import { checkoutKey } from '../publish/publish.js';
 import { gatesUnderDaemon, readDaemon } from '../dockerd-loss.js';
+import { describeError } from '../log.js';
 
 /** The report must fit the board's 128 KiB body: the raw per-gate tail budget, and its floor. */
 const GATES_REPORT_BUDGET_BYTES = 16384;
@@ -97,7 +98,7 @@ export async function mintGateCredentials(rt: LoopRuntime, job: BoardJob): Promi
     try {
         await ensureGatePair(gates, job);
     } catch (e) {
-        rt.log(`job ${job.id}: could not mint the gate credentials early: ${(e as Error).message}`);
+        rt.log(`job ${job.id}: could not mint the gate credentials early: ${describeError(e)}`);
     }
 }
 
@@ -447,7 +448,7 @@ export async function runDeclaredGates(
             // superseded run must die (docs/jobs.md); this pump only ever loses freshness.
             await rt.board.gates(job, [...results]);
         } catch (e) {
-            log(`job ${job.id}: could not report gate state, continuing: ${(e as Error).message}`);
+            log(`job ${job.id}: could not report gate state, continuing: ${describeError(e)}`);
         }
     };
     const report = (): Promise<void> => {
@@ -735,7 +736,7 @@ export async function probeDeadServices(rt: LoopRuntime, job: BoardJob): Promise
     try {
         return await rt.runner.deadServices(job);
     } catch (e) {
-        rt.log(`job ${job.id}: could not read the service fleet, running the gates: ${(e as Error).message}`);
+        rt.log(`job ${job.id}: could not read the service fleet, running the gates: ${describeError(e)}`);
         return [];
     }
 }

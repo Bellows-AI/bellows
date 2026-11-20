@@ -8,6 +8,60 @@
         margin-bottom: var(--space-2);
     }
 
+    /* Access tokens: the create dialog is the executor picker's field layout at 480px; the printed
+       token sits in a sunken, mono, whole-selectable well beside Copy, and a created row wears the
+       --ok-wash while it is new. */
+    .token-modal {
+        max-width: 480px;
+    }
+
+    .token-modal h2 {
+        margin-bottom: var(--space-2);
+        overflow-wrap: anywhere;
+    }
+
+    .token-empty {
+        align-items: center;
+        border: 1px dashed var(--line-strong);
+        border-radius: var(--radius-lg);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-3);
+        padding: var(--space-6);
+    }
+
+    .token-empty p {
+        margin: 0;
+    }
+
+    .token-copy-row {
+        align-items: stretch;
+        display: flex;
+        gap: var(--space-2);
+        margin: var(--space-3) 0;
+    }
+
+    .token-well {
+        background: var(--surface-sunken);
+        border-radius: var(--radius-md);
+        flex: 1;
+        font-size: var(--text-sm);
+        min-width: 0;
+        overflow-wrap: anywhere;
+        padding: var(--space-2) var(--space-3);
+        user-select: all;
+    }
+
+    button.token-copied {
+        background: var(--ok-wash);
+        border-color: var(--ok-border);
+        color: var(--lamp-run);
+    }
+
+    tr.token-flash td {
+        background: var(--ok-wash);
+    }
+
     /* The executor editor (issue 261): each field is a column — label above, control, short help, and
        the field's own error below it. The model choice is a fieldset whose legend wears the
        label's type. */

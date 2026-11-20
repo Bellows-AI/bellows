@@ -39,13 +39,24 @@ RUN npm run build -w driver
 FROM deps AS dev
 COPY --from=mirror.gcr.io/library/docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 
+# The driver's production dependencies, installed in a clean stage of their own: no dev tree, and
+# none of the server's or web's. The npm that runs here never reaches the shipped image.
+FROM mirror.gcr.io/library/node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS prod-deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY core/package.json core/
+COPY server/package.json server/
+COPY web/package.json web/
+COPY driver/package.json driver/
+RUN npm ci --omit=dev --ignore-scripts -w driver
+
 FROM mirror.gcr.io/library/node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 # The client only. The daemon is the host's, reached through the socket mounted at run time.
 COPY --from=mirror.gcr.io/library/docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
-# No `npm ci` here: the driver has no runtime dependencies at all. package.json is still needed —
-# it is what makes node read dist/*.js as ESM.
+# No `npm ci` here: the driver's production dependencies come from `prod-deps` below. package.json
+# is still needed — it is what makes node read dist/*.js as ESM.
 COPY driver/package.json driver/package.json
 # And no package manager either: this stage never runs one, and npm/yarn/corepack bundle their own
 # dependency trees, which a scanner reads as vulnerabilities in the shipped image.
@@ -53,6 +64,7 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
         /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
         /usr/local/bin/yarn /usr/local/bin/yarnpkg
 COPY --from=build /app/driver/dist driver/dist
+COPY --from=prod-deps /app/node_modules node_modules
 # The `node` user, like the dashboard: the chart runs it as uid 1000 and mounts no socket. The docker
 # executor needs root for /var/run/docker.sock, which is root-owned on the host; docker-compose.yml
 # sets `user: "0"` on its driver (see docs/security.md for what mounting the socket grants).

@@ -18,6 +18,9 @@ import type { ExecutorType } from '../executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from '../http.js';
 import type { HelperPlan } from '../helpers.js';
 import type { ServiceSpec } from '../services.js';
+import { logger } from '../log.js';
+import type { ClaimPollOutcome } from '../driver-metrics.js';
+import { markIdlePoll, markUnconfirmedPoll } from '../lifecycle-span.js';
 import { isThreadFacts, type BoardThreadFacts } from './board-thread-facts.js';
 
 export type { BoardThreadFacts };
@@ -870,12 +873,15 @@ export function createBoard({
     credential = () => '',
     fetch = globalThis.fetch,
     onMalformedClaim = (fields: string[]) =>
-        console.error(`[driver] the board delivered a malformed claim (${fields.join(', ')}); left to its lease`),
+        logger('driver').error(`the board delivered a malformed claim (${fields.join(', ')}); left to its lease`),
+    onPoll = () => undefined,
 }: {
     url: string;
     leaseSeconds: number;
     /** Told the names of the fields that made a claim malformed; the claim is then left to its lease. */
     onMalformedClaim?: (fields: string[]) => void;
+    /** Told the outcome of every job claim poll. */
+    onPoll?: (outcome: ClaimPollOutcome) => void;
     /**
      * This driver's credential (`board-credential.ts`), read for every call; '' against a board with AUTH_MODE=none.
      *
@@ -891,11 +897,26 @@ export function createBoard({
 
     return {
         async claim(worker) {
-            const response = await post('/api/jobs/claim', { worker, leaseSeconds });
-            if (response.status === HTTP_NO_CONTENT) return null;
+            let response: Response;
+            try {
+                response = await post('/api/jobs/claim', { worker, leaseSeconds });
+            } catch (e) {
+                onPoll('error');
+                throw e;
+            }
+            if (response.status === HTTP_NO_CONTENT) {
+                markIdlePoll();
+                onPoll('idle');
+                return null;
+            }
             const parsed = parseClaim(await response.json().catch(() => null));
-            if ('claim' in parsed) return parsed.claim;
-            // Never a verdict on an unconfirmed read: the job is left to its lease.
+            if ('claim' in parsed) {
+                onPoll('claimed');
+                return parsed.claim;
+            }
+            // Never a verdict on an unconfirmed read: the job is left to its lease, and the poll's trace is kept.
+            markUnconfirmedPoll();
+            onPoll('malformed');
             onMalformedClaim(parsed.malformed);
             return null;
         },

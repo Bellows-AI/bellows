@@ -37,7 +37,7 @@ Classes defined here: `login-gate`, `login-card`, `login-button`, `public-brand`
 `onboarding-org-summary`, `onboarding-mode-option`, `onboarding-mode-help`, `onboarding-repos`,
 `onboarding-repo-count`, `onboarding-note`, `onboarding-summary-total`, `onboarding-summary-rows`,
 `onboarding-actions`, `onboarding-blocker`, `onboarding-loading-line`, `identity-head`,
-`identity-name`, `token-create`, `setup-steps`, `setup-step-mark`, `setup-step-done`,
+`identity-name`, `setup-steps`, `setup-step-mark`, `setup-step-done`,
 `setup-step-skipped`, `setup-actions`, `setup-back`, `setup-tools`, `setup-tool`, `setup-tool-body`,
 `setup-tool-name`, `setup-tool-purpose`, `setup-tool-connection`, `setup-tool-state`, `setup-tools-more`,
 `setup-tools-retry`, `model-label`, `model-providers`, `model-provider`, `model-provider-head`,
