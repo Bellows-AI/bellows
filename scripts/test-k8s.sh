@@ -827,8 +827,8 @@ for pair in dashboard:"$obs_dashboard" driver:"$obs_driver"; do
     expect_contains "the $who names its pod" "$resource_attributes" 'k8s.pod.name=$(POD_NAME)'
     expect_contains "the $who names its namespace" "$resource_attributes" 'k8s.namespace.name=$(POD_NAMESPACE)'
     expect_contains "the $who names its instance" "$resource_attributes" 'service.instance.id=$(POD_NAME)'
-    pod_line="$(grep -n 'name: POD_NAME' <<<"$doc" | head -1 | cut -d: -f1)"
-    attributes_line="$(grep -n 'name: OTEL_RESOURCE_ATTRIBUTES' <<<"$doc" | head -1 | cut -d: -f1)"
+    pod_line="$(grep -n -m1 'name: POD_NAME' <<<"$doc" | cut -d: -f1)"
+    attributes_line="$(grep -n -m1 'name: OTEL_RESOURCE_ATTRIBUTES' <<<"$doc" | cut -d: -f1)"
     [ -n "$pod_line" ] && [ -n "$attributes_line" ] && [ "$pod_line" -lt "$attributes_line" ] &&
         ok "the $who declares POD_NAME before it is referenced" ||
         bad "the $who declares POD_NAME before it is referenced" "POD_NAME line '$pod_line', attributes line '$attributes_line'"
