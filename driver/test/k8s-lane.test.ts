@@ -920,6 +920,71 @@ describe('kind lane observability phase', () => {
         expect(phase.slice(0, last)).not.toMatch(/^\s*exit\b/m);
     });
 
+    // The board this phase rolls keeps no object written before the roll, so a skill pinned by an earlier
+    // phase is unavailable to the lane member. The phase queues as a member of its own.
+    const runObsTask = async (obsToken: string) => {
+        const fn = phase.match(/^obs_run_task\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
+        const dir = mkdtempSync(join(tmpdir(), 'k8s-lane-obs-'));
+        stubDirs.push(dir);
+        const log = join(dir, 'calls.log');
+        const harness = [
+            'ok() { :; }',
+            `bad() { echo "bad $1" >>"${log}"; }`,
+            `queue_job() { echo "queue $FACTORY_TOKEN" >>"${log}"; printf job-1; }`,
+            `await_brief() { echo "await $FACTORY_TOKEN" >>"${log}"; printf 'succeeded|1|0||'; }`,
+            fn,
+            `obs_token='${obsToken}'`,
+            'obs_run_task t cmd',
+        ].join('\n');
+        const result = await runAsync('bash', ['-c', harness], {
+            cwd: REPO_ROOT,
+            env: { ...process.env, FACTORY_TOKEN: 'lane-token' },
+        });
+        let calls = '';
+        try {
+            calls = readFileSync(log, 'utf8');
+        } catch {}
+        return { status: result.status, calls };
+    };
+
+    it('queues and awaits its tasks as a member of its own, never the lane member', async () => {
+        const { status, calls } = await runObsTask('obs-token');
+        expect(status).toBe(0);
+        expect(calls).toBe('queue obs-token\nawait obs-token\n');
+    });
+
+    it('refuses to queue when it has no member of its own', async () => {
+        const { status, calls } = await runObsTask('');
+        expect(status).not.toBe(0);
+        expect(calls).not.toMatch(/^queue /m);
+        expect(calls.split('\n').filter((line) => line.startsWith('bad '))).toHaveLength(1);
+    });
+
+    it('mints its member and stores its executor before the first task, and never names the lane member', () => {
+        const mint = phase.indexOf('mint_member "obs-');
+        const store = phase.indexOf('FACTORY_TOKEN="$obs_token" store_executor');
+        const first = phase.indexOf("obs_run_task '");
+        expect(mint).toBeGreaterThan(-1);
+        expect(store).toBeGreaterThan(mint);
+        expect(first).toBeGreaterThan(store);
+        expect(phase).not.toMatch(/\$member\b/);
+    });
+
+    it('mints a lane member through one bounded psql call shared with capacity', () => {
+        const body = script.match(/^mint_member\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
+        const exec = body.split('\n').find((line) => line.includes('kubectl exec')) ?? '';
+        expect(exec).toContain('bounded');
+        expect(exec).toContain('--request-timeout');
+        expect(script).not.toContain('cap_mint()');
+        expect(script).not.toContain('cap_executors()');
+        const capacity = script.slice(
+            script.indexOf('if selected_phase capacity; then'),
+            script.indexOf('if selected_phase mcp; then')
+        );
+        expect(capacity).toContain('mint_member "$heavy"');
+        expect(capacity).toContain('mint_member "$light"');
+    });
+
     it('proves the ops ingress policy in the netpol lane, with the honest probe before the apply', () => {
         const apply = netpol.indexOf('ops-collector-networkpolicy.yaml');
         expect(apply).toBeGreaterThan(-1);
