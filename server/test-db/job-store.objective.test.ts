@@ -201,7 +201,7 @@ describe.skipIf(!enabled)('objective mode — database', () => {
             const rows = (await store.thread(root))!;
             expect(rows).toHaveLength(2);
             const fix = rows[1]!;
-            expect(fix).toMatchObject({ status: 'queued', mode: OBJECTIVE_MODE, parentId: first.id });
+            expect(fix).toMatchObject({ status: 'queued', mode: OBJECTIVE_MODE, followUpTo: first.id });
             expect(fix.command).toContain('test');
             expect(fix.command).toContain('expected 1 to equal 2');
             expect(await gateFixRowsOf()).toEqual([expect.objectContaining({ id: fix.id, gate_fix_round: 1 })]);
@@ -224,8 +224,8 @@ describe.skipIf(!enabled)('objective mode — database', () => {
 
         it('freezes the limit from the executor at launch: 0 turns repair off, a later edit changes nothing', async () => {
             await sql`
-                insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds)
-                values (${ORG}, null, 'strict', 'claude-code', '{}'::jsonb, 0)`;
+                insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds, position)
+                values (${ORG}, null, 'strict', 'claude-code', '{}'::jsonb, 0, 0)`;
             const created = await store.create('scaffold', null, {
                 repo: null,
                 executor: 'strict',
