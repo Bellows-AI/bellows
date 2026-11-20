@@ -82,8 +82,8 @@ test('a first sign-in connects a model, starts its first task from Ready and lan
     // Start: the starter fills the request, the task is created on the agent default and opened.
     await page.getByRole('button', { name: 'Write CONTRIBUTING.md' }).click();
     await expect(page.getByLabel('What should the agent do?')).toHaveValue(/CONTRIBUTING\.md/);
-    // The desktop composer has no send button: Enter sends.
-    await expect(page.locator('.chat-input-hint')).toContainText('Enter to send');
+    // The arrow shows at every width; Enter sends too.
+    await expect(page.getByRole('button', { name: 'Start task' })).toBeVisible();
     await page.getByLabel('What should the agent do?').press('Enter');
     await expect(page).toHaveURL(/\/tasks\/[\w-]+$/, { timeout: 60_000 });
     expect(launches.bodies).toHaveLength(1);

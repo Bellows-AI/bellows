@@ -47,10 +47,10 @@ export interface ChatInputSend {
 
 /**
  * The one chat input, shared by the new-task page and the task's follow-up: the draft's files
- * above, then a one-line bordered field that grows with its text, with the paperclip inside its
- * frame; caller controls, the Enter hint and the status sit in a row below. On a desktop screen
- * Enter sends and Shift+Enter is a new line, through the same `onSend` the arrow calls; the round
- * arrow shows only on the compact shell, where return is a new line. The field is described by
+ * above, then one rounded card holding a field that grows with its text, the paperclip and the round
+ * arrow; caller controls and the status sit in a row below. On a desktop screen Enter sends and
+ * Shift+Enter is a new line, through the same `onSend` the arrow calls; on the compact shell
+ * return is a new line and the arrow sends. The field is described by
  * whatever describes the arrow, so the reason it cannot send is read on the field too. The
  * visible label is hidden; the field keeps it as its name. Drop is the surrounding
  * `AttachmentDropZone`'s.
@@ -139,12 +139,7 @@ export function ChatInput({
             {children}
             <div className="chat-input-bar">
                 <div className="chat-input-controls">{controls}</div>
-                <div className="chat-input-end">
-                    <span className="chat-input-hint">
-                        <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> new line
-                    </span>
-                    {status}
-                </div>
+                <div className="chat-input-end">{status}</div>
             </div>
         </div>
     );

@@ -180,9 +180,10 @@
        (the border stays transparent, so a state that adds one back shifts nothing). `primary`,
        `tertiary`, `icon-button` and `danger` below are the variants. */
     button {
-        background: var(--surface-strong);
+        background: var(--button-fill);
+        box-shadow: var(--shadow-hairline);
         color: var(--ink);
-        border: 1px solid transparent;
+        border: 1px solid var(--button-line);
         border-radius: var(--radius-lg);
         /* Desktop control floor (issue 189): padding alone lands a 31px control; every button,
            tab and verdict clears 36. The compact shell restates 44 for touch below. */
@@ -209,6 +210,7 @@
 
     button:disabled {
         background: transparent;
+        box-shadow: none;
         color: var(--ink-muted);
         cursor: not-allowed;
     }
@@ -220,6 +222,7 @@
         border-color: var(--accent);
         color: var(--ink-inverse);
         font-weight: 600;
+        box-shadow: none;
         min-height: 40px;
         padding: 0 var(--space-4);
     }
@@ -244,6 +247,8 @@
     /* The quietest action: no fill until hovered, never the page's one main thing. */
     button.tertiary {
         background: transparent;
+        border-color: transparent;
+        box-shadow: none;
     }
 
     button.tertiary:hover:not(:disabled),
@@ -255,6 +260,8 @@
     button.icon-button {
         align-items: center;
         background: transparent;
+        border-color: transparent;
+        box-shadow: none;
         display: inline-flex;
         justify-content: center;
         min-width: 36px;
@@ -265,6 +272,8 @@
        hover. Never filled: danger is never visually primary. */
     button.danger {
         background: transparent;
+        border-color: transparent;
+        box-shadow: none;
         color: var(--lamp-stop);
     }
 
@@ -489,8 +498,9 @@
        a meaning with it and `panel-flat` can draw the canvas tier's hairline without a reflow. */
     .panel {
         background: var(--surface-soft);
-        border: 1px solid transparent;
+        border: 1px solid var(--panel-line);
         border-radius: var(--radius-xl);
+        box-shadow: var(--shadow-hairline);
         padding: var(--space-6);
     }
 
@@ -517,7 +527,9 @@
     .panel.panel-flat {
         background: var(--surface);
         border-color: var(--line);
+        box-shadow: none;
     }
+
 
     .panel.bad {
         border-color: var(--bad-border);
@@ -815,6 +827,7 @@
     }
 
     .sidenav {
+        background: var(--surface-nav);
         border-right: 1px solid var(--line);
         padding: 0 var(--space-3) var(--space-4);
         position: sticky;
@@ -864,9 +877,11 @@
     }
 
     .sidenav-link.is-active {
-        background: var(--surface-strong);
-        color: var(--ink);
+        background: var(--nav-active-bg);
+        color: var(--nav-active-ink);
+        font-weight: var(--nav-active-weight);
     }
+
 
     .sidenav-link.is-active .icon {
         color: var(--accent);
@@ -1126,7 +1141,7 @@
     .pill {
         align-items: center;
         border: 1px solid var(--line);
-        border-radius: var(--radius-md);
+        border-radius: var(--pill-radius);
         display: inline-flex;
         font-size: var(--text-xs);
         font-weight: 600;
