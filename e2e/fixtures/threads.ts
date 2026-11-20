@@ -123,6 +123,9 @@ export interface ThreadJob {
     titleRevision: number;
     /** The task's stored execution mode (issue 543): workflow on every row of a named workflow's thread. */
     mode: JobMode;
+    /** The board's automatic gate repair (162): this row's round and the thread's frozen limit; null on every fixture here. */
+    gateFixRound: number | null;
+    gateFixLimit: number | null;
     doneAt: string | null;
     cancelRequestedAt: string | null;
     workspacePath: string | null;
@@ -265,6 +268,8 @@ function run(fields: RunFields): ThreadJob {
         titleOrigin: null,
         titleRevision: 0,
         mode: fields.workflowName != null ? WORKFLOW_MODE : OBJECTIVE_MODE,
+        gateFixRound: null,
+        gateFixLimit: null,
         doneAt: null,
         cancelRequestedAt: null,
         workspacePath: null,

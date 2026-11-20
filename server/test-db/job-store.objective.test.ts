@@ -142,7 +142,7 @@ describe.skipIf(!enabled)('objective mode — database', () => {
         expect(second).toMatchObject({ id: first.id, attempts: 1, claimSeq: 2 });
         expect(second.leaseToken).not.toBe(first.leaseToken);
 
-        // The red gate fails the run; the retry is a new row of the same objective thread.
+        // The red gate fails the run; the board queues the repair as a new row of the same objective thread.
         await store.gates(second.id, second.leaseToken, failedGate);
         await store.complete(second.id, second.leaseToken, {
             status: 'failed',
@@ -151,10 +151,9 @@ describe.skipIf(!enabled)('objective mode — database', () => {
             failureKind: 'gate',
             treeChanged: true,
         });
-        const retry = await store.createRetry(root, null);
-        if (typeof retry === 'string') throw new Error(`retry refused: ${retry}`);
+        const [repair] = await gateFixRowsOf();
         const third = await claim();
-        expect(third.id).toBe(retry.id);
+        expect(third.id).toBe(repair!.id);
         await store.gates(third.id, third.leaseToken, [{ name: 'test', status: 'passed', exitCode: 0, output: 'ok' }]);
         await store.complete(third.id, third.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
 
