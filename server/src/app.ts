@@ -452,7 +452,7 @@ export async function buildApp({
     await app.register(healthRoutes(ready));
     await app.register(versionRoutes(version));
     if (auth) {
-        await app.register(authRoutes({ config, store: auth, orgs, identity, appSlug, installationListing }));
+        await app.register(authRoutes({ config, store: auth, orgs, identity, appSlug, installationListing, oauth }));
         // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
         // credential, so a token minted here would be inert at best — and a live personal
         // credential the day the same database flips to `github`. The settings page hides both

@@ -11,6 +11,7 @@
  * caller below it before the handler runs.
  */
 import { ADMIN_ROLE, MEMBER_ROLE, type Role } from '@factory-ai/core';
+import type { AppConfig } from '../config.js';
 
 /**
  * The board operator's role (`OPERATOR_GITHUB_IDS`): not a membership role but a deployment one, held by the named
@@ -21,6 +22,22 @@ export type RouteRole = Role | typeof OPERATOR_ROLE;
 
 export const SCOPES = ['factory:read', 'factory:write'] as const;
 export type Scope = (typeof SCOPES)[number];
+/**
+ * The built-in CLI client's one scope, on the API audience only: the token acts as its member's `fat_` and is never
+ * scope-checked. Deliberately outside `SCOPES`, so no MCP client can ask for it, no tool needs it and the metadata
+ * never advertises it.
+ */
+export const FULL_SCOPE = 'factory:full';
+
+/** `${origin}/api` of the MCP resource: the API audience `factory:full` lives on, spelled in this one place. */
+export const apiResourceFor = (mcpResource: string): string => `${new URL(mcpResource).origin}/api`;
+
+/**
+ * The API audience exactly when the authorization server exists (MCP on, github mode); null otherwise, and then no
+ * `mat_` reaches a REST route.
+ */
+export const apiResourceOf = (config: AppConfig): string | null =>
+    config.mcp.enabled && config.auth.mode === 'github' ? apiResourceFor(config.mcp.resource) : null;
 /**
  * `none` is never available to a scoped caller, whatever it holds: the routes that mint, rotate, list or revoke a
  * credential, write a secret or a connection grant, authorize a provider, or administer membership, outbound

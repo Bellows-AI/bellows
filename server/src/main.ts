@@ -366,7 +366,8 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     // always somewhere for accounts to live. buildApp's optional `auth` is for the route tests.
     const authStore = createAuthStore(crossOrg);
     // GitHub's membership answer in front of the store: sign-in verdicts, the token-path re-check and its pass.
-    const membership = membershipGuardFor(config, { ...crossOrg, store: authStore });
+    const mcp = mcpStores(crossOrg);
+    const membership = membershipGuardFor(config, { ...crossOrg, store: authStore, oauth: mcp.oauth });
     const identity = config.auth.mode === 'github' ? createGitHubIdentityClient(config.auth) : undefined;
 
     if (config.auth.mode === 'github') {
@@ -404,7 +405,6 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         log: (d) => logger('integrations').info(d, 'integration diagnostic'),
     });
 
-    const mcp = mcpStores(crossOrg);
     const driverCredentials = bootstrappedDriverCredentials(crossOrg, config, (m) => logger('auth').info(m));
     const app = await buildApp({
         config,
@@ -417,6 +417,8 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         auth: membership.store,
         githubRoster: membership.roster,
         ...mcp,
+        // The re-checked store feeds the auth hook (both `mat_` audiences) and the OAuth routes alike.
+        oauth: membership.oauth,
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one
         // org-less job query, because the pair's answer IS the org. The worker-route resolvers

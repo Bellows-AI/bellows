@@ -17,9 +17,9 @@ export const SYSTEM_ACTOR: AuditEntry['actor'] = { kind: 'system', id: null };
 
 /**
  * THE way a membership ends, whoever ends it (the sign-in sweep, the webhook, a confirmed non-member at the
- * re-check, an admin's removal): the memberships of `orgIds`, the account's sessions in those orgs and its
- * personal tokens there, inside the caller's transaction — so a membership granted again later never revives
- * an old credential. Each deleted membership writes its `member.remove` audit row there too, naming `cause`.
+ * re-check, an admin's removal): the memberships of `orgIds`, the account's sessions in those orgs, its
+ * personal tokens there and its OAuth grant families there (every access and refresh token, both audiences),
+ * inside the caller's transaction — so a membership granted again later never revives an old credential. Each deleted membership writes its `member.remove` audit row there too, naming `cause`.
  * Returns how many memberships were deleted.
  */
 export async function endMemberships(
@@ -42,6 +42,19 @@ export async function endMemberships(
         update access_token set revoked_at = now()
         where user_id = ${userId}::uuid and org_id = any(${ids}::text[]) and kind = 'personal' and revoked_at is null
     `;
+    // A `mat_` reaches through the live membership join and a refresh does not read it at all: without this, a
+    // rejoin would revive an unexpired grant.
+    const families = await tx<{ id: string }[]>`
+        update oauth_grant_family set revoked_at = now()
+        where user_id = ${userId}::uuid and org_id = any(${ids}::text[]) and revoked_at is null
+        returning id
+    `;
+    if (families.length > 0) {
+        await tx`
+            update oauth_token set revoked_at = now()
+            where family_id = any(${families.map((f) => f.id)}::uuid[]) and revoked_at is null
+        `;
+    }
     return deleted.length;
 }
 

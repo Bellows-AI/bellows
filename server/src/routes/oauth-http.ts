@@ -1,6 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { createUserResolver } from '../auth/plugin.js';
+import { FULL_SCOPE, SCOPES, apiResourceFor } from '../auth/route-class.js';
 import { SESSION_COOKIE, hashToken, unsign } from '../auth/session.js';
 import type { OAuthClient, OAuthStore } from '../auth/oauth-store.js';
 import type { AuthStore, Caller } from '../auth/store.js';
@@ -44,17 +45,34 @@ export interface OAuthRouteDeps {
     registrationLimits?: RegistrationLimits | undefined;
 }
 
-/** The board's origin as the OAuth issuer, and the resource an access token is bound to. */
-export const identityOf = (config: AppConfig): { issuer: string; resource: string; sessionSecret: string } => {
+/**
+ * The board's origin as the OAuth issuer, and the two resources an access token is bound to: the MCP endpoint, and the
+ * API audience (`${issuer}/api`) only the built-in CLI client gets.
+ */
+export const identityOf = (
+    config: AppConfig
+): { issuer: string; resource: string; apiResource: string; sessionSecret: string } => {
     if (!config.mcp.enabled || config.auth.mode !== 'github') {
         throw new Error('OAuth routes need MCP_ENABLED and AUTH_MODE=github');
     }
     return {
         issuer: new URL(config.mcp.resource).origin,
         resource: config.mcp.resource,
+        apiResource: apiResourceFor(config.mcp.resource),
         sessionSecret: config.auth.sessionSecret,
     };
 };
+
+/**
+ * The one resource a client may ask for, and its default: the built-in CLI client is bound to the API audience, every
+ * other client to the MCP endpoint. Neither may ask for the other's.
+ */
+export const resourceFor = (client: Pick<OAuthClient, 'kind'>, identity: { resource: string; apiResource: string }) =>
+    client.kind === 'builtin' ? identity.apiResource : identity.resource;
+
+/** The scopes a client may ask for, all of them its default: `factory:full` for the built-in client, `SCOPES` else. */
+export const scopesFor = (client: Pick<OAuthClient, 'kind'>): readonly string[] =>
+    client.kind === 'builtin' ? [FULL_SCOPE] : SCOPES;
 
 /** RFC 6749 section 5.2: a JSON error, never cached. */
 export const oauthError = (reply: FastifyReply, status: number, error: string, description?: string) =>

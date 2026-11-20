@@ -3,6 +3,7 @@ import type { Sql } from 'postgres';
 import { hashToken } from '../src/auth/session.js';
 import { useTestDb } from './harness.js';
 import { testOrg } from './fixtures.js';
+import { seedBuiltinClient } from './oauth-http-rig.js';
 import { buildWorld, exchange, grant, okGrant, pkceChallenge, REDIRECT, VERIFIER } from './oauth-rig.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -98,5 +99,18 @@ describe.skipIf(!enabled)('oauth purgeExpired', () => {
         expect(await w.store.purgeExpired()).toEqual({ codes: 0, consents: 0, pending: 0, families: 0 });
         expect(await w.store.findAccessToken(hashToken(issued.accessToken))).not.toBeNull();
         expect(okGrant(await exchange(w, code)).accessToken).toBeTruthy();
+    });
+});
+
+describe.skipIf(!enabled)('oauth deleteUnusedClients', () => {
+    it('deleteUnusedClients never deletes the builtin client', async () => {
+        await seedBuiltinClient(sql);
+        const w = await buildWorld(sql, ORG);
+        await sql`update oauth_client set created_at = ${w.clock.now()} where client_id = 'bellows-cli'`;
+        w.clock.advance(2 * REFRESH_DAYS * DAY);
+        // The world's unused dcr client goes; the seeded CLI client, as old and as unused, stays.
+        expect(await w.store.deleteUnusedClients()).toBe(1);
+        expect(await count('oauth_client', w.clientId)).toBe(0);
+        expect(await count('oauth_client', 'bellows-cli')).toBe(1);
     });
 });

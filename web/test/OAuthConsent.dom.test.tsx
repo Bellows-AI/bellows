@@ -154,4 +154,24 @@ describe('the consent screen', () => {
         expect(screen.getByText(/myapp:\/\/evil\.example\/cb/)).toBeTruthy();
         expect(screen.queryByText('evil.example')).toBeNull();
     });
+
+    it('names the built-in CLI by its name, says it is built into this board, and spells out full access', async () => {
+        setup(
+            request({
+                client: { id: 'bellows-cli', kind: 'builtin', name: 'Bellows CLI', uri: null },
+                scopes: ['factory:full'],
+                resource: 'https://board.example.test/api',
+                redirectUri: 'http://127.0.0.1:53682/callback',
+            })
+        );
+        await screen.findByRole('button', { name: 'Allow' });
+        expect(screen.getAllByText('Bellows CLI').length).toBeGreaterThan(0);
+        expect(screen.getByText('Built into this board: the Bellows command-line tool on this computer.')).toBeTruthy();
+        expect(screen.queryByText(/unverified/i)).toBeNull();
+        expect(
+            screen.getByText(
+                'Full access — acts as you everywhere you can, including tokens, connections and admin settings'
+            )
+        ).toBeTruthy();
+    });
 });

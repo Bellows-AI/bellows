@@ -11,7 +11,7 @@ Who a caller is, and which credential each route accepts.
 | Installation-selection screen, pending sign-in, repo scope | `server/src/routes/auth-onboarding.ts` | `server/test/auth.completion.test.ts` |
 | Accounts, sessions, memberships, roles (SQL); onboarding setup state per membership (156) and its `POST /api/onboarding/setup{,/complete}` | `server/src/auth/store.ts`, `server/migrations/010_auth.sql`, `server/migrations/156_membership_setup.sql`, `server/src/auth/setup-store.ts`, `server/src/routes/onboarding-setup.ts` | `server/test-db/auth-store.test.ts`, `server/test-db/migration.156-membership-setup.test.ts`, `server/test/routes.onboarding-setup.test.ts` |
 | Personal (`fat_`) and org (`oat_`) access tokens | `server/src/auth/access-token.ts`, `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts`, `server/test-db/auth-store.access-tokens.test.ts` |
-| MCP OAuth storage: clients (CIMD, DCR), codes, grant families, `mat_`/`mrt_` tokens, consent transaction, parked authorize requests | `server/src/auth/oauth-store.ts`, `server/src/auth/access-token.ts`, `server/migrations/122_oauth.sql`, `server/migrations/123_oauth_pending_authorize.sql` | `server/test-db/auth-store.oauth-codes.test.ts`, `server/test-db/auth-store.oauth-tokens.test.ts`, `server/test-db/auth-store.oauth-consent.test.ts`, `server/test-db/auth-store.oauth-concurrency.test.ts` |
+| OAuth storage: clients (CIMD, DCR, the seeded built-in `bellows-cli`), codes, grant families, `mat_`/`mrt_` tokens, consent transaction, parked authorize requests | `server/src/auth/oauth-store.ts`, `server/src/auth/access-token.ts`, `server/migrations/122_oauth.sql`, `server/migrations/123_oauth_pending_authorize.sql`, `server/migrations/161_oauth_builtin_client.sql` | `server/test-db/auth-store.oauth-codes.test.ts`, `server/test-db/auth-store.oauth-tokens.test.ts`, `server/test-db/auth-store.oauth-consent.test.ts`, `server/test-db/auth-store.oauth-concurrency.test.ts`, `server/test-db/migration.161-oauth-builtin-client.test.ts` |
 | MCP OAuth authorization server (only with `MCP_ENABLED` in github mode): metadata, authorize (+ `/resume`: the request is parked server-side, only an opaque id rides the return path), token, revoke, open DCR, consent and connected-apps APIs, the redirect-URI rule, the expiry sweep | `server/src/routes/oauth*.ts`, `server/src/oauth/redirect-match.ts`, `server/src/auth/oauth-sweep.ts` | `server/test/routes.oauth-metadata.test.ts`, `server/test/routes.oauth-register.test.ts`, `server/test/oauth.client-matrix.test.ts`, `server/test/oauth.redirect-match.test.ts`, `server/test-db/routes.oauth-*.test.ts`, `server/test-db/oauth.sdk-flow.test.ts` |
 | MCP OAuth purge of expired codes, tokens and grant families | `server/src/auth/oauth-sweep.ts` | `server/test-db/auth-store.oauth-purge.test.ts` |
 | Route classes (read / write per method + pattern), `Caller.scopes`, the bridged-caller binding, the `WWW-Authenticate` challenge | `server/src/auth/route-class.ts`, `server/src/auth/bridge-binding.ts`, `server/src/auth/oauth-challenge.ts`, `server/src/auth/plugin.ts` (`scopeAllows`) | `server/test/auth.enforcement.test.ts` ("has a row for every route"), `server/test/auth.route-class.test.ts` |
@@ -20,7 +20,7 @@ Who a caller is, and which credential each route accepts.
 | Commerce plan push: `commerce` requirement, bearer `COMMERCE_TOKEN`, enforced in both `AUTH_MODE`s (`enforceCommerce`; [commerce.md](commerce.md)) | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts`, `server/test/routes.commerce.test.ts` |
 | Driver credentials (150): issue, list, revoke, rotate with an overlap window (operator API, `bellows operator *-credential`, or `driver-credential-cli.js` on the database); DRIVER_CREDENTIAL_SHA256 boot record; per-org claim key | `server/src/auth/driver-credentials.ts`, `server/src/auth/driver-credential-command.ts`, `server/src/auth/org-key.ts`, `cli/src/operator.ts` | `server/test-db/driver-credentials.test.ts`, `server/test-db/driver-credential-cli.test.ts`, `cli/test/operator.test.ts` |
 | GitHub-side removal, signed webhook | `server/src/routes/webhook.ts` | `server/test/webhook.test.ts` |
-| Membership re-check (App `Members: read`): at sign-in, on a session or `fat_` past `MEMBERSHIP_TTL_MS` (10 min), in a 5-minute pass; owner to admin; an admin's removal block and its restore | `server/src/auth/membership.ts`, `server/src/auth/membership-guard.ts`, `server/src/auth/membership-store.ts`, `server/migrations/137_membership_recheck.sql` | `server/test/auth.membership-reader.test.ts`, `server/test-db/auth-membership.test.ts` |
+| Membership re-check (App `Members: read`): at sign-in, on a session, `fat_` or `mat_` past `MEMBERSHIP_TTL_MS` (10 min), in a 5-minute pass; owner to admin; an admin's removal block and its restore | `server/src/auth/membership.ts`, `server/src/auth/membership-guard.ts`, `server/src/auth/membership-store.ts`, `server/migrations/137_membership_recheck.sql` | `server/test/auth.membership-reader.test.ts`, `server/test-db/auth-membership.test.ts` |
 | Sign-in in a real browser | `e2e/auth.spec.ts`, `e2e/stub-idp.mjs`, `e2e/signin.ts` | the `auth` Playwright project (`playwright.config.ts`) |
 
 See also [organizations.md](organizations.md), [configuration.md](configuration.md), [security.md](security.md), [api.md](api.md).
@@ -41,14 +41,12 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
 - **Only a confirmed non-membership revokes.** A 200 counts only with the asked `user.id` and `organization.id`, a 404
   once org login and user id are confirmed (a renamed login re-asked once); anything else is `unknown`, stamps
   `checked_at`, revokes nothing. A stale check alone never refuses. `server/test/auth.membership-reader.test.ts`.
-- **Every membership deletion is `endMemberships`** (sign-in sweep, webhook, re-check, admin removal): membership,
-  sessions in that org and personal tokens there, in one transaction, so a later membership revives no old
-  credential. Onboarding writes an allowlist only for an org the sign-in admitted. `server/test-db/auth-membership.test.ts`.
+- **Every membership deletion is `endMemberships`** (sign-in sweep, webhook, re-check, admin removal): membership, sessions in that org, personal tokens and OAuth grant families there, in one transaction, so a later membership revives no old credential. Onboarding writes an allowlist only for an org the sign-in admitted. `server/test-db/auth-membership.test.ts`.
 - **An admin's removal is a block row** (`org_membership_removal`): sign-in admits no blocked `(org, user)` until a
   restore deletes the row; the last admin is refused. An invitation is only the sign-in link, so GitHub still decides
   who gets in; it pre-ticks its org if reported and unblocked. `server/test-db/auth-membership.test.ts`, `e2e/members.spec.ts`.
 - **The role a route needs is its `ROUTE_CLASSES` row's 4th column**, checked once in the auth hook for every user
-  caller (cookie, `fat_`, bridged): an `admin` row is `403` to a member before the handler runs. `admin` is the
+  caller (cookie, `fat_`, API `mat_`, bridged): an `admin` row is `403` to a member before the handler runs. `admin` is the
   org-wide administration (org tokens, org and repository env, the roster, org executors, skills and notification
   subscriptions); a row-dependent rule (author or admin, an org-scope body) stays in its handler.
   `server/src/auth/route-class.ts`, `server/test/auth.route-class.test.ts`, `server/test/auth.route-role.test.ts`.
@@ -56,10 +54,7 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   `SameSite=Lax`: the callback is a cross-site top-level GET. `server/src/auth/session.ts`,
   `server/test/auth.session.test.ts`.
 - **The credential class is the matched route's, never a re-parse of the URL.** Every worker and connector pattern names its row `:id`. `server/src/auth/plugin.ts`, `server/test/auth.route-match.test.ts`.
-- **Four credential kinds, one per request, no fall-through.** A bearer on a session route wins over the
-  cookie; a worker token is refused on human routes and vice versa; an `oat_` reaches only `ORG_TOKEN_ROUTES`
-  and is `403` off it; a `mat_` is `401` on every route but `/api/mcp` and never falls back to a cookie
-  (`isAccessToken` does not match it). `server/src/auth/plugin.ts`, `server/test/auth.enforcement.test.ts`.
+- **Four credential kinds, one per request, no fall-through.** A bearer on a session route wins over the cookie; a worker token is refused on human routes and vice versa; an `oat_` reaches only `ORG_TOKEN_ROUTES` and is `403` off it. A `mat_` reaches by its audience: an API one holding `factory:full` acts as its member's `fat_` wherever a `fat_` reaches (class `none`, branch and OTLP included, never scope-checked) and is `401` on `/api/mcp`; an MCP one is `401` everywhere else; neither falls back to a cookie. `server/src/auth/plugin.ts` (`resolveBearer`), `server/test/auth.enforcement.test.ts`, `server/test-db/routes.oauth-api-audience.test.ts`.
 - **A bridged caller exists only as a symbol on an injected request class.** It beats the cookie and the bearer, is
   checked against its route class (`403 insufficient_scope` plus a `WWW-Authenticate` challenge; an unclassified route
   is refused; credential, secret, connection and membership routes are class `none`, refused whatever the scopes; a
@@ -80,6 +75,7 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   replica **in this process only**, behind a proxy the address is the proxy's. A secret or another auth method is
   refused; a grant this server does not issue is dropped, `authorization_code` is required. `server/src/oauth/client-metadata.ts`, `server/src/oauth/client-resolver.ts`,
   `server/src/routes/oauth-register.ts`, `server/test/oauth.client-resolver.test.ts`, `server/test-db/oauth.client-registration.test.ts`.
+- **The built-in CLI client is seeded, never registered** (`bellows-cli`, kind `builtin`, never purged): it alone gets the API audience (`${issuer}/api`) and `factory:full`, every other client `/api/mcp` and `SCOPES`; a missing resource or scope takes the client's own, the other's is `invalid_target` / `invalid_scope`. `server/src/routes/oauth-http.ts` (`resourceFor`, `scopesFor`), `server/test-db/routes.oauth-api-audience.test.ts`.
 - **Consent is the cookie session and nothing else.** Approve and deny need the signed-in session, the transaction id
   and its CSRF value (carried once, in the fragment of the redirect to `/oauth/consent`), a JSON body, and read nothing
   else but an optional `orgId` (default the session's, refused unless the caller belongs to it; the grant binds to it):
@@ -87,7 +83,7 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   A `mat_` or `fat_` never approves its own grant. `server/test-db/routes.oauth-consent.test.ts`.
 - **The connected-apps routes are the cookie session and route-class `none`.** A member lists and ends only their own
   live grant families across every organization they belong to (each row names its org; `lastIssuedAt` is the newest
-  token minted, not the last use); another member's, unknown and ended ids are one 404, and an MCP token can neither list nor end a grant. `server/src/routes/oauth-grants.ts`,
+  token minted, not the last use); another member's, unknown and ended ids are one 404, and a `mat_` can neither list nor end a grant. `server/src/routes/oauth-grants.ts`,
   `server/test-db/routes.oauth-grants.test.ts`.
 - **No page frames the app:** the CSP carries `frame-ancestors 'none'` and every response `X-Frame-Options: DENY`, so
   the consent screen cannot be clickjacked. `server/src/app.ts`, `server/test/app.csp.test.ts`.
@@ -116,5 +112,5 @@ See also [organizations.md](organizations.md), [configuration.md](configuration.
   agent runs ([security.md](security.md)).
 - Org `member_removed` events fire for organization installations only; a user-account removal is caught one
   sign-in late by the selection sweep.
-- An MCP `mat_` is not re-checked against GitHub itself; it ends through the membership join once a re-check of
-  that member's session or token, the pass, or a sign-in deletes the membership.
+- An API `mat_` (1 h) or its `mrt_` (30 days) is full access: it can mint a permanent `fat_`, and any local program can present the built-in client id, so consent says "full access" and is the only control (`web/src/oauth-client.ts`).
+- A lost refresh response leaves a spent `mrt_` with the client; its next refresh trips reuse detection, ends the grant and forces a new sign-in. `server/test-db/routes.oauth-api-audience.test.ts`.

@@ -1,14 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 import {
     approveCode,
+    cliLogin,
     codeForm,
     decide,
     memberOf,
     otherMember,
+    seedBuiltinClient,
     startConsent,
     APPROVE,
     startBoard,
@@ -29,6 +31,9 @@ const GRANTS = '/api/oauth/grants';
 let sql: Sql;
 beforeAll(() => {
     if (enabled) sql = db.sql;
+});
+beforeEach(async () => {
+    if (enabled) await seedBuiltinClient(sql);
 });
 const boards: Board[] = [];
 afterEach(async () => {
@@ -180,5 +185,33 @@ describe.skipIf(!enabled)('the connected-apps API', () => {
         expect((await revoke(board, String(grant?.id), stranger.cookie)).statusCode).toBe(HTTP_NOT_FOUND);
         expect((await revoke(board, String(grant?.id), member.cookie)).statusCode).toBe(HTTP_OK);
         expect((await listOf(board, member.cookie)).grants).toEqual([]);
+    });
+
+    it('an API mat_ can neither list nor end a grant', async () => {
+        const board = await start();
+        const { access_token: token } = await cliLogin(board);
+        const [grant] = (await listOf(board)).grants;
+        const headers = { authorization: `Bearer ${token}` };
+        const listed = await board.app.inject({ method: 'GET', url: GRANTS, headers });
+        expect(listed.statusCode).toBe(HTTP_UNAUTHORIZED);
+        const ended = await board.app.inject({ method: 'POST', url: `${GRANTS}/${String(grant?.id)}/revoke`, headers });
+        expect(ended.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect((await listOf(board)).grants).toHaveLength(1);
+    });
+
+    it('the CLI grant lists as kind builtin with factory:full; ending it 401s the next REST call', async () => {
+        const board = await start();
+        const { access_token: token } = await cliLogin(board);
+        const headers = { authorization: `Bearer ${token}` };
+        expect((await board.app.inject({ method: 'GET', url: '/api/tokens', headers })).statusCode).toBe(HTTP_OK);
+        const [grant] = (await listOf(board)).grants;
+        expect(grant).toMatchObject({
+            client: { id: 'bellows-cli', name: 'Bellows CLI', kind: 'builtin' },
+            scopes: ['factory:full'],
+        });
+        expect((await revoke(board, String(grant?.id))).statusCode).toBe(HTTP_OK);
+        expect((await board.app.inject({ method: 'GET', url: '/api/tokens', headers })).statusCode).toBe(
+            HTTP_UNAUTHORIZED
+        );
     });
 });

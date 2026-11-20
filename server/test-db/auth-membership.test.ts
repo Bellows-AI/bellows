@@ -6,12 +6,14 @@ import { buildApp } from '../src/app.js';
 import { createMembershipGuard } from '../src/auth/membership-guard.js';
 import { createMembershipReader } from '../src/auth/membership.js';
 import { createMembershipStore } from '../src/auth/membership-store.js';
+import { createOAuthStore } from '../src/auth/oauth-store.js';
 import { SESSION_COOKIE, hashToken, sign } from '../src/auth/session.js';
 import { createAuthStore, type InstallationRef } from '../src/auth/store.js';
 import { TEST_SESSION_SECRET } from '../test/helpers-config.js';
 import { FAKE_GITHUB_API, fakeGitHubMembers, type MembershipAnswer } from '../test/helpers-github-members.js';
 import { githubAuth, staticRegistry, telemetryStoreStub, testConfig } from '../test/helpers.js';
 import { randomGithubId, testOrg } from './fixtures.js';
+import { pkceChallenge, REDIRECT, VERIFIER } from './oauth-rig.js';
 import { useTestDb } from './harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -473,4 +475,97 @@ describe.runIf(enabled)('setup state per membership (onboarding)', () => {
         const untouched = await board.credentials(other);
         expect((await board.base.findSession(untouched.session))?.membership.setup).toEqual(fresh);
     });
+});
+
+/** Both `mat_` audiences: the CLI's API audience with `factory:full`, and an MCP client's. */
+const AUDIENCES = [
+    ['an API mat_', 'https://board.example.test/api', ['factory:full']],
+    ['an MCP mat_', 'https://board.example.test/api/mcp', ['factory:read']],
+] as const;
+
+/** An OAuth grant for the caller in `orgId`, issued straight from the store: its access hash and refresh token. */
+const oauthGrant = async (
+    caller: { user: { id: string } },
+    orgId: string,
+    resource: string,
+    scopes: readonly string[]
+) => {
+    const store = createOAuthStore({ sql });
+    const clientId = `client-${randomUUID()}`;
+    await store.upsertClient({ clientId, kind: 'dcr', name: 'probe', redirectUris: [REDIRECT] });
+    const { code } = await store.createCode({
+        clientId,
+        userId: caller.user.id,
+        orgId,
+        scopes,
+        codeChallenge: pkceChallenge(VERIFIER),
+        resource,
+        redirectUri: REDIRECT,
+    });
+    const result = await store.consumeCode({ code, clientId, redirectUri: REDIRECT, resource, codeVerifier: VERIFIER });
+    if (!result.ok) throw new Error(`expected a grant, got ${result.error}`);
+    return { store, clientId, access: hashToken(result.accessToken), refresh: result.refreshToken };
+};
+
+describe.runIf(enabled)('the membership re-check covers OAuth access tokens', () => {
+    it.each(AUDIENCES)(
+        '%s past the TTL is re-checked: a confirmed non-member is refused',
+        async (_, resource, scopes) => {
+            const board = rig();
+            const alice = person('alice');
+            board.set(alice, 'member');
+            const caller = await board.signIn(alice);
+            const issued = await oauthGrant(caller, board.install.id, resource, scopes);
+            const oauth = board.guard.guardOAuth(issued.store);
+
+            board.set(alice, 'absent');
+            const asked = board.github.calls.length;
+            expect(await oauth.findAccessToken(issued.access)).not.toBeNull();
+            expect(board.github.calls.length).toBe(asked);
+
+            board.advance(TTL_MS + 1);
+            expect(await oauth.findAccessToken(issued.access)).toBeNull();
+            expect(await board.roleOf(caller.user.id)).toBeNull();
+        }
+    );
+
+    it.each(AUDIENCES)('%s keeps access when the re-check cannot be confirmed', async (_, resource, scopes) => {
+        const board = rig();
+        const alice = person('alice');
+        board.set(alice, 'member');
+        const caller = await board.signIn(alice);
+        const issued = await oauthGrant(caller, board.install.id, resource, scopes);
+        const oauth = board.guard.guardOAuth(issued.store);
+
+        board.set(alice, { status: 502, body: 'bad gateway' });
+        board.advance(TTL_MS + 1);
+        expect(await oauth.findAccessToken(issued.access)).not.toBeNull();
+        expect(await board.roleOf(caller.user.id)).not.toBeNull();
+    });
+
+    it.each(AUDIENCES)(
+        '%s and its refresh token stay dead after a removal and a rejoin',
+        async (_, resource, scopes) => {
+            const board = rig();
+            const alice = person('alice');
+            board.set(alice, 'member');
+            const caller = await board.signIn(alice);
+            const issued = await oauthGrant(caller, board.install.id, resource, scopes);
+
+            board.set(alice, 'absent');
+            board.advance(TTL_MS + 1);
+            await board.guard.pass();
+            expect(await board.roleOf(caller.user.id)).toBeNull();
+
+            // Rejoining mints a new membership; the grant issued under the old one must not come back with it.
+            board.set(alice, 'member');
+            await board.signIn(alice);
+            expect(await board.roleOf(caller.user.id)).not.toBeNull();
+            expect(await issued.store.findAccessToken(issued.access)).toBeNull();
+            expect(await issued.store.refresh({ refreshToken: issued.refresh, clientId: issued.clientId })).toEqual({
+                ok: false,
+                error: 'invalid_grant',
+            });
+        }
+    );
 });

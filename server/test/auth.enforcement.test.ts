@@ -6,8 +6,9 @@ import { buildApp } from '../src/app.js';
 import { bridgedRequestClass } from '../src/auth/bridge-binding.js';
 import { requirementFor } from '../src/auth/plugin.js';
 import { ROUTE_CLASSES, classOf } from '../src/auth/route-class.js';
-import { SESSION_COOKIE } from '../src/auth/session.js';
+import { SESSION_COOKIE, hashToken } from '../src/auth/session.js';
 import type { OAuthStore } from '../src/auth/oauth-store.js';
+import type { Caller } from '../src/auth/store.js';
 import type { AuthConfig } from '../src/config.js';
 import type { Job } from '../src/db/jobs/job-store-types.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
@@ -48,6 +49,8 @@ const JOB_ID = '11111111-1111-4111-8111-111111111111';
 const LEASE = '22222222-2222-4222-8222-222222222222';
 const INGEST = '33333333-3333-4333-8333-333333333333';
 const WORKER_TOKEN = TEST_DRIVER_CREDENTIAL;
+const MCP_RESOURCE = 'https://board.example.test/api/mcp';
+const API_RESOURCE = 'https://board.example.test/api';
 
 const track = trackApps();
 
@@ -96,11 +99,14 @@ async function build(
     {
         orgsFor,
         orgOfIngest,
+        oauth,
     }: {
         // When set, the registry answers null for every org id outside it — the production shape,
         // where an org that does not exist resolves to nothing.
         orgsFor?: readonly string[];
         orgOfIngest?: AppDeps['orgOfIngest'];
+        // When set, MCP is on (MCP_RESOURCE below) and the OAuth store resolves `mat_` tokens through this.
+        oauth?: Pick<OAuthStore, 'findAccessToken'>;
     } = {}
 ) {
     const app = await buildWithAuth(
@@ -121,6 +127,12 @@ async function build(
             orgOfReclaim: async (reclaimId) => (reclaimId === JOB_ID ? ORG : null),
             // The upload-request routes and the capability PUT exist exactly when the store does.
             uploadCapabilities: memoryUploadCapabilities().store,
+            ...(oauth
+                ? {
+                      config: testConfig({ auth, mcp: { enabled: true, resource: MCP_RESOURCE, trustedOrigins: [] } }),
+                      oauth: oauth as OAuthStore,
+                  }
+                : {}),
         }
     );
     track(app);
@@ -1297,9 +1309,17 @@ const inject = (server: Awaited<ReturnType<typeof build>>, method: string, url: 
         ...extra,
     });
 
-describe('the MCP access token is honoured on the MCP route only', () => {
+/** An OAuth store that resolves one `mat_` to the caller, bound to `resource` with `scopes`. */
+const oauthFor = (caller: Caller, token: string, resource: string, scopes: readonly string[]) => ({
+    findAccessToken: async (hash: Buffer) =>
+        hash.equals(hashToken(token))
+            ? { ...caller, scopes, clientId: 'bellows-cli', resource, familyId: 'family-1' }
+            : null,
+});
+
+describe('a mat_ reaches by its audience: the API one as a fat_, the MCP one /api/mcp only', () => {
     it.each(USER_ROUTES)(
-        '$method $pattern refuses a mat_ with 401 and never falls through to the cookie',
+        '$method $pattern refuses an unknown mat_ with 401 and never falls through to the cookie',
         async (r) => {
             const store = memoryAuthStore();
             const server = await build(githubAuth(), store);
@@ -1314,6 +1334,76 @@ describe('the MCP access token is honoured on the MCP route only', () => {
             expect(withCookie.json().code).toBe('UNAUTHENTICATED');
         }
     );
+
+    it.each(USER_ROUTES)('$method $pattern refuses an MCP-audience mat_ with 401, cookie or not', async (r) => {
+        const store = memoryAuthStore();
+        const caller = store.seedMember(ORG, 'octocat', 'admin');
+        const token = 'mat_mcp-audience-token';
+        const oauth = oauthFor(caller, token, MCP_RESOURCE, ['factory:read', 'factory:write']);
+        const server = await build(githubAuth(), store, undefined, { oauth });
+        const cookie = await signedIn(store, caller);
+        for (const headers of [{ authorization: `Bearer ${token}` }, { authorization: `Bearer ${token}`, cookie }]) {
+            const response = await inject(server, r.method, r.url, { headers });
+            expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+            expect(response.json().code).toBe('UNAUTHENTICATED');
+        }
+    });
+
+    it.each(USER_ROUTES)('$method $pattern answers an API-audience mat_ exactly as its member’s fat_', async (r) => {
+        const store = memoryAuthStore();
+        const caller = store.seedMember(ORG, 'octocat', 'admin');
+        const token = 'mat_api-audience-token';
+        const oauth = oauthFor(caller, token, API_RESOURCE, ['factory:full']);
+        const server = await build(githubAuth(), store, undefined, { oauth });
+        const fat = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
+        const asFat = (await inject(server, r.method, r.url, { headers: { authorization: `Bearer ${fat}` } }))
+            .statusCode;
+        const asMat = await inject(server, r.method, r.url, { headers: { authorization: `Bearer ${token}` } });
+        // A cached read (the stats route) answers 202 cold and 200 warm: the fat_ reads again once the mat_ has.
+        const again = await inject(server, r.method, r.url, { headers: { authorization: `Bearer ${fat}` } });
+        // The hook never refuses it; a handler that takes the cookie session only refuses both alike.
+        expect(asMat.body).not.toContain('Invalid access token');
+        expect([asFat, again.statusCode]).toContain(asMat.statusCode);
+    });
+
+    it('an API-audience mat_ without factory:full is 401', async () => {
+        const store = memoryAuthStore();
+        const caller = store.seedMember(ORG, 'octocat', 'admin');
+        const token = 'mat_api-audience-narrow';
+        const oauth = oauthFor(caller, token, API_RESOURCE, ['factory:read', 'factory:write']);
+        const server = await build(githubAuth(), store, undefined, { oauth });
+        const response = await inject(server, 'GET', '/api/jobs', { headers: { authorization: `Bearer ${token}` } });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+    });
+
+    it('an API-audience mat_ is accepted on the branch and OTLP routes, as a fat_ is', async () => {
+        const store = memoryAuthStore();
+        const caller = store.seedMember(ORG, 'octocat', 'admin');
+        const token = 'mat_api-audience-branch';
+        const server = await build(githubAuth(), store, undefined, {
+            oauth: oauthFor(caller, token, API_RESOURCE, ['factory:full']),
+        });
+        const fat = store.seedAccessToken(ORG, 'personal', { userId: caller.user.id });
+        for (const url of ['/api/sessions/branch', '/api/otlp/v1/logs']) {
+            const asMat = await inject(server, 'POST', url, { headers: { authorization: `Bearer ${token}` } });
+            const asFat = await inject(server, 'POST', url, { headers: { authorization: `Bearer ${fat}` } });
+            expect(asMat.statusCode, url).not.toBe(HTTP_UNAUTHORIZED);
+            expect(asMat.statusCode, url).toBe(asFat.statusCode);
+        }
+    });
+
+    it('a mat_ lookup that throws is 503, never 401', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store, undefined, {
+            oauth: {
+                findAccessToken: async () => {
+                    throw storeOutage();
+                },
+            },
+        });
+        const response = await inject(server, 'GET', '/api/jobs', { headers: { authorization: 'Bearer mat_x' } });
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+    });
 
     it('no header or query parameter creates a bridged caller', async () => {
         const server = await build(githubAuth(), memoryAuthStore());

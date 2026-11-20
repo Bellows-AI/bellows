@@ -1,6 +1,5 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import type { OAuthClient } from '../auth/oauth-store.js';
-import { SCOPES } from '../auth/route-class.js';
 import { createUserResolver } from '../auth/plugin.js';
 import { redirectUriMatches } from '../oauth/redirect-match.js';
 import {
@@ -13,6 +12,8 @@ import {
     oauthError,
     readParams,
     redirectWith,
+    resourceFor,
+    scopesFor,
     scopesOf,
     sessionHashOf,
     closeSignal,
@@ -24,16 +25,19 @@ const STATE_LIMIT = 4096;
 /** RFC 7636: a base64url SHA-256 digest, no padding. */
 const S256_CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 
-type Vetted = { error: string; description: string } | { challenge: string; scopes: string[] };
+type Vetted = { error: string; description: string } | { challenge: string; scopes: string[]; resource: string };
 type Ask = {
     client: OAuthClient;
     redirectUri: string;
-    vetted: { challenge: string; scopes: string[] };
+    vetted: { challenge: string; scopes: string[]; resource: string };
     state: string | undefined;
 };
 
-/** The request parameters that need no store: everything the client can get wrong once its redirect is trusted. */
-const vet = (params: Map<string, string>, resource: string): Vetted => {
+/**
+ * The request parameters that need no store: everything the client can get wrong once its redirect is trusted. The
+ * resource and scopes are the client's own (`resourceFor`, `scopesFor`); a missing one takes the client's default.
+ */
+const vet = (params: Map<string, string>, resource: string, allowed: readonly string[]): Vetted => {
     if (params.get('response_type') !== 'code') {
         return { error: 'unsupported_response_type', description: 'Only response_type=code is supported.' };
     }
@@ -45,13 +49,13 @@ const vet = (params: Map<string, string>, resource: string): Vetted => {
         return { error: 'invalid_request', description: 'code_challenge_method must be S256.' };
     }
     const requested = scopesOf(params.get('scope') ?? '');
-    const scopes = requested.length === 0 ? [...SCOPES] : requested;
-    if (!scopes.every((scope) => (SCOPES as readonly string[]).includes(scope))) {
-        return { error: 'invalid_scope', description: `Supported scopes: ${SCOPES.join(' ')}.` };
+    const scopes = requested.length === 0 ? [...allowed] : requested;
+    if (!scopes.every((scope) => allowed.includes(scope))) {
+        return { error: 'invalid_scope', description: `Supported scopes: ${allowed.join(' ')}.` };
     }
     const asked = params.get('resource');
     if (asked !== undefined && asked !== resource) return { error: 'invalid_target', description: 'Unknown resource.' };
-    return { challenge, scopes };
+    return { challenge, scopes, resource };
 };
 
 /**
@@ -68,7 +72,7 @@ export const oauthAuthorizeRoutes =
     (deps: OAuthRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const { config, auth, oauth } = deps;
-        const { issuer, resource, sessionSecret } = identityOf(config);
+        const { issuer, sessionSecret, ...resources } = identityOf(config);
         const resolveClient = deps.resolveClient ?? ((clientId: string) => oauth.findClient(clientId));
         const resolveUser = createUserResolver({ config, store: auth });
 
@@ -104,7 +108,7 @@ export const oauthAuthorizeRoutes =
                     sessionHash,
                     clientId: ask.client.clientId,
                     redirectUri: ask.redirectUri,
-                    resource,
+                    resource: ask.vetted.resource,
                     scopes: ask.vetted.scopes,
                     codeChallenge: ask.vetted.challenge,
                     clientState: ask.state ?? null,
@@ -133,7 +137,7 @@ export const oauthAuthorizeRoutes =
                 const id = await oauth.createPending({
                     clientId: ask.client.clientId,
                     redirectUri: ask.redirectUri,
-                    resource,
+                    resource: ask.vetted.resource,
                     scopes: ask.vetted.scopes,
                     codeChallenge: ask.vetted.challenge,
                     clientState: ask.state ?? null,
@@ -163,7 +167,7 @@ export const oauthAuthorizeRoutes =
             if (state !== undefined && state.length > STATE_LIMIT) {
                 return refuse('invalid_request', 'state is too long.', undefined);
             }
-            const vetted = vet(params, resource);
+            const vetted = vet(params, resourceFor(client, resources), scopesFor(client));
             if ('error' in vetted) return refuse(vetted.error, vetted.description, state);
 
             return proceed(request, reply, { client, redirectUri, vetted, state });
@@ -187,7 +191,7 @@ export const oauthAuthorizeRoutes =
                 return openConsent(reply, sessionHash, {
                     client,
                     redirectUri: parked.redirectUri,
-                    vetted: { challenge: parked.codeChallenge, scopes: [...parked.scopes] },
+                    vetted: { challenge: parked.codeChallenge, scopes: [...parked.scopes], resource: parked.resource },
                     state: parked.clientState ?? undefined,
                 });
             } catch (e) {

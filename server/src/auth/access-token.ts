@@ -8,8 +8,10 @@ import { randomBytes } from 'node:crypto';
 export const PERSONAL_TOKEN_PREFIX = 'fat_';
 export const ORG_TOKEN_PREFIX = 'oat_';
 /**
- * The MCP OAuth pair (server/src/auth/oauth-store.ts). Deliberately NOT matched by `isAccessToken`: a `mat_` is a
- * different credential kind, honoured on the MCP route only, so every other route answers it as an unknown bearer.
+ * The OAuth pair (server/src/auth/oauth-store.ts). Deliberately NOT matched by `isAccessToken`: a `mat_` is a
+ * different credential kind whose reach is its grant's audience. An MCP-audience one is honoured on the MCP route
+ * only; an API-audience one with `factory:full` (the built-in CLI client's) acts as its member's `fat_` on every route
+ * a `fat_` reaches (`resolveBearer` in plugin.ts), and is refused on the MCP route.
  */
 export const MCP_ACCESS_PREFIX = 'mat_';
 export const MCP_REFRESH_PREFIX = 'mrt_';

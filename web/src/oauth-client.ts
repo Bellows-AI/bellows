@@ -3,7 +3,8 @@
  * connected-apps panel so both say the same thing about the same app.
  */
 
-export type OAuthClientKind = 'cimd' | 'dcr';
+/** `builtin` is a client the board ships itself: the Bellows command-line tool. */
+export type OAuthClientKind = 'cimd' | 'dcr' | 'builtin';
 
 /** The client as the consent and grants routes report it; `kind` is null when the client row is gone. */
 export interface OAuthClientView {
@@ -25,9 +26,18 @@ const UNNAMED = 'An unnamed app';
 
 /**
  * A CIMD client is identified by the HTTPS URL it serves its metadata from, so its host is the one
- * claim the app cannot make up; a DCR client registered itself, and its name is whatever it typed.
+ * claim the app cannot make up; a DCR client registered itself, and its name is whatever it typed. The
+ * built-in client is the board's own row; any program on the computer can present its id, so the basis
+ * says where it runs and no more.
  */
 export function clientIdentity(client: OAuthClientView): ClientIdentity {
+    if (client.kind === 'builtin') {
+        return {
+            label: client.name ?? UNNAMED,
+            basis: 'Built into this board: the Bellows command-line tool on this computer.',
+            claimedName: null,
+        };
+    }
     if (client.kind === 'cimd') {
         let host = client.id;
         try {
@@ -59,6 +69,7 @@ export function redirectTarget(redirectUri: string): string {
 const SCOPE_LABELS: Readonly<Record<string, string>> = {
     'factory:read': 'Read tasks, repositories and settings',
     'factory:write': 'Create and change tasks',
+    'factory:full': 'Full access — acts as you everywhere you can, including tokens, connections and admin settings',
 };
 
 /** A scope as a sentence; an unknown one is shown as written, never hidden. */
