@@ -4,6 +4,7 @@ import { installationTokenProvider, type InstallationTokenProvider } from '../gi
 import { startIntervalLoop } from '../interval-loop.js';
 import { createMembershipReader, type MembershipReader, type MembershipVerdict } from './membership.js';
 import { createMembershipStore, type MembershipStore } from './membership-store.js';
+import type { OAuthStore } from './oauth-store.js';
 import type { AuthStore, Caller } from './store.js';
 
 const MS_PER_MINUTE = 60_000;
@@ -20,15 +21,17 @@ const PASS_BATCH = 200;
 export interface MembershipGuard {
     /** The auth store with sign-in verdicts and the token-path re-check in front of it. */
     store: AuthStore;
+    /** The OAuth store with the same re-check in front of `findAccessToken`: a `mat_` of either audience. */
+    guardOAuth(oauth: OAuthStore): OAuthStore;
     /** One re-check of every due membership (up to the batch); never throws on a GitHub failure. */
     pass(signal?: AbortSignal): Promise<void>;
 }
 
 /**
  * Puts GitHub's membership answer in front of the auth store (docs/auth.md): sign-in reads a verdict per
- * installation (`SignInCheck`), and the session and personal-token reads re-check a membership whose last
- * check is older than the TTL, refusing the credential only on a confirmed "not a member" — which has
- * already revoked it. A stale check alone, or an unanswered read, never refuses.
+ * installation (`SignInCheck`), and the session, personal-token and OAuth access-token reads re-check a
+ * membership whose last check is older than the TTL, refusing the credential only on a confirmed "not a
+ * member" — which has already revoked it. A stale check alone, or an unanswered read, never refuses.
  */
 export function createMembershipGuard({
     store,
@@ -60,12 +63,14 @@ export function createMembershipGuard({
         return read;
     };
 
-    const stale = (caller: Caller): boolean => {
+    const stale = (caller: Pick<Caller, 'membershipCheckedAt'>): boolean => {
         const checkedAt = caller.membershipCheckedAt;
         if (checkedAt === undefined) return false;
         return checkedAt === null || now() - checkedAt.getTime() > ttlMs;
     };
-    const guarded = async (caller: Caller | null): Promise<Caller | null> => {
+    const guarded = async <T extends Pick<Caller, 'membershipCheckedAt' | 'org' | 'user'>>(
+        caller: T | null
+    ): Promise<T | null> => {
         if (!caller || !stale(caller)) return caller;
         const verdict = await recheck(caller.org.id, caller.user.id);
         return verdict.kind === 'not-member' ? null : caller;
@@ -95,6 +100,11 @@ export function createMembershipGuard({
             findSession: async (tokenHash) => guarded(await store.findSession(tokenHash)),
             findPersonalToken: async (tokenHash) => guarded(await store.findPersonalToken(tokenHash)),
         },
+
+        guardOAuth: (oauth) => ({
+            ...oauth,
+            findAccessToken: async (tokenHash) => guarded(await oauth.findAccessToken(tokenHash)),
+        }),
 
         async pass(signal) {
             const due = await membership.due(new Date(now() - ttlMs), PASS_BATCH);
@@ -126,15 +136,17 @@ export function startMembershipRecheck(
  */
 export function membershipGuardFor(
     config: AppConfig,
-    { sql, ready, store }: { sql: Sql; ready: Promise<unknown>; store: AuthStore }
+    { sql, ready, store, oauth }: { sql: Sql; ready: Promise<unknown>; store: AuthStore; oauth: OAuthStore }
 ): {
     store: AuthStore;
+    /** The OAuth store, its access-token read re-checked the same way. */
+    oauth: OAuthStore;
     /** GitHub's member list for the invitation read; undefined where there is no App to ask with. */
     roster: Pick<MembershipReader, 'roster'> | undefined;
     start: (timedPass: <T>(loop: string, fn: () => Promise<T>) => Promise<T>) => () => Promise<void>;
 } {
     if (config.auth.mode !== 'github' || config.github.mode !== 'app') {
-        return { store, roster: undefined, start: () => async () => undefined };
+        return { store, oauth, roster: undefined, start: () => async () => undefined };
     }
     const github = config.github;
     const providers = new Map<string, InstallationTokenProvider>();
@@ -148,5 +160,10 @@ export function membershipGuardFor(
     };
     const reader = createMembershipReader({ apiUrl: github.apiUrl, tokenFor });
     const guard = createMembershipGuard({ store, membership: createMembershipStore({ sql, ready }), reader });
-    return { store: guard.store, roster: reader, start: (timedPass) => startMembershipRecheck(guard, timedPass) };
+    return {
+        store: guard.store,
+        oauth: guard.guardOAuth(oauth),
+        roster: reader,
+        start: (timedPass) => startMembershipRecheck(guard, timedPass),
+    };
 }

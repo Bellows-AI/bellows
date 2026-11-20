@@ -150,6 +150,35 @@ describe('bellows auth status: identity', () => {
         expect(text + err.join('')).not.toContain(SECRET);
     });
 
+    it('shows an oauth sign-in, its source and expiry, never the tokens', async () => {
+        const path = join(mkdtempSync(join(tmpdir(), 'bellows-settings-')), 'settings.json');
+        const expiresAt = '2099-01-01T00:00:00.000Z';
+        const oauth = {
+            url: 'http://board',
+            clientId: 'bellows-cli',
+            accessToken: 'mat_s3cr3t',
+            refreshToken: 'mrt_s3cr3t',
+            expiresAt,
+            scope: 'factory:full',
+        };
+        writeFileSync(path, JSON.stringify({ oauth }), { mode: 0o600 });
+        const { out, err, sent, io } = recordingBoard(routed(board()), {
+            env: { FACTORY_URL: 'http://board' },
+            settings: { path, explicit: true },
+        });
+        expect(await run(['auth', 'status'], io)).toBe(0);
+        expect(out.join('')).toContain(`token    set (oauth, expires ${expiresAt}) [${path}]`);
+        expect(sent.every((call) => call.authorization === 'Bearer mat_s3cr3t')).toBe(true);
+
+        const json = recordingBoard(routed(board()), {
+            env: { FACTORY_URL: 'http://board' },
+            settings: { path, explicit: true },
+        });
+        expect(await run(['auth', 'status', '--json'], json.io)).toBe(0);
+        expect(envelope(json.out).data.config.token).toEqual({ set: true, kind: 'oauth', expiresAt });
+        expect(out.join('') + err.join('') + json.out.join('')).not.toContain('s3cr3t');
+    });
+
     it('says not signed in when the board answers authenticated:false', async () => {
         const { out, io } = harness(board({ '/api/auth/me': () => json({ authenticated: false }) }));
         expect(await run(['auth', 'status', '--json'], io)).toBe(1);

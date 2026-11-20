@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 import type { Sql } from 'postgres';
 import { buildApp } from '../src/app.js';
@@ -165,3 +166,31 @@ export interface TokenBody {
     expires_in: number;
     scope: string;
 }
+
+/** The built-in CLI client 161 seeds, and the API audience it is bound to. */
+export const BUILTIN = 'bellows-cli';
+export const API_RESOURCE = `${PUBLIC_URL}/api`;
+export const CLI_REDIRECT = 'http://127.0.0.1:53682/callback';
+const BUILTIN_MIGRATION = new URL('../migrations/161_oauth_builtin_client.sql', import.meta.url);
+
+/** The harness truncates every table before each test; this puts the seeded client back the way 161 put it. */
+export const seedBuiltinClient = async (sql: Sql): Promise<void> => {
+    await sql.unsafe(readFileSync(BUILTIN_MIGRATION, 'utf8'));
+};
+
+/** The CLI's authorize parameters: its client and loopback redirect, and no resource or scope. */
+export const cliParams = { client_id: BUILTIN, redirect_uri: CLI_REDIRECT, scope: undefined, resource: undefined };
+
+/** The CLI's login through the HTTP surface: authorize with no resource or scope, consent, exchange. */
+export const cliLogin = async (board: Board, cookie = board.cookie): Promise<TokenBody> => {
+    const tx = await startConsent(board, cliParams, cookie);
+    const approved = await decide(board, APPROVE, tx, cookie);
+    const code = new URL((approved.json() as { redirect: string }).redirect).searchParams.get('code');
+    if (!code) throw new Error(`expected a code, got ${approved.statusCode} ${approved.body}`);
+    const exchanged = await tokenRequest(
+        board,
+        codeForm(board, code, { client_id: BUILTIN, redirect_uri: CLI_REDIRECT })
+    );
+    if (exchanged.statusCode !== 200) throw new Error(`expected tokens, got ${exchanged.statusCode} ${exchanged.body}`);
+    return exchanged.json() as TokenBody;
+};

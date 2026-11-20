@@ -10,6 +10,7 @@ import { CliConfigError, loadCliConfig, type SettingsFile, takeConfigFlag } from
 import { envelopeOf, OUTCOME } from './outcome.js';
 import type { CommandResult, ErrorDetail } from './outcome.js';
 import { authStatusCommand, preflightCommand } from './diagnose.js';
+import { type AuthIo, authCommands, credentialFetch } from './login.js';
 import { configSummary } from './diagnostics.js';
 import { executorDiscovery, repoDiscovery } from './discovery.js';
 import { INPUT_OPTIONS, MODEL_OPTION, noArguments, parseOrUsage, resolveCommandInput, UsageError } from './input.js';
@@ -66,11 +67,10 @@ const VERSION_ARGS = ['--version', 'version'];
 const END_OF_OPTIONS = '--';
 const JSON_OPTION = { json: { type: 'boolean', default: false } } as const;
 
-export interface RunIo extends InputIo {
-    env: NodeJS.ProcessEnv;
+/** `env`, `fetch`, `openBrowser` and the rest of the sign-in's slice come from `AuthIo`. */
+export interface RunIo extends InputIo, AuthIo {
     /** The settings file under the environment: the default path, or what `--config` named. */
     settings: SettingsFile;
-    fetch?: typeof globalThis.fetch | undefined;
     /** The clock the wait's budget is measured on — injected so tests spend no real time. */
     now?: (() => number) | undefined;
     /** The pause between read retries — injected with `now` so tests spend no real time backing off. */
@@ -106,7 +106,7 @@ function boardFor(io: RunIo, deadlineAt?: number): BoardClient {
     return createBoardClient({
         url: config.url,
         token: config.token,
-        fetch: io.fetch,
+        fetch: credentialFetch(config, io),
         signal: io.signal,
         requestTimeoutMs: config.requestTimeoutMs,
         readRetries: config.readRetries,
@@ -499,6 +499,7 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'skill list': runSkillList,
     'connection list': runConnectionList,
     'auth status': runAuthStatus,
+    ...authCommands,
     ...batchCommands(boardFor),
     ...operatorCommands(boardFor),
     help: async () => ok({ usage: USAGE }, USAGE),

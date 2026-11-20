@@ -36,7 +36,8 @@ export type McpCaller = Omit<Caller, 'scopes'> & {
     familyId: string;
 };
 
-export type OAuthClientKind = 'cimd' | 'dcr';
+/** `builtin` is a client the board ships (161 seeds `bellows-cli`): it never registers and is never purged. */
+export type OAuthClientKind = 'cimd' | 'dcr' | 'builtin';
 
 export interface OAuthClient {
     clientId: string;
@@ -446,7 +447,8 @@ const clientOps = (ctx: Ctx): ClientOps => ({
         const cutoff = plus(ctx.now(), -UNUSED_CLIENT_DAYS * DAY);
         const rows = await ctx.sql`
             delete from oauth_client c
-            where coalesce(c.last_used_at, c.fetched_at, c.created_at) < ${cutoff}
+            where c.kind <> 'builtin'
+              and coalesce(c.last_used_at, c.fetched_at, c.created_at) < ${cutoff}
               and not exists (select 1 from oauth_grant_family f where f.client_id = c.client_id)
               and not exists (select 1 from oauth_authorization_code a where a.client_id = c.client_id)
               and not exists (select 1 from oauth_consent_transaction t where t.client_id = c.client_id)
@@ -689,7 +691,7 @@ const grantOps = (ctx: Ctx): GrantOps => ({
         const rows = await ctx.sql<AccessRow[]>`
             select u.id, u.github_user_id, u.github_login, u.display_name,
                    u.avatar_url, u.created_at, u.last_login_at,
-                   m.invited_at, m.claimed_at, m.role,
+                   m.invited_at, m.claimed_at, m.role, m.checked_at,
                    m.setup_completed_at, m.setup_done, m.setup_skipped,
                    o.id as org_id, o.name as org_name,
                    t.scopes, f.client_id, f.resource, f.id as family_id

@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import type { OAuthStore } from '../src/auth/oauth-store.js';
 import { ROUTE_CLASSES } from '../src/auth/route-class.js';
-import { githubAuth, harness, memoryAuthStore, memoryEnvVarStore, signedIn } from './helpers.js';
+import { hashToken } from '../src/auth/session.js';
+import {
+    buildWithAuth,
+    githubAuth,
+    harness,
+    memoryAuthStore,
+    memoryEnvVarStore,
+    signedIn,
+    testConfig,
+} from './helpers.js';
 import { HTTP_FORBIDDEN, HTTP_OK, trackApps } from './helpers-http.js';
 
 /**
@@ -108,5 +118,46 @@ describe('the route→role table', () => {
             300
         );
         expect((await send(instance, 'PUT /api/env/workspace', member.token, { vars: [] })).statusCode).toBe(HTTP_OK);
+    });
+});
+
+describe('the route→role table for an API-audience OAuth token', () => {
+    /** MCP on, and a store that resolves one CLI `mat_` (API audience, `factory:full`) to a plain member. */
+    async function bootMemberMat() {
+        const auth = memoryAuthStore();
+        const member = auth.seedMember(ORG, 'octocat');
+        const token = 'mat_member-api-token';
+        const oauth: Pick<OAuthStore, 'findAccessToken'> = {
+            findAccessToken: async (hash) =>
+                hash.equals(hashToken(token))
+                    ? {
+                          ...member,
+                          scopes: ['factory:full'],
+                          clientId: 'bellows-cli',
+                          resource: 'https://board.example.test/api',
+                          familyId: 'family-1',
+                      }
+                    : null,
+        };
+        const config = testConfig({
+            auth: githubAuth(),
+            mcp: { enabled: true, resource: 'https://board.example.test/api/mcp', trustedOrigins: [] },
+        });
+        const instance = track(
+            await buildWithAuth(
+                githubAuth(),
+                auth,
+                { envVars: memoryEnvVarStore() },
+                { config, oauth: oauth as OAuthStore }
+            )
+        );
+        return { instance, headers: { authorization: `Bearer ${token}` } };
+    }
+
+    it.each(ADMIN_ROUTES)('$method $pattern refuses a member’s API mat_ with 403', async (r) => {
+        const { instance, headers } = await bootMemberMat();
+        const response = await send(instance, `${r.method} ${r.url}`, headers);
+        expect(response.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(response.json()).toMatchObject({ error: REFUSAL, code: 'FORBIDDEN' });
     });
 });

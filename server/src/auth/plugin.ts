@@ -12,7 +12,8 @@ import { withCaller } from '../mcp/server.js';
 import { originPermitted } from '../mcp/origin.js';
 import { challengeFor, resourceMetadataUrl } from './oauth-challenge.js';
 import type { OAuthStore } from './oauth-store.js';
-import { OPERATOR_ROLE, SCOPE_OF_CLASS, bridgeOpen, classOf, grantedScopes, roleOf } from './route-class.js';
+import { FULL_SCOPE, OPERATOR_ROLE, SCOPE_OF_CLASS, apiResourceOf, bridgeOpen, classOf } from './route-class.js';
+import { grantedScopes, roleOf } from './route-class.js';
 import { SESSION_COOKIE, hashToken, unsign } from './session.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from './store.js';
 import { enforceWorker, secretsMatch } from './worker-auth.js';
@@ -268,8 +269,18 @@ export interface AuthPluginDeps {
     orgOfReclaim?: ((reclaimId: string) => Promise<string | null>) | undefined;
     /** The per-driver credentials (`drv_`) the worker routes accept. Absent: none resolves. */
     driverCredentials?: Pick<DriverCredentialStore, 'resolve'> | undefined;
-    /** Resolves a `mat_` for the MCP endpoint; only consulted in github mode, and required there when MCP is enabled. */
+    /**
+     * Resolves a `mat_`: for the MCP endpoint, and an API-audience one on every route a `fat_` reaches. Only consulted
+     * in github mode, and required there when MCP is enabled.
+     */
     oauth?: Pick<OAuthStore, 'findAccessToken'> | undefined;
+}
+
+/** What `resolveBearer` reads: the auth store, and the OAuth store with the API audience an API `mat_` must carry. */
+export interface BearerDeps {
+    store: AuthStore;
+    oauth: Pick<OAuthStore, 'findAccessToken'> | undefined;
+    apiResource: string | null;
 }
 
 /**
@@ -301,21 +312,36 @@ export function createUserResolver({ config, store }: AuthPluginDeps) {
     };
 }
 
+/** An API-audience `mat_` holding `factory:full` is its member, unscoped; anything else is the 401 already sent. */
+async function resolveApiToken(request: FastifyRequest, reply: FastifyReply, token: string, deps: BearerDeps) {
+    const found = deps.oauth && deps.apiResource ? await deps.oauth.findAccessToken(hashToken(token)) : null;
+    if (!found || found.resource !== deps.apiResource || !found.scopes.includes(FULL_SCOPE)) {
+        await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid access token', code: ERROR_CODES.UNAUTHENTICATED });
+        return true;
+    }
+    request.auth = { kind: 'user', caller: { ...found, scopes: 'all', grantFamilyId: found.familyId } };
+    return true;
+}
+
 /**
  * The access token in the Authorization header — the credential for callers that cannot hold a
  * cookie, and the laptop plugin's credential on the branch route. Shared by the person routes'
- * fall-through and the branch arm, because both mean the same two things: a personal token acts as
- * its member, and an `oat_` is a read-only allowlist credential that a write route refuses with
- * 403 (it did authenticate — the route just needs a human or a lease behind it).
+ * fall-through and the branch arm, because both mean the same things: a personal token acts as
+ * its member, an API-audience `mat_` holding `factory:full` (the CLI's OAuth sign-in) acts as its
+ * member exactly as a personal token does, and an `oat_` is a read-only allowlist credential that a
+ * write route refuses with 403 (it did authenticate — the route just needs a human or a lease behind it).
+ * Any other `mat_` (an MCP grant, or MCP off) is a 401; a lookup that throws reaches `guard` as a 503.
  *
  * Answers true when the request is settled — `request.auth` set, or a refusal already sent — and
  * false when there was no bearer to look at, so the caller can fall through. A PRESENT bearer that
  * resolves is the credential for the request: a failed or foreign one is a 401, never a fall-through
  * to whatever stands behind it.
  */
-export async function resolveBearer(request: FastifyRequest, reply: FastifyReply, store: AuthStore): Promise<boolean> {
+export async function resolveBearer(request: FastifyRequest, reply: FastifyReply, deps: BearerDeps): Promise<boolean> {
+    const { store } = deps;
     const accessToken = bearer(request);
     if (!accessToken) return false;
+    if (accessToken.startsWith(MCP_ACCESS_PREFIX)) return resolveApiToken(request, reply, accessToken, deps);
     if (!isAccessToken(accessToken)) {
         await reply.code(HTTP_UNAUTHORIZED).send({ error: 'Invalid access token', code: ERROR_CODES.UNAUTHENTICATED });
         return true;
@@ -352,7 +378,7 @@ export async function resolveBearer(request: FastifyRequest, reply: FastifyReply
 
 interface IngestAuthDeps {
     auth: AuthConfig;
-    store: AuthStore;
+    bearerDeps: BearerDeps;
     ingestOrgOf: (jobId: string, ingestToken: string) => Promise<string | null>;
 }
 
@@ -366,7 +392,7 @@ interface IngestAuthDeps {
  * rule. A lookup that throws is not a refusal: the hook answers 503, which the collector retries.
  */
 async function enforceIngest(deps: IngestAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const { auth, store, ingestOrgOf } = deps;
+    const { auth, bearerDeps, ingestOrgOf } = deps;
     if (auth.mode === 'none') return;
 
     const jobId = request.headers[JOB_ID_HEADER];
@@ -385,7 +411,7 @@ async function enforceIngest(deps: IngestAuthDeps, request: FastifyRequest, repl
         return;
     }
 
-    if (await resolveBearer(request, reply, store)) return;
+    if (await resolveBearer(request, reply, bearerDeps)) return;
     await reply
         .code(HTTP_UNAUTHORIZED)
         .send({ error: 'Telemetry ingest needs a credential', code: ERROR_CODES.UNAUTHENTICATED });
@@ -393,12 +419,12 @@ async function enforceIngest(deps: IngestAuthDeps, request: FastifyRequest, repl
 
 interface BranchAuthDeps {
     auth: AuthConfig;
-    store: AuthStore;
+    bearerDeps: BearerDeps;
     leaseOrgOf: (jobId: string, leaseToken: string) => Promise<string | null>;
 }
 
 async function enforceBranch(deps: BranchAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const { auth, store, leaseOrgOf } = deps;
+    const { auth, bearerDeps, leaseOrgOf } = deps;
     // Open in `none` mode, exactly the worker routes' stance: the stand-in local org is the only
     // one there is, and request.auth stays null for it.
     if (auth.mode === 'none') return;
@@ -426,7 +452,7 @@ async function enforceBranch(deps: BranchAuthDeps, request: FastifyRequest, repl
 
     // The laptop plugin's credential: the user's personal access token, through the same
     // resolution the person routes use. No pair and no bearer → 401.
-    if (await resolveBearer(request, reply, store)) return;
+    if (await resolveBearer(request, reply, bearerDeps)) return;
     await reply
         .code(HTTP_UNAUTHORIZED)
         .send({ error: 'Branch ingest needs a credential', code: ERROR_CODES.UNAUTHENTICATED });
@@ -625,12 +651,12 @@ async function roleAllows(
 interface UserAuthDeps {
     auth: AuthConfig;
     operators: readonly number[];
-    store: AuthStore;
+    bearerDeps: BearerDeps;
     resolveUser: (request: FastifyRequest) => Promise<Caller | null>;
 }
 
 async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const { auth, store, resolveUser, operators } = deps;
+    const { auth, bearerDeps, resolveUser, operators } = deps;
     // A request the MCP bridge injected carries its caller on the request class (bridge-binding.ts); a network
     // request cannot. It is THE credential: no cookie or bearer beside it is consulted.
     const bound = boundCallerOf(request.raw);
@@ -645,9 +671,9 @@ async function enforceUser(deps: UserAuthDeps, request: FastifyRequest, reply: F
     // behind a failed or foreign bearer must not be consulted — that would let a rewritten header
     // ride somebody's session in.
     if (auth.mode !== 'none') {
-        if (await resolveBearer(request, reply, store)) {
-            // A personal token acts as its member, so it passes the same role check; an `oat_` reaches only its
-            // read allowlist, and a refused bearer has already been answered.
+        if (await resolveBearer(request, reply, bearerDeps)) {
+            // A personal token and an API-audience `mat_` act as their member, so they pass the same role check; an
+            // `oat_` reaches only its read allowlist, and a refused bearer has already been answered.
             const tokenCaller = callerOf(request);
             if (tokenCaller && !reply.sent) await roleAllows(tokenCaller, operators, request, reply);
             return;
@@ -683,6 +709,7 @@ export async function registerAuth(
     await app.register(fastifyCookie);
 
     const resolveUser = createUserResolver({ config, store });
+    const bearerDeps: BearerDeps = { store, oauth, apiResource: apiResourceOf(config) };
     const leaseOrgOf = orgOfLease ?? (async () => null);
     const ingestOrgOf = orgOfIngest ?? (async () => null);
     const jobOrgOf = orgOfJob ?? (async () => null);
@@ -695,11 +722,11 @@ export async function registerAuth(
 
     type Enforcer = (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     const enforcers: Record<Exclude<Requirement, 'open'>, Enforcer> = {
-        ingest: (request, reply) => enforceIngest({ auth, store, ingestOrgOf }, request, reply),
+        ingest: (request, reply) => enforceIngest({ auth, bearerDeps, ingestOrgOf }, request, reply),
         connector: enforceConnector,
         commerce: (request, reply) => enforceCommerce(config.commerce, request, reply),
         mcp: (request, reply) => enforceMcp({ config, oauth, resolveUser }, request, reply),
-        branch: (request, reply) => enforceBranch({ auth, store, leaseOrgOf }, request, reply),
+        branch: (request, reply) => enforceBranch({ auth, bearerDeps, leaseOrgOf }, request, reply),
         worker: (request, reply) =>
             enforceWorker(
                 { auth, jobOrgOf, reclaimOrgOf, driverCredentialOf },
@@ -708,7 +735,7 @@ export async function registerAuth(
                 reply
             ),
         user: (request, reply) =>
-            enforceUser({ auth, store, resolveUser, operators: config.operatorGithubIds }, request, reply),
+            enforceUser({ auth, bearerDeps, resolveUser, operators: config.operatorGithubIds }, request, reply),
     };
     const enforce = (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
         const requirement = requirementOf(request);

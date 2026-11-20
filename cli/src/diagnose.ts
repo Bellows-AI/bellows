@@ -54,7 +54,7 @@ export async function preflightCommand(args: readonly string[], boardFor: () => 
 
 const HTTP_UNAUTHORIZED = 401;
 const NOT_SIGNED_IN =
-    "not signed in — set FACTORY_TOKEN to a personal access token minted from the board's settings page";
+    "not signed in — run bellows auth login, or set FACTORY_TOKEN to a personal access token from the board's settings page";
 
 /**
  * Where the CLI points and who it acts as, without a credential in the output: the configuration
@@ -95,7 +95,9 @@ export async function authStatusCommand(
         const failure =
             error instanceof BoardError && error.status === HTTP_UNAUTHORIZED
                 ? new BoardError(
-                      `${error.message} (the token was refused — mint a new personal token from the settings page)`,
+                      config.token.kind === 'oauth'
+                          ? `${error.message} (the sign-in was refused — run bellows auth login again)`
+                          : `${error.message} (the token was refused — mint a new personal token from the settings page)`,
                       error.status,
                       error.code
                   )

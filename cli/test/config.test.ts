@@ -180,6 +180,51 @@ describe('loadCliConfig: settings file', () => {
     });
 });
 
+describe('loadCliConfig: the oauth sign-in', () => {
+    const oauth = {
+        url: 'http://board',
+        clientId: 'bellows-cli',
+        accessToken: 'mat_secret',
+        refreshToken: 'mrt_secret',
+        expiresAt: '2026-11-20T11:00:00.000Z',
+        scope: 'factory:full',
+    };
+
+    it('accepts an oauth entry and carries it as the credential for its own board', () => {
+        const path = settingsFile({ url: 'http://board', oauth });
+        const config = loadCliConfig({}, { path, explicit: false });
+        expect(config.oauth).toEqual(oauth);
+        expect(config.credential).toBe('oauth');
+        expect(config.token).toBe('');
+        expect(config.sources.token).toBe(path);
+
+        const elsewhere = loadCliConfig({ FACTORY_URL: 'http://other' }, { path, explicit: false });
+        expect(elsewhere.credential).toBeNull();
+        expect(elsewhere.sources.token).toBe('default');
+    });
+
+    it.each([
+        ['a non-object', 'mat_x'],
+        ['a missing refresh token', { ...oauth, refreshToken: undefined }],
+        ['an expiry that is not a date', { ...oauth, expiresAt: 'soon' }],
+        ['a url that is not http(s)', { ...oauth, url: 'board:8080' }],
+    ])('refuses %s as a named configuration error that never echoes a token', (_label, value) => {
+        const path = settingsFile({ url: 'http://board', oauth: value });
+        const refusal = refusalOf(() => loadCliConfig({}, { path, explicit: false }));
+        expect(refusal).toBeInstanceOf(CliConfigError);
+        expect(refusal!.message).toContain(`${path}: oauth`);
+        expect(refusal!.message).not.toContain('secret');
+    });
+
+    it.skipIf(process.platform === 'win32')('refuses an oauth entry in a file readable beyond its owner', () => {
+        const path = settingsFile({ url: 'http://board', oauth }, 0o640);
+        const refusal = refusalOf(() => loadCliConfig({}, { path, explicit: false }));
+        expect(refusal).toBeInstanceOf(CliConfigError);
+        expect(refusal!.message).toContain(`chmod 600 ${path}`);
+        expect(refusal!.message).not.toContain('secret');
+    });
+});
+
 describe('--config', () => {
     const version = () => json({ version: '9.9.9' });
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { hashToken } from '../src/auth/session.js';
 import { testOrg } from './fixtures.js';
@@ -9,10 +9,12 @@ import {
     DENY,
     FORM,
     STATE,
+    cliLogin,
     codeForm,
     decide,
     memberOf,
     otherMember,
+    seedBuiltinClient,
     startBoard,
     startConsent,
     tokenRequest,
@@ -34,6 +36,9 @@ const CONSENT_TTL_SECONDS = 600;
 let sql: Sql;
 beforeAll(() => {
     if (enabled) sql = db.sql;
+});
+beforeEach(async () => {
+    if (enabled) await seedBuiltinClient(sql);
 });
 const boards: Board[] = [];
 afterEach(async () => {
@@ -163,6 +168,23 @@ describe.skipIf(!enabled)('the consent transaction API', () => {
             });
             expect(response.statusCode, authorization).toBe(HTTP_UNAUTHORIZED);
         }
+    });
+
+    it('an API mat_ cannot approve or deny: consent is the cookie session only', async () => {
+        const board = await start();
+        const { access_token: token } = await cliLogin(board);
+        const tx = await startConsent(board);
+        for (const path of [APPROVE, DENY]) {
+            const response = await board.app.inject({
+                method: 'POST',
+                url: path,
+                payload: tx,
+                headers: { authorization: `Bearer ${token}` },
+            });
+            expect(response.statusCode, path).toBe(HTTP_UNAUTHORIZED);
+        }
+        // Unspent: the session still approves it.
+        expect((await decide(board, APPROVE, tx)).statusCode).toBe(HTTP_OK);
     });
 
     it('answers a form post 415: only JSON, so a cross-site form cannot reach it', async () => {

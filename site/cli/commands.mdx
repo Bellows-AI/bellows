@@ -177,7 +177,9 @@ Bellows Cloud only, for the board operator. Each driver gets its own credential,
 
 | Command | What it does |
 | --- | --- |
-| `bellows auth status` | Show the configuration, where each value came from, the server's version, and who the token acts as. Read-only. |
+| `bellows auth status` | Show the configuration, where each value came from, the server's version, and who the token acts as. Read-only. A browser sign-in shows as `oauth` with its expiry. |
+| `bellows auth login` | Sign in through your browser and save the sign-in in the settings file. The server must have MCP enabled. See [Install and sign in](/cli/install). |
+| `bellows auth logout` | End the browser sign-in on the server, then remove it from the settings file. If the server cannot confirm, the sign-in is kept: end it under **Connected apps** on your account page. |
 | `bellows help`, `--help`, `-h` | Print the full usage text. |
 | `bellows --version` | Print the CLI version. |
 | `--config <path>` | On any command: read that settings file. |

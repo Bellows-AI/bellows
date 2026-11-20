@@ -16,6 +16,22 @@ const grant = (id: string, overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('the connected apps panel', () => {
+    it('shows the built-in CLI by name with full access, and never as an unverified name', async () => {
+        stubFetch(() => ({
+            grants: [
+                grant('g1', {
+                    client: { id: 'bellows-cli', name: 'Bellows CLI', kind: 'builtin' },
+                    scopes: ['factory:full'],
+                }),
+            ],
+        }));
+        render(<ConnectedAppsSection />);
+        const table = await screen.findByRole('table', { name: 'Connected apps' });
+        expect(within(table).getByText('Bellows CLI')).toBeTruthy();
+        expect(within(table).queryByText(/unverified name/)).toBeNull();
+        expect(within(table).getByText(/^Full access/)).toBeTruthy();
+    });
+
     it('lists each app with its identity, access and times', async () => {
         stubFetch(() => ({
             grants: [

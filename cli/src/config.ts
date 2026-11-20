@@ -10,9 +10,14 @@
  * Unlike the driver, there is no default board URL: a CLI types at a specific deployment, and
  * guessing `127.0.0.1:8080` would queue real tasks against whichever board happens to be running
  * there. A url in neither place is a named refusal, not a fallback.
+ *
+ * The file may also hold `oauth`, the sign-in `bellows auth login` saved (docs/auth.md). It has no
+ * variable and is the weakest credential: `FACTORY_TOKEN`, then the file's `token`, then `oauth`,
+ * and `oauth` only against the board that issued it.
  */
 
 import { readFileSync, statSync } from 'node:fs';
+import type { OAuthCredential } from './credentials.js';
 import { DEFAULT_READ_RETRIES, DEFAULT_REQUEST_TIMEOUT_MS } from './transport.js';
 
 /** A configuration problem — a value is missing, blank or unusable, or the settings file is. */
@@ -26,8 +31,12 @@ export class CliConfigError extends Error {
 export interface CliConfig {
     /** The board's base URL, trailing slashes stripped — request paths are appended to it. */
     url: string;
-    /** A personal access token (`fat_…`), or '' against an open board. */
+    /** A personal access token (`fat_…`), or '' against an open board or when the sign-in is used. */
     token: string;
+    /** The stored sign-in, validated, whichever board it names; requests carry it only when `credential` is `oauth`. */
+    oauth: OAuthCredential | null;
+    /** What requests carry: the token, the stored sign-in, or nothing. */
+    credential: 'token' | 'oauth' | null;
     /** One request attempt's deadline, headers and body included (`FACTORY_REQUEST_TIMEOUT_S`). */
     requestTimeoutMs: number;
     /** Re-issues of a failed read after the first attempt (`FACTORY_READ_RETRIES`); 0 turns them off. */
@@ -58,7 +67,11 @@ const SETTINGS_TYPES: Record<SettingsKey, 'string' | 'number'> = {
     requestTimeoutS: 'number',
     readRetries: 'number',
 };
-type Settings = Partial<Record<SettingsKey, unknown>>;
+type Settings = Partial<Record<SettingsKey | typeof OAUTH_KEY, unknown>>;
+
+/** The file-only key `bellows auth login` writes. */
+export const OAUTH_KEY = 'oauth';
+const OAUTH_FIELDS = ['url', 'clientId', 'accessToken', 'refreshToken', 'expiresAt', 'scope'] as const;
 
 /** One value as found: its text, the name an error calls it by, and where it came from. */
 interface Found {
@@ -169,11 +182,10 @@ function readSettings(file: SettingsFile): Settings {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
         throw new CliConfigError(`${file.path} must hold a JSON object`);
     }
-    const unknown = Object.keys(parsed).find((key) => !Object.hasOwn(ENV_NAMES, key));
+    const known = [...Object.keys(ENV_NAMES), OAUTH_KEY];
+    const unknown = Object.keys(parsed).find((key) => !known.includes(key));
     if (unknown !== undefined) {
-        throw new CliConfigError(
-            `${file.path}: unknown key "${unknown}" (known: ${Object.keys(ENV_NAMES).join(', ')})`
-        );
+        throw new CliConfigError(`${file.path}: unknown key "${unknown}" (known: ${known.join(', ')})`);
     }
     const settings = parsed as Settings;
     for (const [key, type] of Object.entries(SETTINGS_TYPES)) {
@@ -181,16 +193,45 @@ function readSettings(file: SettingsFile): Settings {
         if (value !== undefined && typeof value !== type)
             throw new CliConfigError(`${file.path}: ${key} must be a ${type}`);
     }
-    // Refused even when FACTORY_TOKEN overrides it: the file exposes the token either way.
-    // Windows has no POSIX mode bits to read.
+    if (settings.oauth !== undefined) parseOAuth(settings.oauth, `${file.path}: ${OAUTH_KEY}`);
+    refuseShared(file.path, settings, mode);
+    return settings;
+}
+
+// Refused even when FACTORY_TOKEN overrides it: the file exposes the token either way.
+// Windows has no POSIX mode bits to read.
+function refuseShared(path: string, settings: Settings, mode: number): void {
     const token = settings.token;
-    if (typeof token === 'string' && token.trim() && process.platform !== 'win32' && mode & SHARED_MODE_BITS) {
+    const secret = (typeof token === 'string' && token.trim() !== '') || settings.oauth !== undefined;
+    if (secret && process.platform !== 'win32' && mode & SHARED_MODE_BITS) {
         const octal = (mode & PERMISSION_BITS).toString(OCTAL).padStart(MODE_DIGITS, '0');
         throw new CliConfigError(
-            `${file.path} holds a token but is mode 0${octal}, readable beyond its owner — chmod 600 ${file.path}`
+            `${path} holds a token but is mode 0${octal}, readable beyond its owner — chmod 600 ${path}`
         );
     }
-    return settings;
+}
+
+/**
+ * A stored sign-in, or a named refusal that never echoes a value: each field a non-empty string,
+ * `url` an http(s) URL and `expiresAt` a date. A malformed entry is a configuration error, never cleared.
+ */
+export function parseOAuth(value: unknown, label: string): OAuthCredential {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        throw new CliConfigError(`${label} must be an object — run bellows auth login again`);
+    }
+    const entry = value as Record<string, unknown>;
+    for (const field of OAUTH_FIELDS) {
+        const text = entry[field];
+        if (typeof text !== 'string' || text.trim() === '') {
+            throw new CliConfigError(`${label}.${field} must be a non-empty string — run bellows auth login again`);
+        }
+    }
+    const credential = entry as unknown as OAuthCredential;
+    assertHttpUrl(credential.url, `${label}.url`);
+    if (Number.isNaN(Date.parse(credential.expiresAt))) {
+        throw new CliConfigError(`${label}.expiresAt must be a date — run bellows auth login again`);
+    }
+    return credential;
 }
 
 /** A set variable, else the file's key, else nothing. A blank string in the file is unset too. */
@@ -223,10 +264,14 @@ export function loadCliConfig(env: NodeJS.ProcessEnv, file: SettingsFile): CliCo
     const stripped = found.url.raw.replace(/\/+$/, '');
     refuseUserinfo(stripped, found.url.label);
     assertHttpUrl(stripped, found.url.label);
+    const oauth = settings.oauth === undefined ? null : parseOAuth(settings.oauth, `${file.path}: ${OAUTH_KEY}`);
+    const signedIn = !found.token && oauth?.url === stripped;
     return {
         url: stripped,
         // Empty is unset: the auth header is omitted rather than sent empty against an open board.
         token: found.token?.raw ?? '',
+        oauth,
+        credential: found.token ? 'token' : signedIn ? 'oauth' : null,
         requestTimeoutMs:
             intOf(found.requestTimeoutS, {
                 fallback: DEFAULT_REQUEST_TIMEOUT_MS / MS_PER_SECOND,
@@ -240,7 +285,7 @@ export function loadCliConfig(env: NodeJS.ProcessEnv, file: SettingsFile): CliCo
         }),
         sources: {
             url: found.url.source,
-            token: found.token?.source ?? 'default',
+            token: found.token?.source ?? (signedIn ? file.path : 'default'),
             requestTimeoutS: found.requestTimeoutS?.source ?? 'default',
             readRetries: found.readRetries?.source ?? 'default',
         },

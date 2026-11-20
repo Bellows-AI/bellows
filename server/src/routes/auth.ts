@@ -1,6 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { createUserResolver, resolveBearer } from '../auth/plugin.js';
+import { apiResourceOf } from '../auth/route-class.js';
 import { boundCallerOf } from '../auth/bridge-binding.js';
 import type { GitHubIdentity, GitHubIdentityClient } from '../auth/github.js';
 import { createGitHubAppClient, type InstallationRepo } from '../github/app-client.js';
@@ -22,6 +23,7 @@ import {
     statesMatch,
     unsign,
 } from '../auth/session.js';
+import type { OAuthStore } from '../auth/oauth-store.js';
 import type { AuthStore, Caller, InstallationRef } from '../auth/store.js';
 import type { AppConfig } from '../config.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -70,6 +72,8 @@ export interface AuthRouteDeps {
      * that onboarding lists repos for an installation that has no org row yet.
      */
     installationListing?: ((installationId: string) => Promise<InstallationRepo[] | null>) | undefined;
+    /** Resolves an API-audience `mat_` for `/me`, as the auth hook does; absent, no `mat_` resolves. */
+    oauth?: Pick<OAuthStore, 'findAccessToken'> | undefined;
 }
 
 /**
@@ -334,10 +338,11 @@ async function handleSwitchOrg(ctx: SwitchOrgCtx, request: FastifyRequest, reply
 }
 
 export const authRoutes =
-    ({ config, store, orgs, identity, appSlug, installationListing }: AuthRouteDeps): FastifyPluginAsync =>
+    ({ config, store, orgs, identity, appSlug, installationListing, oauth }: AuthRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const { auth } = config;
         const resolveUser = createUserResolver({ config, store });
+        const bearerDeps = { store, oauth, apiResource: apiResourceOf(config) };
         // The member's setup progress, which `/me.setup` reports back (both auth modes, like `/me`).
         await app.register(onboardingSetupRoutes({ store }));
 
@@ -359,7 +364,7 @@ export const authRoutes =
             // The MCP bridge's injected request carries its caller on the request class, never on a header.
             const bound = boundCallerOf(request.raw);
             if (bound) return bound;
-            if (auth.mode !== 'none' && (await resolveBearer(request, reply, store))) {
+            if (auth.mode !== 'none' && (await resolveBearer(request, reply, bearerDeps))) {
                 return request.auth?.kind === 'user' ? request.auth.caller : null;
             }
             return resolveUser(request);

@@ -9,6 +9,7 @@ import {
     noStore,
     oauthError,
     readParams,
+    resourceFor,
     scopesOf,
     type OAuthRouteDeps,
 } from './oauth-http.js';
@@ -31,13 +32,16 @@ const parseForm = (text: string): Record<string, string | string[]> => {
 
 type Refusal = readonly [status: number, error: string, description?: string];
 type TokenResult = Awaited<ReturnType<OAuthStore['consumeCode']>>;
-type Parsed = { refusal: Refusal } | { clientId: string; run: (oauth: OAuthStore) => Promise<TokenResult> };
+/** `resource` is the found client's default (`resourceFor`), used when the request names none. */
+type Parsed =
+    | { refusal: Refusal }
+    | { clientId: string; run: (oauth: OAuthStore, resource: string) => Promise<TokenResult> };
 
 const invalidRequest = (description: string): { refusal: Refusal } => ({
     refusal: [HTTP_BAD_REQUEST, 'invalid_request', description],
 });
 
-const parseCode = (params: Map<string, string>, clientId: string, resource: string): Parsed => {
+const parseCode = (params: Map<string, string>, clientId: string): Parsed => {
     const code = params.get('code');
     const redirectUri = params.get('redirect_uri');
     const codeVerifier = params.get('code_verifier');
@@ -47,7 +51,7 @@ const parseCode = (params: Map<string, string>, clientId: string, resource: stri
     if (!VERIFIER.test(codeVerifier)) return invalidRequest('code_verifier is malformed.');
     return {
         clientId,
-        run: (oauth) =>
+        run: (oauth, resource) =>
             oauth.consumeCode({
                 code,
                 clientId,
@@ -75,12 +79,12 @@ const parseRefresh = (params: Map<string, string>, clientId: string): Parsed => 
     };
 };
 
-const parseTokenRequest = (params: Map<string, string>, resource: string): Parsed => {
+const parseTokenRequest = (params: Map<string, string>): Parsed => {
     const grantType = params.get('grant_type');
     const clientId = params.get('client_id');
     if (!grantType) return invalidRequest('grant_type is required.');
     if (!clientId) return invalidRequest('client_id is required.');
-    if (grantType === 'authorization_code') return parseCode(params, clientId, resource);
+    if (grantType === 'authorization_code') return parseCode(params, clientId);
     if (grantType === 'refresh_token') return parseRefresh(params, clientId);
     return { refusal: [HTTP_BAD_REQUEST, 'unsupported_grant_type'] };
 };
@@ -105,7 +109,7 @@ export const oauthTokenRoutes =
     (deps: OAuthRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const { config, oauth } = deps;
-        const { resource } = identityOf(config);
+        const identity = identityOf(config);
 
         app.addContentTypeParser(
             FORM_CONTENT_TYPE,
@@ -125,13 +129,14 @@ export const oauthTokenRoutes =
             const params = readParams(request.body);
             if (!params)
                 return oauthError(reply, HTTP_BAD_REQUEST, 'invalid_request', 'Repeated or malformed parameters.');
-            const parsed = parseTokenRequest(params, resource);
+            const parsed = parseTokenRequest(params);
             if ('refusal' in parsed) return oauthError(reply, ...parsed.refusal);
             let result: TokenResult;
             try {
-                if (!(await oauth.findClient(parsed.clientId)))
-                    return oauthError(reply, HTTP_UNAUTHORIZED, 'invalid_client');
-                result = await parsed.run(oauth);
+                // The client is found first: its kind decides which resource a code defaults to.
+                const client = await oauth.findClient(parsed.clientId);
+                if (!client) return oauthError(reply, HTTP_UNAUTHORIZED, 'invalid_client');
+                result = await parsed.run(oauth, resourceFor(client, identity));
             } catch (e) {
                 return unavailable(reply, e as Error);
             }
