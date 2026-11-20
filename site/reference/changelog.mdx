@@ -5,6 +5,14 @@ description: "What changed in each Bellows release, in plain words."
 
 User-facing changes only. Self-hosting upgrade notes live in the release notes on [GitHub](https://github.com/Bellows-AI/bellows/releases).
 
+<Update label="v0.1.5" description="2026-11-20">
+  **New**
+  - **Monitoring for self-hosted installs.** The board and the driver send traces, metrics and logs over OpenTelemetry to a collector in your release, which forwards them to the monitoring backend you choose. Ready-made Grafana dashboards and alert rules ship with Bellows. See [Monitoring](/self-host/monitoring).
+
+  **Changed**
+  - The Prometheus endpoints on the board and the driver are gone, and the old `dashboard.otel` chart value is refused. Move to the `observability` chart values before you upgrade. See [Monitoring](/self-host/monitoring).
+</Update>
+
 <Update label="v0.1.4" description="2026-11-19">
   **Fixed**
   - On Kubernetes, a slow health check no longer restarts a running service such as a throwaway database in the middle of a gate. Before this fix, one slow check on a busy microVM runner could drop the gate's database connections. See [Services](/guides/services).
