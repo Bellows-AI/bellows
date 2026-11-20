@@ -50,10 +50,7 @@ The render refuses to start without them, and names the missing value.
 | --- | --- | --- |
 | `global.imageRegistry` | `''` | Prefixes every image the chart renders, both executor images included, for example `ghcr.io/<owner>`. Empty means bare names, which only work with side-loaded images. |
 | `dashboard.image.tag`, `driver.image.tag` | `''` | Empty uses the chart's `appVersion`, so a chart version names the exact build. |
-| `observability.enabled` | `false` | Runs an ops collector that receives the board's and the driver's own traces, metrics and logs and forwards them to `observability.endpoint`. Runner pods cannot reach it. |
-| `observability.endpoint` | empty | The OTLP/HTTP base URL of your backend. Required when `observability.enabled` is on. |
-| `observability.headersSecret.name`, `observability.headersSecret.key` | empty | An existing Secret whose key holds a JSON map of header names to values sent with every export, for example `{"Authorization":"Basic …"}`. Set both or neither. |
-| `observability.sampling.tailPercent`, `observability.sampling.latencyThresholdMs` | `25`, `2000` | Traces that errored or ran longer than the threshold are always kept; this percentage of the rest is kept too. |
+| `observability.*` | `disabled` | Exports the board's and the driver's own telemetry through an ops collector. See [Monitoring](/self-host/monitoring). |
 | `dashboard.replicas` | `1` | Above 1 needs `artifacts.backend: s3` or `gcs` and at least two schedulable nodes. The pods spread over nodes (never two on one) and zones, and the PodDisruptionBudget keeps one pod through a drain. |
 | `dashboard.topologySpreadConstraints` | `[]` | Empty uses the default spread above one replica; a list replaces it, at any replica count. |
 | `artifacts.backend` | `s3` | `s3`, `gcs` or `filesystem`. `filesystem` keeps objects in the dashboard pod's `/tmp`. One replica only, and lost with the pod. Trials only. |

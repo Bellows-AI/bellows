@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 import { USAGE } from '../../cli/src/usage.js';
 import { ALL_BATCH_TOOLS, TOOLS } from '../src/mcp/registry.js';
 import { parseBellowsWithPolicy } from '../src/workspace/bellows.js';
@@ -9,6 +10,7 @@ import { parseServices } from '../src/workspace/bellows-services.js';
 
 /** The user docs hand-copy facts from the code; this pins each copy (AGENTS.md, `site/`). */
 const site = fileURLToPath(new URL('../../site/', import.meta.url));
+const repo = fileURLToPath(new URL('../../', import.meta.url));
 
 const mdxFiles = (dir = site): string[] =>
     readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
@@ -116,5 +118,65 @@ describe('site/docs.json', () => {
                 .sort(),
             'present but not listed': [...files].filter((p) => !listed.has(p)).sort(),
         }).toEqual({ 'listed but missing': [], 'present but not listed': [] });
+    });
+});
+
+describe('site/self-host/monitoring.mdx', () => {
+    // An absent page reads as '' so the failure lists every missing name instead of throwing ENOENT.
+    const page = existsSync(join(site, 'self-host/monitoring.mdx')) ? read('self-host/monitoring.mdx') : '';
+    const documented = (name: string) => page.includes(`\`${name}\``);
+
+    /** Key paths under a plain object; stops at `stop`, which is named once. */
+    const keyPaths = (node: Record<string, unknown>, prefix: string, stop: string): string[] =>
+        Object.entries(node).flatMap(([key, value]) => {
+            const path = `${prefix}.${key}`;
+            return value && typeof value === 'object' && !Array.isArray(value) && key !== stop
+                ? keyPaths(value as Record<string, unknown>, path, stop)
+                : [path];
+        });
+
+    it('names every observability chart value', () => {
+        const values = parseYaml(readFileSync(join(repo, 'charts/factory/values.yaml'), 'utf8')) as Record<
+            string,
+            unknown
+        >;
+        const block = values.observability;
+        expect(
+            block && typeof block === 'object' && !Array.isArray(block),
+            'values.yaml has no observability map'
+        ).toBe(true);
+        const keys = keyPaths(block as Record<string, unknown>, 'observability', 'resources');
+        expect(keys.length).toBeGreaterThanOrEqual(8);
+        expect(keys.filter((key) => !documented(key))).toEqual([]);
+    });
+
+    it('names every dashboard and alert rule file', () => {
+        const dashboards = readdirSync(join(repo, 'observability/dashboards')).filter((f) => f.endsWith('.json'));
+        const rules = readdirSync(join(repo, 'observability/alerts')).filter((f) => f.endsWith('.yaml'));
+        expect(dashboards.length).toBeGreaterThanOrEqual(5);
+        expect(rules.length).toBeGreaterThanOrEqual(3);
+        const paths = [
+            ...dashboards.map((f) => `observability/dashboards/${f}`),
+            ...rules.map((f) => `observability/alerts/${f}`),
+        ];
+        expect(paths.filter((path) => !documented(path))).toEqual([]);
+    });
+
+    // The Kubernetes guide installs release `bellows` into namespace `bellows`; a copied command must hit it.
+    it('its helm and kubectl commands target the release and namespace the Kubernetes guide installs', () => {
+        const commands = page.replace(/\\\n/g, ' ').match(/^\s*(helm|kubectl) .*$/gm) ?? [];
+        expect(commands.length).toBeGreaterThan(0);
+        const wrong = commands.filter(
+            (c) =>
+                !/(-n|--namespace) bellows\b/.test(c) ||
+                (c.includes('helm') && !/helm upgrade bellows oci:\/\//.test(c))
+        );
+        expect(wrong).toEqual([]);
+    });
+
+    it('kubernetes.mdx carries no Prometheus scrape instruction', () => {
+        const kubernetes = read('self-host/kubernetes.mdx');
+        expect(kubernetes).not.toMatch(/prometheus\.io\//);
+        expect(kubernetes).not.toMatch(/\/metrics/);
     });
 });
