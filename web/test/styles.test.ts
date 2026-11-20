@@ -235,13 +235,7 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.legend-button',
         '.chart-disclosure summary',
     ],
-    'styles/regions/entry.css': [
-        '.login-button',
-        '.onboarding-actions button',
-        '.token-create input',
-        '.token-create button',
-        '.onboarding-org-summary',
-    ],
+    'styles/regions/entry.css': ['.login-button', '.onboarding-actions button', '.onboarding-org-summary'],
     'styles/regions/batches.css': [
         '.batch-new',
         '.batch-actions button',
