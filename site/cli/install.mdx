@@ -29,7 +29,7 @@ bellows --version
 `bellows auth login` opens your browser on the server's consent page. Approve it, and the CLI saves the sign-in in the settings file (mode 600). It renews itself while you use it, so you sign in once.
 
 ```bash Terminal
-export FACTORY_URL="https://bellows.cloud"
+export FACTORY_URL="https://app.bellows.cloud"
 bellows auth login
 bellows auth status
 ```
@@ -51,7 +51,7 @@ You give the CLI a server URL and a token.
     mkdir -p ~/.bellows
     cat > ~/.bellows/settings.json <<'JSON'
     {
-      "url": "https://bellows.cloud",
+      "url": "https://app.bellows.cloud",
       "token": "fat_..."
     }
     JSON
@@ -74,7 +74,7 @@ The CLI refuses a settings file that holds a token and is readable by anyone but
 
 Set `url` to the base URL of your server. There is no default URL, so a missing one is an error (exit code 2). The URL must be `http` or `https` and must not contain credentials.
 
-- Bellows Cloud: `https://bellows.cloud`.
+- Bellows Cloud: `https://app.bellows.cloud`.
 - Self-hosted: your own server's base URL. A server running with authentication off (`AUTH_MODE=none`) needs no token. Leave `token` out.
 
 ## Settings
@@ -99,7 +99,7 @@ With no settings file, the CLI reads the environment alone.
 Store the token in your scheduler's secret store and pass it as `FACTORY_TOKEN`.
 
 ```bash Terminal
-export FACTORY_URL="https://bellows.cloud"
+export FACTORY_URL="https://app.bellows.cloud"
 export FACTORY_TOKEN="$BELLOWS_TOKEN"   # from your secret store
 bellows auth status
 ```

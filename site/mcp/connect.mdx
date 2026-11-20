@@ -14,7 +14,7 @@ The Bellows MCP server lets an AI assistant work your task board for you. Ask it
 On Bellows Cloud the endpoint is:
 
 ```text
-https://bellows.cloud/api/mcp
+https://app.bellows.cloud/api/mcp
 ```
 
 Self-hosted: your server's URL plus `/api/mcp`.
@@ -49,7 +49,7 @@ The access you grant has two parts:
 <Tabs>
   <Tab title="Claude Code">
     ```bash
-    claude mcp add --transport http bellows https://bellows.cloud/api/mcp
+    claude mcp add --transport http bellows https://app.bellows.cloud/api/mcp
     ```
 
     Start Claude Code, run `/mcp`, choose **bellows**, then **Authenticate**. Approve the request in the browser. Check it with a prompt like "call whoami on the bellows server".
