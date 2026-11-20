@@ -2407,3 +2407,48 @@ describe('the images pin what they download and what they start from', () => {
         expect(block).toMatch(/^ {8}user: ['"]?0['"]?$/m);
     });
 });
+
+describe('the driver runtime image ships its runtime dependencies', () => {
+    const dockerfile = read('docker/driver.Dockerfile');
+    const heads = [...dockerfile.matchAll(/^FROM (\S+) AS (\S+)$/gm)];
+    const stages = heads.map((m, i) => ({
+        from: m[1]!,
+        name: m[2]!,
+        index: i,
+        body: dockerfile.slice(m.index! + m[0].length, heads[i + 1]?.index ?? dockerfile.length),
+    }));
+    const runtime = stages.find((s) => s.name === 'runtime');
+
+    it('brings a production-only node_modules holding every runtime dependency driver/package.json declares', () => {
+        const deps = Object.keys(JSON.parse(read('driver/package.json')).dependencies ?? {});
+        expect(deps.length).toBeGreaterThan(0);
+        expect(runtime).toBeDefined();
+        const source = /^COPY --from=(\S+) \/app\/node_modules (?:\/app\/)?node_modules$/m.exec(runtime!.body)?.[1];
+        expect(source, 'runtime must COPY --from=<stage> /app/node_modules').toBeDefined();
+        const stage = stages.find((s) => s.name === source);
+        expect(stage, `stage ${source}`).toBeDefined();
+        expect(stage!.index).toBeLessThan(runtime!.index);
+        expect(stage!.from).toMatch(/^mirror\.gcr\.io\/library\/node:[\w.-]+@sha256:[0-9a-f]{64}$/);
+        expect(stage!.body).toMatch(/^COPY package-lock\.json|^COPY package\.json package-lock\.json /m);
+        expect(stage!.body).toMatch(/^COPY driver\/package\.json /m);
+        const installs = stage!.body.split('\n').filter((l) => /^RUN npm ci\b/.test(l));
+        expect(installs).toHaveLength(1);
+        expect(installs[0]).toContain('--omit=dev');
+        expect(installs[0]).toMatch(/(?:-w|--workspace)[ =]driver\b/);
+    });
+
+    it('installs nothing in the runtime stage and still removes the package manager', () => {
+        expect(runtime).toBeDefined();
+        const runs = runtime!.body.split('\n').filter((l) => /^RUN /.test(l) || /^\s+\//.test(l));
+        expect(runs.join('\n')).not.toMatch(/npm (ci|install)/);
+        expect(runtime!.body).toMatch(/rm -rf[^\n]*\/usr\/local\/lib\/node_modules\/npm/);
+        expect(runtime!.body).toContain('/usr/local/bin/npm');
+    });
+
+    it('keeps every driver dependency resolvable from /app/driver/dist via the root node_modules', () => {
+        const packages = Object.keys(JSON.parse(read('package-lock.json')).packages as Record<string, unknown>);
+        expect(packages.length).toBeGreaterThan(0);
+        const nested = packages.filter((p) => p.startsWith('driver/node_modules/'));
+        expect(nested, 'the runtime stage must also copy /app/driver/node_modules').toEqual([]);
+    });
+});
