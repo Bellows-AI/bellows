@@ -1,0 +1,106 @@
+---
+title: "Monitoring"
+description: "Export the board's and the driver's own traces, metrics and logs to your OTLP backend, and import the dashboards and alert rules."
+---
+
+Bellows can export its own telemetry to the OpenTelemetry-compatible backend you already run. Nothing is exported until you set an endpoint.
+
+## What is exported
+
+The board (`service.name` `bellows-board`) and the driver (`bellows-driver`) send their traces, metrics and logs over OTLP/HTTP. Neither serves a scrape endpoint, so there is nothing for Prometheus to scrape; point an OTLP-capable backend (Grafana Cloud, a Grafana Mimir/Tempo/Loki stack, an OpenTelemetry collector gateway) at them instead.
+
+This is separate from the runner `collector`, which carries the telemetry of runners to the board for the dashboard's own statistics. Monitoring never touches that path.
+
+## Kubernetes (Helm)
+
+The chart runs an ops collector between your pods and your backend. Set these values:
+
+| Value | Default | Meaning |
+| --- | --- | --- |
+| `observability.enabled` | `false` | Runs the ops collector and points the board and driver at it. |
+| `observability.endpoint` | empty | The OTLP/HTTP base URL of your backend. Required when enabled. |
+| `observability.headersSecret.name` | empty | An existing Secret that holds the backend's headers. Empty sends no headers. |
+| `observability.headersSecret.key` | empty | The key in that Secret. Its value is a JSON map of header name to value. Set both name and key, or neither. |
+| `observability.sampling.tailPercent` | `25` | The share, 0 to 100, of traces kept beyond the errored and slow ones. |
+| `observability.sampling.latencyThresholdMs` | `2000` | A trace that runs longer than this is always kept. |
+| `observability.debugFile` | `false` | For the project's own test lanes only. Leave it off. |
+| `observability.resources` | 50m CPU and 128Mi request, 512Mi limit | Kubernetes resource requests and limits for the ops collector. |
+
+```bash
+kubectl create secret generic otlp-headers \
+  --from-literal=headers='{"Authorization":"Basic …"}'
+
+helm upgrade --install factory <chart> --reuse-values \
+  --set observability.enabled=true \
+  --set observability.endpoint=https://otlp.example.com \
+  --set observability.headersSecret.name=otlp-headers \
+  --set observability.headersSecret.key=headers
+```
+
+On the board and driver pods the chart sets `OTEL_EXPORTER_OTLP_ENDPOINT` to the ops collector, `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, and `OTEL_RESOURCE_ATTRIBUTES` with the pod name, the namespace and `service.instance.id`. The instance id becomes the `instance` label the driver dashboards and alerts group by. Your backend's headers reach only the ops collector pod, never the board or driver.
+
+## The ops collector
+
+The ops collector receives the board's and the driver's telemetry on port 4318. It limits its own memory, batches, tail-samples traces (it keeps those that errored, those slower than the threshold, and the configured percentage of the rest), and forwards everything to your backend. It also exports its own `otelcol_*` metrics, so a failing export is visible in the backend. It never exports to the board.
+
+Its NetworkPolicy admits only the dashboard and driver pods, on 4318. Runner pods cannot reach it. The policy needs a CNI that enforces NetworkPolicy; see [Before you start](/self-host/kubernetes#before-you-start). If the ops collector is down or scaled to zero, tasks still run; only the telemetry is lost.
+
+## Docker Compose
+
+Compose runs the same collector config behind a profile. In `.env`:
+
+| Variable | Meaning |
+| --- | --- |
+| `COMPOSE_PROFILES=observability` | Starts the ops collector and a local `lgtm` backend (Grafana, Tempo, Loki and Mimir in one container). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT=http://ops-collector:4318` | Points the board and driver at the ops collector. |
+| `OPS_BACKEND_ENDPOINT` | The OTLP/HTTP endpoint the ops collector exports to. Defaults to `http://lgtm:4318`. This is the counterpart of `observability.endpoint`. |
+| `OPS_BACKEND_HEADERS` | A JSON map of header name to value. The counterpart of `observability.headersSecret`. |
+
+The local Grafana UI is on `http://127.0.0.1:3000`; that is where you import the dashboards, not an export endpoint. Runners are not on the ops network and cannot reach the ops collector. Compose sets no instance id, so the `instance` label is empty.
+
+## Environment variables
+
+The board and the driver read the standard OpenTelemetry variables. [Configuration](/self-host/configuration) has the full rows.
+
+| Variable | Meaning |
+| --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | The OTLP/HTTP endpoint for all signals. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | Per-signal endpoints. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Headers sent with every export. |
+| `OTEL_SERVICE_NAME` | Defaults to `bellows-board` and `bellows-driver`. |
+| `OTEL_SDK_DISABLED` | Turns export off. |
+| `OTEL_RESOURCE_ATTRIBUTES` | Extra resource attributes. |
+
+The driver never forwards `OTEL_*` variables to runners or to the commands it runs, and `RUNNER_ENV` refuses to name them.
+
+## Dashboards and alert rules
+
+The repository ships Grafana dashboards and Prometheus alert rules under [`observability/`](https://github.com/Bellows-AI/bellows/tree/main/observability). The README there lists them.
+
+| File | Shows |
+| --- | --- |
+| `observability/dashboards/board-red.json` | Board request rate, errors and latency by route. |
+| `observability/dashboards/claims-admission.json` | Task claims and admission. |
+| `observability/dashboards/db.json` | Database operations. |
+| `observability/dashboards/driver.json` | The driver, on docker and kubernetes. |
+| `observability/dashboards/tasks.json` | Task outcomes, infrastructure loss apart from run failure. |
+| `observability/alerts/board.yaml` | Board error ratio, latency, claim lock waits and metric read failures. |
+| `observability/alerts/driver.yaml` | The driver not polling, and reaper sweep failures. |
+| `observability/alerts/collector.yaml` | Ops collector export failures. |
+| `observability/alerts/driver.test.yaml` | `promtool` unit tests for the driver rules. |
+
+A Prometheus-style backend stores each instrument under a translated name: dots become `_`, a unit of seconds adds `_seconds`, a counter adds `_total`, and a histogram adds `_bucket`, `_sum` and `_count`. The dashboards and rules are written against those names.
+
+To import a dashboard, open Grafana, then Dashboards, New, Import, upload the JSON file and choose your Prometheus data source for `DS_PROMETHEUS`. Load the rules through the Mimir ruler, Prometheus `rule_files`, or Grafana's data-source-managed rules. Check the driver rules with:
+
+```bash
+promtool test rules observability/alerts/driver.test.yaml
+```
+
+## What is never exported
+
+- Runner telemetry and runner pod logs. The ops collector receives only the board's and the driver's own signals, and runners cannot reach it.
+- Repository and branch names.
+- Prompts and tokens or other credentials.
+- Query strings and concrete URL paths; routes appear as templates.
+- SQL text and parameters. Database spans and the `db.client.operation.duration` metric carry the statement verb only.
