@@ -51,20 +51,30 @@ export interface Otel {
     shutdown(): Promise<void>;
 }
 
-/** Starts the SDK, or returns null when no OTLP endpoint is configured. */
+/**
+ * Starts the SDK, or returns null when no OTLP endpoint is configured. The undici instrumentation subscribes to the
+ * process-wide request channels when it is constructed, so a failed start disables it: left on, every later `fetch`
+ * in the process throws from a tracer that was never installed.
+ */
 export function startOtel(env: NodeJS.ProcessEnv = process.env): Otel | null {
     if (!otelEnabled(env)) return null;
     diag.setLogger(diagLogger(), DiagLogLevel.WARN);
+    const undici = new UndiciInstrumentation();
     const sdk = new NodeSDK({
         serviceName: env.OTEL_SERVICE_NAME ?? SERVICE_NAME,
-        instrumentations: [new UndiciInstrumentation()],
+        instrumentations: [undici],
         views: INSTRUMENTATION_SCOPES.map((meterName) => ({
             instrumentName: '*',
             meterName,
             aggregation: { type: AggregationType.DROP },
         })),
     });
-    sdk.start();
-    installSpanProcessors();
+    try {
+        sdk.start();
+        installSpanProcessors();
+    } catch (error) {
+        undici.disable();
+        throw error;
+    }
     return { shutdown: () => sdk.shutdown() };
 }
