@@ -82,6 +82,22 @@ describe('the dashboards and alert rules', () => {
         expect(readsWithMax('sum(bellows_admission_running)')).toBe(false);
     });
 
+    it('scopes every standard-name metric to the board service', () => {
+        const BOARD_JOB = 'job="bellows-board"';
+        const unscoped = (expr: string): string[] =>
+            metricNamesIn(expr)
+                .filter((name) => !name.startsWith('bellows_') && !EXTERNAL.test(name))
+                .filter((name) =>
+                    [...expr.matchAll(new RegExp(`\\b${name}\\b\\s*(\\{[^}]*\\})?`, 'g'))].some(
+                        (match) => !(match[1] ?? '').includes(BOARD_JOB)
+                    )
+                );
+        const found = queriesIn().flatMap(({ file, expr }) => unscoped(expr).map((name) => `${file}: ${name}`));
+        expect(found).toEqual([]);
+        expect(unscoped('rate(http_server_request_duration_seconds_count[5m])')).toHaveLength(1);
+        expect(unscoped(`rate(http_server_request_duration_seconds_count{${BOARD_JOB}}[5m])`)).toEqual([]);
+    });
+
     it('never turns a missing sample into zero', () => {
         expect(queriesIn().filter((q) => q.expr.includes('vector('))).toEqual([]);
     });

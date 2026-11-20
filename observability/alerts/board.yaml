@@ -3,8 +3,8 @@ groups:
     rules:
       - alert: BellowsBoard5xxRatio
         expr: >-
-          sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
-          / sum(rate(http_server_request_duration_seconds_count[5m])) > 0.05
+          sum(rate(http_server_request_duration_seconds_count{job="bellows-board", http_response_status_code=~"5.."}[5m]))
+          / sum(rate(http_server_request_duration_seconds_count{job="bellows-board"}[5m])) > 0.05
         for: 10m
         labels:
           severity: warning
@@ -14,7 +14,7 @@ groups:
       - alert: BellowsBoardLatencyP95
         # The two excluded patterns carry the settle long-poll, which holds a request for its timeout.
         expr: >-
-          histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{http_route!~"/api/jobs/:id|/api/batches/:id"}[5m]))) > 2
+          histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job="bellows-board", http_route!~"/api/jobs/:id|/api/batches/:id"}[5m]))) > 2
         for: 10m
         labels:
           severity: warning

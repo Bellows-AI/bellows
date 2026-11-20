@@ -54,7 +54,7 @@
           "uid": "${DS_PROMETHEUS}"
         },
         "query": {
-          "query": "label_values(http_server_request_duration_seconds_count, instance)",
+          "query": "label_values(http_server_request_duration_seconds_count{job=\"bellows-board\"}, instance)",
           "refId": "instance"
         },
         "refresh": 2,
@@ -106,7 +106,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (http_request_method, http_route) (rate(http_server_request_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (http_request_method, http_route) (rate(http_server_request_duration_seconds_count{job=\"bellows-board\", instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{http_request_method}} {{http_route}}"
         }
       ]
@@ -147,7 +147,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (http_route) (rate(http_server_request_duration_seconds_count{http_response_status_code=~\"5..\", instance=~\"$instance\"}[$__rate_interval])) / sum by (http_route) (rate(http_server_request_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (http_route) (rate(http_server_request_duration_seconds_count{job=\"bellows-board\", http_response_status_code=~\"5..\", instance=~\"$instance\"}[$__rate_interval])) / sum by (http_route) (rate(http_server_request_duration_seconds_count{job=\"bellows-board\", instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{http_route}}"
         }
       ]
@@ -188,7 +188,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.5, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{job=\"bellows-board\", instance=~\"$instance\"}[$__rate_interval])))",
           "legendFormat": "{{http_route}}"
         }
       ]
@@ -229,7 +229,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_seconds_bucket{job=\"bellows-board\", instance=~\"$instance\"}[$__rate_interval])))",
           "legendFormat": "{{http_route}}"
         }
       ]
@@ -270,7 +270,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum by (http_response_status_code) (rate(http_server_request_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval]))",
+          "expr": "sum by (http_response_status_code) (rate(http_server_request_duration_seconds_count{job=\"bellows-board\", instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{http_response_status_code}}"
         }
       ]
