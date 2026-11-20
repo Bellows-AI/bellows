@@ -1,5 +1,6 @@
 import type { Meter } from '@opentelemetry/api';
 import { createServerMetrics, type ServerMetrics } from '../src/metrics.js';
+import { dbOperationDuration } from '../src/pg-trace.js';
 import {
     MeterProvider,
     MetricReader,
@@ -65,4 +66,37 @@ export function boardMetrics(): { metrics: ServerMetrics; harness: MetricsHarnes
         meter: harness.meter,
     });
     return { metrics, harness };
+}
+
+/**
+ * Records one point on every board instrument, so a test reads the whole set an SDK would export. `db` adds
+ * `db.client.operation.duration`, which `pg-trace` owns and `createServerMetrics` does not.
+ */
+export async function recordEveryBoardInstrument(meter: Meter, opts: { db: boolean }): Promise<void> {
+    const metrics = createServerMetrics({
+        admission: { global: 1, org: 1, repo: 1 },
+        occupancy: async () => ({ global: 1, orgMax: 1, repoMax: 1 }),
+        meter,
+    });
+    metrics.request('GET', '/api/jobs/:id', 200, 0.1);
+    metrics.claimPoll('claimed');
+    metrics.mcpTool('whoami', 'ok', 0.1);
+    metrics.claim.refusal('org');
+    metrics.claim.wait('new', 1);
+    metrics.claim.lockWait(0.1);
+    metrics.claim.acquire(0.1);
+    metrics.claim.sweep(0.1);
+    metrics.claim.interrupted('lease_expired', true);
+    metrics.claim.settled('dead', 'poison_budget');
+    await metrics.timedPass('sweep', async () => undefined);
+    createServerMetrics({
+        admission: {},
+        occupancy: async () => {
+            throw new Error('down');
+        },
+        meter,
+    });
+    if (opts.db) {
+        dbOperationDuration(meter).record(0.01, { 'db.system.name': 'postgresql', 'db.operation.name': 'SELECT' });
+    }
 }
