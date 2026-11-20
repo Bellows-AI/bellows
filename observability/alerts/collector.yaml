@@ -1,0 +1,17 @@
+groups:
+  - name: bellows-ops-collector
+    rules:
+      - alert: BellowsCollectorExportFailures
+        expr: >-
+          sum(rate(otelcol_exporter_send_failed_spans_total[5m])) > 0
+          or sum(rate(otelcol_exporter_send_failed_metric_points_total[5m])) > 0
+          or sum(rate(otelcol_exporter_send_failed_log_records_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: The ops collector fails to export telemetry.
+          description: >-
+            The ops collector reports failed sends of spans, metric points or log records for 10 minutes. A collector
+            that cannot export at all cannot export this alert either. The series names depend on the collector version
+            (0.161.0) and are confirmed only in the import check against a running stack.

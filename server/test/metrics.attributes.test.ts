@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createServerMetrics } from '../src/metrics.js';
-import { metricsHarness } from './helpers-metrics.js';
+import { metricsHarness, recordEveryBoardInstrument } from './helpers-metrics.js';
 
 /**
  * The attribute names each board instrument may carry. A new instrument, or a new attribute on one, is added here on
@@ -28,30 +27,7 @@ const FORBIDDEN_NAME = /(^|[._])(org|repo|job|lease|user|pod|session|token)([._]
 describe('board metric attributes', () => {
     it('limits every instrument to its allowlist, and none to an id', async () => {
         const harness = metricsHarness();
-        const metrics = createServerMetrics({
-            admission: { global: 1, org: 1, repo: 1 },
-            occupancy: async () => ({ global: 1, orgMax: 1, repoMax: 1 }),
-            meter: harness.meter,
-        });
-        metrics.request('GET', '/api/jobs/:id', 200, 0.1);
-        metrics.claimPoll('claimed');
-        metrics.mcpTool('whoami', 'ok', 0.1);
-        metrics.claim.refusal('org');
-        metrics.claim.wait('new', 1);
-        metrics.claim.lockWait(0.1);
-        metrics.claim.acquire(0.1);
-        metrics.claim.sweep(0.1);
-        metrics.claim.interrupted('lease_expired', true);
-        metrics.claim.settled('dead', 'poison_budget');
-        await metrics.timedPass('sweep', async () => undefined);
-        const failing = createServerMetrics({
-            admission: {},
-            occupancy: async () => {
-                throw new Error('down');
-            },
-            meter: harness.meter,
-        });
-        expect(failing).toBeDefined();
+        await recordEveryBoardInstrument(harness.meter, { db: false });
 
         const collected = await harness.collect();
         const seen = collected.map((m) => m.descriptor.name);

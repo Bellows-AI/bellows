@@ -28,7 +28,7 @@ const SECONDS = 's';
 const buckets = (spec: string): number[] => spec.split(' ').map(Number);
 
 const HTTP_BUCKETS = buckets('0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10 30');
-const DB_BUCKETS = buckets('0.001 0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 15');
+export const DB_BUCKETS = buckets('0.001 0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 15');
 /** A queued row can wait for a free slot for hours; the buckets reach past a shift. */
 const WAIT_BUCKETS = buckets('0.1 0.5 1 5 15 30 60 300 900 1800 3600 14400 86400');
 const PASS_BUCKETS = buckets('0.01 0.05 0.1 0.5 1 2.5 5 15 30 60');

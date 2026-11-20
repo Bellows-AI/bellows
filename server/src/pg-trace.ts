@@ -3,8 +3,10 @@
  * statement of every pool and transaction passes: `Query#handle`, which runs once, when the query executes. The span
  * carries the operation verb only — never the statement text or a parameter. docs/telemetry.md.
  */
-import { SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
+import { metrics, SpanKind, SpanStatusCode, trace, type Histogram, type Meter } from '@opentelemetry/api';
 import postgres from 'postgres';
+import { DB_BUCKETS, METER_NAME } from './metrics.js';
+import { secondsSince } from './timing.js';
 
 const TRACER_NAME = 'bellows-board-postgres';
 const SPAN_NAME_PREFIX = 'postgres';
@@ -25,9 +27,21 @@ export function operationOf(strings: TemplateStringsArray | string): string {
     return VERB.exec(text)?.[1]?.toUpperCase() ?? 'QUERY';
 }
 
-let installed = false;
+/** `db.client.operation.duration`: one point per statement, labelled by verb alone. */
+export function dbOperationDuration(meter: Meter): Histogram {
+    return meter.createHistogram('db.client.operation.duration', {
+        unit: 's',
+        description: 'Board Postgres statement duration, by verb.',
+        advice: { explicitBucketBoundaries: DB_BUCKETS },
+    });
+}
 
-export function installPostgresTracing(): void {
+let installed = false;
+let duration: Histogram | undefined;
+
+export function installPostgresTracing(meter: Meter = metrics.getMeter(METER_NAME)): void {
+    // Rebound on every call: a shared test fork may have installed against another meter first.
+    duration = dbOperationDuration(meter);
     if (installed) return;
     installed = true;
     // An unexecuted query is a plain Promise subclass instance: building one opens no connection.
@@ -40,10 +54,12 @@ export function installPostgresTracing(): void {
             kind: SpanKind.CLIENT,
             attributes: { 'db.system.name': 'postgresql', 'db.operation.name': operation },
         });
+        const start = performance.now();
         let ended = false;
         const end = (failed: boolean) => {
             if (ended) return;
             ended = true;
+            duration?.record(secondsSince(start), { 'db.system.name': 'postgresql', 'db.operation.name': operation });
             if (failed) span.setStatus({ code: SpanStatusCode.ERROR });
             span.end();
         };

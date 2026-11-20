@@ -121,6 +121,7 @@ const loop = createLoop({
     gates,
     log: (m) => log.loop.info(m),
 });
+metrics.observeSlots(() => loop.slots());
 
 // The orphan reaper: the periodic watcher that reaps service objects whose owning
 // job can no longer use them — the fleet of a terminal, dead, board-unknown or superseded

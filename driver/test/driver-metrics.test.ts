@@ -7,6 +7,7 @@ const UUID = '3f1c2a4e-9b7d-4c1a-8e2f-5a6b7c8d9e0f';
 
 const BOARD_DURATION = 'bellows.driver.board.request.duration';
 const K8S_DURATION = 'bellows.driver.k8s.request.duration';
+const DOCKER_DURATION = 'bellows.driver.docker.command.duration';
 const DOCKER_COMMANDS = 'bellows.driver.docker.commands';
 
 /** Every attribute value of every point of a collection, as one string a leak would show in. */
@@ -239,6 +240,45 @@ describe('the docker exec wrapper', () => {
         expect(countOf(points, { client: 'runner', command: 'ps', outcome: 'ok' })).toBe(1);
         expect(countOf(points, { client: 'reaper', command: 'rm', outcome: 'error' })).toBe(1);
         expect(await attributeText(harness)).not.toContain('factory-job-x');
+    });
+});
+
+describe('docker command timing and claim slots', () => {
+    it('times a command once, by closed vocabulary, on success, on a throw and on a timeout', async () => {
+        const harness = metricsHarness();
+        const metrics = createDriverMetrics({ boardUrl: BOARD, meter: harness.meter });
+        await metrics.docker(async () => ({ stdout: '' }), 'runner')(['ps', '-a']);
+        await expect(
+            metrics.docker(async () => {
+                throw new Error('exit 1');
+            }, 'reaper')(['rm', '-f', 'factory-job-x'])
+        ).rejects.toThrow('exit 1');
+        await expect(
+            metrics.docker(async () => {
+                throw Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' });
+            }, 'runner')(['wait', 'factory-job-x'], { timeout: 5 })
+        ).rejects.toThrow('timed out');
+
+        const collected = await harness.collect();
+        expect(collected.find((m) => m.descriptor.name === DOCKER_DURATION)?.descriptor.unit).toBe('s');
+        const points = await harness.points(DOCKER_DURATION);
+        expect(points).toHaveLength(3);
+        expect(countOf(points, { client: 'runner', command: 'ps', outcome: 'ok' })).toBe(1);
+        expect(countOf(points, { client: 'reaper', command: 'rm', outcome: 'error' })).toBe(1);
+        expect(countOf(points, { client: 'runner', command: 'wait', outcome: 'error' })).toBe(1);
+        expect(await attributeText(harness)).not.toContain('factory-job-x');
+        const counted = await harness.points(DOCKER_COMMANDS);
+        expect(countOf(counted, { client: 'runner', command: 'ps', outcome: 'ok' })).toBe(1);
+        expect(countOf(counted, { client: 'reaper', command: 'rm', outcome: 'error' })).toBe(1);
+    });
+
+    it('reports claim slots by state', async () => {
+        const harness = metricsHarness();
+        const metrics = createDriverMetrics({ boardUrl: BOARD, meter: harness.meter });
+        metrics.observeSlots(() => ({ busy: 2, open: 0 }));
+        const points = await harness.points('bellows.driver.slots');
+        expect(countOf(points, { state: 'busy' })).toBe(2);
+        expect(countOf(points, { state: 'open' })).toBe(0);
     });
 });
 
