@@ -10,7 +10,9 @@ begin_phase observability
 # exporters only enqueue, so a lost collector drops telemetry, never a task). The release is ALWAYS restored to
 # observability off at the end — no step above returns or exits — because bench upgrades with --reuse-values and
 # would otherwise inherit these values. Enforcement of the collector's ingress policy is not proved here (kindnet
-# does not enforce NetworkPolicy): `--netpol` does that.
+# does not enforce NetworkPolicy): `--netpol` does that. The phase queues as a member and org of its own, because
+# the board it rolls keeps no object written before the roll (filesystem artifact backend), so a skill pinned by an
+# earlier phase (recovery step f) would be unavailable to the lane member.
 
 echo
 echo '# observability'
@@ -48,18 +50,40 @@ obs_roll_all() { # obs_roll_all <what> [with the ops collector] -> the board and
 }
 obs_run_task() { # obs_run_task <what> <command> -> the task queued and settled succeeded, with the attempt its brief carries
     local id brief
-    id="$(queue_job "$2")"
+    [ -n "$obs_token" ] || {
+        bad "observability: $1 is queued" 'the phase has no member of its own'
+        return 1
+    }
+    id="$(FACTORY_TOKEN="$obs_token" queue_job "$2")"
     [ -n "$id" ] || {
         bad "observability: $1 is queued" 'the board refused the task'
         return 1
     }
-    brief="$(await_brief "$id" 'succeeded*' 300)" && ok "observability: $1 succeeds" || {
+    brief="$(FACTORY_TOKEN="$obs_token" await_brief "$id" 'succeeded*' 300)" && ok "observability: $1 succeeds" || {
         bad "observability: $1 succeeds" "$brief"
         return 1
     }
 }
 
 obs_ok=1
+obs_token=''
+
+# 0. A member and org of its own, with the executor its tasks run under.
+if [ "$obs_ok" = 1 ]; then
+    # Not inside $(...): the helper's MINTED_TOKEN would be lost with the subshell.
+    if mint_member "obs-$(openssl rand -hex 4)" >"$work/observability-mint.log"; then
+        obs_token="$MINTED_TOKEN"
+    else
+        bad 'observability: a member of its own is minted' "$(head -c 300 "$work/observability-mint.log")"
+        obs_ok=0
+    fi
+fi
+if [ "$obs_ok" = 1 ]; then
+    FACTORY_TOKEN="$obs_token" store_executor || {
+        bad 'observability: the member stores the task executor' 'PUT /api/workspace/executors never answered 200'
+        obs_ok=0
+    }
+fi
 
 # 1-2. The headers Secret, and the release with the collector on.
 if [ "$obs_ok" = 1 ]; then

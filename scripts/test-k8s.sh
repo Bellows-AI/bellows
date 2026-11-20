@@ -3202,6 +3202,47 @@ queue_job() { # queue_job <command> -> the new job's id, empty when the board re
     case "$id" in unread:* | refused:*) ;; *) printf '%s' "$id" ;; esac
 }
 
+mint_member() { # mint_member <login> -> MINTED_TOKEN of a new org member tracking $SMOKE_REPO; non-zero with psql's answer
+    local hash out
+    # The token is made here, not inside bounded: bounded backgrounds its command and a variable set there is lost.
+    read -r MINTED_TOKEN hash < <(node -e '
+const c = require("node:crypto");
+const t = "fat_" + c.randomBytes(32).toString("base64url");
+process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
+')
+    out="$(bounded 40 kubectl exec -i -n "$NAMESPACE" --request-timeout=20s "statefulset/$STATE_RELEASE-postgres" -- \
+        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -q -v ON_ERROR_STOP=1 -v "login=$1" -v "hash=$hash" -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" \
+        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+with o as (
+    insert into organization (id, name) values (:'login', :'login') returning id
+), u as (
+    insert into app_user (github_user_id, github_login)
+    values ((1000000000 + floor(random() * 1000000000000))::bigint, :'login') returning id
+), m as (
+    insert into org_membership (org_id, github_login, user_id, role, claimed_at)
+    select o.id, :'login', u.id, 'member', now() from o, u
+)
+insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
+select o.id, 'personal', u.id, u.id, 'test-k8s', decode(:'hash', 'hex') from o, u;
+insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+values (:'login', 'claude-code', 'test-k8s-capacity', :'owner' || '/' || :'name', 'main', now(), now());
+SQL
+    )" || {
+        printf '%s' "$out"
+        return 1
+    }
+}
+
+store_executor() { # store_executor -> the current FACTORY_TOKEN's member stores the executor its tasks run under
+    local until=$(($(date +%s) + 60))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        [ "$(http_status PUT "$BASE/api/workspace/executors" \
+            '{"executors":[{"name":"claude","type":"claude-code","config":{}}]}')" = '200' ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
 job_brief() { # job_brief <id> -> "status|attempts|interruptions|first claimSeq|first reason"; "unread: ..." for a failed or misshapen read
     # scripts/acceptance-job.mjs validates the shape; a body without its fields is never a brief a check can pass on.
     ACC_AUTH="${FACTORY_TOKEN:+Bearer $FACTORY_TOKEN}" node "$REPO/scripts/acceptance-job.mjs" GET "$BASE/api/jobs/$1" brief
