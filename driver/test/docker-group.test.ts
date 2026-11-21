@@ -405,7 +405,7 @@ describe('creating and starting the group', () => {
         expect(calls.find((argv) => argv.includes(supervisorName(job)))).not.toContain('SUPERVISOR_GATE=1');
     });
 
-    // BEL-508: the environment image alone starts the gate container the agent's commands run in.
+    // The environment image alone starts the gate container the agent's commands run in.
     it('creates the gate container for a checkout that declares only an environment image', async () => {
         const imageOnly: BoardJob = { ...gated, gates: { image: 'node:24', gates: [] } };
         const { calls, deps } = recorder();

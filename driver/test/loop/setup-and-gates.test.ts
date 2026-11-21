@@ -443,7 +443,7 @@ describe('environment.setup before the agent starts', () => {
         return { stack, gates, doors, images };
     };
 
-    // BEL-508: the environment image alone is enough for the agent to run commands in it.
+    // The environment image alone is enough for the agent to run commands in it.
     it('an environment that declares only an image begins the gate environment and opens the gate door', async () => {
         const board = stubBoard([{ ...gatedJob(1), gates: { image: 'node:24', gates: [] } }]);
         const { stack, gates, doors, images } = recordedDoors();

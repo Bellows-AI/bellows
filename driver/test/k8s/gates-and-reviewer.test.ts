@@ -208,7 +208,7 @@ describe('the gate sidecar', () => {
         }
     });
 
-    // BEL-508: the environment image alone specs the sidecar; only a claim with no environment, or no worktree, has none.
+    // The environment image alone specs the sidecar; only a claim with no environment, or no worktree, has none.
     it('specs no gate sidecar for a checkout that declares no environment, or has no worktree', () => {
         const { repo: _repo, ...repoless } = gated;
         for (const of of [job, repoless]) {

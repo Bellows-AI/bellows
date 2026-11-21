@@ -528,7 +528,7 @@ describe('the gate server', () => {
         await server.close();
     });
 
-    // BEL-508: an image-only or setup-only environment holds a registered door, yet still has no gate to run.
+    // An image-only or setup-only environment holds a registered door, yet still has no gate to run.
     it('a gate request on a claim that declares no gates answers 404 no gates', async () => {
         const ran: string[] = [];
         const manager = {
