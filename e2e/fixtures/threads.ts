@@ -1031,6 +1031,45 @@ export const longContentThread = thread([
     }),
 ]);
 
+const WIDE_URL = `https://example.com/${'segment/'.repeat(40)}file.ts?query=${'a1b2c3'.repeat(40)}`;
+const WIDE_TABLE = [
+    `| ${'column-one-'.repeat(8)} | ${'column-two-'.repeat(8)} | ${'column-three-'.repeat(8)} |`,
+    `| ${'-'.repeat(88)} | ${'-'.repeat(88)} | ${'-'.repeat(88)} |`,
+    `| ${'cell-a-'.repeat(12)} | ${'cell-b-'.repeat(12)} | ${'cell-c-'.repeat(12)} |`,
+].join('\n');
+
+/** The conversation's own prose: a prompt, a summary and a live run whose every line is wider
+ *  than any phone — a URL, a code line, a pipe table, an unbroken token. The chat must hold the
+ *  viewport and let only its blocks scroll. */
+export const longChatThread = thread([
+    run({
+        id: 'aaaaaaaa-0000-4000-8000-000000000127',
+        command: `look at ${WIDE_URL} and ${'prompt'.repeat(60)}`,
+        summary: [
+            `See ${WIDE_URL}`,
+            `const result = await fetchEverything(${'argument, '.repeat(24)});`,
+            WIDE_TABLE,
+            'Unbroken'.repeat(60),
+        ].join('\n'),
+        output: [WIDE_TABLE, `$ curl ${WIDE_URL}`, '0123456789'.repeat(200)].join('\n'),
+        gates: [{ name: 'build', status: 'passed', exitCode: 0, output: WIDE_TABLE }],
+        runtime: finishedRuntime('2026-09-01T12:29:00.000Z'),
+    }),
+    run({
+        id: 'aaaaaaaa-0000-4000-8000-000000000128',
+        command: `and ${WIDE_URL}`,
+        status: 'running',
+        attempts: 1,
+        repo: REPO,
+        sessionId: 'bbbbbbbb-0000-4000-8000-000000000127',
+        createdAt: '2026-09-01T12:40:00.000Z',
+        startedAt: '2026-09-01T12:40:05.000Z',
+        ...unfinished,
+        output: [WIDE_TABLE, `$ curl ${WIDE_URL}`, '0123456789'.repeat(200)].join('\n'),
+        runtime: liveRuntime(`reading ${WIDE_URL}`, '2026-09-01T12:41:00.000Z'),
+    }),
+]);
+
 /**
  * The measured task plus its gate and PR activity: three gate executions (two passed,
  * one failed) none of which carries a timing, so the duration is "-" and the coverage partial; one
