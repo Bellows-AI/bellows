@@ -232,6 +232,16 @@ export interface BoardJob extends ClaimSkills {
      */
     gates?: { image: string; setup?: string; cache?: readonly string[]; gates: readonly DeclaredGate[] } | null;
     /**
+     * The thread's latest passed or failed report per gate name, read by the board at claim (copied from the board's
+     * `LastGateReport`): what `factory-gate <name> --last` answers. Absent on a board that predates it.
+     */
+    lastGateReports?: readonly {
+        name: string;
+        status: 'passed' | 'failed';
+        exitCode: number | null;
+        output: string | null;
+    }[];
+    /**
      * The services the same file declares, already validated as one plan (`planRefusal` carries a
      * refusal). Both executors start exactly this list; the driver reads no file. Absent: none.
      */

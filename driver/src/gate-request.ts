@@ -16,7 +16,7 @@ const FILTER_MAX_CHARS = 256;
 const PRINTABLE_FILTER = /^[\x20-\x7e]+$/;
 
 export type GateRequest =
-    | { ok: true; gate: string; filter?: string }
+    | { ok: true; gate: string; filter?: string; last?: true }
     | { ok: true; exec: string }
     | { ok: false; status: number; error: string };
 
@@ -33,7 +33,7 @@ const execRequest = (parsed: Record<string, unknown>): GateRequest => {
 
 /**
  * Reads and validates the ad-hoc endpoint's request body: exactly one of `{"gate": "<declared name>",
- * "filter"?: "<pattern>"}` or `{"exec": "<command>"}`.
+ * "filter"?: "<pattern>"}`, `{"gate": "<declared name>", "last": true}` or `{"exec": "<command>"}`.
  */
 export const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> => {
     const raw = await readBody(request, BODY_LIMIT);
@@ -42,6 +42,11 @@ export const parseGateRequest = async (request: IncomingMessage): Promise<GateRe
     if (parsed === null) return refused('body must be JSON');
     if (parsed.exec !== undefined) return execRequest(parsed);
     if (typeof parsed.gate !== 'string' || !parsed.gate.trim()) return refused('gate must be a name');
+    if (parsed.last !== undefined) {
+        if (parsed.last !== true) return refused('last must be true');
+        if (parsed.filter !== undefined) return refused('last reads a stored report: it takes no filter');
+        return { ok: true, gate: parsed.gate, last: true };
+    }
     if (parsed.filter === undefined) return { ok: true, gate: parsed.gate };
     if (typeof parsed.filter !== 'string' || !parsed.filter.trim() || parsed.filter.length > FILTER_MAX_CHARS) {
         return refused(`filter must be 1-${FILTER_MAX_CHARS} printable characters`);

@@ -43,7 +43,7 @@ import type {
 } from './job-store-types.js';
 import { type ClaimCandidateRow, withClaimAttachments } from './job-store-claim-row.js';
 import { lockCandidate } from './job-store-claim-lock.js';
-import { claimCommand } from '../follow-up-recap.js';
+import { claimCommandAndReports } from '../follow-up-recap.js';
 import { claimPromptInput, resolveMasterPrompt, resolveTurnContext } from '../master-prompt.js';
 import { activeOrgOf } from '../org-status.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from '../workflows/workflow-blocks/runtime.js';
@@ -471,6 +471,7 @@ async function acquireCandidate(
             returning id, command, attempts, max_attempts, claim_seq, lease_token, ingest_token, lease_expires_at,
                       (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as run_as,
                       session_id, repo, parent_job_id, executor, executor_scope, agent_type, agent_model, workflow_node, workflow_name, mode,
+                      gate_fix_round,
                       -- The post-update row: whether this attempt's loss would retire the job.
                       ${exhausted} as last_attempt,
                       extract(epoch from clock_timestamp() - ${locked.queued_since}::timestamptz)::float8 as queue_age,
@@ -572,7 +573,7 @@ async function assembleClaim(
     const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.run_as) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
-    const command = await claimCommand(tx, orgId, rootJobId, row);
+    const { command, lastGateReports } = await claimCommandAndReports(tx, orgId, rootJobId, row);
     // The thread root's selection checked against what this claim's env authorizes: names
     // only, so selecting a skill never adds to the env and the sentence never carries a value.
     const managed = [...row.live_providers, ...connections.dismissed, ...(githubApp ? ['github'] : [])];
@@ -588,7 +589,8 @@ async function assembleClaim(
         ...evidence,
         skillRefusal,
     });
-    return connections.outcomes.length > 0 ? { ...claim, connectionOutcomes: connections.outcomes } : claim;
+    const outcomes = connections.outcomes.length > 0 ? { connectionOutcomes: connections.outcomes } : {};
+    return { ...claim, lastGateReports, ...outcomes };
 }
 
 /** The settle passes a claim runs before it looks for a candidate, each committed on its own. */
@@ -919,7 +921,7 @@ export function buildClaimResult(
             turnContext: string | null;
             skillRefusal: string | null;
         }
-): Omit<Claim, 'attachments'> {
+): Omit<Claim, 'attachments' | 'lastGateReports'> {
     const {
         claimEnv,
         executorType,
