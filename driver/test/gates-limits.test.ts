@@ -50,7 +50,7 @@ describe('Stop during the declared gates', () => {
             stop: async () => {},
         };
         const state = newJobState();
-        const gates = runDeclaredGates(rtWith(manager), JOB, session, { state, treeAfter: null });
+        const gates = runDeclaredGates(rtWith(manager), JOB, session, { state, treeAfter: null, source: 'completion' });
         await delay(5);
         recordEnding(state, 'stop');
         state.abortNow();
@@ -72,7 +72,7 @@ describe('Stop during the declared gates', () => {
         await manager.acquire(KEY, 'node:24', '', { job: JOB });
         void manager.runGate(KEY, 'test', 'npm test'); // a previous attempt's orphaned ad-hoc run
         const state = newJobState();
-        const gates = runDeclaredGates(rtWith(manager), JOB, session, { state, treeAfter: null });
+        const gates = runDeclaredGates(rtWith(manager), JOB, session, { state, treeAfter: null, source: 'completion' });
         await delay(5);
         recordEnding(state, 'stop');
         state.abortNow();

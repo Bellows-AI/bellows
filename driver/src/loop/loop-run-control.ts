@@ -43,8 +43,12 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         );
         attachConnection({ rt, job, state }, token);
         gates.server.attachGateToken(token, createGateTokenRelay(rt, job, state));
-        // A job with no environment answers its agent's `POST /gate/run` "no gates"; one with an environment 503s until `beginGates`.
-        if (!declaresGateEnvironment(job) || !checkoutKey(job)) gates.server.attachGateRun(token, null);
+        // A job with no environment answers its agent's `POST /gate/run` and `POST /gate/finish` "no gates"; one with an
+        // environment 503s until `beginGates` (the finish pass: `attachFinishPass`).
+        if (!declaresGateEnvironment(job) || !checkoutKey(job)) {
+            gates.server.attachGateRun(token, null);
+            gates.server.attachFinish(token, null);
+        }
         gates.server.grantAgent(token, agentToken);
         gates.server.grantExporter(token, exporterToken);
         attachTranscriptExport({ rt, job, state }, token);

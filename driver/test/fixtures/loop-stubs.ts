@@ -16,7 +16,7 @@ import type {
     ReviewClaim,
     RuntimeReport,
 } from '../../src/board/board.js';
-import type { GateRunRecord, GateRunWrite } from '../../src/board/board-gate-runs.js';
+import type { FinishPassWrite, GateRunRecord, GateRunWrite } from '../../src/board/board-gate-runs.js';
 import type { PrOperationWrite } from '../../src/board/board-pr-operations.js';
 import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
@@ -26,6 +26,8 @@ import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
 import type { GateManager, GateRun, GateRunOptions } from '../../src/gate-manager.js';
 import type { GateServer } from '../../src/gates.js';
+import type { FinishRelay } from '../../src/control-channel.js';
+import { measuredRun } from '../../src/gate-record.js';
 import type { HelperResult } from '../../src/helpers.js';
 import { createLoop, type Loop } from '../../src/loop/loop.js';
 import type { GateStack, LoopRuntime } from '../../src/loop/loop-types.js';
@@ -98,6 +100,10 @@ export interface BoardStub extends Board {
     gateRunsWritten: GateRunWrite[];
     /** The run claim sequence of every gate-run read the loop made. */
     gateRunReads: { id: string; leaseToken: string }[];
+    /** Every finish-pass round the loop wrote, in write order — the board took it or not. */
+    finishPassesWritten: FinishPassWrite[];
+    /** How many times the loop read the failed finish rounds. */
+    finishRoundReads: number;
     /** Every PR operation the loop recorded, with the lease token it wrote under. */
     prOperationsWritten: { id: string; leaseToken: string; write: PrOperationWrite }[];
     /** The final envelopes the loop staged before each verdict. */
@@ -127,6 +133,14 @@ export interface BoardStub extends Board {
     artifactChunks: { id: string; claimSeq: number; stream: string; offset: number; text: string }[];
     artifactManifests: { id: string; claimSeq: number; stream: string; state: ArtifactManifest['state'] }[];
 }
+
+/** The board's durable gate-run and finish-round records, outliving one claim: what a takeover reads back. */
+export interface BoardLedger {
+    gateRuns: GateRunRecord[];
+    finishPasses: FinishPassWrite[];
+}
+
+export const boardLedger = (): BoardLedger => ({ gateRuns: [], finishPasses: [] });
 
 /**
  * Hands out the given jobs, then answers empty. After `idleBeforeStop` empty answers it stops the
@@ -179,6 +193,15 @@ export function stubBoard(
         gateRunWrite?: 'ok' | 'lost' | 'rejected' | 'throw';
         /** The board's answer to a PR-operation write. */
         prOperation?: 'ok' | 'lost' | 'rejected' | 'throw';
+        /**
+         * The board's durable records, shared by every board handed the same object — a second claim (a takeover)
+         * reads what the first wrote: gate-run reads answer the rows written, the round read counts the failed rounds.
+         */
+        ledger?: BoardLedger;
+        /** The board's answer to a finish-round write; `ok` (and recorded in `ledger`) when absent. */
+        finishPassWrite?: 'ok' | 'lost' | 'rejected';
+        /** The failed-round read: `unreadable` answers null (unconfirmed); absent counts the ledger's failed rounds. */
+        finishRounds?: 'unreadable';
         /** The board's answer to a staged conclusion; held when absent. */
         stageAnswer?: Awaited<ReturnType<Board['stageConclusion']>>;
     } = {}
@@ -202,6 +225,8 @@ export function stubBoard(
         phaseCheckpointReads: [],
         gateRunsWritten: [],
         gateRunReads: [],
+        finishPassesWritten: [],
+        finishRoundReads: 0,
         prOperationsWritten: [],
         sessions: [],
         sessionEvidence: [],
@@ -351,10 +376,13 @@ export function stubBoard(
             const answer = options.phaseCheckpoints ?? null;
             return typeof answer === 'function' ? answer(signal) : answer;
         },
-        async gateRun(_claimed, write) {
+        async gateRun(claimed, write) {
             board.gateRunsWritten.push(structuredClone(write));
             if (options.gateRunWrite === 'throw') throw new Error('the board is down');
-            return options.gateRunWrite ?? 'ok';
+            const answer = options.gateRunWrite ?? 'ok';
+            if (answer === 'ok')
+                options.ledger?.gateRuns.push({ ...structuredClone(write), claimSeq: claimed.claimSeq });
+            return answer;
         },
         async prOperation(claimed, write) {
             board.prOperationsWritten.push({
@@ -367,14 +395,21 @@ export function stubBoard(
         },
         async gateRuns(claimed, signal) {
             board.gateRunReads.push({ id: claimed.id, leaseToken: claimed.leaseToken });
+            if (options.ledger && options.gateRuns === undefined) return structuredClone(options.ledger.gateRuns);
             const answer = options.gateRuns ?? null;
             return typeof answer === 'function' ? answer(signal) : answer;
         },
-        async finishPass() {
-            return 'ok';
+        async finishPass(_claimed, write) {
+            board.finishPassesWritten.push(structuredClone(write));
+            const answer = options.finishPassWrite ?? 'ok';
+            if (answer === 'ok') options.ledger?.finishPasses.push(structuredClone(write));
+            return answer;
         },
         async finishRounds() {
-            return null;
+            board.finishRoundReads += 1;
+            if (options.finishRounds === 'unreadable') return null;
+            const rounds = options.ledger?.finishPasses ?? board.finishPassesWritten;
+            return rounds.filter((round) => round.verdict === 'failed').length;
         },
         async stageConclusion(claimed, result) {
             board.staged.push({ id: claimed.id, ...result });
@@ -684,7 +719,8 @@ export async function drive(
  * predictable.
  */
 export function stubGateStack(
-    outcomes: Record<string, number> = {},
+    /** Each gate's exit code; a sequence answers one per run, its last code for every run after. */
+    outcomes: Record<string, number | number[]> = {},
     options: {
         control?: boolean;
         polled?: boolean;
@@ -694,9 +730,19 @@ export function stubGateStack(
         /** The ad-hoc server's `quiesce`: settles once no ad-hoc run is in flight; immediate when absent. */
         quiesce?: (token: string) => Promise<void>;
         /** Awaited inside each declared gate after it started: a gate that is still running while its siblings start. */
-        hold?: (name: string) => Promise<void>;
+        hold?: (name: string, signal?: AbortSignal) => Promise<void>;
+        /** Runs each declared gate through the real record measurement: a running row, and trees probed around it. */
+        measure?: boolean;
     } = {}
 ) {
+    const runs = new Map<string, number>();
+    const nextCode = (name: string): number => {
+        const scripted = outcomes[name] ?? 0;
+        if (typeof scripted === 'number') return scripted;
+        const n = runs.get(name) ?? 0;
+        runs.set(name, n + 1);
+        return scripted[Math.min(n, scripted.length - 1)] ?? 0;
+    };
     const stack = {
         controlOpened: [] as string[],
         /** Each exporter token granted, beside the supervisor token it belongs to. */
@@ -727,6 +773,10 @@ export function stubGateStack(
         started: [] as { name: string; parallel: boolean }[],
         /** Every pre-agent `runSetup` call's options, in order. */
         setups: [] as GateRunOptions[],
+        /** The finish relay attached per control token (null: the job has no gate environment). */
+        finishRelays: new Map<string, FinishRelay | null>(),
+        /** Each token whose ad-hoc admission was reopened, in order. */
+        reopened: [] as string[],
         manager: {
             acquire: async (key: string, _image: string, envBody: string) => {
                 stack.acquired.push(key);
@@ -737,12 +787,21 @@ export function stubGateStack(
                 return options.setup ?? null;
             },
             runGate: async (key: string, name: string, _command: string, runOptions: GateRunOptions = {}) => {
-                stack.ran = { key, names: [...stack.ran.names, name] };
-                stack.started.push({ name, parallel: runOptions.parallel === true });
-                options.onRun?.(name);
-                await options.hold?.(name);
-                const code = outcomes[name] ?? 0;
-                return { exitCode: code, output: code === 0 ? `${name} ok` : `${name} failed badly` };
+                const execute = async (): Promise<GateRun> => {
+                    stack.ran = { key, names: [...stack.ran.names, name] };
+                    stack.started.push({ name, parallel: runOptions.parallel === true });
+                    options.onRun?.(name);
+                    await options.hold?.(name, runOptions.signal);
+                    const code = nextCode(name);
+                    return { exitCode: code, output: code === 0 ? `${name} ok` : `${name} failed badly` };
+                };
+                if (!options.measure || !runOptions.execution) return execute();
+                const measured = await measuredRun(
+                    runOptions.execution,
+                    { signal: runOptions.signal, probeTimeoutMs: 1000 },
+                    execute
+                );
+                return measured ?? { exitCode: null, output: 'cancelled' };
             },
             release: (key: string) => {
                 stack.released.push(key);
@@ -763,6 +822,12 @@ export function stubGateStack(
             quiesce: async (token: string) => {
                 stack.quiesced.push(token);
                 await options.quiesce?.(token);
+            },
+            reopen: (token: string) => {
+                stack.reopened.push(token);
+            },
+            attachFinish: (token: string, relay: FinishRelay | null) => {
+                stack.finishRelays.set(token, relay);
             },
             // The run-control channel is opt-in: a stack without it models a driver
             // whose endpoint could not open, where a Stop kills at once.

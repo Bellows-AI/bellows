@@ -10,7 +10,7 @@ import type { GateRunNote } from './timeout-note.js';
 import type { ConnectionRelay } from './connection-control.js';
 import type { GateTokenRelay } from './gate-token-control.js';
 import type { InputDelivery } from './input-control.js';
-import { attachersOf, createControlChannel, gateRunAttacher } from './control-channel.js';
+import { attachersOf, createControlChannel, type FinishRelay, gateRunAttacher } from './control-channel.js';
 import type { DaemonState, Read } from './runner.js';
 import { withDaemonNote } from './dockerd-loss.js';
 import { stepLost, type StepBroker } from './step-control.js';
@@ -129,6 +129,16 @@ export interface GateServer {
      * answers `404 no gates`. Once the gate token is unregistered the route answers a retryable 503 again, never a run.
      */
     attachGateRun(controlToken: string, gateToken: string | null): void;
+    /**
+     * Opens `POST /gate/finish` on an open control token for its agent: `relay` runs the finish pass (`loop-finish.ts`).
+     * Null for a job with no gate environment, which answers `404 no gates`; unattached, a retryable 503.
+     */
+    attachFinish(controlToken: string, relay: FinishRelay | null): void;
+    /**
+     * Reopens a token's ad-hoc admission a `quiesce` closed — a finish pass is over and the agent works on. A no-op for
+     * a token that is not registered: an ended attempt is never reopened.
+     */
+    reopen(token: string): void;
     /**
      * Settles a pending question on an open control token: an answer the board recorded, or an
      * answer arriving. False — and nothing changes — for an unknown token or id and a question
@@ -444,6 +454,9 @@ export function createGateServer({
             this.unregister(token);
         },
         quiesce: (token) => admission.close(token),
+        reopen(token) {
+            if (claims.has(token)) admission.open(token);
+        },
         openControl: (token, relay, publisher, reviewer) => channel.open(token, relay, publisher, reviewer),
         grantAgent: (token, agentToken) => channel.grantAgent(token, agentToken),
         grantExporter: (token, exporterToken, exporter) => channel.grantExporter(token, exporterToken, exporter),

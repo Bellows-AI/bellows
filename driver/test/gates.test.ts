@@ -1348,3 +1348,85 @@ describe('the gate server: departing a token (#829)', () => {
         await server.close();
     });
 });
+
+describe('the gate server: the finish pass door (BEL-509)', () => {
+    /** A control token with its agent token beside it; `post` is the agent's `POST /gate/finish`. */
+    async function finishServer() {
+        const server = createGateServer({ host: '127.0.0.1', manager: idle });
+        server.openControl('sup');
+        server.grantAgent('sup', 'agent');
+        const port = await server.listen();
+        const post = (token: string, method = 'POST') =>
+            fetch(`http://127.0.0.1:${port}/gate/finish`, {
+                method,
+                headers: { authorization: `Bearer ${token}` },
+                ...(method === 'POST' ? { body: '{}' } : {}),
+            });
+        return { server, post };
+    }
+
+    it('answers a retryable 503 until the pass is attached, then the relay answer', async () => {
+        const { server, post } = await finishServer();
+
+        const early = await post('agent');
+        expect(early.status).toBe(UNAVAILABLE_STATUS);
+        expect(await early.json()).toMatchObject({ retryable: true });
+        server.attachFinish('sup', async () => ({ verdict: 'pass' }));
+        const answered = await post('agent');
+        expect(answered.status).toBe(OK_STATUS);
+        expect(await answered.json()).toEqual({ verdict: 'pass' });
+        await server.close();
+    });
+
+    it('answers 404 no gates for an attempt with no gate environment', async () => {
+        const { server, post } = await finishServer();
+        server.attachFinish('sup', null);
+
+        const answer = await post('agent');
+        expect(answer.status).toBe(NOT_FOUND_STATUS);
+        expect(await answer.json()).toEqual({ error: 'no gates' });
+        await server.close();
+    });
+
+    it('opens to the agent token only: the supervisor token is refused, an unknown token is 401', async () => {
+        const { server, post } = await finishServer();
+        let asked = 0;
+        server.attachFinish('sup', async () => {
+            asked += 1;
+            return { verdict: 'pass' };
+        });
+
+        expect((await post('sup')).status).toBe(FORBIDDEN_STATUS);
+        expect((await post('nope')).status).toBe(UNAUTHORIZED_STATUS);
+        expect((await post('agent', 'GET')).status).not.toBe(OK_STATUS);
+        expect(asked).toBe(0);
+        // The agent's ask never says a supervisor is listening.
+        expect((await post('agent')).status).toBe(OK_STATUS);
+        expect(server.controlPolled('sup')).toBe(false);
+        await server.close();
+    });
+
+    it('answers a relay that throws with a 500 the helper reads as no answer', async () => {
+        const { server, post } = await finishServer();
+        server.attachFinish('sup', async () => {
+            throw new Error('boom');
+        });
+
+        expect((await post('agent')).status).toBe(500);
+        await server.close();
+    });
+
+    it('reopens the ad-hoc admission a quiesce closed; an unknown token is a no-op', async () => {
+        const { server, run } = await serveGates(idle);
+
+        await server.quiesce('tok-1');
+        expect((await run()).status).toBe(UNAVAILABLE_STATUS);
+        server.reopen('tok-1');
+        expect((await run()).status).toBe(OK_STATUS);
+        expect(() => server.reopen('unknown')).not.toThrow();
+        server.unregister('tok-1');
+        server.reopen('tok-1');
+        expect((await run()).status).toBe(UNAUTHORIZED_STATUS);
+        await server.close();
+    });
+});

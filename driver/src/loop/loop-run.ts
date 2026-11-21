@@ -1,4 +1,3 @@
-import { noChangeSkip } from './loop-no-change.js';
 import type { BoardJob, VerdictEvidence } from '../board/board.js';
 import { claimContinuesSession, repoCacheProblem } from '../claim.js';
 import { pickSession } from '../runner-plan.js';
@@ -8,14 +7,9 @@ import { adoptStep, recordAdopted, runnerClassStep } from './loop-adopt.js';
 import { askGithubToken } from './loop-github.js';
 import { preHelperStep } from './loop-helpers.js';
 import { probeTreeNow, type GateFailure, type GateSession } from './loop-gates.js';
-import {
-    type GateReport,
-    beginGates,
-    mintGateCredentials,
-    probeDeadServices,
-    runVerdictGates,
-    sizeGateForVerify,
-} from './loop-gates.js';
+import { beginGates, mintGateCredentials, probeDeadServices } from './loop-gates.js';
+import { type GatesPhase, runGatePass } from './loop-gate-pass.js';
+import { attachFinishPass } from './loop-finish.js';
 import { openRunControl } from './loop-run-control.js';
 import { armLeaseClock } from './loop-lease.js';
 import { drainTranscriptExport, uploadRunTail } from './loop-export.js';
@@ -57,7 +51,7 @@ import { OPENCODE } from '../executors.js';
 import { masterPromptRefusalReason } from '../master-prompt.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 import { stepLost } from '../step-control.js';
-import { restartDeadServices, servicesLost, startServicesStep } from './loop-services.js';
+import { servicesLost, startServicesStep } from './loop-services.js';
 import { servicePlanRefusal } from '../services.js';
 import { attemptAttributes, withLifecycleSpan } from '../lifecycle-span.js';
 import { DaemonLost } from '../dockerd-loss.js';
@@ -273,7 +267,11 @@ async function runPhases(ctx: AttemptCtx): Promise<GateSession | null | typeof S
     const booted = await acquireGateSession(ctx);
     const session = isConclusion(booted) ? null : booted;
     // A session the boot handed back is released by `end` if the attempt ended meanwhile.
-    if (session) ctx.gateSession = session;
+    if (session) {
+        ctx.gateSession = session;
+        // The agent's finish pass opens with the session, on every claim — a takeover's `beginGates` included.
+        attachFinishPass(ctx);
+    }
     if (await conclude(ctx, isConclusion(booted) ? booted : null)) return STOOD_DOWN;
     ctx.setupDone = true;
     return session;
@@ -522,19 +520,6 @@ function gatesOutcomeOf(declared: boolean, gated: GatesPhase): GatesOutcome {
     return gated.failure ? 'failed' : 'passed';
 }
 
-/** What the gates phase of one attempt found: the failed gate, the dead services, or why it skipped. */
-interface GatesPhase {
-    failure: GateFailure | null;
-    deadServices: DeadService[];
-    gatesSkipped: string | null;
-    /** The gates were skipped because the task produced no change. */
-    noChange?: boolean;
-    /** The services found dead before the gates and restarted for them: noted, not faults. */
-    recoveredServices: DeadService[];
-    /** The gates list as the board was last told it; empty when no declared gate ran. */
-    reports: GateReport[];
-}
-
 /**
  * The run's end with no verdict of its own, answering whether the attempt was concluded here: an
  * ad-hoc gate that found the supervisor lost while the agent ran interrupts it, and a
@@ -575,9 +560,9 @@ async function gatesOrLoss(
     }
 }
 
-/** The declared gates, unless the run did not finish cleanly or a declared service is dead. */
+/** The declared gates, unless the run did not finish cleanly; the pass itself is the one the finish pass runs too. */
 async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome: RunOutcome): Promise<GatesPhase> {
-    const { rt, job, state } = ctx;
+    const { rt, job } = ctx;
     const agent = agentFaults(outcome);
     const gatesSkipped = gatesEligible(agent) ? null : skipWhyOf(agent);
     if (gatesSkipped !== null) {
@@ -592,37 +577,7 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
             reports: [],
         };
     }
-    // A task that changed nothing has nothing for the gates to judge.
-    const unchanged = await noChangeSkip({ ...ctx, gateSession });
-    if (unchanged) return unchanged;
-    // A gate against a dead service fails on an environment the agent cannot fix, and a
-    // failed gate is what the workflow's gate-fix edge spends a round on. The
-    // services are stateless fixtures, so a dead one is restarted first; only a restart that
-    // cannot bring the fleet back is the run's fault.
-    await sizeGateForVerify(rt, job);
-    const deadBefore = await probeDeadServices(rt, job);
-    let recoveredServices: DeadService[] = [];
-    if (deadBefore.length > 0) {
-        const restartFailure = await restartDeadServices(rt, job, state.signal, deadBefore);
-        // A stand-down during the restart runs no gates; the caller's fence settles the attempt.
-        if (restartFailure === STOOD_DOWN)
-            return { failure: null, deadServices: [], gatesSkipped: null, recoveredServices, reports: [] };
-        if (restartFailure !== null) {
-            const deadServices = deadBefore.map((dead) => ({ ...dead, restartFailure }));
-            return { failure: null, deadServices, gatesSkipped: null, recoveredServices, reports: [] };
-        }
-        recoveredServices = deadBefore;
-    }
-    const failure = await runVerdictGates(rt, job, gateSession, { state, treeAfter: ctx.treeAfter ?? null });
-    // A service OOM-killed by the suite fails the gate for a reason the agent cannot fix: re-probe.
-    const deadAfter = failure ? await probeDeadServices(rt, job) : [];
-    return {
-        failure,
-        deadServices: deadAfter,
-        gatesSkipped: null,
-        recoveredServices,
-        reports: gateSession.lastReports ?? [],
-    };
+    return runGatePass(ctx, gateSession, { source: 'completion', treeAfter: ctx.treeAfter ?? null });
 }
 
 /**
