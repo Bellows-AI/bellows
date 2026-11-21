@@ -426,6 +426,52 @@ describe('environment.setup before the agent starts', () => {
         expect(atSync).toBeUndefined();
         expect(stack.registeredTokens).toEqual([]);
     });
+
+    /** Records each `attachGateRun` and each acquired image of a stack with the run-control channel open. */
+    const recordedDoors = () => {
+        const { stack, gates } = stubGateStack({}, { control: true });
+        const doors: [string, string | null][] = [];
+        const images: string[] = [];
+        stack.server.attachGateRun = (controlToken: string, gateToken: string | null) => {
+            doors.push([controlToken, gateToken]);
+        };
+        const acquire = stack.manager.acquire.bind(stack.manager);
+        stack.manager.acquire = async (key, image, envBody, attempt) => {
+            images.push(image);
+            return acquire(key, image, envBody, attempt);
+        };
+        return { stack, gates, doors, images };
+    };
+
+    // BEL-508: the environment image alone is enough for the agent to run commands in it.
+    it('an environment that declares only an image begins the gate environment and opens the gate door', async () => {
+        const board = stubBoard([{ ...gatedJob(1), gates: { image: 'node:24', gates: [] } }]);
+        const { stack, gates, doors, images } = recordedDoors();
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates });
+
+        expect(images).toEqual(['node:24']);
+        expect(stack.registeredTokens).toHaveLength(1);
+        // The door opens on the registered gate token, never on `none`, and is attached once.
+        expect(doors).toEqual([[stack.controlOpened[0], stack.registeredTokens[0]]]);
+        // No declared gate and no setup: there is no end pass to run.
+        expect(stack.setups).toEqual([]);
+        expect(stack.ran.names).toEqual([]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('answers a job with no environment "no gates" and starts no gate environment', async () => {
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
+        const { stack, gates, doors, images } = recordedDoors();
+        const runner = stubRunner(async () => ok());
+
+        await drive({ ...board, runner, gates });
+
+        expect(images).toEqual([]);
+        expect(stack.registeredTokens).toEqual([]);
+        expect(doors).toEqual([[stack.controlOpened[0], null]]);
+    });
 });
 
 describe('verification gates', () => {

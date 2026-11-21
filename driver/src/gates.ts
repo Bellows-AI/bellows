@@ -291,6 +291,23 @@ const readGateRequest = async (request: IncomingMessage, stillLive: () => boolea
     return parsed;
 };
 
+/** The declared gate an ad-hoc request names, or the refusal it answers. */
+const declaredGateOf = (
+    claim: GateClaim,
+    request: Extract<GateRequest, { ok: true }>
+): { gate: DeclaredGate } | { status: number; error: string } => {
+    // A setup-only or image-only environment holds a registered door yet declares nothing to run.
+    if (claim.gates.length === 0) return { status: HTTP_NOT_FOUND, error: 'no gates' };
+    // Only a DECLARED name runs. An arbitrary command string here would make the runner's
+    // agent a shell on the host through a container the driver owns — the one thing the
+    // declare-then-run model exists to prevent.
+    const gate = claim.gates.find((candidate) => candidate.name === request.gate);
+    if (!gate) return { status: HTTP_NOT_FOUND, error: `no declared gate "${request.gate}"` };
+    const refusal = adHocRefusal(gate, request.filter);
+    if (refusal) return { status: HTTP_UNPROCESSABLE, error: refusal };
+    return { gate };
+};
+
 /** Notes the latest completed run of a gate for its token: the timeout note's raw material. */
 const recordNote = (
     history: Map<string, Map<string, GateRunNote>>,
@@ -346,13 +363,9 @@ export function createGateServer({
         const parsedRequest = await readGateRequest(request, () => claims.get(auth) === claim);
         if (!parsedRequest.ok) return respond(reply, parsedRequest.status, { error: parsedRequest.error });
 
-        // Only a DECLARED name runs. An arbitrary command string here would make the runner's
-        // agent a shell on the host through a container the driver owns — the one thing the
-        // declare-then-run model exists to prevent.
-        const gate = claim.gates.find((candidate) => candidate.name === parsedRequest.gate);
-        if (!gate) return respond(reply, HTTP_NOT_FOUND, { error: `no declared gate "${parsedRequest.gate}"` });
-        const refusal = adHocRefusal(gate, parsedRequest.filter);
-        if (refusal) return respond(reply, HTTP_UNPROCESSABLE, { error: refusal });
+        const declared = declaredGateOf(claim, parsedRequest);
+        if ('error' in declared) return respond(reply, declared.status, { error: declared.error });
+        const { gate } = declared;
 
         if (admission.isClosed(auth)) {
             return respond(reply, HTTP_SERVICE_UNAVAILABLE, { error: 'ad-hoc gate runs are closed', retryable: true });

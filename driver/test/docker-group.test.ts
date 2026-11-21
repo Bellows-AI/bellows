@@ -405,6 +405,16 @@ describe('creating and starting the group', () => {
         expect(calls.find((argv) => argv.includes(supervisorName(job)))).not.toContain('SUPERVISOR_GATE=1');
     });
 
+    // BEL-508: the environment image alone starts the gate container the agent's commands run in.
+    it('creates the gate container for a checkout that declares only an environment image', async () => {
+        const imageOnly: BoardJob = { ...gated, gates: { image: 'node:24', gates: [] } };
+        const { calls, deps } = recorder();
+        await createGroup(deps, imageOnly, SESSION);
+        const gate = calls.find((argv) => argv[0] === 'create' && argv.includes(gateName(imageOnly)));
+        expect(gate).toContain('node:24');
+        expect(calls.find((argv) => argv.includes(supervisorName(imageOnly)))).toContain('SUPERVISOR_GATE=1');
+    });
+
     it('removes the whole group, the gate container included, when the daemon refuses the gate', async () => {
         const { calls, deps } = recorder((argv) => argv[0] === 'create' && argv.includes(gateName(gated)));
         await expect(createGroup(deps, gated, SESSION)).rejects.toThrow('daemon said no');
