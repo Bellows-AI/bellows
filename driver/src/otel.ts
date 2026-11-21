@@ -55,16 +55,23 @@ export interface Otel {
 export function startOtel(env: NodeJS.ProcessEnv = process.env): Otel | null {
     if (!otelEnabled(env)) return null;
     diag.setLogger(diagLogger(), DiagLogLevel.WARN);
+    const instrumentations = [new UndiciInstrumentation()];
     const sdk = new NodeSDK({
         serviceName: env.OTEL_SERVICE_NAME ?? SERVICE_NAME,
-        instrumentations: [new UndiciInstrumentation()],
+        instrumentations,
         views: INSTRUMENTATION_SCOPES.map((meterName) => ({
             instrumentName: '*',
             meterName,
             aggregation: { type: AggregationType.DROP },
         })),
     });
-    sdk.start();
-    installSpanProcessors();
+    try {
+        sdk.start();
+        installSpanProcessors();
+    } catch (error) {
+        // An instrumentation enables itself on construction and subscribes to the process-global diagnostics_channel.
+        for (const instrumentation of instrumentations) instrumentation.disable();
+        throw error;
+    }
     return { shutdown: () => sdk.shutdown() };
 }
