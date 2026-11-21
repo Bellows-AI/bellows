@@ -5,7 +5,14 @@
 
 import { waitAdvisoryXactLock } from '../pool.js';
 import type { Sql, TransactionSql } from 'postgres';
-import { type DeploymentMode, OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
+import {
+    DEFAULT_GATE_FIX_ROUNDS,
+    type DeploymentMode,
+    OBJECTIVE_MODE,
+    ORG_SCOPE,
+    USER_SCOPE,
+    WORKFLOW_MODE,
+} from '@factory-ai/core';
 import { lockThreadRootInTx } from '../connection-bindings.js';
 import { cancelWaitsWithEvent, insertAdminActionEvent } from './job-store-admin-event.js';
 import { addFollowUpBindings, bindOnCreate } from './job-store-connections.js';
@@ -32,6 +39,26 @@ import { refuseInactiveOrg } from '../org-status.js';
 
 /** A workflow column's value: the JSON when a workflow was named, SQL null otherwise. */
 const jsonOrNull = (sql: Sql, value: object | undefined) => (value ? sql.json(value as never) : null);
+
+/**
+ * The gate-repair round limit an objective root freezes at create (162): the selected profile's
+ * `gate_fix_rounds`, the default when no profile resolved (an agent default, or a personal name with no caller to own
+ * it). A workflow root walks its graph and has none.
+ */
+function gateFixRoundsFragment(
+    tx: TransactionSql,
+    { orgId, mode, createdBy, target }: { orgId: string; mode: string; createdBy: string | null; target: CreateTarget }
+) {
+    if (mode !== OBJECTIVE_MODE) return tx`null::integer`;
+    const scope = target.executorScope ?? USER_SCOPE;
+    const owner = scope === ORG_SCOPE ? null : createdBy;
+    if (target.executor === null || (scope !== ORG_SCOPE && owner === null))
+        return tx`${DEFAULT_GATE_FIX_ROUNDS}::integer`;
+    return tx`coalesce((
+        select p.gate_fix_rounds from executor_profile p
+        where p.org_id = ${orgId} and p.name = ${target.executor} and p.user_id is not distinct from ${owner}
+    ), ${DEFAULT_GATE_FIX_ROUNDS}::integer)`;
+}
 
 /**
  * Refuses a create once the org queues `cap` rows (its plan's queued limit), naming `queued`. The org's creates take
@@ -92,7 +119,7 @@ export async function insertJobInTx(
             insert into job (
                 org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
                 workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params, mode,
-                execution_user_id, skills, base_branch, skill_pin, skill_hidden, agent_type, agent_model
+                execution_user_id, skills, base_branch, skill_pin, skill_hidden, agent_type, agent_model, gate_fix_rounds
             )
             select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, ${target.executorScope ?? USER_SCOPE}, x, x,
                    ${target.workflow?.id ?? null},
@@ -105,7 +132,8 @@ export async function insertJobInTx(
                    ${sql.array([...(target.skills ?? [])])}::text[],
                    ${target.baseBranch ?? null},
                    '[]'::jsonb, '[]'::jsonb,
-                   ${target.agentType ?? null}, ${target.agentModel ?? null}
+                   ${target.agentType ?? null}, ${target.agentModel ?? null},
+                   ${gateFixRoundsFragment(tx, { orgId, mode, createdBy, target })}
             from (select gen_random_uuid() as x) s
             returning id
         `;

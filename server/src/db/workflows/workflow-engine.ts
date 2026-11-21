@@ -17,6 +17,7 @@ import {
     type ParamValues,
     type WorkflowDefinition,
     type WorkflowNode,
+    boundedTail,
     interpolate,
     nodeOf,
     tailMatches,
@@ -115,6 +116,43 @@ const REST_BY_KIND: Partial<Record<FailureKind, RestReason>> = {
 export type Transition =
     | { action: 'insert'; node: WorkflowNode; command: string; session: 'resume' | 'fresh'; publish: boolean }
     | { action: 'rest'; reason: RestReason };
+
+/**
+ * The follow-up an objective-mode thread's board queues for a run that failed on a declared gate. The words
+ * are the board's, not the member's: the failed gate's name and output tail follow, each bounded like a workflow
+ * placeholder.
+ */
+export const objectiveGateFixCommand = (gate: GateReport): string =>
+    `The "${boundedTail(gate.name)}" gate failed at the end of your last run. Fix the cause so the gate passes, ` +
+    `keeping the change as small as the fix allows.\n\nGate output:\n${boundedTail(gate.output ?? '')}`;
+
+/**
+ * An objective-mode thread's transition (no graph): a run that failed on a declared gate gets one gate-fix
+ * follow-up, bounded by the limit frozen on the root, and anything else rests. Reuses the workflow rules a
+ * `gate-failed` edge follows — the kinds that rest before any edge, the unchanged-tree rest, the command cap.
+ */
+export function nextObjectiveTransition(input: {
+    completed: CompletedRun;
+    /** The limit frozen on the root; null (a root from before the column) is off. */
+    limit: number | null;
+    /** Gate-fix rows the thread already holds, dead ones included. */
+    spentRounds: number;
+    /** Another row of the thread is queued or running. */
+    threadBusy: boolean;
+}): { action: 'insert'; command: string; round: number } | { action: 'rest'; reason: RestReason } {
+    const { completed, limit, spentRounds, threadBusy } = input;
+    const restReason = completed.failureKind ? REST_BY_KIND[completed.failureKind] : undefined;
+    if (restReason !== undefined) return { action: 'rest', reason: restReason };
+    if (completed.status !== 'failed' || completed.failureKind !== 'gate') return { action: 'rest', reason: 'no_edge' };
+    const failed = firstFailedGate(completed.gates);
+    if (failed === null) return { action: 'rest', reason: 'no_edge' };
+    if (threadBusy) return { action: 'rest', reason: 'thread_busy' };
+    if (completed.treeChanged === false) return { action: 'rest', reason: 'no_progress' };
+    if (limit === null || spentRounds >= limit) return { action: 'rest', reason: 'loop_bound' };
+    const command = objectiveGateFixCommand(failed);
+    if (command.length > COMMAND_LIMIT) return { action: 'rest', reason: 'command_too_large' };
+    return { action: 'insert', command, round: spentRounds + 1 };
+}
 
 /**
  * The thread's PRIMARY session: the session of the first `resume`-policy run, scanned oldest

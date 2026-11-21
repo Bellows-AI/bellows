@@ -12,6 +12,7 @@ import {
     toJobRow,
     type TaskRow,
     threadBaseBranchFragment,
+    gateFixColumns,
     threadTitleColumnsFragment,
     toTask,
     userRef,
@@ -158,6 +159,7 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                session_id, exit_code, output, gates, runtime, repo, executor, executor_scope, agent_type, agent_model, run_model,
                parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+               ${gateFixColumns(sql)},
                -- The task's overall wall clock, summed over the thread the WHERE already
                -- scoped: every member carries the total, so the view reads it off any of
                -- them. A sum over all-null banks is null — nothing measurable, never zero.
@@ -260,6 +262,7 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                session_id, exit_code, output, gates, runtime, repo, executor, executor_scope, agent_type, agent_model, run_model,
                parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+               ${gateFixColumns(sql)},
                summary, wall_clock_ms, agent_turns, setup_ms, interruptions, failure_kind, failure_cause,
                -- The thread's wait (036) and publication, served by the detail reads on
                -- the same thread-wide rule thread() follows — the per-run lists answer null.

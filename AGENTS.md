@@ -38,7 +38,9 @@ such a test before the next lane run; a lane is rerun to confirm a fix, never to
 panel, page, style, label or `aria-*` name — or to a payload a panel renders runs
 `npm run verify:ui` before it ships, and every failure is fixed in the same change: the app if it
 regressed, the spec if the UI changed on purpose. CI runs the e2e job only after merge to `main`
-(`.github/workflows/ci.yml`), so a PR never catches it.
+(`.github/workflows/ci.yml`), so a PR never catches it. Inside a Bellows task the agent's image has
+no browser: run it through the on-demand `ui` gate, filtered to the specs the change touches
+(`scripts/gate-ui.sh`).
 
 **A change to user-facing behaviour updates `site/` in the same PR.** UI labels, CLI commands and
 flags, MCP tools, `.bellows.yaml` and limits are documented there by hand; `server/test/site-docs.test.ts`
