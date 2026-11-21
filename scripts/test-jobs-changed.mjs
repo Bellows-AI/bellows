@@ -36,6 +36,7 @@ export const PHASES = [
     'repo-skills',
     'ask-user-question',
     'question-round-trip',
+    'finish-gate',
     'pinned-skills',
     'mcp',
 ];
@@ -45,7 +46,7 @@ export const FULL = 'full';
 export const NONE = 'none';
 
 // The phases that boot a real agent CLI image (make runners) against the scripted model endpoint.
-const REAL = ['cooperative-stop', 'tool-isolation', 'ask-user-question', 'question-round-trip', 'repo-skills', 'pinned-skills'];
+const REAL = ['cooperative-stop', 'tool-isolation', 'ask-user-question', 'question-round-trip', 'finish-gate', 'repo-skills', 'pinned-skills'];
 const RECOVERY = ['node-disruption', 'driver-kill'];
 
 // [pattern, phases | FULL | NONE, reason]. First match wins, so a specific file precedes its directory.
@@ -131,7 +132,7 @@ export const RULES = [
     [/^scripts\/lane-skills\.mjs$/, ['pinned-skills'], 'the pinned-skills phase publisher'],
     [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish(-retry)?|loop\/loop-pr-operation)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
-    [/^driver\/src\/(loop\/loop-gates|loop\/loop-gate-pass|loop\/loop-finish|loop\/loop-run-control|gate-manager|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs|dockerd-loss)\.ts$/, ['driver', 'workflows'], 'gates and phases'],
+    [/^driver\/src\/(loop\/loop-gates|loop\/loop-gate-pass|loop\/loop-finish|loop\/loop-run-control|gate-manager|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs|dockerd-loss)\.ts$/, ['driver', 'workflows', 'finish-gate'], 'gates and phases'],
     [/^driver\/src\/scripts\/gate-(loop|shell|github)\.sh$/, ['driver', 'workflows'], 'gates'],
     [/^driver\/src\/(docker\/docker-task-volume|task-volume)\.ts$/, ['driver', 'capacity', 'pinned-skills', ...RECOVERY], 'task volume'],
     [/^driver\/src\/(docker\/docker-close-read|close-read|docker\/docker-teardown|loop\/loop-conclusion|loop\/loop-post-run)\.ts$/, ['driver', ...RECOVERY], 'task conclusion'],
@@ -148,8 +149,8 @@ export const RULES = [
     [/^docker\/executor-common\/(github-credential|credential-broker)\.cjs$/, ['github-credential', 'cooperative-stop', 'tool-isolation', 'image-checks'], 'GitHub credential, built into both images'],
     [/^docker\/(claude-executor|opencode-executor)\/(stop-hook\.cjs|stop-plugin\/.*)$/, ['cooperative-stop'], 'cooperative stop'],
     [/^docker\/(claude|opencode)-executor\/test\.sh$/, ['image-checks'], 'executor image checks'],
-    [/^docker\/claude-executor\/(Dockerfile|entrypoint\.sh|claude-bridge\.cjs|claude-progress\.cjs|turn-context-hook\.cjs|managed-settings\.json|claude-home\/.*)$/, [...REAL, 'image-checks'], 'claude-executor image'],
-    [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|rate-limit-watch\.cjs|otel-credential\.cjs|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation', 'image-checks', 'repo-skills', 'pinned-skills'], 'opencode-executor image'],
+    [/^docker\/claude-executor\/(Dockerfile|entrypoint\.sh|claude-bridge\.cjs|claude-progress\.cjs|turn-context-hook\.cjs|finish-hook\.cjs|managed-settings\.json|claude-home\/.*)$/, [...REAL, 'image-checks'], 'claude-executor image'],
+    [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|rate-limit-watch\.cjs|otel-credential\.cjs|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation', 'image-checks', 'repo-skills', 'pinned-skills', 'finish-gate'], 'opencode-executor image'],
     [/^docker\/executor-common\//, [...REAL, 'image-checks'], 'files both executor images copy in'],
     [/^docker\/tool-isolation-checks\.sh$/, ['tool-isolation'], 'tool isolation'],
     [/^docker\/skills\/factory-task-title\//, ['tool-isolation', 'question-round-trip'], 'task title helper and skill'],

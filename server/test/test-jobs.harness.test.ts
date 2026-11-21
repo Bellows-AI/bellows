@@ -157,7 +157,7 @@ describe('the test-jobs harness', () => {
             expect(line).toContain(`"$IMAGE_BASE" >${file}`);
         }
         expect(SCRIPT).toContain(
-            'docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_ACC" "$IMAGE_BASE"'
+            'docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_ACC" "$IMAGE_FINISH-claude" "$IMAGE_FINISH-opencode" "$IMAGE_BASE"'
         );
     });
 
