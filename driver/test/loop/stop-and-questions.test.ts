@@ -758,7 +758,7 @@ describe('questions (issue #226)', () => {
         expect(refused.runner.paused).toEqual([]);
     });
 
-    it('keeps the budget paused when a question is answered while a finish pass is in flight (BEL-509)', async () => {
+    it('keeps the budget paused when a question is answered while a finish pass is in flight', async () => {
         let release = () => {};
         const held = new Promise<void>((resolve) => {
             release = resolve;

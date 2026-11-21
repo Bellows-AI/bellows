@@ -17,7 +17,7 @@ import {
 } from '../fixtures/loop-stubs.js';
 
 /**
- * The finish pass (BEL-509): the agent's stop asks `POST /gate/finish`, and the driver runs the declared gates
+ * The finish pass: the agent's stop asks `POST /gate/finish`, and the driver runs the declared gates
  * inside the run with the close-time pass's own body — reuse, dead-service restart, records — under the
  * round cap frozen on the root. The stub runner's `run` plays the agent: it asks the relay the loop attached.
  * Both executors share the loop: the two `EXECUTOR` values pin that parity.

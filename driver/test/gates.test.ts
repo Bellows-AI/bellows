@@ -1349,7 +1349,7 @@ describe('the gate server: departing a token (#829)', () => {
     });
 });
 
-describe('the gate server: the finish pass door (BEL-509)', () => {
+describe('the gate server: the finish pass door', () => {
     /** A control token with its agent token beside it; `post` is the agent's `POST /gate/finish`. */
     async function finishServer() {
         const server = createGateServer({ host: '127.0.0.1', manager: idle });

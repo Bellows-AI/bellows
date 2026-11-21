@@ -124,7 +124,7 @@ describe('the gate runs (issue #983)', () => {
     });
 });
 
-describe('the finish passes (BEL-509)', () => {
+describe('the finish passes', () => {
     const job = boardJob();
     const pass = {
         passId: '88888888-8888-4888-8888-888888888888',
@@ -190,7 +190,7 @@ describe('the finish passes (BEL-509)', () => {
     });
 });
 
-describe('the round cap on the claim (BEL-509)', () => {
+describe('the round cap on the claim', () => {
     const { finishRounds: _none, ...wire } = boardJob();
 
     it.each([0, 3, 10])('carries a cap of %i as is', (cap) => {

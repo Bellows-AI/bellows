@@ -10,7 +10,7 @@ import { staticRegistry, stubTelemetryClient, testConfig, jobStoreSlice } from '
  * Issue #983: `POST /api/jobs/:id/gate-run` records one gate execution under the attempt's lease;
  * `POST /api/jobs/:id/gate-runs` reads the run's latest row per gate back for the driver's completion
  * pass. Both are the worker's routes: the lease in the body is the credential. `POST /api/jobs/:id/finish-passes`
- * records one answered finish pass (BEL-509) and `POST /api/jobs/:id/finish-passes/read` answers the rounds the job
+ * records one answered finish pass and `POST /api/jobs/:id/finish-passes/read` answers the rounds the job
  * row has failed, under the same lease.
  */
 const track = trackApps();
