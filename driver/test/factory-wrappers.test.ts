@@ -118,6 +118,22 @@ describe('factory-gate', () => {
         expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ gate: 'unit', filter: 'src/a.test.ts' });
     });
 
+    it('sends --last as the last field, and takes it with no filter', async () => {
+        const gate = await serve(200, '{"exitCode":1,"last":true}', true);
+        await run(GATE, ['test:db', '--last'], env(gate.listen));
+        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ gate: 'test:db', last: true });
+        const refused = await run(GATE, ['test:db', '--last', '--filter', 'x'], env(gate.listen));
+        expect(refused.code).toBe(2);
+        expect(gate.seen).toHaveLength(1);
+    });
+
+    it('keeps the "no report" answer of --last: body printed, HTTP exit', async () => {
+        const body = '{"error":"no stored report for gate \\"test\\" in this thread"}';
+        const gate = await serve(404, body, true);
+        const ran = await run(GATE, ['test', '--last'], env(gate.listen));
+        expect(ran).toMatchObject({ code: 22, stdout: body });
+    });
+
     it('encodes shell-hostile input as data: nothing is interpolated or run', async () => {
         const gate = await serve(200, '{}', true);
         const hostile = `a"}'; $(touch /tmp/pwned) \`id\` \\n`;

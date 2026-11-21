@@ -12,9 +12,11 @@ const BODY_LIMIT = 4096;
 const FILTER_MAX_CHARS = 256;
 const PRINTABLE_FILTER = /^[\x20-\x7e]+$/;
 
-export type GateRequest = { ok: true; gate: string; filter?: string } | { ok: false; status: number; error: string };
+export type GateRequest =
+    | { ok: true; gate: string; filter?: string; last?: true }
+    | { ok: false; status: number; error: string };
 
-/** Reads and validates the ad-hoc endpoint's request body: `{"gate": "<declared name>"}`. */
+/** Reads and validates the ad-hoc endpoint's request body: `{"gate": "<declared name>"}`, plus `filter` or `last`. */
 export const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> => {
     const raw = await readBody(request, BODY_LIMIT);
     if (raw === null) return { ok: false, status: HTTP_PAYLOAD_TOO_LARGE, error: 'body too large' };
@@ -22,6 +24,13 @@ export const parseGateRequest = async (request: IncomingMessage): Promise<GateRe
     if (parsed === null) return { ok: false, status: HTTP_BAD_REQUEST, error: 'body must be JSON' };
     if (typeof parsed.gate !== 'string' || !parsed.gate.trim()) {
         return { ok: false, status: HTTP_BAD_REQUEST, error: 'gate must be a name' };
+    }
+    if (parsed.last !== undefined) {
+        if (parsed.last !== true) return { ok: false, status: HTTP_BAD_REQUEST, error: 'last must be true' };
+        if (parsed.filter !== undefined) {
+            return { ok: false, status: HTTP_BAD_REQUEST, error: 'last reads a stored report: it takes no filter' };
+        }
+        return { ok: true, gate: parsed.gate, last: true };
     }
     if (parsed.filter === undefined) return { ok: true, gate: parsed.gate };
     if (typeof parsed.filter !== 'string' || !parsed.filter.trim() || parsed.filter.length > FILTER_MAX_CHARS) {

@@ -11,6 +11,7 @@
  */
 import { COMMAND_LIMIT } from '@factory-ai/core';
 import type { FailureKind, GateReport } from '../jobs/job-store-types.js';
+import { firstFailedGate, gateOutputTail } from '../gate-report.js';
 import {
     type EdgeRule,
     type ParamValues,
@@ -115,11 +116,6 @@ export type Transition =
     | { action: 'insert'; node: WorkflowNode; command: string; session: 'resume' | 'fresh'; publish: boolean }
     | { action: 'rest'; reason: RestReason };
 
-/** The first failed gate of a completed run, for the `{{gate.*}}` placeholders; null when green. */
-export function firstFailedGate(gates: GateReport[] | null): GateReport | null {
-    return gates?.find((gate) => gate.status === 'failed') ?? null;
-}
-
 /**
  * The thread's PRIMARY session: the session of the first `resume`-policy run, scanned oldest
  * first (design.md Decision 3). Pre-workflow threads (snapshot null) are all resume-equivalent —
@@ -209,7 +205,7 @@ function followEdge(
             return '';
         },
         gateName: failed?.name ?? '',
-        gateOutput: failed?.output ?? '',
+        gateOutput: failed ? gateOutputTail(failed) : '',
         param: (name) => input.params[name] ?? '',
         command: input.command,
     });

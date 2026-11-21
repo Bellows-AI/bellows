@@ -489,18 +489,20 @@ async function serveGates(
     {
         token = 'tok-1',
         gates = [{ name: 'test', command: 'npm test' }],
-    }: { token?: string; gates?: GateClaim['gates'] } = {}
+        job = JOB,
+    }: { token?: string; gates?: GateClaim['gates']; job?: BoardJob } = {}
 ) {
     const server = createGateServer({ host: '127.0.0.1', manager });
-    server.register(token, { key: KEY, image: 'node:24', job: JOB, gates });
+    server.register(token, { key: KEY, image: 'node:24', job, gates });
     const port = await server.listen();
-    const run = (gate = 'test') =>
+    const post = (body: object) =>
         fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: `Bearer ${token}` },
-            body: JSON.stringify({ gate }),
+            body: JSON.stringify(body),
         });
-    return { server, port, run };
+    const run = (gate = 'test') => post({ gate });
+    return { server, port, run, post };
 }
 
 describe('the gate server', () => {
@@ -1326,6 +1328,68 @@ describe('the gate server: departing a token (#829)', () => {
         expect((await call('agent', 'POST', '/publish')).status).toBe(UNAUTHORIZED_STATUS);
         expect((await call('exp', 'GET', '/export/chunk')).status).toBe(UNAUTHORIZED_STATUS);
         await expect(call('sup', 'GET', '/control')).rejects.toThrow();
+        await server.close();
+    });
+});
+
+/** BEL-505: `{"gate","last":true}` reads the report the claim carried; it never runs the gate. */
+describe('the gate server: reading the last stored report', () => {
+    const LONG_GATES = [
+        { name: 'test:db', command: 'npm run test:db', timeoutMinutes: 30 },
+        { name: 'lint', command: 'npm run lint' },
+    ];
+    const withReports: BoardJob = {
+        ...JOB,
+        lastGateReports: [
+            { name: 'test:db', status: 'failed', exitCode: 1, output: '3 tests failed' },
+            { name: 'lint', status: 'passed', exitCode: 0, output: null },
+        ],
+    };
+
+    it('answers a gate whose timeout refuses an ad hoc run, without acquiring or running anything', async () => {
+        const acquire = vi.fn(async () => {});
+        const runGate = vi.fn(async () => ({ exitCode: 0, output: '' }));
+        const { server, post, run } = await serveGates({ acquire, runGate }, { gates: LONG_GATES, job: withReports });
+
+        expect((await run('test:db')).status).toBe(UNPROCESSABLE_STATUS);
+        const last = await post({ gate: 'test:db', last: true });
+
+        expect(last.status).toBe(OK_STATUS);
+        await expect(last.json()).resolves.toEqual({
+            status: 'failed',
+            exitCode: 1,
+            output: '3 tests failed',
+            last: true,
+        });
+        expect(acquire).not.toHaveBeenCalled();
+        expect(runGate).not.toHaveBeenCalled();
+        await server.close();
+    });
+
+    it('answers a clear "no report" for a declared gate the thread never ran', async () => {
+        const { server, post } = await serveGates(idle, {
+            gates: [...LONG_GATES, { name: 'typecheck', command: 'npm run typecheck' }],
+            job: withReports,
+        });
+
+        const last = await post({ gate: 'typecheck', last: true });
+
+        expect(last.status).toBe(NOT_FOUND_STATUS);
+        await expect(last.json()).resolves.toEqual({ error: 'no stored report for gate "typecheck" in this thread' });
+        await server.close();
+    });
+
+    it('answers "no report" when the claim carried none', async () => {
+        const { server, post } = await serveGates(idle, { gates: LONG_GATES });
+        expect((await post({ gate: 'lint', last: true })).status).toBe(NOT_FOUND_STATUS);
+        await server.close();
+    });
+
+    it('still refuses an undeclared name, and refuses last with a filter or a non-boolean', async () => {
+        const { server, post } = await serveGates(idle, { gates: LONG_GATES, job: withReports });
+        expect((await post({ gate: 'deploy', last: true })).status).toBe(NOT_FOUND_STATUS);
+        expect((await post({ gate: 'lint', last: true, filter: 'x' })).status).toBe(BAD_REQUEST_STATUS);
+        expect((await post({ gate: 'lint', last: 'yes' })).status).toBe(BAD_REQUEST_STATUS);
         await server.close();
     });
 });

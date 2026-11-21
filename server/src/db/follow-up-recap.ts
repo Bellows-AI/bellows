@@ -1,5 +1,8 @@
 import { COMMAND_LIMIT } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
+import { renderFailedGates } from './gate-report.js';
+import { readThreadGateReports } from './jobs/job-store-gate-reports.js';
+import type { LastGateReport } from './jobs/job-store-types.js';
 
 /**
  * The recap a sessionless member follow-up carries: with no conversation to resume, the agent
@@ -87,14 +90,19 @@ export async function readRecapTurns(
 }
 
 /**
- * The command a claim delivers: a member follow-up with no session to resume starts fresh, so the
- * earlier turns ride ahead of its command; every other claim delivers the row's own command. A
- * claim that continues an interrupted attempt in its session is delivered exactly what
- * that attempt's first claim was — the recap too when the session is the row's own, minted by a
- * first claim that ran sessionless — never wrapped: the runner that claim launched is marked with
- * this text (`COMMAND_MARK`) and adopted on it, and the driver frames the continuation itself.
+ * The command a claim delivers, and the thread's last gate reports it carries: a member follow-up
+ * with no session to resume starts fresh, so the earlier turns ride ahead of its command; every
+ * other claim delivers the row's own command. A claim that continues an interrupted attempt in its
+ * session is delivered exactly what that attempt's first claim was — the recap too when the
+ * session is the row's own, minted by a first claim that ran sessionless — never wrapped: the
+ * runner that claim launched is marked with this text (`COMMAND_MARK`) and adopted on it, and the
+ * driver frames the continuation itself.
+ *
+ * A member follow-up of a run whose stored gates hold a failed report also carries it after the
+ * person's words: the end-of-run gates ran after the agent exited, so their output never entered
+ * the session. The report is the parent row's, so every claim of this row renders the same text.
  */
-export async function claimCommand(
+export async function claimCommandAndReports(
     tx: TransactionSql,
     orgId: string,
     rootJobId: string,
@@ -102,15 +110,23 @@ export async function claimCommand(
         id: string;
         command: string;
         follow_up: boolean;
+        parent_job_id: string | null;
         session_id: string | null;
         own_session: boolean;
         workflow_node: string | null;
         resumes_interrupted: boolean;
     }
-): Promise<string> {
+): Promise<{ command: string; lastGateReports: LastGateReport[] }> {
+    const reports = await readThreadGateReports(tx, orgId, rootJobId, row);
+    const memberFollowUp = row.follow_up && row.workflow_node === null;
+    const failed = memberFollowUp ? renderFailedGates(reports.parent, row.command) : '';
+    const command = failed ? `${row.command}\n\n${failed}` : row.command;
     // Whether the attempt's first claim ran sessionless: for a continuation, when the session it
     // resumes is one that first claim minted (`own_session`).
     const sessionless = row.resumes_interrupted ? row.own_session : row.session_id === null;
-    if (!row.follow_up || row.workflow_node !== null || !sessionless) return row.command;
-    return renderFollowUpRecap(await readRecapTurns(tx, orgId, rootJobId, row.id), row.command);
+    const delivered =
+        memberFollowUp && sessionless
+            ? renderFollowUpRecap(await readRecapTurns(tx, orgId, rootJobId, row.id), command)
+            : command;
+    return { command: delivered, lastGateReports: reports.last };
 }

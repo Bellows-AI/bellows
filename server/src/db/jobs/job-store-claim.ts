@@ -43,7 +43,7 @@ import type {
 } from './job-store-types.js';
 import { type ClaimCandidateRow, withClaimAttachments } from './job-store-claim-row.js';
 import { lockCandidate } from './job-store-claim-lock.js';
-import { claimCommand } from '../follow-up-recap.js';
+import { claimCommandAndReports } from '../follow-up-recap.js';
 import { claimPromptInput, resolveMasterPrompt, resolveTurnContext } from '../master-prompt.js';
 import { activeOrgOf } from '../org-status.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from '../workflows/workflow-blocks/runtime.js';
@@ -572,7 +572,7 @@ async function assembleClaim(
     const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.run_as) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
-    const command = await claimCommand(tx, orgId, rootJobId, row);
+    const { command, lastGateReports } = await claimCommandAndReports(tx, orgId, rootJobId, row);
     // The thread root's selection checked against what this claim's env authorizes: names
     // only, so selecting a skill never adds to the env and the sentence never carries a value.
     const managed = [...row.live_providers, ...connections.dismissed, ...(githubApp ? ['github'] : [])];
@@ -588,7 +588,8 @@ async function assembleClaim(
         ...evidence,
         skillRefusal,
     });
-    return connections.outcomes.length > 0 ? { ...claim, connectionOutcomes: connections.outcomes } : claim;
+    const outcomes = connections.outcomes.length > 0 ? { connectionOutcomes: connections.outcomes } : {};
+    return { ...claim, lastGateReports, ...outcomes };
 }
 
 /** The settle passes a claim runs before it looks for a candidate, each committed on its own. */
@@ -919,7 +920,7 @@ export function buildClaimResult(
             turnContext: string | null;
             skillRefusal: string | null;
         }
-): Omit<Claim, 'attachments'> {
+): Omit<Claim, 'attachments' | 'lastGateReports'> {
     const {
         claimEnv,
         executorType,

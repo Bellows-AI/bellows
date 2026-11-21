@@ -173,6 +173,30 @@ const adHocRefusal = (gate: DeclaredGate, filter: string | undefined): string | 
     return null;
 };
 
+/** `factory-gate <name> --last`: the thread's latest stored verdict of the gate, as the claim carried it. */
+const lastReportAnswer = (job: BoardJob, name: string): { status: number; body: unknown } => {
+    const stored = job.lastGateReports?.find((report) => report.name === name);
+    if (!stored) {
+        return { status: HTTP_NOT_FOUND, body: { error: `no stored report for gate "${name}" in this thread` } };
+    }
+    const { status, exitCode, output } = stored;
+    return { status: HTTP_OK, body: { status, exitCode, output, last: true } };
+};
+
+/**
+ * The answer an ad-hoc request gets before anything is acquired: a stored report (`--last`, whatever the gate's
+ * timeout), or the 422 for a run the gate refuses. Null for a request that runs.
+ */
+const answeredWithoutRunning = (
+    job: BoardJob,
+    gate: DeclaredGate,
+    request: { filter?: string | undefined; last?: true | undefined }
+): { status: number; body: unknown } | null => {
+    if (request.last) return lastReportAnswer(job, gate.name);
+    const refusal = adHocRefusal(gate, request.filter);
+    return refusal ? { status: HTTP_UNPROCESSABLE, body: { error: refusal } } : null;
+};
+
 /**
  * Acquires the checkout's gate environment and runs the declared gate in it, translating the
  * outcome into the ad-hoc endpoint's response. CONTAINER_GONE means the gate could not be run — its
@@ -351,8 +375,8 @@ export function createGateServer({
         // declare-then-run model exists to prevent.
         const gate = claim.gates.find((candidate) => candidate.name === parsedRequest.gate);
         if (!gate) return respond(reply, HTTP_NOT_FOUND, { error: `no declared gate "${parsedRequest.gate}"` });
-        const refusal = adHocRefusal(gate, parsedRequest.filter);
-        if (refusal) return respond(reply, HTTP_UNPROCESSABLE, { error: refusal });
+        const early = answeredWithoutRunning(claim.job, gate, parsedRequest);
+        if (early) return respond(reply, early.status, early.body);
 
         if (admission.isClosed(auth)) {
             return respond(reply, HTTP_SERVICE_UNAVAILABLE, { error: 'ad-hoc gate runs are closed', retryable: true });
