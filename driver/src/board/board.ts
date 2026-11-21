@@ -206,6 +206,11 @@ export interface BoardJob extends ClaimSkills {
      */
     baseBranch?: string | null;
     /**
+     * The failed finish passes a run of this thread may answer: the root's frozen round cap. Present only when the
+     * claim carried a non-negative integer (`claimOf`); absent is unknown, never 0.
+     */
+    finishRounds?: number;
+    /**
      * The thread ROOT job's command — the job's own, unless it is a follow-up. The publisher reads
      * the task's issue from it: the run that publishes is often a follow-up ("both OK") whose own
      * command names nothing.

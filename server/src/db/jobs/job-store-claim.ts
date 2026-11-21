@@ -492,6 +492,8 @@ async function acquireCandidate(
                        where b.org_id = job.org_id and b.root_job_id = job.root_job_id and c.status = 'active')
                           as live_providers,
                       ${baseBranch} as base_branch,
+                      (select r.gate_fix_rounds from job r
+                       where r.org_id = job.org_id and r.id = job.root_job_id) as finish_rounds,
                       (interruptions -> -1 ->> 'refunded')::boolean as takeover_refunded
         `;
         const row = rows[0];
@@ -974,6 +976,7 @@ export function buildClaimResult(
         ...(claimEnv ? { env: claimEnv } : {}),
         ...(row.repo !== null ? { repo: row.repo } : {}),
         ...(row.base_branch ? { baseBranch: row.base_branch } : {}),
+        ...(row.finish_rounds !== null ? { finishRounds: row.finish_rounds } : {}),
         ...(claimGates ? { gates: claimGates } : {}),
         ...(claimServices.length > 0 ? { services: claimServices } : {}),
         ...(planRevision ? { planRevision } : {}),

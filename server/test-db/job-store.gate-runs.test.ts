@@ -115,6 +115,13 @@ describe.skipIf(!enabled)('gate runs', () => {
         ]);
     });
 
+    it('stores a finish pass’s row and reads it back', async () => {
+        const c = await claimed();
+        const done = passed(c, row(c, { source: 'finish' }));
+        expect(await store.writeGateRun(c.id, c.leaseToken, done)).toEqual({ result: 'ok' });
+        expect(await read(c)).toEqual([{ ...done, claimSeq: c.claimSeq }]);
+    });
+
     it('answers the latest row per gate, oldest gate first, whatever the scope of the row', async () => {
         const c = await claimed();
         const first = row(c);

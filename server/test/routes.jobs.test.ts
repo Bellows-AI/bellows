@@ -528,6 +528,14 @@ function stubStore(
             boom();
             return { result: 'ok', runs: [] };
         },
+        async writeFinishPass() {
+            boom();
+            return { result: 'ok' };
+        },
+        async readFinishRounds() {
+            boom();
+            return { result: 'ok', failedRounds: 0 };
+        },
         async writePrOperation() {
             boom();
             return { result: 'ok' };

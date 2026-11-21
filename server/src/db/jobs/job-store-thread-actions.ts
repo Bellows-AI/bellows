@@ -41,15 +41,14 @@ import { refuseInactiveOrg } from '../org-status.js';
 const jsonOrNull = (sql: Sql, value: object | undefined) => (value ? sql.json(value as never) : null);
 
 /**
- * The gate-repair round limit an objective root freezes at create (162): the selected profile's
+ * The gate round cap every root freezes at create (162, 163), whatever its mode: the selected profile's
  * `gate_fix_rounds`, the default when no profile resolved (an agent default, or a personal name with no caller to own
- * it). A workflow root walks its graph and has none.
+ * it). Only the profile's own 0 yields 0.
  */
 function gateFixRoundsFragment(
     tx: TransactionSql,
-    { orgId, mode, createdBy, target }: { orgId: string; mode: string; createdBy: string | null; target: CreateTarget }
+    { orgId, createdBy, target }: { orgId: string; createdBy: string | null; target: CreateTarget }
 ) {
-    if (mode !== OBJECTIVE_MODE) return tx`null::integer`;
     const scope = target.executorScope ?? USER_SCOPE;
     const owner = scope === ORG_SCOPE ? null : createdBy;
     if (target.executor === null || (scope !== ORG_SCOPE && owner === null))
@@ -133,7 +132,7 @@ export async function insertJobInTx(
                    ${target.baseBranch ?? null},
                    '[]'::jsonb, '[]'::jsonb,
                    ${target.agentType ?? null}, ${target.agentModel ?? null},
-                   ${gateFixRoundsFragment(tx, { orgId, mode, createdBy, target })}
+                   ${gateFixRoundsFragment(tx, { orgId, createdBy, target })}
             from (select gen_random_uuid() as x) s
             returning id
         `;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createBoard } from '../src/board/board.js';
+import { type BoardJob, createBoard } from '../src/board/board.js';
+import { claimOf, parseClaim } from '../src/board/board-claim.js';
 import { boardJob } from './fixtures/board-job.js';
 
 /**
@@ -120,5 +121,93 @@ describe('the gate runs (issue #983)', () => {
             throw new Error('connection reset');
         }) as unknown as typeof globalThis.fetch;
         expect(await boardOn(failing).gateRun(job, write)).toBe('rejected');
+    });
+});
+
+describe('the finish passes (BEL-509)', () => {
+    const job = boardJob();
+    const pass = {
+        passId: '88888888-8888-4888-8888-888888888888',
+        runClaimSeq: 2,
+        verdict: 'failed' as const,
+        gate: 'test',
+    };
+
+    it('records a pass under the lease token and reads the failed rounds back', async () => {
+        const written = recorder(() => Response.json({ id: 'job-1', passId: pass.passId }));
+        expect(await boardOn(written.fetch, 'fwt_abc').finishPass(job, pass)).toBe('ok');
+        expect(written.calls[0]!.url).toBe('http://board/api/jobs/job-1/finish-passes');
+        expect(written.calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+        expect(written.calls[0]!.body).toEqual({ leaseToken: job.leaseToken, ...pass });
+
+        const read = recorder(() => Response.json({ failedRounds: 2 }));
+        expect(await boardOn(read.fetch).finishRounds(job)).toBe(2);
+        expect(read.calls[0]!.url).toBe('http://board/api/jobs/job-1/finish-passes/read');
+        expect(read.calls[0]!.body).toEqual({ leaseToken: job.leaseToken });
+    });
+
+    it('reads zero failed rounds as zero, not as unreadable', async () => {
+        const { fetch } = recorder(() => Response.json({ failedRounds: 0 }));
+        expect(await boardOn(fetch).finishRounds(job)).toBe(0);
+    });
+
+    it.each<[string, () => Response]>([
+        ['a 409', () => Response.json({ code: 'LEASE_LOST' }, { status: 409 })],
+        ['a 404', () => Response.json({ code: 'NOT_FOUND' }, { status: 404 })],
+        ['a 500', () => Response.json({ error: 'down' }, { status: 500 })],
+        ['a body that is not JSON', () => new Response('<html>', { status: 200 })],
+        ['no failedRounds field', () => Response.json({})],
+        ['a fractional count', () => Response.json({ failedRounds: 1.5 })],
+        ['a negative count', () => Response.json({ failedRounds: -1 })],
+        ['a string count', () => Response.json({ failedRounds: '2' })],
+        ['a null body', () => Response.json(null)],
+    ])('reads %s as unknown rounds, never as zero', async (_what, respond) => {
+        const { fetch } = recorder(respond);
+        expect(await boardOn(fetch).finishRounds(job)).toBeNull();
+    });
+
+    it('reads a rejected fetch and a timed-out signal as unknown rounds', async () => {
+        const failing = (async () => {
+            throw new Error('connection reset');
+        }) as unknown as typeof globalThis.fetch;
+        expect(await boardOn(failing).finishRounds(job)).toBeNull();
+        const { fetch } = recorder(() => Response.json({ failedRounds: 1 }));
+        const slow = ((url: string, init: RequestInit) =>
+            init.signal?.aborted ? Promise.reject(init.signal.reason) : fetch(url, init)) as unknown as typeof fetch;
+        const timedOut = AbortSignal.abort(new DOMException('the read timed out', 'TimeoutError'));
+        expect(await boardOn(slow).finishRounds(job, timedOut)).toBeNull();
+    });
+
+    it.each<[string, string, () => Response]>([
+        ['a lost lease', 'lost', () => Response.json({ code: 'LEASE_LOST' }, { status: 409 })],
+        ['a conflicting run claim', 'rejected', () => Response.json({ code: 'GATE_RUN_CONFLICT' }, { status: 409 })],
+        ['a removed thread', 'lost', () => Response.json({ code: 'NOT_FOUND' }, { status: 404 })],
+        ['a 400', 'rejected', () => Response.json({ code: 'BAD_BODY' }, { status: 400 })],
+        ['a 500', 'rejected', () => Response.json({ error: 'down' }, { status: 500 })],
+    ])('answers a pass refused with %s as %s', async (_what, answer, respond) => {
+        const { fetch } = recorder(respond);
+        expect(await boardOn(fetch).finishPass(job, pass)).toBe(answer);
+    });
+});
+
+describe('the round cap on the claim (BEL-509)', () => {
+    const { finishRounds: _none, ...wire } = boardJob();
+
+    it.each([0, 3, 10])('carries a cap of %i as is', (cap) => {
+        expect(claimOf({ ...wire, finishRounds: cap }).finishRounds).toBe(cap);
+    });
+
+    it.each<[string, unknown]>([
+        ['missing', undefined],
+        ['null', null],
+        ['textual', '3'],
+        ['fractional', 1.5],
+        ['negative', -1],
+    ])('leaves a %s cap unknown, never 0, and keeps the claim', (_what, value) => {
+        const parsed = parseClaim({ ...wire, finishRounds: value });
+        expect('claim' in parsed).toBe(true);
+        const claim = (parsed as { claim: BoardJob }).claim;
+        expect(claim.finishRounds).toBeUndefined();
+        expect('finishRounds' in claim).toBe(false);
     });
 });

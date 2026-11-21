@@ -269,7 +269,8 @@ function run(fields: RunFields): ThreadJob {
         titleRevision: 0,
         mode: fields.workflowName != null ? WORKFLOW_MODE : OBJECTIVE_MODE,
         gateFixRound: null,
-        gateFixLimit: null,
+        // Every root freezes a round cap at create (163); a root seeded without one carries the default, 3.
+        gateFixLimit: 3,
         doneAt: null,
         cancelRequestedAt: null,
         workspacePath: null,

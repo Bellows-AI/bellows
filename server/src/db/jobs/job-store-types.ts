@@ -698,6 +698,12 @@ export interface Claim {
      */
     baseBranch?: string;
     /**
+     * The failed finish passes a run of this thread may answer before the close-time verifier judges it: the
+     * root's `gate_fix_rounds`, frozen at create for every mode (163), carried as stored. Absent only when the root
+     * holds none, which the schema refuses; the driver reads absence as unknown, never as 0.
+     */
+    finishRounds?: number;
+    /**
      * The ROOT job's command — `command` itself unless this is a follow-up. The driver's publisher
      * closes the issue it names: the run that publishes is often a follow-up whose own command
      * ("both OK") names none.

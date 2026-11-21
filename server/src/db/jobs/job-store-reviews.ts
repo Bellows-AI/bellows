@@ -360,6 +360,8 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
             skill_hidden: row!.skill_hidden,
             live_providers: [],
             base_branch: null,
+            // A review runs no finish pass: its claim carries no round cap.
+            finish_rounds: null,
             last_attempt: false,
             own_session: row!.session_id !== null,
         },

@@ -370,6 +370,12 @@ export function stubBoard(
             const answer = options.gateRuns ?? null;
             return typeof answer === 'function' ? answer(signal) : answer;
         },
+        async finishPass() {
+            return 'ok';
+        },
+        async finishRounds() {
+            return null;
+        },
         async stageConclusion(claimed, result) {
             board.staged.push({ id: claimed.id, ...result });
             return options.stageAnswer ?? 'held';
