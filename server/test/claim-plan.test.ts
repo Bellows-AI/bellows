@@ -33,6 +33,14 @@ describe('resolveClaimPublish: the execution plan', () => {
         });
     });
 
+    // An environment image alone starts the gate container and `factory-exec`; a node that opts out of the
+    // gates gets neither, so its agent's exec answers "no gates" (exit 3).
+    it('drops an image-only environment on a node that opts out of the gates', () => {
+        const imageOnly = { ...read, claimGates: { image: 'node:24', gates: [] }, claimServices: [] };
+        expect(resolveClaimPublish(definition, 'review', imageOnly).claimGates).toBeNull();
+        expect(resolveClaimPublish(definition, 'fix', imageOnly).claimGates).toEqual({ image: 'node:24', gates: [] });
+    });
+
     it('drops a refusal with the plan on a node that opts out of the gates', () => {
         const refused = { ...read, claimGates: null, claimServices: [], planRefusal: 'ports collide' };
         expect(resolveClaimPublish(definition, 'review', refused).planRefusal).toBeNull();

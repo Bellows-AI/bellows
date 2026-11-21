@@ -192,6 +192,7 @@ export const stepRequest = (
         env?: Record<string, string>;
         timeoutMs: number;
         parallel?: true;
+        tokenless?: true;
     }
 ): StepRequest => ({
     id: `${kind}-${attemptKey(job)}-${parts.id}`,
@@ -203,6 +204,7 @@ export const stepRequest = (
     env: parts.env ?? {},
     timeoutMs: parts.timeoutMs,
     ...(parts.parallel ? { parallel: true as const } : {}),
+    ...(parts.tokenless ? { tokenless: true as const } : {}),
 });
 
 /**
@@ -402,6 +404,8 @@ export interface GateStepRequest {
     timeoutMs: number;
     /** Runs beside the other parallel gates in the gate container instead of waiting its turn (`StepRequest.parallel`). */
     parallel?: true;
+    /** An agent's exec: the step gets no GitHub token (`StepRequest.tokenless`). */
+    tokenless?: true;
 }
 
 /**
@@ -427,6 +431,7 @@ export async function runGateStep(
         env: gate.env,
         timeoutMs: gate.timeoutMs,
         ...(gate.parallel ? { parallel: true as const } : {}),
+        ...(gate.tokenless ? { tokenless: true as const } : {}),
     });
     const cancel = (): void => host.sink.cancel(token, step.id);
     signal?.addEventListener('abort', cancel, { once: true });

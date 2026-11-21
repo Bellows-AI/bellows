@@ -676,4 +676,18 @@ describe('the step broker holdsGate', () => {
         broker.release('t');
         expect(broker.holdsGate('t', 'g2')).toBe(false);
     });
+
+    // An agent's exec gets no GitHub token, so the driver's `/gate-token` refuses its ask.
+    it('a tokenless gate step never holds a token ask', async () => {
+        const broker = createStepBroker();
+        broker.open('t');
+        const exec = broker.submit('t', step('x1', { kind: 'gate', tokenless: true }));
+        exec.catch(() => undefined);
+        await broker.next('t', 0, never);
+        expect(broker.holdsGate('t', 'x1')).toBe(false);
+        const plain = broker.submit('t', gate('g1'));
+        plain.catch(() => undefined);
+        await broker.next('t', 0, never);
+        expect(broker.holdsGate('t', 'g1')).toBe(true);
+    });
 });

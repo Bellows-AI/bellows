@@ -19,46 +19,15 @@
  * cut short or is not JSON. A 75 is retryable and says nothing about the gate: never a pass, never
  * "no gates". No client timeout: a gate runs for minutes and the relay bounds the call.
  *
- * One file, built into both executor images (driver/test/executor-images.test.ts).
+ * The transport and the answer rules live in `control-call.cjs`, shared with `factory-exec`. One file,
+ * built into both executor images (driver/test/executor-images.test.ts).
  */
-const http = require('node:http');
+const { EXIT_USAGE, controlCall, fail: failAs } = require('./control-call.cjs');
 
 const USAGE = 'usage: factory-gate <name> [--filter <value>]';
-const EXIT_USAGE = 2;
-const EXIT_NO_GATES = 3;
-const EXIT_HTTP = 22;
-/** EX_TEMPFAIL: no usable answer, ask again. */
-const EXIT_RETRYABLE = 75;
-const HTTP_OK_MIN = 200;
-const HTTP_OK_MAX = 299;
-const HTTP_NOT_FOUND = 404;
-const HTTP_BAD_GATEWAY = 502;
-const HTTP_UNAVAILABLE = 503;
-
-/** The agent's control socket (`control-proxy.cjs`); FACTORY_CONTROL_SOCKET replaces it for the tests' scratch socket. */
-const SOCKET = process.env.FACTORY_CONTROL_SOCKET || '/run/factory-control/control.sock';
-/** `GATE_RUN_PATH` of driver/src/control-channel.ts. */
-const GATE_RUN_PATH = '/gate/run';
-/** The driver's answer for a job that declares no gates (`404 no gates`, control-channel.ts). */
-const NO_GATES_ERROR = 'no gates';
-
 const NAME = 'factory-gate';
 
-function fail(code, message) {
-    process.stderr.write(`${NAME}: ${message}\n`);
-    process.exit(code);
-}
-
-/** A transport failure: retryable, and said so in words that cannot be read as a gate verdict. */
-const retry = (why) => fail(EXIT_RETRYABLE, `no answer from the gate run (${why}); this says nothing about the gate: retry`);
-
-const parsed = (text) => {
-    try {
-        return JSON.parse(text);
-    } catch {
-        return undefined;
-    }
-};
+const fail = (code, message) => failAs(NAME, code, message);
 
 /** The request body for argv: the gate name, and the filter only when `--filter <value>` was given. */
 function bodyOf(args) {
@@ -70,37 +39,12 @@ function bodyOf(args) {
 }
 
 function main() {
-    const body = JSON.stringify(bodyOf(process.argv.slice(2)));
-    const headers = { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) };
-    const req = http.request({ socketPath: SOCKET, path: GATE_RUN_PATH, method: 'POST', headers }, (res) => {
-        const chunks = [];
-        res.on('data', (chunk) => chunks.push(chunk));
-        // A hang-up mid-answer ends the response without `complete`: no partial result reaches stdout.
-        res.on('error', (e) => retry(e.message));
-        res.on('close', () => {
-            if (!res.complete) return retry('the answer was cut short');
-            answer(res.statusCode ?? 0, Buffer.concat(chunks).toString('utf8'));
-        });
-    });
-    req.on('error', (e) => retry(e.message));
-    req.end(body);
-}
-
-/** Settles the process on the whole answer: printed unchanged, then the exit its status asks for. */
-function answer(status, text) {
-    const json = parsed(text);
-    if (status === HTTP_NOT_FOUND && json?.error === NO_GATES_ERROR) fail(EXIT_NO_GATES, 'the job declares no gates');
-    if (status === HTTP_BAD_GATEWAY) return retry('the control relay is unavailable');
-    // A 503 that is not a recorded run's (those carry an executionId): the driver has no gate run open yet.
-    if (status === HTTP_UNAVAILABLE && json?.retryable === true && json.executionId === undefined) {
-        return retry('the gate run is not open yet');
-    }
-    const ok = status >= HTTP_OK_MIN && status <= HTTP_OK_MAX;
-    if (ok && json === undefined) return retry('the answer is not JSON');
-    process.stdout.write(text, () => {
-        if (ok) return;
-        process.stderr.write(`${NAME}: HTTP ${status}\n`);
-        process.exit(EXIT_HTTP);
+    controlCall({
+        name: NAME,
+        body: bodyOf(process.argv.slice(2)),
+        what: 'gate run',
+        retryNote: 'this says nothing about the gate',
+        noGates: 'the job declares no gates',
     });
 }
 

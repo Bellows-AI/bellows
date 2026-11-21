@@ -124,6 +124,12 @@ gates:
 
 The filter is up to 256 printable characters on one line. It is set for that one run only. A filtered run is never proof that the gate passed, and the end-of-run pass always runs gates without a filter. Pair a filtered `on_demand` gate with a full gate that has the same command and no filter.
 
+## Commands in the environment image
+
+The agent can run any command in your environment image while it works, with `factory-exec`. It uses this for what only the image has: a browser, tooling the image provides, debugging your `setup`, or reproducing a failed gate step. A repository that declares only `environment.image`, with no gates, gets this too.
+
+An exec run is never proof that a gate passed, and it is not recorded. It runs in the task's worktree with your gates' environment variables but no GitHub token, one run at a time behind any gate, for at most 10 minutes. It does not run a pending `setup` first. A workflow step with `gates: false` has no environment image, so the agent cannot use `factory-exec` there.
+
 ## Gates that need docker
 
 A gate can run `docker`, `docker compose` and `docker build` when the task runs in a docker runner class: an organization [executor profile](/guides/executors#runner-class) picks it. The daemon belongs to the task and starts empty, so the gate builds the images it needs. The gate's image brings the docker CLI.

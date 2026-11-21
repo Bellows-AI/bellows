@@ -258,6 +258,8 @@ export interface StepRequest {
     timeoutMs: number;
     /** A `gate` step only: it runs beside the other parallel gates instead of waiting its turn in the gate lane. */
     parallel?: true;
+    /** A `gate` step only: an agent's exec, whose GitHub token ask the driver refuses (`StepBroker.holdsGate`). */
+    tokenless?: true;
 }
 
 /** What the supervisor answers a step with. `replayed` marks an answer read back from its ledger. */

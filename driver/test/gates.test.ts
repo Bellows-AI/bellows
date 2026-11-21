@@ -528,6 +528,25 @@ describe('the gate server', () => {
         await server.close();
     });
 
+    // An image-only or setup-only environment holds a registered door, yet still has no gate to run.
+    it('a gate request on a claim that declares no gates answers 404 no gates', async () => {
+        const ran: string[] = [];
+        const manager = {
+            acquire: async () => {},
+            runGate: async (_key: string, name: string) => {
+                ran.push(name);
+                return { exitCode: 0, output: '' };
+            },
+        };
+        const { server, run } = await serveGates(manager, { gates: [] });
+
+        const response = await run('test');
+        expect(response.status).toBe(NOT_FOUND_STATUS);
+        await expect(response.json()).resolves.toEqual({ error: 'no gates' });
+        expect(ran).toEqual([]);
+        await server.close();
+    });
+
     // A gate holds no GitHub token of its own: it asks for one through its mailbox, so a claim carries none to renew.
     it('acquires an ad-hoc run with the env the claim registered, which carries no GitHub token', async () => {
         const bodies: (string | undefined)[] = [];

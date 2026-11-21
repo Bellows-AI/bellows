@@ -95,9 +95,10 @@ export function claudeManagedSettings(endpoint: string): string {
                 'Bash(git stash *)',
                 'Bash(git checkout *)',
                 'Bash(git restore *)',
-                // The skills' gate-server and run-control commands: fixed destinations, never a curl.
+                // The skills' gate-server, run-control and environment-image commands: fixed destinations, never a curl.
                 'Bash(factory-gate *)',
                 'Bash(factory-control *)',
+                'Bash(factory-exec *)',
                 'Edit(//tmp/**)',
                 'Write(//tmp/**)',
             ],

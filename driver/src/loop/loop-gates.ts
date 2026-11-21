@@ -68,12 +68,11 @@ export type GateReport = {
     reused?: { executionId: string; finishedAt: string | null; reason: string };
 };
 
-/** Whether the job declares gates or setup, so that a gate environment is started for it at all. */
-const declaresGateEnvironment = (job: BoardJob): boolean =>
-    Boolean(job.gates && (job.gates.gates.length || job.gates.setup));
-
-/** Whether the agent can ask for a gate: a declared one, in a checkout the gate environment is keyed by. */
-export const declaresGates = (job: BoardJob): boolean => Boolean(job.gates?.gates.length && checkoutKey(job));
+/**
+ * Whether the claim carries an environment, so that a gate environment is started for it at all:
+ * its image alone is enough, for the agent's own commands in it.
+ */
+export const declaresGateEnvironment = (job: BoardJob): boolean => Boolean(job.gates);
 
 /**
  * Puts the gate server's registration key onto `job.gateEnv`, once. It is the driver's own handle on
@@ -88,7 +87,7 @@ async function ensureGatePair(gates: GateStack, job: BoardJob): Promise<string> 
 }
 
 /**
- * Mints the job's gate registration key for a job that declares gates or setup, before the first
+ * Mints the job's gate registration key for a job that carries an environment, before the first
  * runner step, so the key is one value across every step of the attempt. Best-effort like
  * `openRunControl`: `beginGates` mints it itself when this could not.
  */
@@ -104,7 +103,7 @@ export async function mintGateCredentials(rt: LoopRuntime, job: BoardJob): Promi
 
 /**
  * Ensures the job's gate environment, registers its ad-hoc token and runs `environment.setup` in
- * it, or answers null for a job that declares neither gates nor setup. The token
+ * it, or answers null for a job that carries no environment. The token
  * stays the driver's: it is on `job.gateEnv` and in no runner env, so the agent's gate
  * request carries it nowhere and a takeover has nothing for the agent to re-learn.
  */
@@ -115,9 +114,9 @@ export async function beginGates(
     opts: { takeover?: boolean; runClaimSeq?: number } = {}
 ): Promise<GateSession | null> {
     const { gates } = rt;
-    // A checkout that declares only `setup` still gets the environment: setup runs in it before
-    // the agent starts.
-    if (!job.gates || (!job.gates.gates.length && !job.gates.setup)) return null;
+    // A checkout that declares only `setup`, or only its image, still gets the environment: setup
+    // runs in it before the agent starts, and the agent's own commands run in it.
+    if (!job.gates) return null;
     if (!gates) {
         // Declared gates with no gate environment were refused by the re-read; only setup is left.
         rt.log(`job ${job.id}: environment.setup skipped — this driver has no gate environment configured`);
@@ -158,9 +157,10 @@ export async function beginGates(
             // A docker class's daemon restarting under an ad-hoc run is a note in its answer, never a loss.
             dockerdRestarts: (signal) => readDaemon(rt.runner, job, signal),
         });
-        // The agent's `POST /gate/run` reaches this claim through the control channel, whichever driver holds the run.
+        // The agent's `POST /gate/run` reaches this claim through the control channel, whichever driver holds the run;
+        // a claim that declares no gate answers a gate request `404 no gates` itself.
         const controlToken = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
-        if (controlToken && declaresGates(job)) gates.server.attachGateRun(controlToken, token);
+        if (controlToken) gates.server.attachGateRun(controlToken, token);
         // The key is on `job.gateEnv`, beside `env` and not inside it, and no runner env renders it: the
         // reserved-name filter keeps a member-configured BELLOWS_GATE_* out of the claim lines.
         // A taken-over run's environment setup ran before the agent did.

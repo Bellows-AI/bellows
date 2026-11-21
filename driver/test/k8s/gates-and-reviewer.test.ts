@@ -208,15 +208,17 @@ describe('the gate sidecar', () => {
         }
     });
 
-    it('specs no gate sidecar for a checkout that declares neither gates nor setup, or has no worktree', () => {
+    // The environment image alone specs the sidecar; only a claim with no environment, or no worktree, has none.
+    it('specs no gate sidecar for a checkout that declares no environment, or has no worktree', () => {
         const { repo: _repo, ...repoless } = gated;
-        for (const of of [job, repoless, { ...gated, gates: { image: 'node:24', gates: [] } }]) {
+        for (const of of [job, repoless]) {
             const pod = podOf(of);
             expect(pod.initContainers).toBeUndefined();
             const supervisor = pod.containers.find((candidate) => candidate.name === 'supervisor')!;
             expect(supervisor.env).not.toContainEqual({ name: 'SUPERVISOR_GATE', value: '1' });
         }
         expect(gateOf({ ...gated, gates: { image: 'node:24', setup: 'npm ci', gates: [] } }).name).toBe('gate');
+        expect(gateOf({ ...gated, gates: { image: 'node:24', gates: [] } }).name).toBe('gate');
     });
 
     // D11: the adopted run's group (made on demand, no agent) still runs its gates.

@@ -1054,6 +1054,7 @@ describe('the claude-executor managed settings', () => {
                 'Bash(git restore *)',
                 'Bash(factory-gate *)',
                 'Bash(factory-control *)',
+                'Bash(factory-exec *)',
                 'Edit(//tmp/**)',
                 'Write(//tmp/**)',
             ],
@@ -1074,7 +1075,7 @@ describe('the claude-executor managed settings', () => {
 // fixed and the allowlist names exactly those. This pins the two together: a skill that starts a gate
 // or control call any other way fails here, not in a live run.
 describe('the skills and the allowlist agree on the gate and control commands (issue #1061)', () => {
-    const WRAPPER = /^factory-(?:gate|control)\b/;
+    const WRAPPER = /^factory-(?:gate|control|exec)\b/;
     const GUIDES = [
         ...readdirSync(join(ROOT, 'docker/skills'))
             .filter((dir) => existsSync(join(ROOT, 'docker/skills', dir, 'SKILL.md')))
@@ -1094,8 +1095,8 @@ describe('the skills and the allowlist agree on the gate and control commands (i
         return [...fenced, ...inline].map((line) => line.trim()).filter((line) => WRAPPER.test(line));
     };
 
-    it('allows the two wrappers and nothing broader', () => {
-        expect(allowed).toEqual(expect.arrayContaining(['factory-gate', 'factory-control']));
+    it('allows the three wrappers and nothing broader', () => {
+        expect(allowed).toEqual(expect.arrayContaining(['factory-gate', 'factory-control', 'factory-exec']));
         // Whole words: `git stash` is not a shell, `sh -c` is.
         expect(allowed.filter((prefix) => /\b(?:curl|wget|node|sh|bash|dash|zsh)\b/.test(prefix))).toEqual([]);
     });
@@ -2004,6 +2005,30 @@ describe('the no-gates and retry directives in the agent instructions', () => {
             expect(text).toMatch(/\b75\b/);
             expect(text).toMatch(/ask again|call it again/);
             expect(text).toMatch(/never a pass/);
+        }
+    );
+});
+
+// `factory-exec` runs any command in the environment image. Every guide the agent reads says how, that
+// an exec run is never gate evidence, what exit 3 and exit 75 mean.
+describe('the exec directive in every prompt surface', () => {
+    it.each([
+        'docker/skills/factory-gates/SKILL.md',
+        'docker/opencode-executor/opencode-home/AGENTS.md',
+        'docker/claude-executor/claude-home/CLAUDE.md',
+    ])('%s documents factory-exec, never evidence, exit 3 and exit 75', (path) => {
+        const text = read(path).replace(/\s+/g, ' ');
+        expect(text).toContain('factory-exec');
+        expect(text).toMatch(/not gate evidence|never evidence/);
+        expect(text).toContain('never report an exec run as a passed gate');
+        expect(text).toMatch(/[Ee]xit `?3`?[^.]*no environment image/);
+        expect(text).toMatch(/[Ee]xit `?75`?[^.]*may (or may not )?have run/);
+    });
+
+    it.each(['docker/claude-executor/Dockerfile', 'docker/opencode-executor/Dockerfile'])(
+        '%s installs factory-exec on the PATH',
+        (path) => {
+            expect(read(path)).toContain('COPY --from=common factory-exec.cjs /usr/local/bin/factory-exec\n');
         }
     );
 });
