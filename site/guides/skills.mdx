@@ -24,7 +24,7 @@ All built-in names start with `factory-`.
 | Skill | What it does |
 | --- | --- |
 | `factory-fix` | A playbook for fixing a backend bug end to end under TDD: reproduce with a failing test, fix, publish the PR. |
-| `factory-gates` | Runs the repository's gates from `.bellows.yaml` and reads their output. See [Gates](/guides/gates). |
+| `factory-gates` | Runs the repository's gates from `.bellows.yaml`, or any command in its environment image with `factory-exec`, and reads their output. See [Gates](/guides/gates). |
 | `factory-github` | Works with GitHub through `gh`: PR reviews, line comments, CI status, issues, replies. |
 | `factory-jira` | Reads, searches and comments on Jira work items using the task's Jira connection. |
 | `factory-linear` | Reads, searches and comments on Linear issues using the task's Linear connection. |

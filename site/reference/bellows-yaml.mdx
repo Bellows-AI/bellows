@@ -76,7 +76,7 @@ environment:
 
 | Key | Type | Required | Default | Rules |
 | --- | --- | --- | --- | --- |
-| `image` | string | yes | none | A plain Docker reference. Must match `^[A-Za-z0-9_][A-Za-z0-9_./:-]*$`: no spaces, `$`, `=`, quotes, `@` or leading `-` |
+| `image` | string | yes | none | A plain Docker reference. Must match `^[A-Za-z0-9_][A-Za-z0-9_./:-]*$`: no spaces, `$`, `=`, quotes, `@` or leading `-`. The agent can run commands in it with `factory-exec`, see [Gates](/guides/gates#commands-in-the-environment-image) |
 | `setup` | string | no | none | One line, not empty, up to 4096 characters, declared once. Runs before the agent starts and is retried before the first gate while it fails |
 | `cache` | list of names | no | none | Up to 16 names, no repeats, at least one if the key is present. Declare it before `gates` |
 | `gates` | list of gates | no | none | Up to 16 gates, names unique |
