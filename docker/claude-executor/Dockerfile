@@ -134,6 +134,11 @@ ENV CLAUDE_CONFIG_DIR=/home/node/.claude
 # has no switch short of --safe-mode, so it stays listed.
 ENV CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1
 
+# The finish gate's Stop hook (finish-hook.cjs) blocks a stop once per red gate round, and Claude Code
+# ends the turn after 8 stop-hook blocks in a row. The driver's round limit is the bound on that loop,
+# so this cap sits above the highest limit an executor can set (MAX_GATE_FIX_ROUNDS, core/src/executors.ts).
+ENV CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=20
+
 # The predefined configuration. Everything under claude-home/ lands in the config directory as-is:
 # settings.json, CLAUDE.md, agents/, commands/, hooks/. No credentials live here — those arrive at
 # runtime as environment (see README).
@@ -198,6 +203,8 @@ COPY stop-hook.cjs /usr/local/bin/stop-hook.cjs
 # The claim's turn context (issue #509): settings.json's UserPromptSubmit hook answers it from
 # FACTORY_TURN_CONTEXT. Absolute path for the same reason as the branch reporter.
 COPY turn-context-hook.cjs /usr/local/bin/turn-context-hook.cjs
+# The finish gate: settings.json's Stop command hook runs the shared factory-finish.cjs beside it.
+COPY finish-hook.cjs /usr/local/bin/finish-hook.cjs
 # The runner's GitHub token (docs/connections.md): the helper git's credential.helper and the gh
 # wrapper ask, which renews from the board; the real gh sits in /usr/local/libexec behind it.
 COPY --from=common github-credential.cjs /usr/local/bin/github-credential.cjs
@@ -207,7 +214,7 @@ COPY --from=common attempt-pair.cjs /usr/local/bin/attempt-pair.cjs
 COPY --from=common connection-ask.cjs /usr/local/bin/connection-ask.cjs
 COPY --from=common skill-view.cjs /usr/local/bin/skill-view.cjs
 COPY --from=common gh-wrapper.sh /usr/local/bin/gh
-RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/credential-broker.cjs /usr/local/bin/board-call.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/connection-ask.cjs /usr/local/bin/skill-view.cjs /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
+RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/credential-broker.cjs /usr/local/bin/board-call.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/connection-ask.cjs /usr/local/bin/skill-view.cjs /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs /usr/local/bin/finish-hook.cjs
 # The agent's tools run as their own uid (issue #814). factory-launch, the ENTRYPOINT below, starts
 # the tool broker as root and drops to node for the CLI, whose shell (CLAUDE_CODE_SHELL, SHELL) asks
 # the broker to run each command as factory-tool, 1001 in node's group. Only node is in
@@ -239,7 +246,10 @@ COPY --from=common factory-gate.cjs /usr/local/bin/factory-gate
 COPY --from=common factory-control.cjs /usr/local/bin/factory-control
 COPY --from=common factory-exec.cjs /usr/local/bin/factory-exec
 COPY --from=common control-call.cjs /usr/local/bin/control-call.cjs
-RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs /usr/local/bin/factory-gate /usr/local/bin/factory-control /usr/local/bin/factory-exec /usr/local/bin/control-call.cjs
+# The finish pass's caller (docs/jobs.md): asks the driver whether the agent may stop. Beside the
+# transport it requires; run by the image itself, never named in the agent's allowlist.
+COPY --from=common factory-finish.cjs /usr/local/bin/factory-finish.cjs
+RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs /usr/local/bin/factory-gate /usr/local/bin/factory-control /usr/local/bin/factory-exec /usr/local/bin/control-call.cjs /usr/local/bin/factory-finish.cjs
 # The task supervisor's mailbox mount points (driver/src/supervisor-contract.ts). Baked and node-
 # owned so a docker volume mounted over them inherits the owner and mode — the agent's two closed to
 # the tool uid (issue #814); a kubernetes emptyDir is made sticky by the tool broker instead.

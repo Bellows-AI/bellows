@@ -258,7 +258,10 @@ COPY --from=common factory-gate.cjs /usr/local/bin/factory-gate
 COPY --from=common factory-control.cjs /usr/local/bin/factory-control
 COPY --from=common factory-exec.cjs /usr/local/bin/factory-exec
 COPY --from=common control-call.cjs /usr/local/bin/control-call.cjs
-RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs /usr/local/bin/factory-gate /usr/local/bin/factory-control /usr/local/bin/factory-exec /usr/local/bin/control-call.cjs
+# The finish pass's caller (docs/jobs.md): asks the driver whether the agent may stop. Beside the
+# transport it requires; run by the image itself, never named in the agent's allowlist.
+COPY --from=common factory-finish.cjs /usr/local/bin/factory-finish.cjs
+RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs /usr/local/bin/factory-gate /usr/local/bin/factory-control /usr/local/bin/factory-exec /usr/local/bin/control-call.cjs /usr/local/bin/factory-finish.cjs
 # The task supervisor's mailbox mount points (driver/src/supervisor-contract.ts). Baked and node-
 # owned so a docker volume mounted over them inherits the owner and mode — the agent's two closed to
 # the tool uid (issue #814); a kubernetes emptyDir is made sticky by the tool broker instead.
