@@ -36,6 +36,7 @@
             "Bash(git restore *)",
             "Bash(factory-gate *)",
             "Bash(factory-control *)",
+            "Bash(factory-exec *)",
             "Edit(//tmp/**)",
             "Write(//tmp/**)"
         ]

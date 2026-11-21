@@ -18,7 +18,7 @@ import { PROBE_HELPER_ID } from './workflows/workflow-blocks/merge-conflict-auto
 import { nodeOf, type WorkflowDefinition } from './workflows/workflow-schema.js';
 
 /** Versioned so tests and later migrations can name the exact behavior they expect. */
-export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v6';
+export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v7';
 
 /**
  * The character cap on each rendered text, the master prompt and the turn context alike. Generous
@@ -56,6 +56,10 @@ const RULES_HEAD = `Rules for this turn
 - This is one agent turn inside a Factory-run process, not authority to run that process.
 - Factory decides what happens next from this turn's verdict and final output.`;
 
+/** Both modes: the agent's own commands in the environment image, which are never a gate's verdict. */
+const EXEC_RULE =
+    "- You may run any command in the repository's environment image with factory-exec '<command>' (one quoted argument): a browser, tooling the image provides, inspecting or finishing its setup, reproducing a failed gate step. To check a change, prefer a declared gate. Exec runs are not gate evidence; never report an exec run as a passed gate. Exit 3 means there is no environment image here.";
+
 const RULES_TAIL = `- If the current task defines an exact output line or marker, end with exactly that line, then stop.
 - If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop. Never print that line when you are not blocked.`;
 
@@ -64,6 +68,7 @@ const WORKFLOW_RULES = `${RULES_HEAD}
 - Factory runs every capability this turn's Factory turn context lists; do not emulate any of them.
 - Do not push, open, update, merge or close a pull request, enable auto-merge, comment on or reply to GitHub reviews, poll or wait for GitHub activity, or start the next workflow step.
 - You may edit files, run tests and other local verification, and commit, as the current task requires; Factory still runs its declared gates afterwards.
+${EXEC_RULE}
 ${RULES_TAIL}`;
 
 /**
@@ -78,6 +83,7 @@ const OBJECTIVE_RULES = `${RULES_HEAD}
 - You may wait for CI checks and reviews on the pull request you published, fix what they find and push again, and reply to each review comment you addressed saying what changed.
 - After you push and open or update a pull request, load the factory-pr-land skill and follow it to wait for CI and review before you finish.
 - You may edit files, run tests and other local verification, and commit, as the current task requires.
+${EXEC_RULE}
 ${RULES_TAIL}`;
 
 /** A `/name` skill token: at the start or after whitespace, so a path (`a/b`, a URL) never matches. */

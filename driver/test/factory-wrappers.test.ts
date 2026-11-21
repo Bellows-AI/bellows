@@ -14,6 +14,7 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  */
 const GATE = join(ROOT, 'docker/executor-common/factory-gate.cjs');
 const CONTROL = join(ROOT, 'docker/executor-common/factory-control.cjs');
+const EXEC = join(ROOT, 'docker/executor-common/factory-exec.cjs');
 
 interface Seen {
     method: string;
@@ -220,6 +221,89 @@ describe('factory-gate', () => {
     );
 });
 
+// `factory-exec '<command>'` runs one command in the environment image through the same relay.
+describe('factory-exec', () => {
+    const env = (socket: string) => ({ FACTORY_CONTROL_SOCKET: socket });
+    const RETRYABLE = 75;
+
+    it('POSTs the one argument as {"exec"} to /gate/run and prints the answer unchanged', async () => {
+        const answer = '{"exitCode":0,"output":"hi"}';
+        const gate = await serve(200, answer, true);
+        const ran = await run(EXEC, ['echo hi && ls "$HOME"'], env(gate.listen));
+        expect(ran).toMatchObject({ code: 0, stdout: answer });
+        expect(gate.seen).toEqual([
+            {
+                method: 'POST',
+                url: '/gate/run',
+                authorization: undefined,
+                body: '{"exec":"echo hi && ls \\"$HOME\\""}',
+            },
+        ]);
+        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ exec: 'echo hi && ls "$HOME"' });
+    });
+
+    it('a command that exited nonzero is still a 2xx answer: exit 0, its exit code in the JSON', async () => {
+        const answer = '{"exitCode":1,"output":"boom"}';
+        const gate = await serve(200, answer, true);
+        expect(await run(EXEC, ['false'], env(gate.listen))).toMatchObject({ code: 0, stdout: answer });
+    });
+
+    it("says there is no environment image only on the driver's explicit 404 no-gates answer", async () => {
+        const gate = await serve(404, '{"error":"no gates"}', true);
+        const ran = await run(EXEC, ['ls'], env(gate.listen));
+        expect(ran.code).toBe(3);
+        expect(ran.stderr).toContain('no environment image');
+    });
+
+    it('a 502 from the relay is retryable and says the command may have run', async () => {
+        const gate = await serve(502, '{"error":"control relay unavailable"}', true);
+        const ran = await run(EXEC, ['ls'], env(gate.listen));
+        expect(ran.code).toBe(RETRYABLE);
+        expect(ran.stderr).toMatch(/may (or may not )?have run/);
+        expect(ran.stderr).not.toContain('no environment');
+    });
+
+    it('a 200 answer cut short is retryable and prints no partial result', async () => {
+        const socket = await serveRaw((req, res) => {
+            req.resume();
+            req.on('end', () => {
+                res.writeHead(200, { 'content-length': 500 });
+                res.write('{"exitCode":0,"output":"par');
+                setTimeout(() => res.destroy(), 20);
+            });
+        });
+        expect(await run(EXEC, ['ls'], env(socket))).toMatchObject({ code: RETRYABLE, stdout: '' });
+    });
+
+    it('a 200 answer that is not JSON is retryable', async () => {
+        const gate = await serve(200, '<html>proxy error</html>', true);
+        expect(await run(EXEC, ['ls'], env(gate.listen))).toMatchObject({ code: RETRYABLE, stdout: '' });
+    });
+
+    it('any other status keeps the body with the HTTP exit', async () => {
+        const body = '{"error":"exec must be a non-blank command with no NUL byte"}';
+        const gate = await serve(400, body, true);
+        const ran = await run(EXEC, ['ls'], env(gate.listen));
+        expect(ran).toMatchObject({ code: 22, stdout: body });
+        expect(ran.stderr).toContain('400');
+    });
+
+    it.each([[[]], [['ls', '-la']], [['']]])('refuses the arguments %j without sending anything', async (args) => {
+        const gate = await serve(200, '{}', true);
+        const ran = await run(EXEC, args, env(gate.listen));
+        expect(ran.code).toBe(2);
+        expect(gate.seen).toEqual([]);
+    });
+
+    it('refuses a command whose request is over 4096 bytes without sending anything', async () => {
+        const gate = await serve(200, '{}', true);
+        const ran = await run(EXEC, ['x'.repeat(4096)], env(gate.listen));
+        expect(ran.code).toBe(2);
+        expect(ran.stderr).toContain('command too long');
+        expect(gate.seen).toEqual([]);
+    });
+});
+
 describe('factory-control', () => {
     const env = (socket: string) => ({ FACTORY_CONTROL_SOCKET: socket });
 
@@ -279,17 +363,28 @@ describe('factory-control', () => {
 describe('in the images', () => {
     const IMAGES = ['claude-executor', 'opencode-executor'];
 
-    it.each(['factory-gate', 'factory-control'])('%s is one shared file, in neither image directory', (name) => {
-        expect(readFileSync(join(ROOT, `docker/executor-common/${name}.cjs`), 'utf8')).toBeTruthy();
-        for (const image of IMAGES) expect(existsSync(join(ROOT, `docker/${image}/${name}.cjs`)), image).toBe(false);
-    });
+    it.each(['factory-gate', 'factory-control', 'factory-exec', 'control-call'])(
+        '%s is one shared file, in neither image directory',
+        (name) => {
+            expect(readFileSync(join(ROOT, `docker/executor-common/${name}.cjs`), 'utf8')).toBeTruthy();
+            for (const image of IMAGES)
+                expect(existsSync(join(ROOT, `docker/${image}/${name}.cjs`)), image).toBe(false);
+        }
+    );
 
-    it.each(IMAGES)('%s installs both root-owned and executable on the PATH, with no extension', (image) => {
+    it.each(IMAGES)('%s installs every wrapper root-owned and executable on the PATH, with no extension', (image) => {
         const dockerfile = readFileSync(join(ROOT, `docker/${image}/Dockerfile`), 'utf8');
-        for (const name of ['factory-gate', 'factory-control']) {
+        for (const name of ['factory-gate', 'factory-control', 'factory-exec']) {
             expect(dockerfile).toContain(`COPY --from=common ${name}.cjs /usr/local/bin/${name}\n`);
             expect(dockerfile).toMatch(new RegExp(`chmod 0755 [^\\n]*/usr/local/bin/${name}\\b`));
         }
-        expect(dockerfile).not.toMatch(/--chown[^\n]*factory-(gate|control)/);
+        expect(dockerfile).not.toMatch(/--chown[^\n]*factory-(gate|control|exec)/);
+    });
+
+    // The wrappers `require('./control-call.cjs')`: it sits beside them, root-owned.
+    it.each(IMAGES)('%s installs the shared transport beside the wrappers', (image) => {
+        const dockerfile = readFileSync(join(ROOT, `docker/${image}/Dockerfile`), 'utf8');
+        expect(dockerfile).toContain('COPY --from=common control-call.cjs /usr/local/bin/control-call.cjs\n');
+        expect(dockerfile).not.toMatch(/--chown[^\n]*control-call/);
     });
 });

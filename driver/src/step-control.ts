@@ -205,11 +205,14 @@ function cancelStep(slot: Slot, id: string): void {
     }
 }
 
-/** Whether a gate step of this id is pulled and unsettled on the slot (`StepBroker.holdsGate`). */
+/**
+ * Whether a gate step of this id is pulled and unsettled on the slot (`StepBroker.holdsGate`). A tokenless step
+ * (an agent's exec) never holds one: its GitHub token ask is refused.
+ */
 function holdsGateStep(slot: Slot | undefined, id: string): boolean {
     if (!slot) return false;
     return [...slot.waiters.values()].some(
-        ({ step }) => step.id === id && step.kind === 'gate' && !slot.queue.includes(step)
+        ({ step }) => step.id === id && step.kind === 'gate' && !step.tokenless && !slot.queue.includes(step)
     );
 }
 
