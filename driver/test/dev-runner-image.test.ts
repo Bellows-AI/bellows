@@ -46,12 +46,17 @@ describe('the dev runner image', () => {
             expect(apt, pkg).toMatch(new RegExp(`\\s${pkg}(\\s|$)`));
     });
 
-    it('installs the chromium system libraries at the Playwright version the repo pins', () => {
+    // The ui gate (scripts/gate-ui.sh) finds the browser in place; it stays writable by uid 1000 so the
+    // gate's `npx playwright install chromium` can lock it, or add a revision after a Playwright bump.
+    it('installs chromium and its system libraries at the Playwright version the repo pins', () => {
         const text = read(DOCKERFILE);
         const pinned = (JSON.parse(read('package.json')) as { devDependencies: Record<string, string> })
             .devDependencies['@playwright/test'];
         expect(arg(text, 'PLAYWRIGHT_VERSION')).toBe(pinned);
-        expect(text).toContain(`playwright@\${PLAYWRIGHT_VERSION} install-deps chromium`);
+        expect(text).toMatch(/^ENV PLAYWRIGHT_BROWSERS_PATH=\/ms-playwright$/m);
+        const install = text.split(/^RUN /m).find((step) => step.includes(`playwright@\${PLAYWRIGHT_VERSION}`));
+        expect(install).toContain('install --with-deps chromium');
+        expect(install).toContain('chown -R 1000:1000 "$PLAYWRIGHT_BROWSERS_PATH"');
     });
 
     // The sidecar daemon's socket is group 1000; the gate reaches it as that uid's primary group.

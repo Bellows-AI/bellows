@@ -269,7 +269,14 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     it('parses under the strict grammar', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const gates = parseBellows(text)?.gates ?? [];
-        expect(gates.map((gate) => gate.name)).toEqual(['test', 'lint', 'typecheck', 'test:db', 'test:executors']);
+        expect(gates.map((gate) => gate.name)).toEqual([
+            'test',
+            'lint',
+            'typecheck',
+            'test:db',
+            'test:executors',
+            'ui',
+        ]);
         expect(gates.slice(0, 2)).toEqual([
             { name: 'test', command: 'sh scripts/gate-test-changed.sh', timeoutMinutes: 30 },
             { name: 'lint', command: 'npm run lint' },
@@ -319,6 +326,20 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
             timeoutMinutes: 15,
         });
         expect(gates.filter((g) => /test:jobs|make runners|docker/.test(`${g.name} ${g.command}`))).toEqual([]);
+    });
+
+    // The browser check the agent cannot run in its own image: on demand, narrowed to the specs a change
+    // touches, and within the 10 minutes an ad-hoc gate run may take. CI's verify:ui stays the full suite.
+    it('declares verify:ui as an on-demand, filtered gate the agent may run', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        const gates = parseBellows(text)?.gates ?? [];
+        expect(gates.find((g) => g.name === 'ui')).toEqual({
+            name: 'ui',
+            command: 'sh scripts/gate-ui.sh',
+            timeoutMinutes: 10,
+            onDemand: true,
+            filter: true,
+        });
     });
 
     // The gate image ships no jq and runs as a non-root user; the pr-land suite needs one.
