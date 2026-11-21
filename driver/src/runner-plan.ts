@@ -21,6 +21,7 @@ import {
     opencodeTurnPrompt,
 } from './master-prompt.js';
 import { baseBranchOf, checkoutDir } from './publish/publish.js';
+import { heartbeatPeriodMs, takeoverBoundMs } from './supervisor-plan.js';
 import { SKILLS_DIR, SKILLS_ROOT } from './task-volume.js';
 import { randomUUID } from 'node:crypto';
 import type { RunSession } from './runner.js';
@@ -120,6 +121,16 @@ const claudeHiddenArgs = (job: BoardJob): string[] => {
 };
 
 /**
+ * How long the agent's finish helper re-asks a finish pass the control channel cannot answer yet
+ * (a takeover's window: the new holder binds within `takeoverBoundMs`, learned within one heartbeat).
+ * Both executors, every runner.
+ */
+export const FINISH_RETRY_ENV = 'BELLOWS_FINISH_RETRY_MS';
+const finishRetryEnv = (config: DriverConfig): [string, string][] => [
+    [FINISH_RETRY_ENV, String(takeoverBoundMs(config) + heartbeatPeriodMs(config))],
+];
+
+/**
  * Issue #822: a takeover or handover of a session the row minted itself (`ownSession` — a root's,
  * a sessionless follow-up's) may have nothing behind it, its driver lost before the CLI's first
  * write — the runner may start that one anew (the claude bridge's `startUnwrittenResume`, the
@@ -141,7 +152,12 @@ const unwrittenResumeEnv = (job: BoardJob, session: RunSession): [string, string
  * persisting it per task (thread root) inside the member's tree — a dot-directory the workspace
  * reconcile never mistakes for a checkout.
  */
-function opencodePlan(job: BoardJob, session: RunSession | null, attachmentsPath?: string): RunnerPlan {
+function opencodePlan(
+    config: DriverConfig,
+    job: BoardJob,
+    session: RunSession | null,
+    attachmentsPath?: string
+): RunnerPlan {
     if (session && !session.resume) {
         throw new Error(`refusing to run job ${job.id}: the opencode runner cannot adopt a minted session`);
     }
@@ -153,6 +169,7 @@ function opencodePlan(job: BoardJob, session: RunSession | null, attachmentsPath
         ...skillsEnv(job),
         ...workspaceSkillsEnv(job),
         ...hiddenSkillsEnv(job),
+        ...finishRetryEnv(config),
     ];
     const cliArgs = ['run', ...opencodeAgentArgs()];
     if (session) {
@@ -205,6 +222,7 @@ function claudePlan(
         ...skillsEnv(job),
         ...workspaceSkillsEnv(job),
         ...hiddenSkillsEnv(job),
+        ...finishRetryEnv(config),
     ];
     const cliArgs = [
         session.resume ? '--resume' : '--session-id',
@@ -232,7 +250,7 @@ export function runnerPlan(
     attachmentsPath?: string
 ): RunnerPlan {
     return job.executorType === OPENCODE
-        ? opencodePlan(job, session, attachmentsPath)
+        ? opencodePlan(config, job, session, attachmentsPath)
         : claudePlan(config, job, session, attachmentsPath);
 }
 

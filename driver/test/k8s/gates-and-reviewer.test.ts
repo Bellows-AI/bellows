@@ -12,7 +12,8 @@ import { gateLoopArgv, reviewerLaunchArgv, supervisorScript } from '../../src/co
 import { ARTIFACT_LIMIT } from '../../src/runner.js';
 import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { LOG_TAIL_LINES } from '../../src/k8s/k8s-transport.js';
-import { jobsPath, runnerJobName, runnerJobSpec, secretName } from '../../src/k8s/k8s-podspec.js';
+import { jobsPath, runnerJobName, runnerJobSpec, runnerName, secretName } from '../../src/k8s/k8s-podspec.js';
+import { jobPath } from '../../src/k8s/k8s-auxspec.js';
 import {
     GATE_UID,
     CREDENTIAL_CACHE_DIR,
@@ -491,6 +492,58 @@ describe('the kubernetes runner and the gates', () => {
                 },
                 contentType: 'application/strategic-merge-patch+json',
             },
+        ]);
+    });
+
+    // A finish pass pauses the runtime budget, sizes the gate for verify, then back to idle and
+    // resumes the budget (`loop-finish.ts`); on kubernetes the budget is the Job's activeDeadlineSeconds.
+    // GUARD: the runner calls exist before the relay does; this pins their kubernetes rendering.
+    it('renders a finish pass as the Job deadline paused, the gate sized for verify then idle, the deadline back', async () => {
+        const base = fakeRequest();
+        const order: string[] = [];
+        const resized: unknown[] = [];
+        const deadline: { activeDeadlineSeconds?: number } = { activeDeadlineSeconds: 7200 };
+        const annotations: Record<string, string> = {};
+        const runnerJob = jobPath(namespace, runnerName(gated));
+        const request: K8sRequest = (method, path, body, options) => {
+            if (method === 'PATCH' && path.endsWith('/resize')) {
+                order.push('resize');
+                resized.push(body);
+                return Promise.resolve({ status: 200, body: '{}' });
+            }
+            if (path === runnerJob && (method === 'GET' || method === 'PATCH')) {
+                if (method === 'PATCH') {
+                    order.push('deadline');
+                    const patch = body as {
+                        spec: { activeDeadlineSeconds: number | null };
+                        metadata: { annotations: Record<string, string | null> };
+                    };
+                    if (patch.spec.activeDeadlineSeconds === null) delete deadline.activeDeadlineSeconds;
+                    else deadline.activeDeadlineSeconds = patch.spec.activeDeadlineSeconds;
+                    for (const [key, value] of Object.entries(patch.metadata.annotations)) {
+                        if (value === null) delete annotations[key];
+                        else annotations[key] = value;
+                    }
+                }
+                const answer = { spec: deadline, metadata: { uid: 'job-uid', annotations } };
+                return Promise.resolve({ status: 200, body: JSON.stringify(answer) });
+            }
+            return base.request(method, path, body, options);
+        };
+        const k8s = runner(request, sized({}, { requests: { cpu: '2', memory: '2Gi' } }));
+        await k8s.pauseDeadline(gated, true);
+        expect(deadline.activeDeadlineSeconds).toBeUndefined();
+        expect(await k8s.resizeGate(gated, 'verify')).toBe(true);
+        expect(await k8s.resizeGate(gated, 'idle')).toBe(true);
+        await k8s.pauseDeadline(gated, false);
+        expect(deadline.activeDeadlineSeconds).toBeGreaterThanOrEqual(7200);
+        expect(order).toEqual(['deadline', 'resize', 'resize', 'deadline']);
+        const requestsOf = (patch: unknown) =>
+            (patch as { spec: { initContainers: { resources: { requests: unknown } }[] } }).spec.initContainers[0]
+                ?.resources.requests;
+        expect(resized.map(requestsOf)).toEqual([
+            { cpu: '2', memory: '2Gi' },
+            { cpu: '100m', memory: '128Mi' },
         ]);
     });
 

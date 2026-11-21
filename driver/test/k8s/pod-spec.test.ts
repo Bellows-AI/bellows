@@ -14,7 +14,7 @@ import type { K8sDeps, K8sRequest } from '../../src/k8s/k8s-transport.js';
 import { POLL_MS } from '../../src/k8s/k8s-transport.js';
 import { GROUP_END_WAIT_MS } from '../../src/k8s/k8s-teardown.js';
 import { readVerdict } from '../../src/k8s/k8s-poll.js';
-import { takeoverBoundMs } from '../../src/supervisor-plan.js';
+import { finishRelayBoundMs, heartbeatPeriodMs, takeoverBoundMs } from '../../src/supervisor-plan.js';
 import { readerJobSpec, runnerJobName, runnerJobSpec, secretName } from '../../src/k8s/k8s-podspec.js';
 import { jobPath } from '../../src/k8s/k8s-auxspec.js';
 import { GATE_GID } from '../../src/claim.js';
@@ -48,6 +48,14 @@ import {
     DOCKERD_CONTAINER,
 } from '../../src/k8s/k8s-dockerd.js';
 
+/** The finish helper's re-ask window in the agent's env (`supervisor-plan-finish.test.ts` pins its value). */
+const FINISH_RETRY = {
+    name: 'BELLOWS_FINISH_RETRY_MS',
+    value: String(
+        takeoverBoundMs(loadDriverConfig({ EXECUTOR: 'kubernetes' })) +
+            heartbeatPeriodMs(loadDriverConfig({ EXECUTOR: 'kubernetes' }))
+    ),
+};
 /** The Job's backstop beyond the agent's budget: the drain and the report, then the hours the group serves steps. */
 const WINDDOWN_S =
     (SUPERVISOR_WINDDOWN_MS +
@@ -66,6 +74,34 @@ describe('the group-end wait', () => {
                 KUBERNETES_DEFAULT_GRACE_SECONDS;
             expect(GROUP_END_WAIT_MS).toBeGreaterThanOrEqual(grace * 1000 + POLL_MS);
         }
+    });
+});
+
+// The docker twin is docker-group.test.ts; both render supervisor-plan.ts.
+describe('the finish pass bounds', () => {
+    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+    const envOf = (of: BoardJob, name: string) =>
+        runnerJobSpec(
+            config,
+            { ...of, ...SUPERVISED },
+            { id: SESSION, resume: false }
+        ).spec.template.spec.containers.find((container) => container.name === name)?.env;
+
+    it('tells the supervisor of a gated pod the finish relay bound, and none without a gate', () => {
+        expect(envOf(gatedOf(job), SUPERVISOR_CONTAINER)).toContainEqual({
+            name: 'SUPERVISOR_FINISH_RELAY_TIMEOUT_MS',
+            value: String(finishRelayBoundMs(config, gatedOf(job))),
+        });
+        expect(envOf(job, SUPERVISOR_CONTAINER)?.map((entry) => entry.name)).not.toContain(
+            'SUPERVISOR_FINISH_RELAY_TIMEOUT_MS'
+        );
+    });
+
+    it('tells the agent the finish helper’s re-ask window', () => {
+        expect(envOf(job, AGENT_CONTAINER)).toContainEqual({
+            name: 'BELLOWS_FINISH_RETRY_MS',
+            value: String(takeoverBoundMs(config) + heartbeatPeriodMs(config)),
+        });
     });
 });
 
@@ -259,6 +295,7 @@ describe('the runner job spec', () => {
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
             { name: 'FACTORY_HIDDEN_SKILLS', value: '' },
+            FINISH_RETRY,
             // The two mailbox paths the agent finds its supervisor through — paths, no credential.
             { name: 'FACTORY_CTL_IN', value: '/factory/in/agent' },
             { name: 'FACTORY_CTL_OUT', value: '/factory/out/agent' },
@@ -376,6 +413,7 @@ describe('the runner job spec', () => {
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
             { name: 'FACTORY_HIDDEN_SKILLS', value: '' },
+            FINISH_RETRY,
             { name: 'FACTORY_CTL_IN', value: '/factory/in/agent' },
             { name: 'FACTORY_CTL_OUT', value: '/factory/out/agent' },
             { name: 'FACTORY_CTL_GO', value: GO_MARKER },
@@ -463,6 +501,7 @@ describe('the runner job spec', () => {
             { name: 'BELLOWS_SESSION_ID', value: SESSION },
             { name: 'NPM_CONFIG_UPDATE_NOTIFIER', value: 'false' },
             { name: 'FACTORY_HIDDEN_SKILLS', value: '' },
+            FINISH_RETRY,
             { name: 'FACTORY_CTL_IN', value: '/factory/in/agent' },
             { name: 'FACTORY_CTL_OUT', value: '/factory/out/agent' },
             { name: 'FACTORY_CTL_GO', value: GO_MARKER },

@@ -49,9 +49,11 @@
 //   SUPERVISOR_AGENT_TOKEN    — the agent's token on the driver; the agent relay attaches it (absent: no agent relay).
 //   SUPERVISOR_EXPORT_TOKEN   — the exporter's token on the driver; the export relay attaches it (absent: no export relay).
 //   SUPERVISOR_RELAY_TIMEOUT_MS — how long one relayed request may take, end to end (default 900000).
+//   SUPERVISOR_FINISH_RELAY_TIMEOUT_MS — how long one relayed finish pass (`POST /gate/finish`) may take: every declared
+//                               gate's deadline and the pass's own work; absent or not a positive number: the relay bound above.
 //   SUPERVISOR_CONTROL_MS     — the driver poll period (default 5000).
 //   SUPERVISOR_TICK_MS        — the mailbox period (default 500).
-//   SUPERVISOR_DEADLINE_MS    — the run budget, paused while a question waits; absent = unbounded.
+//   SUPERVISOR_DEADLINE_MS    — the run budget, paused while a question waits or a finish pass is relayed; absent = unbounded.
 //   SUPERVISOR_DRAIN_MS       — how long the exporter may take to drain (default 300000).
 //   SUPERVISOR_AGENT_LOST_MS  — a seen agent heartbeat older than this is a lost agent (default 30000).
 //   SUPERVISOR_AGENT_START_MS — how long the agent may take to show a first heartbeat (default 600000).
@@ -117,7 +119,7 @@ const { pipeline, Transform } = require('node:stream');
 /** @typedef {{ id: string, outcome: string | null, cause: string | null, agentExit: number | null, agentEnd: string, drained: boolean }} Report */
 /** @typedef {{ posted: boolean, settled: boolean }} Question */
 /** @typedef {{ stage: string, outcome: string | null, cause: string | null, history: () => string[], enter: (next: string) => void, abort: (why: string, because?: string | null) => void, complete: () => void, performed: () => string[], delegated: () => string[] }} Machine */
-/** @typedef {{ method: string, match: (path: string) => boolean, cap: number, query?: boolean, timeout?: 'gateRelayMs' }} RelayRoute */
+/** @typedef {{ method: string, match: (path: string) => boolean, cap: number, query?: boolean, timeout?: 'gateRelayMs' | 'finishRelayMs', finish?: boolean }} RelayRoute */
 /** @typedef {{ token: 'agentToken' | 'exportToken', inflight: number, routes: RelayRoute[] }} RelaySpec */
 /** @typedef {{ ok?: boolean, reason?: string, state: string, cause: string | null, headerFile: string, parts: Array<{ path: string }> }} Verdict */
 /**
@@ -150,6 +152,7 @@ const { pipeline, Transform } = require('node:stream');
  * @property {AbortController} abort
  * @property {AbortController} stop
  * @property {Record<string, Relay>} relays
+ * @property {number} finishRelays
  * @property {AbortController} pulling
  * @property {{ interrupt: () => void } | null} inflight
  * @property {Record<string, Lane>} lanes
@@ -469,6 +472,12 @@ function settingsOf(env) {
             'SUPERVISOR_GATE_RELAY_TIMEOUT_MS',
             positive(env, 'SUPERVISOR_DEADLINE_MS', 0) || positive(env, 'SUPERVISOR_RELAY_TIMEOUT_MS', DEFAULT_RELAY_MS)
         ),
+        // A finish pass runs the declared gates while the agent waits on it: its bound is theirs, never 0.
+        finishRelayMs: positive(
+            env,
+            'SUPERVISOR_FINISH_RELAY_TIMEOUT_MS',
+            positive(env, 'SUPERVISOR_RELAY_TIMEOUT_MS', DEFAULT_RELAY_MS)
+        ),
         // The claim this binding belongs to, and the file a newer holder names itself in; no claim, no following.
         claimSeq: /^\d{1,15}$/.test(env.SUPERVISOR_CLAIM_SEQ ?? '') ? Number(env.SUPERVISOR_CLAIM_SEQ) : null,
         bindingFile: env.SUPERVISOR_BINDING_FILE || null,
@@ -616,6 +625,8 @@ function newRun(settings, now, log) {
         stop: new AbortController(),
         // The relay servers by role, and how many requests each has in flight (`serveRelay`).
         relays: { agent: { server: null, active: 0 }, export: { server: null, active: 0 } },
+        // How many finish passes the agent relay holds open: the run budget is paused while any is (`tickBudget`).
+        finishRelays: 0,
         // Aborted when the group stops taking steps; `inflight` interrupts the one still running.
         pulling: new AbortController(),
         inflight: null,
@@ -2001,12 +2012,12 @@ function watchAgent(run) {
 }
 
 /**
- * The run budget, paused while a question waits for a person.
+ * The run budget, paused while a question waits for a person or a finish pass runs the declared gates.
  * @param {Run} run
  */
 function tickBudget(run) {
     if (!run.budget || run.killRaised || run.agentEnd) return;
-    const paused = pendingQuestions(run);
+    const paused = pendingQuestions(run) || run.finishRelays > 0;
     if (paused !== run.budgetPaused) {
         if (paused) run.budget -= run.now() - run.budgetStartedAt;
         else run.budgetStartedAt = run.now();
@@ -2277,6 +2288,14 @@ const RELAYS = {
             { method: 'POST', match: (p) => p === '/connection', cap: KIB },
             // `{gate, filter}`; the answer carries the gate's output and is streamed back whole, never cut to a size.
             { method: 'POST', match: (p) => p === '/gate/run', cap: JSON_KIB * KIB, timeout: 'gateRelayMs' },
+            // The finish pass: no body to speak of; held while the declared gates run, the run budget paused.
+            {
+                method: 'POST',
+                match: (p) => p === '/gate/finish',
+                cap: KIB,
+                timeout: 'finishRelayMs',
+                finish: true,
+            },
             { method: 'GET', match: (p) => REVIEW_KEY.test(p), cap: MIB },
         ],
     },
@@ -2312,6 +2331,16 @@ function relayRouteOf(spec, request) {
  * @param {RelayRoute} route
  */
 const relayMsOf = (settings, route) => settings[route.timeout ?? 'relayMs'];
+
+/**
+ * How many finish passes are in flight, moved by one relayed request's start (`1`) and its settlement (`-1`).
+ * @param {Run} run
+ * @param {RelayRoute} route
+ * @param {1 | -1} by
+ */
+const countFinish = (run, route, by) => {
+    if (route.finish) run.finishRelays += by;
+};
 
 /**
  * Refuses a body past `cap` by erroring the stream: the relay then hangs up on both sides.
@@ -2391,14 +2420,18 @@ function relayRequest(run, role, request, response) {
     }
     const lib = binding.url.startsWith('https:') ? https : http;
     state.active += 1;
+    countFinish(run, route, 1);
     let settled = false;
     /** @type {import('node:http').ClientRequest | null} */
     let upstream = null;
+    // The one settlement of this request, from every listener — the answer, an error, an abort, the
+    // client's hang-up, the bound's timeout — and only once: the in-flight counts never drift.
     /** @param {boolean} hangUp */
     const settle = (hangUp) => {
         if (settled) return;
         settled = true;
         state.active -= 1;
+        countFinish(run, route, -1);
         if (!hangUp) return;
         request.destroy();
         response.destroy();

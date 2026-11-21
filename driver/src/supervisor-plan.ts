@@ -3,8 +3,11 @@ import { opencodeDbPath, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { checkpointScript, gitHardenScript } from './container-scripts.js';
 import { OPENCODE } from './executors.js';
+import { gateDeadlineMs } from './gate-manager.js';
+import { declaredTimeoutMs } from './gates.js';
 import { baseBranchOf } from './publish/publish-base.js';
 import { GATE_IMAGE, checkoutDir, checkoutKey, worktreeBranch } from './publish/publish.js';
+import { SERVICE_RESTART_TIMEOUT_MS } from './runner.js';
 import { CHECKPOINT_DIR } from './task-volume.js';
 import {
     AGENT_IN,
@@ -68,6 +71,31 @@ export function gateImageOf(job: BoardJob): string | null {
     return declared.image;
 }
 
+/** What a finish pass spends besides its gates: the tree probes, the board reads and writes, the gate sidecar's resize. */
+export const FINISH_RELAY_MARGIN_MS = 120_000;
+
+/**
+ * The wall-clock bound of one finish pass relayed through the supervisor — the pass runs every
+ * end-of-run gate (`on_demand` ones are skipped) one after another at worst, each to its own deadline,
+ * after a failed setup's retry and a restart of the dead services, so the relay must outlast all of them.
+ * None for a job that declares no end-of-run gate: its finish answers at once.
+ */
+export function finishRelayBoundMs(config: DriverConfig, job: BoardJob): number | null {
+    const declared = (job.gates?.gates ?? []).filter((gate) => !gate.onDemand);
+    if (declared.length === 0) return null;
+    const gatesMs = declared.reduce(
+        (sum, gate) => sum + gateDeadlineMs(config, config.gateTimeoutMs, declaredTimeoutMs(gate)),
+        0
+    );
+    return gatesMs + config.gateTimeoutMs + SERVICE_RESTART_TIMEOUT_MS + FINISH_RELAY_MARGIN_MS;
+}
+
+/** The finish relay bound as a supervisor literal, where the group holds a gate container that runs the pass. */
+function finishRelayLiterals(config: DriverConfig, job: BoardJob, gated: boolean | undefined): [string, string][] {
+    const bound = gated ? finishRelayBoundMs(config, job) : null;
+    return bound === null ? [] : [[SUPERVISOR_ENV.finishRelayMs, String(bound)]];
+}
+
 /** The supervisor's own env literals: the budget it enforces, the paces it works at, whether an exporter and a gate container wait. */
 export function supervisorLiterals(
     config: DriverConfig,
@@ -87,6 +115,7 @@ export function supervisorLiterals(
         ...(group.exporting ? ([[SUPERVISOR_ENV.exports, '1']] as [string, string][]) : []),
         ...(group.agentless ? ([[SUPERVISOR_ENV.agentless, '1']] as [string, string][]) : []),
         ...(group.gated ? ([[SUPERVISOR_ENV.gate, '1']] as [string, string][]) : []),
+        ...finishRelayLiterals(config, job, group.gated),
         ...(group.reviewing ? ([[SUPERVISOR_ENV.reviewer, '1']] as [string, string][]) : []),
         ...(group.agentless ? [] : checkpointLiterals(job)),
     ];

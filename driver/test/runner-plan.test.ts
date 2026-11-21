@@ -3,6 +3,7 @@ import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import type { RunSession } from '../src/runner.js';
 import { reviewerPlan, runnerPlan } from '../src/runner-plan.js';
+import { heartbeatPeriodMs, takeoverBoundMs } from '../src/supervisor-plan.js';
 
 /**
  * What a runner is asked to do, decided once for both platforms (runner-plan.ts). docker renders
@@ -39,6 +40,11 @@ const SYSTEM_PROMPT = ['--append-system-prompt', MASTER_PROMPT, '--system-prompt
  * inherited from an earlier row stays a refusal when it is missing.
  */
 const UNWRITTEN: [string, string][] = [['BELLOWS_RESUME_MAY_BE_UNWRITTEN', '1']];
+/** The finish helper's re-ask window, on every runner (`supervisor-plan-finish.test.ts` pins its value). */
+const FINISH_RETRY: [string, string] = [
+    'BELLOWS_FINISH_RETRY_MS',
+    String(takeoverBoundMs(loadDriverConfig({})) + heartbeatPeriodMs(loadDriverConfig({}))),
+];
 
 const plan = (j: BoardJob, session: RunSession | null, env: NodeJS.ProcessEnv = {}) =>
     runnerPlan(loadDriverConfig(env), j, session);
@@ -77,6 +83,7 @@ describe('the claude-code runner plan', () => {
                 ...unwritten,
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
                 ['FACTORY_HIDDEN_SKILLS', ''],
+                FINISH_RETRY,
             ],
             cliArgs: [flag, SESSION, '--permission-mode', 'auto', ...SYSTEM_PROMPT, '-p', 'fix the failing build'],
         });
@@ -176,6 +183,7 @@ describe('the opencode runner plan', () => {
                 ['XDG_DATA_HOME', `/task/.factory/opencode/${opencodeJob.id}`],
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
                 ['FACTORY_HIDDEN_SKILLS', ''],
+                FINISH_RETRY,
             ],
             cliArgs: ['run', '--agent', 'factory', 'fix the failing build'],
         });
@@ -206,6 +214,7 @@ describe('the opencode runner plan', () => {
                 ['XDG_DATA_HOME', `/task/.factory/opencode/${opencodeJob.id}`],
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
                 ['FACTORY_HIDDEN_SKILLS', ''],
+                FINISH_RETRY,
                 ['BELLOWS_SESSION_ID', session.id],
                 ...unwritten,
             ],
