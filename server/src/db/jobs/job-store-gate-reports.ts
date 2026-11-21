@@ -2,7 +2,7 @@ import type { TransactionSql } from 'postgres';
 import { gateOutputTail, isStoredVerdict } from '../gate-report.js';
 import type { GateReport, LastGateReport } from './job-store-types.js';
 
-/** What a claim reads of the thread's stored gate reports (BEL-505). */
+/** What a claim reads of the thread's stored gate reports. */
 export interface ThreadGateReports {
     /** The `gates` the followed-up row stored; null when this row follows nothing or the parent stored none. */
     parent: GateReport[] | null;

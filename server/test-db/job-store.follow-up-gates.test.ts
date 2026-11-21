@@ -7,7 +7,7 @@ import { INTERP_TAIL_LIMIT, TRUNCATION_MARKER } from '../src/db/workflows/workfl
 import { useTestDb } from './harness.js';
 import { mustCreate, testOrg } from './fixtures.js';
 
-/** BEL-505: a follow-up after a gate-failed run carries the failed gate's report; `lastGateReports` serves `factory-gate --last`. */
+/** A follow-up after a gate-failed run carries the failed gate's report; `lastGateReports` serves `factory-gate --last`. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const LEASE_SECONDS = 300;

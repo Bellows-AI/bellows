@@ -1332,7 +1332,7 @@ describe('the gate server: departing a token (#829)', () => {
     });
 });
 
-/** BEL-505: `{"gate","last":true}` reads the report the claim carried; it never runs the gate. */
+/** `{"gate","last":true}` reads the report the claim carried; it never runs the gate. */
 describe('the gate server: reading the last stored report', () => {
     const LONG_GATES = [
         { name: 'test:db', command: 'npm run test:db', timeoutMinutes: 30 },
