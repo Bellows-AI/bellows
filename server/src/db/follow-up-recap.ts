@@ -1,6 +1,6 @@
 import { COMMAND_LIMIT } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
-import { renderFailedGates } from './gate-report.js';
+import { COMMAND_REPORT_SEPARATOR, renderFailedGates } from './gate-report.js';
 import { readThreadGateReports } from './jobs/job-store-gate-reports.js';
 import type { LastGateReport } from './jobs/job-store-types.js';
 
@@ -120,7 +120,7 @@ export async function claimCommandAndReports(
     const reports = await readThreadGateReports(tx, orgId, rootJobId, row);
     const memberFollowUp = row.follow_up && row.workflow_node === null;
     const failed = memberFollowUp ? renderFailedGates(reports.parent, row.command) : '';
-    const command = failed ? `${row.command}\n\n${failed}` : row.command;
+    const command = failed ? `${row.command}${COMMAND_REPORT_SEPARATOR}${failed}` : row.command;
     // Whether the attempt's first claim ran sessionless: for a continuation, when the session it
     // resumes is one that first claim minted (`own_session`).
     const sessionless = row.resumes_interrupted ? row.own_session : row.session_id === null;

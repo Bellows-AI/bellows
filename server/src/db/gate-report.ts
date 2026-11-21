@@ -8,6 +8,9 @@ import { boundedTail } from './workflows/workflow-schema.js';
  * read it, so the bound on a report never drifts between them.
  */
 
+/** What joins a command to the failed-gates text `renderFailedGates` sizes against it. */
+export const COMMAND_REPORT_SEPARATOR = '\n\n';
+
 /** A report an agent can act on: it ran, and ended passed or failed. */
 export type StoredGateVerdict = GateReport & { status: 'passed' | 'failed' };
 
@@ -41,7 +44,7 @@ export function renderFailedGates(gates: GateReport[] | null, command: string): 
     let text = '';
     for (const gate of failed) {
         const next = `${text || FAILED_GATES_PREAMBLE}\n\n${failedGateText(gate)}`;
-        if (command.length + 2 + next.length > COMMAND_LIMIT) break;
+        if (command.length + COMMAND_REPORT_SEPARATOR.length + next.length > COMMAND_LIMIT) break;
         text = next;
     }
     return text;
