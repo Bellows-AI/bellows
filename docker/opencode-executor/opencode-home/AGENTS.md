@@ -127,5 +127,24 @@ did not opt in answers 422. A filtered run is never evidence that the gate passe
 that run when you finish are always unfiltered.
 A gate that declares `timeout:` above 10 (minutes) answers 422 and runs only when you finish (an
 `on_demand` one not at all): do not retry it; run its pieces with your own commands instead.
-If `factory-gate` reports no gates (exit 3) there are none here: verify with your own commands instead.
+If `factory-gate` reports no gates (exit 3) there are none here: verify with your own commands instead — or with `factory-exec` when the check needs the environment image.
 Exit 75 means no usable answer came (the control socket is missing or refuses, the relay hung up, the gate run is not open yet): it says nothing about the gate and is never a pass, so ask again.
+
+## Commands in the environment image
+
+Run any command in the repository's environment image — the container the gates use, in this
+worktree — with `factory-exec`, the command as ONE quoted argument (it runs under `sh -c`):
+
+```bash
+factory-exec 'npx playwright test e2e/login.spec.ts'
+```
+
+It prints `{"exitCode":N,"output":"..."}`. Use it for what only that image has: a browser, a toolchain
+or client the image provides, inspecting or finishing the environment's setup, reproducing a failed
+gate step. To check a change, prefer a declared gate. One run at a time, behind any gate already
+running, capped at 10 minutes; it gets no GitHub token and never runs the pending setup first. The
+request must fit 4096 bytes: put a longer script in a file and run that.
+Exec runs are not gate evidence; never report an exec run as a passed gate.
+Exit 3 means there is no environment image here (no `environment` declared, or a workflow step with
+`gates: false`): run the command in your own shell instead. Exit 75 means no usable answer came: the
+command may or may not have run, so check its effects before you ask again.

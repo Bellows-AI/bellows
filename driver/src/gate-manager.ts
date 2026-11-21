@@ -58,7 +58,19 @@ export interface GateRunOptions {
      * for all of them before it asks for the next serial one. The pending setup still runs first, once for the group.
      */
     parallel?: boolean | undefined;
+    /**
+     * An agent's exec (`{"exec"}` on the ad-hoc endpoint): the command it asked for, in the checkout's queue, under
+     * the ad-hoc cap, with no setup run first, no record and no GitHub token (`StepRequest.tokenless`).
+     */
+    exec?: true | undefined;
 }
+
+/**
+ * The longest run an ad-hoc call may start: the agent's shell tool gives up on one command at 10
+ * minutes, and the hangup cancels the run, so a longer gate would be killed every time.
+ */
+export const AD_HOC_MAX_MINUTES = 10;
+const MS_PER_MINUTE = 60_000;
 
 export interface GateManager {
     /**
@@ -227,6 +239,7 @@ export function createSupervisedGateManager({
             signal: AbortSignal | undefined;
             filter?: string | undefined;
             parallel?: boolean | undefined;
+            tokenless?: boolean | undefined;
         },
         setup = false
     ): Promise<GateRun> => {
@@ -240,6 +253,7 @@ export function createSupervisedGateManager({
             },
             timeoutMs: run.deadlineMs,
             ...(run.parallel ? { parallel: true as const } : {}),
+            ...(run.tokenless ? { tokenless: true as const } : {}),
         };
         return gateRunOf(await runner.runGate(entry.job, gate, run.signal), run.deadlineMs);
     };
@@ -287,12 +301,17 @@ export function createSupervisedGateManager({
         return entry.settingUp;
     };
 
-    /** The gate in the worktree, recorded when it is given an `execution`. */
+    /** The gate in the worktree, recorded when it is given an `execution`; an exec skips setup and record. */
     const runAfterSetup = async (
         entry: SupervisedEntry,
         command: string,
-        { signal, timeoutMs, filter, execution, parallel }: GateRunOptions
+        { signal, timeoutMs, filter, execution, parallel, exec: isExec }: GateRunOptions
     ): Promise<GateRun> => {
+        // An exec leaves a failed setup pending, so the agent can use it to debug that setup.
+        if (isExec) {
+            const deadlineMs = gateDeadlineMs(config, gateTimeoutMs, AD_HOC_MAX_MINUTES * MS_PER_MINUTE);
+            return exec(entry, { command, deadlineMs, signal, tokenless: true });
+        }
         const setupFailure = await ensureSetup(entry, signal);
         if (setupFailure) return setupFailure;
         const run = { command, deadlineMs: gateDeadlineMs(config, gateTimeoutMs, timeoutMs), signal, filter, parallel };
@@ -324,7 +343,9 @@ export function createSupervisedGateManager({
 
         runGate(key, _name, command, options = {}) {
             const work = (entry: SupervisedEntry): Promise<GateRun> => runAfterSetup(entry, command, options);
-            return options.parallel ? alongside(key, options.signal, work) : inQueue(key, options.signal, work);
+            return options.parallel && !options.exec
+                ? alongside(key, options.signal, work)
+                : inQueue(key, options.signal, work);
         },
 
         runSetup(key, { signal, timeoutMs } = {}) {

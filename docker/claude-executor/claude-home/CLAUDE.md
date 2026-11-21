@@ -135,3 +135,22 @@ declared service listens. Before connecting to a database or any other backing s
   the service `name` is its hostname, which resolves to `127.0.0.1` — connect to `db:5432`, not to
   a guessed address. Services start with no health wait: a refused first connect may be a service
   still booting, so retry briefly before declaring it down.
+
+## Commands in the environment image
+
+Run any command in the repository's environment image — the container the gates use, in this
+worktree — with `factory-exec`, the command as ONE quoted argument (it runs under `sh -c`):
+
+```bash
+factory-exec 'npx playwright test e2e/login.spec.ts'
+```
+
+It prints `{"exitCode":N,"output":"..."}`. Use it for what only that image has: a browser, a toolchain
+or client the image provides, inspecting or finishing the environment's setup, reproducing a failed
+gate step. To check a change, prefer a declared gate. One run at a time, behind any gate already
+running, capped at 10 minutes; it gets no GitHub token and never runs the pending setup first. The
+request must fit 4096 bytes: put a longer script in a file and run that.
+Exec runs are not gate evidence; never report an exec run as a passed gate.
+Exit 3 means there is no environment image here (no `environment` declared, or a workflow step with
+`gates: false`): run the command in your own shell instead. Exit 75 means no usable answer came: the
+command may or may not have run, so check its effects before you ask again.
