@@ -6,7 +6,7 @@
 
 import { waitAdvisoryXactLock } from '../pool.js';
 import type { TransactionSql } from 'postgres';
-import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
+import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
 import { lockRootRowsInTx, requirementWaitOf } from '../connection-bindings.js';
 import { orgRelease } from '../org-status.js';
 import { planLimits, type StopCause } from '../plan-limits.js';
@@ -17,6 +17,7 @@ import { createTally, type OutcomeTally } from './job-store-outcome-tally.js';
 import { recordReportedSession, type SessionEvidence } from './job-store-provenance.js';
 import { answeredQuestionsOf } from './job-store-questions.js';
 import { fingerprintOf, missedSettle, recordReceipt, type SettleKey } from './job-store-receipts.js';
+import { queueObjectiveGateFix } from './job-store-gate-fix.js';
 import { stagedFingerprint } from './job-store-staged.js';
 import { exists, insertWorkflowSuccessor, runtimePatch, stopReviewsOf } from './job-store-rows.js';
 import { issueVerdictReclaim, liveVerdictReclaim } from './job-store-reclaim-queue.js';
@@ -574,7 +575,7 @@ async function settleVerdict(
     // snapshot on its root and skips it: its completes behave byte-identically to
     // before 027.
     const [root] = await tx<WorkflowTransitionRoot[]>`
-        select mode, workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo
+        select mode, workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo, gate_fix_rounds
         from job
         where org_id = ${orgId} and id = ${rootJobId}
     `;
@@ -687,6 +688,8 @@ export interface WorkflowTransitionRoot {
     command: string;
     created_by: string | null;
     repo: string | null;
+    /** The objective gate-repair limit frozen at create (162); null on a workflow root and on older roots. */
+    gate_fix_rounds: number | null;
 }
 
 /**
@@ -762,7 +765,20 @@ const frozenAgentOf = (row: { agent_type: string | null; agent_model: string | n
 
 export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowTransitionInput): Promise<void> {
     const { orgId, rootJobId, root, completedId, prs } = input;
-    // An objective-mode thread (051) has no graph: its verdict is the whole story.
+    // An objective-mode thread (051) has no graph: its verdict is the whole story, save the gate repair.
+    if (root.mode === OBJECTIVE_MODE) {
+        await queueObjectiveGateFix(tx, {
+            orgId,
+            rootJobId,
+            completedId,
+            status: input.status,
+            failureKind: input.failureKind,
+            treeChanged: input.treeChanged,
+            limit: root.gate_fix_rounds,
+            createdBy: root.created_by,
+        });
+        return;
+    }
     if (root.mode !== WORKFLOW_MODE || !root.workflow_snapshot) return;
     // The same per-root advisory lock the claim takes: a transition insert must not interleave
     // with a claim's select-lock-claim of this thread, or two rows of one thread could end up

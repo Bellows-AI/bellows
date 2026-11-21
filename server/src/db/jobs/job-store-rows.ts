@@ -84,6 +84,9 @@ export interface JobRow {
     workflow_name: string | null;
     /** The row's execution mode (051), inherited from the thread root. */
     mode: JobMode;
+    /** Only the detail reads (get/thread) select these (162): the board-queued gate repair's round, and the root's limit. */
+    gate_fix_round?: number | null;
+    gate_fix_limit?: number | null;
     done_at: Date | null;
     cancel_requested_at: Date | null;
     command_delivered_at: Date | null;
@@ -214,6 +217,12 @@ const resolvedModelOf = (row: JobRow): string | null => row.run_model ?? null;
 const hiddenSkillsOf = (row: JobRow) =>
     row.skill_hidden ? { hiddenSkills: row.skill_hidden.map(({ name, reason }) => ({ name, reason })) } : {};
 
+/** The board's gate repair on a detail read (162); null from a read that does not select it. */
+const gateFixOf = (row: JobRow) => ({
+    gateFixRound: row.gate_fix_round ?? null,
+    gateFixLimit: row.gate_fix_limit ?? null,
+});
+
 export function toJob(orgId: string, row: JobRow): Job {
     return {
         id: row.id,
@@ -247,6 +256,7 @@ export function toJob(orgId: string, row: JobRow): Job {
         workflowNode: row.workflow_node ?? null,
         workflowName: row.workflow_name ?? null,
         mode: row.mode,
+        ...gateFixOf(row),
         doneAt: iso(row.done_at),
         cancelRequestedAt: iso(row.cancel_requested_at),
         // The claim builds the same path only for jobs it hands out; every read carries it too,
@@ -549,6 +559,12 @@ export function threadTitleColumnsFragment(sql: Sql): Fragment {
     return sql`(select r.title from job r where r.org_id = job.org_id and r.id = job.root_job_id) as title,
                (select r.title_origin from job r where r.org_id = job.org_id and r.id = job.root_job_id) as title_origin,
                (select r.title_revision from job r where r.org_id = job.org_id and r.id = job.root_job_id) as title_revision`;
+}
+
+/** The gate-repair columns of a detail read (162): this row's round and the thread root's frozen limit. */
+export function gateFixColumns(sql: Sql): Fragment {
+    return sql`job.gate_fix_round,
+               (select r.gate_fix_rounds from job r where r.org_id = job.org_id and r.id = job.root_job_id) as gate_fix_limit`;
 }
 
 export function publicationColumnsFragment(sql: Sql): Fragment {
