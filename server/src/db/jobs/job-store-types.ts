@@ -327,13 +327,6 @@ export interface Job {
      */
     mode: JobMode;
     /**
-     * The 1-based round of the board's own gate repair when this row is the follow-up it queued for a run that failed
-     * a declared gate (162); null on every other row. Detail reads (get/thread) only.
-     */
-    gateFixRound?: number | null;
-    /** The round limit frozen on the thread's root at create: the M of "round N of M". Null on older threads. Detail reads only. */
-    gateFixLimit?: number | null;
-    /**
      * When the user declared the task done — the verdict no run can make. Null until they say so,
      * and only settable on a finished task; it never replaces the run's own outcome.
      */

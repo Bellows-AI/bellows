@@ -33,7 +33,7 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
   `UNKNOWN_KEY` — `server/test/workflow-schema.test.ts`.
 - **The definition and name freeze on the root row at create**; `job.workflow_id` has no foreign key.
   `server/test-db/job-store.workflow.test.ts`.
-- **No `workflow` means objective mode on every row** — no snapshot, node or wait; its one transition is the gate repair in [jobs.md](jobs.md).
+- **No `workflow` means objective mode on every row** — no snapshot, node, wait or transition: a red gate is repaired inside the run ([jobs.md](jobs.md)).
   `server/test-db/job-store.objective.test.ts`.
 - **An unmatched completion or an exhausted bound rests the thread**, never fails or falls through;
   loop bounds count rows for the target node, so every edge into it needs the same `max`.
