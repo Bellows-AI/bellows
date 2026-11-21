@@ -27,7 +27,7 @@ Every value is commented in `charts/factory/values.yaml`. These are the ones you
 
 ### Required
 
-The render refuses to start without them, and names the missing value.
+The render refuses to start without them, and names the missing value. With `secret.create: false`, the chart creates no Secret, so `database.url`, `secret.oauthClientSecret`, `secret.sessionSecret` and `github.appPrivateKey` come from your own Secret instead ([Secrets to create](#secrets-to-create)).
 
 | Value | What it is |
 | --- | --- |

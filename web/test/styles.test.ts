@@ -627,8 +627,12 @@ describe('the stylesheet — sizing and motion (#189)', () => {
                 .filter(([prelude]) => prelude.split(',').some((part) => part.trim() === selector))
                 .map(([, decls]) => decls)
                 .join('\n');
+        // The primary item takes the theme's nav tokens: grey in dark, an accent wash in light.
+        const primary = body('.sidenav-link.is-active');
+        expect(primary).toMatch(/background:\s*var\(--nav-active-bg\)/);
+        expect(primary).toMatch(/color:\s*var\(--nav-active-ink\)/);
+        expect(primary).not.toMatch(/border|outline|box-shadow/);
         for (const selector of [
-            '.sidenav-link.is-active',
             '.sidenav-sublink.is-active',
             '.sidenav-task.is-active',
             '.sidenav-newtask.is-active',
@@ -659,14 +663,15 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(body).not.toMatch(/border\s*:/);
     });
 
-    it('rests secondary buttons without a visible frame and gives them the quiet soft fill', () => {
+    it('rests secondary buttons on the theme button tokens: soft fill in dark, a white framed hairline in light', () => {
         const css = stripComments(shippedCss());
         const body = (selector: string) => rules(css).find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
         const bare = body('button');
-        expect(bare).toMatch(/border\s*:\s*1px solid transparent/);
-        expect(bare).toContain('background: var(--surface-strong)');
+        expect(bare).toMatch(/border\s*:\s*1px solid var\(--button-line\)/);
+        expect(bare).toContain('background: var(--button-fill)');
+        expect(bare).toContain('box-shadow: var(--shadow-hairline)');
         expect(body('button:disabled')).toMatch(/cursor\s*:\s*not-allowed/);
-        expect(body('button.danger')).not.toMatch(/border[a-z-]*\s*:/);
+        expect(body('button.danger')).not.toMatch(/border[a-z-]*:\s+(?!transparent)\S/);
         expect(body('button.danger')).toMatch(/background\s*:\s*transparent/);
     });
 
@@ -731,18 +736,22 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(configured?.[1]).not.toContain('surface-raised');
     });
 
-    it('draws the chat input with no surface: the field is the only frame, its chips on the shared quiet trigger', () => {
+    it('draws the chat input as one rounded card the field sits bare inside, its chips on the shared quiet trigger', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
         const all = rules(css);
         const body = (selector: string) => all.find(([prelude]) => prelude.trim() === selector)?.[1] ?? '';
         expect(body('.chat-input')).not.toMatch(/border|background|box-shadow|padding/);
         expect(body('.chat-input-bar')).not.toMatch(/border|background|padding/);
-        expect(body('.chat-input-field')).toMatch(/border-color:\s*var\(--line\)/);
+        expect(body('.chat-input-box')).toMatch(/border:\s*1px solid var\(--line-strong\)/);
+        expect(body('.chat-input-box')).toMatch(/box-shadow:\s*var\(--shadow-soft\)/);
+        expect(body('.chat-input-box')).toMatch(/background:\s*var\(--surface-raised\)/);
+        expect(body('.chat-input-field')).toMatch(/border:\s*0/);
         expect(body('.chat-input-field')).toMatch(/field-sizing:\s*content/);
+        expect(css).not.toContain('chat-input-hint');
         expect(body('.composer-context .select-trigger')).not.toMatch(/border|background/);
     });
 
-    it('focus on the chat input brightens its border and never resizes it (not the RED, see the e2e)', () => {
+    it('focus on the chat input lights the card with the accent and never resizes it (not the RED, see the e2e)', () => {
         const css = stripComments(readFileSync(join(webSrc, 'styles/regions/composer.css'), 'utf8'));
         const focusRules = rules(css).filter(
             ([prelude]) => /:focus(-within|-visible)?\b/.test(prelude) && /chat-input/.test(prelude)
@@ -751,8 +760,9 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         for (const [, declarations] of focusRules) {
             // Only the colour moves: no width, padding or size change, so the box never jumps.
             expect(declarations).not.toMatch(/border(-width)?:|padding|margin|width|height/);
-            expect(declarations).toMatch(/border-color:\s*var\(--line-strong\)/);
         }
+        expect(focusRules.some(([, d]) => /border-color:\s*var\(--accent\)/.test(d))).toBe(true);
+        expect(focusRules.some(([, d]) => /box-shadow:\s*var\(--focus-halo\)/.test(d))).toBe(true);
     });
 
     it('task detail: the conversation is the one scroll region, the composer docks under it', () => {
@@ -776,7 +786,7 @@ describe('the stylesheet — sizing and motion (#189)', () => {
         expect(perComposer).toEqual([]);
         // Focus keeps a visible ring on the field itself, drawn on the border, never `outline: none`.
         const focus = rules(css).find(([p]) => /\.chat-input-field:focus-visible/.test(p));
-        expect(focus?.[1]).toMatch(/outline:\s*1px solid var\(--line-strong\)/);
+        expect(focus?.[1]).toMatch(/outline:\s*1px solid var\(--accent\)/);
         expect(focus?.[1]).toMatch(/outline-offset:\s*-1px/);
         expect(focus?.[1]).not.toMatch(/outline:\s*none/);
     });

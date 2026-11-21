@@ -76,9 +76,9 @@ test.describe('the guided task composer', () => {
         for (const label of ['Repository', 'Executor'] as const) {
             await expect(contextChip(page, label)).toBeInViewport({ ratio: 1 });
         }
-        // A desktop screen has no arrow: Enter sends, and the hint says so.
-        await expect(page.getByRole('button', { name: 'Start task' })).toBeHidden();
-        await expect(page.locator('.chat-input-hint')).toBeInViewport({ ratio: 1 });
+        // The round arrow shows on a desktop screen too, and there is no keyboard hint.
+        await expect(page.getByRole('button', { name: 'Start task' })).toBeInViewport({ ratio: 1 });
+        await expect(page.locator('.chat-input-hint')).toHaveCount(0);
         expect(await page.evaluate(() => window.scrollY)).toBe(0);
 
         // On a wide screen the context chips share one row: same top, left to right.
@@ -112,7 +112,6 @@ test.describe('the guided task composer', () => {
         const box = (await start.boundingBox())!;
         expect(box.width).toBe(box.height);
         expect(box.height).toBeGreaterThanOrEqual(44);
-        await expect(page.locator('.chat-input-hint')).toBeHidden();
         await prompt(page).fill('one');
         await prompt(page).press('Enter');
         await expect(prompt(page)).toHaveValue('one\n');
@@ -499,11 +498,9 @@ test.describe('attachments in the composer', () => {
         const blocker = page.locator('#composer-blocker');
         await expect(chips(page).getByText('Failed: Storage is busy, try again')).toBeVisible();
         await expect(blocker).toHaveText('Remove or retry the failed files to continue.');
-        await expect(page.locator('.chat-input-hint')).toBeHidden();
         await page.getByRole('button', { name: 'Retry flaky.txt' }).click();
         await expect(chips(page).getByText('Ready')).toHaveCount(4);
         await expect(blocker).toHaveText('');
-        await expect(page.locator('.chat-input-hint')).toBeVisible();
         expect(board.uploads.filter((name) => name === 'flaky.txt')).toHaveLength(2);
         await page.screenshot({ path: `${SHOTS}/composer-attachments.png`, fullPage: true });
         // The one 503 is the failure this test injects; anything else is a problem.

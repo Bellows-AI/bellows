@@ -344,9 +344,15 @@
         margin-bottom: var(--space-1);
     }
 
-    .chat-exchange {
-        border-top: 1px solid var(--line);
-        padding-top: 10px;
+    /* No divider between turns: the grid's 16px gap plus this margin is the 28px between them,
+       and the member's bubble marks each start. */
+    .chat-exchange + .chat-exchange {
+        margin-top: var(--space-3);
+    }
+
+    /* Dark: the rail's cards take the hairline the light theme's cards already carry. */
+    .task-rail .panel {
+        border-color: var(--line);
     }
 
     /* The outcome's group labels. */

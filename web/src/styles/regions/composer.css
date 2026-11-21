@@ -76,9 +76,8 @@
     }
 
     /* The one chat input (ChatInput.tsx), shared by the new-task page and the follow-up: the
-       files above, a bordered one-line field that grows with the paperclip and the send arrow
-       inside its frame, and the caller's control row below. No surface of its own — the field's
-       border is the only frame. */
+       files above, one rounded card (`.chat-input-box`) holding the field with the paperclip and
+       the send arrow inside it, and the caller's control row below. */
     .chat-input {
         display: flex;
         flex-direction: column;
@@ -88,26 +87,38 @@
         width: 100%;
     }
 
+    /* The card: raised ground, the strong border, the soft shadow; focus lands on it. The field
+       inside is bare, so its own frame never doubles the card's. */
+    .chat-input-box {
+        background: var(--surface-raised);
+        border: 1px solid var(--line-strong);
+        border-radius: 12px;
+        box-shadow: var(--shadow-soft);
+        min-height: 48px;
+        position: relative;
+    }
+
     .chat-input-field {
-        border-color: var(--line);
+        background: transparent;
+        border: 0;
         display: block;
         field-sizing: content;
         line-height: 20px;
         max-height: 50vh;
         min-height: 0;
-        padding: 6px 10px;
+        padding: var(--space-3) 10px;
         resize: none;
         width: 100%;
     }
 
-    /* The paperclip (and, on the compact shell, the arrow) sit on the field's last line, inside its
-       border; the field's side padding keeps the text clear of them. */
-    .chat-input-box {
-        position: relative;
-    }
-
+    /* The paperclip and the arrow sit on the field's last line, inside the card; the field's side
+       padding keeps the text clear of them. */
     .chat-input-box:has(> .attachment-add) > .chat-input-field {
         padding-left: 38px;
+    }
+
+    .chat-input-field {
+        padding-right: 44px;
     }
 
     /* `min-height: 0` outranks `button.primary`'s 40px; the compact shell's 44px rule below
@@ -122,21 +133,30 @@
         left: 8px;
     }
 
+    /* The round arrow at every width; disabled (the muted fill) until there is text. */
     .chat-input-box > .chat-input-send {
+        align-items: center;
+        border-radius: 50%;
+        display: inline-flex;
+        height: 32px;
+        justify-content: center;
+        min-width: 32px;
+        padding: 0;
         right: 8px;
+        width: 32px;
     }
 
-    .chat-input-field:hover {
-        border-color: var(--line);
+    /* Focus: the accent border and a 3px accent halo on the card. The 1px outline sits exactly on
+       the border (offset -1px), so the keyboard matrix still finds a ring on the focused field
+       while the box is what lights up. */
+    .chat-input-box:focus-within {
+        border-color: var(--accent);
+        box-shadow: var(--focus-halo);
     }
 
-    /* Focus brightens the border a step instead of drawing the accent ring. The 1px outline sits
-       exactly on the border (offset -1px), so it reads as the brighter border while the keyboard
-       matrix still finds a ring on the focused element. */
     .chat-input-field:focus,
     .chat-input-field:focus-visible {
-        border-color: var(--line-strong);
-        outline: 1px solid var(--line-strong);
+        outline: 1px solid var(--accent);
         outline-offset: -1px;
     }
 
@@ -164,22 +184,6 @@
         gap: var(--space-1);
         justify-content: flex-end;
         margin-left: auto;
-    }
-
-    /* Send: no arrow on a desktop screen — Enter sends there. The compact shell shows it below. */
-    .chat-input-send {
-        display: none;
-    }
-
-    /* How to send, beside the status; it gives way while the status says why sending is blocked. */
-    .chat-input-hint {
-        color: var(--ink-muted);
-        font-size: var(--text-xs);
-        white-space: nowrap;
-    }
-
-    .chat-input-end:has(> .composer-blocker:not(:empty)) > .chat-input-hint {
-        display: none;
     }
 
     /* The request against the board's limit: shown only close to it, the stop lamp once over. */
@@ -645,10 +649,6 @@
         .chat-input-send svg {
             height: 18px;
             width: 18px;
-        }
-
-        .chat-input-hint {
-            display: none;
         }
 
         /* The field grows to hold the two 44px targets on its line. */

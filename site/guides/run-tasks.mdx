@@ -22,10 +22,11 @@ Everything here also works from the [CLI](/cli/commands) and the [MCP server](/m
 | Action                    | When to use it                                                                                     |
 | ------------------------- | -------------------------------------------------------------------------------------------------- |
 | **Follow up**             | The run finished, but you want more or something different. Same checkout, executor and session; you can switch the model |
+| **Ask for another pass**  | A failed run: puts the cursor in the follow-up box so you can say what to fix. Nothing is sent      |
 | **Answer**                | The agent asked a question                                                                         |
-| **Retry**                 | The run failed for a transient reason; same prompt, new job                                        |
-| **Edit**                  | You'd rather fix the prompt than add to it                                                         |
-| **Stop**                  | The run is going the wrong way                                                                     |
-| **Mark done** / **Reopen** | Close the task in Bellows; it doesn't merge or close the PR. Reopen to continue later             |
+| **Stop run**              | The run is going the wrong way                                                                     |
+| **Mark done**             | Close the task in Bellows; it doesn't merge or close the PR                                        |
+
+**Retry** (same prompt, new job), **Edit** (replace the command of a queued run) and **Reopen** (undo done) are not buttons in the app. Use `bellows job retry`, `bellows job edit` and `bellows job reopen`, or the MCP tools `retry_task`, `edit_task` and `reopen_task`.
 
 What each status means, and what to do when a run fails: [Task lifecycle](/guides/task-lifecycle).
