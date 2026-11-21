@@ -1,6 +1,6 @@
 ---
 name: factory-gates
-description: Run a repository's verification gates (tests, lint, build checks declared in .bellows.yaml) in the shared environment image, and read their output. Use before finishing a task, after changes that could break CI, or whenever asked to "run the gates", "run the checks" or "verify with CI steps". Needs a repository that declares gates: `factory-gate` reports when it has none.
+description: Run a repository's verification gates (tests, lint, build checks declared in .bellows.yaml) in the shared environment image, and read their output. Use before finishing a task, after changes that could break CI, or whenever asked to "run the gates", "run the checks" or "verify with CI steps". Needs a repository that declares gates: `factory-gate` reports when it has none. Also runs any command in that environment image with `factory-exec` (a browser, the image's tooling, debugging its setup, reproducing a failed gate step).
 ---
 
 # Verification gates
@@ -44,6 +44,46 @@ required` in `.bellows.yaml` holds the publish back until they pass.
 If `factory-gate` reports no gates (exit 3), this environment has no gates configured: say so and verify with
 your own commands instead. Do not try to reach the gate server by any other route.
 
+## Reading the last report
+
+```bash
+factory-gate test --last
+```
+
+`factory-gate <name> --last` answers the thread's last stored report of a declared gate without running it, whatever the
+gate's `timeout`: `{"status":"failed","exitCode":1,"output":"...","last":true}`, the output cut to about 4 KiB. It is the
+latest passed or failed report of that gate in this task, as of when this run started; a gate you ran ad hoc since is not in it.
+A gate that has never run in this task answers 404 `no stored report for gate "<name>" in this thread` (exit 22, body printed):
+say so instead of guessing. Takes no `--filter`.
+
+A follow-up that continues a run whose gates failed also starts with the failed gates' name, exit code and output after the
+person's message. When you are told a gate failed (or "fix tests") and you cannot see why, read it with `--last` before you
+guess at a fix; a long gate you cannot rerun here is exactly what it is for.
+
+## Running any command: factory-exec
+
+```bash
+factory-exec 'npx playwright test e2e/login.spec.ts'
+```
+
+`factory-exec '<command>'` runs one command in the repository's environment image — the container the
+gates use, in this worktree — and prints `{"exitCode":N,"output":"..."}`. Use it for what only that image
+has: a browser, a toolchain or client the image provides, inspecting or finishing the environment's
+setup, reproducing a failed gate step. To check a change, prefer a declared gate.
+
+- Pass the command as ONE quoted argument; it runs under `sh -c`. The request must fit 4096 bytes
+  (exit 2, "command too long"): put a longer script in a file in the worktree and run that file.
+- One run at a time, behind any gate already running, capped at 10 minutes; whatever it started in the
+  background is killed when it ends. It gets the gates' environment variables but no GitHub token, and
+  it never runs the environment's pending `setup` first.
+- Exec runs are not gate evidence; never report an exec run as a passed gate. Nothing records them,
+  and `exitCode` is the command's own status.
+- Exit 3 means there is no environment image here (the repository declares no `environment`, or this
+  workflow step runs without one, as a `gates: false` node does): run the command in your own shell
+  instead. Exit 75 means no usable answer came: the command may or may not have run, so check its
+  effects before you ask again. Exit 22 is an answer that is not a 2xx (its body printed, the status
+  on stderr).
+
 ## Rules
 
 - Only gates the repository declares can run. The gate **name** goes in the request; you cannot
@@ -61,5 +101,5 @@ your own commands instead. Do not try to reach the gate server by any other rout
   finish are always unfiltered.
 - A gate whose `.bellows.yaml` entry declares `timeout:` above 10 (minutes) cannot run ad hoc: the
   call answers 422 and the gate runs only when you finish (an `on_demand` one not at all). Do not
-  retry it; run its pieces (a build, one spec) with your own commands instead.
+  retry it; run its pieces (a build, one spec) with your own commands instead, and read its last stored report with `--last`.
 - If a declared gate is still failing when you finish, say so plainly; never claim it passed.

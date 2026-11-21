@@ -36,7 +36,7 @@ Gates run in a separate container that shares the task's workspace. What the age
 
 A failing gate fails the run. The task page shows the badge <span className="status status-failed">gate failed</span> and a **Verification failed** pill.
 
-By default, Bellows then starts an automatic repair round: the agent gets the failing gate's name and output and tries to fix it. The limit is the **Gate repair rounds** setting on the executor. The default is 3, the maximum is 10, and 0 turns repair off. The limit is fixed when the task is created. A repair round that leaves the tree unchanged ends the loop, because the same gate would fail the same way.
+By default, Bellows then queues an automatic repair round as a follow-up run on the same task, in the same checkout and session: the agent gets the failing gate's name and output and tries to fix it. The run is labelled **automatic gate fix · round N of M** on the task page. The limit is the **Gate repair rounds** setting on the executor. The default is 3, the maximum is 10, and 0 turns repair off. The limit is fixed when the task is created. A repair round that leaves the tree unchanged ends the loop, because the same gate would fail the same way. A task you marked done, one whose pull request was merged, and a run that failed for another reason (blocked, a dead service, a failed publish, a configuration or policy refusal) get no repair round; you can still follow up by hand.
 
 <Note>
   If repair rounds run out, the work still ships as a draft pull request, unless your repo sets `policy: gates: required`. Then nothing is published until the gates pass. See [Policy and reviewers](/guides/policy-and-reviewers).
@@ -95,8 +95,17 @@ Parallel gates need `setsid` in your environment image, which common images such
 Use `on_demand: true` for checks that are too slow or too specific to run on every task, such as an end-to-end suite. The agent runs it only when its change touches what the gate checks, and a failure never fails the task.
 
 <Warning>
-  A gate with `timeout` above 10 cannot be run by the agent while it works. The call is refused and the gate runs only at the end, so an `on_demand` gate with a long timeout never runs. Keep on-demand gates at 10 minutes or less.
+  A gate with `timeout` above 10 cannot be run by the agent while it works. The call is refused and the gate runs only at the end, so an `on_demand` gate with a long timeout never runs. Keep on-demand gates at 10 minutes or less. The agent can still read such a gate's last report with `factory-gate <name> --last`.
 </Warning>
+
+## Reading the last report
+
+The gates that run when the agent finishes run after it has exited, so their output never reaches its session. Two things carry it forward:
+
+- A follow-up on a task whose last run failed a gate starts with that gate's name, exit code and the tail of its output after your message. A gate that passed or was skipped adds nothing.
+- The agent can read a gate's last stored report with `factory-gate <name> --last`, without running it, including a gate whose `timeout` above 10 refuses an ad hoc run. It answers the latest passed or failed report of that gate in the task, as of when the run started, and says so when the gate has not run in the task yet.
+
+Reports are cut to about 4 KiB, the same as `{{gate.output}}` in a workflow.
 
 ## Filters
 
@@ -123,6 +132,12 @@ gates:
 </CodeGroup>
 
 The filter is up to 256 printable characters on one line. It is set for that one run only. A filtered run is never proof that the gate passed, and the end-of-run pass always runs gates without a filter. Pair a filtered `on_demand` gate with a full gate that has the same command and no filter.
+
+## Commands in the environment image
+
+The agent can run any command in your environment image while it works, with `factory-exec`. It uses this for what only the image has: a browser, tooling the image provides, debugging your `setup`, or reproducing a failed gate step. A repository that declares only `environment.image`, with no gates, gets this too.
+
+An exec run is never proof that a gate passed, and it is not recorded. It runs in the task's worktree with your gates' environment variables but no GitHub token, one run at a time behind any gate, for at most 10 minutes. It does not run a pending `setup` first. A workflow step with `gates: false` has no environment image, so the agent cannot use `factory-exec` there.
 
 ## Gates that need docker
 

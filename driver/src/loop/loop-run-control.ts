@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob } from '../board/board.js';
 import { describeError } from '../log.js';
+import { checkoutKey } from '../publish/publish.js';
 import { SUPERVISOR_ENV } from '../supervisor-contract.js';
 import { takeoverBoundMs } from '../supervisor-plan.js';
 import { clearPendingQuestions } from './loop-attempt.js';
@@ -8,7 +9,7 @@ import type { JobState } from './loop-attempt.js';
 import { attachConnection } from './loop-connection.js';
 import { attachCheckpoint, attachTranscriptExport } from './loop-export.js';
 import { createGateTokenRelay } from './loop-github.js';
-import { declaresGates } from './loop-gates.js';
+import { declaresGateEnvironment } from './loop-gates.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
 import { createReviewRelay } from './loop-review.js';
@@ -42,8 +43,8 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         );
         attachConnection({ rt, job, state }, token);
         gates.server.attachGateToken(token, createGateTokenRelay(rt, job, state));
-        // A job with no gate to ask for answers its agent's `POST /gate/run` "no gates"; a gated one 503s until `beginGates`.
-        if (!declaresGates(job)) gates.server.attachGateRun(token, null);
+        // A job with no environment answers its agent's `POST /gate/run` "no gates"; one with an environment 503s until `beginGates`.
+        if (!declaresGateEnvironment(job) || !checkoutKey(job)) gates.server.attachGateRun(token, null);
         gates.server.grantAgent(token, agentToken);
         gates.server.grantExporter(token, exporterToken);
         attachTranscriptExport({ rt, job, state }, token);

@@ -90,25 +90,39 @@
     --question-border: color-mix(in oklab, var(--question) 30%, var(--surface-raised));
     --user-bubble: color-mix(in oklab, var(--accent) 16%, var(--surface-raised)); /* the member's chat bubble */
     --user-bubble-border: color-mix(in oklab, var(--accent) 35%, var(--surface-raised));
+    /* Depth: the dark theme casts none; the light block below carries the shadows. */
+    --shadow-hairline: none;
+    --shadow-soft: none;
+    /* The shell and controls the light theme re-skins: the sidebar ground, the current nav item,
+       the secondary button's fill and frame. */
+    --surface-nav: var(--surface);
+    --nav-active-bg: var(--surface-strong);
+    --nav-active-ink: var(--ink);
+    --button-fill: var(--surface-strong);
+    --button-line: transparent;
+    --panel-line: transparent; /* the soft tier's frame: none at rest, the task rail restates --line */
+    --nav-active-weight: 400;
+    --pill-radius: var(--radius-md);
+    --focus-halo: 0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent); /* the composer card's focus */
 }
 
 /* ---------- Semantic tokens: light ---------- */
 :root[data-theme="light"] {
     color-scheme: light;
 
-    --surface-sunken: oklch(0.960 0.008 254);
-    --surface: oklch(0.978 0.005 258);
-    --surface-soft: oklch(0.986 0.004 258);
+    --surface-sunken: oklch(0.955 0.009 255);
+    --surface: oklch(0.968 0.007 255);
+    --surface-soft: oklch(1 0 0);
     --surface-raised: oklch(1 0 0);
     --surface-strong: oklch(0.935 0.013 256);
-    --line: oklch(0.926 0.013 256);
-    --line-strong: oklch(0.853 0.021 250);
+    --line: oklch(0.912 0.014 256);
+    --line-strong: oklch(0.840 0.020 254);
 
-    --ink: oklch(0.216 0.036 258);
-    --ink-muted: oklch(0.477 0.037 256);
+    --ink: oklch(0.205 0.030 260);
+    --ink-muted: oklch(0.500 0.030 257);
     --ink-inverse: oklch(1 0 0);
 
-    --accent: oklch(0.540 0.179 258);
+    --accent: oklch(0.535 0.190 262);
 
     /* Issue 189: every lamp carries status text on raised, canvas and sunken, so the light
        palette darkens them until those text pairs clear AA; the status borders derive in step. */
@@ -165,8 +179,21 @@
     --question: oklch(0.520 0.190 300);
     --question-wash: color-mix(in oklab, var(--question) 8%, var(--surface-raised));
     --question-border: color-mix(in oklab, var(--question) 30%, var(--surface-raised));
-    --user-bubble: color-mix(in oklab, var(--accent) 16%, var(--surface-raised)); /* the member's chat bubble */
-    --user-bubble-border: color-mix(in oklab, var(--accent) 35%, var(--surface-raised));
+    --user-bubble: oklch(0.955 0.025 262); /* the member's chat bubble */
+    --user-bubble-border: oklch(0.900 0.045 262);
+    /* Depth: panels, cards and secondary buttons carry the hairline, the composer the soft one. */
+    --shadow-hairline: 0 1px 2px color-mix(in oklab, var(--ink) 6%, transparent);
+    --shadow-soft: 0 1px 2px color-mix(in oklab, var(--ink) 5%, transparent),
+        0 4px 16px color-mix(in oklab, var(--ink) 6%, transparent);
+    --surface-nav: oklch(0.955 0.010 255);
+    --nav-active-bg: var(--accent-wash);
+    --nav-active-ink: var(--accent);
+    --button-fill: var(--surface-raised);
+    --button-line: var(--line-strong);
+    --panel-line: var(--line);
+    --nav-active-weight: 600;
+    --pill-radius: 999px;
+    --focus-halo: 0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent);
 }
 
 /* ---------- Expose semantic tokens as utilities ----------

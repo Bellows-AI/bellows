@@ -10,7 +10,7 @@ environment:
     image: golang:1.25
 ```
 
-Only `image` is required. Without gates, though, nothing checks the agent's work, so add at least one.
+Only `image` is required. An image alone already lets the agent run commands in it while it works (see [Commands in the environment image](/guides/gates#commands-in-the-environment-image)). Without gates, though, nothing checks the agent's work, so add at least one.
 
 ## Full example
 

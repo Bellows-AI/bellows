@@ -320,7 +320,7 @@ describe('the executor isolation record (#382)', () => {
             "A taken-over run's agent (publish, review and ad-hoc gate runs, `POST /gate/run`) and exporter reach the new holder through the supervisor's relay (`serveRelay`); a request in flight across the rebind is hung up on (the exporter retries it; the agent's proxy answers 502), and the transcript continues under the new claim from its first unacknowledged byte. `driver/test/supervisor.test.ts`, `driver/test/control-proxy.test.ts`."
         );
         expect(prose(kubernetesDocs)).toContain(
-            "A taken-over run's agent gate requests reach the new holder the same way, and the agent holds no gate URL or token (`factory-gate` asks the control socket); an ad-hoc gate run in flight across the rebind is hung up on and re-asked, so it may run on both holders, never exactly once. `driver/src/loop/loop-gates.ts`."
+            "A taken-over run's agent gate requests reach the new holder the same way, and the agent holds no gate URL or token (`factory-gate` asks the control socket); an ad-hoc gate or exec run in flight across the rebind is hung up on and re-asked, so it may run on both holders, never exactly once. `driver/src/loop/loop-gates.ts`."
         );
     });
 

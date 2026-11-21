@@ -68,7 +68,7 @@ const defaultSnapshot = (options: { review?: boolean; merge?: boolean } = {}): W
 describe('resolveMasterPrompt: objective', () => {
     it('renders the objective mode with no per-turn values', () => {
         const prompt = resolveMasterPrompt(OBJECTIVE);
-        expect(MASTER_PROMPT_VERSION).toBe('factory-master-prompt/v6');
+        expect(MASTER_PROMPT_VERSION).toBe('factory-master-prompt/v7');
         expect(prompt).toBe(
             `Factory execution contract (${MASTER_PROMPT_VERSION})
 
@@ -85,9 +85,27 @@ Rules for this turn
 - You may wait for CI checks and reviews on the pull request you published, fix what they find and push again, and reply to each review comment you addressed saying what changed.
 - After you push and open or update a pull request, load the factory-pr-land skill and follow it to wait for CI and review before you finish.
 - You may edit files, run tests and other local verification, and commit, as the current task requires.
+- You may run any command in the repository's environment image with factory-exec '<command>' (one quoted argument): a browser, tooling the image provides, inspecting or finishing its setup, reproducing a failed gate step. To check a change, prefer a declared gate. Exec runs are not gate evidence; never report an exec run as a passed gate. Exit 3 means there is no environment image here.
 - If the current task defines an exact output line or marker, end with exactly that line, then stop.
 - If you cannot proceed for a reason outside the repository (missing credentials, no access, an unreachable service), end your final message with the line FACTORY_BLOCKED: <one-line reason>, then stop. Never print that line when you are not blocked.`
         );
+    });
+
+    // Both modes may run commands in the environment image, and neither may pass one off as a gate.
+    it('both modes carry the exec directive', () => {
+        const workflow = resolveMasterPrompt({
+            command: 'do the work',
+            workflowNode: 'task',
+            mode: WORKFLOW_MODE,
+            workflowName: 'default',
+            snapshot: defaultSnapshot(),
+            helperPlans: undefined,
+        });
+        for (const prompt of [workflow, resolveMasterPrompt(OBJECTIVE)]) {
+            expect(prompt).toContain("factory-exec '<command>'");
+            expect(prompt).toContain('never report an exec run as a passed gate');
+            expect(prompt).toContain('Exit 3 means there is no environment image here.');
+        }
     });
 
     it('keeps the publication denial on a workflow turn', () => {

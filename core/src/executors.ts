@@ -63,11 +63,11 @@ export const executorSuspendedMessage = (scope: ExecutorScope, name: string): st
     'Resume it or choose another executor, then start a new task.';
 
 /**
- * The default-workflow gate-repair round limit: how many bounded gate-fix rounds an
+ * The gate-repair round limit: how many bounded gate-fix rounds an
  * ordinary task may spend repairing a failed gate before the thread rests. A value of zero turns
- * automatic gate repair off — the graph falls back to today's no-edge shape. The board reads the
+ * automatic gate repair off. The board reads the
  * per-member value off the selected executor row at launch and freezes it onto the thread's root
- * row with the snapshot; a mid-flight settings edit changes later tasks, never a running thread.
+ * row; a mid-flight settings edit changes later tasks, never a running thread.
  */
 export const DEFAULT_GATE_FIX_ROUNDS = 3;
 

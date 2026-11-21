@@ -55,12 +55,13 @@ export const finalizeWaitMs = (config: DriverConfig): number =>
 
 /**
  * The declared gate image of the attempt's group, or null when the group runs no gate
- * container: the checkout declares neither gates nor setup, or the job has no worktree to run them
- * in. One decision for both executors' group specs; the image is asserted before it lands in one.
+ * container: the claim carries no environment, or the job has no worktree to run it in. An
+ * environment that declares only its image still gets the container, for the agent's own commands.
+ * One decision for both executors' group specs; the image is asserted before it lands in one.
  */
 export function gateImageOf(job: BoardJob): string | null {
     const declared = job.gates;
-    if (!declared || (declared.gates.length === 0 && !declared.setup) || !checkoutKey(job)) return null;
+    if (!declared || !checkoutKey(job)) return null;
     if (!GATE_IMAGE.test(declared.image)) {
         throw new Error(`refusing to run a gate in an image that is not a plain image reference: "${declared.image}"`);
     }

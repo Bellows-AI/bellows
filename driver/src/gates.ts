@@ -1,8 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { BoardJob, DeclaredGate } from './board/board.js';
 import { parseGateRequest, type GateRequest } from './gate-request.js';
-import type { GateManager } from './gate-manager.js';
-import { createGateAdmission } from './gate-admission.js';
+import { AD_HOC_MAX_MINUTES, type GateManager } from './gate-manager.js';
+import { createGateAdmission, type GateAdmission } from './gate-admission.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import { GateRecordRefused, recordGateRun, type GateEnd, type GateLedger } from './gate-record.js';
 
@@ -39,20 +39,16 @@ export const declaredTimeoutMs = (gate: DeclaredGate): number | undefined =>
         : undefined;
 
 /**
- * The longest gate an ad-hoc call may start: the agent's shell tool gives up on one command at 10
- * minutes, and the hangup cancels the run, so a longer gate would be killed every time.
- */
-const AD_HOC_MAX_MINUTES = 10;
-
-/**
  * The ad-hoc channel: a tiny HTTP server the RUNNER's agent calls to run one declared gate and
  * read its output, mid-run — "partially run tests in the environment image".
  *
  * The security posture, in one place: the endpoint listens on loopback by default (the bind
  * address is the access control, the dashboard's own rule); a call must carry a bearer token the
- * loop minted for ONE job; and the only thing a call can ask for is a gate NAME the job's own
- * `.bellows.yaml` declared — never an arbitrary command. The values travel by env file into the
- * runner, never in argv, like every credential here.
+ * loop minted for ONE job; a gate request carries only a gate NAME the job's own `.bellows.yaml`
+ * declared; and an `exec` request runs an arbitrary command only in that attempt's own gate
+ * container — in its task group, reaching nothing the agent's own container cannot — with no GitHub
+ * token, no record and no verdict. The values travel by env file into the runner, never in argv,
+ * like every credential here.
  */
 /** One gated job's registration with the ad-hoc endpoint. */
 export interface GateClaim {
@@ -173,6 +169,16 @@ const adHocRefusal = (gate: DeclaredGate, filter: string | undefined): string | 
     return null;
 };
 
+/** `factory-gate <name> --last`: the thread's latest stored verdict of the gate, as the claim carried it. */
+const lastReportAnswer = (job: BoardJob, name: string): { status: number; body: unknown } => {
+    const stored = job.lastGateReports?.find((report) => report.name === name);
+    if (!stored) {
+        return { status: HTTP_NOT_FOUND, body: { error: `no stored report for gate "${name}" in this thread` } };
+    }
+    const { status, exitCode, output } = stored;
+    return { status: HTTP_OK, body: { status, exitCode, output, last: true } };
+};
+
 /**
  * Acquires the checkout's gate environment and runs the declared gate in it, translating the
  * outcome into the ad-hoc endpoint's response. CONTAINER_GONE means the gate could not be run — its
@@ -291,6 +297,73 @@ const readGateRequest = async (request: IncomingMessage, stillLive: () => boolea
     return parsed;
 };
 
+/** The declared gate an ad-hoc request names, or the refusal it answers. */
+const declaredGateOf = (
+    claim: GateClaim,
+    request: Extract<GateRequest, { gate: string }>
+): { gate: DeclaredGate } | { status: number; body: unknown } => {
+    const refused = (status: number, error: string) => ({ status, body: { error } });
+    // A setup-only or image-only environment holds a registered door yet declares nothing to run.
+    if (claim.gates.length === 0) return refused(HTTP_NOT_FOUND, 'no gates');
+    // A gate request runs only a DECLARED name: its verdict is evidence, so the command is the repo's, never the
+    // agent's. The agent's own commands come as `exec`, which runs unrecorded and tokenless (`runExec`).
+    const gate = claim.gates.find((candidate) => candidate.name === request.gate);
+    if (!gate) return refused(HTTP_NOT_FOUND, `no declared gate "${request.gate}"`);
+    // `--last` reads a stored report and runs nothing, whatever the gate's timeout.
+    if (request.last) return lastReportAnswer(claim.job, gate.name);
+    const refusal = adHocRefusal(gate, request.filter);
+    if (refusal) return refused(HTTP_UNPROCESSABLE, refusal);
+    return { gate };
+};
+
+/**
+ * An agent's exec in the attempt's gate container: the command it sent, one at a time with the checkout's gates,
+ * never recorded and never a gate's latest run — its answer is the command's exit and output, no verdict.
+ */
+const runExec = async (
+    manager: Pick<GateManager, 'acquire' | 'runGate'>,
+    claim: GateClaim,
+    command: string,
+    signal: AbortSignal
+): Promise<{ status: number; body: unknown }> => {
+    if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
+    const unready = await acquireFor(manager, claim);
+    if (unready) {
+        return {
+            status: HTTP_INTERNAL_SERVER_ERROR,
+            body: { error: `gate environment failed to start: ${unready.message}` },
+        };
+    }
+    try {
+        const outcome = await manager.runGate(claim.key, 'exec', command, { signal, exec: true });
+        if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
+        return { status: HTTP_OK, body: { exitCode: outcome.exitCode, output: outcome.output } };
+    } catch (e) {
+        return failedRunAnswer(e, claim, signal);
+    }
+};
+
+/** An exec request under its token: admitted like a gate run (503 once closed), never recorded or noted. */
+const answerExec = async (
+    at: {
+        manager: Pick<GateManager, 'acquire' | 'runGate'>;
+        admission: GateAdmission;
+        auth: string;
+        claim: GateClaim;
+        reply: ServerResponse;
+    },
+    command: string,
+    cancelled: AbortSignal
+): Promise<void> => {
+    const { manager, admission, auth, claim, reply } = at;
+    if (admission.isClosed(auth)) {
+        return respondJson(reply, HTTP_SERVICE_UNAVAILABLE, { error: 'ad-hoc gate runs are closed', retryable: true });
+    }
+    const run = () => runExec(manager, claim, command, cancelled);
+    const result = await admission.admit(auth, withDaemonNote(claim.dockerdRestarts, cancelled, run));
+    return respondJson(reply, result.status, withDeadNote(result, claim));
+};
+
 /** Notes the latest completed run of a gate for its token: the timeout note's raw material. */
 const recordNote = (
     history: Map<string, Map<string, GateRunNote>>,
@@ -345,19 +418,18 @@ export function createGateServer({
 
         const parsedRequest = await readGateRequest(request, () => claims.get(auth) === claim);
         if (!parsedRequest.ok) return respond(reply, parsedRequest.status, { error: parsedRequest.error });
+        const cancelled = AbortSignal.any([cancels.get(auth)?.signal ?? AbortSignal.abort(), hangup]);
+        if ('exec' in parsedRequest) {
+            return answerExec({ manager, admission, auth, claim, reply }, parsedRequest.exec, cancelled);
+        }
 
-        // Only a DECLARED name runs. An arbitrary command string here would make the runner's
-        // agent a shell on the host through a container the driver owns — the one thing the
-        // declare-then-run model exists to prevent.
-        const gate = claim.gates.find((candidate) => candidate.name === parsedRequest.gate);
-        if (!gate) return respond(reply, HTTP_NOT_FOUND, { error: `no declared gate "${parsedRequest.gate}"` });
-        const refusal = adHocRefusal(gate, parsedRequest.filter);
-        if (refusal) return respond(reply, HTTP_UNPROCESSABLE, { error: refusal });
+        const declared = declaredGateOf(claim, parsedRequest);
+        if (!('gate' in declared)) return respond(reply, declared.status, declared.body);
+        const { gate } = declared;
 
         if (admission.isClosed(auth)) {
             return respond(reply, HTTP_SERVICE_UNAVAILABLE, { error: 'ad-hoc gate runs are closed', retryable: true });
         }
-        const cancelled = AbortSignal.any([cancels.get(auth)?.signal ?? AbortSignal.abort(), hangup]);
         const run = () => runRegisteredGate(manager, claim, { gate, filter: parsedRequest.filter }, cancelled);
         const result = await admission.admit(auth, withDaemonNote(claim.dockerdRestarts, cancelled, run));
         // A filtered run is a partial answer: it never stands as the gate's latest run.

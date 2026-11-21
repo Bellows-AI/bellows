@@ -276,6 +276,7 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
             'typecheck',
             'test:db',
             'test:executors',
+            'ui',
         ]);
         expect(gates.slice(0, 3)).toEqual([
             { name: 'build:core', command: 'npm run build -w core' },
@@ -284,13 +285,14 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         ]);
     });
 
-    // Every gate but the first runs side by side in the end-of-run pass. They share one checkout, and
+    // Every end-of-run gate but the first runs side by side. They share one checkout, and
     // test, test:db, test:executors (their pretest) and typecheck (tsc -b) each build core into
     // core/dist, which the suites import: building it once, alone, first leaves each later tsc -b an
-    // up-to-date no-op instead of a concurrent rewrite under another gate's reads.
-    it('builds core alone, then runs every other gate in parallel', async () => {
+    // up-to-date no-op instead of a concurrent rewrite under another gate's reads. An on_demand gate
+    // is not part of that pass.
+    it('builds core alone, then runs every other end-of-run gate in parallel', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
-        const [first, ...rest] = parseBellows(text)?.gates ?? [];
+        const [first, ...rest] = (parseBellows(text)?.gates ?? []).filter((gate) => !gate.onDemand);
         expect(first).toEqual({ name: 'build:core', command: 'npm run build -w core' });
         expect(rest.length).toBeGreaterThan(0);
         for (const gate of rest) expect(gate.parallel, gate.name).toBe(true);
@@ -340,6 +342,20 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
             parallel: true,
         });
         expect(gates.filter((g) => /test:jobs|make runners|docker/.test(`${g.name} ${g.command}`))).toEqual([]);
+    });
+
+    // The browser check the agent cannot run in its own image: on demand, narrowed to the specs a change
+    // touches, and within the 10 minutes an ad-hoc gate run may take. CI's verify:ui stays the full suite.
+    it('declares verify:ui as an on-demand, filtered gate the agent may run', async () => {
+        const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
+        const gates = parseBellows(text)?.gates ?? [];
+        expect(gates.find((g) => g.name === 'ui')).toEqual({
+            name: 'ui',
+            command: 'sh scripts/gate-ui.sh',
+            timeoutMinutes: 10,
+            onDemand: true,
+            filter: true,
+        });
     });
 
     // The gate image ships no jq and runs as a non-root user; the pr-land suite needs one.

@@ -87,6 +87,8 @@ The schema is in [.bellows.yaml reference](/reference/bellows-yaml).
 | Default gate time | 10 minutes. Set by the operator | The gate fails with exit code 124, and counts as an environment failure |
 | Longest gate the agent can start itself | 10 minutes | The call is refused. The gate runs only in the end-of-run pass |
 | Filter value (`$GATE_FILTER`) | 256 printable characters, one line | The agent's request is refused |
+| Agent command in the environment image (`factory-exec`) | 10 minutes | The command is killed with exit code 124 |
+| `factory-exec` request | 4 KiB, the command included | The command is refused before it is sent |
 | Gate repair rounds | 0 to 10, default 3 | `0` turns repair off. The value is fixed when the task is created |
 
 A gate's own `timeout` is also capped by the run time limit below. See [Gates](/guides/gates).

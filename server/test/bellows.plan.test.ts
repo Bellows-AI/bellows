@@ -380,11 +380,13 @@ describe("this repository's own .bellows.yaml", () => {
             ['s3', [9000]],
         ]);
         expect(plan.config?.gates.map((gate) => gate.name)).toEqual([
+            'build:core',
             'test',
             'lint',
             'typecheck',
             'test:db',
             'test:executors',
+            'ui',
         ]);
     });
 

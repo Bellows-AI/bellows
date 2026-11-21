@@ -100,6 +100,17 @@ export interface GateReport {
 }
 
 /**
+ * The latest stored verdict of one declared gate in the task's thread, as a claim carries it: what
+ * `factory-gate <name> --last` answers. `output` is bounded like `{{gate.output}}`.
+ */
+export interface LastGateReport {
+    name: string;
+    status: 'passed' | 'failed';
+    exitCode: number | null;
+    output: string | null;
+}
+
+/**
  * One declared service of the attempt's `.bellows.yaml`, as the driver's platform reports it:
  * the declared name (the DNS name inside the job), the image, and a lowercase state word —
  * docker's container State, or the pod phase under kubernetes.
@@ -326,6 +337,13 @@ export interface Job {
      * create and inherited by every follow-up, retry and successor.
      */
     mode: JobMode;
+    /**
+     * The 1-based round of the board's own gate repair when this row is the follow-up it queued for a run that failed
+     * a declared gate (162); null on every other row. Detail reads (get/thread) only.
+     */
+    gateFixRound?: number | null;
+    /** The round limit frozen on the thread's root at create: the M of "round N of M". Null on older threads. Detail reads only. */
+    gateFixLimit?: number | null;
     /**
      * When the user declared the task done — the verdict no run can make. Null until they say so,
      * and only settable on a finished task; it never replaces the run's own outcome.
@@ -755,6 +773,12 @@ export interface Claim {
      * Null when none is declared (the ordinary case); absent when the board resolved no plan.
      */
     gates?: BellowsConfig | null;
+    /**
+     * The latest passed or failed report per gate name across the thread's earlier rows, read at claim: empty when
+     * the thread never stored one. The driver answers `factory-gate <name> --last` from it, so a gate whose
+     * timeout refuses an ad hoc run can still be read.
+     */
+    lastGateReports: LastGateReport[];
     /** The services that file declares, validated as a whole with the gates; absent when there are none. */
     services?: readonly ServiceSpec[];
     /** The commit the plan was read at: the tip of the base branch (the default branch when none) at claim time. */

@@ -43,6 +43,7 @@ Queued -> Running -> Succeeded · Needs review -> Done
 - Sending the first prompt (`Enter`, or the round **Start task** arrow on a narrow screen) creates the first job. It is **Queued**, then **Running** when a runner picks it up.
 - When the agent asks a question, the task shows **Needs answer** until you answer. Your answer starts a new job.
 - **Stop run** moves a running task to **Stopping**, then **Stopped · Needs review**.
+- A run that fails a gate starts a repair run by itself, up to the executor's **Gate repair rounds**; see [Gates](/guides/gates#when-a-gate-fails).
 - A finished run waits for you. A follow-up, or a retry from the CLI or MCP, starts a new job. **Mark done** closes the task. `bellows job reopen` brings it back.
 - When review on the pull request is pending, the task shows **Waiting for review**. Once that wait ends, the reason is added to the label.
 

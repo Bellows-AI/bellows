@@ -58,8 +58,8 @@ const attemptOf = (g: Group) =>
         req.end();
     });
 
-/** `POST /gate/run {gate}` on a group's agent relay, the way the agent's gate tool reaches its driver. */
-const gateRunOf = (g: Group, gate: string) =>
+/** `POST /gate/run` on a group's agent relay, the way the agent's gate and exec tools reach their driver. */
+const gateRunOf = (g: Group, gate: string | { exec: string }) =>
     new Promise<{ status: number; body: string }>((resolve, reject) => {
         const req = request(
             {
@@ -75,7 +75,7 @@ const gateRunOf = (g: Group, gate: string) =>
             }
         );
         req.on('error', reject);
-        req.end(JSON.stringify({ gate }));
+        req.end(JSON.stringify(typeof gate === 'string' ? { gate } : gate));
     });
 
 const scenarios: Record<string, (s: Sim) => Promise<void>> = {
@@ -395,6 +395,52 @@ describe("takeover simulation, the agent's gate request", () => {
             // The agent never held a gate URL or token to go stale: nothing in its env names the lost driver's endpoint.
             expect(s.runnerEnvs.length).toBeGreaterThan(0);
             for (const { body } of s.runnerEnvs) expect(body).not.toMatch(/BELLOWS_GATE_/);
+            s.agentExits(g, 0);
+            await settled(s);
+        } finally {
+            await s.teardown();
+        }
+    }, 40_000);
+
+    // An exec rides the same relay, so a re-ask after the takeover runs on the new holder.
+    it("a taken-over run's agent exec reaches the new holder", async () => {
+        const s = new Sim(scaled(15), { gated: true });
+        try {
+            s.release();
+            const a = await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            await s.kill(a);
+            s.expireLease();
+            await s.start('B');
+            await until('the rebind', s, () => g.logs.some((l) => l.startsWith('supervisor: rebound to claim 2')));
+            let answer = await gateRunOf(g, { exec: 'echo hi' });
+            for (let tries = 0; answer.status === 503 && tries < 200; tries++) {
+                await nap(20);
+                answer = await gateRunOf(g, { exec: 'echo hi' });
+            }
+            expect(answer.status).toBe(200);
+            expect(JSON.parse(answer.body)).toEqual({ exitCode: 0, output: 'ran on driver B' });
+            expect(s.gateRuns).toEqual([{ driver: 'B', command: 'echo hi' }]);
+            s.agentExits(g, 0);
+            await settled(s);
+        } finally {
+            await s.teardown();
+        }
+    }, 40_000);
+
+    // A run with no gate environment (a repository with none, or a `gates: false` workflow node) answers exec "no gates".
+    it('a job with no gate environment answers its agent\'s exec "no gates"', async () => {
+        const s = new Sim(scaled(15));
+        try {
+            s.release();
+            await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            const answer = await gateRunOf(g, { exec: 'echo hi' });
+            expect(answer.status).toBe(404);
+            expect(JSON.parse(answer.body)).toEqual({ error: 'no gates' });
+            expect(s.gateRuns).toEqual([]);
             s.agentExits(g, 0);
             await settled(s);
         } finally {

@@ -2,7 +2,7 @@
 # `npm test` reach for — a docker CLI with the compose and buildx plugins (the test:jobs lane and
 # `make runners`, against a docker class's sidecar daemon through DOCKER_HOST), helm (the chart
 # suites), jq, a psql client (the lane on a declared Postgres, TEST_JOBS_PG_URL), and Playwright's
-# chromium system libraries. No daemon and no init: the daemon is the class's sidecar, and the
+# chromium with its system libraries (the ui gate). No daemon and no init: the daemon is the class's sidecar, and the
 # suites reap their own children.
 #
 # The executors' base, by the same digest (scripts/pin-digests.sh re-pins both).
@@ -80,10 +80,13 @@ RUN case "$TARGETARCH" in amd64) sha="$HELM_SHA256_amd64" ;; arm64) sha="$HELM_S
     && rm -rf /tmp/helm.tar.gz "/tmp/linux-${TARGETARCH}" \
     && helm version --short
 
-# Chromium's system libraries at the Playwright version package.json pins; the browser itself is
-# a per-checkout `npx playwright install chromium`, which needs no root.
+# Chromium and its system libraries at the Playwright version package.json pins, for the ui gate
+# (scripts/gate-ui.sh). The browser directory belongs to uid 1000: the gate's own
+# `npx playwright install chromium` takes a lock there, and adds a revision after a Playwright bump.
 ARG PLAYWRIGHT_VERSION=1.62.1
-RUN npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium \
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx -y playwright@${PLAYWRIGHT_VERSION} install --with-deps chromium \
+    && chown -R 1000:1000 "$PLAYWRIGHT_BROWSERS_PATH" \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/* /root/.npm
 

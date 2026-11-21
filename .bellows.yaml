@@ -37,6 +37,14 @@ environment:
            command: "npm run test:executors"
            timeout: 15
            parallel: true
+         # verify:ui in a real chromium against the declared postgres (scripts/gate-ui.sh): the agent's
+         # image has no browser libraries. On demand, filtered to the specs a change touches, and at
+         # most 10 minutes so the agent may run it while it works. CI's verify:ui stays the full check.
+         - name: ui
+           command: "sh scripts/gate-ui.sh"
+           timeout: 10
+           on_demand: true
+           filter: true
 
 services:
     - name: postgres

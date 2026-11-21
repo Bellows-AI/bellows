@@ -15,6 +15,14 @@ const knownTurnContext = (value: unknown): Pick<BoardJob, 'turnContext'> =>
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
+/** One stored gate verdict of the claim's `lastGateReports`, as far as `factory-gate --last` relies on it. */
+const isLastGateReport = (value: unknown): boolean =>
+    isRecord(value) &&
+    typeof value.name === 'string' &&
+    (value.status === 'passed' || value.status === 'failed') &&
+    (value.exitCode === null || typeof value.exitCode === 'number') &&
+    (value.output === null || typeof value.output === 'string');
+
 /** A service entry of the claim's plan, as far as the driver's argv and pod specs rely on it. */
 const isServiceSpec = (value: unknown): value is ServiceSpec =>
     isRecord(value) &&
@@ -87,6 +95,7 @@ const TYPED: Record<string, Check> = {
     taskGeneration: isNumber,
     agent: (value) => value === false,
     publish: isBoolean,
+    lastGateReports: (value) => Array.isArray(value) && value.every(isLastGateReport),
     gates: orNull((value) => isRecord(value) && isString(value.image) && Array.isArray(value.gates)),
 };
 

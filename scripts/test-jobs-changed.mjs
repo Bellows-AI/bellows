@@ -60,6 +60,7 @@ export const RULES = [
     [/^scripts\/gate-pg-fast\.sh$/, NONE, "this repository's test:db gate postgres tuning; pinned by server/test/bellows.test.ts"],
     [/^scripts\/gate-diag(-pod)?\.sh$/, NONE, 'the gate diagnostic pass; pinned by server/test/gate-diag.test.ts'],
     [/^scripts\/gate-test-changed\.sh$/, NONE, "this repository's test and test:db gate wrapper; pinned by server/test/gate-test-changed.test.ts"],
+    [/^scripts\/gate-ui\.sh$/, NONE, "this repository's ui gate wrapper; pinned by server/test/gate-ui.test.ts"],
     [/^scripts\/gate-base\.sh$/, NONE, "this repository's gate base resolution; pinned by server/test/gate-test-changed.test.ts"],
     [/^scripts\/test-jobs-groups\.mjs$/, NONE, '--parallel scheduling only; pinned by server/test/test-jobs.groups.test.ts'],
     [/^driver\/src\/scripts\/(supervisor\.cjs|task-init\.sh|task-checkout\.cjs|git-probe\.cjs|git-harden\.cjs)$/, FULL, 'runs inside every task'],
@@ -88,7 +89,7 @@ export const RULES = [
     [/^server\/src\/secrets\/rotate-(cli|args)\.ts$/, NONE, 'the rotation command line, not called by any jobs phase'],
     [/^server\/src\/secrets\//, FULL, 'the secret store every board opens'],
     [/^server\/src\/(pr-follower|batch-loops|batch-pr-observer|stats-service|skills|skill-catalog)\.ts$/, FULL, 'the PR follower and stats warm-up every board runs, and the skill catalog every create reads'],
-    [/^server\/src\/db\/(pool|migrate|org-sql|org-tables|org-status|audit-log|lease-types|attempt-of-lease|restore-types|object-write-fence|operation-receipts|env-var-store|env-secrets|user-executor-store|executor-credentials|stored-repos|tracked-repos|master-prompt|review-prompt|evidence-policy|follow-up-recap|task-summary|plan-limits|plan-allowances|outbox-backoff|pr-follow-store|pr-lifecycle-store|org-retention|org-purge|skill-store|connection-bindings|agent-default-sql|env-var-write)\.ts$/, FULL, 'stores the job path, the claim or a boot loop uses'],
+    [/^server\/src\/db\/(pool|migrate|org-sql|org-tables|org-status|audit-log|lease-types|attempt-of-lease|restore-types|object-write-fence|operation-receipts|env-var-store|env-secrets|user-executor-store|executor-credentials|stored-repos|tracked-repos|master-prompt|review-prompt|evidence-policy|follow-up-recap|gate-report|task-summary|plan-limits|plan-allowances|outbox-backoff|pr-follow-store|pr-lifecycle-store|org-retention|org-purge|skill-store|connection-bindings|agent-default-sql|env-var-write)\.ts$/, FULL, 'stores the job path, the claim or a boot loop uses'],
     [/^server\/src\/db\/batches\/batch-store-(observation|types)\.ts$/, FULL, 'the PR follower every board runs reads its lease'],
     // What server/src/main.ts starts on every board (pinned by the test from its start* imports): a loop's first pass runs
     // at boot. Integration recovery reads every integration module and the grants; commerce delivery is called and returns

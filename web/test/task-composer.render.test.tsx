@@ -549,15 +549,10 @@ describe('the redesigned composer (#280)', () => {
         expect(start).toContain('M12 19V5');
     });
 
-    it('says how to send beside the status, and keeps Start an arrow with no text', () => {
+    it('carries no keyboard hint, and keeps Start an arrow with no text', () => {
         const html = renderComposer({});
-        const hint = html.slice(
-            html.indexOf('class="chat-input-hint"'),
-            html.indexOf('</span>', html.indexOf('class="chat-input-hint"'))
-        );
-        expect(hint).toContain('<kbd>Enter</kbd> to send');
-        expect(hint).toContain('<kbd>Shift</kbd>+<kbd>Enter</kbd> new line');
-        expect(html.indexOf('class="chat-input-hint"')).toBeLessThan(html.indexOf('id="composer-blocker"'));
+        expect(html).not.toContain('chat-input-hint');
+        expect(html).not.toContain('new line');
         expect(html.match(START_RE)?.[0]).not.toContain('>Start task<');
         expect(html).not.toContain('>Start task</button>');
     });
