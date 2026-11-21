@@ -354,6 +354,7 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
         {
             ...row!,
             follow_up: false,
+            gate_fix_round: null,
             root_command: row!.command,
             skills: [],
             skill_pin: [],

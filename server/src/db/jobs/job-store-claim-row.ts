@@ -23,6 +23,7 @@ export interface ClaimCandidateRow extends FrozenAgentColumns {
     executor: string | null;
     follow_up: boolean;
     workflow_node: string | null;
+    gate_fix_round: number | null;
     workflow_name: string | null;
     mode: JobMode;
     root_command: string;

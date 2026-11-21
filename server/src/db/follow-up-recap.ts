@@ -114,12 +114,15 @@ export async function claimCommandAndReports(
         session_id: string | null;
         own_session: boolean;
         workflow_node: string | null;
+        /** Set on the board's own gate-fix row (162), whose command already names the failed gate. */
+        gate_fix_round: number | null;
         resumes_interrupted: boolean;
     }
 ): Promise<{ command: string; lastGateReports: LastGateReport[] }> {
     const reports = await readThreadGateReports(tx, orgId, rootJobId, row);
     const memberFollowUp = row.follow_up && row.workflow_node === null;
-    const failed = memberFollowUp ? renderFailedGates(reports.parent, row.command) : '';
+    const failed =
+        memberFollowUp && row.gate_fix_round === null ? renderFailedGates(reports.parent, row.command) : '';
     const command = failed ? `${row.command}${COMMAND_REPORT_SEPARATOR}${failed}` : row.command;
     // Whether the attempt's first claim ran sessionless: for a continuation, when the session it
     // resumes is one that first claim minted (`own_session`).
