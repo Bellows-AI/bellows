@@ -12,8 +12,9 @@
  * It fails open: only a confirmed `fail` blocks the stop, and the close-time verifier judges every run
  * this lets through. A no-usable-answer (the proxy socket missing or refusing, a cut relay's 502, a
  * retryable 503 before the pass opens, an answer cut short or not JSON) is asked again every 5 s until
- * BELLOWS_FINISH_RETRY_MS of wall clock has passed since this process started, then given up. An unset
- * or malformed window is the default one, never zero. A container with no supervisor relay
+ * BELLOWS_FINISH_RETRY_MS of wall clock has passed since the first one, then given up: a healthy gate that
+ * holds an ask open spends none of the window, so a takeover late in a long gate is still asked again. An
+ * unset or malformed window is the default one, never zero. A container with no supervisor relay
  * (FACTORY_CTL_OUT without its control.sock) has nobody to ask and stops at once.
  *
  * One invocation is one stop: it mints one request id and sends it on its first ask and on every retry, so
@@ -38,8 +39,6 @@ const RETRY_STEP_MS = 5_000;
 const DEFAULT_WINDOW_MS = 640_000;
 /** The supervisor's relay socket in the agent's mailbox (`RELAY_SOCKET` of control-proxy.cjs). */
 const RELAY_SOCKET = 'control.sock';
-
-const started = Date.now();
 
 /** A positive whole number of milliseconds, or the default. */
 function windowMs(value) {
@@ -72,6 +71,7 @@ async function main() {
     if (!relayExists()) return letStop('no run-control relay in this container');
     const window = windowMs(process.env.BELLOWS_FINISH_RETRY_MS);
     const body = { requestId: randomUUID() };
+    let failedAt;
     for (;;) {
         const result = await post({ path: FINISH_PATH, body });
         const json = result.cut === undefined ? parsed(result.text) : undefined;
@@ -82,7 +82,8 @@ async function main() {
             process.stdout.write(text, () => process.exit(EXIT_BLOCK));
             return;
         }
-        const left = window - (Date.now() - started);
+        failedAt ??= Date.now();
+        const left = window - (Date.now() - failedAt);
         if (left <= 0) return letStop(`no answer from the finish pass (${why}) within ${window} ms`);
         await new Promise((resolve) => setTimeout(resolve, Math.min(RETRY_STEP_MS, left)));
     }

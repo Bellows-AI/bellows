@@ -377,16 +377,18 @@ describe('factory-control', () => {
 });
 
 /** A unix-socket server that answers each request with the next `[status, body]`, the last one repeated. */
-async function serveSequence(answers: [number, string][]): Promise<{ socket: string; seen: Seen[] }> {
+async function serveSequence(answers: [number, string, number?][]): Promise<{ socket: string; seen: Seen[] }> {
     const seen: Seen[] = [];
     const socket = await serveRaw((req, res) => {
         let body = '';
         req.on('data', (chunk) => (body += String(chunk)));
         req.on('end', () => {
             seen.push({ method: req.method ?? '', url: req.url ?? '', authorization: req.headers.authorization, body });
-            const [status, reply] = answers[Math.min(seen.length, answers.length) - 1]!;
-            res.statusCode = status;
-            res.end(reply);
+            const [status, reply, delayMs = 0] = answers[Math.min(seen.length, answers.length) - 1]!;
+            setTimeout(() => {
+                res.statusCode = status;
+                res.end(reply);
+            }, delayMs);
         });
     });
     return { socket, seen };
@@ -536,7 +538,7 @@ describe('factory-finish', () => {
     );
 
     it(
-        'gives up when the window of wall clock since its start has passed, letting the stop through',
+        'gives up when the window of wall clock since the first failed ask has passed, letting the stop through',
         async () => {
             const finish = await serveSequence([[502, '{"error":"the control relay is unavailable"}']]);
             const window = 1_500;
@@ -547,6 +549,24 @@ describe('factory-finish', () => {
             expect(took).toBeGreaterThanOrEqual(window);
             expect(took).toBeLessThan(RETRY_STEP_MS);
             expect(finish.seen.length).toBeGreaterThanOrEqual(2);
+        },
+        SLOW_CASE_MS
+    );
+
+    // A healthy gate holds the ask open for minutes; the window counts only the time since the
+    // connection first failed, so a takeover late in a long gate is still asked again.
+    it(
+        'starts the window at the first failed ask, not at its start, so a slow answer spends none of it',
+        async () => {
+            const window = 1_500;
+            const finish = await serveSequence([
+                [502, '{"error":"the control relay is unavailable"}', window + 500],
+                [200, FAIL],
+            ]);
+            const ran = await run(FINISH, [], env(finish.socket, { BELLOWS_FINISH_RETRY_MS: String(window) }));
+            expect(ran).toMatchObject({ code: BLOCK, stdout: MESSAGE });
+            expect(finish.seen).toHaveLength(2);
+            expect(new Set(requestIdsOf(finish.seen)).size).toBe(1);
         },
         SLOW_CASE_MS
     );
