@@ -53,6 +53,7 @@ const RECOVERY = ['node-disruption', 'driver-kill'];
 export const RULES = [
     // --- the shared fixture: every board phase builds on it -------------------------------------
     [/^scripts\/(test-jobs\.sh|test-jobs-changed\.mjs|stub-agent\.sh|stub-runner\.Dockerfile|lane-gh\.sh|lane-lib\.sh|lane-api\.mjs|lane-slow-jobs\.mjs)$/, FULL, 'lane harness and stub image'],
+    [/^scripts\/fake-forge\/[^/]+\.mjs$/, FULL, 'the fake forge the lane serves'],
     // One file per phase (scripts/lanes/jobs): a phase file runs that phase; the fixture the services phases share runs them all.
     [/^scripts\/lanes\/jobs\/service-fixture\.sh$/, ['services', 'orphan-reaper', 'node-disruption'], 'the service fixture three phases build on'],
     ...PHASES.map((phase) => [new RegExp(`^scripts/lanes/jobs/${phase}\\.sh$`), [phase], 'its own phase file']),
