@@ -106,7 +106,7 @@ Each entry reads symptom, cause, fix. For every failure badge, see [Task lifecyc
   </Accordion>
   <Accordion title="No pull request was opened, or publishing failed">
     **Cause.** One of three. The run failed with `publish failed` (a conflict with the base branch or a refused push). Or your `policy` blocked it as `evidence required`: nothing is pushed until gates pass or a review approves. Or the run itself failed before it produced a change.
-    **Fix.** Read the reason on the run. For `publish failed`, resolve the conflict, then follow up or retry. For `evidence required`, see the reason table in [Policy and reviewers](/guides/policy-and-reviewers#when-policy-blocks). Without a policy, a task whose gate repair rounds ran out still ships as a draft pull request.
+    **Fix.** Read the reason on the run. For `publish failed`, resolve the conflict, then follow up or retry. For `evidence required`, see the reason table in [Policy and reviewers](/guides/policy-and-reviewers#when-policy-blocks). Without a policy, a task whose gate still failed after its repair rounds still ships as a draft pull request.
   </Accordion>
   <Accordion title="An attachment was rejected">
     **Cause.** The file is over 20 MiB, has an unsupported type, or its bytes do not match its extension.

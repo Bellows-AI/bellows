@@ -127,6 +127,9 @@ did not opt in answers 422. A filtered run is never evidence that the gate passe
 that run when you finish are always unfiltered.
 A gate that declares `timeout:` above 10 (minutes) answers 422 and runs only when you finish (an
 `on_demand` one not at all): do not retry it; run its pieces with your own commands instead.
+Your finish is gated: when you stop, the declared gates run in full on the tree as it is. If one fails,
+its name and output come back to you in this same session: fix the cause, then finish again. This repeats
+up to the executor's repair rounds; after the last one the task fails.
 If `factory-gate` reports no gates (exit 3) there are none here: verify with your own commands instead — or with `factory-exec` when the check needs the environment image.
 Exit 75 means no usable answer came (the control socket is missing or refuses, the relay hung up, the gate run is not open yet): it says nothing about the gate and is never a pass, so ask again.
 
