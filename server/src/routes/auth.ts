@@ -3,7 +3,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { createUserResolver, resolveBearer } from '../auth/plugin.js';
 import { apiResourceOf } from '../auth/route-class.js';
 import { boundCallerOf } from '../auth/bridge-binding.js';
-import type { GitHubIdentity, GitHubIdentityClient } from '../auth/github.js';
+import { type GitHubIdentity, type GitHubIdentityClient, TokenExpirationOffError } from '../auth/github.js';
 import { createGitHubAppClient, type InstallationRepo } from '../github/app-client.js';
 import { installationTokenProvider } from '../github/app-token.js';
 import {
@@ -90,6 +90,9 @@ const failure = (returnTo: string, reason: string): string => {
     return `${url.pathname}${url.search}${url.hash}`;
 };
 
+/** The `auth_error` for an App that issues no refresh token; the sign-in screen words it. */
+const AUTH_ERROR_TOKEN_EXPIRATION = 'token_expiration';
+
 type DecodedState = { returnTo: string; org: string | null; reselect: boolean };
 
 async function redirectToInstallPage(
@@ -162,7 +165,8 @@ async function resolveCallbackCaller(
     input: CallbackInput
 ): Promise<{ kind: 'caller'; caller: Caller } | { kind: 'handled' }> {
     const { decoded, returnTo, code } = input;
-    const accessToken = await ctx.identity.exchange(code);
+    const tokens = await ctx.identity.exchange(code);
+    const { accessToken } = tokens;
     const who = await ctx.identity.identity(accessToken);
     // THE FULL REPORT, loudly complete. Since #125 this is no longer automatically the membership
     // set: it is what the selection is validated against, what the stored choice is pruned with,
@@ -214,7 +218,9 @@ async function resolveCallbackCallerSafely(
         return await resolveCallbackCaller(ctx, request, reply, input);
     } catch (e) {
         request.log.error({ err: e }, 'github sign-in failed');
-        reply.redirect(failure(input.returnTo, 'github'), HTTP_FOUND);
+        // An App that issues non-expiring tokens is the operator's to fix, and no retry will.
+        const reason = e instanceof TokenExpirationOffError ? AUTH_ERROR_TOKEN_EXPIRATION : 'github';
+        reply.redirect(failure(input.returnTo, reason), HTTP_FOUND);
         return { kind: 'handled' };
     }
 }

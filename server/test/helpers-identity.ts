@@ -1,4 +1,9 @@
-import type { GitHubIdentity, GitHubIdentityClient, InstallationAccount } from '../src/auth/github.js';
+import type {
+    GitHubIdentity,
+    GitHubIdentityClient,
+    GitHubUserTokens,
+    InstallationAccount,
+} from '../src/auth/github.js';
 import { SESSION_COOKIE, hashToken, mintToken, sign } from '../src/auth/session.js';
 import type { AuthStore, Caller, InstallationRef } from '../src/auth/store.js';
 import { TEST_SESSION_SECRET } from './helpers-config.js';
@@ -16,6 +21,8 @@ export interface IdentityStub extends GitHubIdentityClient {
     /** What the next exchange resolves to. Set per test. */
     next: GitHubIdentity;
     exchanges: string[];
+    /** The lifetimes every exchange answers with; the token strings follow the code. */
+    tokens: GitHubUserTokens;
     /** The standing `installations()` answer, until a queued one-shot overrides it. */
     installationsAnswer: InstallationAccount[];
     /** One-shot answers, consumed first — for flows whose answer CHANGES between sign-ins. */
@@ -36,13 +43,14 @@ export function stubIdentityClient(identity?: Partial<GitHubIdentity>): Identity
             ...identity,
         },
         exchanges: [],
+        tokens: { accessToken: '', refreshToken: '', expiresIn: 28_800, refreshExpiresIn: 15_811_200 },
         installationsAnswer: [],
         installationsQueue: [],
         installationsCalls: [],
         authorizeUrl: (state) => `https://github.test/login/oauth/authorize?state=${state}`,
         async exchange(code) {
             stub.exchanges.push(code);
-            return `access-for-${code}`;
+            return { ...stub.tokens, accessToken: `access-for-${code}`, refreshToken: `refresh-for-${code}` };
         },
         async identity() {
             return stub.next;
