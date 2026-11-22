@@ -2,6 +2,7 @@
 'use strict';
 /*
  * `factory-gate <name> [--filter <value>]`: run one declared gate on the gate server.
+ * `factory-gate <name> --last`: read the thread's last stored report of the gate without running it.
  *
  * The agent's skills call this instead of a hand-built request, so the managed allowlist can
  * pre-approve exactly this command (`Bash(factory-gate *)`) without admitting a `curl` whose `*`
@@ -24,16 +25,17 @@
  */
 const { EXIT_USAGE, controlCall, fail: failAs } = require('./control-call.cjs');
 
-const USAGE = 'usage: factory-gate <name> [--filter <value>]';
+const USAGE = 'usage: factory-gate <name> [--filter <value> | --last]';
 const NAME = 'factory-gate';
 
 const fail = (code, message) => failAs(NAME, code, message);
 
-/** The request body for argv: the gate name, and the filter only when `--filter <value>` was given. */
+/** The request body for argv: the gate name, and the filter only when `--filter <value>` was given, or `last` for `--last`. */
 function bodyOf(args) {
     const [gate, ...rest] = args;
     if (!gate || gate.startsWith('-')) fail(EXIT_USAGE, USAGE);
     if (rest.length === 0) return { gate };
+    if (rest.length === 1 && rest[0] === '--last') return { gate, last: true };
     if (rest.length !== 2 || rest[0] !== '--filter') fail(EXIT_USAGE, USAGE);
     return { gate, filter: rest[1] };
 }

@@ -179,6 +179,16 @@ const adHocRefusal = (gate: DeclaredGate, filter: string | undefined): string | 
     return null;
 };
 
+/** `factory-gate <name> --last`: the thread's latest stored verdict of the gate, as the claim carried it. */
+const lastReportAnswer = (job: BoardJob, name: string): { status: number; body: unknown } => {
+    const stored = job.lastGateReports?.find((report) => report.name === name);
+    if (!stored) {
+        return { status: HTTP_NOT_FOUND, body: { error: `no stored report for gate "${name}" in this thread` } };
+    }
+    const { status, exitCode, output } = stored;
+    return { status: HTTP_OK, body: { status, exitCode, output, last: true } };
+};
+
 /**
  * Acquires the checkout's gate environment and runs the declared gate in it, translating the
  * outcome into the ad-hoc endpoint's response. CONTAINER_GONE means the gate could not be run — its
@@ -301,15 +311,18 @@ const readGateRequest = async (request: IncomingMessage, stillLive: () => boolea
 const declaredGateOf = (
     claim: GateClaim,
     request: Extract<GateRequest, { gate: string }>
-): { gate: DeclaredGate } | { status: number; error: string } => {
+): { gate: DeclaredGate } | { status: number; body: unknown } => {
+    const refused = (status: number, error: string) => ({ status, body: { error } });
     // A setup-only or image-only environment holds a registered door yet declares nothing to run.
-    if (claim.gates.length === 0) return { status: HTTP_NOT_FOUND, error: 'no gates' };
+    if (claim.gates.length === 0) return refused(HTTP_NOT_FOUND, 'no gates');
     // A gate request runs only a DECLARED name: its verdict is evidence, so the command is the repo's, never the
     // agent's. The agent's own commands come as `exec`, which runs unrecorded and tokenless (`runExec`).
     const gate = claim.gates.find((candidate) => candidate.name === request.gate);
-    if (!gate) return { status: HTTP_NOT_FOUND, error: `no declared gate "${request.gate}"` };
+    if (!gate) return refused(HTTP_NOT_FOUND, `no declared gate "${request.gate}"`);
+    // `--last` reads a stored report and runs nothing, whatever the gate's timeout.
+    if (request.last) return lastReportAnswer(claim.job, gate.name);
     const refusal = adHocRefusal(gate, request.filter);
-    if (refusal) return { status: HTTP_UNPROCESSABLE, error: refusal };
+    if (refusal) return refused(HTTP_UNPROCESSABLE, refusal);
     return { gate };
 };
 
@@ -421,7 +434,7 @@ export function createGateServer({
         }
 
         const declared = declaredGateOf(claim, parsedRequest);
-        if ('error' in declared) return respond(reply, declared.status, { error: declared.error });
+        if (!('gate' in declared)) return respond(reply, declared.status, declared.body);
         const { gate } = declared;
 
         if (admission.isClosed(auth)) {

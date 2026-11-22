@@ -50,6 +50,22 @@ required` in `.bellows.yaml` holds the publish back until they pass.
 If `factory-gate` reports no gates (exit 3), this environment has no gates configured: say so and verify with
 your own commands instead. Do not try to reach the gate server by any other route.
 
+## Reading the last report
+
+```bash
+factory-gate test --last
+```
+
+`factory-gate <name> --last` answers the thread's last stored report of a declared gate without running it, whatever the
+gate's `timeout`: `{"status":"failed","exitCode":1,"output":"...","last":true}`, the output cut to about 4 KiB. It is the
+latest passed or failed report of that gate in this task, as of when this run started; a gate you ran ad hoc since is not in it.
+A gate that has never run in this task answers 404 `no stored report for gate "<name>" in this thread` (exit 22, body printed):
+say so instead of guessing. Takes no `--filter`.
+
+A follow-up that continues a run whose gates failed also starts with the failed gates' name, exit code and output after the
+person's message. When you are told a gate failed (or "fix tests") and you cannot see why, read it with `--last` before you
+guess at a fix; a long gate you cannot rerun here is exactly what it is for.
+
 ## Running any command: factory-exec
 
 ```bash
@@ -91,5 +107,5 @@ setup, reproducing a failed gate step. To check a change, prefer a declared gate
   finish are always unfiltered.
 - A gate whose `.bellows.yaml` entry declares `timeout:` above 10 (minutes) cannot run ad hoc: the
   call answers 422 and the gate runs only when you finish (an `on_demand` one not at all). Do not
-  retry it; run its pieces (a build, one spec) with your own commands instead.
+  retry it; run its pieces (a build, one spec) with your own commands instead, and read its last stored report with `--last`.
 - If a declared gate is still failing when you finish, say so plainly; never claim it passed.

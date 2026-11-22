@@ -100,8 +100,17 @@ Parallel gates need `setsid` in your environment image, which common images such
 Use `on_demand: true` for checks that are too slow or too specific to run on every task, such as an end-to-end suite. The agent runs it only when its change touches what the gate checks, and a failure never fails the task.
 
 <Warning>
-  A gate with `timeout` above 10 cannot be run by the agent while it works. The call is refused and the gate runs only at the end, so an `on_demand` gate with a long timeout never runs. Keep on-demand gates at 10 minutes or less.
+  A gate with `timeout` above 10 cannot be run by the agent while it works. The call is refused and the gate runs only at the end, so an `on_demand` gate with a long timeout never runs. Keep on-demand gates at 10 minutes or less. The agent can still read such a gate's last report with `factory-gate <name> --last`.
 </Warning>
+
+## Reading the last report
+
+The gates that run when the agent finishes run after it has exited, so their output never reaches its session. Two things carry it forward:
+
+- A follow-up on a task whose last run failed a gate starts with that gate's name, exit code and the tail of its output after your message. A gate that passed or was skipped adds nothing.
+- The agent can read a gate's last stored report with `factory-gate <name> --last`, without running it, including a gate whose `timeout` above 10 refuses an ad hoc run. It answers the latest passed or failed report of that gate in the task, as of when the run started, and says so when the gate has not run in the task yet.
+
+Reports are cut to about 4 KiB, the same as `{{gate.output}}` in a workflow.
 
 ## Filters
 

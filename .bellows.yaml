@@ -9,23 +9,34 @@ environment:
          # test and test:db run only the suites the change since origin/$BELLOWS_BASE_BRANCH reaches
          # (scripts/gate-test-changed.sh); a shared file still runs everything in the test gate.
          # CI's npm test and npm run test:db stay the merge gate.
+         # Every gate after build:core runs side by side in the end-of-run pass, in one checkout. test,
+         # test:db, test:executors and typecheck each build core into core/dist, which the suites import:
+         # build:core builds it once, alone, so each later build is an up-to-date no-op, not a rewrite
+         # under another gate's reads.
+         - name: "build:core"
+           command: "npm run build -w core"
          - name: test
            command: "sh scripts/gate-test-changed.sh"
            timeout: 30
+           parallel: true
          - name: lint
            command: "npm run lint"
+           parallel: true
          - name: typecheck
            command: "npm run typecheck"
            timeout: 15
+           parallel: true
          - name: "test:db"
            # The service is throwaway: durability off, and twice the default workers, since in a microVM
            # the suite waits on round trips and WAL syncs, not CPU.
            command: "sh scripts/gate-pg-fast.sh postgres://factory:factory@postgres:5432/postgres && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test sh scripts/gate-test-changed.sh --db"
            timeout: 30
+           parallel: true
          # The in-process driver, supervisor and job-route suites, whatever the change touched: no daemon.
          - name: "test:executors"
            command: "npm run test:executors"
            timeout: 15
+           parallel: true
          # verify:ui in a real chromium against the declared postgres (scripts/gate-ui.sh): the agent's
          # image has no browser libraries. On demand, filtered to the specs a change touches, and at
          # most 10 minutes so the agent may run it while it works. CI's verify:ui stays the full check.
