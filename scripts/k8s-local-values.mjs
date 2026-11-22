@@ -10,7 +10,7 @@
 //
 // PUBLIC_URL is deliberately not read: .env's points at the dev stack. The cluster is reached
 // through `make start`'s port-forward, so the origin is K8S_PUBLIC_URL, defaulting to that
-// forward. GitHub accepts any port on a loopback redirect, so the OAuth App registered for the dev
+// forward. GitHub accepts any port on a loopback redirect, so the GitHub App registered for the dev
 // stack's 127.0.0.1 callback serves this one too.
 import { existsSync, readFileSync } from 'node:fs';
 
@@ -27,8 +27,8 @@ const privateKey =
 const required = {
     GITHUB_APP_ID: env.GITHUB_APP_ID?.trim(),
     'GITHUB_APP_PRIVATE_KEY (or GITHUB_APP_PRIVATE_KEY_FILE)': privateKey,
-    GITHUB_OAUTH_CLIENT_ID: env.GITHUB_OAUTH_CLIENT_ID?.trim(),
-    GITHUB_OAUTH_CLIENT_SECRET: env.GITHUB_OAUTH_CLIENT_SECRET?.trim(),
+    GITHUB_APP_CLIENT_ID: env.GITHUB_APP_CLIENT_ID?.trim(),
+    GITHUB_APP_CLIENT_SECRET: env.GITHUB_APP_CLIENT_SECRET?.trim(),
     SESSION_SECRET: env.SESSION_SECRET?.trim(),
     // The driver's own credential (`drv_…`); the chart records its SHA-256 on the dashboard.
     DRIVER_CREDENTIAL: env.DRIVER_CREDENTIAL?.trim(),
@@ -64,14 +64,14 @@ if (secretStoreRequired.SECRETS_BACKEND !== 'database') {
 const values = {
     auth: {
         publicUrl: env.K8S_PUBLIC_URL?.trim() || `http://127.0.0.1:${env.K8S_PORT?.trim() || '8081'}`,
-        oauthClientId: required.GITHUB_OAUTH_CLIENT_ID,
     },
     github: {
         appId: required.GITHUB_APP_ID,
+        appClientId: required.GITHUB_APP_CLIENT_ID,
         appPrivateKey: privateKey,
     },
     secret: {
-        oauthClientSecret: required.GITHUB_OAUTH_CLIENT_SECRET,
+        githubAppClientSecret: required.GITHUB_APP_CLIENT_SECRET,
         sessionSecret: required.SESSION_SECRET,
         githubWebhookSecret: env.GITHUB_WEBHOOK_SECRET?.trim() ?? '',
     },

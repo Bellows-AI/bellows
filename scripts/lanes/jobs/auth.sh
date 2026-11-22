@@ -22,7 +22,7 @@ AUTH_CREDENTIAL="drv_$(printf '%064d' 1)"
 env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$AUTH_PORT" HOST=127.0.0.1 \
     REPO_CLONE_BASE="$PLAN_BASE" \
     AUTH_MODE=github \
-    GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
+    GITHUB_APP_CLIENT_ID=stub-client GITHUB_APP_CLIENT_SECRET=stub-secret \
     SESSION_SECRET=a-job-harness-session-secret-32-chars \
     DRIVER_CREDENTIAL_SHA256="$(credential_sha256 "$AUTH_CREDENTIAL")" \
     node server/dist/offline.js >"$work/auth-server.log" 2>&1 &

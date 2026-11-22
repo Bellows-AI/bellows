@@ -183,19 +183,19 @@ export default defineConfig({
                 // Two runner classes, one with Docker, so org-executors.spec.ts picks a class through
                 // the dialog and the board's own validation accepts it. Exported as E2E_RUNNER_CLASSES.
                 RUNNER_CLASSES: JSON.stringify(E2E_RUNNER_CLASSES),
-                GITHUB_OAUTH_CLIENT_ID: 'stub-client-id',
-                GITHUB_OAUTH_CLIENT_SECRET: 'stub-client-secret',
+                GITHUB_APP_CLIENT_ID: 'stub-client-id',
+                GITHUB_APP_CLIENT_SECRET: 'stub-client-secret',
                 SESSION_SECRET: 'an-e2e-session-secret-of-at-least-32-chars',
                 PUBLIC_URL: `http://127.0.0.1:${AUTH_PORT}`,
                 // The MCP authorization server: an http loopback PUBLIC_URL needs a loopback bind.
                 MCP_ENABLED: 'true',
                 HOST: '127.0.0.1',
-                // The three overrides that point the exchange at the stub. Environment only — and
+                // The two overrides that point the exchange at the stub: authorize and token follow the
+                // web URL, `/user` and `/user/installations` the API URL. Environment only — and
                 // the server logs loudly when they are in use, because a configurable authorize
                 // URL reaching a real deployment would be a phishing vector.
-                GITHUB_OAUTH_AUTHORIZE_URL: `http://127.0.0.1:${IDP_PORT}/login/oauth/authorize`,
-                GITHUB_OAUTH_TOKEN_URL: `http://127.0.0.1:${IDP_PORT}/login/oauth/access_token`,
-                GITHUB_OAUTH_USER_URL: `http://127.0.0.1:${IDP_PORT}/user`,
+                GITHUB_WEB_URL: `http://127.0.0.1:${IDP_PORT}`,
+                GITHUB_API_URL: `http://127.0.0.1:${IDP_PORT}`,
                 // The Jira connect flow against the same stub's /atlassian/* endpoints; the
                 // board logs loudly when an override is in use, like the GitHub ones above.
                 ATLASSIAN_CLIENT_ID: 'stub-atlassian-client-id',

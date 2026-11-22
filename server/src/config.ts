@@ -380,11 +380,19 @@ function loadGitHub(env: NodeJS.ProcessEnv): Extract<GitHubConfig, { mode: 'app'
         appId: appId!,
         privateKeyPem: pem,
         // Environment only, and deliberately not a documented variable, for the same reason
-        // the three GITHUB_OAUTH_*_URL overrides are: a configurable API host in a file that ships
+        // GITHUB_WEB_URL is: a configurable API host in a file that ships
         // with a deployment is somewhere to send a credential. main.ts logs it when it is set.
-        apiUrl: (env.GITHUB_API_URL?.trim() || 'https://api.github.com').replace(/\/+$/, ''),
+        apiUrl: githubApiUrl(env),
     });
 }
+
+const trimmedOrigin = (raw: string | undefined, fallback: string): string =>
+    (raw?.trim() || fallback).replace(/\/+$/, '');
+
+const githubApiUrl = (env: NodeJS.ProcessEnv): string => trimmedOrigin(env.GITHUB_API_URL, 'https://api.github.com');
+
+/** Where the browser authorizes and the token is exchanged; the API host is `GITHUB_API_URL`. */
+const githubWebUrl = (env: NodeJS.ProcessEnv): string => trimmedOrigin(env.GITHUB_WEB_URL, 'https://github.com');
 
 /**
  * Long enough that the cookie signature is not the weak link. Fatal rather than padded: a secret
@@ -438,12 +446,12 @@ function requireGithubAuthFields(env: NodeJS.ProcessEnv): {
     clientSecret: string;
     sessionSecret: string;
 } {
-    const clientId = env.GITHUB_OAUTH_CLIENT_ID?.trim();
-    const clientSecret = env.GITHUB_OAUTH_CLIENT_SECRET?.trim();
+    const clientId = env.GITHUB_APP_CLIENT_ID?.trim();
+    const clientSecret = env.GITHUB_APP_CLIENT_SECRET?.trim();
     const sessionSecret = env.SESSION_SECRET?.trim();
     for (const [label, value] of [
-        ['GITHUB_OAUTH_CLIENT_ID', clientId],
-        ['GITHUB_OAUTH_CLIENT_SECRET', clientSecret],
+        ['GITHUB_APP_CLIENT_ID', clientId],
+        ['GITHUB_APP_CLIENT_SECRET', clientSecret],
         ['SESSION_SECRET', sessionSecret],
     ] as const) {
         if (!value) {
@@ -523,10 +531,11 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
         publicUrl: origin.origin,
         // Environment only. A configurable authorize URL in a file that ships with a deployment is
         // a phishing vector; as an environment variable it stays a test seam that main.ts logs
-        // loudly when it is used.
-        authorizeUrl: env.GITHUB_OAUTH_AUTHORIZE_URL?.trim() || 'https://github.com/login/oauth/authorize',
-        tokenUrl: env.GITHUB_OAUTH_TOKEN_URL?.trim() || 'https://github.com/login/oauth/access_token',
-        userUrl: env.GITHUB_OAUTH_USER_URL?.trim() || 'https://api.github.com/user',
+        // loudly when it is used. Authorize and token follow GITHUB_WEB_URL, `/user` and
+        // `/user/installations` follow GITHUB_API_URL.
+        authorizeUrl: `${githubWebUrl(env)}/login/oauth/authorize`,
+        tokenUrl: `${githubWebUrl(env)}/login/oauth/access_token`,
+        userUrl: `${githubApiUrl(env)}/user`,
     });
 }
 
@@ -536,6 +545,21 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
  * the environment, which always yields the App — deliberately evaluated in the body, after the
  * retired-variable refusals.
  */
+/**
+ * The OAuth App the GitHub App's own user authorization replaced: sign-in goes through the App now, so its
+ * client id and secret are GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET, and the endpoints follow
+ * GITHUB_WEB_URL and GITHUB_API_URL. No alias: a client id left in the environment would sign members in
+ * against an application that cannot issue the refreshable token the member's GitHub grant is made of.
+ */
+function assertNoOAuthApp(env: NodeJS.ProcessEnv): void {
+    const oauthApp = Object.keys(env).find((key) => key.startsWith('GITHUB_OAUTH_') && env[key]?.trim());
+    if (oauthApp) {
+        throw new Error(
+            `${oauthApp} is no longer supported: sign-in goes through the GitHub App's own user authorization. Remove every GITHUB_OAUTH_* line and set GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET from the App's settings. See docs/configuration.md.`
+        );
+    }
+}
+
 /**
  * The keys retired variables that must fail loudly rather than be silently ignored — each one used
  * to decide what the page was made of or which organization the process served, so an ignored one
@@ -593,6 +617,8 @@ function assertNoRetiredEnvVars(env: NodeJS.ProcessEnv): void {
             'BOTS is no longer supported: it classified pull-request authors, which are removed. Remove the line.'
         );
     }
+
+    assertNoOAuthApp(env);
 
     /*
      * The keys the multi-org sign-in replaced.

@@ -13,8 +13,8 @@ const load = (env: NodeJS.ProcessEnv) => loadConfig({ ...BASE, ...env });
 const github = (env: NodeJS.ProcessEnv = {}) =>
     load({
         AUTH_MODE: 'github',
-        GITHUB_OAUTH_CLIENT_ID: 'client-id',
-        GITHUB_OAUTH_CLIENT_SECRET: 'client-secret',
+        GITHUB_APP_CLIENT_ID: 'client-id',
+        GITHUB_APP_CLIENT_SECRET: 'client-secret',
         SESSION_SECRET: SECRET,
         ...env,
     });
