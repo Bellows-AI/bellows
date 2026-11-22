@@ -26,6 +26,10 @@ const { createFakeForge, USER_TOKEN_TTL_S } = (await import(
     USER_TOKEN_TTL_S: number;
 };
 
+const { registerGithub } = (await import(pathToFileURL(join(ROOT, 'scripts/fake-forge/github.mjs')).href)) as {
+    registerGithub: unknown;
+};
+
 let dir: string;
 let forge: FakeForge;
 let base: string;
@@ -76,6 +80,10 @@ afterEach(async () => {
 });
 
 describe('fake GitHub: the user-token flow', () => {
+    it('registers its routes from github.mjs, the default of the base', () => {
+        expect(typeof registerGithub).toBe('function');
+    });
+
     it('issues a ghu_/ghr_ pair that identifies the member', async () => {
         const pair = await signIn();
         expect(pair.access_token).toMatch(/^ghu_/);
