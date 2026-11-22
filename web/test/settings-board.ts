@@ -1,5 +1,6 @@
 import { ADMIN_ROLE, CLAUDE_CODE, type DeploymentMode, type Role } from '@factory-ai/core';
 import type { ConnectionView } from '../src/api/connections.js';
+import type { ForgeGrantView } from '../src/api/forgeGrants.js';
 import type { OrgExecutorFull, OrgExecutorInput } from '../src/api/orgExecutors.js';
 import type { SubscriptionScope, SubscriptionView } from '../src/api/notificationSubscriptions.js';
 import type { InstallationRepo } from '../src/api/useRepos.js';
@@ -21,6 +22,8 @@ export interface SettingsBoard {
     /** The runner classes the board declares, as `GET /api/workspace/executors` answers them. */
     runnerClasses: RunnerClassOption[];
     connections: ConnectionView[];
+    /** The caller's forge grants, as `GET /api/forge-grants` answers them. */
+    forgeGrants: ForgeGrantView[];
     /** The notification subscriptions of each scope, and the channel kinds the board can send through. */
     subscriptions: Record<SubscriptionScope, SubscriptionView[]>;
     connectorKinds: string[];
@@ -44,6 +47,7 @@ export function settingsBoard(overrides: Partial<SettingsBoard> = {}): SettingsB
         orgExecutors: [],
         runnerClasses: [],
         connections: [],
+        forgeGrants: [],
         subscriptions: { org: [], workspace: [] },
         connectorKinds: ['discord'],
         jiraConfigured: true,
@@ -99,6 +103,14 @@ export const connection = (site: string, overrides: Partial<ConnectionView> = {}
     status: 'active',
     needsReconnect: false,
     createdAt: AT,
+    ...overrides,
+});
+
+export const forgeGrant = (overrides: Partial<ForgeGrantView> = {}): ForgeGrantView => ({
+    forge: 'github',
+    login: 'e2e-member',
+    standing: 'live',
+    connectPath: '/api/auth/github?returnTo=%2Fsettings%2Fintegrations&org=1',
     ...overrides,
 });
 
@@ -228,6 +240,7 @@ function routes(board: SettingsBoard, { method, url, body }: FetchCall): FetchRe
         };
     }
     if (method === 'GET' && path === '/api/connections') return { connections: board.connections };
+    if (method === 'GET' && path === '/api/forge-grants') return { grants: board.forgeGrants };
     if (method === 'DELETE' && path.startsWith('/api/connections/')) {
         board.connections = board.connections.filter((row) => !path.endsWith(`/${row.id}`));
         return { status: 204 };

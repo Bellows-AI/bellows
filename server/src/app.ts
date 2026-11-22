@@ -48,6 +48,7 @@ import { operatorRoutes } from './routes/operator.js';
 import { operatorDriverCredentialRoutes } from './routes/operator-driver-credentials.js';
 import { orgExportRoutes } from './routes/org-export.js';
 import { authRoutes } from './routes/auth.js';
+import { forgeGrantRoutes } from './routes/forge-grants.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestRoutes } from './routes/ingest.js';
@@ -287,6 +288,7 @@ async function registerAccountRoutes(
     if (config.webhookSecret) {
         await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret, memberGrants }));
     }
+    await app.register(forgeGrantRoutes({ memberGrants }));
     await registerMcp(app, { config, auth, oauth, version, metrics });
 }
 

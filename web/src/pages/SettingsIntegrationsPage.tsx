@@ -1,5 +1,6 @@
 import { canConnect, integrationProvider, LISTED_PROVIDERS } from '@factory-ai/core';
 import { Link } from 'react-router-dom';
+import { type ForgeGrantView, useForgeGrants } from '../api/forgeGrants.js';
 import { useConnections } from '../api/useConnections.js';
 import { IntegrationNoticeBanner } from '../components/IntegrationNoticeBanner.js';
 import { PageHeader } from '../components/PageHeader.js';
@@ -19,6 +20,40 @@ export const STATE_PILL: Record<ConnectionState, { text: string; className: stri
 export const integrationPath = (provider: string, connectionId: string): string =>
     `/settings/integrations/${encodeURIComponent(provider)}/${encodeURIComponent(connectionId)}`;
 
+/** The GitHub card's words by standing: what it says under the title, the pill, and the link that fixes it. */
+const GITHUB_CARD: Record<
+    ForgeGrantView['standing'],
+    { sentence: (login: string) => string; pill: { text: string; className: string }; action: string | null }
+> = {
+    live: { sentence: (login) => `Connected as ${login}`, pill: STATE_PILL.connected, action: null },
+    broken: {
+        sentence: (login) => `Connected as ${login}, but GitHub needs you to sign in again.`,
+        pill: STATE_PILL['needs-reconnect'],
+        action: 'Reconnect GitHub',
+    },
+    missing: {
+        sentence: () => 'Sign in with GitHub to let tasks act as you.',
+        pill: { text: 'Not connected', className: 'pill' },
+        action: 'Connect GitHub',
+    },
+};
+
+/** The member's GitHub grant, in the card pattern of the connections: the sign-in round trip is its reconnect. */
+function GitHubCard({ grant }: { grant: ForgeGrantView }) {
+    const words = GITHUB_CARD[grant.standing];
+    return (
+        <li className="integration-card" aria-label="GitHub connection">
+            <ProviderMark provider="github" />
+            <span className="integration-card-text">
+                <span className="integration-card-title">GitHub</span>
+                <span className="integration-card-site">{words.sentence(grant.login)}</span>
+                {words.action ? <a href={grant.connectPath}>{words.action}</a> : null}
+            </span>
+            <span className={words.pill.className}>{words.pill.text}</span>
+        </li>
+    );
+}
+
 const BROWSE_PATH = '/settings/integrations/available';
 const PREVIEW_LIMIT = 4;
 
@@ -29,6 +64,8 @@ const PREVIEW_LIMIT = 4;
  */
 export function SettingsIntegrationsPage() {
     const read = useConnections();
+    const forge = useForgeGrants();
+    const github = forge.state === 'ok' ? forge.grants.find((grant) => grant.forge === 'github') : undefined;
     const { notice } = useIntegrationNotice();
     const preview = LISTED_PROVIDERS.filter((provider) => !canConnect(provider)).slice(0, PREVIEW_LIMIT);
     return (
@@ -46,7 +83,17 @@ export function SettingsIntegrationsPage() {
                     {read.error}
                 </p>
             ) : null}
-            {read.state === 'ok' && read.connections.length === 0 ? (
+            {forge.state === 'error' ? (
+                <p className="status error" role="alert">
+                    {forge.error}
+                </p>
+            ) : null}
+            {github ? (
+                <ul className="integration-list" aria-label="GitHub">
+                    <GitHubCard grant={github} />
+                </ul>
+            ) : null}
+            {read.state === 'ok' && read.connections.length === 0 && github?.standing !== 'live' ? (
                 <section className="panel integration-empty">
                     <p className="muted">No integrations connected yet.</p>
                     <Link to={BROWSE_PATH}>Browse integrations</Link>

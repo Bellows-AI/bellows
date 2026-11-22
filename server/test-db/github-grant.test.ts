@@ -39,8 +39,12 @@ const WEBHOOK_SECRET = 'webhook-secret-for-the-grant-revocation-suite';
 const TOKEN_ROUTE = /^\/login\/oauth\/access_token$/;
 
 let fake: FakeAtlassian;
+/** One secret-store keyring for the test: two replicas of one board decrypt each other's secrets. */
+let keyring: ReturnType<typeof lineageHarness>;
 beforeEach(async () => {
-    if (enabled) fake = await startFakeAtlassian();
+    if (!enabled) return;
+    fake = await startFakeAtlassian();
+    keyring = lineageHarness(db.sql);
 });
 afterEach(async () => {
     if (enabled) await fake.close();
@@ -55,7 +59,7 @@ function replica(sql: Sql = db.sql): MemberForgeGrants {
         tokenUrl: `${fake.origin}/login/oauth/access_token`,
         userUrl: `${fake.origin}/user`,
     });
-    const secrets = lineageHarness(sql).open();
+    const secrets = keyring.openWith(keyring.realRepo);
     const runtime = createIntegrationRuntime({
         sql,
         crossOrgSql: sql,
