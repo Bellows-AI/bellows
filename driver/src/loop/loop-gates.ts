@@ -17,6 +17,7 @@ import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
 import { checkoutKey } from '../publish/publish.js';
 import { gatesUnderDaemon, readDaemon } from '../dockerd-loss.js';
 import { describeError } from '../log.js';
+import { finishGates } from '../tools.js';
 
 /** The report must fit the board's 128 KiB body: the raw per-gate tail budget, and its floor. */
 const GATES_REPORT_BUDGET_BYTES = 16384;
@@ -172,7 +173,7 @@ export async function beginGates(
             gates.manager.release(key, job);
             return null;
         }
-        const declared = job.gates.gates.filter((gate) => !gate.onDemand);
+        const declared = finishGates(job.gates.gates);
         return {
             key,
             token,
