@@ -6,7 +6,7 @@ import { drive, gatedJob, job, ok, stubBoard, stubGateStack, stubRunner } from '
 
 /**
  * Gates judge work: a run that did not finish cleanly left none, and a failed gate over it would
- * fire the workflow's `gate-failed` edge on work that never happened.
+ * fail the run on work that never happened.
  */
 describe('the gate environment’s GitHub token (docs/connections.md)', () => {
     // A gate holds no token of its own: it asks for one through its mailbox when git or gh needs it.
@@ -228,48 +228,24 @@ describe('the agent reporting it is blocked', () => {
 });
 
 /**
- * A gate-fix round that changed nothing can only fail the same gate again: the driver reports
- * whether the tree moved since the startup sync, and the board rests the `gate-failed` edge on false.
+ * The tree is probed once a gated run ends — the revision gate reuse and the evidence bind to —
+ * and the verdict carries no tree-change field: a red gate follows the ordinary `failed` path.
  */
-describe('the tree change behind a failed gate', () => {
+describe('the tree behind a failed gate', () => {
     const synced = { ok: true, reason: null, fingerprint: 'head:aaaa' };
 
-    it.each([
-        ['unchanged', 'head:aaaa', false],
-        ['changed', 'head:bbbb', true],
-    ])('reports a %s tree after a failed gate', async (_label, after, changed) => {
+    it('reports a failed gate over a moved tree with no tree-change field', async () => {
         const board = stubBoard([gatedJob(1)]);
-        const runner = stubRunner(async () => ok(), { sync: synced, probeTree: after });
+        const runner = stubRunner(async () => ok(), { sync: synced, probeTree: 'head:bbbb' });
 
         await drive({ ...board, runner, gates: stubGateStack({ test: 1 }).gates });
 
         expect(runner.probed).toHaveLength(1);
-        expect(board.board.completed[0]).toMatchObject({ failureKind: 'gate', treeChanged: changed });
-    });
-
-    it.each([
-        ['the probe answers nothing', synced, null],
-        ['the sync printed no fingerprint', { ok: true, reason: null }, 'head:aaaa'],
-    ])('reports nothing when %s', async (_label, sync, probe) => {
-        const board = stubBoard([gatedJob(1)]);
-        const runner = stubRunner(async () => ok(), { sync, probeTree: probe });
-
-        await drive({ ...board, runner, gates: stubGateStack({ test: 1 }).gates });
-
         expect(board.board.completed[0]).toMatchObject({ failureKind: 'gate' });
         expect(board.board.completed[0]).not.toHaveProperty('treeChanged');
     });
 
-    it('reports nothing when the gates pass', async () => {
-        const board = stubBoard([gatedJob(1)]);
-        const runner = stubRunner(async () => ok(), { sync: synced, probeTree: 'head:bbbb' });
-
-        await drive({ ...board, runner, gates: stubGateStack().gates });
-
-        expect(board.board.completed[0]).not.toHaveProperty('treeChanged');
-    });
-
-    // A failing gate that writes a non-ignored artifact must not read as the agent's progress.
+    // A failing gate that writes a non-ignored artifact must not read as the agent's work.
     it('reads the tree before the gates run', async () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack({ test: 1 });
@@ -283,7 +259,7 @@ describe('the tree change behind a failed gate', () => {
         await drive({ ...board, runner, gates: stack.gates });
 
         expect(gatesRunAtProbe).toBe(0);
-        expect(board.board.completed[0]).toMatchObject({ failureKind: 'gate', treeChanged: false });
+        expect(board.board.completed[0]).toMatchObject({ failureKind: 'gate' });
     });
 });
 
@@ -313,7 +289,7 @@ describe('a stop cancels the gates', () => {
         expect(ran).toEqual(['test']);
         expect(board.board.completed).toEqual([]);
         expect(board.board.suspended).toEqual([gatedJob(1).id]);
-        // The cancelled gate is never reported failed — `gate-failed` cannot read it.
+        // The cancelled gate is never reported failed — no verdict can read it.
         expect(board.board.gatesReported.flatMap((r) => r.results).some((g) => g.status === 'failed')).toBe(false);
         expect(stack.stack.unregistered).toBe(1);
         expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
@@ -432,7 +408,7 @@ describe('a stop cancels the gates', () => {
     });
 
     // A Stop landing while the tree probe is pending must park the turn without running the
-    // gates, never complete a failed gate a `gate-failed` edge reads.
+    // gates, never complete a failed gate verdict.
     it('parks the turn stopped when the stop lands during the pre-gate tree probe', async () => {
         const options: { cancelRequested?: boolean } = {};
         const board = stubBoard([gatedJob(1)], options);

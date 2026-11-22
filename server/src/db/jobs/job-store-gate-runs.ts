@@ -6,9 +6,10 @@
  */
 
 import { lockRunningAttempt, leaseRefusal } from './job-store-rows.js';
+import type { FinishPassStore } from './job-store-finish-passes.js';
 import type { JobStoreContext } from './job-store-types.js';
 
-export const GATE_RUN_SOURCES = ['adhoc', 'completion'] as const;
+export const GATE_RUN_SOURCES = ['adhoc', 'completion', 'finish'] as const;
 export type GateRunSource = (typeof GATE_RUN_SOURCES)[number];
 export const GATE_RUN_OUTCOMES = ['running', 'passed', 'failed', 'setup_failed', 'not_started', 'incomplete'] as const;
 export type GateRunOutcome = (typeof GATE_RUN_OUTCOMES)[number];
@@ -38,8 +39,8 @@ export interface GateRunRow extends GateRunWrite {
     claimSeq: number;
 }
 
-/** The store half the board's gate-run routes call; `JobStore` extends it. */
-export interface GateRunStore {
+/** The store half the board's gate-run and finish-pass routes call; `JobStore` extends it. */
+export interface GateRunStore extends FinishPassStore {
     /**
      * Records one execution under the attempt's lease. Idempotent on `executionId`: a row only moves
      * `running` -> terminal, the first terminal row wins, and a replay changes nothing. `conflict` is a

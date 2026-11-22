@@ -1,5 +1,5 @@
 /**
- * The gate-run record's two board calls. Split out of `board.ts` for its line budget;
+ * The gate-run record's and the finish-pass record's board calls. Split out of `board.ts` for its line budget;
  * `createBoard` is the only importer. Neither throws: a write the board did not take and a read it
  * did not answer are both "nothing confirmed" — the write's caller refuses or goes on as its policy
  * says, and a read that is not fully readable reuses nothing.
@@ -10,8 +10,8 @@ import { leasedWriter, type Post } from './board-lease-write.js';
 
 const CONFLICT_CODE = 'GATE_RUN_CONFLICT';
 
-/** Where a gate run came from: the agent's ad-hoc call, or the end-of-run gates pass. */
-export const GATE_RUN_SOURCES = ['adhoc', 'completion'] as const;
+/** Where a gate run came from: the agent's ad-hoc call, the end-of-run gates pass, or a finish pass inside the run. */
+export const GATE_RUN_SOURCES = ['adhoc', 'completion', 'finish'] as const;
 export type GateRunSource = (typeof GATE_RUN_SOURCES)[number];
 
 /**
@@ -51,6 +51,24 @@ export interface GateRunRecord extends GateRunWrite {
     claimSeq: number;
 }
 
+/** One answered finish pass as the driver records it (copied from the board's). */
+export interface FinishPassWrite {
+    passId: string;
+    runClaimSeq: number;
+    verdict: 'passed' | 'failed';
+    /** The first gate that failed; null on a passed pass. */
+    gate: string | null;
+}
+
+/** What the job row holds for one pass id (copied from the board's): a failed one carries the round it spent. */
+export type RecordedPass = { verdict: 'passed' } | { verdict: 'failed'; round: number };
+
+/** One round read: the job row's failed rounds, and what it holds for the asked pass id (null: nothing). */
+export interface FinishRead {
+    failedRounds: number;
+    pass: RecordedPass | null;
+}
+
 const isString = (v: unknown): v is string => typeof v === 'string';
 const nullable = (v: unknown, check: (x: unknown) => boolean): boolean => v === null || check(v);
 const isInteger = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v);
@@ -72,6 +90,18 @@ function recordOf(raw: unknown): GateRunRecord | null {
     return row as unknown as GateRunRecord;
 }
 
+/** The asked pass as the board holds it: null when it holds none, undefined when the answer is not readable. */
+function recordedPassOf(raw: unknown): RecordedPass | null | undefined {
+    if (raw === null) return null;
+    const pass = raw as { verdict?: unknown; round?: unknown } | undefined;
+    if (typeof pass !== 'object') return undefined;
+    if (pass.verdict === 'passed') return { verdict: 'passed' };
+    if (pass.verdict === 'failed' && isInteger(pass.round) && pass.round >= 1) {
+        return { verdict: 'failed', round: pass.round };
+    }
+    return undefined;
+}
+
 export interface GateRunBoard {
     /**
      * Records one gate execution's row under the lease: `ok` only when the board took it. Never throws:
@@ -84,6 +114,17 @@ export interface GateRunBoard {
      * unconfirmed read is never an empty one, so the caller reuses nothing.
      */
     gateRuns(job: BoardJob, signal?: AbortSignal): Promise<GateRunRecord[] | null>;
+    /**
+     * Records one answered finish pass under the lease: `ok` only when the board took it. Never throws:
+     * `lost` when the lease is not this attempt's, `rejected` for anything else the board did not take.
+     */
+    finishPass(job: BoardJob, write: FinishPassWrite, signal?: AbortSignal): Promise<'ok' | 'lost' | 'rejected'>;
+    /**
+     * The failed finish passes of the job row, every claim of it, and what the row holds for `passId`. Null for any
+     * answer the driver cannot read in full (non-2xx, a lost lease, a missing or malformed count or pass, an aborted
+     * request): unknown rounds are never zero rounds, and an unread pass is never "not recorded".
+     */
+    finishRounds(job: BoardJob, passId: string, signal?: AbortSignal): Promise<FinishRead | null>;
 }
 
 export function gateRunCalls(post: Post): GateRunBoard {
@@ -103,6 +144,29 @@ export function gateRunCalls(post: Post): GateRunBoard {
                 if (!Array.isArray(raw)) return null;
                 const rows = raw.map(recordOf);
                 return rows.some((r) => r === null) ? null : (rows as GateRunRecord[]);
+            } catch {
+                return null;
+            }
+        },
+
+        async finishPass(job, write, signal) {
+            return leased(`/api/jobs/${job.id}/finish-passes`, job, write, signal);
+        },
+
+        async finishRounds(job, passId, signal) {
+            try {
+                const response = await post(
+                    `/api/jobs/${job.id}/finish-passes/read`,
+                    { leaseToken: job.leaseToken, passId },
+                    false,
+                    { signal }
+                );
+                if (!response.ok) return null;
+                const body = (await response.json()) as { failedRounds?: unknown; pass?: unknown } | null;
+                const rounds = body?.failedRounds;
+                if (!isInteger(rounds) || rounds < 0) return null;
+                const pass = recordedPassOf(body?.pass);
+                return pass === undefined ? null : { failedRounds: rounds, pass };
             } catch {
                 return null;
             }

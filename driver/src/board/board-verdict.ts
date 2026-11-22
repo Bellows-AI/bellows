@@ -30,7 +30,6 @@ function completeBody({
     summary,
     failureKind,
     failureCause,
-    treeChanged,
     evidence,
     publication,
 }: Parameters<Board['complete']>[1]): Record<string, unknown> {
@@ -48,8 +47,6 @@ function completeBody({
         // The structured failure reason, when there is one; absent stays null.
         ...(failureKind ? { failureKind } : {}),
         ...(failureCause ? { failureCause } : {}),
-        // Measured only after a failed gate; unknown stays off the wire.
-        ...(typeof treeChanged === 'boolean' ? { treeChanged } : {}),
         // What the gates and the review assessed, for the board's completion check.
         ...(evidence ? { evidence } : {}),
         // The identity of what was published, when anything was — the board keys review

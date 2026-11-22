@@ -23,7 +23,6 @@ export interface ClaimCandidateRow extends FrozenAgentColumns {
     executor: string | null;
     follow_up: boolean;
     workflow_node: string | null;
-    gate_fix_round: number | null;
     workflow_name: string | null;
     mode: JobMode;
     root_command: string;
@@ -37,6 +36,8 @@ export interface ClaimCandidateRow extends FrozenAgentColumns {
     live_providers: string[];
     /** The frozen target branch of the batch task the thread works (059), read in the same RETURNING; null outside a batch. */
     base_branch: string | null;
+    /** The thread root's frozen round cap (163), read in the same RETURNING; null only where the schema was bypassed. */
+    finish_rounds: number | null;
     /** Whether this attempt's loss retires the job: attempts and interruption budget spent. */
     last_attempt: boolean;
     /** Whether this claim continues, in its session, the interrupted attempt it supersedes. */

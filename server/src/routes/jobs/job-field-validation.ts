@@ -214,8 +214,6 @@ export function buildWorkflowSelection(
     if (!entry) return { ok: false, code: ERROR_CODES.BAD_WORKFLOW, message: 'workflow has no entry node' };
     const interpolated = interpolate(entry.prompt, {
         nodeOutput: () => '',
-        gateName: '',
-        gateOutput: '',
         param: (name) => checked.values[name] ?? '',
         command,
     });
@@ -249,7 +247,6 @@ export interface CompleteFields {
     summary: string | null;
     failureKind: FailureKind | null;
     failureCause: FailureCause | null;
-    treeChanged: boolean | null;
     evidence: RecordedEvidence | null;
 }
 
@@ -376,9 +373,6 @@ function closingFieldRefusal(fields: Record<string, unknown>): { code: string; m
     }
     const causeRefusal = failureCauseRefusal(fields);
     if (causeRefusal !== null) return { code: ERROR_CODES.BAD_FAILURE_KIND, message: causeRefusal };
-    if (fields.treeChanged !== undefined && fields.treeChanged !== null && typeof fields.treeChanged !== 'boolean') {
-        return { code: ERROR_CODES.BAD_TREE_CHANGED, message: 'treeChanged must be a boolean or null' };
-    }
     if (badEvidence(fields.evidence)) {
         return {
             code: ERROR_CODES.BAD_EVIDENCE,
@@ -459,8 +453,7 @@ function evidenceValue(evidence: unknown): RecordedEvidence | null {
 export function validateCompleteFields(
     fields: Record<string, unknown>
 ): { ok: true; value: CompleteFields } | { ok: false; code: string; message: string } {
-    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, failureKind, treeChanged } =
-        fields;
+    const { status, exitCode, output, contextTokens, contextCostUsd, agentTurns, summary, failureKind } = fields;
     const refusal = measuredFieldRefusal(fields) ?? closingFieldRefusal(fields);
     if (refusal !== null) return { ok: false, ...refusal };
     return {
@@ -476,7 +469,6 @@ export function validateCompleteFields(
             summary: summaryValue(summary),
             failureKind: (failureKind as FailureKind | undefined) ?? null,
             failureCause: (fields.failureCause as FailureCause | undefined) ?? null,
-            treeChanged: typeof treeChanged === 'boolean' ? treeChanged : null,
             evidence: evidenceValue(fields.evidence),
         },
     };

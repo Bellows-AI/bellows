@@ -65,6 +65,7 @@ import {
 import type { CreateJobStoreDeps, JobStore, JobStoreContext, RuntimeVitals } from './job-store-types.js';
 import { heartbeatJob, sessionReport, progressReport, gatesReport, completeJob } from './job-store-worker.js';
 import { stageConclusion } from './job-store-conclusions.js';
+import { readFinishRounds, writeFinishPass } from './job-store-finish-passes.js';
 import { readGateRuns, writeGateRun } from './job-store-gate-runs.js';
 import { writePrOperation } from './job-store-pr-operations.js';
 import { createTitledJob, renameTaskRow } from './job-store-title.js';
@@ -96,6 +97,8 @@ function workerMethods(
     | 'readPhaseCheckpoints'
     | 'writeGateRun'
     | 'readGateRuns'
+    | 'writeFinishPass'
+    | 'readFinishRounds'
     | 'writePrOperation'
     | 'ingestTranscriptTools'
     | 'leases'
@@ -170,6 +173,14 @@ function workerMethods(
 
         async readGateRuns(id, leaseToken) {
             return readGateRuns(ctx, { id, leaseToken });
+        },
+
+        async writeFinishPass(id, leaseToken, pass) {
+            return writeFinishPass(ctx, { id, leaseToken }, pass);
+        },
+
+        async readFinishRounds(id, leaseToken, passId) {
+            return readFinishRounds(ctx, { id, leaseToken }, passId);
         },
 
         async writePrOperation(id, leaseToken, operation) {

@@ -21,7 +21,7 @@ describe('nextTransition: marker and gate matching', () => {
         });
         expect(t).toMatchObject({ action: 'insert', node: { name: 'fix' }, session: 'resume', publish: false });
         if (t.action !== 'insert') return;
-        expect(t.command).toBe('fix these: findings...\nVERDICT: BLOCKERS gate  said ');
+        expect(t.command).toBe('fix these: findings...\nVERDICT: BLOCKERS');
     });
 
     it('rests when no rule matches — marker absence is a first-class outcome', () => {
@@ -42,7 +42,8 @@ describe('nextTransition: marker and gate matching', () => {
         expect(tailMatches('one\ntwo\n\nVERDICT: CLEAN  \n', 'VERDICT: CLEAN')).toBe(true);
     });
 
-    it('derives gate-failed from the stored gates jsonb, distinguishable from an agent failure', () => {
+    // A red gate is answered inside the run; the graph sees an ordinary failed verdict.
+    it('follows the failed edge for a run that failed on a gate, interpolating no gate report', () => {
         const gates = [gate('test', 'passed', 0), gate('lint', 'failed', 1, 'eslint output')];
         const t = nextTransition({
             params: {},
@@ -53,23 +54,21 @@ describe('nextTransition: marker and gate matching', () => {
         });
         expect(t).toMatchObject({ action: 'insert', node: { name: 'fix' } });
         if (t.action !== 'insert') return;
-        expect(t.command).toBe('fix these:  gate lint said eslint output');
+        expect(t.command).toBe('fix these: ');
     });
 
-    it('keeps agent-exit failure and gate failure distinguishable by declared order', () => {
-        // A failed verdict with GREEN gates falls past gate-failed edges to a plain failure match.
+    it('rests a run that failed on a gate when the node declares no failed edge', () => {
         const t = nextTransition({
             params: {},
             command: '',
-            snapshot: {
-                ...snapshot,
-                edges: [
-                    { from: 'implement', to: 'fix', when: 'gate-failed' },
-                    { from: 'implement', to: 'review', when: 'succeeded' },
-                ],
-            },
+            snapshot: { ...snapshot, edges: [{ from: 'implement', to: 'review', when: 'succeeded' }] },
             rows: [row({ id: 'r1', node: 'implement' })],
-            completed: done({ id: 'r1', status: 'failed', gates: [gate('test', 'passed', 0)] }),
+            completed: done({
+                id: 'r1',
+                status: 'failed',
+                failureKind: 'gate',
+                gates: [gate('lint', 'failed', 1, 'eslint output')],
+            }),
         });
         expect(t).toEqual({ action: 'rest', reason: 'no_edge' });
     });
@@ -92,9 +91,7 @@ describe('nextTransition: marker and gate matching', () => {
     });
 });
 
-describe('nextTransition: blocked and no-progress rests', () => {
-    const failedGates = [gate('lint', 'failed', 1, 'eslint output')];
-
+describe('nextTransition: rests by failure kind', () => {
     // A blocked agent needs a human: no edge fires, an author's own `failed` edge included.
     it('rests a blocked completion before any edge, a custom failed edge included', () => {
         const t = nextTransition({
@@ -162,62 +159,6 @@ describe('nextTransition: blocked and no-progress rests', () => {
             completed: done({ id: 'r1', status: 'failed', failureKind: 'skill_unavailable' }),
         });
         expect(t).toEqual({ action: 'rest', reason: 'skill_unavailable' });
-    });
-
-    it('rests a gate-failed edge over a tree the run left unchanged', () => {
-        const t = nextTransition({
-            params: {},
-            command: '',
-            snapshot,
-            rows: [row({ id: 'r1', node: 'implement' })],
-            completed: done({
-                id: 'r1',
-                status: 'failed',
-                failureKind: 'gate',
-                gates: failedGates,
-                treeChanged: false,
-            }),
-        });
-        expect(t).toEqual({ action: 'rest', reason: 'no_progress' });
-    });
-
-    it.each([
-        ['changed', true],
-        ['unmeasured (null)', null],
-        ['unmeasured (absent)', undefined],
-    ])('follows the gate-failed edge when the tree is %s', (_label, treeChanged) => {
-        const t = nextTransition({
-            params: {},
-            command: '',
-            snapshot,
-            rows: [row({ id: 'r1', node: 'implement' })],
-            completed: done({
-                id: 'r1',
-                status: 'failed',
-                failureKind: 'gate',
-                gates: failedGates,
-                ...(treeChanged === undefined ? {} : { treeChanged }),
-            }),
-        });
-        expect(t).toMatchObject({ action: 'insert', node: { name: 'fix' } });
-    });
-
-    // Only the gate-failed rule reads the tree: an author's `failed` edge still fires.
-    it('leaves a plain failed edge alone over an unchanged tree', () => {
-        const t = nextTransition({
-            params: {},
-            command: '',
-            snapshot: { ...snapshot, edges: [{ from: 'implement', to: 'fix', when: 'failed' }] },
-            rows: [row({ id: 'r1', node: 'implement' })],
-            completed: done({
-                id: 'r1',
-                status: 'failed',
-                failureKind: 'gate',
-                gates: failedGates,
-                treeChanged: false,
-            }),
-        });
-        expect(t).toMatchObject({ action: 'insert', node: { name: 'fix' } });
     });
 });
 
@@ -365,8 +306,6 @@ describe('bounded interpolation', () => {
         const long = 'x'.repeat(INTERP_TAIL_LIMIT + TAIL_OVERFLOW);
         const command = interpolate('{{a.output}}', {
             nodeOutput: () => long,
-            gateName: '',
-            gateOutput: '',
             param: () => '',
             command: '',
         });

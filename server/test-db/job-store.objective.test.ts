@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { OBJECTIVE_MODE } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -37,7 +38,7 @@ const redGate = (output = 'red'): GateReport[] => [{ name: 'test', status: 'fail
 
 /** Claims the queued row and settles it as a run that failed on its declared gate. */
 async function failOnGate(
-    over: { treeChanged?: boolean; failureKind?: 'gate' | 'blocked' | 'services'; output?: string } = {}
+    over: { failureKind?: 'gate' | 'blocked' | 'services'; output?: string } = {}
 ): Promise<Claim> {
     const claimed = await claim();
     await store.gates(claimed.id, claimed.leaseToken, redGate(over.output));
@@ -46,13 +47,9 @@ async function failOnGate(
         exitCode: 1,
         output: 'red',
         failureKind: over.failureKind ?? 'gate',
-        treeChanged: over.treeChanged ?? true,
     });
     return claimed;
 }
-
-const gateFixRowsOf = async (): Promise<{ id: string; gate_fix_round: number | null; status: string }[]> =>
-    sql`select id, gate_fix_round, status from job where gate_fix_round is not null order by created_at, id`;
 
 const claim = async (): Promise<Claim> => {
     const claimed = (await store.claim(WORKER, 60)) as Claim | null;
@@ -142,18 +139,18 @@ describe.skipIf(!enabled)('objective mode — database', () => {
         expect(second).toMatchObject({ id: first.id, attempts: 1, claimSeq: 2 });
         expect(second.leaseToken).not.toBe(first.leaseToken);
 
-        // The red gate fails the run; the board queues the repair as a new row of the same objective thread.
+        // The red gate fails the run and the board queues nothing; the member's follow-up continues the thread.
         await store.gates(second.id, second.leaseToken, failedGate);
         await store.complete(second.id, second.leaseToken, {
             status: 'failed',
             exitCode: 1,
             output: 'red',
             failureKind: 'gate',
-            treeChanged: true,
         });
-        const [repair] = await gateFixRowsOf();
+        const repair = await store.createFollowUp(root, 'fix the failing test', null);
+        if (typeof repair === 'string') throw new Error(`follow-up refused: ${repair}`);
         const third = await claim();
-        expect(third.id).toBe(repair!.id);
+        expect(third.id).toBe(repair.id);
         await store.gates(third.id, third.leaseToken, [{ name: 'test', status: 'passed', exitCode: 0, output: 'ok' }]);
         await store.complete(third.id, third.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
 
@@ -193,35 +190,44 @@ describe.skipIf(!enabled)('objective mode — database', () => {
         ).rejects.toMatchObject({ constraint_name: 'job_mode_ck' });
     });
 
-    describe('automatic gate repair', () => {
-        it('a red gate over a changed tree queues a follow-up naming the gate, in the same thread and session', async () => {
+    describe('a red gate is repaired inside the run, never by a new row', () => {
+        it('a failed gate queues no job', async () => {
             const root = await queueObjective();
             const first = await failOnGate({ output: 'expected 1 to equal 2' });
             const rows = (await store.thread(root))!;
-            expect(rows).toHaveLength(2);
-            const fix = rows[1]!;
-            expect(fix).toMatchObject({ status: 'queued', mode: OBJECTIVE_MODE, followUpTo: first.id });
-            expect(fix.command).toContain('test');
-            expect(fix.command).toContain('expected 1 to equal 2');
-            expect(await gateFixRowsOf()).toEqual([expect.objectContaining({ id: fix.id, gate_fix_round: 1 })]);
-            const [session] = await sql<{ a: string | null; b: string | null }[]>`
-                select (select session_id from job where id = ${first.id}) as a,
-                       (select session_id from job where id = ${fix.id}) as b`;
-            expect(session!.b).toBe(session!.a);
+            expect(rows.map((row) => [row.id, row.status])).toEqual([[first.id, 'failed']]);
+            expect(await store.claim(WORKER, 60)).toBeNull();
         });
 
-        it('rests after the executor limit: three red rounds, then no fourth follow-up', async () => {
+        it('a capped run ends failed with no follow-up row', async () => {
             const root = await queueObjective();
-            await failOnGate();
-            await failOnGate();
-            await failOnGate();
-            expect((await gateFixRowsOf()).map((row) => row.gate_fix_round)).toEqual([1, 2, 3]);
-            await failOnGate();
-            expect(await gateFixRowsOf()).toHaveLength(3);
-            expect((await store.thread(root))!).toHaveLength(4);
+            const claimed = await claim();
+            for (let pass = 0; pass < 3; pass++) {
+                const written = await store.writeFinishPass(claimed.id, claimed.leaseToken, {
+                    passId: randomUUID(),
+                    runClaimSeq: claimed.claimSeq,
+                    verdict: 'failed',
+                    gate: 'test',
+                });
+                expect(written).toEqual({ result: 'ok' });
+            }
+            expect(await store.readFinishRounds(claimed.id, claimed.leaseToken)).toEqual({
+                result: 'ok',
+                failedRounds: 3,
+            });
+            await store.gates(claimed.id, claimed.leaseToken, redGate());
+            await store.complete(claimed.id, claimed.leaseToken, {
+                status: 'failed',
+                exitCode: 1,
+                output: 'red',
+                failureKind: 'gate',
+            });
+            const rows = (await store.thread(root))!;
+            expect(rows.map((row) => [row.id, row.status])).toEqual([[claimed.id, 'failed']]);
+            expect(await store.claim(WORKER, 60)).toBeNull();
         });
 
-        it('freezes the limit from the executor at launch: 0 turns repair off, a later edit changes nothing', async () => {
+        it('freezes the cap from the executor at launch: a later edit changes nothing', async () => {
             await sql`
                 insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds, position)
                 values (${ORG}, null, 'strict', 'claude-code', '{}'::jsonb, 0, 0)`;
@@ -236,14 +242,7 @@ describe.skipIf(!enabled)('objective mode — database', () => {
                 select gate_fix_rounds from job where id = ${created.id}`;
             expect(root!.gate_fix_rounds).toBe(0);
             await failOnGate();
-            expect(await gateFixRowsOf()).toEqual([]);
             expect((await store.thread(created.id))!).toHaveLength(1);
-        });
-
-        it('rests when the run left the tree unchanged', async () => {
-            const root = await queueObjective();
-            await failOnGate({ treeChanged: false });
-            expect((await store.thread(root))!).toHaveLength(1);
         });
 
         it.each(['blocked', 'services'] as const)('rests on a %s failure', async (failureKind) => {
@@ -262,7 +261,6 @@ describe.skipIf(!enabled)('objective mode — database', () => {
                 exitCode: 1,
                 output: 'red',
                 failureKind: 'gate',
-                treeChanged: true,
             });
             expect((await store.thread(root))!).toHaveLength(1);
         });

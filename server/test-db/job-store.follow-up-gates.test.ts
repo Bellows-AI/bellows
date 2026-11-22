@@ -30,15 +30,9 @@ const gate = (name: string, status: GateReport['status'], output: string | null,
 });
 
 /**
- * A task whose first run finishes with `reports` stored; returns the root id. The tree is unchanged unless
- * `treeChanged` says so, so the board queues no automatic gate fix and the person's follow-up is admitted.
+ * A task whose first run finishes with `reports` stored; returns the root id.
  */
-async function finishRun(
-    command: string,
-    reports: GateReport[],
-    failed: boolean,
-    treeChanged = false
-): Promise<string> {
+async function finishRun(command: string, reports: GateReport[], failed: boolean): Promise<string> {
     const { id } = await mustCreate(store.create(command, null, { repo: null, executor: null }));
     const claim = (await store.claim('w1', LEASE_SECONDS)) as Claim;
     await store.session(id, claim.leaseToken, randomUUID());
@@ -47,7 +41,6 @@ async function finishRun(
         status: failed ? 'failed' : 'succeeded',
         exitCode: failed ? 1 : 0,
         output: null,
-        treeChanged,
         ...(failed ? { failureKind: 'gate' as const } : {}),
     });
     return id;
@@ -78,7 +71,7 @@ describe.skipIf(!enabled)('a follow-up after a gate-failed run — database', ()
         expect(claim.command).not.toContain('lint ok');
     });
 
-    it('bounds a failed gate output the way {{gate.output}} does', async () => {
+    it('bounds a failed gate output', async () => {
         const long = 'x'.repeat(INTERP_TAIL_LIMIT + 500);
         const parent = await finishRun('build it', [gate('test', 'failed', long)], true);
 
@@ -86,18 +79,6 @@ describe.skipIf(!enabled)('a follow-up after a gate-failed run — database', ()
 
         expect(command).toContain('x'.repeat(INTERP_TAIL_LIMIT) + TRUNCATION_MARKER);
         expect(command).not.toContain('x'.repeat(INTERP_TAIL_LIMIT + 1));
-    });
-
-    it("does not repeat the gate output on the board's own gate-fix row, whose command already names it", async () => {
-        const parent = await finishRun('build it', [gate('test', 'failed', 'FAIL once only')], true, true);
-
-        const claim = (await store.claim('w1', LEASE_SECONDS)) as Claim;
-
-        expect(claim.followUp).toBe(true);
-        expect(claim.command.split('FAIL once only')).toHaveLength(2);
-        const [row] = await sql<{ parent_job_id: string; gate_fix_round: number }[]>`
-            select parent_job_id, gate_fix_round from job where id = ${claim.id}`;
-        expect(row).toEqual({ parent_job_id: parent, gate_fix_round: 1 });
     });
 
     it('adds nothing when every gate passed', async () => {

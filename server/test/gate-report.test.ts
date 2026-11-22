@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { COMMAND_LIMIT } from '@factory-ai/core';
-import { firstFailedGate, gateOutputTail, renderFailedGates } from '../src/db/gate-report.js';
+import { renderFailedGates } from '../src/db/gate-report.js';
 import type { GateReport } from '../src/db/jobs/job-store-types.js';
-import { INTERP_TAIL_LIMIT, interpolate } from '../src/db/workflows/workflow-schema.js';
+import { INTERP_TAIL_LIMIT } from '../src/db/workflows/workflow-schema.js';
 
 const gate = (name: string, status: GateReport['status'], output: string | null): GateReport => ({
     name,
@@ -33,18 +33,5 @@ describe('gate report text', () => {
         expect(text).toContain('Gate "a"');
         expect(text).not.toContain('Gate "b"');
         expect(command.length + 2 + text.length).toBeLessThanOrEqual(COMMAND_LIMIT);
-    });
-
-    it('is the bound {{gate.output}} substitutes', () => {
-        const failed = gate('a', 'failed', 'y'.repeat(INTERP_TAIL_LIMIT * 2));
-        const viaTemplate = interpolate('{{gate.output}}', {
-            nodeOutput: () => '',
-            gateName: failed.name,
-            gateOutput: gateOutputTail(failed),
-            param: () => '',
-            command: '',
-        });
-        expect(viaTemplate).toBe(gateOutputTail(failed));
-        expect(firstFailedGate([gate('ok', 'passed', null), failed])).toBe(failed);
     });
 });

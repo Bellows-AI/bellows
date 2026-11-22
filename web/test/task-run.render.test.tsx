@@ -227,13 +227,12 @@ describe('TaskRun — gates, publication and metadata', () => {
         expect(bare).not.toContain('msg-meta');
     });
 
-    it('labels a follow-up the board queued to repair a gate with its round, and says nothing on other runs', () => {
-        const fix = child({ command: 'the gate failed', gateFixRound: 2, gateFixLimit: 3 });
-        const html = renderDetail({ jobs: [root, fix] });
-        expect(articleOf(html, 'the gate failed')).toContain('automatic gate fix · round 2 of 3');
-        expect(articleOf(html, 'first command')).not.toContain('automatic gate fix');
-        const unbounded = renderDetail({ jobs: [root, child({ command: 'again', gateFixRound: 1 })] });
-        expect(articleOf(unbounded, 'again')).toContain('automatic gate fix · round 1<');
+    it('labels no run as an automatic gate fix: a red gate is repaired inside the run, not by a queued follow-up', () => {
+        // A stray round on the payload is not a Job field; the run renders no note for it.
+        const stray = { gateFixRound: 2, gateFixLimit: 3 } as Partial<Job>;
+        const html = renderDetail({ jobs: [root, child({ command: 'the gate failed', ...stray })] });
+        expect(html).not.toContain('automatic gate fix');
+        expect(articleOf(html, 'the gate failed')).not.toContain('msg-meta');
     });
 });
 

@@ -50,7 +50,7 @@ type CapabilityLabel = (typeof CAPABILITY_LABELS)[number];
 
 /** Only for a claim whose capabilities include the gates: an ungated run has nothing behind it. */
 const GATES_RULE =
-    '- The declared gates also run when you finish, as a backstop that is no reason to skip them earlier: run the declared gates that cover what you changed, filtered to your tests when the gate accepts a filter, and fix a red one before you finish.';
+    '- The declared gates also run when you finish and a red one sends you back to fix it, which is no reason to skip them earlier: run the declared gates that cover what you changed, filtered to your tests when the gate accepts a filter, and fix a red one before you finish.';
 
 const RULES_HEAD = `Rules for this turn
 - This is one agent turn inside a Factory-run process, not authority to run that process.

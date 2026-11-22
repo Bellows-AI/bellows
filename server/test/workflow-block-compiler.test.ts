@@ -175,17 +175,22 @@ describe('compileDefinition — expansion, namespacing, edge rewriting', () => {
         expect(result).toMatchObject({ ok: true, definition: { params: [{ name: 'issue', pattern: '#\\d+' }] } });
     });
 
-    it('gives the reserved {{gate.*}}/{{command}}/{{param.*}} specs precedence over a same-named internal node', () => {
-        // A block whose own internal node happens to be named "gate" must not hijack the reserved
-        // `{{gate.output}}` placeholder — the completed run's first failed gate always wins, the
-        // same precedence interpolate() itself gives these specs.
+    it('passes {{command}} through and namespaces an internal node named "gate" like any other', () => {
+        // `gate` is no longer a reserved placeholder namespace: `{{gate.output}}` inside a block is
+        // the block's own `gate` node, while `{{command}}` keeps its reserved meaning.
         const withGateNamedNode = fakeBlock('fake/gate-named', {
             expand: () => ({
                 nodes: [
-                    { name: 'gate', kind: 'agent', session: 'fresh', prompt: 'investigate {{gate.output}}' },
-                    { name: 'done', kind: 'agent', session: 'fresh', prompt: 'wrap up', publish: true },
+                    { name: 'gate', kind: 'agent', session: 'fresh', prompt: 'investigate {{command}}' },
+                    {
+                        name: 'done',
+                        kind: 'agent',
+                        session: 'fresh',
+                        prompt: 'wrap up {{gate.output}}',
+                        publish: true,
+                    },
                 ],
-                edges: [{ from: 'gate', to: 'done', when: 'gate-failed' }],
+                edges: [{ from: 'gate', to: 'done', when: 'failed' }],
                 entry: 'gate',
                 exit: 'done',
             }),
@@ -199,10 +204,9 @@ describe('compileDefinition — expansion, namespacing, edge rewriting', () => {
         const result = compileDefinition(authored, registryOf(withGateNamedNode));
         expect(result.ok).toBe(true);
         if (!result.ok) throw new Error('expected compile to succeed');
-        // NOT rewritten to {{step--gate.output}} — the reserved spec passes through untouched.
-        expect(result.definition.nodes.find((n) => n.name === 'step--gate')?.prompt).toBe(
-            'investigate {{gate.output}}'
-        );
+        const promptOf = (name: string) => result.definition.nodes.find((n) => n.name === name)?.prompt;
+        expect(promptOf('step--gate')).toBe('investigate {{command}}');
+        expect(promptOf('step--done')).toBe('wrap up {{step--gate.output}}');
     });
 });
 

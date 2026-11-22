@@ -22,7 +22,7 @@ PARALLEL_SLOTS=2
 WATCH_STALLS="${LANE_WATCH_STALLS:-0}"
 valid_phase() {
     case "$1" in
-    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|image-checks|ask-user-question|question-round-trip|pinned-skills|repo-skills|mcp) return 0 ;;
+    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|image-checks|ask-user-question|question-round-trip|finish-gate|pinned-skills|repo-skills|mcp) return 0 ;;
     esac
     return 1
 }
@@ -62,7 +62,7 @@ while [ "$#" -gt 0 ]; do
         echo 'Usage: scripts/test-jobs.sh [--phase PHASE[,PHASE...] | --changed BASE] [--cli-workers 1|2] [--watch-stalls] [--parallel [--slots 2|3|4]]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, run-deadline, review, workflows, acceptance, compose-driver, auth, cooperative-stop,'
-        echo '        tool-isolation, image-checks, ask-user-question, question-round-trip, pinned-skills, repo-skills, driver-kill, capacity, mcp'
+        echo '        tool-isolation, image-checks, ask-user-question, question-round-trip, finish-gate, pinned-skills, repo-skills, driver-kill, capacity, mcp'
         echo 'A comma list (--phase driver,services) runs those phases, in lane order, on one board fixture.'
         echo '--changed BASE runs the phases scripts/test-jobs-changed.mjs maps from `git diff --name-only` since the merge base with BASE'
         echo '        (uncommitted and untracked files included), prints why, and falls back to the full lane for'
@@ -169,6 +169,8 @@ IMAGE_REVIEW="factory-jobs-$RUN_ID-review"
 IMAGE_GH="factory-jobs-$RUN_ID-github"
 IMAGE_KILL="factory-jobs-$RUN_ID-kill"
 IMAGE_ACC="factory-jobs-$RUN_ID-acceptance"
+# The finish-gate phase's real executor images with the lane's `gh` stand-in: <prefix>-claude, <prefix>-opencode.
+IMAGE_FINISH="factory-jobs-$RUN_ID-finish"
 # The smoke origin: a bare repository on a named volume, served by a git daemon on a
 # network the runners join (RUNNER_NETWORK), because a runner clones its task's checkout onto its
 # own task volume and mounts nothing else. REPO_CLONE_BASE names the daemon.
@@ -237,7 +239,7 @@ docker info >/dev/null 2>&1 || { echo 'test-jobs: docker daemon is unavailable';
 images=''
 if selected_phase cooperative-stop || selected_phase tool-isolation || selected_phase image-checks || selected_phase repo-skills; then
     images='claude-executor opencode-executor'
-elif selected_phase question-round-trip || selected_phase pinned-skills; then
+elif selected_phase question-round-trip || selected_phase finish-gate || selected_phase pinned-skills; then
     images='claude-executor opencode-executor'
 elif selected_phase ask-user-question; then
     images='claude-executor'
@@ -473,7 +475,7 @@ cleanup() {
         docker rm -f "$ORIGIN_NAME" >/dev/null 2>&1
         docker network rm "$NETWORK" >/dev/null 2>&1
         docker volume rm "$ORIGIN_VOLUME" >/dev/null 2>&1
-        docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_ACC" "$IMAGE_BASE" >/dev/null 2>&1
+        docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_ACC" "$IMAGE_FINISH-claude" "$IMAGE_FINISH-opencode" "$IMAGE_BASE" >/dev/null 2>&1
     fi
     # Which attempts held a slot past LANE_SLOW_S, and which never ended; a report, never a verdict.
     if [ -f "$work/driver.log" ]; then
@@ -1208,6 +1210,8 @@ fi
 . "$REPO/scripts/lanes/jobs/ask-user-question.sh"
 
 . "$REPO/scripts/lanes/jobs/question-round-trip.sh"
+
+. "$REPO/scripts/lanes/jobs/finish-gate.sh"
 
 . "$REPO/scripts/lanes/jobs/pinned-skills.sh"
 

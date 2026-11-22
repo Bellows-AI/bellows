@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
@@ -376,10 +376,242 @@ describe('factory-control', () => {
     });
 });
 
+/** A unix-socket server that answers each request with the next `[status, body]`, the last one repeated. */
+async function serveSequence(answers: [number, string, number?][]): Promise<{ socket: string; seen: Seen[] }> {
+    const seen: Seen[] = [];
+    const socket = await serveRaw((req, res) => {
+        let body = '';
+        req.on('data', (chunk) => (body += String(chunk)));
+        req.on('end', () => {
+            seen.push({ method: req.method ?? '', url: req.url ?? '', authorization: req.headers.authorization, body });
+            const [status, reply, delayMs = 0] = answers[Math.min(seen.length, answers.length) - 1]!;
+            setTimeout(() => {
+                res.statusCode = status;
+                res.end(reply);
+            }, delayMs);
+        });
+    });
+    return { socket, seen };
+}
+
+/*
+ * `factory-finish`, the finish pass's caller both executors share (the claude Stop hook, the opencode
+ * entrypoint's loop). It blocks the stop ONLY on a `fail` answer: exit 10 with the driver's message on
+ * stdout. Everything else lets the agent stop — exit 0, nothing on stdout — and the close-time verifier
+ * judges the run. A no-usable-answer is re-asked every 5 s within BELLOWS_FINISH_RETRY_MS of wall clock.
+ */
+describe('factory-finish', () => {
+    const FINISH = join(ROOT, 'docker/executor-common/factory-finish.cjs');
+    const BLOCK = 10;
+    /** The retry step the helper waits between asks. */
+    const RETRY_STEP_MS = 5_000;
+    const SLOW_CASE_MS = 30_000;
+    const MESSAGE =
+        'The "test" gate failed (round 1 of 3). Fix the cause so the gate passes, keeping the change as small as the fix allows, then finish again.\n\nGate output:\nexpected 1 to be 2';
+    const FAIL = JSON.stringify({
+        verdict: 'fail',
+        gate: 'test',
+        exitCode: 1,
+        output: 'expected 1 to be 2',
+        round: 1,
+        limit: 3,
+        message: MESSAGE,
+    });
+    /** The helper's env: the proxy socket, and the supervisor relay socket beside it that says a relay exists. */
+    const env = (socket: string, extra: Record<string, string> = {}) => ({
+        FACTORY_CONTROL_SOCKET: socket,
+        FACTORY_CTL_OUT: dirname(socket),
+        ...extra,
+    });
+
+    /** The request id each ask carried. */
+    const requestIdsOf = (seen: { body: string }[]) =>
+        seen.map(({ body }) => (JSON.parse(body) as { requestId?: unknown }).requestId);
+    const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+    it('blocks the stop on a fail answer: exit 10, the driver’s message on stdout, POST {requestId} to /gate/finish', async () => {
+        const finish = await serveSequence([[200, FAIL]]);
+        const ran = await run(FINISH, [], env(finish.socket));
+        expect(ran).toMatchObject({ code: BLOCK, stdout: MESSAGE });
+        expect(finish.seen).toEqual([
+            { method: 'POST', url: '/gate/finish', authorization: undefined, body: expect.any(String) },
+        ]);
+        expect(Object.keys(JSON.parse(finish.seen[0]!.body) as object)).toEqual(['requestId']);
+        expect(requestIdsOf(finish.seen)[0]).toMatch(UUID_V4);
+    });
+
+    it(
+        'sends one request id on every retry of one stop, so a lost answer is replayed rather than spent again',
+        async () => {
+            const finish = await serveSequence([
+                [502, '{"error":"the control relay is unavailable"}'],
+                [503, '{"error":"the finish pass is not open yet","retryable":true}'],
+                [200, FAIL],
+            ]);
+            const ran = await run(FINISH, [], env(finish.socket, { BELLOWS_FINISH_RETRY_MS: '30000' }));
+            expect(ran).toMatchObject({ code: BLOCK, stdout: MESSAGE });
+            const ids = requestIdsOf(finish.seen);
+            expect(ids).toHaveLength(3);
+            expect(ids[0]).toMatch(UUID_V4);
+            expect(new Set(ids).size).toBe(1);
+        },
+        SLOW_CASE_MS
+    );
+
+    it('mints a new request id for each stop: two invocations never share one', async () => {
+        const finish = await serveSequence([
+            [200, FAIL],
+            [200, FAIL],
+        ]);
+        await run(FINISH, [], env(finish.socket));
+        await run(FINISH, [], env(finish.socket));
+        const ids = requestIdsOf(finish.seen);
+        expect(ids).toHaveLength(2);
+        expect(ids[0]).toMatch(UUID_V4);
+        expect(ids[1]).toMatch(UUID_V4);
+        expect(ids[0]).not.toBe(ids[1]);
+    });
+
+    it.each([
+        ['pass', 200, '{"verdict":"pass"}'],
+        ['skip', 200, '{"verdict":"skip","reason":"no change from base"}'],
+        ['cap', 200, '{"verdict":"cap","rounds":3,"limit":3}'],
+        ['unavailable', 200, '{"verdict":"unavailable","reason":"the round read failed"}'],
+        ['a fail with no message', 200, '{"verdict":"fail","gate":"test"}'],
+        ['a fail with an empty message', 200, '{"verdict":"fail","gate":"test","message":""}'],
+        ['an unknown verdict', 200, '{"verdict":"maybe"}'],
+        ['a JSON array', 200, '[]'],
+        ['404 no gates', 404, '{"error":"no gates"}'],
+        ['500', 500, '{"error":"finish pass failed: boom"}'],
+        ['401', 401, '{"error":"unknown token"}'],
+    ])('lets the stop through on %s, asking once', async (_label, status, reply) => {
+        const finish = await serveSequence([[status, reply]]);
+        const ran = await run(FINISH, [], env(finish.socket));
+        expect(ran).toMatchObject({ code: 0, stdout: '' });
+        expect(finish.seen).toHaveLength(1);
+    });
+
+    it(
+        'asks again after a cut relay (502) and blocks on the answer that follows within the window',
+        async () => {
+            const finish = await serveSequence([
+                [502, '{"error":"the control relay is unavailable"}'],
+                [200, FAIL],
+            ]);
+            const ran = await run(FINISH, [], env(finish.socket, { BELLOWS_FINISH_RETRY_MS: '20000' }));
+            expect(ran).toMatchObject({ code: BLOCK, stdout: MESSAGE });
+            expect(finish.seen).toHaveLength(2);
+        },
+        SLOW_CASE_MS
+    );
+
+    it.each([
+        ['a retryable 503', 503, '{"error":"the finish pass is not open yet","retryable":true}'],
+        ['a 200 that is not JSON', 200, 'not json'],
+    ])(
+        'asks again after %s',
+        async (_label, status, reply) => {
+            const finish = await serveSequence([
+                [status, reply],
+                [200, FAIL],
+            ]);
+            const ran = await run(FINISH, [], env(finish.socket, { BELLOWS_FINISH_RETRY_MS: '20000' }));
+            expect(ran).toMatchObject({ code: BLOCK, stdout: MESSAGE });
+            expect(finish.seen).toHaveLength(2);
+        },
+        SLOW_CASE_MS
+    );
+
+    // An unset, empty, zero or malformed window is the default one, never "no retry".
+    it.each([['0'], ['abc'], [''], ['-5']])(
+        'keeps re-asking with BELLOWS_FINISH_RETRY_MS=%j',
+        async (value) => {
+            const finish = await serveSequence([
+                [503, '{"error":"the finish pass is not open yet","retryable":true}'],
+                [200, '{"verdict":"pass"}'],
+            ]);
+            const ran = await run(FINISH, [], env(finish.socket, { BELLOWS_FINISH_RETRY_MS: value }));
+            expect(ran).toMatchObject({ code: 0, stdout: '' });
+            expect(finish.seen).toHaveLength(2);
+        },
+        SLOW_CASE_MS
+    );
+
+    it(
+        'gives up when the window of wall clock since the first failed ask has passed, letting the stop through',
+        async () => {
+            const finish = await serveSequence([[502, '{"error":"the control relay is unavailable"}']]);
+            const window = 1_500;
+            const started = Date.now();
+            const ran = await run(FINISH, [], env(finish.socket, { BELLOWS_FINISH_RETRY_MS: String(window) }));
+            const took = Date.now() - started;
+            expect(ran).toMatchObject({ code: 0, stdout: '' });
+            expect(took).toBeGreaterThanOrEqual(window);
+            expect(took).toBeLessThan(RETRY_STEP_MS);
+            expect(finish.seen.length).toBeGreaterThanOrEqual(2);
+        },
+        SLOW_CASE_MS
+    );
+
+    // A healthy gate holds the ask open for minutes; the window counts only the time since the
+    // connection first failed, so a takeover late in a long gate is still asked again.
+    it(
+        'starts the window at the first failed ask, not at its start, so a slow answer spends none of it',
+        async () => {
+            const window = 1_500;
+            const finish = await serveSequence([
+                [502, '{"error":"the control relay is unavailable"}', window + 500],
+                [200, FAIL],
+            ]);
+            const ran = await run(FINISH, [], env(finish.socket, { BELLOWS_FINISH_RETRY_MS: String(window) }));
+            expect(ran).toMatchObject({ code: BLOCK, stdout: MESSAGE });
+            expect(finish.seen).toHaveLength(2);
+            expect(new Set(requestIdsOf(finish.seen)).size).toBe(1);
+        },
+        SLOW_CASE_MS
+    );
+
+    it(
+        'gives up at the window when the proxy socket is missing',
+        async () => {
+            const relay = await serveSequence([[200, FAIL]]);
+            const window = 1_500;
+            const started = Date.now();
+            const ran = await run(FINISH, [], {
+                FACTORY_CONTROL_SOCKET: join(dirname(relay.socket), 'absent.sock'),
+                FACTORY_CTL_OUT: dirname(relay.socket),
+                BELLOWS_FINISH_RETRY_MS: String(window),
+            });
+            expect(ran).toMatchObject({ code: 0, stdout: '' });
+            expect(Date.now() - started).toBeGreaterThanOrEqual(window);
+        },
+        SLOW_CASE_MS
+    );
+
+    // A container with no supervisor relay (an image run by hand, a reviewer) has nobody to ask: it
+    // stops at once instead of waiting out the window.
+    it.each([
+        ['FACTORY_CTL_OUT unset', (_socket: string) => ({})],
+        ['no relay socket in FACTORY_CTL_OUT', (socket: string) => ({ FACTORY_CTL_OUT: join(dirname(socket), 'x') })],
+    ])('lets the stop through at once with %s', async (_label, relayEnv) => {
+        const finish = await serveSequence([[200, FAIL]]);
+        const started = Date.now();
+        const ran = await run(FINISH, [], { FACTORY_CONTROL_SOCKET: finish.socket, ...relayEnv(finish.socket) });
+        expect(ran).toMatchObject({ code: 0, stdout: '' });
+        expect(finish.seen).toEqual([]);
+        expect(Date.now() - started).toBeLessThan(RETRY_STEP_MS);
+    });
+
+    it('holds no control credential: it names no token and sends no authorization', () => {
+        const source = readFileSync(FINISH, 'utf8');
+        expect(source).not.toMatch(/token|authorization/i);
+    });
+});
+
 describe('in the images', () => {
     const IMAGES = ['claude-executor', 'opencode-executor'];
 
-    it.each(['factory-gate', 'factory-control', 'factory-exec', 'control-call'])(
+    it.each(['factory-gate', 'factory-control', 'factory-exec', 'control-call', 'factory-finish'])(
         '%s is one shared file, in neither image directory',
         (name) => {
             expect(readFileSync(join(ROOT, `docker/executor-common/${name}.cjs`), 'utf8')).toBeTruthy();

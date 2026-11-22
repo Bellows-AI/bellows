@@ -239,6 +239,23 @@ describe.skipIf(!enabled)('GET /api/org/export', () => {
         expect((await rowsIn(out, 'job')).map((row) => row.command)).toEqual(['mine']);
     });
 
+    it('holds the org’s finish passes and none of another org’s', async () => {
+        const outsider = await personIn(otherOrg);
+        const passOf = async (orgId: string, author: string, gate: string): Promise<void> => {
+            const job = await craftJob({ sql, org: orgId, author });
+            await sql`
+                insert into job_finish_pass (org_id, job_id, pass_id, run_claim_seq, claim_seq, verdict, gate)
+                values (${orgId}, ${job}, ${randomUUID()}, 1, 1, 'failed', ${gate})`;
+        };
+        await passOf(org, admin.userId, 'mine');
+        await passOf(otherOrg, outsider.userId, `theirs-${randomUUID()}`);
+
+        const out = await extract((await exportAs(admin)).rawPayload);
+        expect(await rowsIn(out, 'job_finish_pass')).toEqual([
+            expect.objectContaining({ org_id: org, gate: 'mine', verdict: 'failed' }),
+        ]);
+    });
+
     it('holds no secret value, credential or credential hash anywhere in the archive', async () => {
         const envSecret = `env-secret-${randomUUID()}`;
         const providerKey = `sk-ant-${randomUUID()}`;

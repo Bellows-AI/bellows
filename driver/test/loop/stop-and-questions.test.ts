@@ -10,6 +10,8 @@ import { type PublishResult, publishFailed } from '../../src/publish/publish.js'
 import { createLoop, type Loop } from '../../src/loop/loop.js';
 import type { GateStack } from '../../src/loop/loop-types.js';
 import { RUN_CONTROL_POLL_MS } from '../../src/loop/loop-attempt.js';
+import type { FinishAnswer } from '../../src/control-channel.js';
+import { SUPERVISOR_ENV } from '../../src/supervisor-contract.js';
 import {
     type BoardStub,
     config,
@@ -529,23 +531,35 @@ describe('questions (issue #226)', () => {
             runner: ReturnType<typeof stubRunner>;
             stack: ReturnType<typeof stubGateStack>['stack'];
             beat: { verdict: HeartbeatVerdict };
+            /** The agent's finish ask (`POST /gate/finish`), through the relay the loop attached. */
+            finish: () => Promise<FinishAnswer>;
         }) => Promise<RunOutcome>,
         options: {
             polled?: boolean;
             board?: Parameters<typeof stubBoard>[1];
+            job?: BoardJob;
+            hold?: (name: string) => Promise<void>;
         } = {}
     ) {
-        const board = stubBoard([job(1)], options.board);
+        const board = stubBoard([options.job ?? job(1)], options.board);
         const beat = { verdict: { result: 'held', cancelRequested: false } as HeartbeatVerdict };
         board.board.heartbeat = async () => {
             board.board.beats += 1;
             return beat.verdict;
         };
-        const { stack, gates } = stubGateStack({}, { control: true, polled: options.polled ?? true });
+        const { stack, gates } = stubGateStack(
+            {},
+            { control: true, polled: options.polled ?? true, ...(options.hold ? { hold: options.hold } : {}) }
+        );
         const runner: ReturnType<typeof stubRunner> = stubRunner(async (running) => {
             const control = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '');
             if (!control) throw new Error('no control entry');
-            return body({ control, board: board.board, runner, stack, beat });
+            const finish = () => {
+                const relay = stack.finishRelays.get(running.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '');
+                if (!relay) throw new Error('no finish relay attached');
+                return relay();
+            };
+            return body({ control, board: board.board, runner, stack, beat, finish });
         });
         const loop = createLoop({
             board: board.board,
@@ -742,6 +756,45 @@ describe('questions (issue #226)', () => {
             { board: { questionVerdict: 'refused' } }
         );
         expect(refused.runner.paused).toEqual([]);
+    });
+
+    it('keeps the budget paused when a question is answered while a finish pass is in flight', async () => {
+        let release = () => {};
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let gateStarted = false;
+        let pausedAtAnswer: boolean[] = [];
+        let answer: FinishAnswer | undefined;
+        const { runner } = await driveAsking(
+            async ({ control, beat, runner: running, finish }) => {
+                await recordQuestion(control, asked('toolu_1'));
+                const passing = finish();
+                await until(() => gateStarted);
+                beat.verdict = {
+                    result: 'held',
+                    cancelRequested: false,
+                    answeredQuestions: [{ questionId: 'toolu_1', answers: ANSWERS }],
+                };
+                await until(() => control.questions.get('toolu_1')?.state === 'answered');
+                for (let i = 0; i < 20; i++) await tick();
+                pausedAtAnswer = running.paused.map(({ paused }) => paused);
+                release();
+                answer = await passing;
+                return ok();
+            },
+            {
+                job: { ...gatedJob(1), finishRounds: 3 },
+                hold: async () => {
+                    gateStarted = true;
+                    await held;
+                },
+            }
+        );
+
+        expect(answer).toEqual({ verdict: 'pass' });
+        expect(pausedAtAnswer).toEqual([true]);
+        expect(runner.paused.map(({ paused }) => paused)).toEqual([true, false]);
     });
 });
 

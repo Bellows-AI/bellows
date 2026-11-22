@@ -1,5 +1,5 @@
 /**
- * A fetch-issue → implement → review (x3) → gate-fix (x3) → publish graph, the fixture the engine
+ * A fetch-issue → implement → review (x3) → repair (x3) → publish graph, the fixture the engine
  * walkthrough walks. Authored here, in the test tree — the board ships no seeded workflow.
  */
 import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../src/db/workflows/workflow-templates.js';
@@ -98,24 +98,18 @@ implementation conversation and fix them — nothing else.
 End your final message with the list of blockers you fixed and the verification commands you ran.`;
 
 /**
- * The gate-repair turn, shared by this graph and `server/test-db/gate-fix-workflow.ts`: resume the implementation conversation, fix the first failed gate's cause,
- * rerun the check — never weaken the gate. The board interpolates `{{gate.name}}` /
- * `{{gate.output}}` from the completed run's stored gate report at row-insert time.
+ * The repair turn after a failed run — a red gate included, which ends the run `failed`: resume the
+ * implementation conversation, fix the cause, rerun the check — never weaken a gate.
  */
-export const gateFixPrompt = `A verification gate failed on this task's latest run. Resume the implementation conversation
-and make the gate pass — nothing else. Gates are the checks the checkout declares; the run's own
-work is otherwise done.
+const repairPrompt = `This task's latest run failed. Resume the implementation conversation and make it pass —
+nothing else. Gates are the checks the checkout declares; the run's own work is otherwise done.
 
---- FAILED GATE: {{gate.name}} ---
-{{gate.output}}
---- END GATE OUTPUT ---
-
-1. Read the gate's command and its output; reproduce the failure locally.
+1. Read the failure in your previous run; reproduce it locally.
 2. Fix the cause. If the failure is flaky (re-run passes), say exactly that in your final message
    with the two runs' results — do not "fix" a flake by weakening a check.
 3. Never delete, skip or weaken a test or gate to get green.
 
-End your final message with the cause and the fix, then the gate command's passing output.`;
+End your final message with the cause and the fix, then the failing command's passing output.`;
 
 const publishPrompt = `The review loop has cleared this task. This is the final pre-flight before the board commits
 and publishes your work — verify, then stop.
@@ -130,9 +124,9 @@ End your final message with a one-paragraph summary of the root cause and the fi
 PR description's opening — the board publishes immediately after this run.`;
 
 /**
- * The graph: fetch-issue → implement → review (x3) → gate-fix (x3) → publish. Review
+ * The graph: fetch-issue → implement → review (x3) → repair (x3) → publish. Review
  * rounds are bounded at three by every edge INTO `review` (counts are rows for the node, so the
- * bound is the loop limit, not a per-edge tally), gate-fix rounds the same at three. A round with
+ * bound is the loop limit, not a per-edge tally), repair rounds the same at three. A round with
  * blockers after the third rests the thread — visible, follow-up-able, never silently continued.
  */
 export const FIX_ISSUE_WORKFLOW: { name: string; definition: WorkflowDefinition } = {
@@ -169,10 +163,10 @@ export const FIX_ISSUE_WORKFLOW: { name: string; definition: WorkflowDefinition 
                 prompt: fixPrompt,
             },
             {
-                name: 'gate-fix',
+                name: 'repair',
                 kind: 'agent',
                 session: 'resume',
-                prompt: gateFixPrompt,
+                prompt: repairPrompt,
             },
             {
                 name: 'publish',
@@ -185,13 +179,13 @@ export const FIX_ISSUE_WORKFLOW: { name: string; definition: WorkflowDefinition 
         edges: [
             { from: 'fetch-issue', to: 'implement', when: 'succeeded' },
             { from: 'implement', to: 'review', when: 'succeeded', max: 3 },
-            { from: 'implement', to: 'gate-fix', when: 'gate-failed', max: 3 },
+            { from: 'implement', to: 'repair', when: 'failed', max: 3 },
             { from: 'review', to: 'fix', when: { marker: REVIEW_BLOCKERS_MARKER }, max: 3 },
             { from: 'review', to: 'publish', when: { marker: REVIEW_VERDICT_MARKER } },
             { from: 'fix', to: 'review', when: 'succeeded', max: 3 },
-            { from: 'fix', to: 'gate-fix', when: 'gate-failed', max: 3 },
-            { from: 'gate-fix', to: 'review', when: 'succeeded', max: 3 },
-            { from: 'publish', to: 'gate-fix', when: 'gate-failed', max: 3 },
+            { from: 'fix', to: 'repair', when: 'failed', max: 3 },
+            { from: 'repair', to: 'review', when: 'succeeded', max: 3 },
+            { from: 'publish', to: 'repair', when: 'failed', max: 3 },
         ],
     },
 };

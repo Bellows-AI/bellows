@@ -63,7 +63,7 @@ The JSON is merged into the agent's own settings in the runner. Some keys are ma
 | Claude Code | `hooks`, `enabledPlugins`, `extraKnownMarketplaces`, and the telemetry variables `CLAUDE_CODE_ENABLE_TELEMETRY` and `OTEL_*` under `env` |
 | OpenCode | `permission` |
 
-The same section has **gate repair rounds**: how many times a task on this executor may try to repair a failed gate on its own. The default is 3, the maximum is 10, and `0` turns repair off. The value is fixed when the task is created. See [Gates](/guides/gates).
+The same section has **gate repair rounds**: how many times the agent in a task on this executor gets a gate that failed at its finish back to fix, inside the same run. The default is 3, the maximum is 10, and `0` turns repair off. The value is fixed when the task is created. See [Gates](/guides/gates).
 
 ### Runner class
 

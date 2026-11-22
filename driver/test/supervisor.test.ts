@@ -310,7 +310,7 @@ async function startDriver({
             };
             driver.calls += 1;
             if (driver.silent) return request.socket.destroy();
-            if (/^\/(publish|review|export|connection|gate\/run)(\/|\?|$)/.test(request.url ?? '')) {
+            if (/^\/(publish|review|export|connection|gate\/(run|finish))(\/|\?|$)/.test(request.url ?? '')) {
                 const entry = {
                     method: request.method ?? '',
                     url: request.url ?? '',
@@ -2426,6 +2426,7 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         ['GET', '/review/key-1', undefined],
         ['POST', '/connection', '{"provider":"jira"}'],
         ['POST', '/gate/run', '{"gate":"verify"}'],
+        ['POST', '/gate/finish', '{}'],
     ])('relays the agent route %s %s under the agent token, the answer unchanged', async (method, url, body) => {
         const driver = await startDriver();
         const supervised = relayed(driver);
@@ -2473,6 +2474,9 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         ['agent', 'POST', '/gate/run?x=1'],
         ['agent', 'POST', '/gate/run/../control'],
         ['export', 'POST', '/gate/run'],
+        ['agent', 'GET', '/gate/finish'],
+        ['agent', 'POST', '/gate/finish?x=1'],
+        ['export', 'POST', '/gate/finish'],
         ['export', 'POST', '/publish'],
         ['export', 'GET', '/control'],
         ['export', 'GET', '/export/chunk?session=s&offset=0'],
@@ -2652,6 +2656,97 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
             old.relayAnswer = null;
             await finish(supervised);
         });
+    });
+
+    // The agent's finish is held while the declared gates run. The supervisor's own budget
+    // does not count that wait, and the relay is bounded by the finish pass's own bound.
+    describe("POST /gate/finish, the agent's finish pass", () => {
+        const finishPass = (socket: string, onRequest?: (request: ClientRequest) => void) =>
+            viaSocket(socket, 'POST', '/gate/finish', { body: '{}', ...(onRequest ? { onRequest } : {}) });
+        const PASS = JSON.stringify({ verdict: 'pass' });
+        /** A holder that answers the finish pass after `ms`. */
+        const passesAfter = (driver: Driver, ms: number) => {
+            driver.relayAnswer = async (response) => {
+                await new Promise((resolve) => setTimeout(resolve, ms));
+                response.writeHead(200, { 'content-type': 'application/json' });
+                response.end(PASS);
+            };
+        };
+        const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        it('holds the run budget while the pass is held past it, and resumes it after the answer', async () => {
+            const driver = await startDriver();
+            passesAfter(driver, 1_600);
+            const supervised = relayed(driver, { SUPERVISOR_DEADLINE_MS: '700' });
+            const { agent } = await ready(supervised);
+            const answer = await finishPass(agent);
+            expect(answer.status).toBe(200);
+            expect(JSON.parse(answer.body.toString())).toEqual({ verdict: 'pass' });
+            expect(supervised.saw(MAILBOX_FILES.kill)).toBe(false);
+            driver.relayAnswer = null;
+            await until('the resumed budget’s kill order', () => supervised.saw(MAILBOX_FILES.kill));
+            supervised.exporterDone();
+            supervised.agentExits(143);
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.deadline);
+            expect(supervised.report()).toMatchObject({ outcome: 'timed_out', cause: 'timeout' });
+        });
+
+        it('resumes the budget when the agent hangs up mid-pass, the holder still running it', async () => {
+            const driver = await startDriver();
+            driver.relayAnswer = () => new Promise<void>(() => {});
+            const supervised = relayed(driver, { SUPERVISOR_DEADLINE_MS: '700' });
+            const { agent } = await ready(supervised);
+            let held: ClientRequest | null = null;
+            const outcome = finishPass(agent, (request) => (held = request)).catch((error: Error) => error);
+            await until('the pass to reach the holder', () => driver.seen.length === 1);
+            await sleep(1_100);
+            expect(supervised.saw(MAILBOX_FILES.kill)).toBe(false);
+            (held as ClientRequest | null)?.destroy();
+            expect(await outcome).toBeInstanceOf(Error);
+            await until('the resumed budget’s kill order', () => supervised.saw(MAILBOX_FILES.kill));
+            driver.relayAnswer = null;
+            supervised.exporterDone();
+            supervised.agentExits(143);
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.deadline);
+        });
+
+        it('is bounded by SUPERVISOR_FINISH_RELAY_TIMEOUT_MS, not by the relay timeout or the run budget', async () => {
+            const driver = await startDriver();
+            passesAfter(driver, 500);
+            const supervised = relayed(driver, {
+                SUPERVISOR_RELAY_TIMEOUT_MS: '200',
+                SUPERVISOR_DEADLINE_MS: '600000',
+                SUPERVISOR_FINISH_RELAY_TIMEOUT_MS: '900',
+            });
+            const { agent } = await ready(supervised);
+            expect((await finishPass(agent)).status).toBe(200);
+            driver.relayAnswer = () => new Promise<void>(() => {});
+            const started = Date.now();
+            await expect(finishPass(agent)).rejects.toBeInstanceOf(Error);
+            expect(Date.now() - started).toBeGreaterThanOrEqual(800);
+            driver.relayAnswer = null;
+            await finish(supervised);
+        });
+
+        it.each([['absent'], ['abc'], ['0'], ['-5'], ['']])(
+            'falls back to the default relay bound for a SUPERVISOR_FINISH_RELAY_TIMEOUT_MS that is %s, never 0',
+            async (value) => {
+                const driver = await startDriver();
+                passesAfter(driver, 100);
+                const supervised = relayed(driver, {
+                    SUPERVISOR_RELAY_TIMEOUT_MS: '600',
+                    ...(value === 'absent' ? {} : { SUPERVISOR_FINISH_RELAY_TIMEOUT_MS: value }),
+                });
+                const { agent } = await ready(supervised);
+                expect((await finishPass(agent)).status).toBe(200);
+                driver.relayAnswer = () => new Promise<void>(() => {});
+                const started = Date.now();
+                await expect(finishPass(agent)).rejects.toBeInstanceOf(Error);
+                expect(Date.now() - started).toBeGreaterThanOrEqual(500);
+                driver.relayAnswer = null;
+                await finish(supervised);
+            }
+        );
     });
 
     describe('a holder that does not answer', () => {

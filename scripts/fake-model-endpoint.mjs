@@ -1,6 +1,6 @@
 // A scripted, Anthropic-compatible model endpoint for the real agent CLIs.
 //
-//   node scripts/fake-model-endpoint.mjs [--port N] [--first-delay-ms N] [--tool-steps N] [--ask] [--ask-prose] [--kill-tools] [--probe-files a,b,…] [--steps '<json>'] [--skill-sentinel TEXT[,TEXT…]]
+//   node scripts/fake-model-endpoint.mjs [--port N] [--first-delay-ms N] [--tool-steps N] [--ask] [--ask-prose] [--kill-tools] [--probe-files a,b,…] [--steps '<json>'] [--skill-sentinel TEXT[,TEXT…]] [--finish-gate]
 //
 // Offline and deterministic, no credential: `claude` and `opencode` point their Anthropic base URL
 // at it and run a real agent loop against canned answers. The first `--tool-steps` model requests
@@ -51,6 +51,16 @@
 // `seen` is true once any did; `sentinelCounts` maps each TEXT to its occurrences in the one agent request that carried
 // the most of it, so a skill listed twice reads 2.
 //
+// `--finish-gate` is the in-run finish mode, for a task whose declared gate passes only once `.lane-finish` exists:
+// the first agent request answers one Bash call that changes the tree without that file, the next ends the turn in
+// text, so the finish pass sees a change and a red gate. A user turn carrying the driver's gate-failure message (the
+// claude Stop hook's block reason, or the prompt of opencode's relaunched run) is answered with one Bash call
+// `touch .lane-finish`, then the turn ends again. State is read from the history the CLI sends, never from a
+// counter, so a resent history changes nothing. The Stop hook's own evaluation is answered `{"ok": true}`, and
+// `GET /control` never raises a Stop. `GET /finish-gate` returns `{agentRequests, fixCalls, failures}`: each failure
+// message seen as `{gate, round, limit, sameSession}`, the last true when that request's history also holds the
+// first turn's tool call — the same session continued, not a fresh one.
+//
 // In every mode it plays the driver's step channel too (driver/src/step-control.ts), as much as a
 // lane group needs: `GET /step` hands out `go` on the first poll and `finish` once `POST /report`
 // arrives, and holds any other poll up to its `wait`; `POST /step/<id>` is acknowledged.
@@ -86,6 +96,15 @@ const STOP_HOOK_BLOCK = {
     ok: false,
     reason: 'The person cannot reply to plain text and this run ends when you stop. Call the AskUserQuestion tool now with the question and its options.',
 };
+
+const FINISH_PATH = '/finish-gate';
+const FINISH_WORK_ID = 'toolu_finish_work';
+const FINISH_FIX_ID = 'toolu_finish_fix_';
+/**
+ * The driver's finish-pass failure message (driver/src/loop/loop-finish.ts) inside a JSON body: its quotes come
+ * escaped once, or twice when the CLI quoted the prompt itself (opencode run sends its argument JSON-encoded).
+ */
+const FINISH_FAILURE = /The \\*"([^"\\]+)\\*" gate failed \(round (\d+) of (\d+)\)/;
 
 const sse = (event, data) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
@@ -147,8 +166,10 @@ export function probeCommand(paths) {
     );
 }
 
-export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false, probeFiles = [], steps = [], skillSentinels = [] } = {}) {
+export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false, probeFiles = [], steps = [], skillSentinels = [], finishGate = false } = {}) {
     let agentRequests = 0;
+    /** Each gate-failure message answered with a fix, in order. */
+    const finishFailures = [];
     const sentinelsSeen = new Set();
     /** Each sentinel's occurrences in the agent request that carried the most of it. */
     const sentinelCounts = {};
@@ -236,9 +257,32 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
         }
         return message(`msg_${step}`, [{ type: 'text', text: `ANSWER=${answerFound ? ASK_ANSWER : 'missing'}` }], 'end_turn');
     };
+    const finishReply = (step, tools, messages) => {
+        const bash = tools.find((tool) => BASH_TOOL.test(tool.name));
+        const called = messages
+            .filter((entry) => entry?.role === 'assistant' && Array.isArray(entry.content))
+            .flatMap((entry) => entry.content)
+            .filter((block) => block?.type === 'tool_use' && typeof block.id === 'string')
+            .map((block) => block.id);
+        const fixes = called.filter((id) => id.startsWith(FINISH_FIX_ID)).length;
+        const failures = messages
+            .filter((entry) => entry?.role === 'user')
+            .map((entry) => FINISH_FAILURE.exec(JSON.stringify(entry.content ?? '')))
+            .filter(Boolean);
+        const call = (id, command) =>
+            message(`msg_${step}`, [{ type: 'tool_use', id, name: bash.name, input: { command, description: 'change the tree' } }], 'tool_use');
+        if (bash && failures.length > fixes) {
+            const [, gate, round, limit] = failures[failures.length - 1];
+            finishFailures.push({ gate, round: Number(round), limit: Number(limit), sameSession: called.includes(FINISH_WORK_ID) });
+            return call(`${FINISH_FIX_ID}${failures.length}`, 'touch .lane-finish');
+        }
+        if (bash && !called.includes(FINISH_WORK_ID)) return call(FINISH_WORK_ID, 'echo lane work > lane-finish-work.txt');
+        return message(`msg_${step}`, [{ type: 'text', text: 'done' }], 'end_turn');
+    };
     const agentReply = (tools, messages) => {
         const step = ++agentRequests;
         if (ask || askProse) return askReply(step, tools, messages);
+        if (finishGate) return finishReply(step, tools, messages);
         for (const block of messages.flatMap((entry) => (Array.isArray(entry?.content) ? entry.content : []))) {
             if (block?.type === 'tool_result' && JSON.stringify(block.content ?? '').includes(TOOL_OK)) {
                 reportedOk.add(block.tool_use_id);
@@ -308,8 +352,12 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
                 // question modes: the entrypoint's stop poller reads this too, and a Stop would make
                 // the bridge deny the question as stopped.
                 reply.setHeader('content-type', 'application/json');
-                const stop = !ask && !askProse && !killTools && probeFiles.length === 0 && steps.length === 0 && (agentRequests > 0 || firstInFlight);
+                const stop = !ask && !askProse && !killTools && !finishGate && probeFiles.length === 0 && steps.length === 0 && (agentRequests > 0 || firstInFlight);
                 return reply.end(JSON.stringify({ stop }));
+            }
+            if (url === FINISH_PATH) {
+                reply.setHeader('content-type', 'application/json');
+                return reply.end(JSON.stringify({ agentRequests, fixCalls: finishFailures.length, failures: finishFailures }));
             }
             if (url === TOOL_RESULTS_PATH) {
                 reply.setHeader('content-type', 'application/json');
@@ -366,7 +414,7 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
             // The Stop hook's evaluation, whatever shape the CLI sends it in: recognised by its prompt
             // on a request with no tools. The agent's continuation after a block quotes the prompt
             // back ("Stop hook feedback") but carries the tools, and is an agent step.
-            const isHookRequest = askProse && tools.length === 0 && JSON.stringify(body).includes(STOP_HOOK_PROMPT);
+            const isHookRequest = (askProse || finishGate) && tools.length === 0 && JSON.stringify(body).includes(STOP_HOOK_PROMPT);
             const isAgentStep = tools.length > 0 && !isHookRequest;
             // The delay is the "stop during a model step" window: the answer to the FIRST agent
             // request is held, so a Stop raised meanwhile lands inside the step.
@@ -384,7 +432,7 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
             }
             const hookAnswer = () => {
                 hookRequests += 1;
-                const verdict = hookRequests === 1 ? STOP_HOOK_BLOCK : { ok: true };
+                const verdict = askProse && hookRequests === 1 ? STOP_HOOK_BLOCK : { ok: true };
                 return message('msg_hook', [{ type: 'text', text: JSON.stringify(verdict) }], 'end_turn');
             };
             const answer = isHookRequest ? hookAnswer() : isAgentStep ? agentReply(tools, Array.isArray(body.messages) ? body.messages : []) : message('msg_aux', [{ type: 'text', text: 'ok' }], 'end_turn');
@@ -428,6 +476,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         probeFiles: flagList('--probe-files'),
         skillSentinels: flagList('--skill-sentinel'),
         steps: process.argv.includes('--steps') ? JSON.parse(process.argv[process.argv.indexOf('--steps') + 1]) : [],
+        finishGate: process.argv.includes('--finish-gate'),
     });
     const port = await endpoint.listen(flag('--port', 0));
     process.stdout.write(`${port}\n`);

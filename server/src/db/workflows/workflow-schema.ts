@@ -5,10 +5,9 @@
  * (docs/workflows.md).
  *
  * The grammar is deliberately closed. A node is an `agent` node and nothing else: checkout/sync,
- * gates and publish are driver machinery the graph references by OUTCOME (`gate-failed`, a
- * `publish: true` node), never nodes with containers. An edge rule is a terminal verdict, the
- * gate-failure fact, or an exact output-tail marker — nothing the board does not already store on
- * its own rows. Unknown keys are refused with named errors: a pasted foreign pipeline fails loudly
+ * gates and publish are driver machinery the graph references by OUTCOME (a verdict, a
+ * `publish: true` node), never nodes with containers. An edge rule is a terminal verdict or an
+ * exact output-tail marker — nothing the board does not already store on its own rows. Unknown keys are refused with named errors: a pasted foreign pipeline fails loudly
  * instead of silently doing nothing.
  */
 
@@ -108,9 +107,8 @@ export interface WorkflowNode {
     session: 'resume' | 'fresh';
     /**
      * The prompt template the board interpolates at row-insert time. Placeholders:
-     * `{{nodeName.output}}` — the named node's most recent stored output tail — and
-     * `{{gate.name}}` / `{{gate.output}}` — the completed run's first failed gate, for gate-fix
-     * blocks. Anything else in `{{...}}` is refused by the validator.
+     * `{{nodeName.output}}` — the named node's most recent stored output tail — `{{param.NAME}}`
+     * and `{{command}}`. Anything else in `{{...}}` is refused by the validator.
      */
     prompt: string;
     /**
@@ -200,11 +198,11 @@ export interface AuthoredWorkflowDefinition {
 }
 
 /**
- * An edge's transition rule. A string is a terminal verdict (`succeeded` / `failed`) or the
- * `gate-failed` fact (derived from the run's stored gate results, never parsed from prose); an
- * object is an exact output-tail marker match — the completed run's final line must equal it.
+ * An edge's transition rule. A string is a terminal verdict (`succeeded` / `failed`; a run that
+ * ends on a red gate is `failed`); an object is an exact output-tail marker match — the completed
+ * run's final line must equal it.
  */
-export type EdgeRule = 'succeeded' | 'failed' | 'gate-failed' | { marker: string };
+export type EdgeRule = 'succeeded' | 'failed' | { marker: string };
 
 export interface WorkflowEdge {
     from: string;
@@ -325,9 +323,6 @@ export function boundedTail(output: string, limit = INTERP_TAIL_LIMIT): string {
 export interface InterpolationContext {
     /** The named node's most recent stored output tail, or '' when the node has not run yet. */
     nodeOutput: (name: string) => string;
-    /** The completed run's first failed gate's name and output tail; '' when gates passed. */
-    gateName: string;
-    gateOutput: string;
     /** The thread's frozen parameter value, or '' when the name was never declared. */
     param: (name: string) => string;
     /** The thread root's command — for a workflow thread, the interpolated entry prompt. */
@@ -348,8 +343,6 @@ export function interpolate(template: string, context: InterpolationContext): st
         const paramRef = /^param\.([a-z0-9-]+)$/.exec(spec);
         if (paramRef) return boundedTail(context.param(paramRef[1]!));
         if (spec === 'command') return context.command;
-        if (spec === 'gate.name') return boundedTail(context.gateName);
-        if (spec === 'gate.output') return boundedTail(context.gateOutput);
         const nodeRef = /^([a-z0-9-]+)\.output$/.exec(spec);
         if (nodeRef) return boundedTail(context.nodeOutput(nodeRef[1]!));
         throw new Error(`unknown workflow placeholder "${whole}"`);

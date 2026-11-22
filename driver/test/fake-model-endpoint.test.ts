@@ -43,6 +43,7 @@ async function start(
         askProse?: boolean;
         killTools?: boolean;
         probeFiles?: string[];
+        finishGate?: boolean;
     } = {}
 ) {
     const { createFakeModelEndpoint } = (await import(pathToFileURL(ENDPOINT).href)) as {
@@ -337,6 +338,74 @@ describe('the scripted model endpoint in ask-prose mode (issue #226)', () => {
         // The evaluation after the answer is stop_hook_active territory: allowed, not an agent request.
         expect(JSON.parse((await hook(url)).content[0]!.text)).toEqual({ ok: true });
         expect(endpoint.agentRequests).toBe(2);
+    });
+});
+
+describe('the scripted model endpoint in finish-gate mode', () => {
+    type Reply = {
+        stop_reason: string;
+        content: { type: string; id?: string; name?: string; text?: string; input?: { command?: string } }[];
+    };
+    const request = (url: string, body: object) =>
+        fetch(`${url}/v1/messages`, { method: 'POST', body: JSON.stringify({ stream: false, ...body }) }).then(
+            (response) => response.json() as Promise<Reply>
+        );
+    const tools = [{ name: 'Bash' }, { name: 'Read' }];
+    const said = (reply: Reply) => ({ role: 'assistant', content: reply.content });
+    const result = (id: string) => ({ role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: '' }] });
+    const failure =
+        'The "lane-finish" gate failed (round 1 of 3). Fix the cause so the gate passes, keeping the change as small as the fix allows, then finish again.\n\nGate output:\n';
+    const report = async (url: string) =>
+        (await (await fetch(`${url}/finish-gate`)).json()) as {
+            agentRequests: number;
+            fixCalls: number;
+            failures: { gate: string; round: number; limit: number; sameSession: boolean }[];
+        };
+
+    it('makes a change that leaves the gate red, ends the turn, and fixes it only once the gate failure arrives', async () => {
+        const { endpoint, url } = await start({ finishGate: true });
+        const history: object[] = [{ role: 'user', content: 'do the task' }];
+
+        const work = await request(url, { tools, messages: history });
+        expect(work.content[0]).toMatchObject({ type: 'tool_use', name: 'Bash' });
+        expect(work.content[0]!.input?.command).not.toContain('.lane-finish');
+        history.push(said(work), result(work.content[0]!.id ?? ''));
+        const first = await request(url, { tools, messages: history });
+        expect(first.stop_reason).toBe('end_turn');
+        history.push(said(first));
+
+        // The claude Stop hook's block reason, or the opencode relaunch prompt: the next user turn carries the message.
+        history.push({ role: 'user', content: [{ type: 'text', text: `Stop hook feedback:\n${failure}` }] });
+        const fix = await request(url, { tools, messages: history });
+        expect(fix.content[0]).toMatchObject({ type: 'tool_use', input: { command: 'touch .lane-finish' } });
+        history.push(said(fix), result(fix.content[0]!.id ?? ''));
+        const last = await request(url, { tools, messages: history });
+        expect(last.stop_reason).toBe('end_turn');
+
+        expect(endpoint.agentRequests).toBe(4);
+        expect(await report(url)).toEqual({
+            agentRequests: 4,
+            fixCalls: 1,
+            failures: [{ gate: 'lane-finish', round: 1, limit: 3, sameSession: true }],
+        });
+    });
+
+    it('reads a failure in a fresh history as another session, and allows the Stop-hook evaluation', async () => {
+        const { url } = await start({ finishGate: true });
+
+        // opencode run sends its prompt argument as a JSON-quoted string inside the text block.
+        await request(url, {
+            tools,
+            messages: [{ role: 'user', content: [{ type: 'text', text: JSON.stringify(failure) }] }],
+        });
+        expect((await report(url)).failures).toEqual([{ gate: 'lane-finish', round: 1, limit: 3, sameSession: false }]);
+
+        const hook = await request(url, {
+            messages: [{ role: 'user', content: 'You decide whether an autonomous coding agent may stop.' }],
+        });
+        expect(JSON.parse(hook.content[0]!.text ?? '')).toEqual({ ok: true });
+        expect((await report(url)).agentRequests).toBe(1);
+        expect(((await (await fetch(`${url}/control`)).json()) as { stop: boolean }).stop).toBe(false);
     });
 });
 

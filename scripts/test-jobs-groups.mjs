@@ -32,6 +32,7 @@ const PHASE_SECONDS = {
     'image-checks': 60,
     'ask-user-question': 35,
     'question-round-trip': 67,
+    'finish-gate': 120,
     'repo-skills': 90,
     'pinned-skills': 150,
     mcp: 40,
@@ -45,7 +46,7 @@ export const GROUPS = [
     { name: 'cli-stop', phases: ['cooperative-stop', 'tool-isolation', 'image-checks', 'repo-skills'] },
     { name: 'core', phases: ['board', 'driver', 'github-credential', 'services', 'orphan-reaper', 'auth', 'mcp'] },
     { name: 'guards', phases: ['run-deadline', 'capacity', 'review'] },
-    { name: 'cli-ask', phases: ['ask-user-question', 'question-round-trip', 'pinned-skills'] },
+    { name: 'cli-ask', phases: ['ask-user-question', 'question-round-trip', 'finish-gate', 'pinned-skills'] },
 ];
 
 /** The slots for `selected` phases (all of PHASES when null): `[{ groups: [{ name, phases }], seconds }]`. */

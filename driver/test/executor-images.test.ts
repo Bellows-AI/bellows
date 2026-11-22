@@ -2477,3 +2477,193 @@ describe('the driver runtime image ships its runtime dependencies', () => {
         expect(nested, 'the runtime stage must also copy /app/driver/node_modules').toEqual([]);
     });
 });
+
+/*
+ * The finish pass's callers. Claude Code: a command Stop hook beside the prompt one, whose timeout is
+ * hours (a gate pass outlives the 600 s default, and a hook that reaches it is cancelled and the stop
+ * proceeds), and a stop-hook block cap above the driver's highest round limit (Claude Code ends the
+ * turn after 8 blocks in a row). opencode has no stop hook: its entrypoint asks the shared helper once
+ * the CLI exits cleanly and, on a red gate, resumes the same session with the helper's text.
+ */
+describe('the finish gate in the images', () => {
+    it('claude: the Stop group holds the finish command hook with a timeout above ten minutes', () => {
+        const settings = JSON.parse(read('docker/claude-executor/claude-home/settings.json')) as {
+            hooks: { Stop: { hooks: { type: string; command?: string; timeout?: number }[] }[] };
+        };
+        const hook = settings.hooks.Stop.flatMap((entry) => entry.hooks).find(
+            (entry) => entry.command === 'node /usr/local/bin/finish-hook.cjs'
+        );
+        expect(hook?.type).toBe('command');
+        expect(hook?.timeout).toBeGreaterThan(600);
+    });
+
+    it('claude: the stop-hook block cap is above the highest gate repair round limit', () => {
+        const max = Number(/MAX_GATE_FIX_ROUNDS = (\d+)/.exec(read('core/src/executors.ts'))?.[1]);
+        expect(max).toBeGreaterThan(0);
+        const cap = Number(
+            /^ENV CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=(\d+)$/m.exec(read('docker/claude-executor/Dockerfile'))?.[1]
+        );
+        expect(cap).toBeGreaterThan(max);
+    });
+
+    it.each(['claude', 'opencode'])('%s ships the shared finish helper beside the transport it requires', (name) => {
+        const dockerfile = read(`docker/${name}-executor/Dockerfile`);
+        expect(dockerfile).toContain('COPY --from=common factory-finish.cjs /usr/local/bin/factory-finish.cjs\n');
+        expect(dockerfile).toMatch(/chmod 0755 [^\n]*\/usr\/local\/bin\/factory-finish\.cjs\b/);
+        expect(dockerfile).toContain('COPY --from=common control-call.cjs /usr/local/bin/control-call.cjs\n');
+    });
+});
+
+/** Stand-in finish helper: answers the next of FINISH_ANSWERS (`fail` or anything else) per call. */
+const FINISH_STUB = `const fs = require('node:fs');
+const calls = process.env.STUB_DIR + '/finish-calls';
+fs.appendFileSync(calls, 'ask\\n');
+const n = fs.readFileSync(calls, 'utf8').trim().split('\\n').length;
+const answer = (process.env.FINISH_ANSWERS || '').split(',')[n - 1];
+if (answer !== 'fail') process.exit(0);
+process.stdout.write(${JSON.stringify(finishPrompt('N'))}.replace('N', String(n)), () => process.exit(10));
+`;
+
+/** The text the stand-in helper blocks with: quotes, a dollar and newlines must reach the CLI verbatim. */
+function finishPrompt(round: string): string {
+    return `The "test" gate failed (round ${round}).\n\nGate output:\nit's 'red' $HOME \`x\``;
+}
+
+/** Stand-in opencode: records each launch's argv as one JSON line, then exits, holds or writes the stop marker. */
+const LOOP_CLI_STUB = `#!/bin/sh
+node -e 'require("node:fs").appendFileSync(process.env.STUB_DIR + "/launches", JSON.stringify(process.argv.slice(1)) + "\\n")' -- "$@"
+n=$(wc -l < "$STUB_DIR/launches")
+if [ -n "\${STUB_STOP:-}" ]; then echo stop > "$FACTORY_STOP_MARKER"; fi
+if [ "\${STUB_HOLD_AT:-0}" -gt 0 ] && [ "$n" -ge "\${STUB_HOLD_AT:-0}" ]; then exec "$STUB_DIR/hold" "$@"; fi
+exit "\${STUB_STATUS:-0}"
+`;
+
+describe('the opencode entrypoint asks the finish gate before the run ends', () => {
+    /** The staged opencode image directory with the stand-in helper in place of the real one. */
+    const stageLoop = (): string => {
+        const staged = dirname(stagedEntrypoint('docker/opencode-executor'));
+        const dir = mkdtempSync(join(tmpdir(), 'executor-finish-'));
+        for (const entry of readdirSync(staged)) copyFileSync(join(staged, entry), join(dir, entry));
+        writeFileSync(join(dir, 'factory-finish.cjs'), FINISH_STUB);
+        process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+        return join(dir, 'entrypoint.sh');
+    };
+
+    const loopSandbox = (): Sandbox & { tmp: string } => {
+        const sandbox = makeSandbox();
+        for (const [name, body] of [
+            ['opencode', LOOP_CLI_STUB],
+            ['hold', STUB],
+        ] as const) {
+            writeFileSync(join(sandbox.bin, name), body);
+            chmodSync(join(sandbox.bin, name), EXECUTABLE_MODE);
+        }
+        const tmp = join(dirname(sandbox.bin), 'tmp');
+        mkdirSync(tmp);
+        return { ...sandbox, tmp };
+    };
+
+    const RESUMED = ['run', '--session', 'ses_old', 'first prompt'];
+
+    const start = (sandbox: Sandbox & { tmp: string }, argv: string[], env: Record<string, string>) =>
+        spawnDetached([stageLoop(), ...argv], { ...sandbox.env, TMPDIR: sandbox.tmp, ...env });
+
+    const launches = (sandbox: Sandbox): string[][] =>
+        readFileSync(join(sandbox.bin, 'launches'), 'utf8')
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line) as string[]);
+
+    const asks = (sandbox: Sandbox): number =>
+        existsSync(join(sandbox.bin, 'finish-calls'))
+            ? readFileSync(join(sandbox.bin, 'finish-calls'), 'utf8').trim().split('\n').length
+            : 0;
+
+    it(
+        'resumes the session with the gate prompt on each red answer, until the helper lets it stop',
+        async () => {
+            const sandbox = loopSandbox();
+            try {
+                const child = start(sandbox, RESUMED, {
+                    BELLOWS_SESSION_ID: 'ses_old',
+                    FINISH_ANSWERS: 'fail,fail,pass',
+                });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                expect(launches(sandbox)).toEqual([
+                    RESUMED,
+                    ['run', '--session', 'ses_old', finishPrompt('1')],
+                    ['run', '--session', 'ses_old', finishPrompt('2')],
+                ]);
+                expect(asks(sandbox)).toBe(3);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it.each([
+        ['the stop marker is present', { STUB_STOP: '1' }, 0],
+        ['the CLI exited non-zero', { STUB_STATUS: String(STUB_EXIT_CODE) }, STUB_EXIT_CODE],
+    ])(
+        'does not ask when %s',
+        async (_label, extra, want) => {
+            const sandbox = loopSandbox();
+            try {
+                const child = start(sandbox, RESUMED, {
+                    BELLOWS_SESSION_ID: 'ses_old',
+                    FINISH_ANSWERS: 'fail',
+                    ...extra,
+                });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(want);
+                expect(launches(sandbox)).toEqual([RESUMED]);
+                expect(asks(sandbox)).toBe(0);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    // No handed-in session and no readable baseline to tell this run's session apart: it never starts
+    // a fresh one, it lets the run end and the close-time verifier judge it.
+    it(
+        'does not loop when it cannot name the session',
+        async () => {
+            const sandbox = loopSandbox();
+            try {
+                const child = start(sandbox, ['run', 'first prompt'], { FINISH_ANSWERS: 'fail' });
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                expect(launches(sandbox)).toEqual([['run', 'first prompt']]);
+                expect(asks(sandbox)).toBe(0);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it(
+        'forwards a TERM landing during the resumed run to the new CLI',
+        async () => {
+            const sandbox = loopSandbox();
+            try {
+                const child = start(sandbox, RESUMED, {
+                    BELLOWS_SESSION_ID: 'ses_old',
+                    FINISH_ANSWERS: 'fail,fail',
+                    STUB_HOLD_AT: '2',
+                    STUB_SLEEP: String(TERM_PROOF_SLEEP_S),
+                });
+                await whenFileExists(join(sandbox.bin, 'started'), STARTED_TIMEOUT_MS);
+                child.kill('SIGTERM');
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(TERM_DEATH_EXIT_CODE);
+                expect(readFileSync(join(sandbox.bin, 'signaled'), 'utf8')).toMatch(/^\d+$/m);
+                expect(launches(sandbox)).toHaveLength(2);
+                expect(asks(sandbox)).toBe(1);
+            } finally {
+                sandbox.cleanup();
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+});

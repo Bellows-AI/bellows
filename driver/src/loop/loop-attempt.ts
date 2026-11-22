@@ -162,9 +162,12 @@ export interface JobState {
     endedReviewLeases: Set<string>;
     /** Questions whose answers have not been delivered yet. */
     pendingQuestions: Set<string>;
-    questionPausedAt: number | null;
+    /** Finish passes in flight (`loop-finish.ts`): the agent waits on its gates, and the runtime budget with it. */
+    finishPasses: number;
+    /** When the runtime budget was paused — for a pending question or a finish pass; null while it runs. */
+    runPausedAt: number | null;
     deadlineUpdate: Promise<void>;
-    /** How far the run deadline has been pushed out by questions — what the timeout note adds to `jobTimeoutMs`. */
+    /** How far the run deadline has been pushed out by questions and finish passes — what the timeout note adds to `jobTimeoutMs`. */
     deadlineExtensionMs: number;
     /** The last draft publication the agent made mid-run (`loop-publish.ts`); null when it made none. */
     draftPublication: PublishResult | null;
@@ -239,7 +242,8 @@ export function newJobState(): JobState {
         reviews: new Map(),
         endedReviewLeases: new Set(),
         pendingQuestions: new Set(),
-        questionPausedAt: null,
+        finishPasses: 0,
+        runPausedAt: null,
         deadlineUpdate: Promise.resolve(),
         deadlineExtensionMs: 0,
         draftPublication: null,
@@ -285,20 +289,23 @@ export function clearPendingQuestions(state: JobState): void {
     state.pendingQuestions.clear();
 }
 
-/** Serialize pause/resume with concurrent asks and heartbeat answers. */
-export function updateQuestionDeadline(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
+/**
+ * Serialize pause/resume with concurrent asks, finish passes and heartbeat answers: the budget is paused while a
+ * question is pending or a finish pass is in flight, and resumed only once neither is.
+ */
+export function updateRunDeadline(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
     state.deadlineUpdate = state.deadlineUpdate
         .catch(() => {})
         .then(async () => {
-            const paused = state.pendingQuestions.size > 0;
+            const paused = state.pendingQuestions.size > 0 || state.finishPasses > 0;
             if (state.phase === 'ended' || down(state) || (state.draining && paused)) return;
-            if (paused === (state.questionPausedAt !== null)) return;
+            if (paused === (state.runPausedAt !== null)) return;
             await rt.runner.pauseDeadline(job, paused);
             if (paused) {
-                state.questionPausedAt = Date.now();
-            } else if (state.questionPausedAt !== null) {
-                state.deadlineExtensionMs += Date.now() - state.questionPausedAt;
-                state.questionPausedAt = null;
+                state.runPausedAt = Date.now();
+            } else if (state.runPausedAt !== null) {
+                state.deadlineExtensionMs += Date.now() - state.runPausedAt;
+                state.runPausedAt = null;
             }
         });
     return state.deadlineUpdate;
@@ -316,7 +323,7 @@ async function deliverAnswers(
         if (!rt.gates?.server.resolveQuestion(state.control, questionId, { state: 'answered', answers })) continue;
         state.pendingQuestions.delete(questionId);
     }
-    await updateQuestionDeadline(rt, job, state);
+    await updateRunDeadline(rt, job, state);
 }
 
 /** A draining attempt whose run threw was being stopped all along: it stands down as stopped. */
@@ -352,7 +359,7 @@ async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, co
         state.graceTimer.unref?.();
     }
     // Retry a failed restoration on the next stop heartbeat; the grace timer remains armed.
-    await updateQuestionDeadline(rt, job, state).catch((error: Error) => {
+    await updateRunDeadline(rt, job, state).catch((error: Error) => {
         rt.log(`job ${job.id}: could not resume the draining runtime budget: ${describeError(error)}`);
     });
 }
@@ -426,7 +433,7 @@ async function deliverVerdictAnswers(
         typeof verdict === 'object' &&
         !verdict.cancelRequested &&
         !state.draining &&
-        (state.pendingQuestions.size > 0 || state.questionPausedAt !== null || verdict.answeredQuestions?.length)
+        (state.pendingQuestions.size > 0 || state.runPausedAt !== null || verdict.answeredQuestions?.length)
     ) {
         await deliverAnswers(rt, job, state, verdict.answeredQuestions ?? []).catch((error: Error) => {
             rt.log(`job ${job.id}: could not update the question runtime budget: ${describeError(error)}`);

@@ -341,6 +341,20 @@ describe('test-jobs --changed path-to-phase map', () => {
         }
     });
 
+    it('runs the finish-gate phase for every file the in-run finish pass crosses', () => {
+        for (const file of [
+            'scripts/lanes/jobs/finish-gate.sh',
+            'scripts/fake-model-endpoint.mjs',
+            'docker/executor-common/factory-finish.cjs',
+            'docker/claude-executor/finish-hook.cjs',
+            'docker/claude-executor/claude-home/settings.json',
+            'docker/opencode-executor/entrypoint.sh',
+            'driver/src/loop/loop-finish.ts',
+        ]) {
+            expect(classify([file]).selected, file).toContain('finish-gate');
+        }
+    });
+
     it('maps the GitHub credential helpers to its phase and to both images’ phases', () => {
         for (const file of ['github-credential.cjs', 'credential-broker.cjs']) {
             expect(classify([`docker/executor-common/${file}`]).selected).toEqual(

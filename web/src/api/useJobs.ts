@@ -202,10 +202,6 @@ export interface Job {
     workflowName: string | null;
     /** The task's stored execution mode (issue 543): objective, or a named workflow's graph. */
     mode: JobMode;
-    /** The 1-based round when this run is the follow-up the board queued to repair a failed gate; null otherwise. */
-    gateFixRound?: number | null;
-    /** The round limit frozen on the task at launch — the M of "round N of M"; null on older tasks. */
-    gateFixLimit?: number | null;
     /** The finished task this one asks for adjustments on, when it is a follow-up. */
     followUpTo: string | null;
     /**

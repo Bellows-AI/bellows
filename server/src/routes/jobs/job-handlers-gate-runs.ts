@@ -9,6 +9,11 @@ import {
     type GateRunStore,
     type GateRunWrite,
 } from '../../db/jobs/job-store-gate-runs.js';
+import {
+    FINISH_PASS_VERDICTS,
+    type FinishPassVerdict,
+    type FinishPassWrite,
+} from '../../db/jobs/job-store-finish-passes.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad, guard } from '../helpers.js';
 import {
@@ -149,12 +154,86 @@ export async function handleGateRuns(orgs: OrgRegistry, request: FastifyRequest,
     return reply.code(HTTP_OK).send({ runs: read.value.runs });
 }
 
-/** The two worker routes (087), under the attempt's lease. */
+/** The pass a finish-pass write names, field by field, or the reason it is refused. */
+function validatePass(fields: Record<string, unknown>): Checked<FinishPassWrite> {
+    const { passId, verdict, gate } = fields;
+    if (typeof passId !== 'string' || !UUID.test(passId)) return { ok: false, message: 'passId must be a uuid' };
+    const runClaimSeq = runClaimSeqOf(fields.runClaimSeq);
+    if (runClaimSeq === null) return { ok: false, message: 'runClaimSeq must be a positive integer' };
+    if (!FINISH_PASS_VERDICTS.includes(verdict as FinishPassVerdict)) {
+        return { ok: false, message: `verdict must be one of ${FINISH_PASS_VERDICTS.join(', ')}` };
+    }
+    if (gate !== null && (typeof gate !== 'string' || !gate.trim() || gate.length > GATE_NAME_LIMIT)) {
+        return { ok: false, message: `gate must be null or a name of at most ${GATE_NAME_LIMIT} characters` };
+    }
+    return {
+        ok: true,
+        value: { passId, runClaimSeq, verdict: verdict as FinishPassVerdict, gate: gate === null ? null : gate.trim() },
+    };
+}
+
+/** Records one answered finish pass under the attempt's lease; `lost` and `conflict` are both a 409 (not recorded). */
+export async function handleFinishPass(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveLeasedRoute<keyof GateRunStore>(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id, fields, leaseToken } = route;
+    const checked = validatePass(fields);
+    if (!checked.ok) return bad(reply, ERROR_CODES.BAD_BODY, checked.message);
+
+    const written = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'finish pass write failed'),
+        () => store.writeFinishPass(id, leaseToken, checked.value)
+    );
+    if (!written.ok) return reply;
+    if (written.value.result === 'missing') return notFoundJob(reply);
+    if (written.value.result === 'lost') return leaseLost(reply);
+    if (written.value.result === 'conflict') {
+        return bad(reply, ERROR_CODES.GATE_RUN_CONFLICT, 'runClaimSeq is not a claim of this job', HTTP_CONFLICT);
+    }
+    return reply.code(HTTP_OK).send({ id, passId: checked.value.passId });
+}
+
+/**
+ * The failed finish passes of the job row, every claim of it, under the caller's lease. With a `passId`, also what the
+ * row holds for that pass (`pass`: its verdict and a failed one's round, or null) — how a retried request replays the
+ * round it already spent.
+ */
+export async function handleFinishRounds(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveLeasedRoute<keyof GateRunStore>(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id, fields, leaseToken } = route;
+    const { passId } = fields;
+    if (passId !== undefined && (typeof passId !== 'string' || !UUID.test(passId))) {
+        return bad(reply, ERROR_CODES.BAD_BODY, 'passId must be a uuid');
+    }
+
+    const read = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'finish rounds read failed'),
+        () =>
+            passId === undefined
+                ? store.readFinishRounds(id, leaseToken)
+                : store.readFinishRounds(id, leaseToken, passId)
+    );
+    if (!read.ok) return reply;
+    if (read.value.result !== 'ok') return read.value.result === 'missing' ? notFoundJob(reply) : leaseLost(reply);
+    const { failedRounds, pass } = read.value;
+    return reply.code(HTTP_OK).send(pass === undefined ? { failedRounds } : { failedRounds, pass });
+}
+
+/** The gate-run (087) and finish-pass (163) worker routes, under the attempt's lease. */
 export function gateRunRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
     app.post('/api/jobs/:id/gate-run', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
         handleGateRun(orgs, request, reply)
     );
     app.post('/api/jobs/:id/gate-runs', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
         handleGateRuns(orgs, request, reply)
+    );
+    app.post('/api/jobs/:id/finish-passes', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleFinishPass(orgs, request, reply)
+    );
+    app.post('/api/jobs/:id/finish-passes/read', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleFinishRounds(orgs, request, reply)
     );
 }

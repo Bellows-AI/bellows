@@ -35,7 +35,13 @@ import {
     SUPERVISOR_CREDENTIAL_NAMES,
     SUPERVISOR_EXIT,
 } from '../src/supervisor-contract.js';
-import { bindingBody, orphanBoundMs, takeoverBoundMs } from '../src/supervisor-plan.js';
+import {
+    bindingBody,
+    finishRelayBoundMs,
+    heartbeatPeriodMs,
+    orphanBoundMs,
+    takeoverBoundMs,
+} from '../src/supervisor-plan.js';
 import { REBIND_DEADLINE_MS } from '../src/runner.js';
 import { oneClass } from './fixtures/runner-classes.js';
 
@@ -134,6 +140,18 @@ describe('the supervisor container', () => {
         expect(argv).toContain(`SUPERVISOR_CLAIM_SEQ=${job.claimSeq}`);
         expect(argv).toContain(`SUPERVISOR_BINDING_FILE=${SUPERVISOR_BINDING_PATH}`);
         expect(argv).toContain(`SUPERVISOR_TAKEOVER_MS=${takeoverBoundMs(config)}`);
+    });
+
+    // The finish pass is held on the relay while the declared gates run.
+    it('is told the finish relay bound of a gated group, and none without a gate', () => {
+        const withGate = supervisorCreateArgs(
+            config,
+            gated,
+            { exporting: true, agentless: false, gated: true },
+            '/tmp/supervisor.env'
+        );
+        expect(withGate).toContain(`SUPERVISOR_FINISH_RELAY_TIMEOUT_MS=${finishRelayBoundMs(config, gated)}`);
+        expect(argv.filter((arg) => arg.startsWith('SUPERVISOR_FINISH_RELAY_TIMEOUT_MS='))).toEqual([]);
     });
 
     it('takes its control pair by env file, never by argv', () => {
@@ -253,6 +271,11 @@ describe('the agent container', () => {
         expect(argv).toContain('FACTORY_CTL_GO=/factory/in/agent/go');
         for (const name of SUPERVISOR_CREDENTIAL_NAMES) expect(argv.join(' ')).not.toContain(name);
         expect(argv.join(' ')).not.toContain('tok-supervisor');
+    });
+
+    // The finish helper re-asks across a takeover for this long.
+    it('is told the finish helper’s re-ask window', () => {
+        expect(argv).toContain(`BELLOWS_FINISH_RETRY_MS=${takeoverBoundMs(config) + heartbeatPeriodMs(config)}`);
     });
 });
 
