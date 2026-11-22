@@ -84,7 +84,7 @@ export const registerGithub = (forge) => {
         draft: pull.draft,
         title: pull.title,
         body: pull.body,
-        head: { ref: pull.head, label: `${pull.owner}:${pull.head}` },
+        head: { ref: pull.head, label: `${pull.headOwner}:${pull.head}` },
         base: { ref: pull.base },
     });
     const listOf = (params) => {
@@ -92,6 +92,18 @@ export const registerGithub = (forge) => {
         if (!pulls.has(key)) pulls.set(key, []);
         return pulls.get(key);
     };
+    // `head` is `branch` or `owner:branch` (owner defaulting to the repo's); one identity for create, list and duplicates.
+    const splitHead = (value, defaultOwner) => {
+        const text = String(value ?? '');
+        const at = text.indexOf(':');
+        return at < 0 ? { headOwner: defaultOwner, head: text } : { headOwner: text.slice(0, at), head: text.slice(at + 1) };
+    };
+    const sameHead = (a, b) => a.headOwner === b.headOwner && a.head === b.head;
+    const duplicate = (response, pull) =>
+        forge.json(response, 422, {
+            message: 'Validation Failed',
+            errors: [{ message: `A pull request already exists for ${pull.headOwner}:${pull.head}.` }],
+        });
     const find = (params) => listOf(params).find((pull) => pull.number === Number(params.number));
     const notFound = (response) => forge.json(response, 404, { message: 'Not Found' });
     const base = '/repos/:owner/:name/pulls';
@@ -101,11 +113,9 @@ export const registerGithub = (forge) => {
         base,
         ({ response, params, body, tokenKind }) => {
             const list = listOf(params);
-            if (list.some((pull) => pull.head === body.head && pull.state === 'open')) {
-                return forge.json(response, 422, {
-                    message: 'Validation Failed',
-                    errors: [{ message: `A pull request already exists for ${params.owner}:${body.head}.` }],
-                });
+            const identity = splitHead(body.head, params.owner);
+            if (list.some((pull) => pull.state === 'open' && sameHead(pull, identity))) {
+                return duplicate(response, identity);
             }
             const pull = {
                 number: list.length + 1,
@@ -116,7 +126,7 @@ export const registerGithub = (forge) => {
                 draft: Boolean(body.draft),
                 title: body.title,
                 body: body.body ?? '',
-                head: body.head,
+                ...identity,
                 base: body.base,
                 createdBy: tokenKind,
             };
@@ -126,13 +136,13 @@ export const registerGithub = (forge) => {
         { holdable: true }
     );
     forge.route('GET', base, ({ response, params, query }) => {
-        const head = query.head ? query.head.slice(query.head.indexOf(':') + 1) : null;
+        const head = query.head ? splitHead(query.head, params.owner) : null;
         const state = query.state ?? 'open';
         forge.json(
             response,
             200,
             listOf(params)
-                .filter((pull) => (head === null || pull.head === head) && (state === 'all' || pull.state === state))
+                .filter((pull) => (head === null || sameHead(pull, head)) && (state === 'all' || pull.state === state))
                 .map(shape)
         );
     });
@@ -144,6 +154,16 @@ export const registerGithub = (forge) => {
     forge.route('PATCH', `${base}/:number`, ({ response, params, body }) => {
         const pull = find(params);
         if (!pull) return notFound(response);
+        if (body.state !== undefined && !['open', 'closed'].includes(body.state)) {
+            return forge.json(response, 422, { message: 'Validation Failed' });
+        }
+        if (body.state === 'open' && pull.state !== 'open') {
+            if (pull.merged) return forge.json(response, 422, { message: 'Validation Failed' });
+            if (listOf(params).some((other) => other.state === 'open' && sameHead(other, pull))) {
+                return duplicate(response, pull);
+            }
+        }
+        if (body.state !== undefined) pull.state = body.state;
         for (const field of ['title', 'body', 'base']) if (body[field] !== undefined) pull[field] = body[field];
         forge.json(response, 200, shape(pull));
     });

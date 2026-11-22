@@ -166,6 +166,35 @@ describe('fake GitHub: pull requests', () => {
         expect((await send('GET', `${pulls}/9`, user)).status).toBe(404);
     });
 
+    it('keys a PR by owner and branch: create, duplicate detection and the head filter agree', async () => {
+        const { access_token: user } = await signIn();
+        const created = await open(user, 'acme:task/one');
+        expect(created.body.head).toEqual({ ref: 'task/one', label: 'acme:task/one' });
+        expect((await send('GET', `${pulls}?head=acme:task/one`, user)).body).toHaveLength(1);
+        expect((await open(user, 'task/one')).status).toBe(422);
+        expect((await send('GET', `${pulls}?head=fork:task/one`, user)).body).toEqual([]);
+        const forked = await open(user, 'fork:task/one');
+        expect(forked.status).toBe(201);
+        expect(forked.body.head.label).toBe('fork:task/one');
+        expect((await send('GET', `${pulls}?head=fork:task/one`, user)).body).toHaveLength(1);
+    });
+
+    it('closes and reopens: closed leaves the open list, a new PR on the head may open, reopen is guarded', async () => {
+        const { access_token: user } = await signIn();
+        await open(user);
+        const closed = await send('PATCH', `${pulls}/1`, user, { state: 'closed' });
+        expect(closed.body).toMatchObject({ state: 'closed', merged: false });
+        expect((await send('GET', `${pulls}?head=acme:task/one`, user)).body).toEqual([]);
+        expect((await send('GET', `${pulls}?head=acme:task/one&state=all`, user)).body).toHaveLength(1);
+        expect((await open(user)).status).toBe(201);
+        expect((await send('PATCH', `${pulls}/1`, user, { state: 'open' })).status).toBe(422);
+        await send('PATCH', `${pulls}/2`, user, { state: 'closed' });
+        expect((await send('PATCH', `${pulls}/1`, user, { state: 'open' })).body.state).toBe('open');
+        await send('PUT', `${pulls}/1/merge`, user, {});
+        expect((await send('PATCH', `${pulls}/1`, user, { state: 'open' })).status).toBe(422);
+        expect((await send('PATCH', `${pulls}/1`, user, { state: 'bogus' })).status).toBe(422);
+    });
+
     it('records which kind of token made each call', async () => {
         const { access_token: user } = await signIn();
         const installation = forge.mintInstallationToken();

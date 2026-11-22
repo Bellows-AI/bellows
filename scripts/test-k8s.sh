@@ -204,6 +204,9 @@ cleanup() {
                 "^($RELEASE-|factory-(runner|reclaim|gate|orphan)-)" >"$PODS_FILE" 2>/dev/null
     fi
     # The lane's own object store (the replicas phase); gated on its own flag, so a run that stopped before the install still removes it.
+    if [ "${fake_forge_created:-}" = '1' ]; then
+        kubectl delete pod,service,configmap "$RELEASE-fake-forge" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
+    fi
     if [ "${s3_created:-}" = '1' ]; then
         kubectl delete pod,service,secret "$RELEASE-s3" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
     fi
@@ -2456,6 +2459,7 @@ auth_sets "$BASE" "$(openssl rand -hex 32)" "$CREDENTIAL"
 # phases that talk to GitHub's REST API: http://$RELEASE-fake-forge:8080. The files are mounted from a
 # ConfigMap, never inlined. Off until the publish switch flips it.
 if [ "${FAKE_FORGE:-0}" = 1 ]; then
+    fake_forge_created=1 # set first: cleanup() deletes what a partial setup left
     kubectl create configmap "$RELEASE-fake-forge" -n "$NAMESPACE" --from-file=scripts/fake-forge >/dev/null &&
         kubectl apply -n "$NAMESPACE" -f - >/dev/null <<FORGE || {
 apiVersion: v1
