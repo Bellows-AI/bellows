@@ -15,7 +15,7 @@ import { configSummary } from './diagnostics.js';
 import { executorDiscovery, repoDiscovery } from './discovery.js';
 import { INPUT_OPTIONS, MODEL_OPTION, noArguments, parseOrUsage, resolveCommandInput, UsageError } from './input.js';
 import type { InputIo } from './input.js';
-import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } from './transport.js';
+import { BoardError, MALFORMED_RESPONSE_CODE, isNoVerdict, realClock } from './transport.js';
 import type { BoardClock } from './transport.js';
 import { SELECTION_OPTIONS, selectionOf } from './selection.js';
 import { USAGE } from './usage.js';
@@ -530,7 +530,7 @@ function failureOf(error: unknown, io: RunIo): CommandResult {
         // The board's message is the useful one; the code rides beside it for scripting.
         const code = error.code ? ` [${error.code}]` : '';
         return {
-            outcome: error.status === NO_RESPONSE_STATUS ? OUTCOME.unreachable : OUTCOME.refused,
+            outcome: isNoVerdict(error) ? OUTCOME.unreachable : OUTCOME.refused,
             error: { message: error.message, code: error.code, status: error.status },
             stderr: `error: ${error.message}${code}\n`,
         };
