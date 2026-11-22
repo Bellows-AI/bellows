@@ -5,6 +5,21 @@ description: "What changed in each Bellows release, in plain words."
 
 User-facing changes only. Self-hosting upgrade notes live in the release notes on [GitHub](https://github.com/Bellows-AI/bellows/releases).
 
+<Update label="v0.1.6" description="2026-11-22">
+  **New**
+  - **Finish gate inside the run.** When an agent finishes, the gates run in the same run. A red gate resumes the same session with the failure, up to the profile's round limit (3 by default), instead of queuing a separate fix job. See [Gates](/guides/gates).
+  - **CLI sign-in.** `bellows auth login` signs in through the board, so there is no token to copy by hand. See [Install the CLI](/cli/install).
+  - **Run any command in the environment image.** Agents can run commands in the task's environment image, and an on-demand `ui` gate runs the UI checks in the dev runner image. See [Gates](/guides/gates).
+
+  **Improved**
+  - Follow-ups carry the output of a failed gate, and the agent can re-read it with `factory-gate --last`.
+  - Access tokens are created in a modal, the light theme is polished, and the task chat stays inside the viewport.
+
+  **Fixed**
+  - The CLI exits 7 (unreachable) instead of 1 (refused) when a proxy answers a read with a transient 5xx, for example during `job wait`.
+  - On Kubernetes, a restart of a service sidecar just before the gates no longer loses the run's acknowledgements.
+</Update>
+
 <Update label="v0.1.5" description="2026-11-20">
   **New**
   - **Monitoring for self-hosted installs.** The board and the driver send traces, metrics and logs over OpenTelemetry to a collector in your release, which forwards them to the monitoring backend you choose. Ready-made Grafana dashboards and alert rules ship with Bellows. See [Monitoring](/self-host/monitoring).
