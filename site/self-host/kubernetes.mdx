@@ -17,7 +17,7 @@ Each Bellows release owns its namespace. The driver finds its runner pods by the
 - A CNI that enforces NetworkPolicy. Without one, the runner network policy is accepted but does nothing.
 - An installer that may create cluster-scoped `ValidatingAdmissionPolicy` objects. Turn this off with `isolation.admissionPolicy: false` only if your cluster enforces the same rules another way.
 - A PostgreSQL 17 database and its connection URL.
-- A GitHub App and a GitHub OAuth App. See [Create the GitHub App](/self-host/github-app).
+- A GitHub App. See [Create the GitHub App](/self-host/github-app).
 - An object store for task artifacts (S3, an S3-compatible store or Google Cloud Storage), unless this is a single-replica trial.
 - A registry that holds the Bellows images, and a DNS name for the dashboard.
 
@@ -27,13 +27,13 @@ Every value is commented in `charts/factory/values.yaml`. These are the ones you
 
 ### Required
 
-The render refuses to start without them, and names the missing value. With `secret.create: false`, the chart creates no Secret, so `database.url`, `secret.oauthClientSecret`, `secret.sessionSecret` and `github.appPrivateKey` come from your own Secret instead ([Secrets to create](#secrets-to-create)).
+The render refuses to start without them, and names the missing value. With `secret.create: false`, the chart creates no Secret, so `database.url`, `secret.githubAppClientSecret`, `secret.sessionSecret` and `github.appPrivateKey` come from your own Secret instead ([Secrets to create](#secrets-to-create)).
 
 | Value | What it is |
 | --- | --- |
 | `auth.publicUrl` | The public origin of the dashboard, for example `https://bellows.example.com`. GitHub redirects back to it. |
-| `auth.oauthClientId` | Client id of the GitHub OAuth App. Not secret. |
-| `secret.oauthClientSecret` | Client secret of that OAuth App. |
+| `github.appClientId` | Client id of the GitHub App, used for sign-in. Not secret. |
+| `secret.githubAppClientSecret` | Client secret of that App. |
 | `secret.sessionSecret` | At least 32 characters. Signs the session cookie. `openssl rand -hex 32`. |
 | `driver.credential.value` | The driver's own credential, `echo "drv_$(openssl rand -hex 32)"`. Only the driver pod mounts it. The dashboard records its SHA-256 and never sees it. |
 | `github.appId` | Id of the GitHub App. |
@@ -104,7 +104,7 @@ By default the chart creates its Secrets from your values. For production, creat
     | `database-url` | `database.url` |
     | `database-request-url` (optional) | `database.requestUrl` |
     | `github-app-private-key` | `github.appPrivateKey` |
-    | `github-oauth-client-secret` | `secret.oauthClientSecret` |
+    | `github-app-client-secret` | `secret.githubAppClientSecret` |
     | `session-secret` | `secret.sessionSecret` |
     | `github-webhook-secret` | `secret.githubWebhookSecret` |
     | `atlassian-client-secret` | `secret.atlassianClientSecret` |
@@ -126,7 +126,7 @@ By default the chart creates its Secrets from your values. For production, creat
 kubectl -n bellows create secret generic bellows-dashboard \
   --from-literal=database-url='postgres://bellows:CHANGE_ME@db.example.com:5432/bellows' \
   --from-literal=session-secret="$(openssl rand -hex 32)" \
-  --from-literal=github-oauth-client-secret='...' \
+  --from-literal=github-app-client-secret='...' \
   --from-file=github-app-private-key=./app-private-key.pem
 ```
 
@@ -266,7 +266,7 @@ You need a checkout of the Bellows repository, `docker`, `kind`, `helm`, `kubect
 
 <Steps>
   <Step title="Fill in .env">
-    In the repository root, copy `.env.example` to `.env` and set `GITHUB_APP_ID`, the private key (`GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_FILE`), `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`, `SESSION_SECRET` and `DRIVER_CREDENTIAL` (`drv_` + 64 hex). Set a model credential too (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Register the OAuth App with the callback `http://127.0.0.1:8081/api/auth/github/callback`.
+    In the repository root, copy `.env.example` to `.env` and set `GITHUB_APP_ID`, the private key (`GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_FILE`), `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `SESSION_SECRET` and `DRIVER_CREDENTIAL` (`drv_` + 64 hex). Set a model credential too (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Set the GitHub App's callback URL to `http://127.0.0.1:8081/api/auth/github/callback`.
   </Step>
   <Step title="Create the secret-store keys">
     ```bash
@@ -308,9 +308,9 @@ The local profile keeps artifacts in the dashboard pod (`artifacts.backend: file
     auth:
       publicUrl: https://bellows.example.com
       cookieSecure: 'true'
-      oauthClientId: Iv1.example
     github:
       appId: '123456'
+      appClientId: Iv1.example
     secret:
       create: false
       existingSecret: bellows-dashboard

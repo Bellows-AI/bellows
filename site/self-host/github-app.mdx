@@ -1,14 +1,11 @@
 ---
 title: "Create the GitHub App"
-description: "Register the GitHub App and OAuth App that Bellows needs to sign people in, read repositories and open pull requests."
+description: "Register the GitHub App that Bellows needs to sign people in, read repositories and open pull requests."
 ---
 
-Bellows uses two GitHub registrations. They are separate on purpose: signing someone in needs no repository access, while reading and pushing code needs installation permissions. One credential doing both would give repository access to every person who signs in.
+Bellows uses one GitHub registration, a GitHub App. It gives Bellows an App id and private key for repository access, and a client id and client secret for sign-in.
 
-| Registration | Used for | Gives Bellows |
-| --- | --- | --- |
-| **GitHub App** | Repository access. Installed on each organization or account. | App id and private key |
-| **GitHub OAuth App** | Sign-in. Lists the installations a person can see. | Client id and client secret |
+Signing in uses the App's own user authorization. One consent gives Bellows who the person is, the installations they can see, and a user token it keeps and refreshes as that person's GitHub connection. The token is limited to what the App and the person can both do, and Bellows requests no OAuth scope.
 
 An organization in Bellows is one installation of the GitHub App. Installation access is membership: whoever can see an installation can sign in to that organization.
 
@@ -78,14 +75,16 @@ Deliveries are verified with an HMAC signature. Any other event is acknowledged 
 Webhooks only speed things up. A lost delivery is repaired by a periodic read of GitHub.
 </Note>
 
-## 2. Register the OAuth App
+## 2. Set up sign-in on the App
 
-In GitHub, go to **Settings**, **Developer settings**, **OAuth Apps**, **New OAuth App**.
+Still on the App's settings page, under **Identifying and authorizing users**:
 
-- **Homepage URL**: your dashboard URL.
-- **Authorization callback URL**: `https://bellows.example.com/api/auth/github/callback`. It is `<PUBLIC_URL>/api/auth/github/callback` and must match what Bellows sends.
+- **Callback URL**: `https://bellows.example.com/api/auth/github/callback`. It is `<PUBLIC_URL>/api/auth/github/callback` and must match what Bellows sends.
+- **Expire user authorization tokens**: leave it on. Bellows keeps the refresh token of each person's authorization. With expiry off, GitHub issues no refresh token and sign-in fails, naming this setting.
 
-Create it, generate a client secret, and keep the client id and secret. Bellows requests only the `read:org` scope, so it can list the installations a person can see. It reads no repository data at sign-in.
+Then, under **Client secrets**, generate a client secret. Keep the **Client ID** and the secret.
+
+When a person revokes the App's authorization on GitHub, GitHub sends a `github_app_authorization` event to the webhook (no subscription is needed). Bellows marks that person's GitHub connection as needing a reconnect, and the next sign-in renews it. A person who keeps signing in never has to reconnect; one who has not signed in for six months does.
 
 ## 3. Give the values to Bellows
 
@@ -95,8 +94,8 @@ Create it, generate a client secret, and keep the client id and secret. Bellows 
 | Secure cookies | `COOKIE_SECURE` | `auth.cookieSecure` (empty follows the https `PUBLIC_URL`) |
 | GitHub App id | `GITHUB_APP_ID` | `github.appId` |
 | App private key (PEM or base64) | `GITHUB_APP_PRIVATE_KEY`, or `GITHUB_APP_PRIVATE_KEY_FILE` for a path | `github.appPrivateKey`, or key `github-app-private-key` in `secret.existingSecret` |
-| OAuth client id | `GITHUB_OAUTH_CLIENT_ID` | `auth.oauthClientId` |
-| OAuth client secret | `GITHUB_OAUTH_CLIENT_SECRET` | `secret.oauthClientSecret`, or key `github-oauth-client-secret` |
+| App client id | `GITHUB_APP_CLIENT_ID` | `github.appClientId` |
+| App client secret | `GITHUB_APP_CLIENT_SECRET` | `secret.githubAppClientSecret`, or key `github-app-client-secret` |
 | Webhook secret | `GITHUB_WEBHOOK_SECRET` | `secret.githubWebhookSecret`, or key `github-webhook-secret` |
 | Session signing secret | `SESSION_SECRET` (32 or more characters) | `secret.sessionSecret`, or key `session-secret` |
 
@@ -107,7 +106,7 @@ The private key can mint installation tokens indefinitely, and the only way to r
 </Warning>
 
 <Note>
-Do not set `GITHUB_TOKEN`, `GITHUB_APP_INSTALLATION_ID` or `ORG_REPOS`. Bellows refuses to boot with them. Installations are discovered at sign-in.
+Do not set `GITHUB_TOKEN`, `GITHUB_APP_INSTALLATION_ID`, `ORG_REPOS` or any `GITHUB_OAUTH_*` variable. Bellows refuses to boot with them. Installations are discovered at sign-in, and sign-in uses the App's client id and secret.
 </Note>
 
 Helm install details are in [Kubernetes and Helm](/self-host/kubernetes).

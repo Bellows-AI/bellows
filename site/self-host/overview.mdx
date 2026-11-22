@@ -14,8 +14,7 @@ Bellows is open source. You can run the whole platform on your own machine or cl
 | **Runners** | A container (Docker) or a Job pod (Kubernetes) per task. The agent works on a copy of your repository on a task volume. | Yes |
 | **Executor images** | The images a runner starts from: `claude-executor` for Claude Code and `opencode-executor` for OpenCode. You build or pull them yourself. | Yes |
 | **PostgreSQL** | The only database. Holds everything the board knows. | Yes |
-| **GitHub App** | Lets Bellows read repositories, list them, and mint short-lived tokens for runners. It also defines your organizations: one installation is one organization. | Yes |
-| **GitHub OAuth App** | Signs members in when `AUTH_MODE=github`. A separate registration from the GitHub App. | For sign-in |
+| **GitHub App** | Lets Bellows read repositories, list them, and mint short-lived tokens for runners. It also signs members in when `AUTH_MODE=github`, and defines your organizations: one installation is one organization. | Yes |
 | **Secret store** | Holds environment secrets and connection credentials. Backend is `database`, `aws`, `vault` or `gcp`. | Yes |
 | **Object store** | Holds task artifacts and uploaded attachments. S3-compatible, or a local directory on a single replica. | Yes (defaults to the filesystem) |
 | **Telemetry collector** | An OpenTelemetry collector. Receives metrics from runners and forwards them to the board. | Recommended |
@@ -70,8 +69,7 @@ flowchart LR
 | --- | --- |
 | **PostgreSQL** | PostgreSQL 17 is what the Compose file and the local Helm state chart run. No extensions are needed, so a managed Postgres works. |
 | **Docker or Kubernetes** | Docker (with Compose) on one machine for a trial. A Kubernetes cluster with the Helm chart for a team. The driver is told which with `EXECUTOR=docker` or `EXECUTOR=kubernetes`. |
-| **A GitHub App** | Id and private key are required. The board refuses to start without them. See [GitHub App](/self-host/github-app). |
-| **A GitHub OAuth App** | For member sign-in. See [GitHub App](/self-host/github-app). |
+| **A GitHub App** | Id, private key, and for sign-in a client id and secret are required. The board refuses to start without them. See [GitHub App](/self-host/github-app). |
 | **A model credential** | For example `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` for Claude Code, passed to runners by the driver. |
 | **A domain and TLS** | Needed for any shared deployment. Set `PUBLIC_URL` to the public https origin; the session cookie is then `Secure` without further setting. MCP needs an https `PUBLIC_URL`. A local trial can use `http://127.0.0.1`. |
 | **Node.js 22 or newer** | Only to run `npm run secrets:init` and the CLI from a clone. |
@@ -90,7 +88,7 @@ flowchart LR
     Deploy with the Helm chart. Each task is a pod.
   </Card>
   <Card title="GitHub App" icon="github" href="/self-host/github-app">
-    Register the App and the OAuth App.
+    Register the App.
   </Card>
   <Card title="Jira app" icon="link" href="/self-host/jira-app">
     Turn on Connect Jira with an Atlassian OAuth app.
