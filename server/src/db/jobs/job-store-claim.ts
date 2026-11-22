@@ -492,8 +492,7 @@ async function acquireCandidate(
                        where b.org_id = job.org_id and b.root_job_id = job.root_job_id and c.status = 'active')
                           as live_providers,
                       ${baseBranch} as base_branch,
-                      (select r.gate_fix_rounds from job r
-                       where r.org_id = job.org_id and r.id = job.root_job_id) as finish_rounds,
+                      (select r.gate_fix_rounds from job r where r.org_id = job.org_id and r.id = job.root_job_id) as finish_rounds,
                       (interruptions -> -1 ->> 'refunded')::boolean as takeover_refunded
         `;
         const row = rows[0];
@@ -773,7 +772,7 @@ async function resolveClaimEvidence(
     if (policy === null) return {};
     if (!policy.review) return { policy };
     // An objective thread has no graph; its reviewers are the named profiles its callers invoke.
-    const snapshot = row.mode === OBJECTIVE_MODE ? null : await readWorkflowSnapshot(tx, orgId, rootJobId);
+    const snapshot = row.mode === OBJECTIVE_MODE ? null : await readSnapshot(tx, orgId, rootJobId);
     return { policy, review: await readReviewEvidence(tx, { orgId, rootJobId }, snapshot) };
 }
 
@@ -795,11 +794,7 @@ type ClaimGatesRead = Pick<ResolvedClaimGates, 'claimGates' | 'claimServices' | 
  * so a claim of a workflow node pays this query once, not once per resolver: both run inside the
  * same claim transaction, which already holds the thread's advisory lock for its duration.
  */
-async function readWorkflowSnapshot(
-    tx: TransactionSql,
-    orgId: string,
-    rootJobId: string
-): Promise<WorkflowDefinition | null> {
+async function readSnapshot(tx: TransactionSql, orgId: string, rootJobId: string): Promise<WorkflowDefinition | null> {
     const [root] = await tx<{ workflow_snapshot: WorkflowDefinition | null }[]>`
         select workflow_snapshot from job
         where org_id = ${orgId} and id = ${rootJobId}
@@ -892,7 +887,7 @@ async function resolveClaimWorkflow(
     const { orgId, rootJobId, prs } = ctx;
     // The stored mode decides (051): an objective row never reads a snapshot, so it resolves no
     // publish, no helper plans and an objective master prompt.
-    const snapshot = row.mode === OBJECTIVE_MODE ? null : await readWorkflowSnapshot(tx, orgId, rootJobId);
+    const snapshot = row.mode === OBJECTIVE_MODE ? null : await readSnapshot(tx, orgId, rootJobId);
     const published = resolveClaimPublish(snapshot, row.workflow_node, gates);
     const helperPlans = await resolveClaimHelperPlans(tx, {
         rootJobId,

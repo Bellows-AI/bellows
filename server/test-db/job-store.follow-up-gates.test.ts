@@ -32,11 +32,7 @@ const gate = (name: string, status: GateReport['status'], output: string | null,
 /**
  * A task whose first run finishes with `reports` stored; returns the root id.
  */
-async function finishRun(
-    command: string,
-    reports: GateReport[],
-    failed: boolean
-): Promise<string> {
+async function finishRun(command: string, reports: GateReport[], failed: boolean): Promise<string> {
     const { id } = await mustCreate(store.create(command, null, { repo: null, executor: null }));
     const claim = (await store.claim('w1', LEASE_SECONDS)) as Claim;
     await store.session(id, claim.leaseToken, randomUUID());
