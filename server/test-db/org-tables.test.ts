@@ -71,6 +71,17 @@ describe.skipIf(!enabled)('org-owned tables', () => {
         expect(rows.map((r) => r.name)).toEqual(expect.arrayContaining([...ORG_TABLES]));
     });
 
+    it('registers the finish-pass record (163) and binds it by the org policy', async () => {
+        expect(ORG_TABLES).toContain('job_finish_pass');
+        const [row] = await db.sql<{ enabled: boolean; policies: string[] }[]>`
+            select c.relrowsecurity as enabled, array_agg(p.polname) filter (where p.oid is not null) as policies
+            from pg_class c left join pg_policy p on p.polrelid = c.oid
+            where c.oid = 'job_finish_pass'::regclass
+            group by c.relrowsecurity
+        `;
+        expect(row).toEqual({ enabled: true, policies: ['org_isolation'] });
+    });
+
     it('runs every view in the schema as its invoker, so the policies bind a read through it', async () => {
         const rows = await db.sql<{ name: string; options: string[] | null }[]>`
             select c.relname as name, c.reloptions as options

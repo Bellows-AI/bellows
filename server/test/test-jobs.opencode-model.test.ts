@@ -30,7 +30,7 @@ describe('the opencode lane model', () => {
     it('routes every opencode config through lane_opencode_config', () => {
         expect(CODE.match(/OPENCODE_CONFIG_CONTENT=\$\(lane_opencode_config "/g)).toHaveLength(5);
         // The board-routed configs ride an executor row (PUT /api/workspace/executors).
-        expect(CODE.match(/"\$\(lane_opencode_config "http:\/\/host\.docker\.internal:/g)).toHaveLength(2);
+        expect(CODE.match(/"\$\(lane_opencode_config "http:\/\/host\.docker\.internal:/g)).toHaveLength(3);
         expect(CODE).not.toContain('model: "anthropic/');
     });
 

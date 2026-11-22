@@ -47,7 +47,7 @@ For a guided tour of the main ideas, read [Core concepts](/overview/concepts) fi
 
 **Gate filter.** A `filter: true` gate that lets the agent run part of a suite. The value reaches your command as `$GATE_FILTER`. A filtered run never counts as proof. See [Gates](/guides/gates#filters).
 
-**Gate repair.** The automatic rounds in which the agent gets a failing gate's output and tries to fix it. The limit is the executor's **Gate repair rounds** setting. See [Gates](/guides/gates#when-a-gate-fails).
+**Gate repair.** The rounds inside a run in which the agent gets a gate that failed at its finish, with the output, and keeps working to fix it. The limit is the executor's **Gate repair rounds** setting. See [Gates](/guides/gates#when-a-gate-fails).
 
 ## I
 

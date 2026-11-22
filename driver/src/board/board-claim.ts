@@ -130,6 +130,7 @@ export function claimOf(wire: Partial<BoardJob>): BoardJob {
         skillPin,
         skillHidden,
         orgKey,
+        finishRounds,
         ...claimed
     } = wire;
     const plan = servicePlanOf(services);
@@ -143,6 +144,10 @@ export function claimOf(wire: Partial<BoardJob>): BoardJob {
         ...connectionOutcomesOf(connectionOutcomes),
         ...knownTurnContext(turnContext),
         ...(typeof orgKey === 'string' && orgKey.length > 0 ? { orgKey } : {}),
+        // The round cap: a non-negative integer or absent (unknown), never defaulted to 0.
+        ...(typeof finishRounds === 'number' && Number.isSafeInteger(finishRounds) && finishRounds >= 0
+            ? { finishRounds }
+            : {}),
         masterPrompt: textOrNull(claimed.masterPrompt),
         resumeSessionId: claimed.resumeSessionId ?? null,
         followUp: claimed.followUp ?? false,

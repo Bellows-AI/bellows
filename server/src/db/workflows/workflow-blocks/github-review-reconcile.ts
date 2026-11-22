@@ -33,12 +33,12 @@
  * `repair` only reaches `reply` on `succeeded` — a publish failure fails the verdict (docs/jobs.md,
  * "A publish failure fails the verdict"), so by the time `reply` runs, the push has already
  * landed; this is what "Preserve the block outcome separately from decorated driver output"
- * resolves to here — `repair`/`reply` route on the plain verdict/gate facts, never a marker on the
+ * resolves to here — `repair`/`reply` route on the plain verdict, never a marker on the
  * driver's own decorated publish line, so a `[driver] published …` tail can never corrupt the
  * routing the way a marker match would.
  *
  * The loop bound: `repair` is entered from `collect`/`wait` on `REVIEW-ACTIONABLE` and retried on
- * `gate-failed`/`failed` — all four edges share `maxRounds` (config, 1-10, default 3) as their
+ * `failed` (a red gate included) — all three edges share `maxRounds` (config, 1-10, default 3) as their
  * `max`, since the engine's loop bound is a row COUNT for the target node regardless of which edge
  * inserted it (docs/workflows.md, "give EVERY edge into X the same max"). A fourth required round
  * rests the thread loudly (`loop_bound`), feedback still visible in the last completed run's
@@ -89,9 +89,7 @@ Fix what you can directly in the code. You may NOT comment on the pull request, 
 
 When you finish, write \`.factory/review-reconcile/intents.json\` as exactly:
 {"schema":"review-reconcile-intents/v1","items":[{"key":"<the item's key>","reply":"<a short, specific note on what changed, or why not>","resolve":<true only for a "thread:" item you are certain is now fully resolved>}]}
-Include one entry for every item digest.json presented, even one you chose not to act on — every entry needs a "reply" explaining what happened. "resolve" must be false (or omitted) for every non-thread key.
-
-If this turn instead follows a failed verification gate on your own previous attempt, its name and output are: {{gate.name}} {{gate.output}} — fix that first; digest.json and intents.json from the earlier attempt still stand and need no changes on this account alone.`;
+Include one entry for every item digest.json presented, even one you chose not to act on — every entry needs a "reply" explaining what happened. "resolve" must be false (or omitted) for every non-thread key.`;
 
 export const GITHUB_REVIEW_RECONCILE: BlockDescriptor = {
     id: 'builtin/github-review-reconcile',
@@ -163,7 +161,6 @@ export const GITHUB_REVIEW_RECONCILE: BlockDescriptor = {
                 { from: 'wait', to: 'wait', when: { marker: WAIT_MARKER }, max: WAKE_BOUND },
                 { from: 'wait', to: 'wait', when: 'failed', max: WAKE_BOUND },
                 { from: 'repair', to: 'reply', when: 'succeeded', max: replyMax },
-                { from: 'repair', to: 'repair', when: 'gate-failed', max: maxRounds },
                 { from: 'repair', to: 'repair', when: 'failed', max: maxRounds },
                 { from: 'reply', to: 'collect', when: { marker: REPLIED_MARKER }, max: collectMax },
                 { from: 'reply', to: 'reply', when: 'failed', max: replyMax },

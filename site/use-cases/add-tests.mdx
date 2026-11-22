@@ -84,7 +84,7 @@ You want more tests for one part of your code, such as the `notes` package in `a
 - A summary of what was covered and what was skipped, in the pull request and the final message.
 
 <Note>
-  If a gate keeps failing, Bellows runs repair rounds and then ships a draft pull request. To block publishing until gates pass, set `policy: gates: required`. See [Policy and reviewers](/guides/policy-and-reviewers).
+  If a gate keeps failing, the agent gets it back to fix in the same run, up to the executor's repair rounds, and then Bellows ships a draft pull request. To block publishing until gates pass, set `policy: gates: required`. See [Policy and reviewers](/guides/policy-and-reviewers).
 </Note>
 
 ## Tips

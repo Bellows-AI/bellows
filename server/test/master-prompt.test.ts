@@ -233,13 +233,13 @@ describe('resolveTurnContext: objective', () => {
         expect(resolveTurnContext(OBJECTIVE)).toBe(
             `Factory turn context
 - Factory-managed capabilities: declared gates, publish/reuse PR
-- The declared gates also run when you finish, as a backstop that is no reason to skip them earlier: run the declared gates that cover what you changed, filtered to your tests when the gate accepts a filter, and fix a red one before you finish.`
+- The declared gates also run when you finish and a red one sends you back to fix it, which is no reason to skip them earlier: run the declared gates that cover what you changed, filtered to your tests when the gate accepts a filter, and fix a red one before you finish.`
         );
     });
 });
 
 describe('resolveTurnContext: targeted-test rule', () => {
-    it('tells a gated workflow node to run its covering gates itself, the close-time ones being a backstop', () => {
+    it('tells a gated workflow node to run its covering gates itself, the ones at its finish sending it back on red', () => {
         const prompt = resolveTurnContext({
             command: 'do the work',
             workflowNode: 'task',
@@ -248,7 +248,7 @@ describe('resolveTurnContext: targeted-test rule', () => {
             snapshot: defaultSnapshot(),
             helperPlans: undefined,
         });
-        expect(prompt).toContain('as a backstop that is no reason to skip them earlier');
+        expect(prompt).toContain('a red one sends you back to fix it, which is no reason to skip them earlier');
         expect(prompt).not.toContain('full test suite after your turn');
     });
 });

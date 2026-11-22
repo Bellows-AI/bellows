@@ -19,7 +19,7 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
 | Transition inside the verdict transaction | `server/src/db/jobs/job-store-worker.ts` | `server/test-db/job-store.workflow.test.ts` |
 | Claim's `publish` flag, helper plans, cancellation fence | `server/src/db/jobs/job-store-claim.ts` | `server/test-db/job-store.workflow.test.ts` |
 | Sessions; stop/done/remove on a thread | `server/src/db/jobs/job-store-thread-actions.ts` | `server/test-db/job-store.workflow.test.ts` |
-| Columns and the frozen snapshot | `server/migrations/027_workflows.sql`, `030_workflow_params.sql`, `033_job_workflow_name.sql` | `server/test-db/job-store.workflow.test.ts` |
+| Columns and the frozen snapshot; `165` removes the retired `gate-failed` edges and `{{gate.*}}` tokens from stored definitions and snapshots | `server/migrations/027_workflows.sql`, `030_workflow_params.sql`, `033_job_workflow_name.sql`, `165_strip_gate_failed_edges.sql` | `server/test-db/job-store.workflow.test.ts` |
 | `review: true` node as review evidence | `server/src/db/evidence-policy.ts` | `server/test/evidence-policy.test.ts` |
 | Agent-less nodes, merge-conflict probe | `driver/src/loop/loop-agentless.ts`, `driver/src/scripts/merge-conflict-probe.cjs` | `driver/test/loop/`, `merge-conflict-probe-script.test.ts` |
 | Composer and settings UI, hidden and unrouted | `web/src/panels/TaskComposer.tsx`, `web/src/panels/WorkflowsPanel.tsx`, `web/src/api/useWorkflows.ts` | `web/test/task-composer.render.test.tsx`, `workflows-panel.render.test.tsx` |
@@ -33,7 +33,7 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
   `UNKNOWN_KEY` — `server/test/workflow-schema.test.ts`.
 - **The definition and name freeze on the root row at create**; `job.workflow_id` has no foreign key.
   `server/test-db/job-store.workflow.test.ts`.
-- **No `workflow` means objective mode on every row** — no snapshot, node or wait; its one transition is the gate repair in [jobs.md](jobs.md).
+- **No `workflow` means objective mode on every row** — no snapshot, node, wait or transition. In either mode a red gate is repaired inside the run ([jobs.md](jobs.md)), and a run whose gate stays red follows `failed`.
   `server/test-db/job-store.objective.test.ts`.
 - **An unmatched completion or an exhausted bound rests the thread**, never fails or falls through;
   loop bounds count rows for the target node, so every edge into it needs the same `max`.

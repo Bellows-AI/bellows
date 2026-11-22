@@ -206,6 +206,11 @@ export interface BoardJob extends ClaimSkills {
      */
     baseBranch?: string | null;
     /**
+     * The failed finish passes a run of this thread may answer: the root's frozen round cap. Present only when the
+     * claim carried a non-negative integer (`claimOf`); absent is unknown, never 0.
+     */
+    finishRounds?: number;
+    /**
      * The thread ROOT job's command — the job's own, unless it is a follow-up. The publisher reads
      * the task's issue from it: the run that publishes is often a follow-up ("both OK") whose own
      * command names nothing.
@@ -694,11 +699,6 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
             failureKind?: FailureKind;
             /** What lies under a `gate`, `publish` or `helper` kind; null and absent stay off the wire. */
             failureCause?: FailureCause | null;
-            /**
-             * Whether the task tree differs from the one the startup sync left, read only after
-             * a declared gate failed. Absent is unknown; the board rests a gate-fix edge on false.
-             */
-            treeChanged?: boolean;
             /** The revision-bound evidence record; absent when the attempt measured none. */
             evidence?: VerdictEvidence;
             /**

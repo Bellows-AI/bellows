@@ -14,6 +14,8 @@ unset GITHUB_TOKEN GH_TOKEN
 BRANCH_REPORTER="$(cd "$(dirname "$0")" && pwd)/branch-reporter.cjs"
 # The telemetry credential helper beside it, resolved the same way.
 OTEL_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/otel-credential.cjs"
+# The finish pass's caller beside it, resolved the same way.
+FINISH_HELPER="$(cd "$(dirname "$0")" && pwd)/factory-finish.cjs"
 
 # The task supervisor releases the agent. The group exists from the attempt's first
 # step, the sync, and the tree this container works in does not exist until then, so the agent waits
@@ -251,11 +253,12 @@ REPORTER_PID=''
 WATCHER_PID=''
 CTL_PID=''
 PROXY_PID=''
+FINISH_PID=''
 TERM_PENDING=''
 on_term() {
     TERM_PENDING=1
     # shellcheck disable=SC2086 # deliberately unquoted: an unset pid must vanish, not empty-arg
-    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $CTL_PID $PROXY_PID 2>/dev/null || true
+    kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $CTL_PID $PROXY_PID $FINISH_PID 2>/dev/null || true
 }
 trap on_term TERM INT
 
@@ -350,6 +353,73 @@ while :; do
     wait "$CLI_PID"
     STATUS=$?
     kill -0 "$CLI_PID" 2>/dev/null || break
+done
+
+# The finish gate (docs/jobs.md). opencode has no stop hook, so once the CLI ends cleanly — status 0,
+# no Stop marker, no TERM — the shared helper asks the driver's finish pass whether the agent may stop.
+# On a red gate (exit 10) the same session is resumed with the helper's text as the prompt, and the
+# answer is asked again when it ends; any other exit lets the run end, and the close-time verifier
+# judges it. The driver's round limit bounds the loop. The session is the handed-in BELLOWS_SESSION_ID,
+# else the one `--prior` finds now when it differs from the baseline read before the CLI started; an
+# unknown baseline or an unreadable database names none, and then there is no loop — never a fresh
+# session. The helper runs in the background so a TERM interrupts the wait, its stdout in a private file.
+FINISH_SESSION=''
+while [ "$STATUS" -eq 0 ] && [ -z "$TERM_PENDING" ] && [ ! -e "$FACTORY_STOP_MARKER" ]; do
+    FINISH_SESSION="${FINISH_SESSION:-${BELLOWS_SESSION_ID:-}}"
+    if [ -z "$FINISH_SESSION" ] && [ -z "${BRANCH_REPORTER_PRIOR_UNKNOWN:-}" ]; then
+        FINISH_SESSION="$(node --disable-warning=ExperimentalWarning "$BRANCH_REPORTER" --prior 2>/dev/null)" || FINISH_SESSION=''
+        [ "$FINISH_SESSION" != "${BRANCH_REPORTER_PRIOR_SESSION:-}" ] || FINISH_SESSION=''
+    fi
+    [ -n "$FINISH_SESSION" ] || break
+    FINISH_OUT="$(mktemp "${TMPDIR:-/tmp}/factory-finish.XXXXXX")" || break
+    (
+        trap - TERM INT
+        exec node "$FINISH_HELPER"
+    ) > "$FINISH_OUT" &
+    FINISH_PID=$!
+    [ -z "$TERM_PENDING" ] || kill -TERM "$FINISH_PID" 2>/dev/null
+    while :; do
+        wait "$FINISH_PID"
+        FINISH_STATUS=$?
+        kill -0 "$FINISH_PID" 2>/dev/null || break
+    done
+    FINISH_PID=''
+    FINISH_PROMPT="$(cat "$FINISH_OUT")"
+    rm -f "$FINISH_OUT"
+    if [ "$FINISH_STATUS" -ne 10 ] || [ -z "$FINISH_PROMPT" ] || [ -n "$TERM_PENDING" ]; then break; fi
+    # The same argv minus its last argument (the prompt) and any `--session <id>` pair, then the
+    # session and the gate prompt.
+    left=$#
+    pending=''
+    first=1
+    for arg do
+        if [ "$first" = 1 ]; then set --; first=''; fi
+        left=$((left - 1))
+        [ "$left" -gt 0 ] || break
+        if [ -n "$pending" ]; then pending=''; continue; fi
+        if [ "$arg" = --session ]; then pending=1; continue; fi
+        set -- "$@" "$arg"
+    done
+    set -- "$@" --session "$FINISH_SESSION" "$FINISH_PROMPT"
+    # The watch is bound to one CLI pid: the old one goes before the new CLI and its watch start.
+    stop_helper "$WATCHER_PID"
+    WATCHER_PID=''
+    (
+        trap - TERM INT
+        exec opencode "$@"
+    ) &
+    CLI_PID=$!
+    CLI_PID=$CLI_PID node --disable-warning=ExperimentalWarning /usr/local/bin/rate-limit-watch.cjs &
+    WATCHER_PID=$!
+    if [ -n "$TERM_PENDING" ]; then
+        # shellcheck disable=SC2086 # same reason as on_term
+        kill -TERM $CLI_PID $REPORTER_PID $WATCHER_PID $CTL_PID $PROXY_PID 2>/dev/null || true
+    fi
+    while :; do
+        wait "$CLI_PID"
+        STATUS=$?
+        kill -0 "$CLI_PID" 2>/dev/null || break
+    done
 done
 set -e
 

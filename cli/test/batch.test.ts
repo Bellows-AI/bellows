@@ -461,7 +461,7 @@ describe('batch validate / start / inspect / list', () => {
 
     it('says a start that got no answer may have landed, and how to recover', async () => {
         const result = await cli(['batch', 'start', ID, '--version', '3'], () => json({ error: 'boom' }, 500));
-        expect(result.code).toBe(1);
+        expect(result.code).toBe(7);
         expect(result.err).toContain('may have been applied');
     });
 

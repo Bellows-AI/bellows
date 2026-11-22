@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim } from '../src/db/jobs/job-store-types.js';
@@ -583,5 +584,86 @@ describe.skipIf(!enabled)('workflow parameters', () => {
         // `{{command}}` is the ROOT row's command — for a workflow thread launched through the
         // route, the interpolated entry prompt the member's words rode in on.
         expect(rows[1]!.command).toBe('issue #42; asked: fix the thing');
+    });
+});
+
+describe.skipIf(!enabled)('165: the gate-failed rule leaves stored definitions', () => {
+    const MIGRATION = new URL('../migrations/165_strip_gate_failed_edges.sql', import.meta.url);
+
+    /** A definition stored before the rule was removed: two gate-failed edges and both gate placeholders. */
+    const gated = {
+        entry: 'implement',
+        params: [],
+        nodes: [
+            { name: 'implement', kind: 'agent', session: 'resume', prompt: 'implement' },
+            {
+                name: 'repair',
+                kind: 'agent',
+                session: 'resume',
+                prompt: 'gate {{gate.name}} said {{ gate.output }}; implement said {{implement.output}}',
+            },
+            { name: 'publish', kind: 'agent', session: 'resume', publish: true, prompt: 'preflight' },
+        ],
+        edges: [
+            { from: 'implement', to: 'repair', when: 'gate-failed', max: 3 },
+            { from: 'implement', to: 'repair', when: 'failed', max: 3 },
+            { from: 'implement', to: 'publish', when: 'succeeded' },
+            { from: 'repair', to: 'repair', when: 'gate-failed', max: 3 },
+            { from: 'repair', to: 'publish', when: 'succeeded' },
+        ],
+    };
+    const stripped = {
+        ...gated,
+        nodes: gated.nodes.map((node) =>
+            node.name === 'repair' ? { ...node, prompt: 'gate  said ; implement said {{implement.output}}' } : node
+        ),
+        edges: gated.edges.filter((edge) => edge.when !== 'gate-failed'),
+    };
+
+    const snapshotOf = async (id: string): Promise<unknown> => {
+        const [row] = await sql<
+            { snapshot: unknown }[]
+        >`select workflow_snapshot as snapshot from job where id = ${id}`;
+        return row!.snapshot;
+    };
+    const definitionOfRoot = async (root: string): Promise<unknown> => {
+        const [row] = await sql<{ definition: unknown }[]>`
+            select w.definition from workflow w join job j on j.workflow_id = w.id where j.id = ${root}
+        `;
+        return row!.definition;
+    };
+
+    it('strips the gate-failed edges and {{gate.*}} tokens from a definition and a live snapshot', async () => {
+        const root = await queueWorkflowJob(walk, 'gate-strip');
+        await sql`update job set workflow_snapshot = ${sql.json(gated)} where id = ${root}`;
+        await sql`
+            update workflow set definition = ${sql.json(gated)}
+            where id = (select workflow_id from job where id = ${root})
+        `;
+
+        await sql.unsafe(readFileSync(MIGRATION, 'utf8'));
+
+        expect(await snapshotOf(root)).toEqual(stripped);
+        expect(await definitionOfRoot(root)).toEqual(stripped);
+    });
+
+    it('leaves a stored value it cannot read untouched — never an empty edge list', async () => {
+        // Unreadable is not empty: a shape the migration does not recognise keeps every edge it holds.
+        const unreadable = [
+            { ...gated, nodes: 'not-a-list' },
+            { ...gated, edges: ['gate-failed', ...gated.edges] },
+            { ...gated, edges: { 0: gated.edges[0] } },
+            ['gate-failed'],
+        ];
+        const roots: string[] = [];
+        for (const [i, value] of unreadable.entries()) {
+            const root = await queueWorkflowJob(walk, `gate-strip-unreadable-${i}`);
+            await sql`update job set workflow_snapshot = ${sql.json(value as never)} where id = ${root}`;
+            roots.push(root);
+        }
+
+        await sql.unsafe(readFileSync(MIGRATION, 'utf8'));
+
+        for (const [i, root] of roots.entries()) expect(await snapshotOf(root)).toEqual(unreadable[i]);
     });
 });

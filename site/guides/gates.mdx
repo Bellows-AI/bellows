@@ -26,7 +26,10 @@ environment:
     The agent can run any declared gate by name, as often as it likes, and read the output. It is told to run the gates that cover its change before it pushes. If the Bellows driver running the task restarts, for example when its node is drained, the agent's gate runs go to the driver that takes the task over. A gate run in flight at that moment is cut off, and the agent runs it again.
   </Step>
   <Step title="When the agent finishes">
-    Bellows runs every declared gate once, in the order you wrote them. Gates marked `on_demand` are skipped. Gates marked `parallel` that are declared next to each other run at the same time, see [Parallel gates](#parallel-gates). A gate that the agent already ran unfiltered, and that passed on exactly the final tree, is reused instead of run again.
+    Before the agent may stop, Bellows runs every declared gate, unfiltered, in the order you wrote them, inside the same run. Gates marked `on_demand` are skipped. Gates marked `parallel` that are declared next to each other run at the same time, see [Parallel gates](#parallel-gates). A gate that the agent already ran unfiltered, and that passed on exactly the final tree, is reused instead of run again. A failing gate goes back to the agent, see [When a gate fails](#when-a-gate-fails).
+  </Step>
+  <Step title="When the run ends">
+    Bellows checks the gates once more. A gate that already passed on exactly the final tree is reported as reused; any other gate runs. This catches a run whose finish was not checked, for example because the agent was stopped.
   </Step>
 </Steps>
 
@@ -34,9 +37,11 @@ Gates run in a separate container that shares the task's workspace. What the age
 
 ## When a gate fails
 
-A failing gate fails the run. The task page shows the badge <span className="status status-failed">gate failed</span> and a **Verification failed** pill.
+When a gate fails as the agent finishes, the agent does not stop. It gets the failing gate's name and output in the same session, keeps working and finishes again. This repeats up to the **Gate repair rounds** setting on the executor. The default is 3, the maximum is 10, and 0 turns repair off. The limit is fixed when the task is created and counts every failed round of the task's run, also across a driver restart. The rounds are part of the run: you read them in its transcript, and no follow-up run is queued. While the finish gates run, the task's run time limit is paused, and the 10-minute limit on the agent's own gate runs does not apply.
 
-By default, Bellows then queues an automatic repair round as a follow-up run on the same task, in the same checkout and session: the agent gets the failing gate's name and output and tries to fix it. The run is labelled **automatic gate fix · round N of M** on the task page. The limit is the **Gate repair rounds** setting on the executor. The default is 3, the maximum is 10, and 0 turns repair off. The limit is fixed when the task is created. A repair round that leaves the tree unchanged ends the loop, because the same gate would fail the same way. A task you marked done, one whose pull request was merged, and a run that failed for another reason (blocked, a dead service, a failed publish, a configuration or policy refusal) get no repair round; you can still follow up by hand.
+If Bellows cannot check the finish, for example because a declared service died, the agent is allowed to stop and the gates are checked when the run ends. A task that changed nothing skips the gates.
+
+A gate that still fails when the run ends fails the run. The task page shows the badge <span className="status status-failed">gate failed</span> and a **Verification failed** pill.
 
 <Note>
   If repair rounds run out, the work still ships as a draft pull request, unless your repo sets `policy: gates: required`. Then nothing is published until the gates pass. See [Policy and reviewers](/guides/policy-and-reviewers).

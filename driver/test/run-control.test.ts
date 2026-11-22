@@ -287,12 +287,18 @@ describe("Claude Code's PostToolUse stop hook", () => {
         ]);
     });
 
+    // The finish gate's command hook sits beside it in the same group (finish-hook.test.ts).
     it('registers the prose-question Stop hook as a prompt hook with the exact prompt (issue #226)', () => {
         const settings = JSON.parse(read('docker/claude-executor/claude-home/settings.json')) as {
             hooks: { Stop: unknown[] };
         };
         expect(settings.hooks.Stop).toEqual([
-            { hooks: [{ type: 'prompt', model: '__FACTORY_RUN_MODEL__', prompt: STOP_PROMPT }] },
+            {
+                hooks: [
+                    { type: 'prompt', model: '__FACTORY_RUN_MODEL__', prompt: STOP_PROMPT },
+                    { type: 'command', command: 'node /usr/local/bin/finish-hook.cjs', timeout: 21600 },
+                ],
+            },
         ]);
     });
 });

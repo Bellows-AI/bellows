@@ -33,12 +33,18 @@ do not work around it by installing the service yourself; end with `FACTORY_BLOC
 
 Run, read, fix, run again as often as the work needs: every answer is the gate's own result on the
 tree as it is now. Before every push, run the declared gates that cover your change and fix a red
-one before you push; the gates that run when you finish are a backstop, not a reason to skip them.
+one before you push; the gates that run when you finish are no reason to skip them.
+
+Your finish is gated: when you stop, every declared gate but the `on_demand` ones runs in full,
+unfiltered, on the tree as it is. If one fails, its name and output come back to you in this same
+session and you keep working: fix the cause, keeping the change as small as the fix allows, then
+finish again. This repeats up to the executor's repair rounds; after the last one you may stop and the
+task fails.
 A gate you ran unfiltered that passed on exactly the tree you finish with, with nothing touched while it
 ran, is reported as reused when you finish instead of running again; any later change runs it.
 An unavailable gate (an environment failure) is reported, not a blocker; the pull request itself
-(the factory-github skill) is held back by a gate only where the repository sets `policy: gates: required`. The declared gates also run when you finish and a failing one fails
-the task, but the work still ships as a draft; only a repository that sets `policy: gates:
+(the factory-github skill) is held back by a gate only where the repository sets `policy: gates: required`. A task
+that ends with a failing gate fails, but the work still ships as a draft; only a repository that sets `policy: gates:
 required` in `.bellows.yaml` holds the publish back until they pass.
 
 If `factory-gate` reports no gates (exit 3), this environment has no gates configured: say so and verify with

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, DeclaredGate } from '../board/board.js';
-import type { GateRunRecord } from '../board/board-gate-runs.js';
+import type { GateRunRecord, GateRunSource } from '../board/board-gate-runs.js';
 import { envFileBody, setupTimeoutMs } from '../claim.js';
 import { tailBytes, type DeadService } from '../runner.js';
 import { stepLost } from '../step-control.js';
@@ -245,11 +245,16 @@ async function runEnvironmentSetup(rt: LoopRuntime, job: BoardJob, key: string, 
     job.turnContext = withSetupFailureContext(job.turnContext, job.setupFailure);
 }
 
-/** What the declared-gates pass runs against: the attempt's state, and the tree the run left (null when unread). */
+/** What the declared-gates pass runs against: the attempt's state, the tree the run left (null when unread), and who asked. */
 export interface GatesPass {
     state: JobState;
     treeAfter: string | null;
+    /** The close-time pass (`completion`) or the agent's finish pass inside the run (`finish`): what each record says. */
+    source: GatePassSource;
 }
+
+/** The two passes that run every declared gate: at close, and at the agent's finish. */
+export type GatePassSource = Extract<GateRunSource, 'completion' | 'finish'>;
 
 /** The declared gates of one running attempt: what `runDeclaredGates` and its helper share. */
 interface GatesRunCtx {
@@ -259,6 +264,7 @@ interface GatesRunCtx {
     state: JobState;
     /** Aborted by a stop, lost lease or Remove: the manager cancels the gate it is running. */
     signal: AbortSignal;
+    source: GatePassSource;
 }
 
 /**
@@ -308,7 +314,7 @@ const GATE_SERVER_PAIR: readonly string[] = ['BELLOWS_GATE_URL', 'BELLOWS_GATE_T
 
 /**
  * One declared gate's re-acquire-then-run outcome, folding a re-acquire failure into a failed gate.
- * The run is recorded as a `completion` execution: best-effort, since a board hiccup
+ * The run is recorded under the pass's source (`completion` or `finish`): best-effort, since a board hiccup
  * costs the record, never the gating; exactly one terminal row is written on every exit.
  */
 async function runOneGate(
@@ -321,7 +327,7 @@ async function runOneGate(
     if (!gates) return null;
     const record = recordGateRun(gateSession.ledger, {
         gate,
-        source: 'completion',
+        source: ctx.source,
         filtered: false,
         requireRecord: false,
         signal,
@@ -428,11 +434,11 @@ export async function runDeclaredGates(
     pass: GatesPass
 ): Promise<GateFailure | null> {
     const { gates, log } = rt;
-    const { state, treeAfter } = pass;
+    const { state, treeAfter, source } = pass;
     if (!gates) return null;
     // The attempt's own signal is the gate transport's abort: a stand-down cancels the gate in
     // flight, not only the ones after it, and no second controller exists to keep in step.
-    const runCtx: GatesRunCtx = { rt, job, gateSession, state, signal: state.signal };
+    const runCtx: GatesRunCtx = { rt, job, gateSession, state, signal: state.signal, source };
     // No declared gate to retry a failed setup before: the pass is that retry alone.
     if (gateSession.declared.length === 0) return retryFailedSetup(runCtx);
     const results: GateReport[] = [];
@@ -466,7 +472,7 @@ export async function runDeclaredGates(
     // by serving them from an earlier pass: the reuse waits for a setup that succeeded.
     const content = job.setupFailure ? null : await contentOf(runCtx, treeAfter);
     const walk: GateWalk = { ...runCtx, treeAfter, content, results, perGate, report };
-    // Ad-hoc admission is already closed and drained (verifyRun, before the completion tree is read),
+    // Ad-hoc admission is already closed and drained (`probeTreeNow`, before the pass's tree is read),
     // so every ad-hoc run has landed in the record read here.
     let earlier = content === null ? null : await readGateRuns(runCtx);
     for (;;) {
@@ -552,7 +558,7 @@ async function executeGate(
     const raced = await raceStep(state.signal, runOneGate(w, gate, parallel));
     const outcome = raced?.value?.run;
     // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
-    // and a cancelled gate is never reported failed — `gate-failed` must not read it.
+    // and a cancelled gate is never reported failed — a verdict must not read it.
     if (!outcome || down(state)) return null;
     const { entry, text } = settledGate(gate, outcome, perGate);
     // Replace the gate's own entry — one entry per declared gate, always, so the list the

@@ -43,7 +43,7 @@ function publishDue(job: BoardJob, ledger: Ledger): boolean {
 export function publishModeOf(job: BoardJob, ledger: Ledger): 'publish' | 'draft' | null {
     if (publishDue(job, ledger)) return 'publish';
     // An objective claim carries no `publish` key; a workflow node's publish is the graph's to
-    // order, so its failed gate still fires the `gate-failed` edge instead of shipping a draft.
+    // order, so its failed gate follows the node's `failed` edge instead of shipping a draft.
     return draftable(ledger, job.publish === undefined) && job.publish !== false ? 'draft' : null;
 }
 
@@ -97,8 +97,6 @@ export interface FinishCtx {
     gateRuns: readonly GateRunNote[];
     /** Why declared gates were skipped (`skipWhyOf`), or null when they ran or none exist. */
     gatesSkipped: string | null;
-    /** Whether a failed gate's tree differs from the synced one; null when unmeasured. */
-    treeChanged: boolean | null;
     /** The revision-bound evidence record (set only under a policy); null when none was taken. */
     evidence: VerdictEvidence | null;
     /** Why the evidence policy refused the publish before anything was pushed; null when it did not. */
@@ -194,7 +192,6 @@ function verdictOf(rt: LoopRuntime, finish: FinishCtx): VerdictBody {
         // The structured failure reason; a success reports no kind at all.
         ...(failureKind ? { failureKind } : {}),
         ...(failureCause ? { failureCause } : {}),
-        ...(finish.treeChanged !== null ? { treeChanged: finish.treeChanged } : {}),
         ...(finish.evidence ? { evidence: finish.evidence } : {}),
         ...(publication ? { publication } : {}),
     };

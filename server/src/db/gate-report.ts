@@ -19,12 +19,7 @@ export const isFailedGate = (gate: GateReport): boolean => gate.status === 'fail
 export const isStoredVerdict = (gate: GateReport): gate is StoredGateVerdict =>
     gate.status === 'passed' || gate.status === 'failed';
 
-/** The first failed gate of a run's report, for the `{{gate.*}}` placeholders; null when green. */
-export function firstFailedGate(gates: GateReport[] | null): GateReport | null {
-    return gates?.find(isFailedGate) ?? null;
-}
-
-/** A gate's output tail, bounded: what `{{gate.output}}` substitutes and a follow-up quotes. */
+/** A gate's output tail, bounded: what a follow-up quotes. */
 export const gateOutputTail = (gate: GateReport): string => boundedTail(gate.output ?? '');
 
 const failedGateText = (gate: GateReport): string =>

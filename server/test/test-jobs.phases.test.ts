@@ -41,6 +41,7 @@ const JOBS_PHASES = [
     'image-checks',
     'ask-user-question',
     'question-round-trip',
+    'finish-gate',
     'pinned-skills',
     'repo-skills',
     'driver-kill',

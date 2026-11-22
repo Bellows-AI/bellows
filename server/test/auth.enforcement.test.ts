@@ -269,6 +269,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // The gate-run record: the driver's own writes and its one read, under the lease.
     ['/api/jobs/:id/gate-run', 'worker'],
     ['/api/jobs/:id/gate-runs', 'worker'],
+    // The finish-pass record: the round the driver's finish pass spent, and the rounds read back.
+    ['/api/jobs/:id/finish-passes', 'worker'],
+    ['/api/jobs/:id/finish-passes/read', 'worker'],
     // One row per managed PR operation, written by the driver under the lease.
     ['/api/jobs/:id/pr-operation', 'worker'],
     ['/api/jobs/:id/output', 'worker'],

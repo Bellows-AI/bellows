@@ -6,7 +6,7 @@
 
 import { waitAdvisoryXactLock } from '../pool.js';
 import type { TransactionSql } from 'postgres';
-import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
+import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
 import { lockRootRowsInTx, requirementWaitOf } from '../connection-bindings.js';
 import { orgRelease } from '../org-status.js';
 import { planLimits, type StopCause } from '../plan-limits.js';
@@ -17,7 +17,6 @@ import { createTally, type OutcomeTally } from './job-store-outcome-tally.js';
 import { recordReportedSession, type SessionEvidence } from './job-store-provenance.js';
 import { answeredQuestionsOf } from './job-store-questions.js';
 import { fingerprintOf, missedSettle, recordReceipt, type SettleKey } from './job-store-receipts.js';
-import { queueObjectiveGateFix } from './job-store-gate-fix.js';
 import { stagedFingerprint } from './job-store-staged.js';
 import { exists, insertWorkflowSuccessor, runtimePatch, stopReviewsOf } from './job-store-rows.js';
 import { issueVerdictReclaim, liveVerdictReclaim } from './job-store-reclaim-queue.js';
@@ -166,13 +165,6 @@ export interface JobWorkerStore {
             failureKind?: FailureKind | null;
             /** The cause under a `gate`/`publish`/`helper` kind; absent overwrites to null. */
             failureCause?: FailureCause | null;
-            /**
-             * Whether the task tree changed since the attempt's startup sync, measured by the
-             * driver only after a declared gate failed. Not stored: the workflow transition in
-             * this same transaction reads it (a gate-fix round that changed nothing rests).
-             * Null or absent is unmeasured.
-             */
-            treeChanged?: boolean | null;
             /**
              * The attempt's evidence record: the tree it started from, the tree its gates assessed
              * and how they ended. Stored on the row under the lease guard; absent overwrites to
@@ -551,7 +543,6 @@ async function settleVerdict(
     const { orgId, wallTick, prs } = ctx;
     const { row, key, result, staged } = landed;
     const { status, output, publication } = result;
-    const treeChanged = result.treeChanged ?? null;
     const failureKindPatch = result.failureKind ?? null;
     const completedId = row.id;
     const rootJobId = row.root_job_id;
@@ -575,7 +566,7 @@ async function settleVerdict(
     // snapshot on its root and skips it: its completes behave byte-identically to
     // before 027.
     const [root] = await tx<WorkflowTransitionRoot[]>`
-        select mode, workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo, gate_fix_rounds
+        select mode, workflow_id, workflow_name, workflow_snapshot, workflow_params, command, created_by, repo
         from job
         where org_id = ${orgId} and id = ${rootJobId}
     `;
@@ -604,7 +595,6 @@ async function settleVerdict(
             root,
             completedId,
             ...verdict,
-            treeChanged,
             prs,
         });
     }
@@ -688,8 +678,6 @@ export interface WorkflowTransitionRoot {
     command: string;
     created_by: string | null;
     repo: string | null;
-    /** The objective gate-repair limit frozen at create (162); null on a workflow root and on older roots. */
-    gate_fix_rounds: number | null;
 }
 
 /**
@@ -707,8 +695,6 @@ export interface WorkflowTransitionInput {
     output: string | null;
     /** The verdict's failure kind — a `blocked` run rests the thread before any edge. */
     failureKind: FailureKind | null;
-    /** The driver's tree-change read, unstored — a gate-fix edge over an unchanged tree rests. */
-    treeChanged: boolean | null;
     prs: JobStorePrs | undefined;
 }
 
@@ -716,7 +702,7 @@ export interface WorkflowTransitionInput {
  * The completed row's stored state and the halted node the transition evaluates FROM — extracted
  * so the walk below reads as the decision it is. The completed row's `gates` and `output` here
  * are THIS run's (the verdict UPDATE landed them moments ago): what the edge rules evaluate
- * against (gate-failed reads the stored reports; markers read the tail). The halted node is the
+ * against (markers read the tail). The halted node is the
  * completed row's own node, or (an off-graph user follow-up completing) the thread's newest
  * carried node, mirroring workflow-engine.ts's own private `haltedNode` exactly (its own module
  * comment: "the current node is the completed row's own workflow_node — or, for an off-graph row,
@@ -734,9 +720,9 @@ function transitionContextOf(
         agent_type: string | null;
         agent_model: string | null;
     }[],
-    verdict: Pick<WorkflowTransitionInput, 'completedId' | 'status' | 'output' | 'failureKind' | 'treeChanged'>
+    verdict: Pick<WorkflowTransitionInput, 'completedId' | 'status' | 'output' | 'failureKind'>
 ): { completed: (typeof threadRows)[number] | undefined; completedRun: CompletedRun; halted: string | null } {
-    const { completedId, status, output, failureKind, treeChanged } = verdict;
+    const { completedId, status, output, failureKind } = verdict;
     const completed = threadRows.find((row) => row.id === completedId);
     const completedRun: CompletedRun = {
         id: completedId,
@@ -745,7 +731,6 @@ function transitionContextOf(
         output,
         gates: completed?.gates ?? null,
         failureKind,
-        treeChanged,
     };
     const halted =
         completedRun.node ??
@@ -765,20 +750,8 @@ const frozenAgentOf = (row: { agent_type: string | null; agent_model: string | n
 
 export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowTransitionInput): Promise<void> {
     const { orgId, rootJobId, root, completedId, prs } = input;
-    // An objective-mode thread (051) has no graph: its verdict is the whole story, save the gate repair.
-    if (root.mode === OBJECTIVE_MODE) {
-        await queueObjectiveGateFix(tx, {
-            orgId,
-            rootJobId,
-            completedId,
-            status: input.status,
-            failureKind: input.failureKind,
-            treeChanged: input.treeChanged,
-            limit: root.gate_fix_rounds,
-            createdBy: root.created_by,
-        });
-        return;
-    }
+    // An objective-mode thread (051) has no graph: its verdict is the whole story. A red gate was
+    // already repaired inside the run (finish passes), so nothing is queued after it.
     if (root.mode !== WORKFLOW_MODE || !root.workflow_snapshot) return;
     // The same per-root advisory lock the claim takes: a transition insert must not interleave
     // with a claim's select-lock-claim of this thread, or two rows of one thread could end up

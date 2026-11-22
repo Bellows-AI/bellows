@@ -430,6 +430,8 @@ export const SUPERVISOR_ENV = {
     orphanMs: 'SUPERVISOR_ORPHAN_MS',
     stepWaitMs: 'SUPERVISOR_STEP_WAIT_MS',
     takeoverMs: 'SUPERVISOR_TAKEOVER_MS',
+    /** The wall-clock bound of one relayed finish pass (`finishRelayBoundMs`); absent with no end-of-run gate. */
+    finishRelayMs: 'SUPERVISOR_FINISH_RELAY_TIMEOUT_MS',
     exports: 'SUPERVISOR_EXPORTS',
     agentless: 'SUPERVISOR_AGENTLESS',
     gate: 'SUPERVISOR_GATE',

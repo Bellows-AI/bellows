@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CONNECTION_PATH, GATE_RUN_PATH, PUBLISH_PATH, REVIEW_PATH } from '../src/control-channel.js';
+import { CONNECTION_PATH, FINISH_PATH, GATE_RUN_PATH, PUBLISH_PATH, REVIEW_PATH } from '../src/control-channel.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /**
@@ -21,6 +21,7 @@ const proxy = createRequire(import.meta.url)(PROXY) as {
     REVIEW_PATH: string;
     CONNECTION_PATH: string;
     GATE_RUN_PATH: string;
+    FINISH_PATH: string;
 };
 
 const servers: Server[] = [];
@@ -93,6 +94,7 @@ describe('the run-control proxy', () => {
         ['GET', '/attempt', undefined],
         ['POST', '/connection', '{"provider":"jira"}'],
         ['POST', '/gate/run', '{"gate":"verify","filter":"a-test"}'],
+        ['POST', '/gate/finish', '{}'],
     ])(
         'forwards %s %s to the relay with no credential, and the relay’s answer unchanged',
         async (method, path, body) => {
@@ -128,6 +130,10 @@ describe('the run-control proxy', () => {
         ['PUT', '/gate/run'],
         ['POST', '/gate/run?x=1'],
         ['POST', '/gate/run/x'],
+        ['GET', '/gate/finish'],
+        ['PUT', '/gate/finish'],
+        ['POST', '/gate/finish?x=1'],
+        ['POST', '/gate/finish/x'],
         ['POST', '/gate'],
         ['POST', '/run'],
     ])('answers %s %s 404 without reaching the relay', async (method, path) => {
@@ -172,5 +178,6 @@ describe('the run-control proxy', () => {
         expect(proxy.REVIEW_PATH).toBe(REVIEW_PATH);
         expect(proxy.CONNECTION_PATH).toBe(CONNECTION_PATH);
         expect(proxy.GATE_RUN_PATH).toBe(GATE_RUN_PATH);
+        expect(proxy.FINISH_PATH).toBe(FINISH_PATH);
     });
 });

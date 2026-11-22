@@ -263,7 +263,7 @@ describe('a lost supervisor under the gates and the setup', () => {
         interruptedOnly(board);
     });
 
-    it('interrupts an attempt whose declared gate lost its supervisor, with no gate-failed verdict', async () => {
+    it('interrupts an attempt whose declared gate lost its supervisor, with no failed gate verdict', async () => {
         const board = stubBoard([gatedJob(1)]);
         const { stack, gates } = stubGateStack();
         stack.manager.runGate = async () => {

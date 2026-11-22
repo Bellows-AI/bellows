@@ -37,6 +37,7 @@ export const ORG_TABLES = [
     'job_connection_binding',
     'job_execution',
     'job_execution_session',
+    'job_finish_pass',
     'job_gate_run',
     'job_integration_requirement',
     'job_merge_close',
