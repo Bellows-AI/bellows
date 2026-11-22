@@ -1,5 +1,5 @@
 /**
- * The member who authors a task's commits (BEL-531). The board names them in the claim (`author`: display name and
+ * The member who authors a task's commits. The board names them in the claim (`author`: display name and
  * GitHub noreply address); the committer stays the bot, which every image's gitconfig and the publish fallback
  * supply. Copied from the board's `ClaimAuthor`, never imported. A name and a public address, never a credential.
  */

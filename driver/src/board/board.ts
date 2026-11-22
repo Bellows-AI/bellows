@@ -173,7 +173,7 @@ export interface BoardJob extends ClaimSkills {
      * because a board that predates the field omits it.
      */
     userId: string | null;
-    /** Who authors the run's commits (BEL-531); absent for an unattributed job and under `AUTH_MODE=none`. */
+    /** Who authors the run's commits; absent for an unattributed job and under `AUTH_MODE=none`. */
     author?: CommitAuthor;
     /**
      * Where that person's checkouts live, relative to the mounted workspace volume.

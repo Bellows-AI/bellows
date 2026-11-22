@@ -663,7 +663,7 @@ export interface Claim {
      */
     userId: string | null;
     /**
-     * Who authors the run's commits (BEL-531): the thread starter's display name (else login) and their GitHub noreply
+     * Who authors the run's commits: the thread starter's display name (else login) and their GitHub noreply
      * address, so GitHub shows "<member> authored and Bellows committed". Absent for an unattributed job, in
      * `AUTH_MODE=none` and for a reviewer; the committer is always the bot. A name and a public address, never a token.
      */
@@ -1150,7 +1150,7 @@ export interface CreateJobStoreDeps {
      */
     githubApp?: boolean;
     /**
-     * Whether a claim names the thread starter as the commit author (BEL-531): `config.auth.mode !== 'none'`. Off — the
+     * Whether a claim names the thread starter as the commit author: `config.auth.mode !== 'none'`. Off — the
      * default, and `AUTH_MODE=none`, whose one local account is no real person — the claim carries no author and the
      * bot authors as well as commits.
      */

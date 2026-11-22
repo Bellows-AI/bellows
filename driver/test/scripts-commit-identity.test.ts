@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 /**
- * BEL-531: commits are AUTHORED by the member (GIT_AUTHOR_* env, set by the driver) and COMMITTED by the bot. The
+ * commits are AUTHORED by the member (GIT_AUTHOR_* env, set by the driver) and COMMITTED by the bot. The
  * shipped scripts that configure a local identity configure the committer only: a `user.*` config never shadows the
  * author env, and no script may set an author or committer env that would.
  */

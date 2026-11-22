@@ -591,7 +591,7 @@ async function assembleClaim(
         skillRefusal,
     });
     const outcomes = connections.outcomes.length > 0 ? { connectionOutcomes: connections.outcomes } : {};
-    // Read on every claim, takeover and resume included, so a recovered runner gets the same author (BEL-531).
+    // Read on every claim, takeover and resume included, so a recovered runner gets the same author.
     const author = commitAuthor ? await claimAuthorFor(tx, row.run_as) : null;
     return { ...claim, lastGateReports, ...outcomes, ...(author ? { author } : {}) };
 }

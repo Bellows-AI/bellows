@@ -234,7 +234,7 @@ RUN groupadd -g 1002 factory-agent && usermod -aG factory-agent node \
     && install -d -o node -g node -m 0750 /run/factory-control
 # The agent's commit identity (issue #1017), the one the publisher and the checkout sync fall back to
 # (driver/src/publish/publish.ts): /etc/gitconfig is system scope, so both uids read it whatever HOME
-# a run mounts. It is the COMMITTER (BEL-531): the claim's author rides GIT_AUTHOR_* env (driver/src/commit-author.ts),
+# a run mounts. It is the COMMITTER: the claim's author rides GIT_AUTHOR_* env (driver/src/commit-author.ts),
 # which wins for authorship alone, so GitHub shows "<member> authored and Bellows committed". A repository's own or a
 # member's global identity still wins.
 RUN printf '[user]\n\tname = factory-ai\n\temail = factory-ai@users.noreply.github.com\n' > /etc/gitconfig

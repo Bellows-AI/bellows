@@ -4,7 +4,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import { useTestDb } from './harness.js';
 import { account, craftJob, randomGithubId, testOrg } from './fixtures.js';
 
-/** BEL-531: the claim names the member who started the thread as the commit author, never the bot. */
+/** the claim names the member who started the thread as the commit author, never the bot. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const WORKER = 'author-claimer';

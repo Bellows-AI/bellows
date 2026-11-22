@@ -9,7 +9,7 @@ import { AGENT_CONTAINER } from '../src/supervisor-contract.js';
 import { SESSION, SUPERVISED, job as k8sJob, opencodeJob as k8sOpencodeJob } from './fixtures/k8s-suite.js';
 
 /**
- * BEL-531: the claim's `author` (the member who started the task) reaches git as GIT_AUTHOR_* in the agent's env on
+ * the claim's `author` (the member who started the task) reaches git as GIT_AUTHOR_* in the agent's env on
  * both executors and both agents; GIT_COMMITTER_* is never set, so the committer stays the bot the images' gitconfig
  * names. A takeover or resume reads the same claim, so it gets the same author.
  */
