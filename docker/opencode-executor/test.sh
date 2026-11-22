@@ -462,7 +462,9 @@ fi
 # .claude/skills and .agents/skills, padded to 4 MB (the size at which the repo copy won every run before the fix),
 # and the entrypoint is run for real with FACTORY_WORKSPACE_SKILLS set: it switches the checkout scan off and offers
 # the checkout's skills through a view in which the workspace copy is alone (the pinned directory in skills.paths holds
-# the same copy, so either location is the workspace one). Ten runs, the last under CPU load. A clash
+# the same copy, so either location is the workspace one). The listing goes to a file inside the container, never through
+# a pipe: `opencode debug skill` exits before a pipe drains, so a listing past 64 KiB (the baked skills' bodies alone
+# come close) arrives cut off and the checkout's skills look missing. Ten runs, the last under CPU load. A clash
 # under the checkout's own .opencode/ is a stated limit (docs/skills.md) and is not asserted.
 mkdir -p "$task_vol/.factory/skills-root/.claude/skills/probe-ws"
 printf -- '---\nname: probe-ws\ndescription: pinned workspace skill\n---\nworkspace body\n' >"$task_vol/.factory/skills-root/.claude/skills/probe-ws/SKILL.md"
@@ -483,7 +485,8 @@ for run in 1 2 3 4 5 6 7 8 9 10; do
     # shellcheck disable=SC2086
     located="$(docker run --rm $load -v "$ws_repo:/workspace" -v "$task_vol:/task:ro" -e WORKDIR=/workspace \
         -e FACTORY_WORKSPACE_SKILLS=probe-ws -e FACTORY_SKILLS_PATH=/task/.factory/skills-root/.claude/skills \
-        "$IMAGE" debug skill 2>/dev/null | grep -o '"location": *"[^"]*"')"
+        --entrypoint sh "$IMAGE" -c \
+        '/usr/local/bin/factory-launch /usr/local/bin/opencode-executor debug skill >/tmp/s.json 2>/dev/null; grep -o "\"location\": *\"[^\"]*\"" /tmp/s.json')"
     count="$(printf '%s\n' "$located" | grep -c '/probe-ws/SKILL.md')"
     case "$located" in
     */tmp/.factory-skills-view/probe-ws/SKILL.md* | */task/.factory/skills-root/.claude/skills/probe-ws/SKILL.md*) ws_copy=1 ;;
