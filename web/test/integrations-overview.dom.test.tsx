@@ -157,7 +157,7 @@ describe('the Integrations overview', () => {
         await waitFor(() => expect(calls.some((call) => call.url === '/api/connections')).toBe(true));
     });
 
-    describe('the GitHub card (BEL-528)', () => {
+    describe('the GitHub card', () => {
         const board = (forgeGrants: ReturnType<typeof forgeGrant>[], connections = []) =>
             boardHandler(settingsBoard({ forgeGrants, connections }));
 

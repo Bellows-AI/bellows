@@ -12,7 +12,7 @@ import {
 import { HTTP_OK, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
 
 /**
- * `GET /api/forge-grants` (BEL-528): where the member stands on each forge, for the Settings card. The standing is the
+ * `GET /api/forge-grants`: where the member stands on each forge, for the Settings card. The standing is the
  * grant store's; an unconfirmed read is a 503, never a "not connected" that would send the member to re-authorize.
  */
 

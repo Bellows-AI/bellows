@@ -23,7 +23,7 @@ import { useTestDb } from './harness.js';
 import { lineageHarness } from './integration-store-faults.js';
 
 /**
- * The member's GitHub grant (BEL-528): the sign-in exchange stores it, a sign-in replaces it, a refresh is one call across
+ * The member's GitHub grant: the sign-in exchange stores it, a sign-in replaces it, a refresh is one call across
  * board replicas, `bad_refresh_token` breaks it and a 5xx does not, and the revoke webhook breaks it. The real runtime,
  * lineage and secret store are composed as main.ts composes them; the scripted GitHub token endpoint on 127.0.0.1 is the
  * only boundary faked. Two `replica()`s over one database are two board replicas.

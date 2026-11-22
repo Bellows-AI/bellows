@@ -16,7 +16,7 @@ describe('github sign-in', () => {
         expect(response.headers.location).toContain(`state=${encodeURIComponent(state)}`);
     });
 
-    it('requests no scope: the App user token lists the installations by itself (BEL-528)', async () => {
+    it('requests no scope: the App user token lists the installations by itself', async () => {
         // The real client, not the harness stub: the stub's authorize URL is a fixed string.
         const url = createGitHubIdentityClient(
             githubAuth() as Extract<ReturnType<typeof githubAuth>, { mode: 'github' }>
@@ -24,7 +24,7 @@ describe('github sign-in', () => {
         expect(new URL(url).searchParams.has('scope')).toBe(false);
     });
 
-    it('reports an App whose user tokens do not expire as its own outcome, naming the setting (BEL-528)', async () => {
+    it('reports an App whose user tokens do not expire as its own outcome, naming the setting', async () => {
         const { app, auth, identity } = await setup();
         identity.exchange = async () => {
             throw new TokenExpirationOffError();

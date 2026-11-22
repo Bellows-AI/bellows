@@ -102,7 +102,7 @@ function stubTokenEndpoint(body: unknown, status = 200) {
     return { requests, fetchFn };
 }
 
-describe('the code exchange keeps the App user-token pair (BEL-528)', () => {
+describe('the code exchange keeps the App user-token pair', () => {
     it('returns the access token, the refresh token and both lifetimes', async () => {
         const { requests, fetchFn } = stubTokenEndpoint({
             access_token: 'ghu_access',

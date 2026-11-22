@@ -5,7 +5,7 @@ import { E2E_WEBHOOK_SECRET, IDP_PORT } from '../playwright.config.js';
 import { throughSignIn } from './signin.js';
 
 /**
- * The member's GitHub grant, in a real browser (BEL-528): sign-in through the App's user authorization keeps it, Settings
+ * The member's GitHub grant, in a real browser: sign-in through the App's user authorization keeps it, Settings
  * says so, a revocation delivered by GitHub breaks it, and the reconnect link is the silent sign-in round trip that makes
  * it live again. The stub identity provider issues the token pair; the revocation is the real signed webhook.
  */

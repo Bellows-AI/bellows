@@ -23,7 +23,7 @@ import {
 import { HTTP_FOUND, HTTP_OK, HTTP_UNAUTHORIZED } from './helpers-http.js';
 
 /**
- * What a sign-in does with the App user token pair it obtained (BEL-528): the callback hands it to the member's GitHub
+ * What a sign-in does with the App user token pair it obtained: the callback hands it to the member's GitHub
  * grant after the member exists, in the org the session is for; a grant that cannot be stored never blocks the
  * sign-in; a parked sign-in drops the pair and the completion goes round the authorize trip again.
  */

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createGitHubUserHooks } from '../src/integrations/providers/github-user.js';
 
 /**
- * The GitHub App user-authorization hooks (BEL-528): what the grant lineage refreshes a member's `ghr_` token through.
+ * The GitHub App user-authorization hooks: what the grant lineage refreshes a member's `ghr_` token through.
  * The token endpoint is a function here, never a network: GitHub answers every token error with a 200 and an `error`
  * field, which is the part of the contract most worth pinning.
  */
