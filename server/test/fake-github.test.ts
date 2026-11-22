@@ -40,11 +40,7 @@ const send = async (method: string, path: string, token?: string, body?: object)
             ...(body ? { 'content-type': form ? 'application/x-www-form-urlencoded' : 'application/json' } : {}),
             accept: 'application/json',
         },
-        body: body
-            ? form
-                ? new URLSearchParams(body as Record<string, string>).toString()
-                : JSON.stringify(body)
-            : undefined,
+        ...(body ? { body: form ? new URLSearchParams(body as Record<string, string>) : JSON.stringify(body) } : {}),
     });
     const text = await response.text();
     return {

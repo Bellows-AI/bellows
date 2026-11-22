@@ -500,6 +500,25 @@ trap 'exit 143' TERM
     stall_watch_pid=$!
 }
 
+# LANE_FAKE_FORGE=1: the fake forge (scripts/fake-forge) listens on the host for the phases that
+# talk to GitHub's REST API; its URL is $LANE_FAKE_FORGE_URL. Off until the publish switch flips it.
+if [ "${LANE_FAKE_FORGE:-0}" = 1 ]; then
+    mkdir -p "$work/fake-forge"
+    node "$REPO/scripts/fake-forge/server.mjs" "$work/fake-forge" >"$work/fake-forge.port" 2>"$work/fake-forge.log" &
+    lane_extra_pids="$lane_extra_pids $!"
+    lane_extra_pids="${lane_extra_pids# }"
+    for _ in $(seq 1 50); do
+        [ -s "$work/fake-forge.port" ] && break
+        sleep 0.1
+    done
+    [ -s "$work/fake-forge.port" ] || {
+        echo 'test-jobs: the fake forge did not start'
+        exit 1
+    }
+    LANE_FAKE_FORGE_URL="http://127.0.0.1:$(cat "$work/fake-forge.port")"
+    export LANE_FAKE_FORGE_URL
+fi
+
 # --- HTTP, in node, so the script needs neither curl nor jq: api and field live in scripts/lane-lib.sh ---
 
 lane_api_start || exit 1

@@ -2452,6 +2452,55 @@ BASE="http://127.0.0.1:$PORT"
 secret_store_sets "$(openssl rand -base64 32)" "$(openssl rand -base64 32)" "$(openssl rand -base64 32)"
 CREDENTIAL="drv_$(openssl rand -hex 32)"
 auth_sets "$BASE" "$(openssl rand -hex 32)" "$CREDENTIAL"
+# FAKE_FORGE=1: the fake forge (scripts/fake-forge) as a pod and Service in the release's namespace, for the
+# phases that talk to GitHub's REST API: http://$RELEASE-fake-forge:8080. The files are mounted from a
+# ConfigMap, never inlined. Off until the publish switch flips it.
+if [ "${FAKE_FORGE:-0}" = 1 ]; then
+    kubectl create configmap "$RELEASE-fake-forge" -n "$NAMESPACE" --from-file=scripts/fake-forge >/dev/null &&
+        kubectl apply -n "$NAMESPACE" -f - >/dev/null <<FORGE || {
+apiVersion: v1
+kind: Pod
+metadata:
+    name: $RELEASE-fake-forge
+    labels:
+        app.kubernetes.io/name: $RELEASE-fake-forge
+spec:
+    containers:
+        - name: forge
+          image: $STUB_REF
+          command: ["node", "/forge/server.mjs", "/tmp/forge-state", "8080"]
+          env:
+              - { name: FAKE_FORGE_HOST, value: "0.0.0.0" }
+          ports:
+              - containerPort: 8080
+          readinessProbe:
+              httpGet: { path: /_control/calls, port: 8080 }
+              periodSeconds: 2
+          volumeMounts:
+              - { name: forge, mountPath: /forge }
+    volumes:
+        - name: forge
+          configMap: { name: $RELEASE-fake-forge }
+---
+apiVersion: v1
+kind: Service
+metadata:
+    name: $RELEASE-fake-forge
+spec:
+    selector:
+        app.kubernetes.io/name: $RELEASE-fake-forge
+    ports:
+        - port: 8080
+FORGE
+        echo 'test-k8s: could not create the fake forge'
+        exit 1
+    }
+    kubectl wait --for=condition=Ready --timeout=120s "pod/$RELEASE-fake-forge" -n "$NAMESPACE" >/dev/null 2>&1 || {
+        echo 'test-k8s: the fake forge did not become ready'
+        exit 1
+    }
+fi
+
 REPLICA_SETS=()
 if [ "$PHASE" = replicas ]; then
     # A throwaway S3-compatible store for this run: one pod, its Service and the credentials Secret, all named for the release.
