@@ -27,6 +27,12 @@ export interface ExecTool {
 
 export type ToolSpec = GateTool | ExecTool;
 
+/**
+ * Whether the claim carries an environment, so that a gate environment is started for it at all:
+ * its image alone is enough, for the agent's own commands in it.
+ */
+export const declaresGateEnvironment = (job: BoardJob): boolean => Boolean(job.gates);
+
 /** The gates the finish pass runs: every declared one but those marked `on_demand`. */
 export function finishGates(gates: readonly DeclaredGate[]): DeclaredGate[] {
     return gates.filter((gate) => !gate.onDemand);

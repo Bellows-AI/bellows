@@ -310,7 +310,7 @@ async function startDriver({
             };
             driver.calls += 1;
             if (driver.silent) return request.socket.destroy();
-            if (/^\/(publish|review|export|connection|gate\/(run|finish))(\/|\?|$)/.test(request.url ?? '')) {
+            if (/^\/(publish|review|export|connection|tools|gate\/finish)(\/|\?|$)/.test(request.url ?? '')) {
                 const entry = {
                     method: request.method ?? '',
                     url: request.url ?? '',
@@ -2425,7 +2425,8 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         ['POST', '/review', '{"profile":"a"}'],
         ['GET', '/review/key-1', undefined],
         ['POST', '/connection', '{"provider":"jira"}'],
-        ['POST', '/gate/run', '{"gate":"verify"}'],
+        ['GET', '/tools', undefined],
+        ['POST', '/tools/call', '{"tool":"gate:verify"}'],
         ['POST', '/gate/finish', '{}'],
     ])('relays the agent route %s %s under the agent token, the answer unchanged', async (method, url, body) => {
         const driver = await startDriver();
@@ -2469,11 +2470,16 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         ['agent', 'GET', '/review/../control'],
         ['agent', 'PUT', '/export/chunk?session=s&offset=0'],
         ['agent', 'POST', '/review?x=1'],
-        ['agent', 'GET', '/gate/run'],
-        ['agent', 'PUT', '/gate/run'],
-        ['agent', 'POST', '/gate/run?x=1'],
-        ['agent', 'POST', '/gate/run/../control'],
-        ['export', 'POST', '/gate/run'],
+        // An older runner's route: this relay ships with the new helpers, which never call it.
+        ['agent', 'POST', '/gate/run'],
+        ['agent', 'GET', '/tools/call'],
+        ['agent', 'PUT', '/tools/call'],
+        ['agent', 'POST', '/tools/call?x=1'],
+        ['agent', 'POST', '/tools/call/../control'],
+        ['agent', 'POST', '/tools'],
+        ['agent', 'GET', '/tools?x=1'],
+        ['export', 'POST', '/tools/call'],
+        ['export', 'GET', '/tools'],
         ['agent', 'GET', '/gate/finish'],
         ['agent', 'POST', '/gate/finish?x=1'],
         ['export', 'POST', '/gate/finish'],
@@ -2577,10 +2583,10 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         await finish(supervised);
     });
 
-    describe("POST /gate/run, the agent's ad-hoc gate run", () => {
-        const GATE = '{"gate":"verify"}';
+    describe("POST /tools/call, the agent's tool call", () => {
+        const GATE = '{"tool":"gate:verify"}';
         const gateRun = (socket: string, body: Buffer | string = GATE) =>
-            viaSocket(socket, 'POST', '/gate/run', { body });
+            viaSocket(socket, 'POST', '/tools/call', { body });
         /** A holder that answers after `ms` with `size` bytes of gate output. */
         const answersAfter = (driver: Driver, ms: number, size = 0) => {
             driver.relayAnswer = async (response) => {
@@ -2652,7 +2658,7 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
             await until('the rebind', rebound);
             expect(await outcome).toBeInstanceOf(Error);
             expect((await gateRun(sockets.agent)).status).toBe(200);
-            expect(next.seen).toEqual([expect.objectContaining({ url: '/gate/run' })]);
+            expect(next.seen).toEqual([expect.objectContaining({ url: '/tools/call' })]);
             old.relayAnswer = null;
             await finish(supervised);
         });

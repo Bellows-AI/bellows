@@ -5,8 +5,10 @@ import {
     type GateManager,
     type GateRunOptions,
 } from '../src/gate-manager.js';
-import { declaredTimeoutMs, type GateClaim } from '../src/gates.js';
-import type { BoardJob } from '../src/board/board.js';
+import { declaredTimeoutMs, type GateClaim, type GateLedger } from '../src/gates.js';
+import type { BoardJob, DeclaredGate } from '../src/board/board.js';
+import { toolManifest } from '../src/tools.js';
+import { gatedJob } from './fixtures/loop-stubs.js';
 import { loadDriverConfig } from '../src/config.js';
 import { TASK_MOUNT } from '../src/task-volume.js';
 import { StepChannelClosed } from '../src/step-control.js';
@@ -482,7 +484,7 @@ const idle = { acquire: async () => {}, runGate: async () => ({ exitCode: 0, out
 
 /**
  * A loopback gate server with `token` registered for `gates` under JOB, already listening;
- * `run(gate)` is the agent's `POST /run` for one declared name under that token.
+ * `run(gate)` is the agent's `POST /run` of the tool `gate:<name>` under that token.
  */
 async function serveGates(
     manager: Pick<GateManager, 'acquire' | 'runGate'>,
@@ -501,7 +503,7 @@ async function serveGates(
             headers: { authorization: `Bearer ${token}` },
             body: JSON.stringify(body),
         });
-    const run = (gate = 'test') => post({ gate });
+    const run = (gate = 'test') => post({ tool: `gate:${gate}` });
     return { server, port, run, post };
 }
 
@@ -524,7 +526,7 @@ describe('the gate server', () => {
 
         const response = await run('test');
         expect(response.status).toBe(OK_STATUS);
-        await expect(response.json()).resolves.toEqual({ exitCode: 0, output: 'ok' });
+        await expect(response.json()).resolves.toEqual({ verdict: 'passed', exitCode: 0, output: 'ok', artifacts: [] });
         expect(seen).toEqual([{ key: KEY, name: 'test', command: 'npm test' }]);
         expect(acquiredFor).toEqual([JOB]);
         await server.close();
@@ -573,7 +575,7 @@ describe('the gate server', () => {
             const response = await fetch(`http://127.0.0.1:${port}/run`, {
                 method: 'POST',
                 headers: { authorization: 'Bearer tok-fresh' },
-                body: JSON.stringify({ gate: 'test' }),
+                body: JSON.stringify({ tool: 'gate:test' }),
             });
             expect(response.status).toBe(OK_STATUS);
         }
@@ -673,9 +675,9 @@ describe('the gate server', () => {
                 headers: { authorization: 'Bearer tok-f' },
                 body: JSON.stringify(body),
             });
-        expect((await post({ gate: 'test', filter: 'test/api/users.test.js' })).status).toBe(OK_STATUS);
+        expect((await post({ tool: 'gate:test', input: { filter: 'test/api/users.test.js' } })).status).toBe(OK_STATUS);
         expect(server.lastRuns('tok-f')).toEqual([]);
-        expect((await post({ gate: 'test' })).status).toBe(OK_STATUS);
+        expect((await post({ tool: 'gate:test' })).status).toBe(OK_STATUS);
         expect(server.lastRuns('tok-f')).toHaveLength(1);
         expect(calls.map((call) => call.gate.command)).toEqual(['npm test', 'npm test']);
         expect(calls.map((call) => call.gate.env.GATE_FILTER)).toEqual(['test/api/users.test.js', undefined]);
@@ -688,7 +690,7 @@ describe('the gate server', () => {
         const res = await fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: 'Bearer tok-1' },
-            body: JSON.stringify({ gate: 'test', filter: 'x' }),
+            body: JSON.stringify({ tool: 'gate:test', input: { filter: 'x' } }),
         });
         expect(res.status).toBe(UNPROCESSABLE_STATUS);
         await expect(res.json()).resolves.toEqual({
@@ -713,7 +715,7 @@ describe('the gate server', () => {
         const res = await fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: 'Bearer tok-1' },
-            body: JSON.stringify({ gate: 'test', filter }),
+            body: JSON.stringify({ tool: 'gate:test', input: { filter } }),
         });
         expect(res.status).toBe(BAD_REQUEST_STATUS);
         await server.close();
@@ -724,8 +726,8 @@ describe('the gate server', () => {
         const url = `http://127.0.0.1:${port}/run`;
         const post = (headers: Record<string, string>, body: string) => fetch(url, { method: 'POST', headers, body });
 
-        expect((await post({ authorization: 'Bearer nope' }, '{"gate":"test"}')).status).toBe(UNAUTHORIZED_STATUS);
-        expect((await post({ authorization: 'Bearer tok-2' }, '{"gate":"deploy"}')).status).toBe(NOT_FOUND_STATUS);
+        expect((await post({ authorization: 'Bearer nope' }, '{"tool":"gate:test"}')).status).toBe(UNAUTHORIZED_STATUS);
+        expect((await post({ authorization: 'Bearer tok-2' }, '{"tool":"gate:deploy"}')).status).toBe(NOT_FOUND_STATUS);
         expect((await post({ authorization: 'Bearer tok-2' }, 'not json')).status).toBe(BAD_REQUEST_STATUS);
         expect((await post({ authorization: 'Bearer tok-2' }, '{}')).status).toBe(BAD_REQUEST_STATUS);
         // A body that parses to a non-object is as malformed as one that does not parse.
@@ -790,7 +792,7 @@ describe('the gate server', () => {
         const response = await fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: 'Bearer tok-gone' },
-            body: JSON.stringify({ gate: 'test' }),
+            body: JSON.stringify({ tool: 'gate:test' }),
         });
         expect(response.status).toBe(UNAVAILABLE_STATUS);
         await expect(response.json()).resolves.toMatchObject({ incomplete: true });
@@ -1145,11 +1147,12 @@ describe('the gate server: run history for the timeout note', () => {
         const { server } = served;
         const run = async () => (await served.run('test').then((r) => r.json())) as Record<string, unknown>;
 
-        expect(await run()).toEqual({ exitCode: 0, output: 'ok' });
+        const passed = { verdict: 'passed', exitCode: 0, output: 'ok', artifacts: [] };
+        expect(await run()).toEqual(passed);
         server.setDeadServices('tok-dead', 'service "db" failed');
-        expect(await run()).toEqual({ exitCode: 0, output: 'ok', deadServices: 'service "db" failed' });
+        expect(await run()).toEqual({ ...passed, deadServices: 'service "db" failed' });
         server.setDeadServices('tok-dead', null);
-        expect(await run()).toEqual({ exitCode: 0, output: 'ok' });
+        expect(await run()).toEqual(passed);
         // An unknown token is ignored, never registered by the set.
         server.setDeadServices('tok-nobody', 'x');
         await server.close();
@@ -1165,7 +1168,7 @@ describe('the gate server: body size and bind resilience', () => {
         const response = await fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: 'Bearer tok-4', 'content-type': 'application/json' },
-            body: JSON.stringify({ gate: 'test', padding: 'x'.repeat(OVERSIZED_PADDING_LENGTH) }),
+            body: JSON.stringify({ tool: 'gate:test', padding: 'x'.repeat(OVERSIZED_PADDING_LENGTH) }),
         });
         expect(response.status).toBe(PAYLOAD_TOO_LARGE_STATUS);
         await server.close();
@@ -1464,7 +1467,7 @@ describe('the gate server: the finish pass door', () => {
     });
 });
 
-/** `{"gate","last":true}` reads the report the claim carried; it never runs the gate. */
+/** `{"tool":"gate:<name>","input":{"last":true}}` reads the report the claim carried; it never runs the gate. */
 describe('the gate server: reading the last stored report', () => {
     const LONG_GATES = [
         { name: 'test:db', command: 'npm run test:db', timeoutMinutes: 30 },
@@ -1484,13 +1487,14 @@ describe('the gate server: reading the last stored report', () => {
         const { server, post, run } = await serveGates({ acquire, runGate }, { gates: LONG_GATES, job: withReports });
 
         expect((await run('test:db')).status).toBe(UNPROCESSABLE_STATUS);
-        const last = await post({ gate: 'test:db', last: true });
+        const last = await post({ tool: 'gate:test:db', input: { last: true } });
 
         expect(last.status).toBe(OK_STATUS);
         await expect(last.json()).resolves.toEqual({
-            status: 'failed',
+            verdict: 'failed',
             exitCode: 1,
             output: '3 tests failed',
+            artifacts: [],
             last: true,
         });
         expect(acquire).not.toHaveBeenCalled();
@@ -1504,7 +1508,7 @@ describe('the gate server: reading the last stored report', () => {
             job: withReports,
         });
 
-        const last = await post({ gate: 'typecheck', last: true });
+        const last = await post({ tool: 'gate:typecheck', input: { last: true } });
 
         expect(last.status).toBe(NOT_FOUND_STATUS);
         await expect(last.json()).resolves.toEqual({ error: 'no stored report for gate "typecheck" in this thread' });
@@ -1513,15 +1517,228 @@ describe('the gate server: reading the last stored report', () => {
 
     it('answers "no report" when the claim carried none', async () => {
         const { server, post } = await serveGates(idle, { gates: LONG_GATES });
-        expect((await post({ gate: 'lint', last: true })).status).toBe(NOT_FOUND_STATUS);
+        expect((await post({ tool: 'gate:lint', input: { last: true } })).status).toBe(NOT_FOUND_STATUS);
         await server.close();
     });
 
     it('still refuses an undeclared name, and refuses last with a filter or a non-boolean', async () => {
         const { server, post } = await serveGates(idle, { gates: LONG_GATES, job: withReports });
-        expect((await post({ gate: 'deploy', last: true })).status).toBe(NOT_FOUND_STATUS);
-        expect((await post({ gate: 'lint', last: true, filter: 'x' })).status).toBe(BAD_REQUEST_STATUS);
-        expect((await post({ gate: 'lint', last: 'yes' })).status).toBe(BAD_REQUEST_STATUS);
+        expect((await post({ tool: 'gate:deploy', input: { last: true } })).status).toBe(NOT_FOUND_STATUS);
+        expect((await post({ tool: 'gate:lint', input: { last: true, filter: 'x' } })).status).toBe(BAD_REQUEST_STATUS);
+        expect((await post({ tool: 'gate:lint', input: { last: 'yes' } })).status).toBe(BAD_REQUEST_STATUS);
         await server.close();
+    });
+});
+
+/**
+ * The agent's tool routes on the control channel: `GET /tools` (the manifest) and `POST /tools/call {tool, input}`,
+ * one answer shape for every tool. An older runner's `POST /gate/run` is refused retryably and runs nothing.
+ */
+describe('the gate server: the tool routes', () => {
+    const VERIFY = [{ name: 'verify', command: 'npm run verify' }];
+
+    /** The manifest the loop attaches for a claim declaring `gates`. */
+    const manifestOf = (gates: DeclaredGate[]) => toolManifest({ ...gatedJob(1), gates: { image: 'node:24', gates } });
+
+    /**
+     * A control token `sup` with its agent token `agent`; the gate token `gt` registered for `gates` with a ledger
+     * recording every row. `attach` opens the door and the manifest the way the loop does (`none`: no environment).
+     */
+    async function toolServer(
+        manager: Pick<GateManager, 'acquire' | 'runGate'>,
+        { gates = VERIFY, attach = 'gates' }: { gates?: DeclaredGate[]; attach?: 'gates' | 'none' | 'later' } = {}
+    ) {
+        const rows: string[] = [];
+        const ledger: GateLedger = {
+            probe: async () => ({ fingerprint: 'f', content: 'h', mutatedSince: null }),
+            identity: (gate) => `id-${gate.name}`,
+            write: async (row) => {
+                rows.push(`${row.gate}:${row.outcome}`);
+                return true;
+            },
+        };
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.openControl('sup');
+        server.grantAgent('sup', 'agent');
+        server.register('gt', { key: KEY, image: 'node:24', job: JOB, gates, ledger });
+        const open = (kind: 'gates' | 'none') => {
+            server.attachGateRun('sup', kind === 'gates' ? 'gt' : null);
+            server.attachTools('sup', kind === 'gates' ? manifestOf(gates) : []);
+        };
+        if (attach !== 'later') open(attach);
+        const port = await server.listen();
+        const call = (method: string, path: string, body?: unknown, token = 'agent') =>
+            fetch(`http://127.0.0.1:${port}${path}`, {
+                method,
+                headers: { authorization: `Bearer ${token}` },
+                ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
+            });
+        const tool = (body: unknown) => call('POST', '/tools/call', body);
+        return { server, call, tool, rows, open };
+    }
+
+    /** A manager that records each run's name, command and exec flag and answers `exitCode`. */
+    const recording = (exitCode = 0) => {
+        const ran: { name: string; command: string; exec: boolean }[] = [];
+        const manager = {
+            acquire: async () => {},
+            runGate: async (_key: string, name: string, command: string, options?: GateRunOptions) => {
+                ran.push({ name, command, exec: options?.exec === true });
+                return { exitCode, output: `ran ${command}` };
+            },
+        };
+        return { manager, ran };
+    };
+
+    it("POST /tools/call {tool:'gate:verify'} answers {verdict, exitCode, output, artifacts: [], executionId}", async () => {
+        const passing = recording(0);
+        const { server, tool, rows } = await toolServer(passing.manager);
+        const passed = await tool({ tool: 'gate:verify' });
+        expect(passed.status).toBe(OK_STATUS);
+        expect(await passed.json()).toEqual({
+            verdict: 'passed',
+            exitCode: 0,
+            output: 'ran npm run verify',
+            artifacts: [],
+            executionId: expect.any(String),
+        });
+        // One terminal row; the running row is the manager's to write (`gates-records.test.ts`), not this stub's.
+        expect(rows).toEqual(['verify:passed']);
+        await server.close();
+
+        const failing = recording(1);
+        const red = await toolServer(failing.manager);
+        expect(await (await red.tool({ tool: 'gate:verify' })).json()).toMatchObject({
+            verdict: 'failed',
+            exitCode: 1,
+            artifacts: [],
+        });
+        await red.server.close();
+    });
+
+    it("a gate named exec: {tool:'gate:exec'} runs the declared gate, {tool:'exec'} runs the command", async () => {
+        const { manager, ran } = recording(0);
+        const { server, tool, rows } = await toolServer(manager, { gates: [{ name: 'exec', command: 'npm run e2e' }] });
+
+        const gate = await tool({ tool: 'gate:exec' });
+        expect(await gate.json()).toMatchObject({ verdict: 'passed', executionId: expect.any(String) });
+        const exec = await tool({ tool: 'exec', input: { command: 'echo hi' } });
+        expect(await exec.json()).toEqual({ exitCode: 0, output: 'ran echo hi', artifacts: [] });
+
+        expect(ran).toEqual([
+            { name: 'exec', command: 'npm run e2e', exec: false },
+            { name: 'exec', command: 'echo hi', exec: true },
+        ]);
+        // Only the gate is recorded: an exec writes no board row.
+        expect(rows).toEqual(['exec:passed']);
+        await server.close();
+    });
+
+    it('GET /tools answers the manifest', async () => {
+        const gates: DeclaredGate[] = [
+            { name: 'verify', command: 'npm run verify' },
+            { name: 'smoke', command: 'npm run smoke', onDemand: true, filter: true },
+        ];
+        const { server, call } = await toolServer(idle, { gates });
+        const answer = await call('GET', '/tools');
+        expect(answer.status).toBe(OK_STATUS);
+        const body = (await answer.json()) as { tools: { id: string }[] };
+        expect(body).toEqual({ tools: manifestOf(gates) });
+        expect(body.tools.map((each) => each.id)).toEqual(['gate:verify', 'gate:smoke', 'exec']);
+        // The supervisor's token does not open the agent's routes.
+        expect((await call('GET', '/tools', undefined, 'sup')).status).toBe(FORBIDDEN_STATUS);
+        await server.close();
+    });
+
+    it('GET /tools before attach is 503 retryable', async () => {
+        const { server, call, open } = await toolServer(idle, { attach: 'later' });
+        const early = await call('GET', '/tools');
+        expect(early.status).toBe(UNAVAILABLE_STATUS);
+        expect(await early.json()).toMatchObject({ retryable: true });
+        const earlyCall = await call('POST', '/tools/call', { tool: 'gate:verify' });
+        expect(earlyCall.status).toBe(UNAVAILABLE_STATUS);
+        expect(await earlyCall.json()).toMatchObject({ retryable: true });
+        open('gates');
+        expect((await call('GET', '/tools')).status).toBe(OK_STATUS);
+        await server.close();
+    });
+
+    it('no gates: GET /tools {tools: []}, gate:verify and exec 404 no gates', async () => {
+        const { manager, ran } = recording(0);
+        const { server, call, tool } = await toolServer(manager, { attach: 'none' });
+        expect(await (await call('GET', '/tools')).json()).toEqual({ tools: [] });
+        for (const body of [{ tool: 'gate:verify' }, { tool: 'exec', input: { command: 'ls' } }]) {
+            const answer = await tool(body);
+            expect(answer.status).toBe(NOT_FOUND_STATUS);
+            expect(await answer.json()).toEqual({ error: 'no gates' });
+        }
+        expect(ran).toEqual([]);
+        await server.close();
+    });
+
+    it('an unknown id is 404', async () => {
+        const { manager, ran } = recording(0);
+        const { server, tool } = await toolServer(manager);
+        for (const id of ['verify', 'gate:deploy', 'exec:x', 'shell']) {
+            const answer = await tool({ tool: id });
+            expect(answer.status).toBe(NOT_FOUND_STATUS);
+        }
+        expect(await (await tool({ tool: 'shell' })).json()).toEqual({ error: 'no tool "shell"' });
+        expect(await (await tool({ tool: 'gate:deploy' })).json()).toEqual({ error: 'no declared gate "deploy"' });
+        expect(ran).toEqual([]);
+        await server.close();
+    });
+
+    it('a filter on a gate without filter: true is 422', async () => {
+        const { manager, ran } = recording(0);
+        const { server, tool } = await toolServer(manager);
+        const answer = await tool({ tool: 'gate:verify', input: { filter: 'x' } });
+        expect(answer.status).toBe(UNPROCESSABLE_STATUS);
+        expect(ran).toEqual([]);
+        await server.close();
+    });
+
+    it('--last input answers the stored report in the result shape', async () => {
+        const server = createGateServer({ host: '127.0.0.1', manager: idle });
+        const job: BoardJob = {
+            ...JOB,
+            lastGateReports: [{ name: 'verify', status: 'failed', exitCode: 1, output: '3 tests failed' }],
+        };
+        server.register('gt', { key: KEY, image: 'node:24', job, gates: VERIFY });
+        server.openControl('sup');
+        server.grantAgent('sup', 'agent');
+        server.attachGateRun('sup', 'gt');
+        const port = await server.listen();
+        const answer = await fetch(`http://127.0.0.1:${port}/tools/call`, {
+            method: 'POST',
+            headers: { authorization: 'Bearer agent' },
+            body: JSON.stringify({ tool: 'gate:verify', input: { last: true } }),
+        });
+        expect(answer.status).toBe(OK_STATUS);
+        expect(await answer.json()).toEqual({
+            verdict: 'failed',
+            exitCode: 1,
+            output: '3 tests failed',
+            artifacts: [],
+            last: true,
+        });
+        await server.close();
+    });
+
+    it('POST /gate/run, either old body, answers 503 retryable without executionId, runs nothing and writes no gate-run row — on a claim with gates and on one without', async () => {
+        for (const attach of ['gates', 'none'] as const) {
+            const { manager, ran } = recording(0);
+            const { server, call, rows } = await toolServer(manager, { attach });
+            for (const body of [{ gate: 'verify' }, { exec: 'echo hi' }, { tool: 'gate:verify' }]) {
+                const answer = await call('POST', '/gate/run', body);
+                expect(answer.status).toBe(UNAVAILABLE_STATUS);
+                const json = (await answer.json()) as Record<string, unknown>;
+                expect(json).toMatchObject({ retryable: true, error: expect.stringMatching(/predates its driver/) });
+                expect(json).not.toHaveProperty('executionId');
+            }
+            expect(ran).toEqual([]);
+            expect(rows).toEqual([]);
+            await server.close();
+        }
     });
 });

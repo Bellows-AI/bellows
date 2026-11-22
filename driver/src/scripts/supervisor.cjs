@@ -2286,8 +2286,10 @@ const RELAYS = {
             { method: 'POST', match: (p) => p === '/publish', cap: MIB },
             { method: 'POST', match: (p) => p === '/review', cap: MIB },
             { method: 'POST', match: (p) => p === '/connection', cap: KIB },
-            // `{gate, filter}`; the answer carries the gate's output and is streamed back whole, never cut to a size.
-            { method: 'POST', match: (p) => p === '/gate/run', cap: JSON_KIB * KIB, timeout: 'gateRelayMs' },
+            // The run's tool manifest, a few hundred bytes.
+            { method: 'GET', match: (p) => p === '/tools', cap: JSON_KIB * KIB },
+            // `{tool, input}`; the answer carries the tool's output and is streamed back whole, never cut to a size.
+            { method: 'POST', match: (p) => p === '/tools/call', cap: JSON_KIB * KIB, timeout: 'gateRelayMs' },
             // The finish pass: no body to speak of; held while the declared gates run, the run budget paused.
             {
                 method: 'POST',

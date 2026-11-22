@@ -1,16 +1,18 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { BoardJob, DeclaredGate } from './board/board.js';
 import { parseGateRequest, type GateRequest } from './gate-request.js';
-import { AD_HOC_MAX_MINUTES, type GateManager } from './gate-manager.js';
+import { AD_HOC_MAX_MINUTES, type GateManager, type GateRun } from './gate-manager.js';
 import { createGateAdmission, type GateAdmission } from './gate-admission.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import { GateRecordRefused, recordGateRun, type GateEnd, type GateLedger } from './gate-record.js';
 
 import type { GateRunNote } from './timeout-note.js';
+import type { ToolSpec } from './tools.js';
 import type { ConnectionRelay } from './connection-control.js';
 import type { GateTokenRelay } from './gate-token-control.js';
 import type { InputDelivery } from './input-control.js';
-import { attachersOf, createControlChannel, type FinishRelay, gateRunAttacher } from './control-channel.js';
+import { attachersOf, createControlChannel, type FinishRelay } from './control-channel.js';
+import { gateRunAttacher } from './tool-control.js';
 import type { DaemonState, Read } from './runner.js';
 import { withDaemonNote } from './dockerd-loss.js';
 import { stepLost, type StepBroker } from './step-control.js';
@@ -124,11 +126,13 @@ export interface GateServer {
     /** Gives an open control token the relay of its supervisor's gate token ask (`POST /gate-token`). */
     attachGateToken(token: string, gateToken: GateTokenRelay): void;
     /**
-     * Opens `POST /gate/run` on an open control token for its agent: the ad-hoc run of the registered `gateToken`, with
+     * Opens `POST /tools/call` on an open control token for its agent: the ad-hoc run of the registered `gateToken`, with
      * the admission, quiesce, filter and cancellation rules of any ad-hoc run. Null for a job that declares no gates, which
      * answers `404 no gates`. Once the gate token is unregistered the route answers a retryable 503 again, never a run.
      */
     attachGateRun(controlToken: string, gateToken: string | null): void;
+    /** Opens `GET /tools` on an open control token for its agent: the run's manifest (`tools.ts`); a retryable 503 until then. */
+    attachTools(controlToken: string, manifest: readonly ToolSpec[]): void;
     /**
      * Opens `POST /gate/finish` on an open control token for its agent: `relay` runs the finish pass (`loop-finish.ts`).
      * Null for a job with no gate environment, which answers `404 no gates`; unattached, a retryable 503.
@@ -186,7 +190,19 @@ const lastReportAnswer = (job: BoardJob, name: string): { status: number; body: 
         return { status: HTTP_NOT_FOUND, body: { error: `no stored report for gate "${name}" in this thread` } };
     }
     const { status, exitCode, output } = stored;
-    return { status: HTTP_OK, body: { status, exitCode, output, last: true } };
+    return { status: HTTP_OK, body: { verdict: status, exitCode, output, artifacts: [], last: true } };
+};
+
+/** A gate run's answer in the tool result shape: a verdict beside the exit and output, the record's id when there is one. */
+const gateAnswer = (outcome: GateRun, executionId: string | undefined) => {
+    const { measure: _measure, setupFailed, ...ran } = outcome;
+    return {
+        verdict: ran.exitCode === 0 && !setupFailed ? 'passed' : 'failed',
+        ...ran,
+        artifacts: [],
+        ...(executionId === undefined ? {} : { executionId }),
+        ...(setupFailed ? { setupFailed } : {}),
+    };
 };
 
 /**
@@ -236,8 +252,7 @@ const runRegisteredGate = async (
             end = { run: outcome, cancelled: signal.aborted };
             // A cancelled run's answer is whatever the kill left — never a verdict to record.
             if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
-            const { measure: _measure, ...verdict } = outcome;
-            return { status: HTTP_OK, body: record ? { ...verdict, executionId: record.executionId } : verdict };
+            return { status: HTTP_OK, body: gateAnswer(outcome, record?.executionId) };
         } catch (e) {
             end = { error: e, cancelled: signal.aborted };
             return failedRunAnswer(e, claim, signal);
@@ -347,7 +362,7 @@ const runExec = async (
     try {
         const outcome = await manager.runGate(claim.key, 'exec', command, { signal, exec: true });
         if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
-        return { status: HTTP_OK, body: { exitCode: outcome.exitCode, output: outcome.output } };
+        return { status: HTTP_OK, body: { exitCode: outcome.exitCode, output: outcome.output, artifacts: [] } };
     } catch (e) {
         return failedRunAnswer(e, claim, signal);
     }
@@ -419,7 +434,7 @@ export function createGateServer({
         return handleRun(request, reply, auth);
     };
 
-    /** The ad-hoc gate call: `POST /run` under a gate token. */
+    /** The ad-hoc tool call: `POST /tools/call` relayed by the control channel, or `POST /run` under a gate token. */
     const handleRun = async (request: IncomingMessage, reply: ServerResponse, auth: string): Promise<void> => {
         const claim = claims.get(auth);
         if (!claim) return respond(reply, HTTP_UNAUTHORIZED, { error: 'unknown token' });

@@ -114,7 +114,7 @@ async function harness(options: Options = {}) {
         fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: 'Bearer tok' },
-            body: JSON.stringify({ gate, ...(filter === undefined ? {} : { filter }) }),
+            body: JSON.stringify({ tool: `gate:${gate}`, ...(filter === undefined ? {} : { input: { filter } }) }),
             ...(signal ? { signal } : {}),
         });
     return { server, run, rows, events, probeCalls, execs, infraLoss };
@@ -129,7 +129,13 @@ describe('the gate server: execution records', () => {
         expect(response.status).toBe(200);
         expect(h.events).toEqual(['write:running', 'exec', 'write:passed']);
         const [started, ended] = h.rows;
-        expect(body).toEqual({ exitCode: 0, output: '', executionId: started!.executionId });
+        expect(body).toEqual({
+            verdict: 'passed',
+            exitCode: 0,
+            output: '',
+            artifacts: [],
+            executionId: started!.executionId,
+        });
         expect(started).toMatchObject({
             gate: 'test',
             identity: 'id-test',
@@ -234,7 +240,11 @@ describe('the gate server: execution records', () => {
     it('records a failed setup as setup_failed: one row, the gate never started', async () => {
         const h = await harness({ job: WITH_SETUP, answer: ({ gate }) => answered(gate.command === 'npm ci' ? 1 : 0) });
         const response = await h.run();
-        expect(await response.json()).toMatchObject({ setupFailed: true, executionId: expect.any(String) });
+        expect(await response.json()).toMatchObject({
+            verdict: 'failed',
+            setupFailed: true,
+            executionId: expect.any(String),
+        });
         expect(h.rows.map((r) => r.outcome)).toEqual(['setup_failed']);
         expect(h.rows[0]).toMatchObject({ exitCode: 1, treeBefore: null, treeAfter: null, mutatedSince: null });
         expect(h.execs.map((e) => e.command)).toEqual(['npm ci']);
