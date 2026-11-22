@@ -99,6 +99,8 @@ Parallel gates need `setsid` in your environment image, which common images such
 
 Use `on_demand: true` for checks that are too slow or too specific to run on every task, such as an end-to-end suite. The agent runs it only when its change touches what the gate checks, and a failure never fails the task.
 
+The agent lists the gates it can run, which of them are on demand and whether each takes a filter, with `factory-gate --list`.
+
 <Warning>
   A gate with `timeout` above 10 cannot be run by the agent while it works. The call is refused and the gate runs only at the end, so an `on_demand` gate with a long timeout never runs. Keep on-demand gates at 10 minutes or less. The agent can still read such a gate's last report with `factory-gate <name> --last`.
 </Warning>
