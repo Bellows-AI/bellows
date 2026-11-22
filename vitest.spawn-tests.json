@@ -81,6 +81,7 @@
         "driver/test/skill-inputs.test.ts",
         "driver/test/skill-view.test.ts",
         "driver/test/supervisor-gate-token.test.ts",
+        "driver/test/takeover-sim.test.ts",
         "driver/test/telemetry-shipping.test.ts",
         "driver/test/tool-broker.test.ts",
         "driver/test/tree-fingerprint.test.ts",
