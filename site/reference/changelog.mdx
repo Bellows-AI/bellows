@@ -9,10 +9,10 @@ User-facing changes only. Self-hosting upgrade notes live in the release notes o
   **New**
   - **Finish gate inside the run.** When an agent finishes, the gates run in the same run. A red gate resumes the same session with the failure, up to the profile's round limit (3 by default), instead of queuing a separate fix job. See [Gates](/guides/gates).
   - **CLI sign-in.** `bellows auth login` signs in through the board, so there is no token to copy by hand. See [Install the CLI](/cli/install).
-  - **Run any command in the environment image.** Agents can run commands in the task's environment image, and an on-demand `ui` gate runs the UI checks in the dev runner image. See [Gates](/guides/gates).
+  - **Run any command in the environment image.** Agents can run commands in the task's environment image. See [Gates](/guides/gates).
 
   **Improved**
-  - Follow-ups carry the output of a failed gate, and the agent can re-read it with `factory-gate --last`.
+  - Follow-ups carry the output of a failed gate, and the agent can re-read it with `factory-gate <name> --last`.
   - Access tokens are created in a modal, the light theme is polished, and the task chat stays inside the viewport.
 
   **Fixed**
