@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename } from 'node:path';
+import { basename, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 // Fixture jobs carry constant ids, and the runner derives its env file's path from them: forks
@@ -10,5 +10,13 @@ describe('the worker temp directory', () => {
         expect(basename(tmpdir())).toMatch(/^vitest-worker-/);
         expect(existsSync(tmpdir())).toBe(true);
         expect(process.env.TMPDIR).toBe(tmpdir());
+    });
+
+    // A unix socket path holds 103 bytes on macOS (107 on Linux). macOS's own TMPDIR is already ~50 bytes, so the
+    // worker directory must hang off a short base for the longest socket the driver suites bind
+    // (`entrypoint-helper-race.test.ts`) to fit.
+    it('leaves room for the longest socket path the driver suites bind', () => {
+        const socket = join(tmpdir(), 'entrypoint-race-opencode-XXXXXX', 'out', 'control.sock');
+        expect(Buffer.byteLength(socket)).toBeLessThanOrEqual(process.platform === 'darwin' ? 103 : 107);
     });
 });
