@@ -199,13 +199,13 @@ Without it, output is plain text for people. Progress, such as attachment upload
 | Code | Meaning |
 | --- | --- |
 | `0` | OK. For a wait: the run succeeded. |
-| `1` | The server refused the request. |
+| `1` | The server refused the request with an error of its own. |
 | `2` | Usage or configuration error. Nothing was sent. |
 | `3` | A wait ran out of budget. |
 | `4` | The run failed or died. |
 | `5` | The run was stopped on the server. |
 | `6` | The task is parked on a workflow wait that waiting cannot move. |
-| `7` | The server was unreachable. |
+| `7` | The server was unreachable, or answered with no verdict of its own, such as a proxy's 502, 503 or 504 or any 5xx without an error code. The task is untouched, so wait again. |
 | `130` | Interrupted locally. The task on the server is untouched. |
 
 A succeeded run means the run's verdict, not that the pull request is merged.

@@ -764,13 +764,24 @@ describe('--json on every outcome', () => {
         expect(calls.map((call) => call.method)).toEqual(['GET']);
     });
 
-    it('ends a wait refused, not timed out, when a poll fails and FACTORY_READ_RETRIES is 0', async () => {
+    it('ends a wait unreachable, not timed out, when a poll ends on a proxy 503 and FACTORY_READ_RETRIES is 0', async () => {
         const { out, io } = harness({ ...ENV, FACTORY_READ_RETRIES: '0' }, () => new Response('down', { status: 503 }));
 
         const code = await run(['job', 'wait', 'job-1', '--json'], io);
 
-        expect(code).toBe(1);
-        expect(JSON.parse(out.join(''))).toMatchObject({ outcome: 'refused', error: { status: 503 } });
+        expect(code).toBe(7);
+        expect(JSON.parse(out.join(''))).toMatchObject({ outcome: 'unreachable', error: { status: 503 } });
+    });
+
+    it('ends a wait on the terminal row when a 502 inside the read retries is followed by it', async () => {
+        const { out, io } = harness(ENV, (index) =>
+            index === 0 ? new Response('<html>bad gateway</html>', { status: 502 }) : json(waitBody('terminal'))
+        );
+
+        const code = await run(['job', 'wait', 'job-1', '--json'], io);
+
+        expect(code).toBe(0);
+        expect(JSON.parse(out.join(''))).toMatchObject({ ok: true });
     });
 
     it('ends interrupted, not unreachable or cancelled, when the local signal aborts the request', async () => {

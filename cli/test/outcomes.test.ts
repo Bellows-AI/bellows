@@ -143,6 +143,28 @@ describe('a board refusal', () => {
     });
 });
 
+// A proxy in front of the board answering a transient status says nothing about the board's
+// verdict: the read that ends on it is unreachable (exit 7), so a script waits again.
+const PROXY_PAGE = '<!DOCTYPE html><html><body>Bad gateway</body></html>';
+
+describe('a transient proxy answer that outlasts the read retries', () => {
+    it.each([502, 503, 504, 500])('job wait on a %i exits 7 as unreachable, without the HTML body', async (status) => {
+        const answer = () => new Response(PROXY_PAGE, { status, headers: { 'content-type': 'text/html' } });
+
+        const human = await runCli(['job', 'wait', 'job-1', '--timeout', '3000'], answer);
+        expect(human.code).toBe(7);
+        expect(human.err).not.toContain('<');
+
+        const machine = await runCli(['job', 'wait', 'job-1', '--timeout', '3000', '--json'], answer);
+        expect(machine.code).toBe(7);
+        const envelope = JSON.parse(machine.out);
+        expect(envelope).toMatchObject({ ok: false, outcome: 'unreachable', exitCode: 7 });
+        expect(envelope.error).toMatchObject({ code: null, status });
+        expect(envelope.error.message).toContain(String(status));
+        expect(envelope.error.message).not.toContain('<');
+    });
+});
+
 // A command line the CLI cannot act on exits 2 before any request. `stderr` is what the refusal
 // must name; null where the line asks for --json, so stderr stays empty by contract.
 const USAGE: { label: string; argv: string[]; stderr: string | null }[] = [

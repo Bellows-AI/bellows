@@ -69,6 +69,9 @@ const MIN_TIMEOUT_MS = 1;
 /** How much of a non-JSON error body is quoted before the message is cut off. */
 const ERROR_BODY_PREVIEW_LENGTH = 200;
 
+/** A body that opens like markup — a proxy's error page. */
+const HTML_BODY = /^\s*</;
+
 const HTTP_REQUEST_TIMEOUT = 408;
 const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_BAD_GATEWAY = 502;
@@ -82,6 +85,19 @@ const RETRYABLE_STATUSES: readonly number[] = [
     HTTP_SERVICE_UNAVAILABLE,
     HTTP_GATEWAY_TIMEOUT,
 ];
+const HTTP_SERVER_ERROR = 500;
+
+/**
+ * Whether a failure is no verdict from the board: no answer at all, or a transient or 5xx status
+ * that carries none of the board's own error codes (a proxy's page, not the board's refusal). Such a
+ * read ends `unreachable`, so a caller asks again.
+ */
+export function isNoVerdict(error: BoardError): boolean {
+    if (error.status === NO_RESPONSE_STATUS) return true;
+    if (error.code !== null) return false;
+    return RETRYABLE_STATUSES.includes(error.status) || error.status >= HTTP_SERVER_ERROR;
+}
+
 /** The statuses whose `Retry-After` hint is honored. */
 const HINTED_STATUSES: readonly number[] = [HTTP_TOO_MANY_REQUESTS, HTTP_SERVICE_UNAVAILABLE];
 
@@ -145,7 +161,8 @@ function issueLines(issues: unknown): string {
  */
 function refusalFrom(path: string, status: number, text: string): { message: string; code: string | null } {
     let message = `${path} answered ${status}`;
-    if (text) message += `: ${text.slice(0, ERROR_BODY_PREVIEW_LENGTH)}`;
+    // A proxy's HTML error page is noise, not the board's words: the status line says enough.
+    if (text && !HTML_BODY.test(text)) message += `: ${text.slice(0, ERROR_BODY_PREVIEW_LENGTH)}`;
     let code: string | null = null;
     try {
         const body = JSON.parse(text) as { error?: unknown; code?: unknown; issues?: unknown };
