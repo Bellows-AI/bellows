@@ -1,4 +1,6 @@
+import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { buildApp } from '../src/app.js';
 import { SESSION_COOKIE } from '../src/auth/session.js';
 import {
     ORG,
@@ -10,8 +12,15 @@ import {
     setup,
     signIn,
 } from './auth.oauth-fixtures.js';
-import { memberGrantsFake } from './helpers.js';
-import { HTTP_FOUND, HTTP_OK } from './helpers-http.js';
+import {
+    githubAuth,
+    memberGrantsFake,
+    memoryAuthStore,
+    staticRegistry,
+    stubTelemetryClient,
+    testConfig,
+} from './helpers.js';
+import { HTTP_FOUND, HTTP_OK, HTTP_UNAUTHORIZED } from './helpers-http.js';
 
 /**
  * What a sign-in does with the App user token pair it obtained (BEL-528): the callback hands it to the member's GitHub
@@ -114,5 +123,60 @@ describe('the sign-in keeps the member’s GitHub grant', () => {
         const pending = await beginOnboarding(app, '/tasks');
         const response = await finishOnboarding(app, pending, { orgs: [ORG] });
         expect(response.json().returnTo).toBe('/tasks');
+    });
+});
+
+describe('the github_app_authorization webhook', () => {
+    const SECRET = 'webhook-secret-for-the-installation-round-trip';
+    const sign = (body: string) => `sha256=${createHmac('sha256', SECRET).update(body).digest('hex')}`;
+    const revocation = (action: string, senderId = 4242) =>
+        JSON.stringify({ action, sender: { id: senderId, login: 'octocat' } });
+
+    async function deliver(body: string, signature = sign(body)) {
+        const memberGrants = memberGrantsFake();
+        const config = testConfig({ auth: githubAuth(), webhookSecret: SECRET });
+        const app = await buildApp({
+            config,
+            orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
+            auth: memoryAuthStore(),
+            memberGrants,
+        });
+        const response = await app.inject({
+            method: 'POST',
+            url: '/api/github/webhook',
+            payload: body,
+            headers: {
+                'content-type': 'application/json',
+                'x-github-event': 'github_app_authorization',
+                'x-hub-signature-256': signature,
+            },
+        });
+        await app.close();
+        return { response, memberGrants };
+    }
+
+    it('breaks every grant of the account the sender names when the authorization is revoked', async () => {
+        const { response, memberGrants } = await deliver(revocation('revoked'));
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(memberGrants.revoked).toEqual([{ forge: 'github', externalAccountId: '4242' }]);
+    });
+
+    it('ignores any other action', async () => {
+        const { response, memberGrants } = await deliver(revocation('created'));
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(memberGrants.revoked).toEqual([]);
+    });
+
+    it('breaks nothing on a delivery that names no numeric sender', async () => {
+        const { response, memberGrants } = await deliver(JSON.stringify({ action: 'revoked', sender: {} }));
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(memberGrants.revoked).toEqual([]);
+    });
+
+    it('breaks nothing on a forged signature', async () => {
+        const body = revocation('revoked');
+        const { response, memberGrants } = await deliver(body, 'sha256=00');
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect(memberGrants.revoked).toEqual([]);
     });
 });

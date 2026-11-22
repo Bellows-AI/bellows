@@ -1,11 +1,22 @@
+import { createHmac } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { buildApp } from '../src/app.js';
 import { createAuthStore } from '../src/auth/store.js';
 import { createIntegrationRuntime } from '../src/integrations/integration-recovery.js';
 import { createMemberForgeGrants, type MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import { createGitHubUserHooks, GITHUB_FORGE } from '../src/integrations/providers/github-user.js';
 import { type FakeAtlassian, startFakeAtlassian } from '../test/fake-atlassian.js';
-import { githubAuth, harness, oneInstallation, stubIdentityClient } from '../test/helpers.js';
+import {
+    githubAuth,
+    harness,
+    memoryAuthStore,
+    oneInstallation,
+    staticRegistry,
+    stubIdentityClient,
+    stubTelemetryClient,
+    testConfig,
+} from '../test/helpers.js';
 import { begin, callback } from '../test/auth.oauth-fixtures.js';
 import { randomGithubId, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
@@ -24,6 +35,7 @@ const ALICE = testUser('grant-alice');
 const BOB = testUser('grant-bob');
 const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE, BOB], max: 14 });
 
+const WEBHOOK_SECRET = 'webhook-secret-for-the-grant-revocation-suite';
 const TOKEN_ROUTE = /^\/login\/oauth\/access_token$/;
 
 let fake: FakeAtlassian;
@@ -310,6 +322,60 @@ describe.skipIf(!enabled)('broken versus inconclusive', () => {
         const answer = await grants.accessToken(ORG, ALICE.id, GITHUB_FORGE);
 
         expect(answer.ok).toBe(false);
+        expect(await grants.standing(ORG, ALICE.id, GITHUB_FORGE)).toBe('live');
+    });
+});
+
+describe.skipIf(!enabled)('the github_app_authorization revoke webhook', () => {
+    const signature = (body: string) => `sha256=${createHmac('sha256', WEBHOOK_SECRET).update(body).digest('hex')}`;
+
+    async function deliver(grants: MemberForgeGrants, body: string) {
+        const config = testConfig({ auth: githubAuth(), webhookSecret: WEBHOOK_SECRET });
+        const app = await buildApp({
+            config,
+            orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
+            auth: memoryAuthStore(),
+            memberGrants: grants,
+        });
+        try {
+            return await app.inject({
+                method: 'POST',
+                url: '/api/github/webhook',
+                payload: body,
+                headers: {
+                    'content-type': 'application/json',
+                    'x-github-event': 'github_app_authorization',
+                    'x-hub-signature-256': signature(body),
+                },
+            });
+        } finally {
+            await app.close();
+        }
+    }
+
+    it('breaks the grant in every org the account holds one, and no other account’s', async () => {
+        const grants = replica();
+        await store(grants, ALICE, 'a1', { expiresIn: 28_800 });
+        await store(grants, ALICE, 'a2', { expiresIn: 28_800, orgId: OTHER_ORG });
+        await store(grants, BOB, 'b1', { expiresIn: 28_800 });
+
+        const response = await deliver(
+            grants,
+            JSON.stringify({ action: 'revoked', sender: { id: ALICE.githubUserId, login: 'grant-alice' } })
+        );
+
+        expect(response.statusCode).toBe(200);
+        expect(await grants.standing(ORG, ALICE.id, GITHUB_FORGE)).toBe('broken');
+        expect(await grants.standing(OTHER_ORG, ALICE.id, GITHUB_FORGE)).toBe('broken');
+        expect(await grants.standing(ORG, BOB.id, GITHUB_FORGE)).toBe('live');
+    });
+
+    it('breaks nothing on an action other than revoked', async () => {
+        const grants = replica();
+        await store(grants, ALICE, 'a1', { expiresIn: 28_800 });
+
+        await deliver(grants, JSON.stringify({ action: 'created', sender: { id: ALICE.githubUserId } }));
+
         expect(await grants.standing(ORG, ALICE.id, GITHUB_FORGE)).toBe('live');
     });
 });

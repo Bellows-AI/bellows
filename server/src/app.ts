@@ -269,10 +269,11 @@ async function registerAccountRoutes(
         config,
         auth,
         orgs,
+        memberGrants,
         oauth,
         version,
         metrics,
-    }: Pick<AppDeps, 'config' | 'orgs' | 'oauth' | 'metrics'> & { auth: AuthStore; version: string }
+    }: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'oauth' | 'metrics'> & { auth: AuthStore; version: string }
 ): Promise<void> {
     // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
     // credential, so a token minted here would be inert at best — and a live personal
@@ -284,7 +285,7 @@ async function registerAccountRoutes(
     // The installation webhook exists exactly when its secret does — its credential IS the
     // HMAC signature, so without one there is nothing to verify and no route may answer.
     if (config.webhookSecret) {
-        await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
+        await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret, memberGrants }));
     }
     await registerMcp(app, { config, auth, oauth, version, metrics });
 }
@@ -488,7 +489,7 @@ export async function buildApp({
         await app.register(
             authRoutes({ config, store: auth, orgs, identity, memberGrants, appSlug, installationListing, oauth })
         );
-        await registerAccountRoutes(app, { config, auth, orgs, oauth, version, metrics });
+        await registerAccountRoutes(app, { config, auth, orgs, memberGrants, oauth, version, metrics });
     }
     await app.register(skillRoutes(skillCatalog, orgs, { version }));
     await app.register(skillStoreRoutes({ orgs, builtin: skillCatalog }));
