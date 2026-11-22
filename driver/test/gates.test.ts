@@ -1406,6 +1406,37 @@ describe('the gate server: the finish pass door', () => {
         await server.close();
     });
 
+    it('hands the relay the request id the body carries; a missing or malformed one hands none', async () => {
+        const { server } = await finishServer();
+        const port = await server.listen();
+        const seen: (string | undefined)[] = [];
+        server.attachFinish('sup', async (requestId) => {
+            seen.push(requestId);
+            return { verdict: 'pass' };
+        });
+        const ask = (body: string) =>
+            fetch(`http://127.0.0.1:${port}/gate/finish`, {
+                method: 'POST',
+                headers: { authorization: 'Bearer agent' },
+                body,
+            });
+        const id = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+
+        for (const body of [
+            JSON.stringify({ requestId: id }),
+            '{}',
+            '',
+            'not json',
+            '[]',
+            JSON.stringify({ requestId: 'not-a-uuid' }),
+            JSON.stringify({ requestId: 42 }),
+        ]) {
+            expect((await ask(body)).status).toBe(OK_STATUS);
+        }
+        expect(seen).toEqual([id, undefined, undefined, undefined, undefined, undefined, undefined]);
+        await server.close();
+    });
+
     it('answers a relay that throws with a 500 the helper reads as no answer', async () => {
         const { server, post } = await finishServer();
         server.attachFinish('sup', async () => {

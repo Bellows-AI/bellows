@@ -60,6 +60,15 @@ export interface FinishPassWrite {
     gate: string | null;
 }
 
+/** What the job row holds for one pass id (copied from the board's): a failed one carries the round it spent. */
+export type RecordedPass = { verdict: 'passed' } | { verdict: 'failed'; round: number };
+
+/** One round read: the job row's failed rounds, and what it holds for the asked pass id (null: nothing). */
+export interface FinishRead {
+    failedRounds: number;
+    pass: RecordedPass | null;
+}
+
 const isString = (v: unknown): v is string => typeof v === 'string';
 const nullable = (v: unknown, check: (x: unknown) => boolean): boolean => v === null || check(v);
 const isInteger = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v);
@@ -81,6 +90,18 @@ function recordOf(raw: unknown): GateRunRecord | null {
     return row as unknown as GateRunRecord;
 }
 
+/** The asked pass as the board holds it: null when it holds none, undefined when the answer is not readable. */
+function recordedPassOf(raw: unknown): RecordedPass | null | undefined {
+    if (raw === null) return null;
+    const pass = raw as { verdict?: unknown; round?: unknown } | undefined;
+    if (typeof pass !== 'object') return undefined;
+    if (pass.verdict === 'passed') return { verdict: 'passed' };
+    if (pass.verdict === 'failed' && isInteger(pass.round) && pass.round >= 1) {
+        return { verdict: 'failed', round: pass.round };
+    }
+    return undefined;
+}
+
 export interface GateRunBoard {
     /**
      * Records one gate execution's row under the lease: `ok` only when the board took it. Never throws:
@@ -99,11 +120,11 @@ export interface GateRunBoard {
      */
     finishPass(job: BoardJob, write: FinishPassWrite, signal?: AbortSignal): Promise<'ok' | 'lost' | 'rejected'>;
     /**
-     * The failed finish passes of the job row, every claim of it. Null for any answer the driver cannot read as a
-     * non-negative integer (non-2xx, a lost lease, a missing or malformed count, an aborted request): unknown
-     * rounds are never zero rounds.
+     * The failed finish passes of the job row, every claim of it, and what the row holds for `passId`. Null for any
+     * answer the driver cannot read in full (non-2xx, a lost lease, a missing or malformed count or pass, an aborted
+     * request): unknown rounds are never zero rounds, and an unread pass is never "not recorded".
      */
-    finishRounds(job: BoardJob, signal?: AbortSignal): Promise<number | null>;
+    finishRounds(job: BoardJob, passId: string, signal?: AbortSignal): Promise<FinishRead | null>;
 }
 
 export function gateRunCalls(post: Post): GateRunBoard {
@@ -132,18 +153,20 @@ export function gateRunCalls(post: Post): GateRunBoard {
             return leased(`/api/jobs/${job.id}/finish-passes`, job, write, signal);
         },
 
-        async finishRounds(job, signal) {
+        async finishRounds(job, passId, signal) {
             try {
                 const response = await post(
                     `/api/jobs/${job.id}/finish-passes/read`,
-                    { leaseToken: job.leaseToken },
+                    { leaseToken: job.leaseToken, passId },
                     false,
                     { signal }
                 );
                 if (!response.ok) return null;
-                const body = (await response.json()) as { failedRounds?: unknown } | null;
+                const body = (await response.json()) as { failedRounds?: unknown; pass?: unknown } | null;
                 const rounds = body?.failedRounds;
-                return isInteger(rounds) && rounds >= 0 ? rounds : null;
+                if (!isInteger(rounds) || rounds < 0) return null;
+                const pass = recordedPassOf(body?.pass);
+                return pass === undefined ? null : { failedRounds: rounds, pass };
             } catch {
                 return null;
             }

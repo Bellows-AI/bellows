@@ -140,16 +140,24 @@ describe('the finish passes', () => {
         expect(written.calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
         expect(written.calls[0]!.body).toEqual({ leaseToken: job.leaseToken, ...pass });
 
-        const read = recorder(() => Response.json({ failedRounds: 2 }));
-        expect(await boardOn(read.fetch).finishRounds(job)).toBe(2);
+        const read = recorder(() => Response.json({ failedRounds: 2, pass: null }));
+        expect(await boardOn(read.fetch).finishRounds(job, pass.passId)).toEqual({ failedRounds: 2, pass: null });
         expect(read.calls[0]!.url).toBe('http://board/api/jobs/job-1/finish-passes/read');
-        expect(read.calls[0]!.body).toEqual({ leaseToken: job.leaseToken });
+        expect(read.calls[0]!.body).toEqual({ leaseToken: job.leaseToken, passId: pass.passId });
     });
 
     it('reads zero failed rounds as zero, not as unreadable', async () => {
-        const { fetch } = recorder(() => Response.json({ failedRounds: 0 }));
-        expect(await boardOn(fetch).finishRounds(job)).toBe(0);
+        const { fetch } = recorder(() => Response.json({ failedRounds: 0, pass: null }));
+        expect(await boardOn(fetch).finishRounds(job, pass.passId)).toEqual({ failedRounds: 0, pass: null });
     });
+
+    it.each([[{ verdict: 'failed', round: 1 }], [{ verdict: 'passed' }]])(
+        'reads the recorded pass %j of the asked id',
+        async (recorded) => {
+            const { fetch } = recorder(() => Response.json({ failedRounds: 1, pass: recorded }));
+            expect(await boardOn(fetch).finishRounds(job, pass.passId)).toEqual({ failedRounds: 1, pass: recorded });
+        }
+    );
 
     it.each<[string, () => Response]>([
         ['a 409', () => Response.json({ code: 'LEASE_LOST' }, { status: 409 })],
@@ -161,21 +169,26 @@ describe('the finish passes', () => {
         ['a negative count', () => Response.json({ failedRounds: -1 })],
         ['a string count', () => Response.json({ failedRounds: '2' })],
         ['a null body', () => Response.json(null)],
-    ])('reads %s as unknown rounds, never as zero', async (_what, respond) => {
+        ['no pass field', () => Response.json({ failedRounds: 1 })],
+        ['a pass of an unknown verdict', () => Response.json({ failedRounds: 1, pass: { verdict: 'maybe' } })],
+        ['a failed pass with no round', () => Response.json({ failedRounds: 1, pass: { verdict: 'failed' } })],
+        ['a failed pass of round 0', () => Response.json({ failedRounds: 1, pass: { verdict: 'failed', round: 0 } })],
+        ['a pass that is a string', () => Response.json({ failedRounds: 1, pass: 'failed' })],
+    ])('reads %s as unknown rounds, never as zero or as not recorded', async (_what, respond) => {
         const { fetch } = recorder(respond);
-        expect(await boardOn(fetch).finishRounds(job)).toBeNull();
+        expect(await boardOn(fetch).finishRounds(job, pass.passId)).toBeNull();
     });
 
     it('reads a rejected fetch and a timed-out signal as unknown rounds', async () => {
         const failing = (async () => {
             throw new Error('connection reset');
         }) as unknown as typeof globalThis.fetch;
-        expect(await boardOn(failing).finishRounds(job)).toBeNull();
-        const { fetch } = recorder(() => Response.json({ failedRounds: 1 }));
+        expect(await boardOn(failing).finishRounds(job, pass.passId)).toBeNull();
+        const { fetch } = recorder(() => Response.json({ failedRounds: 1, pass: null }));
         const slow = ((url: string, init: RequestInit) =>
             init.signal?.aborted ? Promise.reject(init.signal.reason) : fetch(url, init)) as unknown as typeof fetch;
         const timedOut = AbortSignal.abort(new DOMException('the read timed out', 'TimeoutError'));
-        expect(await boardOn(slow).finishRounds(job, timedOut)).toBeNull();
+        expect(await boardOn(slow).finishRounds(job, pass.passId, timedOut)).toBeNull();
     });
 
     it.each<[string, string, () => Response]>([

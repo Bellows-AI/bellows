@@ -406,11 +406,52 @@ describe('factory-finish', () => {
         ...extra,
     });
 
-    it('blocks the stop on a fail answer: exit 10, the driver’s message on stdout, POST {} to /gate/finish', async () => {
+    /** The request id each ask carried. */
+    const requestIdsOf = (seen: { body: string }[]) =>
+        seen.map(({ body }) => (JSON.parse(body) as { requestId?: unknown }).requestId);
+    const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+    it('blocks the stop on a fail answer: exit 10, the driver’s message on stdout, POST {requestId} to /gate/finish', async () => {
         const finish = await serveSequence([[200, FAIL]]);
         const ran = await run(FINISH, [], env(finish.socket));
         expect(ran).toMatchObject({ code: BLOCK, stdout: MESSAGE });
-        expect(finish.seen).toEqual([{ method: 'POST', url: '/gate/finish', authorization: undefined, body: '{}' }]);
+        expect(finish.seen).toEqual([
+            { method: 'POST', url: '/gate/finish', authorization: undefined, body: expect.any(String) },
+        ]);
+        expect(Object.keys(JSON.parse(finish.seen[0]!.body) as object)).toEqual(['requestId']);
+        expect(requestIdsOf(finish.seen)[0]).toMatch(UUID_V4);
+    });
+
+    it(
+        'sends one request id on every retry of one stop, so a lost answer is replayed rather than spent again',
+        async () => {
+            const finish = await serveSequence([
+                [502, '{"error":"the control relay is unavailable"}'],
+                [503, '{"error":"the finish pass is not open yet","retryable":true}'],
+                [200, FAIL],
+            ]);
+            const ran = await run(FINISH, [], env(finish.socket, { BELLOWS_FINISH_RETRY_MS: '30000' }));
+            expect(ran).toMatchObject({ code: BLOCK, stdout: MESSAGE });
+            const ids = requestIdsOf(finish.seen);
+            expect(ids).toHaveLength(3);
+            expect(ids[0]).toMatch(UUID_V4);
+            expect(new Set(ids).size).toBe(1);
+        },
+        SLOW_CASE_MS
+    );
+
+    it('mints a new request id for each stop: two invocations never share one', async () => {
+        const finish = await serveSequence([
+            [200, FAIL],
+            [200, FAIL],
+        ]);
+        await run(FINISH, [], env(finish.socket));
+        await run(FINISH, [], env(finish.socket));
+        const ids = requestIdsOf(finish.seen);
+        expect(ids).toHaveLength(2);
+        expect(ids[0]).toMatch(UUID_V4);
+        expect(ids[1]).toMatch(UUID_V4);
+        expect(ids[0]).not.toBe(ids[1]);
     });
 
     it.each([

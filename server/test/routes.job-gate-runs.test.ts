@@ -39,20 +39,24 @@ const READ_ROW = {
     finishedAt: '2026-10-26T10:01:00.000Z',
 };
 
+/** The one pass id the stub store holds a recorded round for. */
+const KNOWN_PASS = '44444444-4444-4444-8444-444444444444';
+
 function stubStore(answer: Answer = 'ok') {
     const written: Written[] = [];
-    const read: [string, string][] = [];
+    const read: string[][] = [];
     const passes: PassWritten[] = [];
     const store = jobStoreSlice<GateRunStore>({
         async writeFinishPass(...args: PassWritten) {
             passes.push(args);
             return { result: answer };
         },
-        async readFinishRounds(id: string, leaseToken: string) {
-            read.push([id, leaseToken]);
-            return answer === 'ok'
-                ? { result: 'ok' as const, failedRounds: 2 }
-                : { result: answer === 'conflict' ? ('lost' as const) : answer };
+        async readFinishRounds(id: string, leaseToken: string, passId?: string) {
+            read.push(passId === undefined ? [id, leaseToken] : [id, leaseToken, passId]);
+            if (answer !== 'ok') return { result: answer === 'conflict' ? ('lost' as const) : answer };
+            if (passId === undefined) return { result: 'ok' as const, failedRounds: 2 };
+            const pass = passId === KNOWN_PASS ? { verdict: 'failed' as const, round: 1 } : null;
+            return { result: 'ok' as const, failedRounds: 2, pass };
         },
         async writeGateRun(...args: Written) {
             written.push(args);
@@ -229,6 +233,31 @@ describe('POST /api/jobs/:id/finish-passes/read', () => {
         expect(res.statusCode).toBe(200);
         expect(res.json()).toEqual({ failedRounds: 2 });
         expect(read).toEqual([[ID, TOKEN]]);
+    });
+
+    it('answers the recorded verdict of a known pass id, with its round, and null for an unknown one', async () => {
+        const { store, read } = stubStore();
+        const app = await harnessWith(store);
+        const url = `/api/jobs/${ID}/finish-passes/read`;
+        const known = await post(app, url, { leaseToken: TOKEN, passId: KNOWN_PASS });
+        expect(known.statusCode).toBe(200);
+        expect(known.json()).toEqual({ failedRounds: 2, pass: { verdict: 'failed', round: 1 } });
+        const unknown = await post(app, url, { leaseToken: TOKEN, passId: PASS });
+        expect(unknown.json()).toEqual({ failedRounds: 2, pass: null });
+        expect(read).toEqual([
+            [ID, TOKEN, KNOWN_PASS],
+            [ID, TOKEN, PASS],
+        ]);
+    });
+
+    it.each([['not-a-uuid'], [42], [null]])('refuses a pass id of %j with 400 and reads nothing', async (passId) => {
+        const { store, read } = stubStore();
+        const res = await post(await harnessWith(store), `/api/jobs/${ID}/finish-passes/read`, {
+            leaseToken: TOKEN,
+            passId,
+        });
+        expect(res.statusCode).toBe(400);
+        expect(read).toEqual([]);
     });
 
     it('refuses a bad lease token with 400', async () => {

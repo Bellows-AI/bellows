@@ -19,6 +19,13 @@ export interface FinishPassWrite {
     gate: string | null;
 }
 
+/**
+ * What the job row holds for one pass id: its verdict and, for a failed one, the round it spent (its place among the
+ * failed rows, oldest first). A request the driver answered but whose answer never reached the agent is retried
+ * under the same id; this is how the next holder replays that round instead of spending another.
+ */
+export type RecordedPass = { verdict: 'passed' } | { verdict: 'failed'; round: number };
+
 /** The store half the board's finish-pass routes call; `GateRunStore` extends it. */
 export interface FinishPassStore {
     /**
@@ -30,11 +37,15 @@ export interface FinishPassStore {
         leaseToken: string,
         pass: FinishPassWrite
     ): Promise<{ result: 'ok' | 'lost' | 'missing' | 'conflict' }>;
-    /** The failed passes of the job row, every claim of it, under the attempt's lease. */
+    /**
+     * The failed passes of the job row, every claim of it, under the attempt's lease; with `passId`, also what the row
+     * holds for that pass (`pass`, null when none).
+     */
     readFinishRounds(
         id: string,
-        leaseToken: string
-    ): Promise<{ result: 'lost' | 'missing' } | { result: 'ok'; failedRounds: number }>;
+        leaseToken: string,
+        passId?: string
+    ): Promise<{ result: 'lost' | 'missing' } | { result: 'ok'; failedRounds: number; pass?: RecordedPass | null }>;
 }
 
 export async function writeFinishPass(
@@ -59,7 +70,8 @@ export async function writeFinishPass(
 
 export async function readFinishRounds(
     ctx: JobStoreContext,
-    attempt: { id: string; leaseToken: string }
+    attempt: { id: string; leaseToken: string },
+    passId?: string
 ): ReturnType<FinishPassStore['readFinishRounds']> {
     const { sql, orgId } = ctx;
     const { id, leaseToken } = attempt;
@@ -69,5 +81,22 @@ export async function readFinishRounds(
         select count(*)::int as n from job_finish_pass
         where org_id = ${orgId} and job_id = ${id} and verdict = 'failed'
     `;
-    return { result: 'ok', failedRounds: row!.n };
+    if (passId === undefined) return { result: 'ok', failedRounds: row!.n };
+    return { result: 'ok', failedRounds: row!.n, pass: await recordedPass(ctx, id, passId) };
+}
+
+/** What the job row holds for one pass id; a failed one's round is its place among the failed rows, oldest first. */
+async function recordedPass(ctx: JobStoreContext, id: string, passId: string): Promise<RecordedPass | null> {
+    const { sql, orgId } = ctx;
+    const [row] = await sql<{ verdict: FinishPassVerdict; round: number }[]>`
+        select p.verdict, (
+            select count(*)::int from job_finish_pass f
+            where f.org_id = p.org_id and f.job_id = p.job_id and f.verdict = 'failed'
+              and (f.created_at, f.pass_id) <= (p.created_at, p.pass_id)
+        ) as round
+        from job_finish_pass p
+        where p.org_id = ${orgId} and p.job_id = ${id} and p.pass_id = ${passId}
+    `;
+    if (!row) return null;
+    return row.verdict === 'failed' ? { verdict: 'failed', round: row.round } : { verdict: 'passed' };
 }

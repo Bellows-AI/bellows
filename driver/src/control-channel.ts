@@ -13,6 +13,8 @@ import {
     serveExport,
 } from './export-control.js';
 import { INPUT_PATH, type InputAnswer, type InputDelivery, serveInput } from './input-control.js';
+import { parseJsonObject } from './json-parse.js';
+import { UUID } from './task-volume.js';
 import { createStepBroker, serveReport, serveStepPoll, serveStepResult, type StepBroker } from './step-control.js';
 import { GATE_TOKEN_PATH, REPORT_PATH, STEP_PATH } from './supervisor-contract.js';
 import { REVIEW_BODY_LIMIT, type ReviewRelay, serveReviewRead, serveReviewRequest } from './review/review-control.js';
@@ -102,8 +104,12 @@ export type FinishAnswer =
     | { verdict: 'skip'; reason: string }
     | { verdict: 'unavailable'; reason: string };
 
-/** The attempt's finish pass: one answer per ask, the loop's (`loop/loop-finish.ts`). */
-export type FinishRelay = () => Promise<FinishAnswer>;
+/**
+ * The attempt's finish pass: one answer per ask, the loop's (`loop/loop-finish.ts`). `requestId` is the id the
+ * agent's helper minted for its stop and sends on every retry of it — the round's replay key; undefined when the
+ * body carried none (or a malformed one), and the loop mints its own.
+ */
+export type FinishRelay = (requestId?: string) => Promise<FinishAnswer>;
 
 export interface ControlChannel {
     /**
@@ -396,8 +402,14 @@ async function serveGateRun(
 /** An attempt's finish pass; the entry is dropped with the attempt, and its relay with it. */
 const finishDoors = new WeakMap<ControlEntry, FinishRelay | 'none'>();
 
-/** The finish ask's body names nothing; it is drained, bounded. */
+/** The finish ask's body: `{"requestId": "<uuid>"}`, bounded. */
 const FINISH_BODY_LIMIT = 1024;
+
+/** The request id a finish ask's body carries, or undefined for anything else: never a reason to refuse the ask. */
+const finishRequestIdOf = (raw: string): string | undefined => {
+    const requestId = parseJsonObject(raw)?.requestId;
+    return typeof requestId === 'string' && UUID.test(requestId) ? requestId.toLowerCase() : undefined;
+};
 const FINISH_GONE: BodyAnswer = { status: HTTP_UNAUTHORIZED, body: { error: 'unknown token' } };
 
 /**
@@ -410,7 +422,7 @@ const serveFinish = (control: ControlEntry, request: IncomingMessage, open: () =
         request,
         FINISH_BODY_LIMIT,
         () => (open() ? null : FINISH_GONE),
-        async (): Promise<BodyAnswer> => {
+        async (raw): Promise<BodyAnswer> => {
             const door = finishDoors.get(control);
             if (door === 'none') return { status: HTTP_NOT_FOUND, body: { error: 'no gates' } };
             if (door === undefined) {
@@ -420,7 +432,7 @@ const serveFinish = (control: ControlEntry, request: IncomingMessage, open: () =
                 };
             }
             try {
-                return { status: HTTP_OK, body: await door() };
+                return { status: HTTP_OK, body: await door(finishRequestIdOf(raw)) };
             } catch (e) {
                 return { status: HTTP_INTERNAL_ERROR, body: { error: `finish pass failed: ${(e as Error).message}` } };
             }

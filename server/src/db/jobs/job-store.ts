@@ -179,8 +179,8 @@ function workerMethods(
             return writeFinishPass(ctx, { id, leaseToken }, pass);
         },
 
-        async readFinishRounds(id, leaseToken) {
-            return readFinishRounds(ctx, { id, leaseToken });
+        async readFinishRounds(id, leaseToken, passId) {
+            return readFinishRounds(ctx, { id, leaseToken }, passId);
         },
 
         async writePrOperation(id, leaseToken, operation) {

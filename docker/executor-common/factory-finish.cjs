@@ -16,8 +16,13 @@
  * or malformed window is the default one, never zero. A container with no supervisor relay
  * (FACTORY_CTL_OUT without its control.sock) has nobody to ask and stops at once.
  *
+ * One invocation is one stop: it mints one request id and sends it on its first ask and on every retry, so
+ * a pass the driver answered but whose answer never arrived (a cut relay, a takeover) is replayed under the
+ * same round on the board, never spent again. The next stop is the next invocation, with an id of its own.
+ *
  * It never sees the run-control credential: the proxy socket takes none, the supervisor attaches it.
  */
+const { randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { parsed, post, retryWhy } = require('./control-call.cjs');
@@ -66,8 +71,9 @@ function blockText(status, json) {
 async function main() {
     if (!relayExists()) return letStop('no run-control relay in this container');
     const window = windowMs(process.env.BELLOWS_FINISH_RETRY_MS);
+    const body = { requestId: randomUUID() };
     for (;;) {
-        const result = await post({ path: FINISH_PATH, body: {} });
+        const result = await post({ path: FINISH_PATH, body });
         const json = result.cut === undefined ? parsed(result.text) : undefined;
         const why = result.cut ?? retryWhy(result.status, json, 'finish pass');
         if (why === undefined) {

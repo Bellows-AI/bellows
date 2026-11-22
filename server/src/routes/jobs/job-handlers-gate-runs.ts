@@ -194,20 +194,32 @@ export async function handleFinishPass(orgs: OrgRegistry, request: FastifyReques
     return reply.code(HTTP_OK).send({ id, passId: checked.value.passId });
 }
 
-/** The failed finish passes of the job row, every claim of it, under the caller's lease. */
+/**
+ * The failed finish passes of the job row, every claim of it, under the caller's lease. With a `passId`, also what the
+ * row holds for that pass (`pass`: its verdict and a failed one's round, or null) — how a retried request replays the
+ * round it already spent.
+ */
 export async function handleFinishRounds(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveLeasedRoute<keyof GateRunStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id, leaseToken } = route;
+    const { store, id, fields, leaseToken } = route;
+    const { passId } = fields;
+    if (passId !== undefined && (typeof passId !== 'string' || !UUID.test(passId))) {
+        return bad(reply, ERROR_CODES.BAD_BODY, 'passId must be a uuid');
+    }
 
     const read = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'finish rounds read failed'),
-        () => store.readFinishRounds(id, leaseToken)
+        () =>
+            passId === undefined
+                ? store.readFinishRounds(id, leaseToken)
+                : store.readFinishRounds(id, leaseToken, passId)
     );
     if (!read.ok) return reply;
     if (read.value.result !== 'ok') return read.value.result === 'missing' ? notFoundJob(reply) : leaseLost(reply);
-    return reply.code(HTTP_OK).send({ failedRounds: read.value.failedRounds });
+    const { failedRounds, pass } = read.value;
+    return reply.code(HTTP_OK).send(pass === undefined ? { failedRounds } : { failedRounds, pass });
 }
 
 /** The gate-run (087) and finish-pass (163) worker routes, under the attempt's lease. */

@@ -32,7 +32,8 @@ const EXECUTORS = [
 
 const claimedJob = (over: Partial<BoardJob> = {}): BoardJob => ({ ...gatedJob(1), finishRounds: 3, ...over });
 
-type Ask = () => Promise<FinishAnswer>;
+/** One stop's ask; `requestId` is the id the helper sends on every retry of that stop. */
+type Ask = (requestId?: string) => Promise<FinishAnswer>;
 
 interface AgentView {
     ask: Ask;
@@ -77,10 +78,10 @@ describe.each(EXECUTORS)('the finish pass on the %s executor', (_executor, env) 
         const answers: FinishAnswer[] = [];
         const runner: ReturnType<typeof stubRunner> = stubRunner(
             async (running) => {
-                const ask: Ask = async () => {
+                const ask: Ask = async (requestId) => {
                     const relay = stack.finishRelays.get(running.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '');
                     if (!relay) throw new Error('no finish relay attached');
-                    const answer = await relay();
+                    const answer = await relay(requestId);
                     answers.push(answer);
                     return answer;
                 };
@@ -442,6 +443,100 @@ describe.each(EXECUTORS)('the finish pass on the %s executor', (_executor, env) 
         expect(r.runner.resized.filter((phase) => phase === 'idle').length).toBeGreaterThanOrEqual(2);
         // The lost supervisor is the attempt's loss: interrupted, never a verdict.
         expect(r.board.completed).toEqual([]);
+    });
+
+    // ---- a retried request: the answer was lost on its way to the agent ----------------------
+    const STOP_A = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+    const STOP_B = '16fd2706-8baf-433b-82eb-8c7fada847da';
+
+    it('a retried request replays its round: the same id answers fail again, a new id answers cap', async () => {
+        let ranInRun: string[] = [];
+        const r = await run({
+            job: claimedJob({ finishRounds: 1 }),
+            outcomes: { test: 1 },
+            agent: async ({ ask, ran }) => {
+                // The first answer never reaches the agent: its helper asks again under the same id.
+                await ask(STOP_A);
+                await ask(STOP_A);
+                ranInRun = ran();
+                await ask(STOP_B);
+            },
+        });
+
+        expect(r.answers[1]).toMatchObject({ verdict: 'fail', gate: 'test', round: 1, limit: 1 });
+        const replayed = r.answers[1] as Extract<FinishAnswer, { verdict: 'fail' }>;
+        expect(replayed.output).toContain('test failed badly');
+        expect(replayed.message).toContain('round 1 of 1');
+        expect(r.answers[2]).toEqual({ verdict: 'cap', rounds: 1, limit: 1 });
+        expect(r.ledger.finishPasses.map((round) => [round.passId, round.verdict])).toEqual([[STOP_A, 'failed']]);
+        expect(r.board.finishRoundReadIds.slice(0, 3)).toEqual([STOP_A, STOP_A, STOP_B]);
+        // The replay reran the red gate for its output; the new stop ran nothing.
+        expect(ranInRun).toEqual(['test', 'test']);
+    });
+
+    it('a request id recorded passed answers pass and runs nothing', async () => {
+        let ranInRun: string[] = [];
+        const ledger = boardLedger();
+        ledger.finishPasses.push({ passId: STOP_A, runClaimSeq: 1, verdict: 'passed', gate: null });
+        const r = await run({
+            ledger,
+            outcomes: { test: 1 },
+            agent: async ({ ask, ran }) => {
+                await ask(STOP_A);
+                ranInRun = ran();
+            },
+        });
+
+        expect(r.answers).toEqual([{ verdict: 'pass' }]);
+        expect(ranInRun).toEqual([]);
+        expect(r.ledger.finishPasses).toHaveLength(1);
+    });
+
+    it('a retry across a takeover replays the round the first holder spent', async () => {
+        const first = claimedJob({ finishRounds: 1 });
+        const second: BoardJob = { ...first, claimSeq: 2, leaseToken: '22222222-2222-4222-8222-222222222222' };
+        let lose = false;
+        const r = await run({
+            job: first,
+            more: [second],
+            env: { DRIVER_CONCURRENCY: '1' },
+            outcomes: { test: 1 },
+            heartbeat: (beaten) =>
+                beaten.claimSeq === 1 && lose ? 'lost' : { result: 'held', cancelRequested: false },
+            agent: async ({ ask, claimed }) => {
+                if (claimed.claimSeq === 1) {
+                    await ask(STOP_A);
+                    // The holder is lost before its answer reached the agent.
+                    lose = true;
+                    for (let i = 0; i < 200; i++) await tick();
+                    return;
+                }
+                await ask(STOP_A);
+                await ask(STOP_B);
+            },
+        });
+
+        expect(r.answers.map((answer) => answer.verdict)).toEqual(['fail', 'fail', 'cap']);
+        expect(r.answers[1]).toMatchObject({ round: 1, limit: 1 });
+        expect(r.ledger.finishPasses.map((round) => [round.passId, round.verdict, round.runClaimSeq])).toEqual([
+            [STOP_A, 'failed', 1],
+        ]);
+    });
+
+    it('an unconfirmed read of a request id answers unavailable, runs nothing and writes nothing', async () => {
+        let ranInRun: string[] = [];
+        const r = await run({
+            board: { finishRounds: 'unreadable' },
+            agent: async ({ ask, ran }) => {
+                await ask(STOP_A);
+                ranInRun = ran();
+            },
+        });
+
+        expect(verdicts(r.answers)).toEqual(['unavailable']);
+        expect(r.board.finishRoundReadIds).toEqual([STOP_A]);
+        expect(ranInRun).toEqual([]);
+        expect(r.board.finishPassesWritten).toEqual([]);
     });
 });
 

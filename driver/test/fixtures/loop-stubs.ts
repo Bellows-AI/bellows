@@ -16,7 +16,7 @@ import type {
     ReviewClaim,
     RuntimeReport,
 } from '../../src/board/board.js';
-import type { FinishPassWrite, GateRunRecord, GateRunWrite } from '../../src/board/board-gate-runs.js';
+import type { FinishPassWrite, GateRunRecord, GateRunWrite, RecordedPass } from '../../src/board/board-gate-runs.js';
 import type { PrOperationWrite } from '../../src/board/board-pr-operations.js';
 import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
@@ -104,6 +104,8 @@ export interface BoardStub extends Board {
     finishPassesWritten: FinishPassWrite[];
     /** How many times the loop read the failed finish rounds. */
     finishRoundReads: number;
+    /** The pass id each round read asked about, in order. */
+    finishRoundReadIds: string[];
     /** Every PR operation the loop recorded, with the lease token it wrote under. */
     prOperationsWritten: { id: string; leaseToken: string; write: PrOperationWrite }[];
     /** The final envelopes the loop staged before each verdict. */
@@ -227,6 +229,7 @@ export function stubBoard(
         gateRunReads: [],
         finishPassesWritten: [],
         finishRoundReads: 0,
+        finishRoundReadIds: [],
         prOperationsWritten: [],
         sessions: [],
         sessionEvidence: [],
@@ -402,14 +405,26 @@ export function stubBoard(
         async finishPass(_claimed, write) {
             board.finishPassesWritten.push(structuredClone(write));
             const answer = options.finishPassWrite ?? 'ok';
-            if (answer === 'ok') options.ledger?.finishPasses.push(structuredClone(write));
+            // Idempotent on the pass id, as the board's write is: a replay stores nothing.
+            const ledger = options.ledger?.finishPasses;
+            if (answer === 'ok' && ledger && !ledger.some((round) => round.passId === write.passId)) {
+                ledger.push(structuredClone(write));
+            }
             return answer;
         },
-        async finishRounds() {
+        async finishRounds(_claimed, passId) {
             board.finishRoundReads += 1;
+            board.finishRoundReadIds.push(passId);
             if (options.finishRounds === 'unreadable') return null;
-            const rounds = options.ledger?.finishPasses ?? board.finishPassesWritten;
-            return rounds.filter((round) => round.verdict === 'failed').length;
+            const rounds = (options.ledger?.finishPasses ?? board.finishPassesWritten).filter(
+                (round, index, all) => all.findIndex((other) => other.passId === round.passId) === index
+            );
+            const failed = rounds.filter((round) => round.verdict === 'failed');
+            const held = rounds.find((round) => round.passId === passId);
+            let pass: RecordedPass | null = null;
+            if (held?.verdict === 'passed') pass = { verdict: 'passed' };
+            if (held?.verdict === 'failed') pass = { verdict: 'failed', round: failed.indexOf(held) + 1 };
+            return { failedRounds: failed.length, pass };
         },
         async stageConclusion(claimed, result) {
             board.staged.push({ id: claimed.id, ...result });

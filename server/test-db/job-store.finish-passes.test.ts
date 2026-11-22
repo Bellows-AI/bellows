@@ -107,6 +107,49 @@ describe.skipIf(!enabled)('finish passes', () => {
         expect(await roundsOf(next)).toBe(0);
     });
 
+    it('answers the recorded verdict of a known pass id, with the round a failed one holds, and null for an unknown one', async () => {
+        const c = await claimed();
+        const first = pass(c);
+        const green = pass(c, { verdict: 'passed', gate: null });
+        const second = pass(c, { gate: 'lint' });
+        for (const each of [first, green, second]) await store.writeFinishPass(c.id, c.leaseToken, each);
+
+        expect(await store.readFinishRounds(c.id, c.leaseToken, first.passId)).toEqual({
+            result: 'ok',
+            failedRounds: 2,
+            pass: { verdict: 'failed', round: 1 },
+        });
+        expect(await store.readFinishRounds(c.id, c.leaseToken, second.passId)).toEqual({
+            result: 'ok',
+            failedRounds: 2,
+            pass: { verdict: 'failed', round: 2 },
+        });
+        expect(await store.readFinishRounds(c.id, c.leaseToken, green.passId)).toEqual({
+            result: 'ok',
+            failedRounds: 2,
+            pass: { verdict: 'passed' },
+        });
+        expect(await store.readFinishRounds(c.id, c.leaseToken, randomUUID())).toEqual({
+            result: 'ok',
+            failedRounds: 2,
+            pass: null,
+        });
+    });
+
+    it('answers a recorded pass id to a takeover, and to no lease that was lost', async () => {
+        const c = await claimed();
+        const failed = pass(c);
+        await store.writeFinishPass(c.id, c.leaseToken, failed);
+        const next = await takeOver(c);
+        expect(await store.readFinishRounds(c.id, c.leaseToken, failed.passId)).toEqual({ result: 'lost' });
+        expect(await store.readFinishRounds(next.id, next.leaseToken, failed.passId)).toEqual({
+            result: 'ok',
+            failedRounds: 1,
+            pass: { verdict: 'failed', round: 1 },
+        });
+        expect(await other.readFinishRounds(c.id, next.leaseToken, failed.passId)).toEqual({ result: 'missing' });
+    });
+
     it('counts the rounds of every claim of the job row: a takeover reads what its predecessor spent', async () => {
         const c = await claimed();
         await store.writeFinishPass(c.id, c.leaseToken, pass(c));
