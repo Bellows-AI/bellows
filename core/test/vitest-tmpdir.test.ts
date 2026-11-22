@@ -16,7 +16,7 @@ describe('the worker temp directory', () => {
     // worker directory must hang off a short base for the longest socket the driver suites bind
     // (`entrypoint-helper-race.test.ts`) to fit.
     it('leaves room for the longest socket path the driver suites bind', () => {
-        const socket = join(tmpdir(), 'entrypoint-race-claude-XXXXXX', 'out', 'control.sock');
+        const socket = join(tmpdir(), 'entrypoint-race-opencode-XXXXXX', 'out', 'control.sock');
         expect(Buffer.byteLength(socket)).toBeLessThanOrEqual(103);
     });
 });
