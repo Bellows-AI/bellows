@@ -23,6 +23,7 @@ import { agentTitleRoutes } from './routes/agent-title.js';
 import { errorHandler } from './routes/error-handler.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
+import type { MemberForgeGrants } from './integrations/member-forge-grant.js';
 import { combineRegistrations } from './integrations/provider-registry.js';
 import { batchRoutes } from './routes/batches/batches.js';
 import type { UploadCapabilityStore } from './attachments/upload-capability-store.js';
@@ -170,6 +171,8 @@ export interface AppDeps {
     oauth?: OAuthStore | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
     identity?: GitHubIdentityClient | undefined;
+    /** The member forge grants: a sign-in keeps the GitHub grant here, and the revoke webhook breaks it. Absent, none. */
+    memberGrants?: MemberForgeGrants | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
     appSlug?: (() => Promise<string>) | undefined;
     /**
@@ -255,6 +258,35 @@ async function registerMcp(
         metrics,
         streamsPerOrg: config.requestLimits.streamsPerOrg,
     });
+}
+
+/**
+ * The routes behind the auth store beside sign-in: the personal tokens (github mode only), the installation webhook and MCP.
+ */
+async function registerAccountRoutes(
+    app: FastifyInstance,
+    {
+        config,
+        auth,
+        orgs,
+        oauth,
+        version,
+        metrics,
+    }: Pick<AppDeps, 'config' | 'orgs' | 'oauth' | 'metrics'> & { auth: AuthStore; version: string }
+): Promise<void> {
+    // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
+    // credential, so a token minted here would be inert at best — and a live personal
+    // credential the day the same database flips to `github`. The settings page hides both
+    // sections for exactly this reason; the API matches it.
+    if (config.auth.mode !== 'none') {
+        await app.register(tokenRoutes({ store: auth }));
+    }
+    // The installation webhook exists exactly when its secret does — its credential IS the
+    // HMAC signature, so without one there is nothing to verify and no route may answer.
+    if (config.webhookSecret) {
+        await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
+    }
+    await registerMcp(app, { config, auth, oauth, version, metrics });
 }
 
 /** Each org's own installation mints its runners' tokens; an org without one has none to give. */
@@ -384,6 +416,7 @@ export async function buildApp({
     attachmentMaxInFlight,
     uploadCapabilities,
     identity,
+    memberGrants,
     appSlug,
     installationListing,
     commercePlanWriter,
@@ -452,20 +485,10 @@ export async function buildApp({
     await app.register(healthRoutes(ready));
     await app.register(versionRoutes(version));
     if (auth) {
-        await app.register(authRoutes({ config, store: auth, orgs, identity, appSlug, installationListing, oauth }));
-        // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
-        // credential, so a token minted here would be inert at best — and a live personal
-        // credential the day the same database flips to `github`. The settings page hides both
-        // sections for exactly this reason; the API matches it.
-        if (config.auth.mode !== 'none') {
-            await app.register(tokenRoutes({ store: auth }));
-        }
-        // The installation webhook exists exactly when its secret does — its credential IS the
-        // HMAC signature, so without one there is nothing to verify and no route may answer.
-        if (config.webhookSecret) {
-            await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret }));
-        }
-        await registerMcp(app, { config, auth, oauth, version, metrics });
+        await app.register(
+            authRoutes({ config, store: auth, orgs, identity, memberGrants, appSlug, installationListing, oauth })
+        );
+        await registerAccountRoutes(app, { config, auth, orgs, oauth, version, metrics });
     }
     await app.register(skillRoutes(skillCatalog, orgs, { version }));
     await app.register(skillStoreRoutes({ orgs, builtin: skillCatalog }));

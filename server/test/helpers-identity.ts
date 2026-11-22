@@ -4,6 +4,12 @@ import type {
     GitHubUserTokens,
     InstallationAccount,
 } from '../src/auth/github.js';
+import type {
+    MemberForgeGrants,
+    MemberGrantStanding,
+    StoreMemberGrantInput,
+    StoreMemberGrantResult,
+} from '../src/integrations/member-forge-grant.js';
 import { SESSION_COOKIE, hashToken, mintToken, sign } from '../src/auth/session.js';
 import type { AuthStore, Caller, InstallationRef } from '../src/auth/store.js';
 import { TEST_SESSION_SECRET } from './helpers-config.js';
@@ -70,3 +76,37 @@ export const oneInstallation = (id: string, account = 'acme'): InstallationAccou
 /** Installation refs as the store's signIn takes them. */
 export const refsOf = (installations: readonly InstallationAccount[]): InstallationRef[] =>
     installations.map((i) => ({ id: i.id, name: i.account ?? i.id }));
+
+/** A scripted `MemberForgeGrants`: records every call, and answers what the test set. */
+export interface MemberGrantsFake extends MemberForgeGrants {
+    stored: StoreMemberGrantInput[];
+    revoked: { forge: string; externalAccountId: string }[];
+    /** What `store` answers next; a thrown error is a store that could not be reached. */
+    storeAnswer: StoreMemberGrantResult | Error;
+    standingAnswer: MemberGrantStanding;
+}
+
+export function memberGrantsFake(): MemberGrantsFake {
+    const fake: MemberGrantsFake = {
+        stored: [],
+        revoked: [],
+        storeAnswer: { ok: true },
+        standingAnswer: 'missing',
+        async store(input) {
+            fake.stored.push(input);
+            if (fake.storeAnswer instanceof Error) throw fake.storeAnswer;
+            return fake.storeAnswer;
+        },
+        async standing() {
+            return fake.standingAnswer;
+        },
+        async accessToken() {
+            return { ok: false, outcome: { outcome: 'integration_required', reason: 'missing', provider: 'github' } };
+        },
+        async revokeAuthorization(forge, externalAccountId) {
+            fake.revoked.push({ forge, externalAccountId });
+            return 1;
+        },
+    };
+    return fake;
+}

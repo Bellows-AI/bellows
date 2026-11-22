@@ -1,6 +1,7 @@
 import { expect } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import type { AppConfig } from '../src/config.js';
+import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import type { InstallationRepo } from '../src/github/app-client.js';
 import { OAUTH_COOKIE, PENDING_COOKIE, SESSION_COOKIE } from '../src/auth/session.js';
 import { githubAuth, harness, memoryAuthStore, oneInstallation, stubIdentityClient } from './helpers.js';
@@ -16,6 +17,8 @@ export const ORG = '999999';
 
 export interface SetupOptions {
     seed?: (store: MemoryAuthStore) => void;
+    /** The member forge grants a sign-in keeps; absent, none (the shape most of these suites run in). */
+    memberGrants?: MemberForgeGrants;
     installations?: { id: string; account: string | null }[];
     installationListing?: (installationId: string) => Promise<InstallationRepo[] | null>;
     config?: Partial<AppConfig>;
@@ -23,6 +26,7 @@ export interface SetupOptions {
 
 export async function setup({
     seed = () => {},
+    memberGrants,
     installations = oneInstallation(ORG),
     installationListing,
     config = {},
@@ -35,6 +39,7 @@ export async function setup({
         config: { auth: githubAuth(), ...config },
         auth,
         identity,
+        ...(memberGrants ? { memberGrants } : {}),
         appSlug: async () => 'stub-app',
         ...(installationListing ? { installationListing } : {}),
     });

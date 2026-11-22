@@ -98,12 +98,12 @@ async function failedExchange(
     ctx: LineageCtx,
     claim: LineageClaim,
     answer: Extract<ExchangeResult, { ok: false }>,
-    options: { rotating: boolean; aborted: boolean }
+    options: { rotating: boolean; retryTransient: boolean; aborted: boolean }
 ): Promise<{ result: RefreshResult; settled: boolean }> {
     if (answer.failure === 'not-sent') {
         return { result: unavailable(options.aborted ? 'aborted' : 'transport'), settled: false };
     }
-    if (answer.failure === 'definitive' || options.rotating) {
+    if (answer.failure === 'definitive' || (options.rotating && !options.retryTransient)) {
         // A spent (or possibly spent) rotating token is never replayed: the person must reconnect.
         await endClaim(ctx, claim, { reconnect: true });
         ctx.log('reconnect-required', claim.grantId);
@@ -161,6 +161,7 @@ async function exchangeUnderClaim(
         if (!answer.ok) {
             const failed = await failedExchange(ctx, claim, answer, {
                 rotating: hooks.rotatesRefreshToken,
+                retryTransient: hooks.retryTransientRefresh === true,
                 aborted: signal?.aborted === true,
             });
             settled = failed.settled;

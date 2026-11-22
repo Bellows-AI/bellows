@@ -27,6 +27,8 @@ import type { OAuthStore } from '../auth/oauth-store.js';
 import type { AuthStore, Caller, InstallationRef } from '../auth/store.js';
 import type { AppConfig } from '../config.js';
 import type { OrgRegistry } from '../orgs.js';
+import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
+import { keepMemberGrant } from './auth-member-grant.js';
 import { registerOnboardingRoutes } from './auth-onboarding.js';
 import { onboardingSetupRoutes } from './onboarding-setup.js';
 import {
@@ -58,6 +60,8 @@ export interface AuthRouteDeps {
     orgs?: OrgRegistry | undefined;
     /** Absent under AUTH_MODE=none, where there is no exchange to make. */
     identity?: GitHubIdentityClient | undefined;
+    /** Where a sign-in keeps the member's GitHub grant; absent, it keeps none. */
+    memberGrants?: MemberForgeGrants | undefined;
     /**
      * The App slug, for building the install-page redirect when an account can see no
      * installations. Absent offline — the code-only no-fetch arm cannot ask GitHub, so the
@@ -119,6 +123,7 @@ async function redirectToInstallPage(
 
 interface CallbackCtx {
     identity: GitHubIdentityClient;
+    memberGrants: MemberForgeGrants | undefined;
     appSlug: (() => Promise<string>) | undefined;
     store: AuthStore;
     secret: string;
@@ -201,6 +206,7 @@ async function resolveCallbackCaller(
     const selected =
         decoded.org && selection.some((install) => install.id === decoded.org) ? decoded.org : selection[0]!.id;
     const caller = await ctx.store.signIn(who, selected, selection);
+    await keepMemberGrant(ctx.memberGrants, request, { caller, who, tokens });
     return { kind: 'caller', caller };
 }
 
@@ -344,7 +350,16 @@ async function handleSwitchOrg(ctx: SwitchOrgCtx, request: FastifyRequest, reply
 }
 
 export const authRoutes =
-    ({ config, store, orgs, identity, appSlug, installationListing, oauth }: AuthRouteDeps): FastifyPluginAsync =>
+    ({
+        config,
+        store,
+        orgs,
+        identity,
+        memberGrants,
+        appSlug,
+        installationListing,
+        oauth,
+    }: AuthRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const { auth } = config;
         const resolveUser = createUserResolver({ config, store });
@@ -441,7 +456,14 @@ export const authRoutes =
             cookie,
             store,
         };
-        const callbackCtx: CallbackCtx = { identity, appSlug, store, secret, cookieSecure: auth.cookieSecure };
+        const callbackCtx: CallbackCtx = {
+            identity,
+            memberGrants,
+            appSlug,
+            store,
+            secret,
+            cookieSecure: auth.cookieSecure,
+        };
 
         app.get('/api/auth/github', async (request, reply) => {
             const query = request.query as { returnTo?: string; org?: string; reselect?: string };
@@ -474,6 +496,7 @@ export const authRoutes =
             cookieSecure: auth.cookieSecure,
             sessionDeps,
             listInstallationRepos,
+            memberGrants,
         });
 
         /*
