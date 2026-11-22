@@ -55,6 +55,7 @@ import {
     nodeSkipsGates,
 } from '../workflows/workflow-schema.js';
 import { logger } from '../../log.js';
+import { claimAuthorFor } from './job-store-claim-author.js';
 
 /** The worker claim of the next queued job. */
 export interface JobClaimStore {
@@ -566,7 +567,7 @@ async function assembleClaim(
     },
     prepared: { rootJobId: string; gates: ResolvedClaimGates; connections: ClaimConnections }
 ): Promise<Omit<Claim, 'attachments'>> {
-    const { orgId, githubApp, prs } = ctx;
+    const { orgId, githubApp, prs, commitAuthor } = ctx;
     const { rootJobId, connections } = prepared;
     const executor = await resolveClaimExecutor(tx, ctx, row);
     await recordRunModel(tx, orgId, row.id, executor.runModel);
@@ -590,7 +591,9 @@ async function assembleClaim(
         skillRefusal,
     });
     const outcomes = connections.outcomes.length > 0 ? { connectionOutcomes: connections.outcomes } : {};
-    return { ...claim, lastGateReports, ...outcomes };
+    // Read on every claim, takeover and resume included, so a recovered runner gets the same author (BEL-531).
+    const author = commitAuthor ? await claimAuthorFor(tx, row.run_as) : null;
+    return { ...claim, lastGateReports, ...outcomes, ...(author ? { author } : {}) };
 }
 
 /** The settle passes a claim runs before it looks for a candidate, each committed on its own. */
