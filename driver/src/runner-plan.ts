@@ -1,3 +1,4 @@
+import { authorEnv } from './commit-author.js';
 import type { BoardJob } from './board/board.js';
 import type { DriverConfig } from './config.js';
 import {
@@ -163,6 +164,7 @@ function opencodePlan(
     }
     const envPairs: [string, string][] = [
         ['XDG_DATA_HOME', opencodeDataDir(job)],
+        ...authorEnv(job),
         ...npmQuietEnv(job),
         ...repoCacheEnv(job),
         ...baseBranchEnv(job),
@@ -216,6 +218,7 @@ function claudePlan(
         ['BELLOWS_SESSION_ID', session.id],
         ...unwrittenResumeEnv(job, session),
         ...claudeTurnContextEnv(job),
+        ...authorEnv(job),
         ...npmQuietEnv(job),
         ...repoCacheEnv(job),
         ...baseBranchEnv(job),

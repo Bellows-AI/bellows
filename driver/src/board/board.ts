@@ -1,3 +1,4 @@
+import type { CommitAuthor } from '../commit-author.js';
 import { type ConnectionOutcome, connectionCalls, type RequirementVerdict } from './board-connection.js';
 import { heldBeat } from './board-heartbeat.js';
 import type { Interruption } from './board-interruption.js';
@@ -172,6 +173,8 @@ export interface BoardJob extends ClaimSkills {
      * because a board that predates the field omits it.
      */
     userId: string | null;
+    /** Who authors the run's commits (BEL-531); absent for an unattributed job and under `AUTH_MODE=none`. */
+    author?: CommitAuthor;
     /**
      * Where that person's checkouts live, relative to the mounted workspace volume.
      *
