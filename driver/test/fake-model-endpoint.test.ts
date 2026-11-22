@@ -352,7 +352,10 @@ describe('the scripted model endpoint in finish-gate mode', () => {
         );
     const tools = [{ name: 'Bash' }, { name: 'Read' }];
     const said = (reply: Reply) => ({ role: 'assistant', content: reply.content });
-    const result = (id: string) => ({ role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: '' }] });
+    const result = (id: string, content: unknown = '') => ({
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: id, content }],
+    });
     const failure =
         'The "lane-finish" gate failed (round 1 of 3). Fix the cause so the gate passes, keeping the change as small as the fix allows, then finish again.\n\nGate output:\n';
     const report = async (url: string) =>
@@ -360,11 +363,52 @@ describe('the scripted model endpoint in finish-gate mode', () => {
             agentRequests: number;
             fixCalls: number;
             failures: { gate: string; round: number; limit: number; sameSession: boolean }[];
+            toolResults: { list: string | null; gate: string | null; exec: string | null };
         };
+    const LIST = '{"tools":[{"id":"gate:lane-finish"},{"id":"gate:lane-adhoc"},{"id":"exec"}]}';
+    const GATE = '{"verdict":"failed","exitCode":1,"output":"","artifacts":[]}';
+    const EXEC = '{"exitCode":0,"output":"lane-exec-ok\\n","artifacts":[]}';
+    /** Answers the three factory tool calls the mode opens with; returns the commands the model ran. */
+    const callTools = async (url: string, history: object[]) => {
+        const commands: string[] = [];
+        // claude sends a string, opencode may send text blocks: both read back as the text.
+        for (const content of [LIST, [{ type: 'text', text: GATE }], EXEC]) {
+            const reply = await request(url, { tools, messages: history });
+            expect(reply.content[0]).toMatchObject({ type: 'tool_use', name: 'Bash' });
+            commands.push(reply.content[0]!.input?.command ?? '');
+            history.push(said(reply), result(reply.content[0]!.id ?? '', content));
+        }
+        return commands;
+    };
+
+    it('in --finish-gate mode the model calls --list, the gate and exec once, then works', async () => {
+        const { endpoint, url } = await start({ finishGate: true });
+        const history: object[] = [{ role: 'user', content: 'do the task' }];
+
+        expect(await callTools(url, history)).toEqual([
+            'factory-gate --list',
+            'factory-gate lane-adhoc',
+            "factory-exec 'echo lane-exec-ok'",
+        ]);
+        // A resent history calls nothing twice: the next step is the work.
+        const work = await request(url, { tools, messages: history });
+        expect(work.content[0]!.input?.command).toBe('echo lane work > lane-finish-work.txt');
+        expect(endpoint.agentRequests).toBe(4);
+    });
+
+    it('GET /finish-gate reports the three tool results', async () => {
+        const { url } = await start({ finishGate: true });
+        expect((await report(url)).toolResults).toEqual({ list: null, gate: null, exec: null });
+        const history: object[] = [{ role: 'user', content: 'do the task' }];
+        await callTools(url, history);
+        await request(url, { tools, messages: history });
+        expect((await report(url)).toolResults).toEqual({ list: LIST, gate: GATE, exec: EXEC });
+    });
 
     it('makes a change that leaves the gate red, ends the turn, and fixes it only once the gate failure arrives', async () => {
         const { endpoint, url } = await start({ finishGate: true });
         const history: object[] = [{ role: 'user', content: 'do the task' }];
+        await callTools(url, history);
 
         const work = await request(url, { tools, messages: history });
         expect(work.content[0]).toMatchObject({ type: 'tool_use', name: 'Bash' });
@@ -382,11 +426,12 @@ describe('the scripted model endpoint in finish-gate mode', () => {
         const last = await request(url, { tools, messages: history });
         expect(last.stop_reason).toBe('end_turn');
 
-        expect(endpoint.agentRequests).toBe(4);
+        expect(endpoint.agentRequests).toBe(7);
         expect(await report(url)).toEqual({
-            agentRequests: 4,
+            agentRequests: 7,
             fixCalls: 1,
             failures: [{ gate: 'lane-finish', round: 1, limit: 3, sameSession: true }],
+            toolResults: { list: LIST, gate: GATE, exec: EXEC },
         });
     });
 

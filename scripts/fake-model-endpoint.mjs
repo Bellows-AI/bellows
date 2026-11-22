@@ -52,14 +52,17 @@
 // the most of it, so a skill listed twice reads 2.
 //
 // `--finish-gate` is the in-run finish mode, for a task whose declared gate passes only once `.lane-finish` exists:
-// the first agent request answers one Bash call that changes the tree without that file, the next ends the turn in
+// the first three agent requests answer one Bash call each — `factory-gate --list`, `factory-gate lane-adhoc` (the
+// lane's `on_demand` gate, red: the file is not there yet) and `factory-exec 'echo lane-exec-ok'` — the next one
+// Bash call that changes the tree without that file, the next ends the turn in
 // text, so the finish pass sees a change and a red gate. A user turn carrying the driver's gate-failure message (the
 // claude Stop hook's block reason, or the prompt of opencode's relaunched run) is answered with one Bash call
 // `touch .lane-finish`, then the turn ends again. State is read from the history the CLI sends, never from a
 // counter, so a resent history changes nothing. The Stop hook's own evaluation is answered `{"ok": true}`, and
-// `GET /control` never raises a Stop. `GET /finish-gate` returns `{agentRequests, fixCalls, failures}`: each failure
-// message seen as `{gate, round, limit, sameSession}`, the last true when that request's history also holds the
-// first turn's tool call — the same session continued, not a fresh one.
+// `GET /control` never raises a Stop. `GET /finish-gate` returns `{agentRequests, fixCalls, failures, toolResults}`:
+// each failure message seen as `{gate, round, limit, sameSession}`, the last true when that request's history also
+// holds the work turn's tool call — the same session continued, not a fresh one; `toolResults` `{list, gate, exec}`
+// holds the text each of the three tool calls came back with, null until it did.
 //
 // In every mode it plays the driver's step channel too (driver/src/step-control.ts), as much as a
 // lane group needs: `GET /step` hands out `go` on the first poll and `finish` once `POST /report`
@@ -100,6 +103,12 @@ const STOP_HOOK_BLOCK = {
 const FINISH_PATH = '/finish-gate';
 const FINISH_WORK_ID = 'toolu_finish_work';
 const FINISH_FIX_ID = 'toolu_finish_fix_';
+/** The factory tool calls the finish-gate mode opens with, once each: `[toolResults key, tool call id, command]`. */
+const FINISH_TOOL_CALLS = [
+    ['list', 'toolu_finish_list', 'factory-gate --list'],
+    ['gate', 'toolu_finish_gate', 'factory-gate lane-adhoc'],
+    ['exec', 'toolu_finish_exec', "factory-exec 'echo lane-exec-ok'"],
+];
 /**
  * The driver's finish-pass failure message (driver/src/loop/loop-finish.ts) inside a JSON body: its quotes come
  * escaped once, or twice when the CLI quoted the prompt itself (opencode run sends its argument JSON-encoded).
@@ -166,10 +175,20 @@ export function probeCommand(paths) {
     );
 }
 
+/** A tool result's text: a string as sent, text blocks joined by newlines, anything else as JSON. */
+const textOf = (content) =>
+    typeof content === 'string'
+        ? content
+        : Array.isArray(content) && content.every((block) => typeof block?.text === 'string')
+          ? content.map((block) => block.text).join('\n')
+          : JSON.stringify(content ?? '');
+
 export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false, probeFiles = [], steps = [], skillSentinels = [], finishGate = false } = {}) {
     let agentRequests = 0;
     /** Each gate-failure message answered with a fix, in order. */
     const finishFailures = [];
+    /** The text each finish-gate tool call came back with, by its toolResults key. */
+    const finishToolResults = { list: null, gate: null, exec: null };
     const sentinelsSeen = new Set();
     /** Each sentinel's occurrences in the agent request that carried the most of it. */
     const sentinelCounts = {};
@@ -269,8 +288,14 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
             .filter((entry) => entry?.role === 'user')
             .map((entry) => FINISH_FAILURE.exec(JSON.stringify(entry.content ?? '')))
             .filter(Boolean);
+        for (const block of messages.flatMap((entry) => (entry?.role === 'user' && Array.isArray(entry.content) ? entry.content : []))) {
+            const tool = FINISH_TOOL_CALLS.find(([, id]) => block?.type === 'tool_result' && block.tool_use_id === id);
+            if (tool && finishToolResults[tool[0]] === null) finishToolResults[tool[0]] = textOf(block.content);
+        }
         const call = (id, command) =>
             message(`msg_${step}`, [{ type: 'tool_use', id, name: bash.name, input: { command, description: 'change the tree' } }], 'tool_use');
+        const tool = FINISH_TOOL_CALLS.find(([, id]) => !called.includes(id));
+        if (bash && tool && failures.length === 0 && !called.includes(FINISH_WORK_ID)) return call(tool[1], tool[2]);
         if (bash && failures.length > fixes) {
             const [, gate, round, limit] = failures[failures.length - 1];
             finishFailures.push({ gate, round: Number(round), limit: Number(limit), sameSession: called.includes(FINISH_WORK_ID) });
@@ -357,7 +382,9 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
             }
             if (url === FINISH_PATH) {
                 reply.setHeader('content-type', 'application/json');
-                return reply.end(JSON.stringify({ agentRequests, fixCalls: finishFailures.length, failures: finishFailures }));
+                return reply.end(
+                    JSON.stringify({ agentRequests, fixCalls: finishFailures.length, failures: finishFailures, toolResults: finishToolResults })
+                );
             }
             if (url === TOOL_RESULTS_PATH) {
                 reply.setHeader('content-type', 'application/json');
