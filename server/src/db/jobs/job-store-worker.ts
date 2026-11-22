@@ -166,13 +166,6 @@ export interface JobWorkerStore {
             /** The cause under a `gate`/`publish`/`helper` kind; absent overwrites to null. */
             failureCause?: FailureCause | null;
             /**
-             * Whether the task tree changed since the attempt's startup sync, measured by the
-             * driver only after a declared gate failed. Not stored: the workflow transition in
-             * this same transaction reads it (a gate-fix round that changed nothing rests).
-             * Null or absent is unmeasured.
-             */
-            treeChanged?: boolean | null;
-            /**
              * The attempt's evidence record: the tree it started from, the tree its gates assessed
              * and how they ended. Stored on the row under the lease guard; absent overwrites to
              * null, so a retry never inherits the killed attempt's evidence.
@@ -550,7 +543,6 @@ async function settleVerdict(
     const { orgId, wallTick, prs } = ctx;
     const { row, key, result, staged } = landed;
     const { status, output, publication } = result;
-    const treeChanged = result.treeChanged ?? null;
     const failureKindPatch = result.failureKind ?? null;
     const completedId = row.id;
     const rootJobId = row.root_job_id;
@@ -603,7 +595,6 @@ async function settleVerdict(
             root,
             completedId,
             ...verdict,
-            treeChanged,
             prs,
         });
     }
@@ -704,8 +695,6 @@ export interface WorkflowTransitionInput {
     output: string | null;
     /** The verdict's failure kind — a `blocked` run rests the thread before any edge. */
     failureKind: FailureKind | null;
-    /** The driver's tree-change read, unstored — a gate-fix edge over an unchanged tree rests. */
-    treeChanged: boolean | null;
     prs: JobStorePrs | undefined;
 }
 
@@ -713,7 +702,7 @@ export interface WorkflowTransitionInput {
  * The completed row's stored state and the halted node the transition evaluates FROM — extracted
  * so the walk below reads as the decision it is. The completed row's `gates` and `output` here
  * are THIS run's (the verdict UPDATE landed them moments ago): what the edge rules evaluate
- * against (gate-failed reads the stored reports; markers read the tail). The halted node is the
+ * against (markers read the tail). The halted node is the
  * completed row's own node, or (an off-graph user follow-up completing) the thread's newest
  * carried node, mirroring workflow-engine.ts's own private `haltedNode` exactly (its own module
  * comment: "the current node is the completed row's own workflow_node — or, for an off-graph row,
@@ -731,9 +720,9 @@ function transitionContextOf(
         agent_type: string | null;
         agent_model: string | null;
     }[],
-    verdict: Pick<WorkflowTransitionInput, 'completedId' | 'status' | 'output' | 'failureKind' | 'treeChanged'>
+    verdict: Pick<WorkflowTransitionInput, 'completedId' | 'status' | 'output' | 'failureKind'>
 ): { completed: (typeof threadRows)[number] | undefined; completedRun: CompletedRun; halted: string | null } {
-    const { completedId, status, output, failureKind, treeChanged } = verdict;
+    const { completedId, status, output, failureKind } = verdict;
     const completed = threadRows.find((row) => row.id === completedId);
     const completedRun: CompletedRun = {
         id: completedId,
@@ -742,7 +731,6 @@ function transitionContextOf(
         output,
         gates: completed?.gates ?? null,
         failureKind,
-        treeChanged,
     };
     const halted =
         completedRun.node ??

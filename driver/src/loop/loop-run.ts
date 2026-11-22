@@ -298,8 +298,6 @@ export type RunPhaseResult = {
     endedAt: number;
     /** Why the declared gates were skipped, or null. */
     gatesSkipped: string | null;
-    /** Whether the failed gate's tree differs from the synced one; null when unmeasured. */
-    treeChanged: boolean | null;
     /** The revision-bound evidence record; null when no policy is configured. */
     evidence: VerdictEvidence | null;
 };
@@ -438,9 +436,8 @@ async function clearUnusedSession(ctx: AttemptCtx, session: RunSession | null, o
 }
 
 /** What verifying a run found beyond the gates phase itself. */
-type VerifiedRun = GatesPhase & Pick<RunPhaseResult, 'treeChanged' | 'evidence'>;
+type VerifiedRun = GatesPhase & Pick<RunPhaseResult, 'evidence'>;
 
-/**
 /**
  * Runs the declared gates over a finished run and gathers what the verdict is built from, answering
  * STOOD_DOWN when a stand-down landed at any of the three points between.
@@ -455,7 +452,7 @@ async function verifyRun(
      * The gates run HERE: after the agent has finished talking and before the verdict, with the
      * heartbeat still beating — settle() has deliberately NOT been called yet, because a test
      * suite can take minutes and it must not outrun the lease it runs under. A run that did not
-     * finish cleanly skips them: a gate over work that never happened fires gate-fix for nothing.
+     * finish cleanly skips them: a gate over work that never happened judges nothing.
      * A session whose gates are all on demand has no pass: its evidence reads `none`, never `passed`.
      */
     const phases = await openChain(ctx);
@@ -488,17 +485,8 @@ async function verifyRun(
     }
     return {
         ...gated,
-        treeChanged: treeChangedOf(ctx, gated, treeAfter),
         evidence: evidenceOf(ctx, gating, gated, treeAfter),
     };
-}
-
-/**
- * Whether the failed gate's tree differs from the synced one; null when unmeasured. A cancelled
- * gate answers no failure, so a stand-down during the gates lands here too.
- */
-function treeChangedOf(ctx: AttemptCtx, gated: GatesPhase, treeAfter: string | null): boolean | null {
-    return gated.failure && ctx.treeBefore !== null && treeAfter !== null ? treeAfter !== ctx.treeBefore : null;
 }
 
 /** The revision-bound evidence record of a verified run; null when no policy is configured. */
@@ -710,7 +698,6 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
             activity: outputPump.snapshot(),
             gateRuns: gateHistory(rt, gateSession),
             gatesSkipped: outcome.gatesSkipped,
-            treeChanged: outcome.treeChanged,
             evidence: outcome.evidence,
             policyRefusal,
         });

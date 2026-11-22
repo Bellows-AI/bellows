@@ -42,6 +42,20 @@ describe('validateDefinition', () => {
             })
         ).toMatchObject({ ok: false, refusal: { code: 'UNKNOWN_NODE' } });
     });
+
+    // A red gate is answered inside the run: the graph has no gate rule and no gate placeholders.
+    it('refuses the gate-failed rule and the {{gate.*}} placeholders', () => {
+        const node = { name: 'a', kind: 'agent', session: 'resume', prompt: 'x', publish: true };
+        expect(
+            validateDefinition({ entry: 'a', nodes: [node], edges: [{ from: 'a', to: 'a', when: 'gate-failed' }] })
+        ).toMatchObject({ ok: false, refusal: { code: 'BAD_RULE' } });
+        for (const prompt of ['fix {{gate.output}}', 'fix {{gate.name}}', 'fix {{ gate.output }}']) {
+            expect(validateDefinition({ entry: 'a', nodes: [{ ...node, prompt }], edges: [] })).toMatchObject({
+                ok: false,
+                refusal: { code: 'UNKNOWN_PLACEHOLDER' },
+            });
+        }
+    });
 });
 
 describe('workflow parameters', () => {

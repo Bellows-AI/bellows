@@ -94,20 +94,19 @@ function resolveConfig(
 /**
  * Rewrites `{{internalName.output}}` references inside a block's own prompt to the namespaced
  * name the compiler is about to give that node — only for names the block's OWN expansion
- * declares; anything else (an outer node, `{{param.*}}`, `{{command}}`, `{{gate.*}}`) passes
+ * declares; anything else (an outer node, `{{param.*}}`, `{{command}}`) passes
  * through untouched, and a genuinely stray reference surfaces as UNKNOWN_PLACEHOLDER on
  * re-validation instead of being silently rewritten into a name that never existed.
  *
  * The reserved specs are checked FIRST, before the generic node-output pattern, the same
- * precedence `interpolate()` itself gives them: `{{gate.output}}` must always mean the completed
- * run's first failed gate, never a same-named internal node — workflow-schema.ts reserves `param`
- * as a node name for exactly this reason, but a block's internal names are the descriptor's own
- * and are not run through that check, so this function is where the same guarantee holds for them.
+ * precedence `interpolate()` itself gives them: workflow-schema.ts reserves `param` as a node
+ * name, but a block's internal names are the descriptor's own and are not run through that check,
+ * so this function is where the same guarantee holds for them.
  */
 function namespacePrompt(prompt: string, prefix: string, internalNames: ReadonlySet<string>): string {
     return prompt.replace(/\{\{([^{}]+)\}\}/g, (whole, raw: string) => {
         const spec = (raw as string).trim();
-        if (spec === 'command' || spec === 'gate.name' || spec === 'gate.output' || spec.startsWith('param.')) {
+        if (spec === 'command' || spec.startsWith('param.')) {
             return whole;
         }
         const match = /^([a-z0-9-]+)\.output$/.exec(spec);

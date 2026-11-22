@@ -93,7 +93,7 @@ describe('the fix-issue fixture walkthrough', () => {
         expect(steps).toEqual(['implement', 'review', 'fix', 'review', 'publish']);
     });
 
-    it('walks gate-failed into gate-fix, filling both gate placeholders', () => {
+    it('walks a run that failed on a gate along the ordinary failed edge into repair', () => {
         const rows: EngineRow[] = [row({ id: 'impl', node: 'implement', sessionId: 'primary' })];
         const t = nextTransition({
             params: {},
@@ -108,11 +108,11 @@ describe('the fix-issue fixture walkthrough', () => {
                 failureKind: 'gate',
             }),
         });
-        expect(t).toMatchObject({ action: 'insert', node: { name: 'gate-fix' } });
+        expect(t).toMatchObject({ action: 'insert', node: { name: 'repair' } });
         if (t.action !== 'insert') return;
-        expect(t.command).toContain('--- FAILED GATE: test ---');
-        expect(t.command).toContain('3 tests failed');
-        // The gate-fix node resumes the thread's primary session.
+        // The gate report is not interpolated: the agent was shown the red gate inside its run.
+        expect(t.command).not.toContain('3 tests failed');
+        // The repair node resumes the thread's primary session.
         expect(t.session).toBe('resume');
     });
 

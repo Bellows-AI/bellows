@@ -390,12 +390,11 @@ function resolveEdgeEndpoints(
     return { ok: true, value: { from: from as string, to: to as string } };
 }
 
-/** Resolves an edge's `when` rule: a terminal verdict, `gate-failed`, or an exact marker match. */
+/** Resolves an edge's `when` rule: a terminal verdict or an exact marker match. */
 function resolveEdgeRule(rule: unknown, i: number): StepResult<EdgeRule> {
     if (
         rule !== 'succeeded' &&
         rule !== 'failed' &&
-        rule !== 'gate-failed' &&
         (typeof rule !== 'object' ||
             rule === null ||
             Array.isArray(rule) ||
@@ -405,7 +404,7 @@ function resolveEdgeRule(rule: unknown, i: number): StepResult<EdgeRule> {
     ) {
         return stepRefuse(
             ERROR_CODES.BAD_RULE,
-            `edges[${i}].when must be "succeeded", "failed", "gate-failed", or { marker } with a non-empty string of at most ${MARKER_LIMIT} characters`
+            `edges[${i}].when must be "succeeded", "failed", or { marker } with a non-empty string of at most ${MARKER_LIMIT} characters`
         );
     }
     return {
@@ -473,7 +472,7 @@ function resolveEntry(
     return { ok: true, value: entry };
 }
 
-/** Whether a prompt placeholder's spec names a known node output, param, gate field, or `command`. */
+/** Whether a prompt placeholder's spec names a known node output, param, or `command`. */
 function placeholderKnown(spec: string, params: WorkflowParam[], names: Set<string>): boolean {
     const nodeRef = /^([a-z0-9-]+)\.output$/.exec(spec);
     const paramRef = /^param\.([a-z0-9-]+)$/.exec(spec);
@@ -482,11 +481,11 @@ function placeholderKnown(spec: string, params: WorkflowParam[], names: Set<stri
         return params.some((p) => p.name === paramRef[1]);
     }
     if (spec === 'command') return true;
-    return spec === 'gate.name' || spec === 'gate.output' || (nodeRef !== null && names.has(nodeRef[1]!));
+    return nodeRef !== null && names.has(nodeRef[1]!);
 }
 
 /**
- * Prompt placeholders: the closed vocabulary only — node outputs, the gate pair, declared params,
+ * Prompt placeholders: the closed vocabulary only — node outputs, declared params,
  * and `{{command}}` (the thread root's command). A template referencing an unknown prior node or
  * an undeclared param would interpolate empty forever. A block node has no prompt of its own to
  * scan — its eventual expansion carries the placeholder contract instead.
@@ -503,7 +502,7 @@ function validatePlaceholders(
             if (!placeholderKnown(spec, params, names)) {
                 return stepRefuse(
                     ERROR_CODES.UNKNOWN_PLACEHOLDER,
-                    `nodes named "${node.name}" carry placeholder "{{${spec}}}" — expected {{nodeName.output}}, {{gate.name}}, {{gate.output}}, {{param.NAME}} or {{command}}`
+                    `nodes named "${node.name}" carry placeholder "{{${spec}}}" — expected {{nodeName.output}}, {{param.NAME}} or {{command}}`
                 );
             }
         }

@@ -38,7 +38,7 @@ const redGate = (output = 'red'): GateReport[] => [{ name: 'test', status: 'fail
 
 /** Claims the queued row and settles it as a run that failed on its declared gate. */
 async function failOnGate(
-    over: { treeChanged?: boolean; failureKind?: 'gate' | 'blocked' | 'services'; output?: string } = {}
+    over: { failureKind?: 'gate' | 'blocked' | 'services'; output?: string } = {}
 ): Promise<Claim> {
     const claimed = await claim();
     await store.gates(claimed.id, claimed.leaseToken, redGate(over.output));
@@ -47,7 +47,6 @@ async function failOnGate(
         exitCode: 1,
         output: 'red',
         failureKind: over.failureKind ?? 'gate',
-        treeChanged: over.treeChanged ?? true,
     });
     return claimed;
 }
@@ -147,7 +146,6 @@ describe.skipIf(!enabled)('objective mode — database', () => {
             exitCode: 1,
             output: 'red',
             failureKind: 'gate',
-            treeChanged: true,
         });
         const repair = await store.createFollowUp(root, 'fix the failing test', null);
         if (typeof repair === 'string') throw new Error(`follow-up refused: ${repair}`);
@@ -223,7 +221,6 @@ describe.skipIf(!enabled)('objective mode — database', () => {
                 exitCode: 1,
                 output: 'red',
                 failureKind: 'gate',
-                treeChanged: true,
             });
             const rows = (await store.thread(root))!;
             expect(rows.map((row) => [row.id, row.status])).toEqual([[claimed.id, 'failed']]);
@@ -248,12 +245,6 @@ describe.skipIf(!enabled)('objective mode — database', () => {
             expect((await store.thread(created.id))!).toHaveLength(1);
         });
 
-        it('rests when the run left the tree unchanged', async () => {
-            const root = await queueObjective();
-            await failOnGate({ treeChanged: false });
-            expect((await store.thread(root))!).toHaveLength(1);
-        });
-
         it.each(['blocked', 'services'] as const)('rests on a %s failure', async (failureKind) => {
             const root = await queueObjective();
             await failOnGate({ failureKind });
@@ -270,7 +261,6 @@ describe.skipIf(!enabled)('objective mode — database', () => {
                 exitCode: 1,
                 output: 'red',
                 failureKind: 'gate',
-                treeChanged: true,
             });
             expect((await store.thread(root))!).toHaveLength(1);
         });

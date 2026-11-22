@@ -43,11 +43,6 @@ export interface CompletedRun {
     gates: GateReport[] | null;
     /** The verdict's failure kind; `blocked` rests the thread before any edge is evaluated. */
     failureKind?: FailureKind | null;
-    /**
-     * Whether the run changed the task tree, as the driver measured it after a failed gate;
-     * absent or null is unmeasured. False rests a `gate-failed` edge: there is nothing to repair.
-     */
-    treeChanged?: boolean | null;
 }
 
 /**
@@ -76,11 +71,9 @@ export interface CompletedRun {
  *                       is followed; a fresh manual retry stays available.
  * - `skill_unavailable`  a pinned org or workspace skill the board can no longer deliver: a retry fails the same way, so no
  *                       edge is followed; a fresh manual retry stays available.
- * - `no_progress`       the matched rule is `gate-failed` and the run left the tree unchanged:
- *                       a gate-fix round over the same tree can only fail the same way.
  * - `thread_busy`       an off-graph follow-up completed while a graph row of the thread is still
  *                       queued or running: that row owns the next step, and a second insert would
- *                       fork the thread (two gate-fix rows, the round budget burned twice).
+ *                       fork the thread (two successor rows, the round budget burned twice).
  */
 export type RestReason =
     | 'off_graph'
@@ -96,7 +89,6 @@ export type RestReason =
     | 'checkpoint_unrestorable'
     | 'attachment_unavailable'
     | 'skill_unavailable'
-    | 'no_progress'
     | 'thread_busy';
 
 /** Failure kinds that rest the thread before any edge is evaluated — a custom `failed` edge included. */
@@ -114,11 +106,6 @@ const REST_BY_KIND: Partial<Record<FailureKind, RestReason>> = {
 export type Transition =
     | { action: 'insert'; node: WorkflowNode; command: string; session: 'resume' | 'fresh'; publish: boolean }
     | { action: 'rest'; reason: RestReason };
-
-/** The first failed gate of a completed run, for the `{{gate.*}}` placeholders; null when green. */
-export function firstFailedGate(gates: GateReport[] | null): GateReport | null {
-    return gates?.find((gate) => gate.status === 'failed') ?? null;
-}
 
 /**
  * The thread's PRIMARY session: the session of the first `resume`-policy run, scanned oldest
@@ -172,14 +159,10 @@ export function nextTransition(input: {
     const restReason = input.completed.failureKind ? REST_BY_KIND[input.completed.failureKind] : undefined;
     if (restReason !== undefined) return { action: 'rest', reason: restReason };
 
-    const failed = firstFailedGate(input.completed.gates);
     for (const edge of input.snapshot.edges) {
         if (edge.from !== halted) continue;
         if (!ruleMatches(edge.when, input.completed)) continue;
-        if (edge.when === 'gate-failed' && input.completed.treeChanged === false) {
-            return { action: 'rest', reason: 'no_progress' };
-        }
-        return followEdge(edge, input, failed);
+        return followEdge(edge, input);
     }
     return { action: 'rest', reason: 'no_edge' };
 }
@@ -187,8 +170,7 @@ export function nextTransition(input: {
 /** The chosen edge's outcome: a loop bound, an unresolvable target, an oversized command, or the insert. */
 function followEdge(
     edge: WorkflowDefinition['edges'][number],
-    input: { snapshot: WorkflowDefinition; params: ParamValues; command: string; rows: EngineRow[] },
-    failed: GateReport | null
+    input: { snapshot: WorkflowDefinition; params: ParamValues; command: string; rows: EngineRow[] }
 ): Transition {
     // Loop bound from the audit trail: every row the thread already holds for the target
     // node counts, whatever status it reached — a dead review row is still a round.
@@ -208,8 +190,6 @@ function followEdge(
             }
             return '';
         },
-        gateName: failed?.name ?? '',
-        gateOutput: failed?.output ?? '',
         param: (name) => input.params[name] ?? '',
         command: input.command,
     });
@@ -242,8 +222,6 @@ function haltedNode(rows: EngineRow[], completedId: string): string | null {
 function ruleMatches(rule: EdgeRule, completed: CompletedRun): boolean {
     if (rule === 'succeeded') return completed.status === 'succeeded';
     if (rule === 'failed') return completed.status === 'failed';
-    // The stored gate report can be a previous attempt's: only a verdict that failed ON a gate makes
-    // it this run's evidence. A marker only counts on a run that succeeded.
-    if (rule === 'gate-failed') return completed.failureKind === 'gate' && firstFailedGate(completed.gates) !== null;
+    // A marker only counts on a run that succeeded.
     return completed.status === 'succeeded' && tailMatches(completed.output, rule.marker);
 }

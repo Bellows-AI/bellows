@@ -17,8 +17,8 @@ import { gitProbeScript } from '../src/publish/publish.js';
 import { GIT_FIXTURE_CONFIG, git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
- * The tree fingerprint (git-probe.cjs / git-worktree.cjs fingerprintOf), issue #438. The
- * engine only stops a gate-fix loop on `treeChanged === false`; null and true both keep it going.
+ * The tree fingerprint (git-probe.cjs / git-worktree.cjs fingerprintOf), issue #438. Gate reuse
+ * and the evidence record bind to it; a null fingerprint is unmeasured, so nothing is reused.
  */
 describe.skipIf(!hasGit())('the tree fingerprint', () => {
     const fx = setupWorktreeFixture();
@@ -45,7 +45,7 @@ describe.skipIf(!hasGit())('the tree fingerprint', () => {
     ])('stays measurable with an untracked %s', (_what, make) => {
         fx.sync();
         make();
-        // A null fingerprint is treeChanged null every round: the no-progress stop never fires.
+        // A null fingerprint every round would mean no gate result is ever reused.
         expect(probed()).toMatch(/^[0-9a-f]{40}:[0-9a-f]{64}$/);
     });
 

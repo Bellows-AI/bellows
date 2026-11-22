@@ -114,7 +114,6 @@ interface StoreStub extends JobStore {
         summary: string | null;
         failureKind: string | null;
         failureCause: string | null;
-        treeChanged: boolean | null;
         evidence: unknown;
     }[];
     sessions: { id: string; sessionId: string | null }[];
@@ -476,18 +475,7 @@ function stubStore(
         async complete(
             id: string,
             _token: string,
-            {
-                output,
-                contextTokens,
-                contextCostUsd,
-                agentTurns,
-                setupMs,
-                summary,
-                failureKind,
-                failureCause,
-                treeChanged,
-                evidence,
-            }
+            { output, contextTokens, contextCostUsd, agentTurns, setupMs, summary, failureKind, failureCause, evidence }
         ) {
             boom();
             stub.completed.push({
@@ -500,7 +488,6 @@ function stubStore(
                 summary: summary ?? null,
                 failureKind: failureKind ?? null,
                 failureCause: failureCause ?? null,
-                treeChanged: treeChanged ?? null,
                 evidence: evidence ?? null,
             });
             const verdict = options.verdict ?? 'ok';
@@ -3233,7 +3220,6 @@ describe('POST /api/jobs/:id/complete', () => {
                 summary: null,
                 failureKind: null,
                 failureCause: null,
-                treeChanged: null,
                 evidence: null,
             },
         ]);
@@ -3258,7 +3244,7 @@ describe('POST /api/jobs/:id/complete', () => {
 
     // What rides the verdict into the store: the close-time summary (truncated, blank → null), the
     // context the run reached, the agent-turn count, the structured failure kind (a dead
-    // `.bellows.yaml` service is its own kind) and the driver's post-gate tree read.
+    // `.bellows.yaml` service is its own kind).
     // Absent stores null — unmeasured, never zero or an empty string.
     it.each<[string, Record<string, unknown>, Record<string, unknown>]>([
         ['the run summary, bounded', { summary: 'x'.repeat(600) }, { summary: 'x'.repeat(512) }],
@@ -3277,16 +3263,28 @@ describe('POST /api/jobs/:id/complete', () => {
         ['the blocked failure kind', { status: 'failed', failureKind: 'blocked' }, { failureKind: 'blocked' }],
         ['the policy failure kind', { status: 'failed', failureKind: 'policy' }, { failureKind: 'policy' }],
         ['null when the report carries no failure kind', {}, { failureKind: null }],
-        ['treeChanged true as true', { treeChanged: true }, { treeChanged: true }],
-        ['treeChanged false as false', { treeChanged: false }, { treeChanged: false }],
-        ['treeChanged null as null', { treeChanged: null }, { treeChanged: null }],
-        ['treeChanged undefined as null', { treeChanged: undefined }, { treeChanged: null }],
     ])('hands the store %s', async (_label, fields, stored) => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
         const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, ...fields });
         expect(response.statusCode).toBe(200);
         expect(store.completed[0]).toMatchObject(stored);
+    });
+
+    // A verdict carries no tree-change read any more; like any key the route does not know, it is ignored.
+    it.each([true, 'yes'])('ignores a treeChanged of %s and hands the store none', async (treeChanged) => {
+        const store = stubStore({ verdict: 'ok' });
+        const handed: object[] = [];
+        const complete = store.complete.bind(store);
+        store.complete = async (id, token, fields) => {
+            handed.push(fields);
+            return complete(id, token, fields);
+        };
+        const instance = await harnessWith(store);
+        const response = await post(instance, `/api/jobs/${ID}/complete`, { ...done, treeChanged });
+        expect(response.statusCode).toBe(200);
+        expect(handed).toHaveLength(1);
+        expect(handed[0]).not.toHaveProperty('treeChanged');
     });
 
     it('hands the store the verdict’s evidence record, rebuilt field by field', async () => {
@@ -3331,8 +3329,6 @@ describe('POST /api/jobs/:id/complete', () => {
         ['an absurd token count', 'BAD_CONTEXT', { contextTokens: 100_000_001 }],
         ['a string cost', 'BAD_CONTEXT', { contextCostUsd: 'free' }],
         ['a negative cost', 'BAD_CONTEXT', { contextCostUsd: -0.01 }],
-        ['treeChanged as a string', 'BAD_TREE_CHANGED', { treeChanged: 'yes' }],
-        ['treeChanged as a number', 'BAD_TREE_CHANGED', { treeChanged: 0 }],
         ['evidence as a string', 'BAD_EVIDENCE', { evidence: 'h:1' }],
         [
             'evidence as an unknown gate outcome',

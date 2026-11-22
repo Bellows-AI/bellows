@@ -558,7 +558,7 @@ async function executeGate(
     const raced = await raceStep(state.signal, runOneGate(w, gate, parallel));
     const outcome = raced?.value?.run;
     // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
-    // and a cancelled gate is never reported failed — `gate-failed` must not read it.
+    // and a cancelled gate is never reported failed — a verdict must not read it.
     if (!outcome || down(state)) return null;
     const { entry, text } = settledGate(gate, outcome, perGate);
     // Replace the gate's own entry — one entry per declared gate, always, so the list the

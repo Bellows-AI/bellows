@@ -689,11 +689,6 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
             failureKind?: FailureKind;
             /** What lies under a `gate`, `publish` or `helper` kind; null and absent stay off the wire. */
             failureCause?: FailureCause | null;
-            /**
-             * Whether the task tree differs from the one the startup sync left, read only after
-             * a declared gate failed. Absent is unknown; the board rests a gate-fix edge on false.
-             */
-            treeChanged?: boolean;
             /** The revision-bound evidence record; absent when the attempt measured none. */
             evidence?: VerdictEvidence;
             /**

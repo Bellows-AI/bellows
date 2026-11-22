@@ -237,8 +237,6 @@ describe('parameter interpolation', () => {
     it('fills {{param.*}} and {{command}}', () => {
         const out = interpolate('{{param.issue}} from {{command}}', {
             nodeOutput: () => '',
-            gateName: '',
-            gateOutput: '',
             param: (name) => (name === 'issue' ? '#42' : ''),
             command: 'fix #42 please',
         });
@@ -249,8 +247,6 @@ describe('parameter interpolation', () => {
         const TAIL_OVERFLOW = 500;
         const out = interpolate('{{param.notes}}', {
             nodeOutput: () => '',
-            gateName: '',
-            gateOutput: '',
             param: () => 'x'.repeat(INTERP_TAIL_LIMIT + TAIL_OVERFLOW),
             command: '',
         });

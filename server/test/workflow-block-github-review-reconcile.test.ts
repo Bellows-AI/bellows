@@ -106,14 +106,11 @@ describe('builtin/github-review-reconcile — compilation', () => {
         for (const edge of intoRepair) expect(edge.max).toBe(3);
     });
 
-    it('retries repair on gate-failed and failed, sharing the same maxRounds bound', () => {
+    it('retries repair on failed alone — a red gate included — with the same maxRounds bound', () => {
         const definition = compiled();
-        expect(definition.edges).toContainEqual({
-            from: 'review--repair',
-            to: 'review--repair',
-            when: 'gate-failed',
-            max: 3,
-        });
+        const retries = definition.edges.filter((e) => e.from === 'review--repair' && e.to === 'review--repair');
+        expect(retries).toEqual([{ from: 'review--repair', to: 'review--repair', when: 'failed', max: 3 }]);
+        expect(definition.nodes.find((n) => n.name === 'review--repair')?.prompt).not.toContain('{{gate.');
         expect(definition.edges).toContainEqual({
             from: 'review--repair',
             to: 'review--repair',
@@ -344,7 +341,7 @@ describe('builtin/github-review-reconcile — pure orchestration walk (real next
         expect(transition).toEqual({ action: 'rest', reason: 'loop_bound' });
     });
 
-    it('a gate failure on repair retries repair itself, counted toward the same round bound', () => {
+    it('a gate failure on repair retries repair along its failed edge, counted toward the same round bound', () => {
         const rows: EngineRow[] = [
             {
                 id: 'r',
@@ -366,6 +363,7 @@ describe('builtin/github-review-reconcile — pure orchestration walk (real next
                 status: 'failed',
                 output: null,
                 gates: [{ name: 'test', status: 'failed', exitCode: 1, output: 'boom' }],
+                failureKind: 'gate',
             },
         });
         expect(transition).toMatchObject({ action: 'insert', node: { name: 'review--repair' } });

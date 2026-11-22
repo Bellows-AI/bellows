@@ -9,8 +9,8 @@ describe('a dead declared service (issue #423)', () => {
     /**
      * A service that died before the gates run makes every gate fail on an environment the agent
      * cannot fix. The gates are skipped, the verdict names the service — its exit and its last
-     * log lines — and lands as `services`, never `gate`, so the workflow's gate-fix edge cannot
-     * spend a round on it.
+     * log lines — and lands as `services`, never `gate`, so a workflow rests on it instead of
+     * spending a round.
      */
     const mongo: DeadService = {
         name: 'test-mongo',

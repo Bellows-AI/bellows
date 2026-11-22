@@ -117,7 +117,7 @@ function prematureFinish(outcome: RunOutcome): Fault | null {
 
 /**
  * What the agent's own run left behind. An agent that did not finish cleanly left no work for a
- * gate to judge — a failed gate over it would fire the workflow's `gate-failed` edge on work that
+ * gate to judge — a failed gate over it would fail the run on work that
  * never happened — so only a timeout keeps the gates running.
  */
 export function agentFaults(outcome: RunOutcome): Fault[] {
