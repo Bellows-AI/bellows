@@ -8,7 +8,7 @@ import type { Claim, JobStore, ReviewerSpec } from '../src/db/jobs/job-store-typ
 import { createWorkflowStore } from '../src/db/workflows/workflow-store.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { expireLease, mustCreate, spendInterruptionBudget, testOrg, repoRefOf } from './fixtures.js';
+import { expireLease, mustCreate, spendInterruptionBudget, testOrg } from './fixtures.js';
 
 /**
  * Issue #845: every claim leaves a durable `job_execution` row, written in the claim's own
