@@ -8,32 +8,19 @@
 # are refused here, before any token is asked: a guard against the habit, not a fence (`gh api` and the libexec binary
 # still reach GitHub with the installation token).
 # One file, built into both executor images (driver/test/executor-images.test.ts).
-# True for `pr create|new|edit` however gh's flags are placed: flags (and the value after -R/--repo) are skipped
-# before and between the command words. POSIX sh: the images ship dash.
+# True when an argument exactly `pr` is followed, anywhere later, by an argument exactly `create`, `new` or `edit`. It
+# knows nothing of gh's flag grammar, so no flag, value-taking or not, can hide the command. The trade-off is chosen: a
+# rare false refusal (a flag value that is exactly `edit`, after a `pr`) is acceptable, a bypass is not. POSIX sh: dash.
 opens_or_edits_pr() {
     seen_pr=
-    skip=
     for word in "$@"; do
-        if [ -n "$skip" ]; then
-            skip=
-            continue
-        fi
-        case "$word" in
-        -R | --repo)
-            skip=1
-            continue
-            ;;
-        -*) continue ;;
-        esac
-        if [ -z "$seen_pr" ]; then
-            [ "$word" = pr ] || return 1
+        if [ -n "$seen_pr" ]; then
+            case "$word" in
+            create | new | edit) return 0 ;;
+            esac
+        elif [ "$word" = pr ]; then
             seen_pr=1
-            continue
         fi
-        case "$word" in
-        create | new | edit) return 0 ;;
-        esac
-        return 1
     done
     return 1
 }

@@ -454,6 +454,62 @@ describe.skipIf(!enabled)('POST /api/jobs/:id/pull-request — a member without 
         expect(closed!.outcome).toBe('bound');
     });
 
+    describe('only a write by the member ends the wait', () => {
+        const openWait = async (id: string, leaseToken: string) =>
+            expect(await jobs.openPrForgeWait(id, leaseToken, { forge: 'github', reason: 'forge-access' })).toEqual({
+                result: 'ok',
+            });
+        const stillOpen = async (id: string) =>
+            expect((await requirements(id)).map((r) => [r.reason, r.satisfied_at])).toEqual([['forge-access', null]]);
+
+        it('a view that finds no PR leaves it open', async () => {
+            await signMemberIn(grantsOver());
+            const instance = await boot({ grants: grantsOver(), writer: writerOver() });
+            const { id, claim } = await running();
+            await openWait(id, claim.leaseToken);
+
+            expect((await ask(instance, id, claim.leaseToken, VIEW_ONLY)).json()).toEqual({ answer: 'none' });
+
+            await stillOpen(id);
+        });
+
+        it('a reused PR left unchanged leaves it open', async () => {
+            await signMemberIn(grantsOver());
+            const instance = await boot({ grants: grantsOver(), writer: writerOver() });
+            const { id, claim } = await running();
+            expect((await ask(instance, id, claim.leaseToken)).json()).toMatchObject({ operation: 'created' });
+            await openWait(id, claim.leaseToken);
+
+            expect((await ask(instance, id, claim.leaseToken)).json()).toMatchObject({ operation: 'reused' });
+
+            await stillOpen(id);
+        });
+
+        it('a successful create closes it', async () => {
+            await signMemberIn(grantsOver());
+            const instance = await boot({ grants: grantsOver(), writer: writerOver() });
+            const { id, claim } = await running();
+            await openWait(id, claim.leaseToken);
+
+            expect((await ask(instance, id, claim.leaseToken)).json()).toMatchObject({ operation: 'created' });
+
+            expect((await requirements(id))[0]!.satisfied_at).toEqual(expect.any(Date));
+        });
+
+        it('a successful edit of the existing PR closes it', async () => {
+            await signMemberIn(grantsOver());
+            const instance = await boot({ grants: grantsOver(), writer: writerOver() });
+            const { id, claim } = await running();
+            await ask(instance, id, claim.leaseToken);
+            await openWait(id, claim.leaseToken);
+
+            const edited = await ask(instance, id, claim.leaseToken, { ...ASK, edit: { title: 'New', body: 'B' } });
+
+            expect(edited.json()).toMatchObject({ operation: 'reused' });
+            expect((await requirements(id))[0]!.satisfied_at).toEqual(expect.any(Date));
+        });
+    });
+
     it('answers denied, never a wait, on a 401: the authorization itself is refused', async () => {
         await signMemberIn(grantsOver());
         const instance = await boot({ grants: grantsOver(), writer: answering(HTTP_UNAUTHORIZED) });

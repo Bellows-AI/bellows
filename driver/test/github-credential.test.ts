@@ -373,7 +373,8 @@ describe('the gh wrapper and the helper in both images', () => {
             expect(out.stderr.trim()).toBe(REFUSAL);
         });
 
-        // Flags before and between the command words do not change what the command is.
+        // The guard fails closed: `pr` followed anywhere later by create, new or edit is refused, whatever the flags
+        // between them are and whether they take a value, so no flag grammar is known to it.
         it.each([
             ['--repo', 'o/r', 'pr', 'create'],
             ['-R', 'o/r', 'pr', 'new', '--title', 't'],
@@ -383,18 +384,26 @@ describe('the gh wrapper and the helper in both images', () => {
             ['pr', '-R', 'o/r', 'create'],
             ['pr', '--repo=o/r', 'new'],
             ['--repo', 'o/r', 'pr', '--repo', 'o/r', 'create'],
-        ])('refuses gh %s %s %s %s however the flags are placed', async (...args) => {
+            ['--title', 't', 'pr', 'create'],
+            ['pr', '--body', 'b', 'new'],
+            ['pr', '--title', 't', 'edit', '3'],
+            ['--some-unknown-flag', 'value', 'pr', '--other', 'x', 'create'],
+            // The accepted false refusal: a value that is exactly the word is indistinguishable from the command.
+            ['pr', 'comment', '1', '--body', 'edit'],
+        ])('refuses gh %s however the flags are placed', async (...args) => {
             const out = await wrapped(args);
             expect(out.code).toBe(2);
             expect(out.stderr.trim()).toBe(REFUSAL);
         });
 
         it.each([
-            ['--repo', 'o/r', 'pr', 'view', '1'],
+            ['pr', 'view', '3'],
+            ['--repo', 'o/r', 'pr', 'list'],
             ['pr', '--repo', 'o/r', 'view', '1'],
             ['-R', 'o/r', 'issue', 'create', '--title', 'pr'],
-            ['issue', 'comment', '1', '--body', 'pr', 'create'],
-        ])('still reaches the real gh for gh %s %s %s %s', async (...args) => {
+            ['issue', 'create'],
+            ['api', 'repos/o/r/issues'],
+        ])('still reaches the real gh for gh %s', async (...args) => {
             const out = await wrapped(args, { GH_TOKEN: 'ghs_x' });
             expect(out.code).not.toBe(2);
             expect(out.stderr).not.toContain('factory-control publish');

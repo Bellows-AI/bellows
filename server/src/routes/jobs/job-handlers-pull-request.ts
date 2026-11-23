@@ -113,7 +113,10 @@ function validateAsk(fields: Record<string, unknown>): { ok: true; value: Ask } 
     return { ok: true, value: { branch, base: typeof base === 'string' ? base : null, create, edit } };
 }
 
-type Outcome = { answer: 'pr'; pr: PullRequestFacts; operation: 'created' | 'reused' } | { answer: 'none' };
+/** `wrote`: a create or a PATCH succeeded under the token. A view, or a reuse left as it was, proves no write access. */
+type Outcome =
+    | { answer: 'pr'; pr: PullRequestFacts; operation: 'created' | 'reused'; wrote: boolean }
+    | { answer: 'none' };
 
 /** The view, create, retarget and edit the ask names, under one token. A failure is the writer's classified error. */
 async function carryOut(
@@ -133,13 +136,15 @@ async function carryOut(
         pr = await writer.findPullRequest(repo, ask.branch, auth);
     }
     if (!pr) return { answer: 'none' };
+    let wrote = operation === 'created';
     if (operation === 'reused') {
         const moved = ask.base !== null && pr.base !== ask.base ? { base: ask.base } : {};
         const change = { ...moved, ...(ask.edit ?? {}) };
         if (ask.edit) pr = await writer.edit(repo, pr.number, change, auth);
         else if (ask.base !== null && 'base' in moved) pr = await writer.retarget(repo, pr.number, ask.base, auth);
+        wrote = ask.edit !== null || 'base' in moved;
     }
-    return { answer: 'pr', pr, operation };
+    return { answer: 'pr', pr, operation, wrote };
 }
 
 type Reply = FastifyReply;
@@ -193,9 +198,9 @@ async function openWait(
 }
 
 /**
- * The ask under the token: the outcome, or `no-access` when the member's own token is refused. A success under the
- * member's token closes whatever wait the thread had; a throw there is a 503, and the driver's retry reuses the PR by
- * head and closes again.
+ * The ask under the token: the outcome, or `no-access` when the member's own token is refused. Only a create or a PATCH
+ * that succeeded under the member's token closes the thread's wait (a view proves read access, not write access); a
+ * throw there is a 503, and the driver's retry reuses the PR by head and edits it, closing again.
  */
 async function write(
     writer: PrWriter,
@@ -216,7 +221,7 @@ async function write(
         if (forge !== null && lacksWriteAccess(e, token.as)) return { answer: 'no-access', forge };
         throw e;
     }
-    if (token.as === 'user' && who.executionUserId !== null) {
+    if (token.as === 'user' && who.executionUserId !== null && outcome.answer === 'pr' && outcome.wrote) {
         await store.closePrForgeWait(who.rootJobId, who.executionUserId);
     }
     return outcome;
