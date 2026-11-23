@@ -84,7 +84,7 @@ export async function enterRuntimeBoundary(
         // count, untouched by enterWait on an already-active wait) both carry over unchanged.
         await tx`
             update workflow_round set
-                repo = ${publication.repo}, pr_number = ${publication.prNumber},
+                repo = ${publication.repo.path}, pr_number = ${publication.prNumber},
                 command = ${successor.command}, session_id = ${successor.sessionId},
                 job_repo = ${successor.repo?.path ?? null}, executor = ${successor.executor},
                 executor_scope = ${successor.executorScope},
@@ -107,7 +107,7 @@ export async function enterRuntimeBoundary(
             command, session_id, job_repo, executor, executor_scope, agent_type, agent_model, parent_job_id
         ) values (
             ${successor.orgId}, ${successor.rootJobId}, ${successor.workflowNode}, ${round},
-            ${publication.repo}, ${publication.prNumber},
+            ${publication.repo.path}, ${publication.prNumber},
             ${successor.command}, ${successor.sessionId}, ${successor.repo?.path ?? null}, ${successor.executor},
             ${successor.executorScope}, ${successor.agentType ?? null}, ${successor.agentModel ?? null},
             ${successor.parentJobId}

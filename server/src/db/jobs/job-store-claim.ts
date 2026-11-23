@@ -864,7 +864,7 @@ export async function resolveClaimHelperPlans(
         helperId: plan.helperId,
         phase: plan.phase,
         githubWriting: plan.githubWriting,
-        input: { publication },
+        input: { publication: publication && { ...publication, repo: publication.repo.path } },
     }));
 }
 

@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { githubRepo } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { useTestDb } from './harness.js';
-import { testOrg } from './fixtures.js';
+import { craftJob, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -29,10 +30,12 @@ beforeAll(async () => {
 
 describe.skipIf(!enabled)('the pr lifecycle store', () => {
     it('records a publication and replaces it on a re-publish', async () => {
-        expect(await store.publicationOf(ROOT)).toBeNull();
+        // The publication's forge and host are the root job's, so the root is a real row.
+        const root = await craftJob({ sql, org: ORG, author: randomUUID() }, { repo: REPO, author: null });
+        expect(await store.publicationOf(root)).toBeNull();
 
         await store.recordPublication({
-            root: ROOT,
+            root: root,
             repo: REPO,
             prNumber: PR,
             prUrl: `https://github.com/${REPO}/pull/${PR}`,
@@ -40,7 +43,7 @@ describe.skipIf(!enabled)('the pr lifecycle store', () => {
             baseBranch: 'main',
         });
         await store.recordPublication({
-            root: ROOT,
+            root: root,
             repo: REPO,
             prNumber: 43,
             prUrl: `https://github.com/${REPO}/pull/43`,
@@ -48,8 +51,8 @@ describe.skipIf(!enabled)('the pr lifecycle store', () => {
             baseBranch: 'main',
         });
 
-        expect(await store.publicationOf(ROOT)).toEqual({
-            repo: REPO,
+        expect(await store.publicationOf(root)).toEqual({
+            repo: githubRepo(REPO),
             prNumber: 43,
             prUrl: `https://github.com/${REPO}/pull/43`,
             headBranch: 'pr/43',
@@ -58,7 +61,7 @@ describe.skipIf(!enabled)('the pr lifecycle store', () => {
     });
 
     it('enters a wait and keeps an active wait intact on re-entry', async () => {
-        await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
+        await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
         await store.recordDelivery({
             deliveryId: 'delivery-1',
             event: 'pull_request_review',
@@ -69,7 +72,7 @@ describe.skipIf(!enabled)('the pr lifecycle store', () => {
         expect((await store.waitOf(ROOT))?.pending).toBe(1);
 
         // Re-entering an ACTIVE wait is a no-op: its folded delivery is not thrown away.
-        await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
+        await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
         const wait = await store.waitOf(ROOT);
         expect(wait?.pending).toBe(1);
         expect(wait?.completedAt).toBeNull();
@@ -77,7 +80,7 @@ describe.skipIf(!enabled)('the pr lifecycle store', () => {
     });
 
     it('starts a fresh cycle when a terminal wait is re-entered', async () => {
-        await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
+        await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
         await store.recordDelivery({
             deliveryId: 'delivery-1',
             event: 'pull_request_review',
@@ -87,7 +90,7 @@ describe.skipIf(!enabled)('the pr lifecycle store', () => {
         });
         await store.finishWait(ROOT, 'review');
 
-        const reentered = await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
+        const reentered = await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
         expect(reentered.pending).toBe(0);
         expect(reentered.lastDeliveryId).toBeNull();
         expect(reentered.completedAt).toBeNull();
@@ -99,7 +102,7 @@ describe.skipIf(!enabled)('the pr lifecycle store', () => {
 
     describe('finish and cancel', () => {
         it('finishes a wait once and is idempotent thereafter', async () => {
-            await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
+            await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
             expect(await store.finishWait(ROOT, 'review', 'exhausted')).toBe(true);
             expect(await store.finishWait(ROOT, 'review')).toBe(false);
 
@@ -110,8 +113,8 @@ describe.skipIf(!enabled)('the pr lifecycle store', () => {
         });
 
         it('cancels a wait once, and cancelWait does not touch a completed one', async () => {
-            await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
-            await store.enterWait({ root: ROOT, reason: 'fixes', repo: REPO, prNumber: PR });
+            await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
+            await store.enterWait({ root: ROOT, reason: 'fixes', repo: githubRepo(REPO), prNumber: PR });
             await store.finishWait(ROOT, 'review');
 
             expect(await store.cancelWait(ROOT, 'review', 'task stopped')).toBe(false);
@@ -130,9 +133,9 @@ describe.skipIf(!enabled)('the pr lifecycle store', () => {
         });
 
         it('cancels every open wait of a root and returns the count', async () => {
-            await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
-            await store.enterWait({ root: ROOT, reason: 'fixes', repo: REPO, prNumber: PR });
-            await store.enterWait({ root: ROOT_TWO, reason: 'review', repo: REPO, prNumber: PR });
+            await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
+            await store.enterWait({ root: ROOT, reason: 'fixes', repo: githubRepo(REPO), prNumber: PR });
+            await store.enterWait({ root: ROOT_TWO, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
 
             expect(await store.cancelWaitsForRoot(ROOT, 'task stopped')).toBe(2);
             expect(await store.cancelWaitsForRoot(ROOT, 'task stopped')).toBe(0);
@@ -143,7 +146,7 @@ describe.skipIf(!enabled)('the pr lifecycle store', () => {
 
 describe.skipIf(!enabled)('the pr lifecycle store: claiming reviews', () => {
     it('claims the folded deliveries once and leaves the coalesce for the next claim', async () => {
-        await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
+        await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
         await store.recordDelivery({
             deliveryId: 'delivery-1',
             event: 'pull_request_review',
@@ -182,15 +185,15 @@ describe.skipIf(!enabled)('the pr lifecycle store: claiming reviews', () => {
     it('claims nothing for a wait that is missing or terminal', async () => {
         expect(await store.claimReview(ROOT, 'review')).toEqual({ pending: 0, lastDeliveryId: null });
 
-        await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
+        await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
         await store.finishWait(ROOT, 'review');
         expect(await store.claimReview(ROOT, 'review')).toEqual({ pending: 0, lastDeliveryId: null });
     });
 
     it('prefers the open wait and otherwise the newest terminal one', async () => {
-        await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
+        await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
         await store.finishWait(ROOT, 'review');
-        await store.enterWait({ root: ROOT, reason: 'fixes', repo: REPO, prNumber: PR });
+        await store.enterWait({ root: ROOT, reason: 'fixes', repo: githubRepo(REPO), prNumber: PR });
 
         const wait = await store.waitOf(ROOT);
         expect(wait?.reason).toBe('fixes');
@@ -216,7 +219,7 @@ describe.skipIf(!enabled)('the pr lifecycle store: claiming reviews', () => {
                     },
                     tx
                 );
-                await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR }, tx);
+                await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR }, tx);
                 throw new Error('roll back');
             })
             .catch(() => {});
@@ -229,8 +232,8 @@ describe.skipIf(!enabled)('the pr lifecycle store: claiming reviews', () => {
 
 describe.skipIf(!enabled)('the pr lifecycle store: delivery folding', () => {
     it('folds a new delivery into every open wait on the PR, and dedupes redeliveries', async () => {
-        await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
-        await store.enterWait({ root: ROOT_TWO, reason: 'review', repo: REPO, prNumber: PR });
+        await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
+        await store.enterWait({ root: ROOT_TWO, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
 
         expect(
             await store.recordDelivery({
@@ -263,7 +266,7 @@ describe.skipIf(!enabled)('the pr lifecycle store: delivery folding', () => {
     });
 
     it('records a delivery with no open wait as unmatched, still deduped by guid', async () => {
-        await store.enterWait({ root: ROOT_TWO, reason: 'review', repo: 'Bellows-AI/other', prNumber: 7 });
+        await store.enterWait({ root: ROOT_TWO, reason: 'review', repo: githubRepo('Bellows-AI/other'), prNumber: 7 });
 
         expect(
             await store.recordDelivery({
@@ -286,7 +289,7 @@ describe.skipIf(!enabled)('the pr lifecycle store: delivery folding', () => {
     });
 
     it('never folds another repository, another PR, or another org', async () => {
-        await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
+        await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
 
         await store.recordDelivery({
             deliveryId: 'd-other-repo',
@@ -314,7 +317,7 @@ describe.skipIf(!enabled)('the pr lifecycle store: delivery folding', () => {
     });
 
     it('prunes deliveries recorded before the ledger window', async () => {
-        await store.enterWait({ root: ROOT, reason: 'review', repo: REPO, prNumber: PR });
+        await store.enterWait({ root: ROOT, reason: 'review', repo: githubRepo(REPO), prNumber: PR });
         await store.recordDelivery({
             deliveryId: 'old-delivery',
             event: 'pull_request',
@@ -345,5 +348,100 @@ describe.skipIf(!enabled)('the pr lifecycle store: delivery folding', () => {
                 prNumber: PR,
             })
         ).toBe('folded');
+    });
+});
+
+/**
+ * A repository path is not an identity: one `o/n` on GitHub and on a GitLab host are two repositories, so a GitHub
+ * delivery, close or follow observation reaches only the GitHub waits (docs/repos.md).
+ */
+describe.skipIf(!enabled)('the pr lifecycle store: one path on two forges', () => {
+    const PATH = 'o/n';
+    const GITLAB_HOST = 'gl.example';
+
+    /** A thread root with an open `review` wait on PR 7 of PATH, on the given forge. */
+    const rootWaiting = async (forge: 'github' | 'gitlab'): Promise<string> => {
+        const root = await craftJob({ sql, org: ORG, author: randomUUID() }, { repo: PATH, author: null });
+        const host = forge === 'github' ? 'github.com' : GITLAB_HOST;
+        await sql`update job set forge = ${forge}, host = ${host} where org_id = ${ORG} and id = ${root}`;
+        await sql`
+            insert into workflow_wait (org_id, root_job_id, reason, forge, host, repo, pr_number)
+            values (${ORG}, ${root}, 'review', ${forge}, ${host}, ${PATH}, 7)
+        `;
+        return root;
+    };
+
+    const stateOf = async (root: string) => {
+        const [row] = await sql<{ pending: number; cancelled_at: Date | null }[]>`
+            select pending, cancelled_at from workflow_wait where org_id = ${ORG} and root_job_id = ${root}
+        `;
+        return row!;
+    };
+
+    it('cancels only the waits of the repository it names', async () => {
+        const github = await rootWaiting('github');
+        const gitlab = await rootWaiting('gitlab');
+
+        expect(await store.cancelForRepoPr(githubRepo(PATH), 7, 'pr closed')).toBe(1);
+
+        expect((await stateOf(github)).cancelled_at).not.toBeNull();
+        expect((await stateOf(gitlab)).cancelled_at).toBeNull();
+    });
+
+    it('folds observed activity only into the waits of the repository it names', async () => {
+        const github = await rootWaiting('github');
+        const gitlab = await rootWaiting('gitlab');
+        await sql`update workflow_wait set observed_since = now() - interval '1 hour' where org_id = ${ORG}`;
+
+        const woken = await store.foldObservedActivity({
+            repo: githubRepo(PATH),
+            prNumber: 7,
+            activityAt: new Date(),
+            fingerprint: 'fp-1',
+        });
+
+        expect(woken).toBe(1);
+        expect((await stateOf(github)).pending).toBe(1);
+        expect((await stateOf(gitlab)).pending).toBe(0);
+    });
+
+    it('folds a GitHub delivery only into the GitHub waits', async () => {
+        const github = await rootWaiting('github');
+        const gitlab = await rootWaiting('gitlab');
+
+        expect(
+            await store.recordDelivery({
+                deliveryId: randomUUID(),
+                event: 'pull_request_review',
+                action: 'submitted',
+                repo: PATH,
+                prNumber: 7,
+            })
+        ).toBe('folded');
+
+        expect((await stateOf(github)).pending).toBe(1);
+        expect((await stateOf(gitlab)).pending).toBe(0);
+    });
+
+    it("records a publication under the root's forge and host", async () => {
+        const gitlab = await rootWaiting('gitlab');
+        await store.recordPublication({
+            root: gitlab,
+            repo: PATH,
+            prNumber: 7,
+            prUrl: 'https://gl.example/o/n/-/merge_requests/7',
+            headBranch: 'factory/x',
+            baseBranch: 'main',
+        });
+
+        const [row] = await sql`
+            select forge, host, repo from job_pr where org_id = ${ORG} and root_job_id = ${gitlab}
+        `;
+        expect(row).toEqual({ forge: 'gitlab', host: GITLAB_HOST, repo: PATH });
+        expect((await store.publicationOf(gitlab))?.repo).toEqual({
+            forge: 'gitlab',
+            host: GITLAB_HOST,
+            path: PATH,
+        });
     });
 });

@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql, TransactionSql } from 'postgres';
@@ -279,7 +280,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             }
         }
 
-        await prLifecycle.enterWait({ root: parent, reason: 'review', repo: 'acme/widgets', prNumber: 7 });
+        await prLifecycle.enterWait({ root: parent, reason: 'review', repo: githubRepo('acme/widgets'), prNumber: 7 });
         for (const member of [parent, first.id]) {
             const chain = await store.thread(member);
             for (const job of chain!) {

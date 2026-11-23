@@ -8,7 +8,7 @@ import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { mustCreate, randomGithubId, spendInterruptionBudget, testOrg } from './fixtures.js';
+import { craftJob, mustCreate, randomGithubId, spendInterruptionBudget, testOrg } from './fixtures.js';
 
 /**
  * The merged-PR closure against a real database: a verified merge delivery closes
@@ -162,7 +162,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
     it('closes every root published to the PR: done, no actor, audit preserved, reclaim queued', async () => {
         const okRoot = await finishPublished('the ok task');
         const failedRoot = await finishPublished('the failed task', 'failed');
-        await prs.enterWait({ root: failedRoot, reason: 'review', repo: REPO, prNumber: PULL });
+        await prs.enterWait({ root: failedRoot, reason: 'review', repo: githubRepo(REPO), prNumber: PULL });
 
         const result = await store.closeMergedPr(REPO, PULL, 'guid-multi');
         expect(result).toEqual({ outcome: 'applied', closedRoots: 2 });
@@ -190,7 +190,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
 
     it('an ordinary close cancels the wait but never stamps done', async () => {
         const root = await finishPublished('a merely closed task');
-        await prs.cancelForRepoPr(REPO, PULL, 'pr closed');
+        await prs.cancelForRepoPr(githubRepo(REPO), PULL, 'pr closed');
 
         expect((await jobRowOf(root)).done_at).toBeNull();
         expect((await reclaimRowsOf(root)).length).toBe(0);
@@ -208,8 +208,9 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
             baseBranch: 'main',
         });
         const otherOrgPrs = createPrLifecycleStore({ sql, orgId: OTHER_ORG });
+        const otherOrgRoot = await craftJob({ sql, org: OTHER_ORG, author: ALICE.id }, { repo: REPO });
         await otherOrgPrs.recordPublication({
-            root,
+            root: otherOrgRoot,
             repo: REPO,
             prNumber: PULL,
             prUrl: `https://github.com/${REPO}/pull/${PULL}`,
@@ -228,7 +229,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         // The other PR's thread and the other org's ledger were never this delivery's business.
         expect(await store.closeMergedPr(REPO, 8, 'guid-after')).toEqual({ outcome: 'applied', closedRoots: 1 });
         expect((await jobRowOf(elsewhere)).done_at).not.toBeNull();
-        expect(await otherOrgPrs.publicationOf(root)).not.toBeNull();
+        expect(await otherOrgPrs.publicationOf(otherOrgRoot)).not.toBeNull();
     });
 
     it('a parked review-wait thread closes: done, wait cancelled `pr merged`, nothing claimable', async () => {
@@ -457,7 +458,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         )[0]!;
         expect(continuation.status).toBe('queued');
 
-        await prs.cancelForRepoPr(REPO, PULL, 'pr closed');
+        await prs.cancelForRepoPr(githubRepo(REPO), PULL, 'pr closed');
         expect(await store.claim('worker-fence', LEASE_SECONDS)).toBeNull();
 
         const settled = await jobRowOf(continuation.id);

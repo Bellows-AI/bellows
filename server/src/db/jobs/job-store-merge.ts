@@ -6,6 +6,7 @@
  */
 
 import { waitAdvisoryXactLock } from '../pool.js';
+import { githubRepo } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { backsBatchTask } from './job-store-rows.js';
 import { queueReclaimIfThreadDone } from './job-store-reclaim-queue.js';
@@ -119,7 +120,7 @@ async function closeMergedPrOnce(
         // The merge-specific cancel: every open wait addressed to this PR ends here, so parked rounds become
         // permanently unwakeable and a continuation woken before this commit is settled at claim by the existing
         // cancellation fence.
-        if (prs) await prs.cancelForRepoPr(repo, prNumber, MERGE_TERMINAL_REASON, tx);
+        if (prs) await prs.cancelForRepoPr(githubRepo(repo), prNumber, MERGE_TERMINAL_REASON, tx);
 
         const roots = await mergedRootsOf(tx, orgId, repo, prNumber);
         if (roots.some((root) => !locked.has(root))) throw new RetryMergeClose();

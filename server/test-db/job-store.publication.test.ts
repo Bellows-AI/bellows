@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -97,7 +98,7 @@ describe.skipIf(!enabled)('publication and wait on the job reads (#324)', () => 
             headBranch: `factory/${root}`,
             baseBranch: 'main',
         });
-        await prs.enterWait({ root, reason: 'review', repo: 'acme/widgets', prNumber: 7 });
+        await prs.enterWait({ root, reason: 'review', repo: githubRepo('acme/widgets'), prNumber: 7 });
 
         // The lists are the one surface that answers null for both — the documented rule the
         // wait fields already followed before this field existed (docs/jobs.md).
@@ -119,7 +120,7 @@ describe.skipIf(!enabled)('publication and wait on the job reads (#324)', () => 
             waitTerminalReason: null,
         });
 
-        await prs.enterWait({ root, reason: 'review', repo: 'acme/widgets', prNumber: 7 });
+        await prs.enterWait({ root, reason: 'review', repo: githubRepo('acme/widgets'), prNumber: 7 });
         const waiting = await store.get(root);
         expect(waiting).toMatchObject({ waitReason: 'review', waitTerminalReason: null });
         expect(waiting?.waitingSince).not.toBeNull();

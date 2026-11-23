@@ -5,7 +5,7 @@
  * behavior is in the sibling `job-store-*.ts` files, which job-store.ts's header maps.
  */
 
-import type { AttachmentMeta } from '@factory-ai/core';
+import type { AttachmentMeta, RepoRef } from '@factory-ai/core';
 import type { ClaimAttachment } from './job-store-attachments.js';
 import type { GateRunStore } from './job-store-gate-runs.js';
 import type { PrOperationStore } from './job-store-pr-operations.js';
@@ -28,7 +28,7 @@ import type { DeploymentMode, UserRef, ExecutorScope, ExecutorType, JobMode, Tas
 import type { AdmissionBudgets, ClaimObserver, JobAdmissionStore } from './job-store-admission.js';
 import type { PlanLimits } from '../plan-limits.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
-import type { PublicationState, WaitState } from '../pr-lifecycle-store.js';
+import type { PublicationIdentity, PublicationState, WaitState } from '../pr-lifecycle-store.js';
 import type { BellowsConfig } from '../../workspace/bellows.js';
 import type { ServiceSpec } from '../../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from '../evidence-policy.js';
@@ -1248,7 +1248,7 @@ export interface JobStorePrs {
      * merge-conflict-autofix block being the first consumer. Null on a thread that never
      * published.
      */
-    publicationOf(root: string, exec?: Sql | TransactionSql): Promise<PublicationState | null>;
+    publicationOf(root: string, exec?: Sql | TransactionSql): Promise<PublicationIdentity | null>;
     /**
      * Ends a durable wait as completed (issue #133's `runtime-settle.ts`, the counterpart to
      * `enterWait` below): idempotent, like every other terminal wait call — an already-terminal or
@@ -1267,7 +1267,7 @@ export interface JobStorePrs {
      * transaction. Returns the count.
      */
     cancelForRepoPr(
-        repo: string,
+        repo: RepoRef,
         prNumber: number,
         terminalReason?: string,
         exec?: Sql | TransactionSql
@@ -1277,7 +1277,7 @@ export interface JobStorePrs {
      * the transition's park, in the same transaction as the verdict that triggered it.
      */
     enterWait(
-        input: { root: string; reason: string; repo: string; prNumber: number },
+        input: { root: string; reason: string; repo: RepoRef; prNumber: number },
         exec?: Sql | TransactionSql
     ): Promise<WaitState>;
     /**

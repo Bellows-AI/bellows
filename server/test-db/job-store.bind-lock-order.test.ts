@@ -285,7 +285,7 @@ describe.skipIf(!enabled)('bind vs thread writers — database', () => {
             prNumber: PULL,
         });
         await sweepRuntimeWakes({ sql, orgId: ORG, prs });
-        await prs.cancelForRepoPr(REPO, PULL, 'pr closed');
+        await prs.cancelForRepoPr(githubRepo(REPO), PULL, 'pr closed');
         await sql`insert into job_merge_close (org_id, root_job_id) values (${ORG}, ${root})`;
 
         const fresh = await connect();

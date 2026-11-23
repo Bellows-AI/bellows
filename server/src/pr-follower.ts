@@ -95,13 +95,18 @@ export function createPrFollower(deps: PrFollowerDeps): PrFollower {
             return { kind: 'seen', closed: true };
         }
         if (facts.state === 'closed') {
-            await prs.cancelForRepoPr(facts.repo, facts.number, CLOSED_REASON, tx);
+            await prs.cancelForRepoPr(githubRepo(facts.repo), facts.number, CLOSED_REASON, tx);
             return { kind: 'seen', closed: true };
         }
         const activityAt = validDate(facts.updatedAt);
         if (activityAt !== undefined) {
             await prs.foldObservedActivity(
-                { repo: facts.repo, prNumber: facts.number, activityAt, fingerprint: observedFingerprint(facts) },
+                {
+                    repo: githubRepo(facts.repo),
+                    prNumber: facts.number,
+                    activityAt,
+                    fingerprint: observedFingerprint(facts),
+                },
                 tx
             );
         }

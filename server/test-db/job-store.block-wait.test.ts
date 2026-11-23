@@ -329,7 +329,7 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
 
     it('a PR close before any delivery leaves the wait cancelled — never wakes', async () => {
         const root = await publishAndTransition('cancel-before-delivery', 7);
-        await prs.cancelForRepoPr(REPO, 7, 'pr closed');
+        await prs.cancelForRepoPr(githubRepo(REPO), 7, 'pr closed');
         await prs.recordDelivery({
             deliveryId: 'd-after-close',
             event: 'pull_request_review',
@@ -359,7 +359,7 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
         const [round] = await roundRows(root);
         expect(round!.job_id).not.toBeNull();
 
-        await prs.cancelForRepoPr(REPO, 8, 'pr closed');
+        await prs.cancelForRepoPr(githubRepo(REPO), 8, 'pr closed');
 
         expect(await store.claim(WORKER, 60)).toBeNull();
         const [job] = await sql<
