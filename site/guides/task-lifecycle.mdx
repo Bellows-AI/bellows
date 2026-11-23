@@ -49,6 +49,8 @@ Queued -> Running -> Succeeded · Needs review -> Done
 
 Commits made in a task are authored by the member who started it and committed by the Bellows bot, so GitHub shows "<member> authored and Bellows committed" and links the commit to the member's profile. The author address is the member's GitHub `noreply` address, never a private email. With `AUTH_MODE=none` the bot authors too.
 
+Bellows opens and edits the task's pull request as the member who started the task, with that member's GitHub connection. If the connection is broken when the branch is ready to publish, the task waits for the member to reconnect GitHub, then publishes; it does not fail.
+
 <Tip>
 **Mark done** closes the task in Bellows only. It does not merge or close the pull request.
 </Tip>
