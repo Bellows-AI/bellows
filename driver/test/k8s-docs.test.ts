@@ -457,3 +457,18 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(testingDocs)).toContain('.bench.tsv');
     });
 });
+
+describe('the runner pod sizing record', () => {
+    // A microVM guest is the sum of the pod's limits: each container is sized by its role, and the
+    // shapes the chart-default budget does not cover are stated, not pinned.
+    it('states the runner pod sizing rule and the reviewer limit', () => {
+        const map = prose(readFileSync(join(ROOT, 'docs/kubernetes.md'), 'utf8'));
+        expect(map).toContain(
+            "Every runner-pod container is sized by its role: the gate takes the largest CPU limit (`gateResources`), the agent and reviewer the class's `resources`, each service a fixed 1 CPU cap with the class's memory plus its tmpfs, the supervisor and the helpers fixed pairs"
+        );
+        const limits = prose(readFileSync(join(ROOT, 'docs/kubernetes-limits.md'), 'utf8'));
+        expect(limits).toContain(
+            "a reviewing pod adds a `reviewer` at the runner's CPU limit (+2 on chart defaults), and each further service adds 1 CPU"
+        );
+    });
+});

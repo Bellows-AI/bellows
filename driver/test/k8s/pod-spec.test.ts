@@ -1,5 +1,8 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 import type { BoardJob } from '../../src/board/board.js';
+import { cpuQuantityToCores } from '../../src/quantities.js';
 import { loadDriverConfig } from '../../src/config.js';
 import {
     AGENT_CONTAINER,
@@ -686,20 +689,90 @@ describe('resources on every pod the driver specs', () => {
     const REQUESTS = { requests: { cpu: '500m', memory: '1Gi' } };
     const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
 
-    // The runner's pod is sized by its agent: the supervisor and the exporter beside it are small
-    // scripts, and a request on each would multiply the pod's reservation by three.
-    const SIDECARS: readonly PodName[] = ['the task supervisor', 'the transcript exporter'];
-    // The gate sidecar is sized by the class's gateResources and resized in place: its own pins below.
-    const SIZED_POD_NAMES = POD_NAMES.filter((name) => !SIDECARS.includes(name) && name !== 'the gate sidecar');
+    // The supervisor and the exporter are small scripts: a fixed pair each, on every class, so neither
+    // repeats the runner's limits nor falls through to the namespace LimitRange's.
+    const FIXED_PAIRS: readonly [PodName, object][] = [
+        ['the task supervisor', { requests: { cpu: '50m', memory: '64Mi' }, limits: { cpu: '500m', memory: '1Gi' } }],
+        [
+            'the transcript exporter',
+            { requests: { cpu: '50m', memory: '64Mi' }, limits: { cpu: '250m', memory: '512Mi' } },
+        ],
+    ];
+    const FIXED: readonly PodName[] = FIXED_PAIRS.map(([name]) => name);
+    // The gate sidecar is sized by the class's gateResources and resized in place, the service
+    // sidecar takes a fixed cpu cap: their own pins below.
+    const SIZED_POD_NAMES = POD_NAMES.filter(
+        (name) => !FIXED.includes(name) && name !== 'the gate sidecar' && name !== 'the service sidecar'
+    );
 
-    it.each(SIDECARS)('leaves %s unsized: the pod is sized by its agent', (name) => {
-        const { pod } = everyPodSpec(sized(REQUESTS))[name]();
-        expect(pod.containers[0]!.resources).toBeUndefined();
+    it.each(FIXED_PAIRS)('sizes %s by its fixed pair on every class', (name, pair) => {
+        expect(everyPodSpec(sized(REQUESTS))[name]().pod.containers[0]!.resources).toEqual(pair);
+        expect(everyPodSpec()[name]().pod.containers[0]!.resources).toEqual(pair);
     });
 
     it.each(SIZED_POD_NAMES)('carries the same requests on %s', (name) => {
         const { pod } = everyPodSpec(sized(REQUESTS))[name]();
         expect(pod.containers[0]!.resources).toEqual(REQUESTS);
+    });
+
+    it('caps the service sidecar’s cpu at 1 under the runner requests', () => {
+        const { pod } = everyPodSpec(sized(REQUESTS))['the service sidecar']();
+        expect(pod.containers[0]!.resources).toEqual({
+            requests: { cpu: '500m', memory: '1Gi' },
+            limits: { cpu: '1' },
+        });
+        expect(everyPodSpec()['the service sidecar']().pod.containers[0]!.resources).toEqual({ limits: { cpu: '1' } });
+    });
+
+    // A microVM RuntimeClass sizes the guest from the sum of the pod's cpu limits: on the chart's
+    // default class, the measured pod (agent, supervisor, exporter, gate, two services) stays within
+    // 11 cpu, and the gate, which runs the parallel gates, has the largest cap.
+    it('sizes the default chart class’s measured runner pod by role: cpu limits sum ≤ 11, the gate’s the largest', () => {
+        const values = parseYaml(
+            readFileSync(new URL('../../../charts/factory/values.yaml', import.meta.url), 'utf8')
+        ) as { runner: { classes: { standard: unknown } } };
+        const config = {
+            ...loadDriverConfig({
+                EXECUTOR: 'kubernetes',
+                K8S_NAMESPACE: namespace,
+                RUNNER_CLASSES: JSON.stringify({ standard: values.runner.classes.standard }),
+                RUNNER_DEFAULT_CLASS: 'standard',
+            }),
+            servicesEnabled: true,
+        };
+        const measured: BoardJob = {
+            ...gatedOf(job),
+            ...SUPERVISED,
+            executorType: 'claude-code',
+            services: [
+                {
+                    name: 'db',
+                    image: 'postgres:17',
+                    environment: [],
+                    tmpfs: [{ path: '/var/lib/postgresql/data', size: '2Gi' }],
+                },
+                { name: 's3', image: 'minio', environment: [] },
+            ],
+        };
+        const pod = runnerJobSpec(config, measured, { id: SESSION, resume: false }).spec.template.spec;
+        const running = [
+            ...pod.containers,
+            ...(pod.initContainers ?? []).filter((container) => container.restartPolicy === 'Always'),
+        ];
+        expect(running.map((container) => container.name).sort()).toEqual(
+            [AGENT_CONTAINER, SUPERVISOR_CONTAINER, EXPORTER_CONTAINER, 'gate', 'svc-db', 'svc-s3'].sort()
+        );
+        const cpuOf = (container: (typeof running)[number]): number => {
+            const limit = container.resources?.limits?.cpu;
+            expect(limit, `${container.name} has a cpu limit`).toEqual(expect.any(String));
+            return Number(cpuQuantityToCores(limit!));
+        };
+        const sum = running.reduce((total, container) => total + cpuOf(container), 0);
+        expect(sum).toBeLessThanOrEqual(11);
+        const gate = cpuOf(running.find((container) => container.name === 'gate')!);
+        for (const container of running.filter((candidate) => candidate.name !== 'gate')) {
+            expect(cpuOf(container), container.name).toBeLessThan(gate);
+        }
     });
 
     // Issue #507 and #773 (D6): a gate runs the whole suite, so it is limited by its class's
@@ -999,17 +1072,20 @@ describe('a docker class', () => {
         }
         expect(named(pod, SUPERVISOR_CONTAINER).resources).toEqual({
             requests: { cpu: '50m', memory: '64Mi' },
-            limits: { cpu: '1', memory: '1Gi' },
+            limits: { cpu: '500m', memory: '1Gi' },
         });
         const reader = readerJobSpec(config, reviewing, 'reader', { argv: ['true'], env: {}, timeoutMs: 1000 });
         const readerPod = reader.spec.template.spec;
         for (const container of readerPod.containers) {
             expect(container.resources?.limits, container.name).toEqual({ cpu: '4', memory: '8Gi' });
         }
-        // A class without a daemon is unchanged: its helpers stay unsized.
+        // A class without a daemon sizes its supervisor and helpers by the same fixed pairs.
         const plain = podOf('standard');
-        expect(named(plain, SUPERVISOR_CONTAINER).resources).toBeUndefined();
-        expect(named(plain, EXPORTER_CONTAINER).resources).toBeUndefined();
+        expect(named(plain, SUPERVISOR_CONTAINER).resources).toEqual(named(pod, SUPERVISOR_CONTAINER).resources);
+        expect(named(plain, EXPORTER_CONTAINER).resources).toEqual({
+            requests: { cpu: '50m', memory: '64Mi' },
+            limits: { cpu: '250m', memory: '512Mi' },
+        });
     });
 
     it('points the agent and the gate at the socket and the shared temp dir, their hardening unchanged', () => {
