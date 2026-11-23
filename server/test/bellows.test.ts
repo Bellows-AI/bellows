@@ -286,7 +286,7 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
     });
 
     // The end-of-run gates run one after another: side by side in one microVM they shared one gate
-    // container and its I/O, and every one hit its deadline (BEL-564). build:core runs first, so each
+    // container and its I/O, and every one hit its deadline. build:core runs first, so each
     // later tsc -b of core is an up-to-date no-op. An on_demand gate is not part of that pass.
     it('builds core first, then runs every other end-of-run gate one after another', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
