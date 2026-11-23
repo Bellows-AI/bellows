@@ -126,12 +126,16 @@ describe.skipIf(!enabled)('row-level security for the request role', () => {
         expect(leaks).toEqual([]);
     });
 
-    it('leaves the owner unbound: a pod of the previous release, on the owner with no setting, reads every row', async () => {
+    it('binds the owner too: an owner without BYPASSRLS reads no row of any org table or partition without the setting, and only its org rows with it', async () => {
         // The owner here is a role of its own, as on a managed database where the owner is no superuser.
         const owner = `rls_owner_${orgA}`;
-        const blind: string[] = [];
+        const leaks: string[] = [];
         await withPlantedRows(async (tx) => {
-            await tx.unsafe(`create role ${owner} nologin`);
+            await tx.unsafe(`create role ${owner} nologin nosuperuser nobypassrls`);
+            const [attrs] = await tx<{ rolsuper: boolean; rolbypassrls: boolean }[]>`
+                select rolsuper, rolbypassrls from pg_roles where rolname = ${owner}
+            `;
+            expect(attrs).toEqual({ rolsuper: false, rolbypassrls: false });
             const tables = await tx<{ name: string }[]>`
                 select c.relname as name from pg_class c
                 join pg_attribute a on a.attrelid = c.oid and a.attname = 'org_id' and not a.attisdropped
@@ -140,12 +144,19 @@ describe.skipIf(!enabled)('row-level security for the request role', () => {
             for (const { name } of tables) await tx.unsafe(`alter table "${name}" owner to ${owner}`);
             await tx.unsafe(`set local role ${owner}`);
             await asOrg(tx, null);
+            for (const { name } of tables) {
+                const [none] = await tx.unsafe<{ n: number }[]>(`select count(*)::int as n from "${name}"`);
+                if (none!.n !== 0) leaks.push(`${name}: ${none!.n} rows with no setting`);
+            }
+            await asOrg(tx, orgA);
             for (const table of ORG_TABLES) {
-                const rows = await tx.unsafe<{ org_id: string }[]>(`select org_id from "${table}"`);
-                if (rows.length !== 2) blind.push(`${table}: ${rows.length} rows`);
+                const own = await tx.unsafe<{ org_id: string }[]>(`select org_id from "${table}"`);
+                if (own.length !== 1 || own[0]!.org_id !== orgA) {
+                    leaks.push(`${table}: ${JSON.stringify(own.map((r) => r.org_id))} with org A's setting`);
+                }
             }
         });
-        expect(blind).toEqual([]);
+        expect(leaks).toEqual([]);
     });
 
     it("refuses a write of another organization's row", async () => {

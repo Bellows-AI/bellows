@@ -4,7 +4,7 @@ How the organization reaches PostgreSQL: every org-owned table carries the polic
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Roles, grants, `enable` (not `force`) and the policy on every `org_id` table and partition; the owner stays exempt | `server/migrations/151_row_level_security.sql`, `server/src/db/org-tables.ts` | `server/test-db/org-tables.test.ts`, `server/test-db/row-level-security.test.ts` |
+| Roles, grants, and the policy on every `org_id` table and partition, enabled (151) and forced (161), so it binds the owner too | `server/migrations/151_row_level_security.sql`, `server/migrations/161_force_row_level_security.sql`, `server/src/db/org-tables.ts` | `server/test-db/org-tables.test.ts`, `server/test-db/row-level-security.test.ts`, `server/test-db/migration.161-force-rls.test.ts` |
 | The legacy point repair trigger runs as `bellows_cross_org`, so evidence the request role writes still repairs org-less points | `server/migrations/151_row_level_security.sql` | `server/test-db/metric-point-repair.rls.test.ts` |
 | A store's statement runs in a transaction that sets its org first (`orgSql`); the org stores get it | `server/src/db/org-sql.ts`, `server/src/orgs.ts` | `server/test-db/org-sql.test.ts` |
 | Views run as their invoker, recreated with their grants each boot | `server/migrations/002_views.repeatable.sql` | `server/test-db/row-level-security.test.ts`, `server/test-db/org-tables.test.ts` |
@@ -16,13 +16,13 @@ How the organization reaches PostgreSQL: every org-owned table carries the polic
 
 - **`bellows_request`** owns nothing and does not bypass RLS: the request and secrets pools take it at connection start, on `DATABASE_REQUEST_URL` (a login that is its member) or else the owner's login.
 - **`bellows_cross_org`** has `BYPASSRLS` and owns the definer functions: the cross-org pool is the owner's login taking it. The migration creates both and grants them to the migrating login. A login that may not create a `BYPASSRLS` role needs both created and granted to it first; the migration then only checks them.
-- **The owner** is exempt from the policies (enabled, not forced), so a pod of the previous release, which runs as the owner with no setting, keeps reading through a rollout. This release runs only its migrations on it, a one-connection pool closed after boot; its seed and boot reaps already take `bellows_cross_org` (`server/src/db/migrate.ts`).
+- **The owner** is bound by the forced policies unless it is a superuser or has `BYPASSRLS`; it runs only the migrations, on a one-connection pool closed after boot. Their seed and boot reaps take `bellows_cross_org` (`server/src/db/migrate.ts`), and so does every write `npm run seed` makes after them (`server/src/seed/cli.ts`). A reader on the owner login sees an org's rows only after `set role bellows_cross_org`.
 
 ## Cross-org paths
 
 Each call `main.ts` hands the cross-org pool, pinned by `server/test/cross-org-pool.test.ts`:
 
-- Sign-in and credentials: `createAuthStore`, `membershipGuardFor`, `mcpStores` (OAuth store, upload capabilities, their expiry sweeps), `bootstrappedDriverCredentials`, and `server/src/auth/driver-credential-cli.ts`.
+- Sign-in and credentials: `createAuthStore`, `membershipGuardFor`, `mcpStores` (OAuth store, upload capabilities, their expiry sweeps), `bootstrappedDriverCredentials`, and `server/src/auth/driver-credential-cli.ts`. Outside the board, `server/src/seed/cli.ts` writes as the role too.
 - A worker credential to its org: `createOrgOfLease`, `createOrgOfIngest`, `createOrgOfJob`, `createOrgOfReclaim`, and through `runnerCredentialDeps` the lease checks `createAttemptOfLease` and `createPairMatches`.
 - Deletes decided by what no org references: `startCollectors` with `startAttachmentSweep`, `startSkillSweep`, `startOrgPurge` and `startOrgRetention`; the integration recovery (`createIntegrationRuntime`); `startMetricPointOrgBackfill`.
 
@@ -40,12 +40,12 @@ The spike (2026-11-14, one laptop, PostgreSQL 17.11, two pools of 50, 8 orgs x 4
 
 ## Invariants
 
-- **`force row level security` is a contract step for a later release**, once no pod of a release before 151 can run: until then the owner must read every row. `server/test-db/row-level-security.test.ts` pins the exemption.
+- **A migration that writes org rows takes `bellows_cross_org` first**: as the owner it reads and changes nothing on a managed database, and CI's superuser cannot see that. `server/test/migrations-owner-dml.test.ts` fails on one after 161 that does not; `server/test-db/row-level-security.test.ts` pins the bound owner.
 - **Nothing but the migrations runs as the owner**: `server/test/cross-org-pool.test.ts` pins where `main.ts` hands the owner pool, `server/test-db/org-sql.test.ts` the role each pool runs as.
 - **A trigger that reads another org's rows, or org-less ones, is `security definer` as `bellows_cross_org`**: of the triggers before 151 only the metric point repair does; the fill trigger runs only for an org-less insert, which no request makes.
 
 - **Every view is `security_invoker` and granted in the repeatable file**: each boot drops and recreates the views. `server/test-db/org-tables.test.ts` fails on a view without it.
-- **A new `org_id` table gets the policy in its own migration**: 151 covered the tables that existed. `server/test-db/org-tables.test.ts` fails on a table without it.
+- **A new `org_id` table gets the policy and force in its own migration**: 151 and 161 covered the tables that existed. `server/test-db/org-tables.test.ts` fails on a table without it.
 - **A sweep that reads absence never runs on the request role**: under it a missing setting reads 0 rows. It joins the list above and `server/test/cross-org-pool.test.ts`.
 - **A definer function returns no row of another org**: a count, a slot, or booleans aligned to the caller's ids.
 - **The request login is never logged or forwarded**: `config.ts` reads it, `main.ts` opens the pools with it.
