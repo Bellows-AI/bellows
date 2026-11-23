@@ -1,3 +1,4 @@
+import { githubRepo, type RepoRef } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { replaceTrackedRepos, trackedRepos } from '../src/db/tracked-repos.js';
@@ -19,7 +20,7 @@ beforeAll(() => {
 const names = async (source: RepoSource) => (await source.list()).map((repo) => `${repo.owner}/${repo.name}`);
 
 /** One dashboard replica's source: its own cache, the shared database's allowlist. */
-const replica = (allowlist: () => Promise<readonly string[]> = () => trackedRepos({ sql, orgId: ORG })) =>
+const replica = (allowlist: () => Promise<readonly RepoRef[]> = () => trackedRepos({ sql, orgId: ORG })) =>
     createRepoSource({ stored: async () => ['acme/web', 'acme/other'], allowlist });
 
 describe.skipIf(!enabled)('the repo list across dashboard replicas', () => {
@@ -30,7 +31,7 @@ describe.skipIf(!enabled)('the repo list across dashboard replicas', () => {
         expect(await names(other)).toEqual(['acme/web', 'acme/other']);
 
         // The onboarding write lands on one replica, which invalidates only its own cache.
-        await replaceTrackedRepos({ sql, orgId: ORG, repos: ['acme/web'] });
+        await replaceTrackedRepos({ sql, orgId: ORG, repos: [githubRepo('acme/web')] });
         writer.invalidate();
 
         expect(await names(writer)).toEqual(['acme/web']);
@@ -39,7 +40,7 @@ describe.skipIf(!enabled)('the repo list across dashboard replicas', () => {
     });
 
     it('a failed allowlist read serves the last narrowed list, never the full listing', async () => {
-        await replaceTrackedRepos({ sql, orgId: ORG, repos: ['acme/web'] });
+        await replaceTrackedRepos({ sql, orgId: ORG, repos: [githubRepo('acme/web')] });
         let fail = false;
         const source = replica(async () => {
             if (fail) throw new Error('allowlist read failed');

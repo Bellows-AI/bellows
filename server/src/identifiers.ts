@@ -1,14 +1,3 @@
-import type { Repo } from './config.js';
-
-/**
- * "owner/name" — the form every repo identity takes in this system, and the key sessions are
- * scoped by.
- *
- * Here rather than in `github/` or `config.ts`, because `db/` and `routes/` need it too and reaching
- * into the GitHub adapter for a string join would be a layering inversion.
- */
-export const fullName = (repo: Repo): string => `${repo.owner}/${repo.name}`;
-
 /**
  * The one organization AUTH_MODE=none has.
  *

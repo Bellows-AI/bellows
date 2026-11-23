@@ -1,7 +1,6 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
 import type { Repo } from '../config.js';
-import { fullName } from '../identifiers.js';
 import type { OrgRuntime } from '../orgs.js';
 import { sendFailure } from './error-handler.js';
 
@@ -89,7 +88,7 @@ export async function checkReposVisible(
 ): Promise<{ ok: true } | { ok: false; status?: number; code: string; message: string }> {
     // This read's own error, not lastError(): a concurrent read may have cleared it already.
     const read = await repos.detail();
-    const available = new Set(read.repos.map(fullName));
+    const available = new Set(read.repos.map((r) => `${r.owner}/${r.name}`));
     // The list is empty (or lacks the repo) in two very different situations — nothing is tracked,
     // or the source could not be asked — and only the first makes "no repository matches" true.
     const unconfirmed = (error: string): { ok: false; status: number; code: string; message: string } => ({

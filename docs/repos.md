@@ -6,7 +6,7 @@ Which repositories an organization sees, where that list comes from, and what it
 | --- | --- | --- |
 | The list itself: fetch, cache, `list()` / `snapshot()` | `server/src/github/repo-source.ts` | `server/test/repo-source.test.ts` |
 | Installation listing | `server/src/github/app-client.ts` | `server/test/github.app-client.test.ts` |
-| Per-org tracked-repo allowlist (`tracked_repo`) | `server/src/db/tracked-repos.ts`, `server/migrations/030_signin_selection.sql` | `server/test/repo-source.test.ts`, `server/test-db/repo-source.replicas.test.ts` |
+| Per-org tracked-repo allowlist (`tracked_repo`) | `server/src/db/tracked-repos.ts`, `server/migrations/030_signin_selection.sql`, `server/migrations/167_repo_ref.sql`, `core/src/repo-ref.ts` | `server/test/repo-source.test.ts`, `server/test-db/repo-source.replicas.test.ts`, `core/test/repo-ref.test.ts` |
 | Credential-less fallback to `session_branch` | `server/src/db/stored-repos.ts` | `server/test/routes.repos.test.ts` |
 | Branch list and prefix search through the installation (a search is one unpaginated `matching-refs` response sliced into 100s) | `server/src/github/app-client.ts` (`listBranches`), `server/src/routes/repos.ts` | `server/test/github.app-client.test.ts`, `server/test/routes.repos.test.ts` |
 | Picker route | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
@@ -36,6 +36,9 @@ Which repositories an organization sees, where that list comes from, and what it
 - **`owner/name` is the one spelling**, shared by the plugin, the branch reporter and the
   installation listing: the comparison is string inclusion, there are no ids to join on. It travels
   in the `/api/stats` payload as `meta.repos`, not behind a second request.
+  Underneath, a repo's identity is `(forge, host, path)` (`RepoRef`): GitHub folds path case, no other forge does,
+  and one path on two hosts is two repos. The tracked allowlist stores and returns refs; a malformed row throws,
+  because dropping it could read as "track everything". The wire spelling stays `owner/name`.
 - **Installation access is the whole boundary.** Any member sees every repo the org tracks; GitHub
   repo permissions are not projected into Factory ([organizations.md](organizations.md)). A write that
   names a repo (`POST /api/jobs`, a batch, env) validates it against the tracked list: `400 UNKNOWN_REPO`,
