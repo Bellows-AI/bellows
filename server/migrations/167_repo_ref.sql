@@ -105,11 +105,15 @@ alter table notification_event
 alter table notification_event add constraint notification_event_forge_ck check (forge in ('github', 'gitlab')) not valid;
 
 -- tracked_repo: a surrogate id, the full path, and identity by (org, forge, host, path). Small table (one row per
--- selected repository), so the rewrite the volatile default and the stored column cause is brief. The previous
--- release deletes and inserts with no conflict target, so the new keys cannot trip it.
+-- selected repository), so the rewrite the stored column causes is brief. The id takes no default in its `add`
+-- (migrations-rewrite.test.ts): the default for new rows is set apart, the few existing rows are backfilled, and the
+-- primary key makes it not null. The previous release deletes and inserts with no conflict target and no id, so the
+-- new keys and the default cannot trip it.
 alter table tracked_repo
-    add column id uuid not null default gen_random_uuid(),
+    add column id uuid,
     add column path text generated always as (owner || '/' || name) stored;
+alter table tracked_repo alter column id set default gen_random_uuid();
+update tracked_repo set id = gen_random_uuid() where id is null;
 alter table tracked_repo drop constraint tracked_repo_pk;
 alter table tracked_repo add primary key (id);
 alter table tracked_repo add constraint tracked_repo_ref_uk unique (org_id, forge, host, path);
