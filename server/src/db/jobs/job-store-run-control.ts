@@ -2,7 +2,9 @@
  * What stops or parks a run: stop, suspend and the interruption a lost or blocked lease records.
  */
 
+import { FORGE_REQUIREMENT_PROVIDER } from '@factory-ai/core';
 import type { Fragment, TransactionSql } from 'postgres';
+import { FORGE_ACCESS_REASON, FORGE_ACCESS_RETRY_SECONDS } from '../forge-requirement.js';
 import { stopReviewsOf, stopRows } from './job-store-rows.js';
 import { interruptionsSpent, releaseOpen } from './job-store-interruption-budget.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
@@ -223,8 +225,17 @@ export async function interruptJob(
                                                else superseded_lease_tokens end,
                 lease_token      = case when ${release} then null else lease_token end,
                 lease_expires_at = case when ${release} then now() else lease_expires_at end,
-                claim_deferred_until = case when ${release && blocked}
-                    then now() + make_interval(secs => ${BLOCKED_RETRY_SECONDS}::int) else claim_deferred_until end,
+                claim_deferred_until = case
+                    when ${release && blocked}
+                        then now() + make_interval(secs => ${BLOCKED_RETRY_SECONDS}::int)
+                    -- A member without write access is retried on a clock, not at once (docs/connections.md).
+                    when ${release && requirement} and exists (
+                        select 1 from job_integration_requirement q
+                        where q.org_id = job.org_id and q.root_job_id = job.root_job_id
+                          and q.provider = ${FORGE_REQUIREMENT_PROVIDER} and q.reason = ${FORGE_ACCESS_REASON}
+                          and q.satisfied_at is null
+                    ) then now() + make_interval(secs => ${FORGE_ACCESS_RETRY_SECONDS}::int)
+                    else claim_deferred_until end,
                 cancel_requested_at = case when ${release} then null else cancel_requested_at end,
                 attempts         = case when ${repeated} then attempts else greatest(attempts - 1, 0) end,
                 interruptions    = interruptions || jsonb_build_array(

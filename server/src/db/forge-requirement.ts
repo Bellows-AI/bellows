@@ -8,10 +8,18 @@ type Db = Sql | TransactionSql;
  * The forge start gate's wait, as an open row of `job_integration_requirement` (docs/connections.md): provider
  * `forge`, target the forge (`github`), source `create`. The claim opens it when the thread starter's grant is not
  * live and closes it the moment it is; a re-link closes it early for the page. It is never dismissed.
+ *
+ * `forge-access` is the exception: the board's PR route opens it when the member's own token is refused (they cannot
+ * write to the repository), so a live grant says nothing about it. Only a successful member write closes it
+ * (`closeForgeAccessWait`), and the claim's hand-back defers the row by `FORGE_ACCESS_RETRY_SECONDS` to retry.
  */
 
-/** Why the thread waits: no grant, a grant needing reconnect, or a starter that no longer exists. */
-export type ForgeRequirementReason = 'missing' | 'reconnect' | 'starter-removed';
+export const FORGE_ACCESS_REASON = 'forge-access';
+/** How long a handed-back `forge-access` wait stays out of the claim before the publish is retried. */
+export const FORGE_ACCESS_RETRY_SECONDS = 600;
+
+/** Why the thread waits: no grant, a grant needing reconnect, a starter that no longer exists, or no write access. */
+export type ForgeRequirementReason = 'missing' | 'reconnect' | 'starter-removed' | typeof FORGE_ACCESS_REASON;
 
 /** Opens the root's forge requirement, or restates its reason when one is already open. */
 export async function openForgeRequirement(
@@ -26,8 +34,21 @@ export async function openForgeRequirement(
     `;
 }
 
-/** Closes the root's open forge requirement as bound by its starter: the grant is live. */
+/** Closes the root's open grant wait as bound by its starter: the grant is live. A live grant is no evidence of write access. */
 export async function closeForgeRequirement(
+    db: Db,
+    args: { orgId: string; rootJobId: string; userId: string }
+): Promise<void> {
+    await db`
+        update job_integration_requirement
+        set satisfied_at = now(), outcome = 'bound', closed_by = ${args.userId}
+        where org_id = ${args.orgId} and root_job_id = ${args.rootJobId} and provider = ${FORGE_REQUIREMENT_PROVIDER}
+          and satisfied_at is null and reason <> ${FORGE_ACCESS_REASON}
+    `;
+}
+
+/** Closes the root's open forge wait, whatever its reason: the member's own write just succeeded. */
+export async function closeForgeAccessWait(
     db: Db,
     args: { orgId: string; rootJobId: string; userId: string }
 ): Promise<void> {
@@ -52,7 +73,7 @@ export async function closeForgeRequirementsOfMember(
         set satisfied_at = now(), outcome = 'bound', closed_by = ${args.userId}
         from job root
         where q.org_id = ${args.orgId} and q.provider = ${FORGE_REQUIREMENT_PROVIDER} and q.target = ${args.forge}
-          and q.satisfied_at is null
+          and q.satisfied_at is null and q.reason <> ${FORGE_ACCESS_REASON}
           and root.org_id = q.org_id and root.id = q.root_job_id and root.execution_user_id = ${args.userId}
     `;
 }
