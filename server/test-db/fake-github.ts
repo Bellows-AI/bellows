@@ -42,6 +42,8 @@ export const startFakeGithub = async ({ now }: { now?: () => number } = {}) => {
         installationToken: async (): Promise<string> => (await fake.control('installation-token')).body.token,
         pulls: async (): Promise<FakePull[]> => (await fake.read('pulls')).body,
         calls: (): ForgeCall[] => fake.forge.calls(),
+        /** Whether a member's user token may write pull requests; off, its create and edit answer 404. */
+        writeAccess: (user: boolean) => fake.control('write-access', { user }),
     };
 };
 export type FakeGithub = Awaited<ReturnType<typeof startFakeGithub>>;

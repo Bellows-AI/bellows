@@ -12,6 +12,9 @@ export const registerGithub = (forge) => {
     /** refresh token -> { access, expiresAt }; a refresh token is deleted when used. */
     const refreshTokens = new Map();
     const pulls = new Map(); // `${owner}/${name}` -> pull[]
+    // The lane's switch for a member who cannot write to the repository: a user token's PR writes answer 404.
+    let userWrites = true;
+    const writeRefused = (tokenKind) => !userWrites && tokenKind === 'user';
 
     const issuePair = () => {
         const id = forge.nextId();
@@ -112,6 +115,7 @@ export const registerGithub = (forge) => {
         'POST',
         base,
         ({ response, params, body, tokenKind }) => {
+            if (writeRefused(tokenKind)) return notFound(response);
             const list = listOf(params);
             const identity = splitHead(body.head, params.owner);
             if (list.some((pull) => pull.state === 'open' && sameHead(pull, identity))) {
@@ -151,7 +155,8 @@ export const registerGithub = (forge) => {
         if (!pull) return notFound(response);
         forge.json(response, 200, shape(pull));
     });
-    forge.route('PATCH', `${base}/:number`, ({ response, params, body }) => {
+    forge.route('PATCH', `${base}/:number`, ({ response, params, body, tokenKind }) => {
+        if (writeRefused(tokenKind)) return notFound(response);
         const pull = find(params);
         if (!pull) return notFound(response);
         if (body.state !== undefined && !['open', 'closed'].includes(body.state)) {
@@ -175,6 +180,16 @@ export const registerGithub = (forge) => {
         pull.merged = true;
         forge.json(response, 200, { merged: true, message: 'Pull Request successfully merged' });
     });
+
+    forge.route(
+        'POST',
+        '/_control/write-access',
+        ({ response, body }) => {
+            userWrites = body.user !== false;
+            forge.json(response, 200, { user: userWrites });
+        },
+        { auth: false }
+    );
 
     // The lane's view of every PR, with the kind of token that created it.
     forge.route(
