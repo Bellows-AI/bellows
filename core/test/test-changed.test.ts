@@ -165,6 +165,17 @@ describe('test:changed plan', () => {
             expect(steps.some((step) => step.label.startsWith('widened'))).toBe(false);
         });
 
+        it('greps a SKILL.md by its directory, not by the name every skill shares', () => {
+            const asked: string[][] = [];
+            run(['docker/skills/factory-github/SKILL.md'], {
+                namedBy: (names) => {
+                    asked.push(names);
+                    return [];
+                },
+            });
+            expect(asked).toEqual([['factory-github/SKILL.md']]);
+        });
+
         it('runs everything for a file every package builds from, though a test names it', () => {
             const steps = run(['Makefile'], { namedBy: () => ['driver/test/executor-images.test.ts'] });
             expect(steps.at(-1)?.label).toContain('shared by every package');

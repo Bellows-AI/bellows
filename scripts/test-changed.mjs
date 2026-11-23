@@ -56,6 +56,9 @@ const DB_FULL = [
 
 const projectArgs = (projects) => projects.flatMap((name) => ['--project', name]);
 const baseName = (file) => file.slice(file.lastIndexOf('/') + 1);
+// Names many directories share: tests name them with their directory (`factory-github/SKILL.md`), so that is the grep key.
+const SHARED_DOC_NAME = /^(SKILL|AGENTS|CLAUDE)\.md$/;
+const nameOf = (file) => (SHARED_DOC_NAME.test(baseName(file)) ? file.split('/').slice(-2).join('/') : baseName(file));
 
 /**
  * The ordered steps for a set of changed files. Fail open: a changed path the selector cannot
@@ -97,7 +100,7 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
             else for (const scanner of SOURCE_SCANNERS[pkg] ?? []) named.add(scanner);
             classify(namedBy([baseName(file)])); // a test that reads the module by path
         } else if (/\.md$/.test(file) && !SHARED_NAME.test(baseName(file))) {
-            classify(namedBy([baseName(file)]));
+            classify(namedBy([nameOf(file)]));
             if (file.startsWith('docs/design-system/')) named.add('web/test/styles.test.ts');
         } else if (SHARED_NAME.test(baseName(file))) {
             widen('all', `${file}: shared by every package`);
