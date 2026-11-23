@@ -33,6 +33,7 @@ const REPO = 'acme/widgets';
 const LEASE_SECONDS = 300;
 const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
+const HTTP_FORBIDDEN = 403;
 const HTTP_CONFLICT = 409;
 const HTTP_UNAVAILABLE = 503;
 const ASK = { branch: 'task/one', base: 'main', create: { title: 'Fix it', body: 'Body', draft: false, base: 'main' } };
@@ -390,20 +391,107 @@ describe.skipIf(!enabled)('POST /api/jobs/:id/pull-request — AUTH_MODE=none us
     });
 });
 
-describe.skipIf(!enabled)('POST /api/jobs/:id/pull-request — a member the forge denies', () => {
-    it('answers denied on a 404 create, with no requirement in this slice', async () => {
-        await signMemberIn(grantsOver());
-        const refusing = writerOver(async (input, init) =>
-            init?.method === 'POST'
-                ? new Response('{"message":"Not Found"}', { status: HTTP_NOT_FOUND })
-                : fetch(input, init)
+describe.skipIf(!enabled)('POST /api/jobs/:id/pull-request — a member without write access waits', () => {
+    const HTTP_UNAUTHORIZED = 401;
+    const FORGE_ACCESS = { answer: 'waiting', forge: 'github', reason: 'forge-access' };
+    const VIEW_ONLY = { branch: ASK.branch, base: ASK.base };
+    /** The fake GitHub, except that a request `refused` matches is answered with `status`. */
+    const answering = (status: number, refused: (init?: RequestInit) => boolean = (init) => init?.method === 'POST') =>
+        writerOver(async (input, init) =>
+            refused(init) ? new Response('{"message":"Not Found"}', { status }) : fetch(input, init)
         );
-        const instance = await boot({ grants: grantsOver(), writer: refusing });
+
+    it.each([HTTP_NOT_FOUND, HTTP_FORBIDDEN])(
+        'answers waiting forge-access on a %s create, keeps the grant active and creates nothing',
+        async (status) => {
+            await signMemberIn(grantsOver());
+            const instance = await boot({ grants: grantsOver(), writer: answering(status) });
+            const { id, claim } = await running();
+
+            const response = await ask(instance, id, claim.leaseToken);
+
+            expect(response.statusCode).toBe(HTTP_OK);
+            expect(response.json()).toEqual(FORGE_ACCESS);
+            expect(await requirements(id)).toEqual([
+                { provider: 'forge', target: 'github', reason: 'forge-access', satisfied_at: null },
+            ]);
+            expect(await grantStatus()).toBe('active');
+            expect(await fake.pulls()).toEqual([]);
+        }
+    );
+
+    it('answers waiting forge-access when the member cannot even see the repository on the view', async () => {
+        await signMemberIn(grantsOver());
+        const instance = await boot({
+            grants: grantsOver(),
+            writer: answering(HTTP_NOT_FOUND, (init) => init?.method !== 'POST'),
+        });
         const { id, claim } = await running();
+
+        const response = await ask(instance, id, claim.leaseToken, VIEW_ONLY);
+
+        expect(response.json()).toEqual(FORGE_ACCESS);
+        expect((await requirements(id))[0]).toMatchObject({ reason: 'forge-access', satisfied_at: null });
+    });
+
+    it('closes the wait as bound when the member’s next ask creates the PR', async () => {
+        await signMemberIn(grantsOver());
+        const refusing = await boot({ grants: grantsOver(), writer: answering(HTTP_NOT_FOUND) });
+        const { id, claim } = await running();
+        expect((await ask(refusing, id, claim.leaseToken)).json()).toEqual(FORGE_ACCESS);
+        await app?.close();
+
+        const allowed = await boot({ grants: grantsOver(), writer: writerOver() });
+        const response = await ask(allowed, id, claim.leaseToken);
+
+        expect(response.json()).toMatchObject({ answer: 'pr', operation: 'created' });
+        expect(await requirements(id)).toEqual([
+            { provider: 'forge', target: 'github', reason: 'forge-access', satisfied_at: expect.any(Date) },
+        ]);
+        const [closed] = await sql<
+            { outcome: string }[]
+        >`select outcome from job_integration_requirement where root_job_id = ${id}`;
+        expect(closed!.outcome).toBe('bound');
+    });
+
+    it('answers denied, never a wait, on a 401: the authorization itself is refused', async () => {
+        await signMemberIn(grantsOver());
+        const instance = await boot({ grants: grantsOver(), writer: answering(HTTP_UNAUTHORIZED) });
+        const { id, claim } = await running();
+
         const response = await ask(instance, id, claim.leaseToken);
-        expect(response.statusCode).toBe(HTTP_OK);
+
         expect(response.json()).toEqual({ answer: 'denied' });
         expect(await requirements(id)).toEqual([]);
-        expect(await grantStatus()).toBe('active');
+    });
+
+    it('opens nothing when the lease was superseded while GitHub answered', async () => {
+        await signMemberIn(grantsOver());
+        let release: () => void = () => {};
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let entered: () => void = () => {};
+        const reached = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
+        const slow = writerOver(async () => {
+            entered();
+            await gate;
+            return new Response('{"message":"Not Found"}', { status: HTTP_NOT_FOUND });
+        });
+        const instance = await boot({ grants: grantsOver(), writer: slow });
+        const { id, claim } = await running();
+        const pending = ask(instance, id, claim.leaseToken);
+        await reached;
+        await expireLease(sql, id);
+        expect(((await jobs.claim('w2', LEASE_SECONDS)) as Claim).id).toBe(id);
+        release();
+
+        const response = await pending;
+
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json()).toMatchObject({ code: 'LEASE_LOST' });
+        expect(await requirements(id)).toEqual([]);
     });
 });

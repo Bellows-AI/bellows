@@ -1,5 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { FORGE_ACCESS_REASON, type ForgeRequirementReason } from '../../db/forge-requirement.js';
+import { forgeOfRepo } from '../../forge/forges.js';
 import type { PrTokenSource } from '../../forge/pr-token.js';
 import {
     GitHubWriteError,
@@ -20,7 +22,9 @@ import { BODY_LIMIT, HTTP_OK, leaseLost, notFoundJob } from './job-limits.js';
  * the thread's starter, with their user token (the installation token under `AUTH_MODE=none`). A worker route: the
  * driver asks under the attempt's lease, and the runner never holds the token. The answer is `pr` (the PR and whether
  * this ask `created` or `reused` it), `none` (a view-only ask found nothing), `waiting` (the starter's grant cannot
- * serve: the forge requirement is open), `denied` or `refused` (GitHub's own word); anything unconfirmed is a 503.
+ * serve, or the member's token is refused a 403/404: the forge requirement is open), `denied` or `refused` (GitHub's
+ * own word); anything unconfirmed is a 503. A member's refusal (not the installation's, whose denial is plain `denied`)
+ * waits as `forge-access` and a later successful write closes it; a 401 is the authorization itself refused.
  * One absolute deadline covers the grant read, the refresh and every GitHub call; no lock is held across them.
  */
 
@@ -30,6 +34,7 @@ export const PR_WRITE_DEADLINE_MS = 30_000;
 const TITLE_LIMIT = 256;
 const BODY_TEXT_LIMIT = 65_536;
 const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 const NO_FORGE = 'This board holds no GitHub credential for the organization, so it opens no pull request.';
@@ -167,17 +172,54 @@ function failureAnswer(e: unknown): { answer: 'denied' } | { answer: 'refused'; 
     return e.kind === 'refused' ? { answer: 'refused', detail: e.message } : null;
 }
 
+/** A member's own token refused a write or a view with a 403/404: they cannot write to the repository. */
+const lacksWriteAccess = (e: unknown, as: 'user' | 'installation'): boolean =>
+    as === 'user' &&
+    e instanceof GitHubWriteError &&
+    e.kind === 'denied' &&
+    (e.status === HTTP_FORBIDDEN || e.status === HTTP_NOT_FOUND);
+
 /** The wait the starter's grant opens, under the lease as it stands now. */
 async function openWait(
     store: Pick<JobStore, 'openPrForgeWait'>,
     reply: Reply,
     attempt: { id: string; leaseToken: string },
-    wait: { forge: string; reason: 'missing' | 'reconnect' }
+    wait: { forge: string; reason: ForgeRequirementReason }
 ) {
     const opened = await store.openPrForgeWait(attempt.id, attempt.leaseToken, wait);
     if (opened.result === 'missing') return notFoundJob(reply);
     if (opened.result === 'lost') return leaseLost(reply);
     return reply.code(HTTP_OK).send({ answer: 'waiting', ...wait });
+}
+
+/**
+ * The ask under the token: the outcome, or `no-access` when the member's own token is refused. A success under the
+ * member's token closes whatever wait the thread had; a throw there is a 503, and the driver's retry reuses the PR by
+ * head and closes again.
+ */
+async function write(
+    writer: PrWriter,
+    run: {
+        store: Pick<JobStore, 'closePrForgeWait'>;
+        who: Written;
+        token: Extract<Awaited<ReturnType<PrTokenSource>>, { ok: true }>;
+        ask: Ask;
+        signal: AbortSignal;
+    }
+): Promise<Outcome | { answer: 'no-access'; forge: string }> {
+    const { store, who, token, ask, signal } = run;
+    let outcome: Outcome;
+    try {
+        outcome = await carryOut(writer, who.repo, ask, { token: token.token, signal });
+    } catch (e) {
+        const forge = forgeOfRepo(who.repo);
+        if (forge !== null && lacksWriteAccess(e, token.as)) return { answer: 'no-access', forge };
+        throw e;
+    }
+    if (token.as === 'user' && who.executionUserId !== null) {
+        await store.closePrForgeWait(who.rootJobId, who.executionUserId);
+    }
+    return outcome;
 }
 
 export async function handlePullRequest(
@@ -187,7 +229,11 @@ export async function handlePullRequest(
     reply: FastifyReply
 ) {
     reply.header('cache-control', 'no-store');
-    const route = await resolveLeasedRoute<'prWriteContext' | 'openPrForgeWait'>(orgs, request, reply);
+    const route = await resolveLeasedRoute<'prWriteContext' | 'openPrForgeWait' | 'closePrForgeWait'>(
+        orgs,
+        request,
+        reply
+    );
     if (!route) return reply;
     const { store, id, fields, leaseToken } = route;
     const attempt = { id, leaseToken };
@@ -205,9 +251,12 @@ export async function handlePullRequest(
             if (token.answer === 'unavailable') throw new Error('the member token is not confirmed');
             return await openWait(store, reply, attempt, { forge: token.forge, reason: token.reason });
         }
-        const outcome = await carryOut(deps.writer, who.repo, asked.value, { token: token.token, signal });
-        if (outcome.answer === 'none') return reply.code(HTTP_OK).send(outcome);
-        const { pr, operation } = outcome;
+        const done = await write(deps.writer, { store, who, token, ask: asked.value, signal });
+        if (done.answer === 'no-access') {
+            return await openWait(store, reply, attempt, { forge: done.forge, reason: FORGE_ACCESS_REASON });
+        }
+        if (done.answer === 'none') return reply.code(HTTP_OK).send(done);
+        const { pr, operation } = done;
         return reply.code(HTTP_OK).send({ answer: 'pr', operation, url: pr.url, number: pr.number });
     } catch (e) {
         const answered = failureAnswer(e);
