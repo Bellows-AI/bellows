@@ -2,17 +2,36 @@
 // A host and lane tool, never a container script. What every forge shares lives here: a token table
 // with expiry on an injectable clock, a record of which kind of token made each call, and the hold
 // that lets a lane park a call until it says go.
-//   <stateDir>/calls.jsonl   one `{method, path, tokenKind, status}` line per answered call
+//   <stateDir>/calls.jsonl   one `{method, path, tokenKind, tokenId, holder, status}` line per answered call;
+//                            tokenId names the token (a hash, never the token) so a lane can tell a refreshed one from its predecessor
 //   <stateDir>/hold          while it exists, a holdable call touches hold.ready and waits for hold.go
 // The `/_control/*` routes (clock, calls, installation tokens) are the lane's own door; no forge uses them.
+import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { registerGithub, USER_TOKEN_TTL_S } from './github.mjs';
+import { GITLAB_TOKEN_TTL_S, registerGitlab } from './gitlab.mjs';
 
-export { USER_TOKEN_TTL_S };
+export { GITLAB_TOKEN_TTL_S, USER_TOKEN_TTL_S };
 const HOLD_POLL_MS = 50;
 const HOLD_DEADLINE_MS = 600_000;
+
+/** A stable, non-reversible name for a token: what the call log records in its place. */
+const tokenIdOf = (value) => `tok_${createHash('sha256').update(value).digest('hex').slice(0, 12)}`;
+
+/** The credential a request presents: Bearer or `token` (GitHub's), PRIVATE-TOKEN (GitLab's), or Basic `oauth2:<token>` (git). */
+const credentialOf = (request) => {
+    const authorization = request.headers.authorization ?? '';
+    const bearer = /^(?:Bearer|token) (.+)$/i.exec(authorization)?.[1];
+    if (bearer) return bearer;
+    const privateToken = request.headers['private-token'];
+    if (typeof privateToken === 'string' && privateToken) return privateToken;
+    const basic = /^Basic (.+)$/i.exec(authorization)?.[1];
+    if (!basic) return undefined;
+    const [user, ...rest] = Buffer.from(basic, 'base64').toString().split(':');
+    return user === 'oauth2' ? rest.join(':') || undefined : undefined;
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -20,7 +39,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @param {{ stateDir: string, now?: () => number, routes?: Array<(forge: object) => void> }} options
  * `now` is the clock; `advance(ms)` moves it forward so a lane can expire a token without waiting.
  */
-export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGithub] }) => {
+export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGithub, registerGitlab] }) => {
     mkdirSync(stateDir, { recursive: true });
     let offsetMs = 0;
     const clock = () => now() + offsetMs;
@@ -28,6 +47,7 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
     const tokens = new Map();
     const callLog = [];
     const table = [];
+    const streams = [];
     let counter = 0;
 
     const forge = {
@@ -35,15 +55,30 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
         clock,
         tokens,
         nextId: () => ++counter,
+        tokenId: tokenIdOf,
+        /** Add a line to the call log that no plain HTTP answer made (a push the forge saw through). */
+        record: (entry) => {
+            callLog.push(entry);
+            appendFileSync(join(stateDir, 'calls.jsonl'), `${JSON.stringify(entry)}\n`);
+        },
+        /**
+         * Register `handler({ request, response, url, token, tokenKind, credential, match })` for the paths `pattern` matches,
+         * whatever the method. It runs before the body is read, so it takes the raw request stream; the credential
+         * check is its own (`token` is the holder, or null).
+         */
+        stream: (pattern, handler) => streams.push({ pattern, handler }),
         json: (response, status, body) => {
             response.writeHead(status, { 'content-type': 'application/json' });
             response.end(JSON.stringify(body));
         },
-        /** Register `handler({ request, response, url, params, query, body, token })` for a method and a `:param` path. */
-        route: (method, pattern, handler, { auth = true, holdable = false } = {}) => {
+        /**
+         * Register `handler({ request, response, url, params, query, body, token })` for a method and a `:param` path.
+         * `deny` is the 401 body a forge answers an unauthenticated call with.
+         */
+        route: (method, pattern, handler, { auth = true, holdable = false, deny = { message: 'Bad credentials' } } = {}) => {
             const keys = [];
             const regex = new RegExp(`^${pattern.replace(/:(\w+)/g, (_, key) => (keys.push(key), '([^/]+)'))}$`);
-            table.push({ method, regex, keys, handler, auth, holdable });
+            table.push({ method, regex, keys, handler, auth, holdable, deny });
         },
         /** The token's holder, or null when it is unknown or past its expiry. */
         resolve: (value) => {
@@ -96,23 +131,39 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
             });
         });
 
-    const server = createServer(async (request, response) => {
+    const server = createServer((request, response) => {
+        // A handler that rejects answers 500 (when nothing was sent yet) and never takes the process down.
+        dispatch(request, response).catch(() => {
+            if (!response.headersSent) forge.json(response, 500, { message: '500 Internal Server Error' });
+            else response.destroy();
+        });
+    });
+    async function dispatch(request, response) {
         const url = new URL(request.url, 'http://fake-forge');
-        const bearer = /^(?:Bearer|token) (.+)$/i.exec(request.headers.authorization ?? '')?.[1];
-        const holder = bearer ? forge.resolve(bearer) : null;
+        const credential = credentialOf(request);
+        const holder = credential ? forge.resolve(credential) : null;
         const tokenKind = holder ? holder.kind : 'none';
         let status = 404;
         response.on('finish', () => {
             status = response.statusCode;
-            const entry = { method: request.method, path: url.pathname, tokenKind, status };
-            callLog.push(entry);
-            appendFileSync(join(stateDir, 'calls.jsonl'), `${JSON.stringify(entry)}\n`);
+            forge.record({
+                method: request.method,
+                path: url.pathname,
+                tokenKind,
+                tokenId: holder ? tokenIdOf(credential) : null,
+                holder: holder ? holder.login : null,
+                status,
+            });
         });
+        for (const { pattern, handler } of streams) {
+            const match = pattern.exec(url.pathname);
+            if (match) return handler({ request, response, url, token: holder, tokenKind, credential, match });
+        }
         const body = await readBody(request);
-        for (const { method, regex, keys, handler, auth, holdable } of table) {
+        for (const { method, regex, keys, handler, auth, holdable, deny } of table) {
             const match = method === request.method ? regex.exec(url.pathname) : null;
             if (!match) continue;
-            if (auth && !holder) return forge.json(response, 401, { message: 'Bad credentials' });
+            if (auth && !holder) return forge.json(response, 401, deny);
             const params = Object.fromEntries(keys.map((key, i) => [key, decodeURIComponent(match[i + 1])]));
             if (holdable) await forge.hold();
             return handler({
@@ -127,7 +178,7 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
             });
         }
         return forge.json(response, 404, { message: 'Not Found' });
-    });
+    }
 
     return {
         listen: (port, host = '127.0.0.1') =>

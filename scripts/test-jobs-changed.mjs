@@ -39,6 +39,7 @@ export const PHASES = [
     'finish-gate',
     'pinned-skills',
     'mcp',
+    'gitlab',
 ];
 
 export const FULL = 'full';

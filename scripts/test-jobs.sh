@@ -22,7 +22,7 @@ PARALLEL_SLOTS=2
 WATCH_STALLS="${LANE_WATCH_STALLS:-0}"
 valid_phase() {
     case "$1" in
-    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|image-checks|ask-user-question|question-round-trip|finish-gate|pinned-skills|repo-skills|mcp) return 0 ;;
+    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|image-checks|ask-user-question|question-round-trip|finish-gate|pinned-skills|repo-skills|mcp|gitlab) return 0 ;;
     esac
     return 1
 }
@@ -62,7 +62,7 @@ while [ "$#" -gt 0 ]; do
         echo 'Usage: scripts/test-jobs.sh [--phase PHASE[,PHASE...] | --changed BASE] [--cli-workers 1|2] [--watch-stalls] [--parallel [--slots 2|3|4]]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, run-deadline, review, workflows, acceptance, compose-driver, auth, cooperative-stop,'
-        echo '        tool-isolation, image-checks, ask-user-question, question-round-trip, finish-gate, pinned-skills, repo-skills, driver-kill, capacity, mcp'
+        echo '        tool-isolation, image-checks, ask-user-question, question-round-trip, finish-gate, pinned-skills, repo-skills, driver-kill, capacity, mcp, gitlab'
         echo 'A comma list (--phase driver,services) runs those phases, in lane order, on one board fixture.'
         echo '--changed BASE runs the phases scripts/test-jobs-changed.mjs maps from `git diff --name-only` since the merge base with BASE'
         echo '        (uncommitted and untracked files included), prints why, and falls back to the full lane for'
@@ -128,7 +128,7 @@ lane_host_bind() {
 needs_board() {
     [ "$PHASE" = all ] && return 0
     for phase in ${PHASE//,/ }; do
-        case "$phase" in cooperative-stop|tool-isolation|image-checks|ask-user-question|repo-skills) ;; *) return 0 ;; esac
+        case "$phase" in cooperative-stop|tool-isolation|image-checks|ask-user-question|repo-skills|gitlab) ;; *) return 0 ;; esac
     done
     return 1
 }
@@ -232,7 +232,7 @@ lane_worker_pids=''
 lane_extra_pids='' # processes a phase starts beyond the one board and driver, for cleanup() to kill
 lane_worker_name=main
 # Preflight before creating or removing any shared lane resource.
-for tool in docker node timeout; do
+for tool in docker node timeout git; do
     command -v "$tool" >/dev/null || { echo "test-jobs: $tool is required"; exit 1; }
 done
 docker info >/dev/null 2>&1 || { echo 'test-jobs: docker daemon is unavailable'; exit 1; }
@@ -501,8 +501,9 @@ trap 'exit 143' TERM
 }
 
 # LANE_FAKE_FORGE=1: the fake forge (scripts/fake-forge) listens on the host for the phases that
-# talk to GitHub's REST API; its URL is $LANE_FAKE_FORGE_URL. Off until the publish switch flips it.
-if [ "${LANE_FAKE_FORGE:-0}" = 1 ]; then
+# talk to GitHub's or GitLab's API; its URL is $LANE_FAKE_FORGE_URL, one server for both. Off until the
+# publish switch flips it, except for the gitlab phase, which is about the fixture itself.
+if [ "${LANE_FAKE_FORGE:-0}" = 1 ] || selected_phase gitlab; then
     mkdir -p "$work/fake-forge"
     node "$REPO/scripts/fake-forge/server.mjs" "$work/fake-forge" >"$work/fake-forge.port" 2>"$work/fake-forge.log" &
     lane_extra_pids="$lane_extra_pids $!"
@@ -1235,6 +1236,8 @@ fi
 . "$REPO/scripts/lanes/jobs/pinned-skills.sh"
 
 . "$REPO/scripts/lanes/jobs/mcp.sh"
+
+. "$REPO/scripts/lanes/jobs/gitlab.sh"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

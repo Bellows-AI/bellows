@@ -47,6 +47,7 @@ const JOBS_PHASES = [
     'driver-kill',
     'capacity',
     'mcp',
+    'gitlab',
 ];
 // What `scripts/test-k8s.sh --help` lists after `smoke`; smoke is the lane's own prerequisites, not a file.
 const K8S_PHASES = [

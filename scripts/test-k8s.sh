@@ -2507,6 +2507,11 @@ FORGE
         echo 'test-k8s: the fake forge did not become ready'
         exit 1
     }
+    # The same pod serves the fake GitLab, git smart-HTTP included, through `git http-backend` in the stub image.
+    # Run bare it answers a CGI error; an image without it answers "not a git command".
+    case "$(kubectl exec "pod/$RELEASE-fake-forge" -n "$NAMESPACE" --request-timeout=20s -- git http-backend </dev/null 2>&1)" in
+    *'is not a git command'*) echo 'test-k8s: note: the stub image has no git http-backend; the in-cluster fake GitLab serves REST only' ;;
+    esac
 fi
 
 REPLICA_SETS=()

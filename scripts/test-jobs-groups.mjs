@@ -36,6 +36,7 @@ const PHASE_SECONDS = {
     'repo-skills': 90,
     'pinned-skills': 150,
     mcp: 40,
+    gitlab: 10,
 };
 // What one group spends before its first phase: Postgres database, stub images, board boot.
 const GROUP_OVERHEAD_SECONDS = 10;
@@ -43,7 +44,7 @@ const GROUP_OVERHEAD_SECONDS = 10;
 export const GROUPS = [
     { name: 'disruption', phases: ['node-disruption', 'driver-kill'] },
     { name: 'engine', phases: ['workflows', 'compose-driver', 'acceptance'] },
-    { name: 'cli-stop', phases: ['cooperative-stop', 'tool-isolation', 'image-checks', 'repo-skills'] },
+    { name: 'cli-stop', phases: ['cooperative-stop', 'tool-isolation', 'image-checks', 'repo-skills', 'gitlab'] },
     { name: 'core', phases: ['board', 'driver', 'github-credential', 'services', 'orphan-reaper', 'auth', 'mcp'] },
     { name: 'guards', phases: ['run-deadline', 'capacity', 'review'] },
     { name: 'cli-ask', phases: ['ask-user-question', 'question-round-trip', 'finish-gate', 'pinned-skills'] },
