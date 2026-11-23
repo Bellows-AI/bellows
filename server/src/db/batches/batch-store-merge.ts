@@ -90,6 +90,7 @@ interface CandidateRow {
     revision: number;
     pr_repo: string;
     pr_number: number;
+    started_by: string | null;
 }
 
 /**
@@ -106,7 +107,8 @@ function candidateRows(
     return db<CandidateRow[]>`
         select t.batch_id, t.key as task_key, a.attempt, s.policy, t.completion_kind, t.execution, t.gate,
                tg.branch as target_branch, o.attempt as o_attempt, o.outcome, o.stale, o.error_code, o.base_branch,
-               o.head_sha, o.target_sha, o.revision::int as revision, o.repo as pr_repo, o.pr_number
+               o.head_sha, o.target_sha, o.revision::int as revision, o.repo as pr_repo, o.pr_number,
+               b.started_by
         from batch_task t
         join batch b on b.org_id = t.org_id and b.id = t.batch_id
         join batch_stage s on s.org_id = t.org_id and s.batch_id = t.batch_id and s.key = t.stage_key
@@ -169,13 +171,26 @@ const candidateOf = (row: CandidateRow) =>
         },
     });
 
+/** What `admit` is asked about a listed candidate: the repository to merge in and the batch's starter, whose token merges. */
+export interface MergeCandidate {
+    batchId: string;
+    repo: string;
+    startedBy: string | null;
+}
+
 /**
  * Records merge intents for ready tasks, one transaction each under the batch's lock, and returns
  * them for dispatch. The fence is re-read under the lock, so a cancel or expiry that committed first
  * stops the request before it exists; a competing batch holding the target's slot, or a duplicate
- * claim, conflicts on an index and is skipped.
+ * claim, conflicts on an index and is skipped. `admit` runs before the lock, once per listed
+ * candidate: a candidate it refuses gets no intent and spends no attempt, and is listed again on the
+ * next pass.
  */
-export async function claimMerges(deps: MergeDeps, limit: number): Promise<MergeIntent[]> {
+export async function claimMerges(
+    deps: MergeDeps,
+    limit: number,
+    admit: (candidate: MergeCandidate) => Promise<boolean>
+): Promise<MergeIntent[]> {
     const { sql, orgId } = deps;
     const now = nowOf(deps);
     const listed = await candidateRows(sql, { orgId, now, limit: limit * LISTING_FACTOR });
@@ -183,6 +198,7 @@ export async function claimMerges(deps: MergeDeps, limit: number): Promise<Merge
     for (const row of listed) {
         if (intents.length >= limit) break;
         if (!candidateOf(row).merge) continue;
+        if (!(await admit({ batchId: row.batch_id, repo: row.pr_repo, startedBy: row.started_by }))) continue;
         const intent = await sql.begin(async (tx) => {
             const [batch] = await tx<{ id: string }[]>`
                 select b.id from batch b

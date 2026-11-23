@@ -10,9 +10,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrWriter, type PrWriter } from '../src/github/pr-write.js';
 import type { MintedToken } from '../src/github/app-token.js';
-import { createIntegrationRuntime } from '../src/integrations/integration-recovery.js';
-import { createMemberForgeGrants, type MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
-import { createGitHubUserHooks, GITHUB_FORGE } from '../src/integrations/providers/github-user.js';
+import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
 import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import { createOrgRegistry } from '../src/orgs.js';
@@ -21,6 +19,7 @@ import { testSecretStore } from './env-secrets-harness.js';
 import { type FakeGithub, startFakeGithub } from './fake-github.js';
 import { expireLease, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
+import { memberGrantsOver, signMemberIn as signMemberInAs } from './member-grant-rig.js';
 
 /**
  * The board writes the task's PR as the acting member (docs/connections.md): `POST /api/jobs/:id/pull-request` on a real
@@ -36,7 +35,6 @@ const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_UNAVAILABLE = 503;
-const TOKEN_PATH = '/login/oauth/access_token';
 const ASK = { branch: 'task/one', base: 'main', create: { title: 'Fix it', body: 'Body', draft: false, base: 'main' } };
 const db = useTestDb({ orgs: [ORG, LOCAL_ORG_ID], users: [AUTHOR], max: 12 });
 
@@ -69,46 +67,11 @@ afterEach(async () => {
 });
 
 /** The grants reader as main.ts composes it, its refresh going through `tokenFetch` to the fake's token endpoint. */
-function grantsOver(store: SecretStore = secrets): MemberForgeGrants {
-    const hooks = createGitHubUserHooks(
-        {
-            clientId: 'client-1',
-            clientSecret: 'client-secret-1',
-            authorizeUrl: `${fake.base}/login/oauth/authorize`,
-            tokenUrl: `${fake.base}${TOKEN_PATH}`,
-            userUrl: `${fake.base}/user`,
-        },
-        (input, init) => tokenFetch(input, init)
-    );
-    const runtime = createIntegrationRuntime({
-        sql,
-        crossOrgSql: sql,
-        secrets: store,
-        providers: (provider) => (provider === GITHUB_FORGE ? hooks : undefined),
-        clients: () => undefined,
-        callbackOrigin: null,
-        timing: { retryDelayMs: 0 },
-    });
-    return createMemberForgeGrants({ sql, crossOrgSql: sql, secrets: store, lineageOf: runtime.lineageOf });
-}
+const grantsOver = (store: SecretStore = secrets): MemberForgeGrants =>
+    memberGrantsOver({ sql, fake, secrets: store, tokenFetch: () => tokenFetch });
 
-/** The member's sign-in through the fake: its pair becomes the stored grant. `expiresIn` short enough puts it inside the refresh skew. */
-async function signMemberIn(grants: MemberForgeGrants, options: { expiresIn?: number; refreshToken?: string } = {}) {
-    const pair = await fake.signIn();
-    const stored = await grants.store({
-        orgId: ORG,
-        userId: AUTHOR.id,
-        forge: GITHUB_FORGE,
-        externalAccountId: String(AUTHOR.githubUserId),
-        tokens: {
-            accessToken: pair.access_token,
-            refreshToken: options.refreshToken ?? pair.refresh_token,
-            expiresIn: options.expiresIn ?? pair.expires_in,
-        },
-    });
-    expect(stored).toEqual({ ok: true });
-    return pair;
-}
+const signMemberIn = (grants: MemberForgeGrants, options: { expiresIn?: number; refreshToken?: string } = {}) =>
+    signMemberInAs({ grants, fake, orgId: ORG, user: AUTHOR }, options);
 
 interface BootOptions {
     grants?: MemberForgeGrants | undefined;

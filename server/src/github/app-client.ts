@@ -1,7 +1,6 @@
 import {
     CONTENT_TYPE_HEADER,
     JSON_CONTENT_TYPE,
-    MERGE_ERR_NOT_SENT,
     MERGE_ERR_UNCERTAIN,
     READ_TRANSPORT,
     type PrFacts,
@@ -65,11 +64,16 @@ export interface GitHubAppClient {
      */
     readPullRequest(repo: string, number: number): Promise<PrFacts>;
     /**
-     * Asks GitHub to merge a PR, bound to the head the caller decided on: GitHub refuses when the head
+     * Asks GitHub to merge a PR as whoever owns `token` (the batch starter), bound to the head the caller decided on: GitHub refuses when the head
      * moved, and enforces protection, required checks, reviews and merge queues itself. Rejects with a
      * `GitHubMergeError` whose `kind` says whether the merge may have happened (`uncertain`).
      */
-    mergePullRequest(repo: string, number: number, request: { sha: string; method: string }): Promise<MergeResult>;
+    mergePullRequest(
+        repo: string,
+        number: number,
+        request: { sha: string; method: string },
+        token: string
+    ): Promise<MergeResult>;
     /** A branch's tip, whether it holds each commit, and the tip's checks (the stage's combined verification). */
     readBranchState(repo: string, branch: string, shas: readonly string[]): Promise<BranchState>;
     /**
@@ -227,12 +231,8 @@ export function createGitHubAppClient(
     const readError = (e: unknown): GitHubReadError =>
         e instanceof GitHubReadError ? e : new GitHubReadError((e as Error).message, READ_TRANSPORT);
 
-    const merge = async (repo: string, number: number, request: { sha: string; method: string }) => {
+    const merge = async (repo: string, number: number, request: { sha: string; method: string }, token: string) => {
         const path = `/repos/${repo}/pulls/${number}/merge`;
-        // No token, no request: nothing can have been merged, unlike a request that was sent.
-        const token = await tokens.get().catch((e: Error) => {
-            throw new GitHubMergeError(e.message, MERGE_ERR_NOT_SENT);
-        });
         let response: Response;
         try {
             response = await fetchFn(`${github.apiUrl}${path}`, {
