@@ -175,6 +175,30 @@ describe.each(EXECUTORS)('the finish pass on the %s executor', (_executor, env) 
         expect(r.runner.publishOptions).toEqual([{ draft: true, recordPrOperation: expect.any(Function) }]);
     });
 
+    it('an on_demand gate never runs in the finish pass', async () => {
+        let ranInRun: string[] = [];
+        const r = await run({
+            job: claimedJob({
+                gates: {
+                    image: 'node:24',
+                    gates: [
+                        { name: 'test', command: 'npm test' },
+                        { name: 'e2e', command: 'npm run e2e', onDemand: true },
+                        { name: 'lint', command: 'npm run lint' },
+                    ],
+                },
+            }),
+            agent: async ({ ask, ran }) => {
+                await ask();
+                ranInRun = ran();
+            },
+        });
+
+        expect(verdicts(r.answers)).toEqual(['pass']);
+        expect(ranInRun).toEqual(['test', 'lint']);
+        expect(r.stack.ran.names).not.toContain('e2e');
+    });
+
     it('cap 0 never runs a gate in the run', async () => {
         let ranInRun: string[] = [];
         const r = await run({

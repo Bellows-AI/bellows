@@ -17,6 +17,7 @@ import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
 import { checkoutKey } from '../publish/publish.js';
 import { gatesUnderDaemon, readDaemon } from '../dockerd-loss.js';
 import { describeError } from '../log.js';
+import { declaresGateEnvironment, finishGates } from '../tools.js';
 
 /** The report must fit the board's 128 KiB body: the raw per-gate tail budget, and its floor. */
 const GATES_REPORT_BUDGET_BYTES = 16384;
@@ -69,15 +70,9 @@ export type GateReport = {
 };
 
 /**
- * Whether the claim carries an environment, so that a gate environment is started for it at all:
- * its image alone is enough, for the agent's own commands in it.
- */
-export const declaresGateEnvironment = (job: BoardJob): boolean => Boolean(job.gates);
-
-/**
  * Puts the gate server's registration key onto `job.gateEnv`, once. It is the driver's own handle on
  * the job's gate claim, never an agent credential: the agent asks for a gate through the control
- * socket (`POST /gate/run`) and holds no gate URL or token, so no runner env renders this.
+ * socket (`POST /tools/call`) and holds no gate URL or token, so no runner env renders this.
  * The key is registered only by `beginGates`.
  */
 async function ensureGatePair(gates: GateStack, job: BoardJob): Promise<string> {
@@ -157,7 +152,7 @@ export async function beginGates(
             // A docker class's daemon restarting under an ad-hoc run is a note in its answer, never a loss.
             dockerdRestarts: (signal) => readDaemon(rt.runner, job, signal),
         });
-        // The agent's `POST /gate/run` reaches this claim through the control channel, whichever driver holds the run;
+        // The agent's `POST /tools/call` reaches this claim through the control channel, whichever driver holds the run;
         // a claim that declares no gate answers a gate request `404 no gates` itself.
         const controlToken = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
         if (controlToken) gates.server.attachGateRun(controlToken, token);
@@ -172,7 +167,7 @@ export async function beginGates(
             gates.manager.release(key, job);
             return null;
         }
-        const declared = job.gates.gates.filter((gate) => !gate.onDemand);
+        const declared = finishGates(job.gates.gates);
         return {
             key,
             token,

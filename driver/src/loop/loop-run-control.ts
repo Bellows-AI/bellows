@@ -9,11 +9,11 @@ import type { JobState } from './loop-attempt.js';
 import { attachConnection } from './loop-connection.js';
 import { attachCheckpoint, attachTranscriptExport } from './loop-export.js';
 import { createGateTokenRelay } from './loop-github.js';
-import { declaresGateEnvironment } from './loop-gates.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
 import { createReviewRelay } from './loop-review.js';
 import type { LoopRuntime } from './loop-types.js';
+import { declaresGateEnvironment, toolManifest } from '../tools.js';
 
 /**
  * Opens the run-control channel for one attempt about to launch, gated or not: three
@@ -43,7 +43,9 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         );
         attachConnection({ rt, job, state }, token);
         gates.server.attachGateToken(token, createGateTokenRelay(rt, job, state));
-        // A job with no environment answers its agent's `POST /gate/run` and `POST /gate/finish` "no gates"; one with an
+        // The agent's `GET /tools`, from this holder's own claim: a takeover's attempt rebuilds it here.
+        gates.server.attachTools(token, toolManifest(job));
+        // A job with no environment answers its agent's `POST /tools/call` and `POST /gate/finish` "no gates"; one with an
         // environment 503s until `beginGates` (the finish pass: `attachFinishPass`).
         if (!declaresGateEnvironment(job) || !checkoutKey(job)) {
             gates.server.attachGateRun(token, null);

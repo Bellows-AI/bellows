@@ -377,6 +377,7 @@ describe('a command counts as the invocation it is, not a substring', () => {
     it.each([
         ['a review request', 'factory-control review security-1 security'],
         ['a review read', 'factory-control review-result security-1'],
+        ['the tool list', 'factory-gate --list'],
         ['the curl gate form', 'curl -sf -X POST "$BELLOWS_GATE_URL/run" -d \'{"gate":"test"}\''],
         [
             'the curl publish form',

@@ -880,6 +880,7 @@ export function stubGateStack(
                 if (control) control.gateToken.relay = gateToken;
             },
             attachGateRun: () => {},
+            attachTools: () => {},
             attachInputs: () => {},
             controlPolled: () => options.polled ?? true,
             raiseKill: (token: string) => {

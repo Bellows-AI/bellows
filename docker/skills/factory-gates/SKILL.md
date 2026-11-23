@@ -22,8 +22,12 @@ the status on stderr), with 3 when the repository declares no gates, and with 75
 came at all (the control socket is missing or refuses, the relay hung up, the gate run is not open yet,
 the answer was cut short): that says nothing about the gate and is never a pass, so ask again.
 
-The answer is JSON: `{"exitCode":0,"output":"...","executionId":"..."}`. `exitCode` `0` means the gate passed; anything
-else failed, and `output` carries its tail — read it, fix what it names, run the gate again. A 503 with
+`factory-gate --list` prints this run's tools as JSON, `{"tools":[...]}`: one `gate:<name>` per declared gate (its
+`required` is `finish` or `on_demand`, `filter` whether it takes `--filter`, `timeout` in minutes) and `exec` when
+`factory-exec` can run here; `{"tools":[]}` means no gates. Read it when you need the gate names.
+
+A gate's answer is JSON: `{"verdict":"passed","exitCode":0,"output":"...","artifacts":[],"executionId":"..."}`.
+`verdict` `passed` (exit code `0`) means the gate passed; `failed` means it failed, and `output` carries its tail — read it, fix what it names, run the gate again. A 503 with
 `"retryable":true` means the run could not be recorded and did not start: call it again.
 
 If the answer also carries `deadServices`, a service the repository declared (a database, a cache) has
@@ -57,7 +61,7 @@ factory-gate test --last
 ```
 
 `factory-gate <name> --last` answers the thread's last stored report of a declared gate without running it, whatever the
-gate's `timeout`: `{"status":"failed","exitCode":1,"output":"...","last":true}`, the output cut to about 4 KiB. It is the
+gate's `timeout`: `{"verdict":"failed","exitCode":1,"output":"...","artifacts":[],"last":true}`, the output cut to about 4 KiB. It is the
 latest passed or failed report of that gate in this task, as of when this run started; a gate you ran ad hoc since is not in it.
 A gate that has never run in this task answers 404 `no stored report for gate "<name>" in this thread` (exit 22, body printed):
 say so instead of guessing. Takes no `--filter`.
@@ -73,7 +77,7 @@ factory-exec 'npx playwright test e2e/login.spec.ts'
 ```
 
 `factory-exec '<command>'` runs one command in the repository's environment image — the container the
-gates use, in this worktree — and prints `{"exitCode":N,"output":"..."}`. Use it for what only that image
+gates use, in this worktree — and prints `{"exitCode":N,"output":"...","artifacts":[]}` (no verdict). Use it for what only that image
 has: a browser, a toolchain or client the image provides, inspecting or finishing the environment's
 setup, reproducing a failed gate step. To check a change, prefer a declared gate.
 

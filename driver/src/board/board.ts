@@ -270,7 +270,7 @@ export interface BoardJob extends ClaimSkills {
      * before spawn, never by the board, which is why it sits beside `env` rather than inside it:
      * the reserved-name filter that keeps a member's claim env from spoofing the name must not
      * strip the driver's own. It is no runner env: the agent asks for a gate through the control
-     * socket (`POST /gate/run`) and holds neither a gate URL nor a token.
+     * socket (`POST /tools/call`) and holds neither a gate URL nor a token.
      */
     gateEnv?: Record<string, string>;
     /**

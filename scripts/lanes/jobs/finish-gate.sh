@@ -11,12 +11,18 @@ begin_phase finish-gate
 # the failure comes back into the same session — claude's Stop hook blocks the stop, opencode's
 # entrypoint relaunches `opencode run --session <same id>` — so the scripted model touches the file
 # and finishes again. One run, no follow-up job, one failed and one passed round, and the close-time
-# pass serves the gate from the finish pass that passed.
+# pass serves the gate from the finish pass that passed. Before its work the model calls
+# `factory-gate --list`, `factory-gate lane-adhoc` and `factory-exec` once each, and the answers the
+# agent got back are checked: the manifest, the red gate's verdict, the command's output and exit code.
+# `lane-adhoc` is a second, `on_demand` gate with the same red command: `lane-finish`'s 15-minute
+# timeout is above the ad-hoc cap, so an ad-hoc call of it answers 422, and an `on_demand` gate is
+# skipped by the finish and end-of-run passes, leaving every finish assertion as it was.
 
 echo
 echo '# finish gate (board + driver + real claude-executor and opencode-executor, scripted model)'
 
 FG_GATE=lane-finish
+FG_ADHOC=lane-adhoc
 
 fg_db() { # fg_db <sql> -> the one value it selects from this run's database
     compose exec -T -e PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' postgres psql -U factory -d "$DB" -qtA \
@@ -40,7 +46,10 @@ write_bellows "environment:
     gates:
         - name: $FG_GATE
           command: 'test -f .lane-finish'
-          timeout: 15"
+          timeout: 15
+        - name: $FG_ADHOC
+          command: 'test -f .lane-finish'
+          on_demand: true"
 
 # The Stop hook's configured timeout, read in the image that ships it: the pass runs as long as the
 # gates do, so a hook bounded at the CLI's 600-second default would cut a slow gate short.
@@ -59,6 +68,18 @@ case "$fg_hook_timeout" in
     fi
     ;;
 esac
+
+fg_tool_result() { # fg_tool_result <cli> <endpoint report> <list|gate|exec> <label> <predicate on the answer `a`>
+    # The helper prints the driver's answer as one JSON line; the CLI's tool result may wrap it in other lines.
+    if node -e 'const text = (JSON.parse(process.argv[1]).toolResults || {})[process.argv[2]];
+        const a = String(text || "").split("\n").map((line) => line.trim()).filter((line) => line.startsWith("{"))
+            .map((line) => { try { return JSON.parse(line); } catch { return null; } }).find(Boolean);
+        process.exit(a && new Function("a", `return ${process.argv[3]}`)(a) ? 0 : 1)' "$2" "$3" "$5" 2>/dev/null; then
+        ok "$1: $4"
+    else
+        bad "$1: $4" "$3 tool result: $(node -e 'try { process.stdout.write(JSON.stringify(JSON.parse(process.argv[1]).toolResults[process.argv[2]]).slice(0, 2000)); } catch { process.stdout.write(process.argv[1].slice(0, 2000)); }' "$2" "$3")"
+    fi
+}
 
 fg_image() { # fg_image <claude|opencode> -> builds $IMAGE_FINISH-<cli>: the real executor image, its `gh` the lane's stand-in
     # The agent's change is published, and the publish runs `gh pr create` in the executor image; the lane has no
@@ -132,6 +153,12 @@ finish_gate_lane() { # finish_gate_lane <claude|opencode>
     else
         bad "$cli: the gate failure reached the same session as its next turn, once" "endpoint: $seen; driver: $(fg_driver_tail "$id")"
     fi
+    fg_tool_result "$cli" "$seen" list "factory-gate --list lists gate:$FG_GATE, gate:$FG_ADHOC on demand, and exec" \
+        "Array.isArray(a.tools) && a.tools.some((t) => t.id === 'gate:$FG_GATE' && t.required === 'finish') && a.tools.some((t) => t.id === 'gate:$FG_ADHOC' && t.required === 'on_demand') && a.tools.some((t) => t.id === 'exec')"
+    fg_tool_result "$cli" "$seen" gate "factory-gate $FG_ADHOC answers the red gate's verdict" \
+        "a.verdict === 'failed' && Number.isInteger(a.exitCode) && Array.isArray(a.artifacts) && a.artifacts.length === 0 && typeof a.executionId === 'string' && a.executionId !== ''"
+    fg_tool_result "$cli" "$seen" exec "factory-exec answers the command's output and exit code" \
+        "a.exitCode === 0 && String(a.output).includes('lane-exec-ok') && Array.isArray(a.artifacts) && a.artifacts.length === 0 && !('verdict' in a)"
     lane_endpoint_stop "$fake_pid"
     if [ "$cli" = opencode ]; then
         api PUT /api/workspace/executors '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}' >/dev/null
