@@ -298,7 +298,7 @@ function buildOrgStores({
                   client,
                   mergeToken: createMergeTokenSource({ memberGrants, installation: () => tokens.get() }),
                   recordMerge: (repo, prNumber, deliveryId, mergedAt) =>
-                      jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
+                      jobs.closeMergedPr(githubRepo(repo), prNumber, deliveryId, mergedAt),
                   reconcile: (batchId) => batches.reconcile(batchId),
               })
             : undefined;
