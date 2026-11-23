@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import type { PrWriteStore } from '../src/db/jobs/job-store-pr-write.js';
-import { createPrWriter } from '../src/github/pr-write.js';
+import { createPrWriter, type PrWriter } from '../src/github/pr-write.js';
 import { trackApps } from './helpers-http.js';
 import { jobStoreSlice, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
@@ -30,7 +30,7 @@ const context = (executionUserId: string | null = 'user-1') => ({
     executionUserId,
 });
 
-async function harness(options: { writer?: boolean; mint?: boolean; store?: Partial<PrWriteStore> } = {}) {
+async function harness(options: { writer?: boolean | PrWriter; mint?: boolean; store?: Partial<PrWriteStore> } = {}) {
     const config = testConfig();
     const store = jobStoreSlice<PrWriteStore>({
         prWriteContext: async () => context(),
@@ -40,7 +40,9 @@ async function harness(options: { writer?: boolean; mint?: boolean; store?: Part
     const instance: FastifyInstance = await buildApp({
         config,
         orgs: staticRegistry({ config, jobs: store, telemetry: stubTelemetryClient() }),
-        ...(options.writer ? { prWriter: createPrWriter({ apiUrl: 'http://127.0.0.1:9' }) } : {}),
+        ...(options.writer
+            ? { prWriter: options.writer === true ? createPrWriter({ apiUrl: 'http://127.0.0.1:9' }) : options.writer }
+            : {}),
         ...(options.mint
             ? {
                   githubMint: async () => ({
@@ -119,5 +121,28 @@ describe('POST /api/jobs/:id/pull-request', () => {
             store: { prWriteContext: async () => ({ ...context(), rootRepo: 'acme/other' }) },
         });
         expect((await post(other, ASK)).statusCode).toBe(403);
+    });
+
+    // A task with no claim base sends `base: null` (nothing to retarget) and the branch to open against in `create.base`.
+    it('creates against create.base when the top-level base is null, and answers created', async () => {
+        const opened: { branch: string; base: string }[] = [];
+        const writer = {
+            findPullRequest: async () => null,
+            openPullRequest: async (_repo: string, ask: { branch: string; base: string }) => {
+                opened.push({ branch: ask.branch, base: ask.base });
+                return {
+                    operation: 'created',
+                    pr: { url: 'https://github.com/acme/widgets/pull/1', number: 1, base: ask.base, state: 'open' },
+                };
+            },
+        } as unknown as PrWriter;
+        const res = await post(await harness({ writer, mint: true }), { ...ASK, base: null });
+        expect(res.json()).toEqual({
+            answer: 'pr',
+            operation: 'created',
+            url: 'https://github.com/acme/widgets/pull/1',
+            number: 1,
+        });
+        expect(opened).toEqual([{ branch: 'task/one', base: 'main' }]);
     });
 });

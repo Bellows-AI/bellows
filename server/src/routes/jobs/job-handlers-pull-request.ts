@@ -119,12 +119,10 @@ async function carryOut(
 ): Promise<Outcome> {
     let pr: PullRequestFacts | null;
     let operation: 'created' | 'reused' = 'reused';
-    if (ask.create && ask.base !== null) {
-        const opened = await writer.openPullRequest(
-            repo,
-            { branch: ask.branch, base: ask.base, create: ask.create },
-            auth
-        );
+    if (ask.create) {
+        // A create names its own base; the top-level `base` only retargets a PR that already exists.
+        const { base, ...fields } = ask.create;
+        const opened = await writer.openPullRequest(repo, { branch: ask.branch, base, create: fields }, auth);
         ({ pr, operation } = opened);
     } else {
         pr = await writer.findPullRequest(repo, ask.branch, auth);

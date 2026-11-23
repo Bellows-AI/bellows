@@ -187,6 +187,17 @@ describe.skipIf(!enabled)('POST /api/jobs/:id/pull-request — the member opens 
         expect(JSON.stringify(response.headers)).not.toContain('ghu_');
     });
 
+    it('creates a PR for a task with no claim base: create.base is the base, nothing is retargeted', async () => {
+        await signMemberIn(grantsOver());
+        const instance = await boot({ grants: grantsOver(), writer: writerOver() });
+        const { id, claim } = await running();
+        const response = await ask(instance, id, claim.leaseToken, { ...ASK, base: null });
+        expect(response.json()).toMatchObject({ answer: 'pr', operation: 'created', number: 1 });
+        expect(creates().map((c) => c.tokenKind)).toEqual(['user']);
+        expect((await fake.pulls())[0]).toMatchObject({ base: { ref: 'main' }, createdBy: 'user' });
+        expect(fake.calls().filter((c) => c.method === 'PATCH')).toEqual([]);
+    });
+
     it('opens no duplicate when the same ask is replayed', async () => {
         await signMemberIn(grantsOver());
         const instance = await boot({ grants: grantsOver(), writer: writerOver() });
