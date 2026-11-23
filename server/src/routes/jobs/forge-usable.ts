@@ -2,7 +2,7 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from 'fastify';
 import type { OrgRegistry } from '../../orgs.js';
 import { callerOf, orgOf } from '../../auth/plugin.js';
-import { type ForgeGate, forgeLabel, type ForgeVerdict } from '../../forge/forge-gate.js';
+import { type ForgeGate, forgeLabel, forgeOfRepo, type ForgeVerdict } from '../../forge/forge-gate.js';
 import type { JobStore } from '../../db/jobs/job-store-types.js';
 import { HTTP_CONFLICT, HTTP_UNAVAILABLE } from './job-limits.js';
 
@@ -80,5 +80,36 @@ export async function refusedOnThread(
     } catch (err) {
         forgeReadFailed(reply, request.log, err);
         return true;
+    }
+}
+
+/** The preflight's forge check: what a create of this repo would decide about the caller's grant, without refusing. */
+export async function forgeCheck(
+    log: FastifyBaseLogger,
+    gate: ForgeGate | undefined,
+    who: { orgId: string; userId: string; repo: string | null }
+): Promise<{
+    subject: 'forge';
+    name: string;
+    status: 'ok' | 'blocked' | 'unverified';
+    code?: string;
+    detail: string;
+} | null> {
+    const forge = forgeOfRepo(who.repo);
+    if (!gate || forge === null) return null;
+    try {
+        const verdict = await gate.check({ ...who, returnTo: TASK_COMPOSER_PATH });
+        if (verdict.ok)
+            return { subject: 'forge', name: forge, status: 'ok', detail: `${forgeLabel(forge)} connected` };
+        return {
+            subject: 'forge',
+            name: forge,
+            status: 'blocked',
+            code: ERROR_CODES.FORGE_GRANT_REQUIRED,
+            detail: forgeRefusalMessage(verdict),
+        };
+    } catch (err) {
+        log.warn({ err }, 'preflight: forge grant standing could not be read');
+        return { subject: 'forge', name: forge, status: 'unverified', detail: 'the connection could not be read' };
     }
 }

@@ -5,11 +5,14 @@ import type { Sql } from 'postgres';
 import { buildApp } from '../src/app.js';
 import { hashToken } from '../src/auth/session.js';
 import { type AuthStore, createAuthStore } from '../src/auth/store.js';
+import { createBatchStore } from '../src/db/batches/batch-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import { createMemberForgeGrants, type MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import { GITHUB_FORGE } from '../src/integrations/providers/github-user.js';
+import { staticRepoSource } from '../src/github/repo-source.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
+import { staticRegistry, stubTelemetryClient, telemetryStoreStub } from '../test/helpers.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
 import { randomGithubId, startRow, testOrg } from './fixtures.js';
@@ -233,5 +236,167 @@ describe.skipIf(!enabled).each(ROUTES)('$name', ({ prepare, call: act }) => {
         const res = await run(admin, member);
         expect(res.statusCode).toBe(CONFLICT);
         expect(res.json()).toMatchObject({ code: 'FORGE_GRANT_REQUIRED', standing: 'missing' });
+    });
+});
+
+// One target: a plan across repositories is refused before the gate (BATCH_UNSUPPORTED multi_target) until batches
+// run on more than one; the gate itself judges every distinct forge of the plan's targets.
+const PLAN = {
+    planVersion: 1,
+    title: 'One repo',
+    targets: [{ key: 'web', repo: REPO }],
+    defaultTarget: 'web',
+    stages: [
+        {
+            key: 'one',
+            tasks: ['a', 'b'].map((key) => ({
+                key,
+                objective: `do ${key}`,
+                acceptance: 'it works',
+                verification: 'npm test',
+            })),
+        },
+    ],
+};
+
+/** The app over the real job and batch stores, with a repo source that knows both target repos' default branches. */
+async function bootBatches(grants: MemberForgeGrants): Promise<FastifyInstance> {
+    const config = testConfig({ auth: githubAuth({ publicUrl: PUBLIC_URL }), batches: { enabled: true } });
+    const jobs = createJobStore({ sql, orgId: org });
+    const batches = createBatchStore({
+        sql,
+        orgId: org,
+        stop: (id, by) => jobs.stop(id, by),
+        close: (id, by) => jobs.markDone(id, by),
+    });
+    const base = staticRepoSource([{ owner: 'gate-owner', name: 'web' }]);
+    const repos = {
+        ...base,
+        detail: async () => ({
+            repos: ['web'].map((name) => ({
+                owner: 'gate-owner',
+                name,
+                defaultBranch: 'main',
+                private: false,
+                pushedAt: null,
+            })),
+            installation: null,
+            error: null,
+        }),
+    };
+    return buildApp({
+        config,
+        orgs: staticRegistry({ config, repos, jobs, batches, telemetry: stubTelemetryClient() }),
+        store: telemetryStoreStub(),
+        auth,
+        memberGrants: grants,
+    });
+}
+
+const batchCounts = async () => ({
+    jobs: Number((await sql`select count(*) from job where org_id = ${org}`)[0]!.count),
+    tasks: Number((await sql`select count(*) from batch_task where org_id = ${org}`)[0]!.count),
+});
+
+const draftStatusOf = async (id: string) =>
+    (await sql<{ status: string }[]>`select status from batch where org_id = ${org} and id = ${id}`)[0]!.status;
+
+describe.skipIf(!enabled)('a batch launch', () => {
+    const draft = async (who: Person): Promise<string> => {
+        const res = await call(who, '/api/batches', { plan: PLAN });
+        expect(res.statusCode, res.body).toBe(201);
+        return (res.json() as { id: string }).id;
+    };
+
+    beforeEach(async () => {
+        await app.close();
+        app = await bootBatches(realGrants);
+    });
+
+    it('refuses the whole start up front when the starter has no grant, and writes nothing', async () => {
+        const id = await draft(member);
+        const before = await batchCounts();
+        const res = await call(member, `/api/batches/${id}/start`, { version: 1 });
+        expect(res.statusCode).toBe(CONFLICT);
+        expect(res.json()).toMatchObject({ code: 'FORGE_GRANT_REQUIRED', forge: 'github', standing: 'missing' });
+        expect(await batchCounts()).toEqual(before);
+        expect(await draftStatusOf(id)).toBe('draft');
+    });
+
+    it('validates with the same refusal', async () => {
+        const id = await draft(member);
+        const res = await call(member, `/api/batches/${id}/validate`);
+        expect(res.statusCode).toBe(CONFLICT);
+        expect(res.json()).toMatchObject({ code: 'FORGE_GRANT_REQUIRED', standing: 'missing' });
+    });
+
+    it('refuses a batch task retry from a requester with no grant', async () => {
+        const id = await draft(member);
+        await seedGrant(admin, 'active');
+        const res = await call(member, `/api/batches/${id}/tasks/a/retry`);
+        expect(res.statusCode).toBe(CONFLICT);
+        expect(res.json()).toMatchObject({ code: 'FORGE_GRANT_REQUIRED' });
+    });
+
+    it('answers 503 when the standing cannot be read, and the draft stays a draft', async () => {
+        const id = await draft(member);
+        await app.close();
+        app = await bootBatches({
+            ...realGrants,
+            standing: async () => {
+                throw new Error('database blip');
+            },
+        });
+        const res = await call(member, `/api/batches/${id}/start`, { version: 1 });
+        expect(res.statusCode).toBe(UNAVAILABLE);
+        expect(res.json()).toMatchObject({ code: 'UNAVAILABLE' });
+        expect(await draftStatusOf(id)).toBe('draft');
+    });
+
+    it('starts when the starter holds a live grant', async () => {
+        await seedGrant(member, 'active');
+        const id = await draft(member);
+        const res = await call(member, `/api/batches/${id}/start`, { version: 1 });
+        expect(res.statusCode, res.body).toBe(200);
+    });
+});
+
+describe.skipIf(!enabled)('preflight', () => {
+    const preflight = (who: Person) => call(who, '/api/jobs/preflight', { repo: REPO });
+    type Check = { subject: string; name: string | null; status: string; code?: string; detail: string };
+
+    it('reports a missing grant as a blocked forge check, with the connect URL', async () => {
+        const res = await preflight(member);
+        const body = res.json() as { ready: boolean; checks: Check[] };
+        expect(body.ready).toBe(false);
+        const check = body.checks.find((c) => c.subject === 'forge');
+        expect(check).toMatchObject({ name: 'github', status: 'blocked', code: 'FORGE_GRANT_REQUIRED' });
+        expect(check!.detail).toContain(`${PUBLIC_URL}/api/auth/github?`);
+        expect(check!.detail).toContain('missing');
+    });
+
+    it('says the connection needs reconnecting when the grant is broken', async () => {
+        await seedGrant(member, 'reconnect_required');
+        const body = (await preflight(member)).json() as { checks: Check[] };
+        expect(body.checks.find((c) => c.subject === 'forge')).toMatchObject({ status: 'blocked' });
+        expect(body.checks.find((c) => c.subject === 'forge')!.detail).toContain('reconnecting');
+    });
+
+    it('reports an unreadable standing as unverified, never blocked', async () => {
+        await app.close();
+        app = await boot({
+            ...realGrants,
+            standing: async () => {
+                throw new Error('database blip');
+            },
+        });
+        const body = (await preflight(member)).json() as { checks: Check[] };
+        expect(body.checks.find((c) => c.subject === 'forge')).toMatchObject({ status: 'unverified' });
+    });
+
+    it('reports the forge check ok when the grant is live', async () => {
+        await seedGrant(member, 'active');
+        const body = (await preflight(member)).json() as { ready: boolean; checks: Check[] };
+        expect(body.checks.find((c) => c.subject === 'forge')).toMatchObject({ status: 'ok' });
     });
 });

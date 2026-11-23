@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
+import type { ForgeGate } from '../../forge/forge-gate.js';
 import type { OrgRegistry } from '../../orgs.js';
 import {
     handleAccept,
@@ -22,7 +23,15 @@ import { BODY_LIMIT, CONTROL_BODY_LIMIT, batchesDisabled } from '../jobs/job-lim
  * `db/batches/batch-store-schedule.ts`.
  */
 export const batchRoutes =
-    ({ orgs, enabled }: { orgs: OrgRegistry; enabled: boolean }): FastifyPluginAsync =>
+    ({
+        orgs,
+        enabled,
+        forgeGate,
+    }: {
+        orgs: OrgRegistry;
+        enabled: boolean;
+        forgeGate?: ForgeGate | undefined;
+    }): FastifyPluginAsync =>
     async (app) => {
         // Off (BATCHES_ENABLED): the routes stay registered behind the auth wall and answer a coded 404 before any
         // body is parsed or store read, so nothing is discoverable and the web and CLI can branch on the code.
@@ -35,13 +44,13 @@ export const batchRoutes =
         app.get('/api/batches/:id/report', (request, reply) => handleReport(orgs, request, reply));
         app.put('/api/batches/:id', { bodyLimit: BODY_LIMIT }, (request, reply) => handleReplace(orgs, request, reply));
         app.post('/api/batches/:id/validate', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleValidate(orgs, request, reply)
+            handleValidate({ orgs, forgeGate }, request, reply)
         );
         app.post('/api/batches/:id/start', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleStart(orgs, request, reply)
+            handleStart({ orgs, forgeGate }, request, reply)
         );
         app.post('/api/batches/:id/tasks/:key/retry', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleRetry(orgs, request, reply)
+            handleRetry({ orgs, forgeGate }, request, reply)
         );
         app.post('/api/batches/:id/tasks/:key/accept', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleAccept(orgs, request, reply)

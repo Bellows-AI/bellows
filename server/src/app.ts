@@ -505,7 +505,7 @@ export async function buildApp({
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
     await app.register(jobRoutes({ orgs, forgeGate, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
     registerTitleRoute(app, orgs);
-    await app.register(preflightRoutes(orgs));
+    await app.register(preflightRoutes({ orgs, forgeGate }));
     await app.register(
         attachmentRoutes({
             orgs,
@@ -518,7 +518,7 @@ export async function buildApp({
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.
-    await app.register(batchRoutes({ orgs, enabled: config.batches.enabled }));
+    await app.register(batchRoutes({ orgs, enabled: config.batches.enabled, forgeGate }));
     await app.register(envRoutes({ config, orgs }));
     // The provider catalog exists on every board; where no OAuth client is wired every OAuth provider reads `unavailable`.
     await app.register(integrationCatalogRoutes({ orgs, configured: integrations?.configured }));
