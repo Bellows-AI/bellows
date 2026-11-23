@@ -22,7 +22,11 @@ export const DOCKER_SOCKET = `${DOCKER_SOCK_DIR}/docker.sock`;
 /** The socket's group: the executor images' `node` group, which the tool uid holds (mode 0660). */
 export const DOCKER_SOCK_GID = 1000;
 
-/** The temp dir agent, gate and dockerd share at one path (TMPDIR), so a bind mount of a temp file resolves on the daemon side. */
+/**
+ * The temp dir agent, gate and dockerd share at one path (TMPDIR), so a bind mount of a temp file resolves on
+ * the daemon side. Memory-backed, as the gate's own /tmp is: it is the suites' scratch in a docker class, and a
+ * plain emptyDir is virtiofs in the microVM's guest. Its pages are charged to whichever container writes them.
+ */
 export const DOCKER_TMP_VOLUME = 'docker-tmp';
 export const DOCKER_TMP_DIR = '/run/factory-tmp';
 
@@ -73,7 +77,7 @@ export const dockerVolumes = (runnerClass: RunnerClass): RunnerVolume[] => [
             ...(runnerClass.dockerStorage ? { sizeLimit: runnerClass.dockerStorage } : {}),
         },
     },
-    { name: DOCKER_TMP_VOLUME, emptyDir: {} },
+    { name: DOCKER_TMP_VOLUME, emptyDir: { medium: 'Memory' } },
     { name: DOCKER_SOCK_VOLUME, emptyDir: {} },
 ];
 

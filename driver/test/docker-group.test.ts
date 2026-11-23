@@ -627,6 +627,13 @@ describe('the gate container (issue #773)', () => {
         expect(mounted.some((mount) => mount.includes(volumeOf('gate')))).toBe(true);
     });
 
+    // The pod's gate sidecar's memory-backed /tmp, executable: the suites run scripts
+    // from their temp dirs, and docker's default tmpfs options would mount it noexec.
+    it('gives the gate a memory-backed, executable /tmp', () => {
+        const tmpfs = argv.filter((_arg, i) => argv[i - 1] === '--tmpfs');
+        expect(tmpfs).toEqual(['/tmp:rw,exec,nosuid,nodev,mode=1777']);
+    });
+
     // The gate writes the shared task worktree, so it writes as the uid:gid every other writer on
     // that tree uses (1000:1000), with a HOME that uid can write (observed: root-written files left
     // a worktree the uid-1000 reclaim could never remove).
