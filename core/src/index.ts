@@ -296,6 +296,7 @@ export type {
 } from './skills.js';
 export {
     connectionEnvNames,
+    FORGE_REQUIREMENT_PROVIDER,
     INTEGRATION_PROVIDERS,
     isReservedSkillName,
     requiredProviders,

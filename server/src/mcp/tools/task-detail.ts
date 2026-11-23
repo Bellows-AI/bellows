@@ -9,6 +9,7 @@ import {
     MAX_TEXT_CHARS,
     ownRequirements,
     questionsOpen,
+    REQUIREMENT_REASONS,
     RunStateSchema,
     stateOfRun,
     type BoardRun,
@@ -47,7 +48,7 @@ const requirementsOf = (run: Pick<BoardRun, 'integrationRequirements'>) =>
 const RequirementView = z.object({
     provider: z.string(),
     label: z.string(),
-    reason: z.enum(['missing', 'ambiguous', 'reconnect']),
+    reason: z.enum(REQUIREMENT_REASONS),
     source: z.enum(['create', 'runtime']),
 });
 

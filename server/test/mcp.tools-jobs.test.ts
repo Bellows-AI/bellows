@@ -409,6 +409,30 @@ describe('investigate_job and list_questions', () => {
         ]);
     });
 
+    it.each(['reconnect', 'starter-removed'])(
+        'surfaces a forge start gate wait (%s) as needs_attention, never as an unreadable thread',
+        async (reason) => {
+            const requirement = {
+                provider: 'forge',
+                label: 'GitHub',
+                reason,
+                source: 'create',
+                connectionId: null,
+                target: 'github',
+                connectPath: reason === 'reconnect' ? '/api/auth/github?returnTo=%2Ftasks%2Fx&org=o1' : null,
+                createdAt: '2026-01-01T00:02:00.000Z',
+            };
+            const waiting = [run(JOB_A, { status: 'queued', integrationRequirements: [requirement] })];
+            const { data } = await call(await boot({ a: { thread: waiting } }), 'alice', 'investigate_job', {
+                jobId: JOB_A,
+            });
+            expect(data.job).toMatchObject({ state: 'needs_attention' });
+            expect(data.job.integrationRequirements).toEqual([
+                { provider: 'forge', label: 'GitHub', reason, source: 'create' },
+            ]);
+        }
+    );
+
     it('shows an open integration requirement on the head run only, not on the finished runs before it', async () => {
         const requirement = {
             provider: 'jira',

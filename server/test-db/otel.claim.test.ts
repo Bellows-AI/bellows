@@ -179,7 +179,7 @@ afterAll(() => {
 
 describe.skipIf(!enabled)('board claim spans', () => {
     it('a claim that acquires a row joins the caller trace with its sweep, acquisition and lock wait', async () => {
-        const id = await craftJob({ sql: db.sql, org: ORG, author: '' }, { author: null });
+        const id = await craftJob({ sql: db.sql, org: ORG, author: '' }, { author: null, repo: null });
 
         const claim = await claimOver('/api/jobs/claim');
         expect(claim.status).toBe(200);

@@ -4,10 +4,10 @@ import { defineTool, READ_ONLY } from '../tool.js';
 import { MAX_CONNECTIONS, MAX_NAME_CHARS, MAX_SELECTED } from './paging.js';
 
 const Check = z.object({
-    subject: z.enum(['repo', 'executor', 'model', 'skill', 'connection']),
+    subject: z.enum(['repo', 'forge', 'executor', 'model', 'skill', 'connection']),
     name: z.string().nullable(),
     status: z.enum(['ok', 'blocked', 'unverified']),
-    /** The code create would refuse with (`NO_MODEL`), on a blocked check that has one. */
+    /** The code create would refuse with (`NO_MODEL`, `FORGE_GRANT_REQUIRED`), on a blocked check that has one. */
     code: z.string().optional(),
     detail: z.string(),
     integration: z

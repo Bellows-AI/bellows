@@ -1,3 +1,4 @@
+import { FORGE_REQUIREMENT_PROVIDER } from '@factory-ai/core';
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { grantStandingExpr } from './forge-grant-standing.js';
 
@@ -8,7 +9,6 @@ type Db = Sql | TransactionSql;
  * `forge`, target the forge (`github`), source `create`. The claim opens it when the thread starter's grant is not
  * live and closes it the moment it is; a re-link closes it early for the page. It is never dismissed.
  */
-export const FORGE_PROVIDER = 'forge';
 
 /** Why the thread waits: no grant, a grant needing reconnect, or a starter that no longer exists. */
 export type ForgeRequirementReason = 'missing' | 'reconnect' | 'starter-removed';
@@ -20,7 +20,7 @@ export async function openForgeRequirement(
 ): Promise<void> {
     await db`
         insert into job_integration_requirement (org_id, root_job_id, provider, reason, target, source)
-        values (${args.orgId}, ${args.rootJobId}, ${FORGE_PROVIDER}, ${args.reason}, ${args.forge}, 'create')
+        values (${args.orgId}, ${args.rootJobId}, ${FORGE_REQUIREMENT_PROVIDER}, ${args.reason}, ${args.forge}, 'create')
         on conflict (org_id, root_job_id, provider) where satisfied_at is null
         do update set reason = excluded.reason, target = excluded.target
     `;
@@ -34,7 +34,7 @@ export async function closeForgeRequirement(
     await db`
         update job_integration_requirement
         set satisfied_at = now(), outcome = 'bound', closed_by = ${args.userId}
-        where org_id = ${args.orgId} and root_job_id = ${args.rootJobId} and provider = ${FORGE_PROVIDER}
+        where org_id = ${args.orgId} and root_job_id = ${args.rootJobId} and provider = ${FORGE_REQUIREMENT_PROVIDER}
           and satisfied_at is null
     `;
 }
@@ -51,7 +51,7 @@ export async function closeForgeRequirementsOfMember(
         update job_integration_requirement q
         set satisfied_at = now(), outcome = 'bound', closed_by = ${args.userId}
         from job root
-        where q.org_id = ${args.orgId} and q.provider = ${FORGE_PROVIDER} and q.target = ${args.forge}
+        where q.org_id = ${args.orgId} and q.provider = ${FORGE_REQUIREMENT_PROVIDER} and q.target = ${args.forge}
           and q.satisfied_at is null
           and root.org_id = q.org_id and root.id = q.root_job_id and root.execution_user_id = ${args.userId}
     `;
@@ -63,7 +63,7 @@ export async function closeForgeRequirementsOfMember(
  * is live now, so the acquire closes it. A missing starter or grant is not live and the wait holds.
  */
 export const forgeWaitIgnored = (sql: Sql, gateOn: boolean, requirement: Fragment): Fragment => sql`(
-    ${requirement}.provider = ${FORGE_PROVIDER}
+    ${requirement}.provider = ${FORGE_REQUIREMENT_PROVIDER}
     and (not ${gateOn}::boolean or coalesce(${grantStandingExpr(sql, {
         orgId: sql`${requirement}.org_id`,
         userId: sql`(select r.execution_user_id from job r

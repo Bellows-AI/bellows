@@ -1,8 +1,7 @@
-import { forgeLabel } from '../forge/forges.js';
-import { FORGE_PROVIDER } from './forge-requirement.js';
+import { forgeConnectPath, forgeLabel } from '../forge/forges.js';
 import { waitAdvisoryXactLock } from './pool.js';
 import type { Sql, TransactionSql } from 'postgres';
-import { INTEGRATION_PROVIDERS, selectedBy } from '@factory-ai/core';
+import { FORGE_REQUIREMENT_PROVIDER, INTEGRATION_PROVIDERS, selectedBy } from '@factory-ai/core';
 import { bindingStanding, type StandingRow } from '../integrations/credential-resolver.js';
 
 /**
@@ -430,6 +429,8 @@ export interface RequirementRecord {
     connectionId: string | null;
     /** What the asking helper needs of the provider (for Jira the site); null when it named none. */
     target: string | null;
+    /** The sign-in that clears a `forge` wait, relative to the board's origin; null for every other provider. */
+    connectPath: string | null;
     createdAt: string;
 }
 
@@ -465,11 +466,15 @@ export async function requirementsOf(db: Db, orgId: string, rootJobId: string): 
     `;
     return rows.map((r) => ({
         provider: r.provider,
-        label: r.provider === FORGE_PROVIDER ? forgeLabel(r.target ?? '') : providerLabel(r.provider),
+        label: r.provider === FORGE_REQUIREMENT_PROVIDER ? forgeLabel(r.target ?? '') : providerLabel(r.provider),
         reason: r.reason,
         source: r.source,
         connectionId: r.connection_id,
         target: r.target,
+        connectPath:
+            r.provider === FORGE_REQUIREMENT_PROVIDER && r.target !== null
+                ? forgeConnectPath(r.target, { orgId, returnTo: `/tasks/${rootJobId}` })
+                : null,
         createdAt: r.created_at.toISOString(),
     }));
 }
@@ -638,7 +643,7 @@ export async function dismissRequirementInTx(
     `;
     if (!root || root.execution_user_id === null || root.execution_user_id !== userId) return 'missing';
     // The starter's GitHub grant is not a choice to decline: the claim opens and closes this wait itself.
-    if (provider === FORGE_PROVIDER) return 'none-open';
+    if (provider === FORGE_REQUIREMENT_PROVIDER) return 'none-open';
     const closed = await db<{ id: string }[]>`
         update job_integration_requirement
         set satisfied_at = now(), satisfied_revision = ${root.binding_revision}, outcome = 'dismissed',

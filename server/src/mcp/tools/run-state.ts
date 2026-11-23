@@ -90,10 +90,13 @@ const QuestionSchema = z.object({
     answeredAt: text,
 });
 
+/** Why a thread waits on an integration; `starter-removed` is the forge start gate's (docs/connections.md). */
+export const REQUIREMENT_REASONS = ['missing', 'ambiguous', 'reconnect', 'starter-removed'] as const;
+
 const RequirementSchema = z.object({
     provider: z.string(),
     label: z.string(),
-    reason: z.enum(['missing', 'ambiguous', 'reconnect']),
+    reason: z.enum(REQUIREMENT_REASONS),
     source: z.enum(['create', 'runtime']),
 });
 
@@ -241,7 +244,7 @@ export const RunViewSchema = z.object({
             z.object({
                 provider: z.string(),
                 label: z.string(),
-                reason: z.enum(['missing', 'ambiguous', 'reconnect']),
+                reason: z.enum(REQUIREMENT_REASONS),
                 source: z.enum(['create', 'runtime']),
             })
         )

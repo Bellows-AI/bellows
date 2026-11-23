@@ -1,5 +1,5 @@
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
-import { forgeOfRepo, forgeSignInPath } from './forges.js';
+import { forgeConnectPath, forgeOfRepo } from './forges.js';
 
 /**
  * The forge start gate (docs/connections.md): no run starts or continues on a repo unless the acting member holds a
@@ -27,12 +27,11 @@ export function createForgeGate(deps: {
     return {
         async check({ orgId, userId, repo, returnTo }) {
             const forge = forgeOfRepo(repo);
-            const signInPath = forge === null ? null : forgeSignInPath(forge);
-            if (forge === null || signInPath === null) return { ok: true };
+            const path = forge === null ? null : forgeConnectPath(forge, { orgId, returnTo });
+            if (forge === null || path === null) return { ok: true };
             const standing = await memberGrants.standing(orgId, userId, forge);
             if (standing === 'live') return { ok: true };
-            const query = new URLSearchParams({ returnTo, org: orgId });
-            return { ok: false, forge, standing, connectUrl: `${publicUrl}${signInPath}?${query}` };
+            return { ok: false, forge, standing, connectUrl: `${publicUrl}${path}` };
         },
     };
 }

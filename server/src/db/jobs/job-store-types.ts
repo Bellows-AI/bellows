@@ -455,6 +455,8 @@ export interface JobIntegrationRequirement {
     connectionId: string | null;
     /** What the asking helper needs of the provider (for Jira the site); null when it named none. */
     target: string | null;
+    /** The sign-in that clears a `forge` wait, relative to the board's origin; null for every other provider. */
+    connectPath: string | null;
     createdAt: string;
 }
 
