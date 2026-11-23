@@ -189,8 +189,11 @@ const lastReportAnswer = (job: BoardJob, name: string): { status: number; body: 
     if (!stored) {
         return { status: HTTP_NOT_FOUND, body: { error: `no stored report for gate "${name}" in this thread` } };
     }
-    const { status, exitCode, output } = stored;
-    return { status: HTTP_OK, body: { verdict: status, exitCode, output, artifacts: [], last: true } };
+    const { status, exitCode, output, result } = stored;
+    return {
+        status: HTTP_OK,
+        body: { verdict: status, exitCode, output, ...(result ? { result } : {}), artifacts: [], last: true },
+    };
 };
 
 /** A gate run's answer in the tool result shape: a verdict beside the exit and output, the record's id when there is one. */

@@ -295,6 +295,36 @@ describe('the step and reaper observers', () => {
         expect(countOf(await harness.points('bellows.driver.reaper.scanned'), { what: 'groups' })).toBe(5);
     });
 
+    it('records a gate run’s duration and the guest’s resources by gate name, and nothing without a sample', async () => {
+        const harness = metricsHarness();
+        const metrics = createDriverMetrics({ boardUrl: BOARD, meter: harness.meter });
+        metrics.gate('test', 'timeout', 12.5, {
+            samples: 3,
+            seconds: 12,
+            cpu: { user: 10, system: 29, iowait: 24, steal: 20, idle: 17 },
+            throttledPeriods: 4,
+            throttledMs: 1500,
+            load: { start: 1, max: 6.5, end: 2 },
+            memAvailableMb: { min: 512, end: 900 },
+            memTotalMb: 4000,
+        });
+        metrics.gate('lint', 'passed', 3);
+        expect(
+            countOf(await harness.points('bellows.driver.gate.duration'), { gate: 'test', outcome: 'timeout' })
+        ).toBe(1);
+        expect(countOf(await harness.points('bellows.driver.gate.duration'), { gate: 'lint', outcome: 'passed' })).toBe(
+            1
+        );
+        const share = await harness.points('bellows.driver.gate.cpu.share');
+        for (const mode of ['user', 'system', 'iowait', 'steal', 'idle']) {
+            expect(countOf(share, { gate: 'test', mode }), mode).toBe(1);
+        }
+        expect(countOf(share, { gate: 'lint', mode: 'user' })).toBeUndefined();
+        expect(countOf(await harness.points('bellows.driver.gate.throttled.duration'), { gate: 'test' })).toBe(1);
+        expect(countOf(await harness.points('bellows.driver.gate.load.max'), { gate: 'test' })).toBe(1);
+        expect(countOf(await harness.points('bellows.driver.gate.memory.available.min'), { gate: 'test' })).toBe(1);
+    });
+
     it('counts the reaper volume exports by result, a loss apart from a drain (issue #938)', async () => {
         const harness = metricsHarness();
         const metrics = createDriverMetrics({ boardUrl: BOARD, meter: harness.meter });

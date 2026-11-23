@@ -90,6 +90,31 @@ echo "late=$([ -e "$WORK/late" ] && echo yes || echo no)"
 kill -KILL -1
 `;
 
+/**
+ * A gate writes `report/tests.json` through $FACTORY_GATE_RUN and runs long enough for the sampler (1 s here) to
+ * fire in between the start and end samples; a cancelled gate is answered with the same files.
+ */
+const REPORTING = String.raw`
+samples_ok() { grep -qE '^t=[0-9.]+ cpu=[0-9,]+ load=[0-9.]+ mem=[0-9]+/[0-9]+' "$box/done/$1/report/resources"; }
+post a 'echo "{\"files\":[]}" > "$FACTORY_GATE_RUN/report/tests.json"; sleep 3.5; echo A'
+waitfor "[ -e $box/done/a/exit ]"
+echo "a exit=$(cat $box/done/a/exit)"
+echo "a report=$([ -s $box/done/a/report/tests.json ] && echo kept || echo lost)"
+echo "a samples-ok=$(samples_ok a && echo yes || echo no)"
+echo "a periodic=$([ "$(wc -l < $box/done/a/report/resources)" -ge 4 ] && echo yes || echo no)"
+post b 'echo "{}" > "$FACTORY_GATE_RUN/report/tests.json"; sleep 30'
+waitfor "[ -s $box/running/b/pgid ] && [ -s $box/running/b/report/tests.json ]"
+touch "$box/running/b/cancel"
+waitfor "[ -e $box/done/b/exit ]"
+echo "b exit=$(cat $box/done/b/exit)"
+echo "b report=$([ -s $box/done/b/report/tests.json ] && echo kept || echo lost)"
+echo "b samples-ok=$(samples_ok b && echo yes || echo no)"
+before=$(wc -l < $box/done/b/report/resources)
+nap 2.5
+echo "samples-after=$([ "$before" = "$(wc -l < $box/done/b/report/resources)" ] && echo same || echo grew)"
+kill -KILL -1
+`;
+
 /** Two requests where the first is slow: without `setsid` the second is not taken until the first is answered. */
 const SERIAL = String.raw`
 post a 'sleep 1.5; echo A'
@@ -111,7 +136,13 @@ describe.skipIf(!NAMESPACED)('the gate loop, run in a pid namespace', () => {
         const harness = join(dir, `${name}.sh`);
         writeFileSync(harness, PRELUDE + scenarios);
         const result = spawnSync('unshare', ['-Upf', 'sh', harness], {
-            env: { PATH: process.env.PATH ?? '', BOX: join(dir, name), WORK: join(dir, 'work'), LOOP_SCRIPT: loop },
+            env: {
+                PATH: process.env.PATH ?? '',
+                FACTORY_GATE_SAMPLE_SECONDS: '1',
+                BOX: join(dir, name),
+                WORK: join(dir, 'work'),
+                LOOP_SCRIPT: loop,
+            },
             encoding: 'utf8',
             timeout: 60_000,
         });
@@ -133,6 +164,21 @@ describe.skipIf(!NAMESPACED)('the gate loop, run in a pid namespace', () => {
         expect(out).toContain('e exit=137');
         expect(out).toContain('f exit=0 out=F');
         expect(out).toContain('late=no');
+        expect(out).not.toContain('TIMEOUT');
+    });
+
+    it('keeps what a gate writes to its report directory, and samples the guest at start, during and at the end', () => {
+        const out = run(gateLoopScript, REPORTING, 'reporting');
+        expect(out).toContain('a exit=0');
+        expect(out).toContain('a report=kept');
+        expect(out).toContain('a samples-ok=yes');
+        expect(out).toContain('a periodic=yes');
+        // A cancelled gate answers with what it had written so far, and its samples.
+        expect(out).toContain('b exit=137');
+        expect(out).toContain('b report=kept');
+        expect(out).toContain('b samples-ok=yes');
+        // No sampler outlives its request.
+        expect(out).toContain('samples-after=same');
         expect(out).not.toContain('TIMEOUT');
     });
 

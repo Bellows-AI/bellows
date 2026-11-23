@@ -33,6 +33,7 @@ import {
     AGENT_MAILBOX_DIR,
     GATE_CANCEL_GRACE_MS,
     GATE_ASK_FILES,
+    GATE_REPORT_FILES,
     GATE_FILES,
     GATE_TOKEN_PATH,
     REVIEW_FILES,
@@ -76,6 +77,7 @@ interface SupervisorModule {
     STEP_KINDS: string[];
     GATE_FILES: Record<string, string>;
     GATE_ASK_FILES: Record<string, string>;
+    GATE_REPORT_FILES: Record<string, string>;
     GATE_TOKEN_PATH: string;
     GATE_LOST_MS: number;
     GATE_CANCEL_MS: number;
@@ -1187,6 +1189,8 @@ interface GatePlan {
     holdMs?: number;
     /** A latch in place of the clock: the answer waits for the test to release it. */
     heldUntil?: () => boolean;
+    /** Files the gate left in its report directory (name -> content), kept in the answer with a cancel too. */
+    report?: Record<string, string>;
 }
 
 /**
@@ -1217,6 +1221,13 @@ function fakeGateLoop(
     };
     const held = new Map<string, { plan: GatePlan; since: number }>();
     const answer = (id: string, exitCode: number, output: string) => {
+        const report = held.get(id)?.plan.report;
+        if (report) {
+            mkdirSync(at(GATE_FILES.running, id, 'report'), { recursive: true });
+            for (const [name, content] of Object.entries(report)) {
+                writeFileSync(at(GATE_FILES.running, id, 'report', name), content);
+            }
+        }
         writeFileSync(at(GATE_FILES.running, id, GATE_FILES.output), output);
         writeFileSync(at(GATE_FILES.running, id, 'exit.tmp'), `${exitCode}\n`);
         renameSync(at(GATE_FILES.running, id, 'exit.tmp'), at(GATE_FILES.running, id, GATE_FILES.exit));
@@ -1280,6 +1291,49 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
         ]);
         // The answer is read and gone: the mailbox keeps no finished request.
         expect(readdirSync(join(supervised.box.gate, GATE_FILES.done))).toEqual([]);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers the gate’s report beside its exit: each section it wrote, and the loop’s resource samples', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const report = {
+            'tests.json': '{"failures":[{"file":"a.test.ts","test":"adds","message":"boom"}]}',
+            'selection.json': '{"mode":"all","reason":"a shared file changed"}',
+            'broken.json': '{not json',
+            resources: 't=1 cpu=1,0,1,1,0,0,0,0 load=0.1 mem=1/2 throttled=0,0\n',
+            'stray.txt': 'ignored',
+        };
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 1, output: '1 failing', report }));
+        driver.order(gateStep('gate-1', 'npm test'));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({
+            exitCode: 1,
+            report: {
+                sections: {
+                    tests: { failures: [{ file: 'a.test.ts', test: 'adds', message: 'boom' }] },
+                    selection: { mode: 'all', reason: 'a shared file changed' },
+                },
+                resources: 't=1 cpu=1,0,1,1,0,0,0,0 load=0.1 mem=1/2 throttled=0,0\n',
+            },
+        });
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers a gate killed at its deadline with the report it had written', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const report = { 'tests.json': '{"inFlight":["slow.test.ts"]}' };
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: '', holdMs: 60_000, report }));
+        driver.order(gateStep('gate-1', 'sleep 60', { timeoutMs: 200 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({
+            exitCode: 124,
+            timedOut: true,
+            report: { sections: { tests: { inFlight: ['slow.test.ts'] } } },
+        });
         supervised.agentExits(0);
         await supervised.done;
     });
@@ -1726,6 +1780,7 @@ describe('what crosses the mailboxes', () => {
         expect(supervisor.STEP_KINDS).toEqual([...STEP_KINDS]);
         expect(supervisor.GATE_FILES).toEqual(GATE_FILES);
         expect(supervisor.GATE_ASK_FILES).toEqual(GATE_ASK_FILES);
+        expect(supervisor.GATE_REPORT_FILES).toEqual(GATE_REPORT_FILES);
         expect(supervisor.GATE_TOKEN_PATH).toBe(GATE_TOKEN_PATH);
         expect(supervisor.GATE_LOST_MS).toBe(GATE_LOST_MS);
         expect(supervisor.GATE_CANCEL_MS).toBe(GATE_CANCEL_GRACE_MS);

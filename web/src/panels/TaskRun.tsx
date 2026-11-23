@@ -1,4 +1,5 @@
 import { type ReactNode, type Ref, useEffect, useRef, useState } from 'react';
+import type { GateResult } from '@factory-ai/core';
 import { isTerminal, type GateCheck, type Job } from '../api/useJobs.js';
 import type { AnswerOutcome } from '../api/answer-question.js';
 import { Icon } from '../components/Icon.js';
@@ -343,6 +344,66 @@ export function GateCountPills({
     );
 }
 
+const MS_PER_SECOND = 1000;
+const plural = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`;
+
+/**
+ * What a gate recorded beside its output, so a gate killed at its deadline or cut short in its tail still says which
+ * tests failed, how its tests were chosen, which files ran longest and what the guest was doing. Absent: nothing.
+ */
+function GateResultView({ result }: { result: GateResult | undefined }) {
+    if (!result) return null;
+    const { failures, inFlight, selection, slowest, resources } = result;
+    return (
+        <div className="gate-result">
+            {failures?.length ? (
+                <>
+                    <p>{plural(failures.length, 'failed test')}</p>
+                    <ul>
+                        {failures.map((f) => (
+                            <li key={`${f.file}:${f.test}`}>
+                                <code>{f.file}</code> &gt; {f.test}: {f.message.split('\n')[0]}
+                            </li>
+                        ))}
+                    </ul>
+                </>
+            ) : null}
+            {inFlight?.length ? (
+                <p>
+                    Running when the deadline hit: <code>{inFlight.join(', ')}</code>
+                </p>
+            ) : null}
+            {selection ? (
+                <p>
+                    Selection: {selection.mode}, {selection.reason}
+                </p>
+            ) : null}
+            {slowest?.length ? (
+                <>
+                    <p>Slowest files</p>
+                    <ul>
+                        {slowest.map((f) => (
+                            <li key={f.file}>
+                                <code>{f.file}</code> {Math.round(f.ms / MS_PER_SECOND)}s
+                            </li>
+                        ))}
+                    </ul>
+                </>
+            ) : null}
+            {resources ? (
+                <p>
+                    Guest over {resources.seconds}s
+                    {resources.cpu
+                        ? `: user ${resources.cpu.user}%, system ${resources.cpu.system}%, iowait ${resources.cpu.iowait}%, steal ${resources.cpu.steal}%, idle ${resources.cpu.idle}%`
+                        : ''}
+                    ; throttled {resources.throttledMs} ms; peak load {resources.load.max}; least free memory{' '}
+                    {resources.memAvailableMb.min} of {resources.memTotalMb} MB
+                </p>
+            ) : null}
+        </div>
+    );
+}
+
 /**
  * The task's verification: the newest run's gates, as the board last reported them — there is no
  * history and no per-test tree, because the board stores neither. Each gate is a native
@@ -380,6 +441,7 @@ export function Verification({ gates, terminal }: { gates: GateCheck[]; terminal
                                         <span className="chat-exit">exit {gate.exitCode}</span>
                                     ) : null}
                                 </summary>
+                                <GateResultView result={gate.result} />
                                 {gate.output !== null ? (
                                     <div className="gate-output-wrap">
                                         <CopyButton text={gate.output} label={`Copy output of ${gate.name}`} />

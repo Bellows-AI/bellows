@@ -111,6 +111,12 @@ export const GATE_FILES = {
     cancel: 'cancel',
 } as const;
 /**
+ * What a gate request keeps beside its answer (`GATE_REPORT_FILES` of supervisor.cjs, the names `scripts/gate-loop.sh`
+ * spells): the `report/` directory of `<section>.json` files its gate wrote, and `report/resources`, the loop's samples
+ * of the guest. A review has none of it.
+ */
+export const GATE_REPORT_FILES = { dir: 'report', resources: 'resources' } as const;
+/**
  * A gate request's GitHub token mailbox, beside `GATE_FILES` (`GATE_ASK_FILES` of supervisor.cjs, the
  * names `scripts/gate-github.sh` and `scripts/gate-loop.sh` spell): the supervisor makes `asks/` and
  * `answers/` in the request, the helper writes `asks/<pid>` and reads `answers/<pid>`, and the loop
@@ -273,6 +279,14 @@ export interface StepResult {
     failureKind?: string;
     /** A gate that asked for its GitHub token and was never answered: it has no verdict, whatever its exit (`gateRunOf` reads it as a lost step). */
     tokenAskUnanswered?: true;
+    /** What the gate left in its report directory beside its verdict (`scripts/gate-loop.sh`); absent when it left nothing. */
+    report?: GateReportFiles;
+}
+
+/** A gate request's report directory as the supervisor read it: each parsed `<section>.json`, and the loop's raw resource samples. */
+export interface GateReportFiles {
+    sections: Record<string, unknown>;
+    resources: string;
 }
 
 /**

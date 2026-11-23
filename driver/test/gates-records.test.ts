@@ -163,6 +163,32 @@ describe('the gate server: execution records', () => {
         await h.server.close();
     });
 
+    it('answers the structured result beside the output: the failures, the selection, and the files in flight at a deadline', async () => {
+        const report = (inFlight: string[]) => ({
+            sections: {
+                tests: { failures: [{ file: 'a.test.ts', test: 'adds', message: 'boom' }], inFlight },
+                selection: { mode: 'all', reason: 'a shared file changed' },
+            },
+            resources: '',
+        });
+        const h = await harness({
+            answer: (_c, n) =>
+                n === 1
+                    ? answered(1, { stdout: 'tail', report: report(['slow.test.ts']) })
+                    : answered(null, { stdout: 'tail', timedOut: true, report: report(['slow.test.ts']) }),
+        });
+        const failed = (await (await h.run()).json()) as { verdict: string; result?: unknown };
+        expect(failed.verdict).toBe('failed');
+        expect(failed.result).toEqual({
+            failures: [{ file: 'a.test.ts', test: 'adds', message: 'boom' }],
+            selection: { mode: 'all', reason: 'a shared file changed' },
+        });
+        const timedOut = (await (await h.run()).json()) as { exitCode: number; result?: { inFlight?: string[] } };
+        expect(timedOut.exitCode).toBe(124);
+        expect(timedOut.result?.inFlight).toEqual(['slow.test.ts']);
+        await h.server.close();
+    });
+
     it('records a failed gate with its exit code, and a fresh execution id per call', async () => {
         const h = await harness({ answer: (_c, n) => answered(n === 1 ? 3 : 0) });
         await h.run();

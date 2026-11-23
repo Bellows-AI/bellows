@@ -1,7 +1,11 @@
+import type { Attributes } from '@opentelemetry/api';
 import type { BoardJob } from './board/board.js';
 import type { DriverConfig } from './config.js';
+import type { GateOutcome } from './driver-metrics.js';
 import { CONTAINER_GONE } from './exec-codes.js';
+import { type GateResources, type GateResult, gateResultOf } from './gate-result.js';
 import { type GateExecution, type GateMeasure, measuredRun } from './gate-record.js';
+import { annotateActiveSpan, withChildSpan } from './lifecycle-span.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
 import { reportTail } from './runner.js';
 import { StepTokenUnanswered } from './step-control.js';
@@ -21,6 +25,9 @@ import { TASK_MOUNT } from './task-volume.js';
  * board, no database and no core, per this package's zero-dependency rule.
  */
 
+/** Told of each gate run that ended (`DriverMetrics.gate`): the gate, how it ended, its seconds and the guest's resources. */
+export type GateObserver = (gate: string, outcome: GateOutcome, seconds: number, resources?: GateResources) => void;
+
 /** What a gate cancelled before it started answers — discarded by the loop that cancelled it. */
 const CANCELLED_EXIT_CODE = 130;
 /** `timeout(1)`'s status: what a gate the supervisor killed at its deadline answers. */
@@ -34,6 +41,8 @@ export interface GateRun {
     setupFailed?: true;
     /** What the run measured around the gate command; present only for a run given an `execution`. */
     measure?: GateMeasure;
+    /** What the gate recorded beside its output: failed tests, selection, slowest files, the guest's resources. */
+    result?: GateResult;
 }
 
 /**
@@ -71,6 +80,7 @@ export interface GateRunOptions {
  */
 export const AD_HOC_MAX_MINUTES = 10;
 const MS_PER_MINUTE = 60_000;
+const MS_PER_SECOND = 1000;
 
 export interface GateManager {
     /**
@@ -174,11 +184,17 @@ export function envBodyRecord(body: string): Record<string, string> {
 function gateRunOf(result: StepResult, deadlineMs: number): GateRun {
     if (result.tokenAskUnanswered) throw new StepTokenUnanswered();
     const output = reportTail(`${result.stdout}${result.stderr}`.trim());
+    const recorded = gateResultOf(result.report, result.timedOut);
+    const structured = recorded ? { result: recorded } : {};
     if (result.timedOut) {
-        return { exitCode: TIMEOUT_EXIT_CODE, output: output || `[driver] gate killed after ${deadlineMs}ms` };
+        return {
+            exitCode: TIMEOUT_EXIT_CODE,
+            output: output || `[driver] gate killed after ${deadlineMs}ms`,
+            ...structured,
+        };
     }
     if (result.exitCode === null) throw gateHarness(result.stderr.trim() || 'the gate container answered no exit');
-    return { exitCode: result.exitCode, output };
+    return { exitCode: result.exitCode, output, ...structured };
 }
 
 interface SupervisedEntry {
@@ -219,6 +235,7 @@ export function createSupervisedGateManager({
     runner,
     gateTimeoutMs = config.gateTimeoutMs,
     probeTimeoutMs = GATE_RUN_PROBE_MS,
+    observe,
 }: {
     config: DriverConfig;
     runner: GateRunner;
@@ -226,6 +243,8 @@ export function createSupervisedGateManager({
     gateTimeoutMs?: number;
     /** The cap on one tree probe around a recorded gate. */
     probeTimeoutMs?: number;
+    /** Told of each declared gate run that ended, for the gate metrics. */
+    observe?: GateObserver;
 }): GateManager {
     const entries = new Map<string, SupervisedEntry>();
     const serialize = keyQueue();
@@ -341,8 +360,11 @@ export function createSupervisedGateManager({
             else entries.set(key, { key, job, envBody, pendingSetup: job.gates?.setup ?? null });
         },
 
-        runGate(key, _name, command, options = {}) {
-            const work = (entry: SupervisedEntry): Promise<GateRun> => runAfterSetup(entry, command, options);
+        runGate(key, name, command, options = {}) {
+            const work = (entry: SupervisedEntry): Promise<GateRun> =>
+                options.exec
+                    ? runAfterSetup(entry, command, options)
+                    : observed(name, options.signal, observe, () => runAfterSetup(entry, command, options));
             return options.parallel && !options.exec
                 ? alongside(key, options.signal, work)
                 : inQueue(key, options.signal, work);
@@ -378,3 +400,52 @@ export function createSupervisedGateManager({
 const GATE_FILTER_ENV = 'GATE_FILTER';
 /** Tells the gate shell the run is `environment.setup`: see scripts/gate-shell.sh. */
 const GATE_SETUP_ENV = 'FACTORY_GATE_SETUP';
+
+/** What the `gate.run` span says of a run: its verdict and what the gate recorded beside its output. */
+function gateSpanAttributes(outcome: GateOutcome, run: GateRun): Attributes {
+    const { result } = run;
+    const { cpu, throttledMs, load, memAvailableMb } = result?.resources ?? {};
+    return {
+        'bellows.gate.outcome': outcome,
+        ...(run.exitCode === null ? {} : { 'bellows.gate.exit_code': run.exitCode }),
+        ...(result?.failures ? { 'bellows.gate.failed_tests': result.failures.length } : {}),
+        ...(result?.inFlight ? { 'bellows.gate.in_flight_files': result.inFlight.length } : {}),
+        ...(result?.selection ? { 'bellows.gate.selection.mode': result.selection.mode } : {}),
+        ...(result?.slowest?.[0] ? { 'bellows.gate.slowest.ms': result.slowest[0].ms } : {}),
+        ...(cpu
+            ? {
+                  'bellows.gate.cpu.user_pct': cpu.user,
+                  'bellows.gate.cpu.system_pct': cpu.system,
+                  'bellows.gate.cpu.iowait_pct': cpu.iowait,
+                  'bellows.gate.cpu.steal_pct': cpu.steal,
+                  'bellows.gate.cpu.idle_pct': cpu.idle,
+              }
+            : {}),
+        ...(throttledMs === undefined ? {} : { 'bellows.gate.throttled_ms': throttledMs }),
+        ...(load ? { 'bellows.gate.load.max': load.max } : {}),
+        ...(memAvailableMb ? { 'bellows.gate.memory.available_min_mb': memAvailableMb.min } : {}),
+    };
+}
+
+/**
+ * One declared gate run as a `gate.run` span naming the gate, its outcome and what it recorded, and the observer's
+ * call. A setup failure and a cancel are the gate's no-verdict cases: no outcome is observed; a run that threw is the
+ * span's ERROR.
+ */
+const observed = (
+    name: string,
+    signal: AbortSignal | undefined,
+    observe: GateObserver | undefined,
+    run: () => Promise<GateRun>
+): Promise<GateRun> =>
+    withChildSpan('gate.run', { 'bellows.gate.name': name }, async () => {
+        const started = performance.now();
+        const outcome = await run();
+        if (outcome.setupFailed || signal?.aborted) return outcome;
+        const seconds = (performance.now() - started) / MS_PER_SECOND;
+        const verdict: GateOutcome =
+            outcome.exitCode === TIMEOUT_EXIT_CODE ? 'timeout' : outcome.exitCode === 0 ? 'passed' : 'failed';
+        annotateActiveSpan(gateSpanAttributes(verdict, outcome));
+        observe?.(name, verdict, seconds, outcome.result?.resources);
+        return outcome;
+    });

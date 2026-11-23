@@ -1,3 +1,4 @@
+import { parseGateResult } from '@factory-ai/core';
 import type { GateReport } from '../../db/jobs/job-store-types.js';
 import { UUID } from '../../identifiers.js';
 import { body } from '../helpers.js';
@@ -55,8 +56,10 @@ function validateGateEntry(raw: unknown): GateReport | string {
     }
     const record = gateEntryRecord(entry);
     if (typeof record === 'string') return record;
+    const result = parseGateResult(entry.result);
     return {
         ...core,
+        ...(result ? { result } : {}),
         output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null,
         ...(startedAt === undefined ? {} : { startedAt }),
         ...record,

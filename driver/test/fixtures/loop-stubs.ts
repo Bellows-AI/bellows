@@ -25,6 +25,7 @@ import type { ConnectionRelay } from '../../src/connection-control.js';
 import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
 import type { GateManager, GateRun, GateRunOptions } from '../../src/gate-manager.js';
+import type { GateResult } from '../../src/gate-result.js';
 import type { GateServer } from '../../src/gates.js';
 import type { FinishRelay } from '../../src/control-channel.js';
 import { measuredRun } from '../../src/gate-record.js';
@@ -748,6 +749,8 @@ export function stubGateStack(
         hold?: (name: string, signal?: AbortSignal) => Promise<void>;
         /** Runs each declared gate through the real record measurement: a running row, and trees probed around it. */
         measure?: boolean;
+        /** The structured result each named gate answers beside its output, on every run. */
+        results?: Record<string, GateResult>;
     } = {}
 ) {
     const runs = new Map<string, number>();
@@ -808,7 +811,12 @@ export function stubGateStack(
                     options.onRun?.(name);
                     await options.hold?.(name, runOptions.signal);
                     const code = nextCode(name);
-                    return { exitCode: code, output: code === 0 ? `${name} ok` : `${name} failed badly` };
+                    const result = options.results?.[name];
+                    return {
+                        exitCode: code,
+                        output: code === 0 ? `${name} ok` : `${name} failed badly`,
+                        ...(result ? { result } : {}),
+                    };
                 };
                 if (!options.measure || !runOptions.execution) return execute();
                 const measured = await measuredRun(

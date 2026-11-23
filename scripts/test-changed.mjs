@@ -8,9 +8,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { posix } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { writeSection } from './gate-report.mjs';
 
 const DEFAULT_BASE = 'origin/main';
+/** The label prefix of the plan step that runs every project. */
+const WIDENED_TO_ALL = 'widened to everything';
 const PROJECTS = ['core', 'server', 'web', 'driver', 'cli', 'dom', 'spawn'];
 // Packages whose in-process suites import `@factory-ai/core` from `core/dist`.
 const CORE_CONSUMERS = ['server', 'web', 'dom'];
@@ -121,7 +124,7 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
     const build = { label: 'build core (server and web import core/dist)', run: ['npm', 'run', 'build', '-w', 'core'] };
     if (wide.has('all')) {
         steps.push(build, {
-            label: `widened to everything: ${wide.get('all').join('; ')}`,
+            label: `${WIDENED_TO_ALL}: ${wide.get('all').join('; ')}`,
             vitest: ['run', ...projectArgs(PROJECTS)],
         });
         return steps;
@@ -162,6 +165,26 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
         });
     }
     return steps;
+}
+
+/**
+ * How the gate chose its tests, for the gate's report (`selection` section, scripts/gate-report.mjs): `all` when the
+ * plan widened to everything, with the reason it printed, else `changed`, naming any package it widened.
+ */
+export function selectionOf(steps, changedCount, base) {
+    const everything = steps.find((step) => step.label.startsWith(WIDENED_TO_ALL));
+    if (everything) return { mode: 'all', reason: everything.label.slice(WIDENED_TO_ALL.length).replace(/^: /, '') };
+    const widened = steps.filter((step) => /^(widened|core changed)/.test(step.label)).map((step) => step.label);
+    return {
+        mode: 'changed',
+        reason: [`${changedCount} changed file(s) since ${base}`, ...widened].join('; '),
+    };
+}
+
+/** The reporter a gate's vitest runs add, so the failures and durations reach the gate's report (scripts/gate-reporter.mjs). */
+export function gateReporterArgs(env, passthrough) {
+    if (!env.FACTORY_GATE_RUN || passthrough.some((arg) => arg.startsWith('--reporter'))) return [];
+    return ['--reporter=default', `--reporter=${fileURLToPath(new URL('./gate-reporter.mjs', import.meta.url))}`];
 }
 
 /**
@@ -284,6 +307,13 @@ function dbSteps(planned, passthrough) {
     ];
 }
 
+/** A `test:db` run takes the reporter after its `--`, as vitest arguments; any other command is left as it was. */
+function withReporter(argv, reporter) {
+    if (reporter.length === 0 || (argv[0] === 'npm' && argv[2] !== 'test:db')) return argv;
+    if (argv[0] !== 'npm') return [...argv, ...reporter];
+    return argv.includes('--') ? [...argv, ...reporter] : [...argv, '--', ...reporter];
+}
+
 function main(argv) {
     const dash = argv.indexOf('--');
     const passthrough = dash === -1 ? [] : argv.slice(dash + 1);
@@ -326,9 +356,11 @@ function main(argv) {
         return 0;
     }
     console.error(`[test:changed] ${changed.length} changed file(s) since ${base}`);
+    writeSection('selection', selectionOf(steps, changed.length, base));
     if (steps.length === 0) console.error('[test:changed] no test:db suite reached; nothing to run');
     for (const step of steps) {
-        const argvOf = step.run ?? ['npx', 'vitest', ...step.vitest, ...passthrough];
+        const reporter = gateReporterArgs(process.env, passthrough);
+        const argvOf = withReporter(step.run ?? ['npx', 'vitest', ...step.vitest, ...passthrough], reporter);
         console.error(`[test:changed] ${step.label}: ${argvOf.join(' ')}`);
         const [cmd, ...rest] = argvOf;
         const result = spawnSync(cmd, rest, { stdio: 'inherit' });

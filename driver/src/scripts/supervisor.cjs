@@ -104,7 +104,8 @@ const { pipeline, Transform } = require('node:stream');
 /** @typedef {{ argv: string[], cwd?: string, env?: Record<string, string>, timeoutMs: number, parallel?: boolean }} SpawnSpec */
 /** @typedef {SpawnSpec & { id: string, invocation: string, kind: StepKind }} Step */
 /** @typedef {Step & { kind: LaneKind }} GateStep */
-/** @typedef {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean, replayed?: boolean, tokenAskUnanswered?: boolean }} StepResult */
+/** @typedef {{ sections: Record<string, unknown>, resources: string }} GateReportFiles */
+/** @typedef {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean, replayed?: boolean, tokenAskUnanswered?: boolean, report?: GateReportFiles }} StepResult */
 /** @typedef {{ result: StepResult, interrupted: boolean, tokens?: string[] }} Outcome */
 /** @typedef {{ state: string, result?: StepResult }} Call */
 /** @typedef {{ id: string, kind: string, effect: StepResult | null, invocations: Record<string, Call> }} Entry */
@@ -239,6 +240,12 @@ const GATE_FILES = {
     exit: 'exit',
     cancel: 'cancel',
 };
+/** What a gate request keeps beside its answer (`GATE_REPORT_FILES` of supervisor-contract.ts; scripts/gate-loop.sh spells the same). */
+const GATE_REPORT_FILES = { dir: 'report', resources: 'resources' };
+/** The most one report section file may hold: a larger one is dropped, never cut into invalid JSON. */
+const REPORT_SECTION_LIMIT = 65_536;
+/** The most the loop's resource samples answer: their tail, which holds the end sample. */
+const REPORT_RESOURCES_LIMIT = 32_768;
 /** A gate request's GitHub token mailbox (`GATE_ASK_FILES` of supervisor-contract.ts; scripts/gate-github.sh spells the same). */
 const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', bin: 'bin' };
 /** A name `sh` can export: the gate loop applies the env with `export "$line"`. */
@@ -1050,11 +1057,44 @@ function readTail(file) {
 }
 
 /**
+ * What a finished request left in its report directory: every `<section>.json` that parses, and the loop's
+ * resource samples. A file that is too large, not JSON or not named so is left out; a gate that wrote nothing
+ * answers null. The report is evidence beside the verdict, never part of it.
+ * @param {string} dir the request's `done/<id>`
+ * @returns {GateReportFiles | null}
+ */
+function readGateReport(dir) {
+    const report = path.join(dir, GATE_REPORT_FILES.dir);
+    /** @type {Record<string, unknown>} */
+    const sections = {};
+    let resources = '';
+    let names = [];
+    try {
+        names = fs.readdirSync(report);
+    } catch {
+        return null;
+    }
+    for (const name of names) {
+        const file = path.join(report, name);
+        try {
+            if (name === GATE_REPORT_FILES.resources) {
+                resources = readTail(file).slice(-REPORT_RESOURCES_LIMIT);
+            } else if (/^[a-z][a-z0-9-]*\.json$/.test(name) && fs.statSync(file).size <= REPORT_SECTION_LIMIT) {
+                sections[name.slice(0, -'.json'.length)] = JSON.parse(fs.readFileSync(file, 'utf8'));
+            }
+        } catch {
+            // Unreadable, or a gate killed mid-write: that section is simply absent.
+        }
+    }
+    return Object.keys(sections).length === 0 && resources === '' ? null : { sections, resources };
+}
+
+/**
  * The answer of a finished request (`done/<id>`), read and removed; null while it is not done.
  * @param {Run} run
  * @param {LaneKind} lane
  * @param {string} name
- * @returns {{ exitCode: number | null, output: string } | null}
+ * @returns {{ exitCode: number | null, output: string, report: GateReportFiles | null } | null}
  */
 function takeGateAnswer(run, lane, name) {
     const done = path.join(run.file[lane].done, name);
@@ -1068,6 +1108,7 @@ function takeGateAnswer(run, lane, name) {
     const answer = {
         exitCode: Number.isFinite(code) ? code : null,
         output: readTail(path.join(done, GATE_FILES.output)),
+        report: readGateReport(done),
     };
     fs.rmSync(done, { recursive: true, force: true });
     return answer;
@@ -1233,6 +1274,14 @@ function answeredGateResult(flight, step, answer) {
 }
 
 /**
+ * The outcome with the gate's report beside its result, when it left one.
+ * @param {Outcome} outcome
+ * @param {GateReportFiles | null} report
+ * @returns {Outcome}
+ */
+const withGateReport = (outcome, report) => (report ? { ...outcome, result: { ...outcome.result, report } } : outcome);
+
+/**
  * A gate loop gone silent: no exit — never a verdict — whether it never took the request or went quiet on it.
  * @param {Run} run
  * @param {GateStep} step
@@ -1255,7 +1304,7 @@ function lostGateResult(run, step) {
  */
 function gateTick(run, step, flight) {
     const answer = takeGateAnswer(run, step.kind, step.id);
-    if (answer) return answeredGateResult(flight, step, answer);
+    if (answer) return withGateReport(answeredGateResult(flight, step, answer), answer.report);
     if (!flight.why) {
         flight.why = gateStopReason(run, step, flight.startedAt);
         flight.stoppedAt = run.now();
@@ -2763,6 +2812,7 @@ module.exports = {
     STEP_KINDS,
     GATE_FILES,
     GATE_ASK_FILES,
+    GATE_REPORT_FILES,
     GATE_TOKEN_PATH,
     GATE_LOST_MS: DEFAULT_GATE_LOST_MS,
     GATE_CANCEL_MS: DEFAULT_GATE_CANCEL_MS,
