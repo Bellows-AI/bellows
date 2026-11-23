@@ -31,12 +31,21 @@ export async function publishBranch(
     options?: PublishOptions
 ): Promise<PublishResult> {
     return rt.runner
-        .publishGit(job, githubToken ?? undefined, { ...options, recordPrOperation: prOperationRecorder(rt, job) })
+        .publishGit(job, githubToken ?? undefined, {
+            ...options,
+            recordPrOperation: prOperationRecorder(rt, job),
+            // The PR is the board's to write, as the member who started the task: the ask runs under its own deadline,
+            // not the stand-down's (an in-flight create is not recalled, like the push).
+            pullRequests: (ask) => rt.board.pullRequest(job, ask, AbortSignal.timeout(PR_ASK_DEADLINE_MS)),
+        })
         .catch((e: Error) => {
             if (stepLost(e)) throw e;
             return publishFailed(`the publish threw: ${e.message}`, 'unknown');
         });
 }
+
+/** One absolute deadline over every try of one PR ask, longer than the board's own bound for the call (30 s). */
+export const PR_ASK_DEADLINE_MS = 60_000;
 
 /** How many times one publish asks for a token and pushes. */
 export const PUBLISH_TRIES = 3;

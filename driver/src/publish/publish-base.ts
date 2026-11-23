@@ -10,16 +10,9 @@ import { parseLastJsonLine } from '../json-parse.js';
 
 /** The PR summary's node script: see scripts/pr-summary.cjs. */
 export const prSummaryScript = script('pr-summary.cjs');
-/** The PR number a url names, or null when it does not point at a pull request. */
-export const prNumberFromUrl = (url: string): number | null => {
-    const match = /\/pull\/(\d+)\/?$/.exec(url.trim());
-    if (!match) return null;
-    const number = Number(match[1]);
-    return Number.isSafeInteger(number) && number > 0 ? number : null;
-};
 /**
  * The branch the claim bases its checkout and PR on, or null for the remote default: a value no
- * git branch can have is dropped here, before it becomes a sync env literal or a `gh --base`.
+ * git branch can have is dropped here, before it becomes a sync env literal or a PR base the board writes.
  */
 export function baseBranchOf(job: Pick<BoardJob, 'baseBranch'>): string | null {
     return typeof job.baseBranch === 'string' && isBranchName(job.baseBranch) ? job.baseBranch : null;
@@ -40,7 +33,7 @@ export function parsePrSummary(stdout: string): PrSummary {
     };
 }
 /**
- * A branch name is about to become a `-w` path-adjacent argv value and a `gh --head` value. The
+ * A branch name is about to become a `-w` path-adjacent argv value and the board's head lookup. The
  * probe's names come from the checkout itself; the plan's are built here. Either way, assert the
  * shape a git branch can have before anything interpolates it.
  */

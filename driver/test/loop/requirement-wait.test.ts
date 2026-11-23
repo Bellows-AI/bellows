@@ -307,3 +307,37 @@ describe('a runtime connection requirement', () => {
         expect(board.suspended).toEqual([]);
     });
 });
+
+/**
+ * A publish the board holds for the starter's forge connection (`POST /api/jobs/:id/pull-request` answers `waiting`):
+ * the branch is pushed and the PR is not, so the attempt is handed back as a requirement wait — released, outside the
+ * interruption budget, never a failed verdict — and the next claim's publish finds the push and asks again.
+ */
+describe('a publish the board holds for a forge connection', () => {
+    const waiting: PublishResult = {
+        ok: false,
+        published: true,
+        branch: 'fix/1',
+        prUrl: null,
+        reason: 'the task waits for a github connection (reconnect)',
+        cause: null,
+        repository: null,
+        baseBranch: null,
+        prNumber: null,
+        waiting: { forge: 'github', reason: 'reconnect' },
+    };
+    const gated = { ...job(1), repo: 'Bellows-AI/factory' };
+
+    it('the end-of-run publish tries once, hands the attempt back and reports no verdict', async () => {
+        const { board, runner } = await driveRun(async () => ok(), { job: gated, runner: { publish: waiting } });
+
+        // Not retried: a wait is no failure a new token or a moment could fix (`publishRetryable`).
+        expect(runner.published).toHaveLength(1);
+        expect(board.completed).toEqual([]);
+        expect(board.suspended).toEqual([]);
+        expect(board.interrupted).toEqual([
+            { id: job(1).id, reason: 'the task waits for a github connection', release: true, requirement: true },
+        ]);
+        expect(board.interrupted[0]).not.toHaveProperty('blocked');
+    });
+});

@@ -22,6 +22,7 @@ import { killedOutcome } from '../../src/k8s/k8s-kill.js';
 import { createKillLedger } from '../../src/kill-ledger.js';
 import { createLoop, type Loop } from '../../src/loop/loop.js';
 import { type AdoptedRun, type LiveRun, ownGroup, type Read, type Runner } from '../../src/runner.js';
+import type { PublishOptions } from '../../src/publish/publish.js';
 import { createStepBroker, StepChannelClosed } from '../../src/step-control.js';
 import { orderFinish, orderGo, stepHostOf, stepRequest, submitStep } from '../../src/supervised-steps.js';
 import {
@@ -190,6 +191,13 @@ export class Sim {
     spawned = 0;
     agentRuns = 0;
     publishes = 0;
+    /** The board's PRs by branch (`POST /api/jobs/:id/pull-request` views by head before it creates) and the creates it served. */
+    readonly prs = new Map<string, { url: string; number: number }>();
+    prCreates = 0;
+    /** Held until opened: the board has created the PR and not yet answered the driver that asked. */
+    prAnswerGate: Promise<void> = Promise.resolve();
+    /** Every PR ask the board served, in order. */
+    readonly prAsks: string[] = [];
     /** The claim of every publish step that returned (the latch was open). */
     readonly published: number[] = [];
     /** Every claim sequence the board handed out, in order. */
@@ -392,6 +400,19 @@ export class Sim {
                 this.settle(result);
                 r.output = String((result as { output?: string }).output ?? '');
                 return { state: 'held', reclaimId: null };
+            },
+            pullRequest: async (claimed, ask) => {
+                if (!this.holds(claimed)) return { kind: 'lost' } as const;
+                this.prAsks.push(ask.branch);
+                let pr = this.prs.get(ask.branch);
+                const operation = pr ? ('reused' as const) : ('created' as const);
+                if (!pr && ask.create) {
+                    this.prCreates += 1;
+                    pr = { number: this.prCreates, url: `https://example.test/pull/${this.prCreates}` };
+                    this.prs.set(ask.branch, pr);
+                }
+                await this.prAnswerGate;
+                return pr ? { kind: 'pr', ...pr, operation } : ({ kind: 'none' } as const);
             },
             phaseCheckpoint: async (claimed, checkpoint) => {
                 if (!this.holds(claimed)) return 'lost';
@@ -615,7 +636,7 @@ export class Sim {
                     started: true,
                 };
             },
-            async publishGit(job: BoardJob) {
+            async publishGit(job: BoardJob, _token?: string, options?: PublishOptions) {
                 sim.publishes += 1;
                 const own = sim.groupOf(job);
                 // A group that is over serves nothing: the publish of an adopted run is a fresh group's, not played here.
@@ -641,7 +662,13 @@ export class Sim {
                     stepRequest(job, 'publish', { id: 'pr', argv: ['sh', '-c', wait], timeoutMs: 120_000 })
                 );
                 sim.published.push(job.claimSeq);
-                return result;
+                // The PR is the board's: asked after the push, as `publishCheckout` does, and its answer is the verdict's.
+                const landed = await options?.pullRequests?.({
+                    branch: 'b',
+                    base: null,
+                    create: { title: 't', body: 'b', draft: false, base: 'main' },
+                });
+                return landed?.kind === 'pr' ? { ...result, prUrl: landed.url, prNumber: landed.number } : result;
             },
             async adopt(job: BoardJob): Promise<AdoptedRun | LiveRun | null> {
                 // The k8s `admitted`: the newest earlier group; a released group whose agent runs, or whose

@@ -9,6 +9,7 @@ import {
     publishCheckout,
 } from '../src/publish/publish.js';
 import { attachmentsDir, TASK_MOUNT } from '../src/task-volume.js';
+import { type FakePr, fakePullRequests } from './fixtures/fake-pull-requests.js';
 
 /**
  * The publish workflow both executors run (`publishCheckout`), over a fake transport: every
@@ -34,7 +35,7 @@ const ISSUE_JOB = {
     env: { GITHUB_TOKEN: 't0k-3n' } as Record<string, string>,
 } as BoardJob;
 const WT = `${TASK_MOUNT}/bellows`;
-const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/42';
+const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/1';
 const PLAN_TITLE = '/fix https://github.com/Bellows-AI/bellows/issues/10 (#10)';
 const GATES_LINE = 'Published by the factory board after the declared gates passed.';
 
@@ -58,7 +59,7 @@ const LANDED = {
     reason: null,
     repository: 'Bellows-AI/bellows',
     baseBranch: 'main',
-    prNumber: 42,
+    prNumber: 1,
     cause: null,
 };
 const nothing = (reason: string) => ({
@@ -78,16 +79,15 @@ const TREE = 't'.repeat(40);
 
 /**
  * A fake transport: the probe answers `state` (then each of `reprobes` in turn), `git switch`
- * without `-c` finds no branch, `gh pr view` finds a PR only when `prExists`, the staged and
+ * without `-c` finds no branch, the board's PR write (`t.pr`, `fakePullRequests`) holds the `existing` PRs, the staged and
  * committed trees answer `trees`, and `fail` rejects a step the way a transport does — with the
  * tool's own words. Every step is recorded, so the flow is the assertion.
  */
 const transport = (
     state: Record<string, unknown>,
     opts: {
-        prExists?: boolean;
-        /** What `gh pr base` answers: the reused PR's state and base. */
-        prBase?: string;
+        /** The PRs the board already holds for the branch. */
+        existing?: Partial<FakePr>[];
         summary?: unknown;
         fail?: (step: PublishStep) => string | null;
         /** What the probes after the first answer, in order; the last repeats. Default: `state`. */
@@ -97,6 +97,7 @@ const transport = (
     } = {}
 ) => {
     const steps: PublishStep[] = [];
+    const pr = fakePullRequests(opts.existing === undefined ? {} : { existing: opts.existing });
     let probes = 0;
     const run = async (step: PublishStep): Promise<{ stdout: string }> => {
         steps.push(step);
@@ -115,26 +116,18 @@ const transport = (
         if (step.label === 'git rev-parse HEAD') return { stdout: `${'a'.repeat(40)}\n` };
         if (step.label === 'publication ledger') return { stdout: '{}\n' };
         if (step.label === 'git switch' && !step.args.includes('-c')) throw new Error('invalid reference: fix/10');
-        if (step.label === 'gh pr view') {
-            if (opts.prExists) return { stdout: `${PR_URL}\n` };
-            throw new Error('no pull requests found');
-        }
-        if (step.label === 'gh pr base') return { stdout: `${opts.prBase ?? ''}\n` };
         if (step.label === 'pr summary') return { stdout: JSON.stringify(opts.summary ?? SUMMARY) };
-        if (step.label === 'gh pr create') return { stdout: `${PR_URL}\n` };
         return { stdout: '' };
     };
     // The publication's identity steps (the commit read, the ledger) are pinned in publish-reconcile.test.ts.
     const IDENTITY = new Set(['git rev-parse HEAD', 'publication ledger']);
     const labels = () => steps.map((s) => s.label).filter((label) => !IDENTITY.has(label));
     const find = (label: string) => steps.find((s) => s.label === label)!;
-    return { run, steps, labels, find };
+    return { run, steps, labels, find, pr };
 };
 
 const publish = (t: ReturnType<typeof transport>, options?: PublishOptions, job: BoardJob = ISSUE_JOB) =>
-    publishCheckout(job, options, t.run);
-
-const flag = (args: string[], name: string) => args[args.indexOf(name) + 1];
+    publishCheckout(job, { ...options, pullRequests: t.pr.port }, t.run);
 
 describe('the publish workflow', () => {
     it('never stages the task inputs: their directory lies outside the checkout and no step names it', async () => {
@@ -163,9 +156,7 @@ describe('the publish workflow', () => {
             'git reset',
             'git commit',
             'git push',
-            'gh pr view',
             'pr summary',
-            'gh pr create',
         ]);
         // The probe reads the worktree by its REPO literal; every other step runs inside it.
         expect(t.find('probe')).toMatchObject({ inRepo: false, env: false, envLiterals: { REPO: WT } });
@@ -174,8 +165,9 @@ describe('the publish workflow', () => {
         expect(
             t.steps.filter((s) => s.label === 'publication ledger').map((s) => s.envLiterals?.STATE ?? 'read')
         ).toEqual(['pushing', 'pushed', 'opened']);
-        // Only the push and the two PR calls are handed the claim env — the token they read.
-        expect(t.steps.filter((s) => s.env).map((s) => s.label)).toEqual(['git push', 'gh pr view', 'gh pr create']);
+        // Only the push is handed the claim env — the installation token it reads. The PR is the board's: no step runs `gh`.
+        expect(t.steps.filter((s) => s.env).map((s) => s.label)).toEqual(['git push']);
+        expect(t.steps.map((s) => s.entrypoint as string)).not.toContain('gh');
         // The plain switch finds no branch; `-c` creates it.
         expect(t.steps.filter((s) => s.label === 'git switch')[1]?.args).toEqual(['switch', '-c', 'fix/10']);
         // The commit carries the plan title, and the fallback identity only when the probe found none.
@@ -203,13 +195,15 @@ describe('the publish workflow', () => {
             env: false,
             envLiterals: { BASE: 'origin/main', BACKSTOP_TITLE: PLAN_TITLE },
         });
-        const create = t.find('gh pr create').args;
-        expect(flag(create, '--head')).toBe('fix/10');
-        // No base on the claim: gh picks the repository default, as it always has.
-        expect(create).not.toContain('--base');
-        expect(flag(create, '--title')).toBe('Fix the sync re-claim fence (#10)');
-        expect(flag(create, '--body')).toBe(`${SUMMARY.body}\n\nCloses #10.\n\n${GATES_LINE}`);
-        expect(create).not.toContain('--draft');
+        // One ask of the board, whole: the PR it opens, and the title and body it writes over a PR already there.
+        // No base on the claim: nothing is retargeted, and a create goes to the probe's default.
+        const words = {
+            title: 'Fix the sync re-claim fence (#10)',
+            body: `${SUMMARY.body}\n\nCloses #10.\n\n${GATES_LINE}`,
+        };
+        expect(t.pr.state.asks).toEqual([
+            { branch: 'fix/10', base: null, create: { ...words, draft: false, base: 'main' }, edit: words },
+        ]);
     });
 
     it('bases the probe and the PR on a claim’s base branch, and reports it', async () => {
@@ -222,7 +216,7 @@ describe('the publish workflow', () => {
         });
         expect(t.find('probe').envLiterals).toEqual({ REPO: WT, BASE_BRANCH: 'batch-sandbox' });
         expect(t.find('pr summary').envLiterals).toMatchObject({ BASE: 'origin/batch-sandbox' });
-        expect(flag(t.find('gh pr create').args, '--base')).toBe('batch-sandbox');
+        expect(t.pr.state.asks[0]).toMatchObject({ base: 'batch-sandbox', create: { base: 'batch-sandbox' } });
     });
 
     it('opens the PR on the claim’s base even when the probe could not name it', async () => {
@@ -231,60 +225,41 @@ describe('the publish workflow', () => {
             baseBranch: 'batch-sandbox',
         });
         expect(t.find('pr summary').envLiterals).toMatchObject({ BASE: 'origin/batch-sandbox' });
-        expect(flag(t.find('gh pr create').args, '--base')).toBe('batch-sandbox');
+        expect(t.pr.state.asks[0]).toMatchObject({ base: 'batch-sandbox' });
     });
 
-    // The agent may have opened the PR itself with gh's default base: a reused PR is retargeted
-    // to the claim's base before the board records it, so automerge never lands on the default.
+    // The agent may have opened the PR itself with the default base: the board retargets a reused PR to the claim's
+    // base before it records it, so automerge never lands on the default.
     it.each([
-        [
-            'reused after a push',
-            { ...ON_TASK_BRANCH, unpushed: 1 },
-            ['probe', 'git push', 'gh pr view', 'gh pr base', 'gh pr edit'],
-        ],
-        [
-            'reconciled on a clean tree',
-            { ...ON_TASK_BRANCH, unpushed: 0 },
-            ['probe', 'gh pr view', 'gh pr base', 'gh pr edit'],
-        ],
-    ])('retargets an open PR %s to the claim’s base branch', async (_case, state, labels) => {
-        const t = transport({ ...state, defaultBranch: 'batch-sandbox' }, { prExists: true, prBase: 'OPEN main' });
+        ['reused after a push', { ...ON_TASK_BRANCH, unpushed: 1 }, ['probe', 'git push', 'pr summary']],
+        ['reconciled on a clean tree', { ...ON_TASK_BRANCH, unpushed: 0 }, ['probe']],
+    ])('asks the board to retarget an open PR %s to the claim’s base branch', async (_case, state, labels) => {
+        const t = transport({ ...state, defaultBranch: 'batch-sandbox' }, { existing: [{ base: 'main' }] });
 
         expect(await publish(t, undefined, { ...ISSUE_JOB, baseBranch: 'batch-sandbox' })).toEqual({
             ...LANDED,
             baseBranch: 'batch-sandbox',
         });
         expect(t.labels()).toEqual(labels);
-        expect(t.find('gh pr edit')).toMatchObject({
-            args: ['pr', 'edit', 'fix/10', '--base', 'batch-sandbox'],
-            env: true,
-            inRepo: true,
-        });
+        expect(t.pr.state.asks[0]).toMatchObject({ branch: 'fix/10', base: 'batch-sandbox' });
+        expect(t.pr.state.prs[0]!.base).toBe('batch-sandbox');
     });
 
-    it.each([
-        ['already on the base', 'OPEN batch-sandbox'],
-        ['merged', 'MERGED main'],
-        ['closed', 'CLOSED main'],
-    ])('leaves a reused PR %s as it is', async (_case, prBase) => {
-        const t = transport(
-            { ...ON_TASK_BRANCH, unpushed: 1, defaultBranch: 'batch-sandbox' },
-            { prExists: true, prBase }
-        );
-
-        expect(await publish(t, undefined, { ...ISSUE_JOB, baseBranch: 'batch-sandbox' })).toMatchObject({ ok: true });
-        expect(t.labels()).toEqual(['probe', 'git push', 'gh pr view', 'gh pr base']);
+    it('asks for no retarget when the claim names no base', async () => {
+        const t = transport({ ...ON_TASK_BRANCH, unpushed: 1 }, { existing: [{ base: 'release' }] });
+        await publish(t);
+        expect(t.pr.state.asks[0]).toMatchObject({ base: null });
+        expect(t.pr.state.prs[0]!.base).toBe('release');
     });
 
-    it.each(['gh pr base', 'gh pr edit'])('fails the publish when the retarget’s %s step fails', async (label) => {
-        const t = transport(
-            { ...ON_TASK_BRANCH, unpushed: 0, defaultBranch: 'batch-sandbox' },
-            { prExists: true, prBase: 'OPEN main', fail: (step) => (step.label === label ? 'HTTP 422' : null) }
-        );
+    it('fails the publish, as transport, when the board does not answer the reconcile', async () => {
+        const t = transport({ ...ON_TASK_BRANCH, unpushed: 0, defaultBranch: 'batch-sandbox' });
+        t.pr.state.down = true;
 
         expect(await publish(t, undefined, { ...ISSUE_JOB, baseBranch: 'batch-sandbox' })).toMatchObject({
             ok: false,
-            reason: expect.stringContaining(`${label}: HTTP 422`),
+            cause: 'transport',
+            reason: expect.stringContaining('the board did not answer'),
         });
     });
 
@@ -310,35 +285,40 @@ describe('the publish workflow', () => {
         expect(t.find('git commit').args).toEqual(['commit', '-m', PLAN_TITLE]);
     });
 
-    it('reuses an existing task branch and an existing PR, with no summarizer', async () => {
-        const t = transport({ ...ON_TASK_BRANCH, unpushed: 1 }, { prExists: true });
+    it('reuses an existing task branch and an existing PR, rewriting what the PR says of the work', async () => {
+        const t = transport({ ...ON_TASK_BRANCH, unpushed: 1 }, { existing: [{ title: 'old', body: 'old' }] });
 
         expect(await publish(t)).toEqual(LANDED);
-        expect(t.labels()).toEqual(['probe', 'git push', 'gh pr view']);
+        expect(t.labels()).toEqual(['probe', 'git push', 'pr summary']);
+        expect(t.pr.state.creates).toBe(0);
+        expect(t.pr.state.prs[0]).toMatchObject({ title: 'Fix the sync re-claim fence (#10)' });
     });
 
     it('opens the agent’s PR as a draft, and reuses one that exists without a second create', async () => {
         const fresh = transport(DIRTY_ON_MAIN);
         await publish(fresh, { draft: true });
-        const create = fresh.find('gh pr create').args;
-        expect(create).toContain('--draft');
-        expect(flag(create, '--body')).toContain('Draft published by the agent');
-        expect(flag(create, '--body')).not.toContain('declared gates passed');
+        const { create } = fresh.pr.state.asks[0]!;
+        expect(create).toMatchObject({ draft: true });
+        expect(create?.body).toContain('Draft published by the agent');
+        expect(create?.body).not.toContain('declared gates passed');
 
-        const again = transport({ ...ON_TASK_BRANCH, unpushed: 1 }, { prExists: true });
-        expect(await publish(again, { draft: true })).toMatchObject({ ok: true, published: true, prNumber: 42 });
-        expect(again.labels()).toEqual(['probe', 'git push', 'gh pr view']);
+        const again = transport({ ...ON_TASK_BRANCH, unpushed: 1 }, { existing: [{}] });
+        expect(await publish(again, { draft: true })).toMatchObject({ ok: true, published: true, prNumber: 1 });
+        expect(again.pr.state.creates).toBe(0);
     });
 
     // Issue #573: the agent opened the PR itself and pushed everything, so the checkout is clean —
     // the publish still names that PR, so the board records the one link.
     it('reconciles a pull request the agent opened itself on a clean, pushed task branch', async () => {
-        const reconciled = transport({ ...ON_TASK_BRANCH, unpushed: 0 }, { prExists: true });
+        const reconciled = transport({ ...ON_TASK_BRANCH, unpushed: 0 }, { existing: [{}] });
         expect(await publish(reconciled)).toEqual(LANDED);
-        expect(reconciled.labels()).toEqual(['probe', 'gh pr view']);
+        expect(reconciled.labels()).toEqual(['probe']);
+        // a view-only ask: nothing is created, and nothing is rewritten
+        expect(reconciled.pr.state.asks).toEqual([{ branch: 'fix/10', base: null }]);
 
         const none = transport({ ...ON_TASK_BRANCH, unpushed: 0 });
         expect(await publish(none)).toEqual(nothing('no uncommitted changes and nothing unpushed'));
+        expect(none.pr.state.creates).toBe(0);
     });
 
     it.each([
@@ -370,7 +350,7 @@ describe('the publish workflow', () => {
             return t.run(s);
         };
 
-        await expect(publishCheckout(ISSUE_JOB, undefined, run)).rejects.toBe(lost);
+        await expect(publishCheckout(ISSUE_JOB, { pullRequests: t.pr.port }, run)).rejects.toBe(lost);
     });
 
     it('publishes nothing for a command-only job, without a probe', async () => {
@@ -425,9 +405,7 @@ describe('a bound publish over hooks that move its content', () => {
             'git commit',
             'git rev-parse HEAD^{tree}',
             'git push',
-            'gh pr view',
             'pr summary',
-            'gh pr create',
         ]);
         for (const label of ['git add', 'git reset', 'git write-tree']) {
             expect(t.find(label).args.slice(0, 2)).toEqual(HOOKLESS);
@@ -506,8 +484,8 @@ describe('the PR summary', () => {
     const created = async (opts: Parameters<typeof transport>[1]) => {
         const t = transport(DIRTY_ON_MAIN, opts);
         const result = await publish(t);
-        const create = t.find('gh pr create').args;
-        return { result, title: flag(create, '--title'), body: flag(create, '--body') };
+        const { create } = t.pr.state.asks[0]!;
+        return { result, title: create?.title, body: create?.body };
     };
 
     it('falls back to the command-derived title and body when the summarizer fails', async () => {

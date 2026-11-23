@@ -1,5 +1,6 @@
 import type { CommitAuthor } from '../commit-author.js';
 import { type ConnectionOutcome, connectionCalls, type RequirementVerdict } from './board-connection.js';
+import { type PullRequestAnswer, type PullRequestAsk, pullRequestCalls } from './board-pull-request.js';
 import { heldBeat } from './board-heartbeat.js';
 import type { Interruption } from './board-interruption.js';
 import { artifactCalls } from '../artifact-calls.js';
@@ -657,6 +658,12 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
     /** Tells the board the task lacks a connection its helper needs (docs/connections.md); a throw is no answer. */
     requireConnection(job: BoardJob, provider: string, target?: string): Promise<RequirementVerdict>;
     /**
+     * Asks the board to view, open, retarget or edit the task's PR as the member who started it
+     * (`board-pull-request.ts`), under the lease, until it answers or `signal` aborts. Throws `PullRequestUnanswered`
+     * with no answer; never a verdict on one.
+     */
+    pullRequest(job: BoardJob, ask: PullRequestAsk, signal: AbortSignal): Promise<PullRequestAnswer>;
+    /**
      * Asks the board what it thinks of a batch of job ids: each known id's status
      * and CURRENT lease token. Unknown ids are ABSENT from the answer — that absence is the
      * board saying "no such job here", which is exactly the fact a reaper acts on. Null — a
@@ -971,6 +978,7 @@ export function createBoard({
         ...skillCalls(post),
         ...githubCredentialCall({ url, fetch }),
         ...connectionCalls(post),
+        ...pullRequestCalls(post),
 
         ...reclaimCalls(post, leaseSeconds),
 

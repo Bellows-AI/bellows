@@ -172,7 +172,9 @@ describe.each(EXECUTORS)('the finish pass on the %s executor', (_executor, env) 
         expect(r.stack.ran.names).toEqual(['test', 'test']);
         expect(r.board.finishPassesWritten).toHaveLength(1);
         expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'gate' });
-        expect(r.runner.publishOptions).toEqual([{ draft: true, recordPrOperation: expect.any(Function) }]);
+        expect(r.runner.publishOptions).toEqual([
+            { draft: true, recordPrOperation: expect.any(Function), pullRequests: expect.any(Function) },
+        ]);
     });
 
     it('cap 0 never runs a gate in the run', async () => {

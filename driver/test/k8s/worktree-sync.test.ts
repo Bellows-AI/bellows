@@ -15,6 +15,7 @@ import type { K8sRequest } from '../../src/k8s/k8s-transport.js';
 import { jobsPath, runnerJobName, type runnerJobSpec, secretName } from '../../src/k8s/k8s-podspec.js';
 import { jobPath } from '../../src/k8s/k8s-auxspec.js';
 import type { Call } from '../fixtures/k8s-apiserver.js';
+import { fakePullRequests } from '../fixtures/fake-pull-requests.js';
 import { StartupRefused } from '../../src/startup-cause.js';
 import { CREDENTIAL_HELPER, gitProbeScript, taskCheckoutScript } from '../../src/publish/publish.js';
 import { TASK_MOUNT, TASK_ROOT_LABEL, taskVolumeName } from '../../src/task-volume.js';
@@ -798,7 +799,7 @@ describe('publishing the produced work', () => {
         env: { GITHUB_TOKEN: 't0k-3n' },
     };
     const WT = `${TASK_MOUNT}/bellows`;
-    const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/42';
+    const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/1';
 
     const DIRTY_ON_MAIN = {
         cloned: true,
@@ -829,22 +830,23 @@ describe('publishing the produced work', () => {
             if (has('rev-parse')) return stepOk(`${HEAD_SHA}\n`);
             if (step.env.ACTION) return stepOk(step.env.ACTION === 'read' ? '{}' : '');
             if (has('switch')) return has('-c') ? stepOk() : failed(1);
-            if (has('pr') && has('view')) return failed(1);
             if (argv[2]?.includes('shortstat')) {
                 return stepOk(JSON.stringify({ title: 'Fix the sync re-claim fence', body: '## Commits' }));
             }
-            if (has('pr') && has('create')) return stepOk(`${PR_URL}\n`);
             return stepOk();
         });
     const publishing = (steps: { sink: StepSink }, request = fakeRequest().request) =>
         runner(request, {}, undefined, steps.sink);
+    /** The board's PR write: the PR is never a step, so the transport renders none of it. */
+    const board = () => fakePullRequests();
     const publishStepsOf = (steps: { submitted: StepRequest[] }) =>
         steps.submitted.filter((step) => step.kind === 'publish');
 
-    it('branches, commits, pushes and opens the PR — one step per git/gh call, in order', async () => {
+    it("branches, commits, pushes and opens the PR — one step per git call, in order; the PR is the board's", async () => {
         const steps = scripted();
         const { request, calls } = fakeRequest();
-        const result = await publishing(steps, request).publishGit(ISSUE_JOB);
+        const pr = board();
+        const result = await publishing(steps, request).publishGit(ISSUE_JOB, undefined, { pullRequests: pr.port });
 
         expect(result).toEqual({
             ok: true,
@@ -854,7 +856,7 @@ describe('publishing the produced work', () => {
             reason: null,
             repository: 'Bellows-AI/bellows',
             baseBranch: 'main',
-            prNumber: 42,
+            prNumber: 1,
             cause: null,
         });
         const sent = publishStepsOf(steps);
@@ -870,7 +872,6 @@ describe('publishing the produced work', () => {
         expect(order('switch')).toBeLessThan(order('add'));
         expect(order('add')).toBeLessThan(order('commit'));
         expect(order('commit')).toBeLessThan(order('push'));
-        expect(order('push')).toBeLessThan(order('create'));
         const commit = commands.find((argv) => argv.includes('commit'));
         expect(commit).toContain('/fix https://github.com/Bellows-AI/bellows/issues/10 (#10)');
         expect(commit).toContain('user.name=factory-ai');
@@ -889,16 +890,17 @@ describe('publishing the produced work', () => {
             BACKSTOP_TITLE: '/fix https://github.com/Bellows-AI/bellows/issues/10 (#10)',
         });
         expect(summary!.cwd).toBe(WT);
-        const create = commands.find((argv) => argv.includes('pr') && argv.includes('create'));
-        expect(create).toContain('--head');
-        expect(create).toContain('fix/10');
-        expect(create?.[create.indexOf('--title') + 1]).toBe('Fix the sync re-claim fence (#10)');
+        // The PR is the board's: no step runs `gh`, and the ask carries what the summarizer said.
+        expect(commands.some((argv) => argv.includes('gh'))).toBe(false);
+        expect(pr.state.asks).toMatchObject([
+            { branch: 'fix/10', create: { title: 'Fix the sync re-claim fence (#10)' } },
+        ]);
         expect(JSON.stringify(commands)).not.toContain('t0k-3n');
     });
 
     it('hands the claim env and the minted token to the steps that read them, and to no other', async () => {
         const steps = scripted();
-        await publishing(steps).publishGit(ISSUE_JOB, 'ghs_minted');
+        await publishing(steps).publishGit(ISSUE_JOB, 'ghs_minted', { pullRequests: board().port });
 
         const sent = publishStepsOf(steps);
         const push = sent.find((step) => step.argv.includes('push'))!;
@@ -918,7 +920,7 @@ describe('publishing the produced work', () => {
     it("publishes with the board's minted token in the step env, never a claim value", async () => {
         const steps = scripted();
         const { request, calls } = fakeRequest();
-        await publishing(steps, request).publishGit(ISSUE_JOB, 'ghs_fresh');
+        await publishing(steps, request).publishGit(ISSUE_JOB, 'ghs_fresh', { pullRequests: board().port });
 
         const push = publishStepsOf(steps).find((step) => step.argv.includes('push'))!;
         expect(push.env.GITHUB_TOKEN).toBe('ghs_fresh');
@@ -994,7 +996,7 @@ describe('publishing the produced work', () => {
     it('carries no claim env for an env-less claim', async () => {
         const steps = scripted({ probe: { cloned: false } });
         const { env: _env, ...envLess } = ISSUE_JOB;
-        const result = await publishing(steps).publishGit(envLess);
+        const result = await publishing(steps).publishGit(envLess, undefined, { pullRequests: board().port });
 
         expect(result).toEqual({
             ok: true,
@@ -1017,7 +1019,9 @@ describe('publishing the produced work', () => {
     // live in two places and drift.
     it('leaves the publish decision to the loop: publishGit ignores a publish:false claim', async () => {
         const steps = scripted();
-        const result = await publishing(steps).publishGit({ ...ISSUE_JOB, publish: false });
+        const result = await publishing(steps).publishGit({ ...ISSUE_JOB, publish: false }, undefined, {
+            pullRequests: board().port,
+        });
 
         expect(result.ok).toBe(true);
         expect(publishStepsOf(steps).some((step) => step.argv.includes('push'))).toBe(true);
@@ -1036,7 +1040,7 @@ describe('publishing the produced work', () => {
                       }
                     : null,
         });
-        const result = await publishing(steps).publishGit(ISSUE_JOB);
+        const result = await publishing(steps).publishGit(ISSUE_JOB, undefined, { pullRequests: board().port });
 
         expect(result.ok).toBe(false);
         expect(result.published).toBe(false);
@@ -1058,7 +1062,10 @@ describe('publishing the produced work', () => {
             },
         });
 
-        const result = await publishing(steps).publishGit(ISSUE_JOB, undefined, { revision: 'h:1' });
+        const result = await publishing(steps).publishGit(ISSUE_JOB, undefined, {
+            revision: 'h:1',
+            pullRequests: board().port,
+        });
 
         expect(result).toMatchObject(published ? { ok: true, published } : { ok: false, stale: true });
         const argvs = publishStepsOf(steps).map((step) => step.argv);
@@ -1075,6 +1082,8 @@ describe('publishing the produced work', () => {
                 throw new StepChannelClosed('the answer');
             },
         });
-        await expect(publishing(steps).publishGit(ISSUE_JOB, 'ghs_fresh')).rejects.toBeInstanceOf(StepChannelClosed);
+        await expect(
+            publishing(steps).publishGit(ISSUE_JOB, 'ghs_fresh', { pullRequests: board().port })
+        ).rejects.toBeInstanceOf(StepChannelClosed);
     });
 });

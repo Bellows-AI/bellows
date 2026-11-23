@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createBoard, type VerdictEvidence } from '../src/board/board.js';
+import { PullRequestUnanswered } from '../src/board/board-pull-request.js';
 import { BoardHttpError } from '../src/board/board-retry.js';
 import { COMPLETE_BODY_LIMIT_BYTES } from '../src/verdict-budget.js';
 import { boardJob } from './fixtures/board-job.js';
@@ -609,6 +610,111 @@ describe('the runtime connection requirement', () => {
         ]);
         const bare = recorder(() => claimed());
         expect(await boardOn(bare.fetch).claim('worker-1')).not.toHaveProperty('connectionOutcomes');
+    });
+});
+
+describe('the pull request ask (docs/connections.md)', () => {
+    const job = boardJob();
+    const ask = {
+        branch: 'fix/10',
+        base: null,
+        create: { title: 'T', body: 'B', draft: false, base: 'main' },
+        edit: { title: 'T', body: 'B' },
+    };
+    const deadline = () => AbortSignal.timeout(400);
+    const answering = (body: unknown, status = 200) => recorder(() => Response.json(body, { status }));
+
+    it('posts the ask under the lease and the driver credential, and reads a PR answer', async () => {
+        const { calls, fetch } = answering({
+            answer: 'pr',
+            url: 'https://github.com/o/n/pull/7',
+            number: 7,
+            operation: 'created',
+        });
+        const answer = await boardOn(fetch, 'drv_x').pullRequest(job, ask, deadline());
+        expect(answer).toEqual({ kind: 'pr', url: 'https://github.com/o/n/pull/7', number: 7, operation: 'created' });
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/pull-request');
+        expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', ...ask });
+        expect(calls[0]!.headers.authorization).toBe('Bearer drv_x');
+    });
+
+    it.each([
+        [{ answer: 'none' }, { kind: 'none' }],
+        [{ answer: 'denied' }, { kind: 'denied' }],
+        [
+            { answer: 'refused', detail: 'No commits between a and b' },
+            { kind: 'refused', detail: 'No commits between a and b' },
+        ],
+        [
+            { answer: 'waiting', forge: 'github', reason: 'reconnect' },
+            { kind: 'waiting', forge: 'github', reason: 'reconnect' },
+        ],
+    ])('reads %j as %j', async (body, expected) => {
+        expect(await boardOn(answering(body).fetch).pullRequest(job, ask, deadline())).toEqual(expected);
+    });
+
+    it('maps 404 NOT_FOUND to removed and 409 LEASE_LOST to lost', async () => {
+        const gone = answering({ error: 'No such job', code: 'NOT_FOUND' }, 404);
+        expect(await boardOn(gone.fetch).pullRequest(job, ask, deadline())).toEqual({ kind: 'removed' });
+        const lost = answering({ error: 'Lease lost', code: 'LEASE_LOST' }, 409);
+        expect(await boardOn(lost.fetch).pullRequest(job, ask, deadline())).toEqual({ kind: 'lost' });
+    });
+
+    // An App-less (offline) board is a different 409 from a lost lease: the push landed and there is no PR to write.
+    it('maps 409 GITHUB_UNAVAILABLE to no forge, and 409 FORGE_GRANT_REQUIRED to a wait', async () => {
+        const noApp = answering({ error: 'no app', code: 'GITHUB_UNAVAILABLE' }, 409);
+        expect(await boardOn(noApp.fetch).pullRequest(job, ask, deadline())).toEqual({ kind: 'no-forge' });
+        const gate = answering({ code: 'FORGE_GRANT_REQUIRED', forge: 'github', standing: 'missing' }, 409);
+        expect(await boardOn(gate.fetch).pullRequest(job, ask, deadline())).toEqual({
+            kind: 'waiting',
+            forge: 'github',
+            reason: 'missing',
+        });
+    });
+
+    // None of these is an answer: asked again until the deadline, then unanswered — never lost, removed or a PR.
+    it.each([
+        ['a 5xx', () => new Response('later', { status: 503 })],
+        ['a 429', () => Response.json({ code: 'RATE_LIMITED' }, { status: 429 })],
+        [
+            'a 409 with a code this driver does not know',
+            () => Response.json({ code: 'SOMETHING_NEW' }, { status: 409 }),
+        ],
+        ['a 409 with no code', () => new Response('conflict', { status: 409 })],
+        ['a 404 with no board code', () => new Response('not here', { status: 404 })],
+        ['a 4xx with no board code', () => new Response('bad gateway page', { status: 400 })],
+        ['a refused driver credential', () => Response.json({ code: 'UNAUTHENTICATED' }, { status: 401 })],
+        ['a 200 that is no answer', () => Response.json({ answer: 'maybe' })],
+        [
+            'a PR answer with no number',
+            () => Response.json({ answer: 'pr', url: 'https://github.com/o/n/pull/7', operation: 'created' }),
+        ],
+        ['a wait with no forge', () => Response.json({ answer: 'waiting', reason: 'missing' })],
+        ['a wait whose reason is not a string', () => Response.json({ answer: 'waiting', forge: 'github', reason: 3 })],
+        ['a body that is not JSON', () => new Response('<html>', { status: 200 })],
+    ])('asks again on %s until the deadline, then throws unanswered', async (_name, respond) => {
+        const { calls, fetch } = recorder(respond);
+        await expect(boardOn(fetch).pullRequest(job, ask, deadline())).rejects.toBeInstanceOf(PullRequestUnanswered);
+        expect(calls.length).toBeGreaterThan(1);
+    });
+
+    it('asks again after a transport failure and answers the try that lands', async () => {
+        let tries = 0;
+        const fetch = (async () => {
+            tries += 1;
+            if (tries < 3) throw new TypeError('fetch failed');
+            return Response.json({ answer: 'none' });
+        }) as unknown as typeof globalThis.fetch;
+        expect(await boardOn(fetch).pullRequest(job, ask, AbortSignal.timeout(5000))).toEqual({ kind: 'none' });
+        expect(tries).toBe(3);
+    });
+
+    it('throws unanswered at once for a deadline that already passed', async () => {
+        const { calls, fetch } = answering({ answer: 'none' });
+        await expect(boardOn(fetch).pullRequest(job, ask, AbortSignal.abort())).rejects.toBeInstanceOf(
+            PullRequestUnanswered
+        );
+        expect(calls).toEqual([]);
     });
 });
 

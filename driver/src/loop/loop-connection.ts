@@ -12,6 +12,22 @@ import type { LoopRuntime } from './loop-types.js';
 export const CONNECTION_ASK_BUDGET_MS = 8_000;
 
 /**
+ * The board holds the thread for a connection: records the requirement on the attempt and stops the agent exactly as a
+ * heartbeat carrying `requirementWait` would (`applyHeartbeatVerdict`), so a relayed ask, a draft publish the board
+ * held and an adopter's heartbeat are one code path; the run's end then hands the attempt back as a requirement wait.
+ */
+export async function handBackForRequirement(
+    rt: LoopRuntime,
+    job: BoardJob,
+    state: JobState,
+    provider: string
+): Promise<void> {
+    state.requirement ??= { provider };
+    state.requirement.provider ??= provider;
+    await applyHeartbeatVerdict(rt, job, state, { result: 'held', cancelRequested: false, requirementWait: true });
+}
+
+/**
  * The relay one attempt's agent token asks for a connection through. The board decides: `bound`
  * and `unavailable` change nothing here. `waiting` records the requirement on the attempt and stops the
  * agent exactly as a heartbeat carrying `requirementWait` would (`applyHeartbeatVerdict`), so the ask and
@@ -32,15 +48,7 @@ export function createConnectionRelay(rt: LoopRuntime, job: BoardJob, state: Job
                 await applyHeartbeatVerdict(rt, job, state, verdict);
                 return 'gone';
             }
-            if (verdict === 'waiting') {
-                state.requirement ??= { provider };
-                state.requirement.provider ??= provider;
-                await applyHeartbeatVerdict(rt, job, state, {
-                    result: 'held',
-                    cancelRequested: false,
-                    requirementWait: true,
-                });
-            }
+            if (verdict === 'waiting') await handBackForRequirement(rt, job, state, provider);
             return verdict;
         },
     };

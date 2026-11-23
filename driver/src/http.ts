@@ -18,6 +18,10 @@ export const OCTET_STREAM_CONTENT_TYPE = 'application/octet-stream';
  */
 export const LEASE_LOST_CODE = 'LEASE_LOST';
 export const NOT_FOUND_CODE = 'NOT_FOUND';
+/** An App-less board: nothing to write a pull request through. */
+export const GITHUB_UNAVAILABLE_CODE = 'GITHUB_UNAVAILABLE';
+/** The start gate's refusal: the member holds no live grant for the forge. */
+export const FORGE_GRANT_REQUIRED_CODE = 'FORGE_GRANT_REQUIRED';
 /** A settle under a lease whose attempt staged a different conclusion. */
 export const CONCLUSION_CONFLICT_CODE = 'CONCLUSION_CONFLICT';
 

@@ -9,6 +9,9 @@ import { baseBranchOf, isBranchName } from './publish-base.js';
 import { headSha, publicationOp, recordOperation } from './publish-reconcile.js';
 import {
     type PrOperationRecorder,
+    PullRequestWaiting,
+    type PullRequestPort,
+    BOARD_UNANSWERED,
     publishedResult,
     pushRecorded,
     reconcileAgentPr,
@@ -23,7 +26,6 @@ export {
     isBranchName,
     type PrSummary,
     parsePrSummary,
-    prNumberFromUrl,
     prSummaryScript,
 } from './publish-base.js';
 
@@ -155,6 +157,12 @@ export interface PublishResult {
     /** What lies under a failed publish (`publishCauseOf` or the transport's own); null when it did not fail. */
     cause: FailureCause | null;
     /**
+     * Set when the publish stopped because the board holds the thread for a forge connection (the starter's grant cannot
+     * serve): not a failure. The branch is pushed (`published`); the loop hands the attempt back, never retries it, and
+     * the next claim's publish finds the pushed branch and asks the board again.
+     */
+    waiting?: { forge: string; reason: string };
+    /**
      * The id minted for the PR operation this publish performed and handed to `PublishOptions.recordPrOperation`;
      * absent when nothing was recorded for it.
      */
@@ -173,6 +181,11 @@ export interface PublishOptions {
     draft?: boolean;
     /** Receives each PR operation as it happens; best effort, never part of the publish's verdict. */
     recordPrOperation?: PrOperationRecorder;
+    /**
+     * The board's PR write for this attempt (`Board.pullRequest`): the PR is opened, reused, retargeted and edited
+     * there, as the member who started the task. Required to publish a repository: nothing here opens a PR itself.
+     */
+    pullRequests?: PullRequestPort;
 }
 
 /**
@@ -271,6 +284,14 @@ export const publishFailed = (reason: string, cause: FailureCause | null): Publi
     cause,
 });
 
+/** The publish stopped for the board's forge wait: the branch is pushed, the PR is not, and nothing failed. */
+export const publishWaiting = (waiting: { forge: string; reason: string }, branch: string): PublishResult => ({
+    ...publishFailed(`the task waits for a ${waiting.forge} connection (${waiting.reason})`, null),
+    published: true,
+    branch,
+    waiting: { forge: waiting.forge, reason: waiting.reason },
+});
+
 /** A bound publish refused: the content is no longer what the evidence assessed; nothing was pushed. */
 const staleRefusal = (reason: string): PublishResult => ({ ...publishFailed(reason, null), stale: true });
 
@@ -283,6 +304,8 @@ const PUBLISH_CAUSES: readonly [FailureCause, RegExp][] = [
     ['transport', /rate limit exceeded|secondary rate limit|HTTP 429|returned error: 429/i],
     // The task supervisor's channel: a step whose answer never came, or an attempt gone.
     ['transport', /supervisor channel closed|was not answered in time/],
+    // The board's PR write: no answer is no verdict, and the retry reaches the reconcile.
+    ['transport', new RegExp(BOARD_UNANSWERED)],
     [
         'denied',
         /Permission to .* denied|returned error: 403|HTTP 403|Authentication failed|could not read Username|Resource not accessible by integration|protected branch hook declined/,
@@ -310,13 +333,19 @@ const GITHUB_SERVER_ERROR = /returned error: 5\d\d|HTTP 5\d\d|GraphQL: Something
 /**
  * Whether asking for a NEW GitHub token and publishing again can turn this failure into a landing:
  * a missing token (`tokenMissing`, the board's reclaim lease still pending), a token
- * GitHub rejected, or a GitHub 5xx. A refusal, a conflict and a stale revision are never retried.
+ * GitHub rejected, a GitHub 5xx, or a board that did not answer the PR ask. A refusal, a conflict, a stale revision
+ * and the board's forge wait (`waiting`) are never retried.
  */
 export function publishRetryable(result: PublishResult, tokenMissing: boolean): boolean {
-    if (result.ok || result.stale || result.cause === 'conflict') return false;
+    if (result.ok || result.waiting || result.stale || result.cause === 'conflict') return false;
     const reason = result.reason ?? '';
     if (PUBLISH_REFUSAL.test(reason)) return false;
-    return tokenMissing || CREDENTIAL_REJECTED.test(reason) || GITHUB_SERVER_ERROR.test(reason);
+    return (
+        tokenMissing ||
+        CREDENTIAL_REJECTED.test(reason) ||
+        GITHUB_SERVER_ERROR.test(reason) ||
+        reason.includes(BOARD_UNANSWERED)
+    );
 }
 
 export { UUID };
@@ -448,10 +477,10 @@ export interface PublishStep {
     /** The step's name in failure messages — "git push", the tool's own words. */
     label: string;
     /** The executable the container runs: docker's `--entrypoint`, the k8s command head. */
-    entrypoint: 'git' | 'gh' | 'node';
+    entrypoint: 'git' | 'node';
     /** The full argv after the entrypoint, exactly what the docker runner passes after the image. */
     args: string[];
-    /** Whether the step needs the claim env — the token the push and the PR calls read. */
+    /** Whether the step needs the claim env — the installation token the push reads. */
     env: boolean;
     /** Literal env values, always paths or code and never credentials: the `REPO` the probe reads. */
     envLiterals?: Record<string, string>;
@@ -695,6 +724,40 @@ async function branchAndCommit(
     return branch;
 }
 
+/** What the probe alone settles: an uncloned checkout, a conflicted tree and a tree that moved off its evidence. */
+function refusalOf(state: GitState, revision: string | undefined): PublishResult | null {
+    if (!state.cloned) return publishNothing('the checkout has not been cloned yet');
+    if (state.conflicts.length > 0 || state.rebasing) return publishFailed(unresolvedConflictReason(state), 'conflict');
+    return revision !== undefined && state.fingerprint !== revision ? staleRefusal(STALE_REVISION_REASON) : null;
+}
+
+/**
+ * The board's PR write a publish must carry. A missing one is a programming error, not a runtime condition: nothing here
+ * opens a PR but the board, and a publish with no way to ask it would push a branch and silently skip the PR.
+ */
+function pullRequestsOf(options: PublishOptions | undefined): PullRequestPort {
+    if (!options?.pullRequests)
+        throw new Error('publishCheckout needs PublishOptions.pullRequests to open the pull request');
+    return options.pullRequests;
+}
+
+/**
+ * A clean, fully-pushed tree: the PR the agent (or an earlier publish) left is linked, a publication that stopped
+ * between its push and its PR is resumed, and anything else is the ordinary no-op.
+ */
+async function publishCleanTree(
+    runStep: RunPublishStep,
+    step: RunPublishStep,
+    context: Parameters<typeof resumePublication>[2]
+): Promise<PublishResult> {
+    const { job, state, pullRequests, record } = context;
+    return (
+        (await reconcileAgentPr({ job, state, pullRequests, record })) ??
+        (await resumePublication(runStep, step, context)) ??
+        publishNothing('no uncommitted changes and nothing unpushed')
+    );
+}
+
 /**
  * The publish workflow both executors run: probe the checkout, branch, commit, push, open (or
  * reuse) the PR — every decision that must not drift between platforms, over an injected
@@ -713,6 +776,7 @@ export async function publishCheckout(
     // construction. That is the ordinary no-op, not a failure: reporting it as publishFailed
     // failed every exit-0 command-only run, the main phase of the e2e suite included.
     if (!repo) return publishNothing('the job names no checkout — nothing to publish');
+    const pullRequests = pullRequestsOf(options);
 
     /** Wraps the transport's rejection with the step's name — docker's own runStep shape. */
     const step = async (publish: PublishStep): Promise<{ stdout: string }> => {
@@ -731,26 +795,12 @@ export async function publishCheckout(
         // What is there to publish? A checkout that was never cloned and a clean, fully-pushed
         // tree are the two ordinary no-ops; everything else flows.
         const state = await probeCheckout(runStep, repo, baseBranchOf(job));
-        if (!state.cloned) return publishNothing('the checkout has not been cloned yet');
-        if (state.conflicts.length > 0 || state.rebasing) {
-            return publishFailed(unresolvedConflictReason(state), 'conflict');
-        }
-        const revision = options?.revision;
-        if (revision !== undefined && state.fingerprint !== revision) return staleRefusal(STALE_REVISION_REASON);
-        const draft = options?.draft === true;
+        const { revision, draft = false } = options ?? {};
+        const refused = refusalOf(state, revision);
+        if (refused) return refused;
         if (!state.dirty && state.unpushed === 0) {
-            return (
-                (await reconcileAgentPr(runStep, step, { job, state, record: options?.recordPrOperation })) ??
-                (await resumePublication(runStep, step, {
-                    job,
-                    repo,
-                    state,
-                    plan,
-                    draft,
-                    record: options?.recordPrOperation,
-                })) ??
-                publishNothing('no uncommitted changes and nothing unpushed')
-            );
+            const record = options?.recordPrOperation;
+            return await publishCleanTree(runStep, step, { job, repo, state, plan, draft, pullRequests, record });
         }
 
         const branch = await branchAndCommit(runStep, step, { job, repo, state, plan, revision });
@@ -764,13 +814,13 @@ export async function publishCheckout(
         await pushRecorded(runStep, step, { repo, branch, op, sha });
 
         // Reuse the branch's PR when one exists, or open one — see resolveOrCreatePr.
-        const landed = await resolveOrCreatePr(runStep, step, {
+        const landed = await resolveOrCreatePr(runStep, {
             job,
             branch,
             plan,
             state,
             draft,
-            op,
+            pullRequests,
             record: options?.recordPrOperation,
         });
         await recordOperation(step, repo, op, { state: 'opened', ...(landed.prUrl ? { prUrl: landed.prUrl } : {}) });
@@ -778,6 +828,7 @@ export async function publishCheckout(
         return publishedResult(job, branch, state.defaultBranch, landed);
     } catch (e) {
         if (stepLost(e)) throw e;
+        if (e instanceof PullRequestWaiting) return publishWaiting(e, e.branch);
         const message = `${(e as Error).message}`;
         return publishFailed(message.slice(0, PUBLISH_FAILURE_MAX_CHARS), publishCauseOf(message));
     }

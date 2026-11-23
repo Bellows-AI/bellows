@@ -186,7 +186,7 @@ export const requirementReason = (state: Pick<JobState, 'requirement'>): string 
 };
 
 /** The hand-back of an attempt the board holds for a connection: released outside the interruption budget. */
-const requirementDecision = (state: JobState, beforeInterrupt?: () => Promise<void>): EndDecision => ({
+export const requirementDecision = (state: JobState, beforeInterrupt?: () => Promise<void>): EndDecision => ({
     kind: 'interrupt',
     reason: requirementReason(state),
     exitCode: null,

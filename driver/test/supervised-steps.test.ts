@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import type { Bound } from '../src/poll.js';
 import type { BoardJob } from '../src/board/board.js';
@@ -559,11 +562,44 @@ describe('the supervised-step members both executors share', () => {
         await expect(lost.members.runHelper(job, NOOP)).rejects.toBeInstanceOf(StepChannelClosed);
     });
 
+    // One workflow serves both executors: docker-runner and k8s-runner spread these members, so the board's PR write
+    // reaches `publishCheckout` the same way on each and no transport opens a PR of its own.
+    it('hands the publish the board’s PR port untouched, and its steps name no `gh`', async () => {
+        const probe = {
+            cloned: true,
+            branch: 'fix/10',
+            defaultBranch: 'main',
+            dirty: false,
+            unpushed: 0,
+            hasIdentity: true,
+        };
+        const s = sink(() => ok(`${JSON.stringify(probe)}\n`));
+        const { members } = groupsOver(s, { has: true });
+        const asked: unknown[] = [];
+        const pullRequests = async (ask: unknown) => {
+            asked.push(ask);
+            return { kind: 'pr', url: 'https://github.com/o/r/pull/9', number: 9, operation: 'reused' } as const;
+        };
+
+        const result = await members.publishGit({ ...job, repo: 'o/r' }, undefined, { pullRequests });
+
+        expect(asked).toEqual([{ branch: 'fix/10', base: null }]);
+        expect(result).toMatchObject({
+            ok: true,
+            published: true,
+            prUrl: 'https://github.com/o/r/pull/9',
+            prNumber: 9,
+        });
+        expect(s.submitted.every((step) => !step.argv.includes('gh'))).toBe(true);
+    });
+
     it('throws a refused group from the publish, the probe and the snapshot, submitting nothing', async () => {
         const refusal = new Error('the group was refused');
         const s = sink();
         const { members } = groupsOver(s, { refuse: refusal });
-        await expect(members.publishGit(job)).rejects.toBe(refusal);
+        await expect(members.publishGit(job, undefined, { pullRequests: async () => ({ kind: 'none' }) })).rejects.toBe(
+            refusal
+        );
         await expect(members.probeTree(job)).rejects.toBe(refusal);
         await expect(members.snapshotTree(job, 'review-1')).rejects.toBe(refusal);
         expect(s.submitted).toEqual([]);
@@ -884,5 +920,30 @@ describe('awaitFirstContact', () => {
                 },
             })
         ).rejects.toThrow('held');
+    });
+});
+
+/**
+ * The PR is the board's to write (docs/connections.md): no source under the publish workflow or either executor names
+ * the `gh` binary for a pull request, so docker and kubernetes cannot grow a runner-side PR path of their own.
+ */
+describe('no runner-side pull request path', () => {
+    const SRC = fileURLToPath(new URL('../src/', import.meta.url));
+    const sourcesOf = (dir: string): [string, string][] =>
+        readdirSync(join(SRC, dir))
+            .filter((name) => name.endsWith('.ts'))
+            .map((name) => [`${dir}/${name}`, readFileSync(join(SRC, dir, name), 'utf8')]);
+    const files: [string, string][] = [
+        ...sourcesOf('publish'),
+        ...sourcesOf('k8s'),
+        ...sourcesOf('docker'),
+        ['gates.ts', readFileSync(join(SRC, 'gates.ts'), 'utf8')],
+        ['supervised-steps.ts', readFileSync(join(SRC, 'supervised-steps.ts'), 'utf8')],
+    ];
+
+    it.each(files)('%s runs no gh entrypoint and no `gh pr` command', (_name, text) => {
+        expect(text).not.toMatch(/entrypoint:\s*'gh'/);
+        expect(text).not.toMatch(/'gh'/);
+        expect(text).not.toMatch(/\bgh pr (view|create|edit)\b/);
     });
 });

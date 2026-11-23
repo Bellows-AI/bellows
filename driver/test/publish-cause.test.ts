@@ -85,6 +85,7 @@ describe('the publish retry predicate', () => {
         'git push: fatal: unable to access https://github.com/acme/app.git/: The requested URL returned error: 502',
         'gh pr create: HTTP 502: Bad Gateway',
         'gh pr create: GraphQL: Something went wrong while executing your query. Please include the request id.',
+        'pull request: the board did not answer',
     ])('retries %s with a token', (reason) => {
         expect(publishRetryable(failedOf(reason), false)).toBe(true);
     });
@@ -98,6 +99,9 @@ describe('the publish retry predicate', () => {
         'gh pr create: HTTP 429: too many requests',
         'gh pr create: HTTP 403: Resource protected by organization SAML enforcement.',
         'git commit: fatal: something nobody has seen before',
+        'Permission to open a pull request denied: GitHub refused the member who started this task',
+        'pull request: GitHub declined it: No commits between main and fix/10',
+        'pull request: the attempt no longer holds its lease',
     ])('does not retry %s with a token', (reason) => {
         expect(publishRetryable(failedOf(reason), false)).toBe(false);
     });

@@ -17,6 +17,7 @@ import type {
     RuntimeReport,
 } from '../../src/board/board.js';
 import type { FinishPassWrite, GateRunRecord, GateRunWrite, RecordedPass } from '../../src/board/board-gate-runs.js';
+import type { PullRequestAnswer, PullRequestAsk } from '../../src/board/board-pull-request.js';
 import type { PrOperationWrite } from '../../src/board/board-pr-operations.js';
 import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
@@ -119,6 +120,8 @@ export interface BoardStub extends Board {
     interrupted: ({ id: string } & Interruption)[];
     /** Every runtime connection ask the loop relayed to the board, in order. */
     connectionAsks: { id: string; provider: string; target?: string }[];
+    /** Every pull request ask the publish made of the board, in order. */
+    pullRequestAsks: { id: string; ask: PullRequestAsk }[];
     beats: number;
     gatesReported: { id: string; results: Parameters<Board['gates']>[1] }[];
     /** Every GitHub credential ask the loop made, by job id (docs/connections.md). */
@@ -183,6 +186,8 @@ export function stubBoard(
         interruptVerdict?: LeaseState | 'exhausted';
         /** The board's answer to a runtime connection ask; `waiting` when absent. */
         connectionVerdict?: RequirementVerdict | (() => Promise<RequirementVerdict>);
+        /** The board's answer to a pull request ask; no PR found when absent. */
+        pullRequestAnswer?: PullRequestAnswer;
         /** Every heartbeat answers `requirementWait: true`: an adopter of an attempt that asked. */
         requirementWait?: boolean;
         /** The board's answer to a phase checkpoint read; null (unreadable) when absent. */
@@ -237,6 +242,7 @@ export function stubBoard(
         suspended: [],
         interrupted: [],
         connectionAsks: [],
+        pullRequestAsks: [],
         beats: 0,
         gatesReported: [],
         githubAsks: [],
@@ -296,6 +302,10 @@ export function stubBoard(
             board.connectionAsks.push({ id: claimed.id, provider, ...(target === undefined ? {} : { target }) });
             const verdict = options.connectionVerdict ?? 'waiting';
             return typeof verdict === 'function' ? verdict() : verdict;
+        },
+        async pullRequest(claimed, ask) {
+            board.pullRequestAsks.push({ id: claimed.id, ask });
+            return options.pullRequestAnswer ?? { kind: 'none' };
         },
         async interrupt(claimed, interruption) {
             board.interrupted.push({ id: claimed.id, ...interruption });

@@ -1,6 +1,7 @@
 import type { BoardJob } from '../board/board.js';
 import { evidenceDecision } from '../evidence-policy.js';
 import { down, type JobState, settling } from './loop-attempt.js';
+import { handBackForRequirement } from './loop-connection.js';
 import { type LoopRuntime, STOOD_DOWN } from './loop-types.js';
 import { publishWithRetry } from './loop-publish-retry.js';
 import type { PublishResult } from '../publish/publish.js';
@@ -54,6 +55,12 @@ async function pushDraft(
         throw e;
     }
     if (result === STOOD_DOWN) return 'gone';
+    if (result.waiting) {
+        // The board holds the thread for the starter's forge connection: the agent is stopped like any requirement wait,
+        // and what it was told of its publish is that the attempt is gone.
+        await handBackForRequirement(rt, job, state, result.waiting.forge);
+        return 'gone';
+    }
     if (result.ok && result.published) state.draftPublication = result;
     return result;
 }

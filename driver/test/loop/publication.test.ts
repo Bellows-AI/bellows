@@ -62,8 +62,8 @@ describe('the agent’s draft publication (issue #547)', () => {
 
         expect(answers).toEqual([200]);
         expect(options).toEqual([
-            { draft: true, recordPrOperation: expect.any(Function) },
-            { recordPrOperation: expect.any(Function) },
+            { draft: true, recordPrOperation: expect.any(Function), pullRequests: expect.any(Function) },
+            { recordPrOperation: expect.any(Function), pullRequests: expect.any(Function) },
         ]);
         expect(board.completed[0]?.status).toBe('succeeded');
         expect(board.completed[0]?.publication).toEqual({
@@ -142,9 +142,9 @@ describe('an objective-mode task, ticket to draft publication (issue #550)', () 
         expect(adHoc).toEqual([1, 0, 0]);
         expect(answers).toEqual([200, 200]);
         expect(options).toEqual([
-            { draft: true, recordPrOperation: expect.any(Function) },
-            { draft: true, recordPrOperation: expect.any(Function) },
-            { recordPrOperation: expect.any(Function) },
+            { draft: true, recordPrOperation: expect.any(Function), pullRequests: expect.any(Function) },
+            { draft: true, recordPrOperation: expect.any(Function), pullRequests: expect.any(Function) },
+            { recordPrOperation: expect.any(Function), pullRequests: expect.any(Function) },
         ]);
         // The close-of-run gates still run over the final tree — policy, not a stage the agent picked.
         expect(stack.ran.names.slice(-2)).toEqual(['test', 'lint']);
@@ -244,4 +244,79 @@ describe('the PR operation record, from the loop (issue #983)', () => {
             expect(logs.some((line) => line.includes('PR operation') && line.includes('unrecorded'))).toBe(true);
         }
     );
+});
+
+describe('the publish and the board’s PR write', () => {
+    const NOTHING: PublishResult = {
+        ok: true,
+        published: false,
+        branch: null,
+        prUrl: null,
+        reason: null,
+        cause: null,
+        repository: null,
+        baseBranch: null,
+        prNumber: null,
+    };
+    const WAITING: PublishResult = {
+        ...NOTHING,
+        ok: false,
+        published: true,
+        branch: 'fix/10',
+        waiting: { forge: 'github', reason: 'missing' },
+    };
+
+    it('hands the publish a PR port that asks the board under the lease, and no token but the installation’s', async () => {
+        const board = stubBoard([gatedJob(1)], {
+            githubToken: 'ghs_installation',
+            pullRequestAnswer: { kind: 'pr', url: 'https://github.com/o/r/pull/5', number: 5, operation: 'created' },
+        });
+        const runner = stubRunner(async () => ok(), { publish: NOTHING });
+        await drive({ ...board, runner, gates: stubGateStack().gates });
+
+        const options = runner.publishOptions[0];
+        const ask = { branch: 'fix/10', base: null };
+        expect(await options?.pullRequests?.(ask)).toEqual({
+            kind: 'pr',
+            url: 'https://github.com/o/r/pull/5',
+            number: 5,
+            operation: 'created',
+        });
+        expect(board.board.pullRequestAsks).toEqual([{ id: gatedJob(1).id, ask }]);
+        // The runner's only credential is the installation token the push reads; the member's never reaches it.
+        expect(runner.githubTokens).toEqual(['ghs_installation']);
+        expect(JSON.stringify([runner.githubTokens, runner.publishOptions, gatedJob(1)])).not.toContain('ghu_');
+    });
+
+    /** One attempt whose agent calls `POST /publish`; the runner answers `result` to the draft. */
+    async function draftAnswered(result: PublishResult) {
+        const board = stubBoard([gatedJob(1)]);
+        const { stack, gates } = stubGateStack({}, { control: true });
+        const answers: number[] = [];
+        const runner: ReturnType<typeof stubRunner> = stubRunner(
+            async (running) => {
+                const control = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '');
+                if (!control?.publisher) throw new Error('no publisher on the control entry');
+                answers.push((await servePublish(control.publishing, control.publisher)).status);
+                return ok();
+            },
+            { publish: result }
+        );
+        const loop = createLoop({ board: board.board, runner, config: config(), gates, sleep });
+        board.attach(loop);
+        await loop.start();
+        return { board: board.board, runner, answers };
+    }
+
+    it('a draft the board holds for a forge connection hands the attempt back, with no verdict and no retry', async () => {
+        const { board, runner, answers } = await draftAnswered(WAITING);
+
+        expect(runner.published).toHaveLength(1);
+        expect(answers).toHaveLength(1);
+        expect(board.completed).toEqual([]);
+        expect(board.interrupted).toEqual([
+            expect.objectContaining({ id: gatedJob(1).id, release: true, requirement: true }),
+        ]);
+        expect(board.interrupted[0]?.reason).toContain('github');
+    });
 });

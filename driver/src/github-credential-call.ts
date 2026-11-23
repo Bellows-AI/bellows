@@ -59,7 +59,7 @@ async function askOnce(url: string, fetch: Fetch, job: BoardJob, signal?: AbortS
 }
 
 /** Waits `ms`, or less when `signal` aborts first. */
-const pause = (ms: number, signal?: AbortSignal): Promise<void> =>
+export const pause = (ms: number, signal?: AbortSignal): Promise<void> =>
     new Promise((resolve) => {
         if (signal?.aborted) return resolve();
         const done = () => {

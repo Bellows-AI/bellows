@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { fakePullRequests } from './fixtures/fake-pull-requests.js';
 import type { BoardJob } from '../src/board/board.js';
 import {
     parseGitState,
@@ -37,7 +38,7 @@ describe('the publish over a conflicted tree (issue #661)', () => {
     ])('refuses %s with cause conflict and pushes nothing', async (_name, state, text) => {
         const t = probeAnswering(state);
 
-        const result = await publishCheckout(job, undefined, t.run);
+        const result = await publishCheckout(job, { pullRequests: fakePullRequests().port }, t.run);
 
         expect(result).toMatchObject({ ok: false, published: false, cause: 'conflict' });
         expect(result.reason).toContain(text);

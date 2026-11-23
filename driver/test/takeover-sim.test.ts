@@ -132,6 +132,29 @@ const scenarios: Record<string, (s: Sim) => Promise<void>> = {
         expect([s.pubRuns(), s.spawned, s.agentRuns]).toEqual([1, 1, 1]);
     },
 
+    // Infrastructure loss after the board wrote the PR: the driver that asked is gone before it heard the answer. The
+    // next claim's publish asks again and the board finds the PR by its head, so one PR exists however the loss fell.
+    't5b: the board created the PR and the driver was lost before the answer: the next claim reuses it, one create':
+        async (s) => {
+            s.release();
+            let open: () => void = () => undefined;
+            s.prAnswerGate = new Promise<void>((resolve) => {
+                open = resolve;
+            });
+            const a = await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            s.agentExits(firstGroup(s), 0);
+            await until('the board to create the PR', s, () => s.prCreates >= 1);
+            await s.kill(a);
+            s.expireLease();
+            open();
+            await s.start('B');
+            await settled(s);
+            expect(s.prCreates).toBe(1);
+            expect(s.prs.size).toBe(1);
+            expect(s.prAsks.length).toBeGreaterThanOrEqual(2);
+        },
+
     't5 with the lost driver alive past the hold: nothing is taken over, the old claim finishes': async (s) => {
         const a = await s.start('A');
         await until('the agent released', s, () => Boolean(released(s)));
