@@ -274,6 +274,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/finish-passes/read', 'worker'],
     // One row per managed PR operation, written by the driver under the lease.
     ['/api/jobs/:id/pr-operation', 'worker'],
+    // The board's PR write as the starter: the driver asks under the lease; the runner's pair is not a credential here.
+    ['/api/jobs/:id/pull-request', 'worker'],
     ['/api/jobs/:id/output', 'worker'],
     // Both are the driver's gate machinery — the state reports after each gate runs and the
     // post-sync re-read of '.bellows.yaml'. Missing from this table is what left the last run's

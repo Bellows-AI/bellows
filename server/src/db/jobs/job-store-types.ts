@@ -9,6 +9,7 @@ import type { AttachmentMeta } from '@factory-ai/core';
 import type { ClaimAttachment } from './job-store-attachments.js';
 import type { GateRunStore } from './job-store-gate-runs.js';
 import type { PrOperationStore } from './job-store-pr-operations.js';
+import type { PrWriteStore } from './job-store-pr-write.js';
 import type { HiddenSkill, PinnedSkill } from './job-store-skill-pin.js';
 import type { JobTitleStore } from './job-store-title.js';
 import type { TranscriptToolStore } from './job-store-transcript-tools.js';
@@ -1031,6 +1032,7 @@ export type JobStore = JobActionStore &
     PhaseCheckpointStore &
     GateRunStore &
     PrOperationStore &
+    PrWriteStore &
     TranscriptToolStore;
 
 /** The page states the task list serves. `attention` is the inbox view: running and review. */

@@ -52,12 +52,15 @@ import { BODY_LIMIT, CONCLUSION_BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LI
 import type { ClaimPollOutcome } from '../../metrics.js';
 import type { ForgeGate } from '../../forge/forge-gate.js';
 import type { OrgRegistry } from '../../orgs.js';
+import { type PullRequestDeps, pullRequestRoutes } from './job-handlers-pull-request.js';
 
 export interface JobRouteDeps {
     /** The per-org runtimes; the store a request touches is the CALLER's org's. */
     orgs: OrgRegistry;
     /** The forge start gate; absent when no member holds a grant (AUTH_MODE=none). */
     forgeGate?: ForgeGate | undefined;
+    /** The board's PR write (docs/connections.md); absent in the route tests that mount no GitHub. */
+    pullRequests?: PullRequestDeps | undefined;
     /** Counts each claim poll by outcome; absent in the route tests. */
     claimPoll?: (outcome: ClaimPollOutcome) => void;
 }
@@ -102,7 +105,7 @@ function startRoutes(app: FastifyInstance, { orgs, forgeGate }: ForgeGatedDeps):
  * the repo's line-count ceiling. See docs/jobs.md for the protocol these routes implement.
  */
 export const jobRoutes =
-    ({ orgs, forgeGate, claimPoll }: JobRouteDeps): FastifyPluginAsync =>
+    ({ orgs, forgeGate, claimPoll, pullRequests }: JobRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const firstJobClaim = fairBoardScan();
         startRoutes(app, { orgs, forgeGate });
@@ -177,6 +180,7 @@ export const jobRoutes =
         phaseCheckpointRoutes(app, orgs);
         gateRunRoutes(app, orgs);
         prOperationRoutes(app, orgs);
+        if (pullRequests) pullRequestRoutes(app, orgs, pullRequests);
         // The agent's questions (050): the driver's reports are worker
         // routes; the answer is a person's, and no organization token reaches it.
         app.post('/api/jobs/:id/question', { bodyLimit: QUESTION_BODY_LIMIT }, (request, reply) =>

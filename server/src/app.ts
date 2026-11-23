@@ -49,6 +49,9 @@ import { operatorDriverCredentialRoutes } from './routes/operator-driver-credent
 import { orgExportRoutes } from './routes/org-export.js';
 import { authRoutes } from './routes/auth.js';
 import { createForgeGate } from './forge/forge-gate.js';
+import { createPrTokenSource } from './forge/pr-token.js';
+import { createPrWriter, type PrWriter } from './github/pr-write.js';
+import type { PullRequestDeps } from './routes/jobs/job-handlers-pull-request.js';
 import { forgeGrantRoutes } from './routes/forge-grants.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
@@ -175,6 +178,8 @@ export interface AppDeps {
     identity?: GitHubIdentityClient | undefined;
     /** The member forge grants: a sign-in keeps the GitHub grant here, and the revoke webhook breaks it. Absent, none. */
     memberGrants?: MemberForgeGrants | undefined;
+    /** The GitHub REST writer behind the PR route; absent, it is built from the configured API URL, and with none the route answers GITHUB_UNAVAILABLE. */
+    prWriter?: PrWriter | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
     appSlug?: (() => Promise<string>) | undefined;
     /**
@@ -301,6 +306,22 @@ const orgMint =
         return tokens ? tokens.fresh(repo) : null;
     };
 
+/**
+ * The board's PR write: the token source (the starter's grant, or the org's installation without member grants) and
+ * the REST writer over the API the board is configured for: the App's, or the sign-in's under the offline `github` auth.
+ */
+const pullRequestDepsOf = (
+    deps: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'prWriter' | 'githubMint'>
+): PullRequestDeps => {
+    const { config, orgs, memberGrants, prWriter, githubMint } = deps;
+    const apiUrl =
+        config.github.mode === 'app' ? config.github.apiUrl : config.auth.mode === 'github' ? config.auth.apiUrl : null;
+    return {
+        tokens: createPrTokenSource({ memberGrants, mint: githubMint ?? orgMint(orgs) }),
+        writer: prWriter ?? (apiUrl === null ? undefined : createPrWriter({ apiUrl })),
+    };
+};
+
 /** Each org's own installation revokes its runners' tokens; null when the org holds none. */
 const orgRevoke =
     (orgs: OrgRegistry): GithubRevoke =>
@@ -421,6 +442,7 @@ export async function buildApp({
     uploadCapabilities,
     identity,
     memberGrants,
+    prWriter,
     appSlug,
     installationListing,
     commercePlanWriter,
@@ -503,7 +525,14 @@ export async function buildApp({
     if (store) await app.register(ingestRoutes(store, orgs));
     // The board and the workflow definitions it resolves against: per-org runtimes, the routes
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
-    await app.register(jobRoutes({ orgs, forgeGate, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
+    await app.register(
+        jobRoutes({
+            orgs,
+            forgeGate,
+            pullRequests: pullRequestDepsOf({ config, orgs, memberGrants, prWriter, githubMint }),
+            ...(metrics ? { claimPoll: metrics.claimPoll } : {}),
+        })
+    );
     registerTitleRoute(app, orgs);
     await app.register(preflightRoutes({ orgs, forgeGate }));
     await app.register(

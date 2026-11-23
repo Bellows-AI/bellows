@@ -139,7 +139,7 @@ describe('edit and retarget', () => {
 });
 
 describe('classification', () => {
-    const answering = (status: number, body: unknown = { message: 'x' }, headers: HeadersInit = {}) =>
+    const answering = (status: number, body: unknown = { message: 'x' }, headers: Record<string, string> = {}) =>
         createPrWriter({
             apiUrl: fake.base,
             fetchFn: async () => new Response(JSON.stringify(body), { status, headers }),
