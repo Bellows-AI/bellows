@@ -165,6 +165,18 @@ describe('test:changed plan', () => {
             expect(steps.some((step) => step.label.startsWith('widened'))).toBe(false);
         });
 
+        it.each([
+            [
+                'docker/skills/factory-github/SKILL.md',
+                ['core/test/skills.test.ts', 'driver/test/skill-helper-paths.test.ts'],
+            ],
+            ['server/test-db/new-suite.test.ts', ['server/test/test-db.harness.test.ts']],
+            ['e2e/specimen/index.html', ['web/test/styles.test.ts']],
+        ])('selects the suites that walk the directory of %s', (file, scanners) => {
+            const selected = run([file]).flatMap((step) => step.vitest ?? []);
+            for (const scanner of scanners) expect(selected, scanner).toContain(scanner);
+        });
+
         it('greps a SKILL.md by its directory, not by the name every skill shares', () => {
             const asked: string[][] = [];
             run(['docker/skills/factory-github/SKILL.md'], {

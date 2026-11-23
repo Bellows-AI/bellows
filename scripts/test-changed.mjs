@@ -32,6 +32,14 @@ const SOURCE_SCANNERS = {
     web: ['web/test/styles.test.ts'],
 };
 
+// Suites that walk a directory and import nothing from it: a change anywhere under it selects them, whatever else
+// names the file (the import graph and the name grep cannot see a directory walk).
+const DIRECTORY_SCANNERS = [
+    [/^docker\/skills\//, ['core/test/skills.test.ts', 'driver/test/executor-images.test.ts', 'driver/test/skill-helper-paths.test.ts']],
+    [/^server\/test-db\//, ['server/test/test-db.harness.test.ts']],
+    [/^e2e\/specimen\//, ['web/test/styles.test.ts']],
+];
+
 // The DB suites (`vitest.db.config.ts` includes `server/test-db/**/*.test.ts`).
 const DB_ROOT = 'server/test-db';
 // The DB config's globalSetup and setupFiles, and the modules they load: every DB suite runs under them.
@@ -88,6 +96,7 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
 
     for (const file of changed) {
         const pkg = file.split('/')[0];
+        for (const [directory, scanners] of DIRECTORY_SCANNERS) if (directory.test(file)) for (const s of scanners) named.add(s);
         if (TEST_TREE.test(file)) {
             // A test file or helper added, moved or changed moves the project lists and the test scans.
             named.add('core/test/vitest-projects.test.ts');

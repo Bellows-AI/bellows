@@ -27,9 +27,12 @@ import { memberGrantsOver, signMemberIn } from './member-grant-rig.js';
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const STARTER = testUser('merge-starter');
+const BLOCKED = testUser('merge-blocked');
 const INSTALLATION_TOKEN = 'ghs_installation';
 const PASSES = 5;
-const db = useTestDb({ orgs: [ORG], users: [STARTER], max: 10 });
+/** The default window: four dispatches at once, four candidates listed for each. */
+const BLOCKED_BATCHES = 16;
+const db = useTestDb({ orgs: [ORG], users: [STARTER, BLOCKED], max: 10 });
 
 let sql: Sql;
 let jobs: JobStore;
@@ -101,8 +104,8 @@ const plan = (): BatchPlan => batchPlan('Merge', [{ key: 'one', policy: 'automer
 
 let nextPr = 7000;
 /** A started batch (by STARTER) whose task succeeded and published a PR the fake GitHub reports ready. */
-async function readyBatch() {
-    const id = await startBatch(store, plan(), STARTER.id);
+async function readyBatch(starter = STARTER.id) {
+    const id = await startBatch(store, plan(), starter);
     await store.reconcile(id);
     const root = await rootOf(store, id, 'a');
     nextPr += 1;
@@ -197,6 +200,22 @@ describe.skipIf(!enabled)('automerge as the batch starter', () => {
         expect(merges).toEqual([]);
         expect(await intentsOf(id)).toEqual([]);
         expect(await attentionOf(id)).toBeNull();
+    });
+
+    it('lists past token-blocked candidates: sixteen blocked older batches do not starve an eligible one', async () => {
+        const pair = await signMemberIn({ grants, fake, orgId: ORG, user: STARTER });
+        const blocked: string[] = [];
+        // BLOCKED holds no grant: each of these is older than the eligible batch and fills the whole default window.
+        for (let i = 0; i < BLOCKED_BATCHES; i += 1) blocked.push((await readyBatch(BLOCKED.id)).id);
+        const { number } = await readyBatch();
+
+        await mergerOf(grants).mergeDue();
+
+        expect(merges).toEqual([{ number, token: pair.access_token }]);
+        for (const id of blocked) {
+            expect(await intentsOf(id)).toEqual([]);
+            expect(await attentionOf(id)).toBeNull();
+        }
     });
 
     // Pin, green before the change: no member grants (AUTH_MODE=none) merges with the installation token.

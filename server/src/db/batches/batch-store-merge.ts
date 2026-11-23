@@ -100,10 +100,18 @@ interface CandidateRow {
  */
 function candidateRows(
     db: Sql | TransactionSql,
-    run: { orgId: string; now: Date; limit: number; only?: { batchId: string; taskKey: string } }
+    run: {
+        orgId: string;
+        now: Date;
+        limit: number;
+        only?: { batchId: string; taskKey: string };
+        /** `batch_id:task_key` of candidates already looked at: a later page lists past them. */
+        seen?: string[];
+    }
 ) {
-    const { orgId, now, limit, only } = run;
+    const { orgId, now, limit, only, seen = [] } = run;
     const scope = only ? db`and t.batch_id = ${only.batchId} and t.key = ${only.taskKey}` : db``;
+    const unseen = seen.length > 0 ? db`and not ((t.batch_id || ':' || t.key) = any(${seen}::text[]))` : db``;
     return db<CandidateRow[]>`
         select t.batch_id, t.key as task_key, a.attempt, s.policy, t.completion_kind, t.execution, t.gate,
                tg.branch as target_branch, o.attempt as o_attempt, o.outcome, o.stale, o.error_code, o.base_branch,
@@ -126,6 +134,7 @@ function candidateRows(
           and o.outcome = ${OUTCOME_READY} and not o.stale and o.error_code is null
           and o.attempt = a.attempt and o.base_branch = tg.branch and o.head_sha is not null
           ${scope}
+          ${unseen}
           and not exists (
               select 1 from batch_decision d
               where d.org_id = t.org_id and d.batch_id = t.batch_id and d.key = ${`${DECISION_ADVANCE}:`}::text || t.stage_key
@@ -193,58 +202,80 @@ export async function claimMerges(
 ): Promise<MergeIntent[]> {
     const { sql, orgId } = deps;
     const now = nowOf(deps);
-    const listed = await candidateRows(sql, { orgId, now, limit: limit * LISTING_FACTOR });
     const intents: MergeIntent[] = [];
-    for (const row of listed) {
-        if (intents.length >= limit) break;
-        if (!candidateOf(row).merge) continue;
-        if (!(await admit({ batchId: row.batch_id, repo: row.pr_repo, startedBy: row.started_by }))) continue;
-        const intent = await sql.begin(async (tx) => {
-            const [batch] = await tx<{ id: string }[]>`
-                select b.id from batch b
-                where b.org_id = ${orgId} and b.id = ${row.batch_id} and b.status = ${BATCH_ROW_STARTED}
-                  and ${unfenced(tx, now)}
-                for update
-            `;
-            if (!batch) return null;
-            // Under the lock the row is read again: what was listed may have moved since.
-            const [fresh] = await candidateRows(tx, {
-                orgId,
-                now,
-                limit: 1,
-                only: { batchId: row.batch_id, taskKey: row.task_key },
-            });
-            if (!fresh || !candidateOf(fresh).merge) return null;
-            const [inserted] = await tx<{ id: string }[]>`
-                insert into batch_merge (org_id, batch_id, task_key, attempt, observation_revision, repo, pr_number,
-                                         target_branch, head_sha, target_sha, method, state, lease_until)
-                values (${orgId}, ${fresh.batch_id}, ${fresh.task_key}, ${fresh.attempt}, ${fresh.revision},
-                        ${fresh.pr_repo}, ${fresh.pr_number}, ${fresh.target_branch}, ${fresh.head_sha!},
-                        ${fresh.target_sha}, ${MERGE_METHOD}, ${MERGE_DISPATCHING},
-                        ${new Date(now.getTime() + MERGE_LEASE_MS)})
-                on conflict do nothing
-                returning id::text as id
-            `;
-            if (!inserted) return null;
-            await tx`
-                update batch_task set attention = null
-                where org_id = ${orgId} and batch_id = ${fresh.batch_id} and key = ${fresh.task_key}
-                  and attention = ${ATTENTION_REFUSED}
-            `;
-            return {
-                id: inserted.id,
-                batchId: fresh.batch_id,
-                taskKey: fresh.task_key,
-                attempt: fresh.attempt,
-                repo: fresh.pr_repo,
-                prNumber: fresh.pr_number,
-                targetBranch: fresh.target_branch,
-                headSha: fresh.head_sha!,
-            };
-        });
-        if (intent) intents.push(intent);
+    // Candidates looked at and passed over (no token, a competing slot, moved since) spend nothing and hold no place in
+    // the window: the next page lists past them, so a run of blocked old batches cannot starve an eligible newer one.
+    const seen: string[] = [];
+    while (intents.length < limit) {
+        const listed = await candidateRows(sql, { orgId, now, limit: limit * LISTING_FACTOR, seen });
+        if (listed.length === 0) break;
+        for (const row of listed) {
+            if (intents.length >= limit) break;
+            seen.push(`${row.batch_id}:${row.task_key}`);
+            const intent = await claimIfAdmitted(deps, now, row, admit);
+            if (intent) intents.push(intent);
+        }
     }
     return intents;
+}
+
+async function claimIfAdmitted(
+    deps: MergeDeps,
+    now: Date,
+    row: CandidateRow,
+    admit: (candidate: MergeCandidate) => Promise<boolean>
+): Promise<MergeIntent | null> {
+    if (!candidateOf(row).merge) return null;
+    if (!(await admit({ batchId: row.batch_id, repo: row.pr_repo, startedBy: row.started_by }))) return null;
+    return claimOne(deps, now, row);
+}
+
+/** One candidate's intent under the batch's lock, or null when it moved since it was listed or conflicts on an index. */
+async function claimOne(deps: MergeDeps, now: Date, row: CandidateRow): Promise<MergeIntent | null> {
+    const { sql, orgId } = deps;
+    return sql.begin(async (tx) => {
+        const [batch] = await tx<{ id: string }[]>`
+            select b.id from batch b
+            where b.org_id = ${orgId} and b.id = ${row.batch_id} and b.status = ${BATCH_ROW_STARTED}
+              and ${unfenced(tx, now)}
+            for update
+        `;
+        if (!batch) return null;
+        // Under the lock the row is read again: what was listed may have moved since.
+        const [fresh] = await candidateRows(tx, {
+            orgId,
+            now,
+            limit: 1,
+            only: { batchId: row.batch_id, taskKey: row.task_key },
+        });
+        if (!fresh || !candidateOf(fresh).merge) return null;
+        const [inserted] = await tx<{ id: string }[]>`
+            insert into batch_merge (org_id, batch_id, task_key, attempt, observation_revision, repo, pr_number,
+                                     target_branch, head_sha, target_sha, method, state, lease_until)
+            values (${orgId}, ${fresh.batch_id}, ${fresh.task_key}, ${fresh.attempt}, ${fresh.revision},
+                    ${fresh.pr_repo}, ${fresh.pr_number}, ${fresh.target_branch}, ${fresh.head_sha!},
+                    ${fresh.target_sha}, ${MERGE_METHOD}, ${MERGE_DISPATCHING},
+                    ${new Date(now.getTime() + MERGE_LEASE_MS)})
+            on conflict do nothing
+            returning id::text as id
+        `;
+        if (!inserted) return null;
+        await tx`
+            update batch_task set attention = null
+            where org_id = ${orgId} and batch_id = ${fresh.batch_id} and key = ${fresh.task_key}
+              and attention = ${ATTENTION_REFUSED}
+        `;
+        return {
+            id: inserted.id,
+            batchId: fresh.batch_id,
+            taskKey: fresh.task_key,
+            attempt: fresh.attempt,
+            repo: fresh.pr_repo,
+            prNumber: fresh.pr_number,
+            targetBranch: fresh.target_branch,
+            headSha: fresh.head_sha!,
+        };
+    });
 }
 
 /** True when the batch is cancelled, expired, past its deadline or finished: nothing is requested behind a fence. */
