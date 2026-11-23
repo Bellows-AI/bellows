@@ -120,6 +120,45 @@ const readyIdOf = async (jobId: string) =>
 
 const prUrl = (number: number) => `https://github.com/${BATCH_REPO}/pull/${number}`;
 
+describe.skipIf(!enabled)('task.ready for a batch task on a GitLab repository', () => {
+    /** A settled one-task batch whose thread and publication are turned GitLab by SQL before its PR is read. */
+    async function gitlabSettled() {
+        const { root, number } = await settled(planOf());
+        await sql`update job set forge = 'gitlab', host = 'gl.example' where org_id = ${ORG} and root_job_id = ${root}`;
+        await sql`update job_pr set forge = 'gitlab', host = 'gl.example' where org_id = ${ORG} and root_job_id = ${root}`;
+        return { root, number };
+    }
+    /** Re-fires the observation trigger on a row that now names GitLab (the batch stores write the pair in 532a2-ii). */
+    const observeOnGitlab = (number: number) => sql`
+        update batch_pr_observation set forge = 'gitlab', host = 'gl.example', outcome = 'review_required', stale = false
+        where org_id = ${ORG} and pr_number = ${number}
+    `;
+    const gitlabReadyOf = (root: string) =>
+        sql`select forge, host from notification_event where org_id = ${ORG} and root_job_id = ${root} and kind = 'task.ready'`;
+
+    it('carries the thread forge and host on the event', async () => {
+        const { root, number } = await gitlabSettled();
+        await observe(number, { requiredApprovals: 1, approvals: 0 });
+        await observeOnGitlab(number);
+
+        expect(await gitlabReadyOf(root)).toEqual([{ forge: 'gitlab', host: 'gl.example' }]);
+    });
+
+    it('is not suppressed by a GitHub merge of the same path and number', async () => {
+        const { root, number } = await gitlabSettled();
+        await observe(number, { requiredApprovals: 1, approvals: 0 });
+        // What the first read emitted is not under test; the merge lands before the GitLab observation does.
+        await sql`delete from notification_event where org_id = ${ORG} and root_job_id = ${root}`;
+        await sql`
+            insert into pr_merge (org_id, forge, host, repo, pr_number, delivery_id, merged_at)
+            values (${ORG}, 'github', 'github.com', ${BATCH_REPO}, ${number}, 'gh-merge', now())
+        `;
+        await observeOnGitlab(number);
+
+        expect(await gitlabReadyOf(root)).toEqual([{ forge: 'gitlab', host: 'gl.example' }]);
+    });
+});
+
 describe.skipIf(!enabled)('task.ready for a batch task with a published PR', () => {
     it('a batch PR task emits no task.ready when its run settles', async () => {
         const { root } = await settled(planOf());

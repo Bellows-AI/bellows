@@ -127,6 +127,19 @@ describe.skipIf(!enabled)('task.blocked for a batch task', () => {
         });
     });
 
+    it('carries the thread forge and host on the event', async () => {
+        const { id, root } = await launched(planWith({ repairs: 1 }));
+        await sql`update job set forge = 'gitlab', host = 'gl.example' where org_id = ${ORG} and root_job_id = ${root}`;
+        await failWith(root, 'gate', 'failed', 'verification');
+        await store.reconcile(id);
+        await failWith(root, 'gate', 'failed', 'verification');
+        await store.reconcile(id);
+
+        expect(
+            await sql`select forge, host from notification_event where org_id = ${ORG} and root_job_id = ${root} and kind = 'task.blocked'`
+        ).toEqual([{ forge: 'gitlab', host: 'gl.example' }]);
+    });
+
     it('a run that reports itself blocked emits one task.blocked', async () => {
         const { id, root } = await launched(planWith());
         await failWith(root, 'blocked');

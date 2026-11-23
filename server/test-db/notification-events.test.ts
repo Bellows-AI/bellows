@@ -585,3 +585,43 @@ describe.skipIf(!enabled)('notification events — database', () => {
         expect(await events(id, OTHER_ORG)).toMatchObject([{ org_id: OTHER_ORG, kind: 'task.ready' }]);
     });
 });
+
+/** An event copies its job's forge and host as well as its path (migration 169); the thread is turned GitLab by SQL. */
+describe.skipIf(!enabled)('notification events carry the job forge and host — database', () => {
+    const GITLAB = { forge: 'gitlab', host: 'gl.example', repo: 'g/sub/p' };
+    const tripleOf = async (id: string, kind: string) =>
+        sql`select forge, host, repo from notification_event where org_id = ${ORG} and job_id = ${id} and kind = ${kind}`;
+    const toGitlab = (id: string) =>
+        sql`update job set forge = ${GITLAB.forge}, host = ${GITLAB.host}, repo = ${GITLAB.repo}
+            where org_id = ${ORG} and id = ${id}`;
+
+    it('task.ready on settle', async () => {
+        const id = await queue('ship it', 'o/n');
+        await toGitlab(id);
+        const c = await claim();
+        await store.complete(id, c.leaseToken, succeeded);
+
+        expect(await tripleOf(id, 'task.ready')).toEqual([GITLAB]);
+    });
+
+    it('task.blocked on a failed verdict', async () => {
+        const id = await queue('ship it', 'o/n');
+        await toGitlab(id);
+        const c = await claim();
+        await store.complete(id, c.leaseToken, { status: 'failed', exitCode: 1, output: 'no', failureKind: 'timeout' });
+
+        expect(await tripleOf(id, 'task.blocked')).toEqual([GITLAB]);
+    });
+
+    it('task.question on a pending question', async () => {
+        const id = await queue('ask it', 'o/n');
+        await toGitlab(id);
+        const c = await claim();
+        await sql`
+            insert into job_question (org_id, job_id, question_id, attempt, claim_seq, lease_token, questions, state)
+            values (${ORG}, ${id}, 'q1', 1, ${c.claimSeq}, ${c.leaseToken}, ${sql.json([{ question: 'which db?' }])}, 'pending')
+        `;
+
+        expect(await tripleOf(id, 'task.question')).toEqual([GITLAB]);
+    });
+});
