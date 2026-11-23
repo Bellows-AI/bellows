@@ -1,4 +1,4 @@
--- Forge-neutral repository identity (BEL-532a): every repo-bearing table gains `forge` and `host`, so a
+-- Forge-neutral repository identity: every repo-bearing table gains `forge` and `host`, so a
 -- repository is the triple (forge, host, path) and GitLab nested groups and the same path on two hosts fit.
 -- Existing rows are GitHub on github.com, which the constant defaults say.
 --
@@ -6,7 +6,7 @@
 -- is `not null` with a constant default (metadata-only on PG >= 11), every check is `not valid` (new writes are
 -- held to it, existing rows all hold the default), and the narrow keys the previous release infers or relies on
 -- stay: pr_merge_pk (its `on conflict (org_id, repo, pr_number)`), batch_merge_slot_idx and job_admission_repo_uk.
--- The contract migration (BEL-562, one release later) drops those, the defaults and tracked_repo.owner/name.
+-- The contract migration (one release later) drops those, the defaults and tracked_repo.owner/name.
 --
 -- `path` stays in the existing `repo` column (tracked_repo: owner/name, env_var and workflow: repo_owner/repo_name)
 -- until then. Left out by design: session_branch, github_delivery, transcript_tool_event.pr_repo and
