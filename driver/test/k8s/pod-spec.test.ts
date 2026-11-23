@@ -1050,7 +1050,8 @@ describe('a docker class', () => {
         expect(pod.volumes).toEqual(
             expect.arrayContaining([
                 { name: DOCKER_DATA_VOLUME, emptyDir: { medium: 'Memory', sizeLimit: '6Gi' } },
-                { name: DOCKER_TMP_VOLUME, emptyDir: {} },
+                // The shared TMPDIR is the docker class's suite scratch: in memory, off virtiofs, as the gate's /tmp is.
+                { name: DOCKER_TMP_VOLUME, emptyDir: { medium: 'Memory' } },
                 { name: DOCKER_SOCK_VOLUME, emptyDir: {} },
             ])
         );
