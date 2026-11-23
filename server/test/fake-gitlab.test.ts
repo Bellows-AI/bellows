@@ -1,4 +1,6 @@
+import { rmSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type FakeGitlab, GITLAB_TOKEN_TTL_S, startFakeGitlab } from '../test-db/fake-gitlab.js';
 
@@ -387,9 +389,60 @@ describe('fake GitLab: merge requests', () => {
             detailed_merge_status: 'conflict',
             has_conflicts: true,
         });
-        expect((await gl.send('PUT', api('/merge_requests/1/merge'), { token })).status).toBe(422);
+        expect((await gl.send('PUT', api('/merge_requests/1/merge'), { token })).status).toBe(406);
         await gl.control('gitlab/merge_status', { project: PROJECT, iid: 1 });
         expect((await gl.send('PUT', api('/merge_requests/1/merge'), { token })).status).toBe(200);
+    });
+
+    it('merges diverged branches with both sides changes, merge commit and squash alike', async () => {
+        for (const squash of [false, true]) {
+            await gl.stop();
+            gl = await startFakeGitlab();
+            await seed({ files: { 'README.md': 'hello\n', 'a.txt': 'a\n' } });
+            const { access_token: token } = await gl.signIn();
+            await gl.control('gitlab/commit', { project: PROJECT, branch: 'main', files: { 'a.txt': 'target\n' } });
+            await openMr(token);
+            const merged = await gl.send('PUT', api('/merge_requests/1/merge'), { token, body: { squash } });
+            expect(merged.status).toBe(200);
+            const raw = (path: string) => gl.send('GET', api(`/repository/files/${path}/raw?ref=main`), { token });
+            expect((await raw('a.txt')).body).toBe('target\n');
+            expect((await raw('README.md')).body).toBe('changed\n');
+        }
+    });
+
+    it('reports a conflict and refuses the merge without moving the target', async () => {
+        await seed();
+        const { access_token: token } = await gl.signIn();
+        await gl.control('gitlab/commit', { project: PROJECT, branch: 'main', files: { 'README.md': 'other\n' } });
+        await openMr(token);
+        const view = (await gl.send('GET', api('/merge_requests/1'), { token })).body;
+        expect(view).toMatchObject({ detailed_merge_status: 'conflict', has_conflicts: true });
+        const before = (await gl.send('GET', api('/repository/branches/main'), { token })).body.commit.id;
+        expect((await gl.send('PUT', api('/merge_requests/1/merge'), { token })).status).toBe(406);
+        expect((await gl.send('GET', api('/repository/branches/main'), { token })).body.commit.id).toBe(before);
+    });
+
+    it('answers an error, not a crash, when a branch is deleted before the merge', async () => {
+        for (const gone of ['feature', 'main']) {
+            await gl.stop();
+            gl = await startFakeGitlab();
+            await seed();
+            const { access_token: token } = await gl.signIn();
+            await openMr(token);
+            await gl.send('DELETE', api(`/repository/branches/${gone}`), { token });
+            expect((await gl.send('PUT', api('/merge_requests/1/merge'), { token })).status).toBe(422);
+            expect((await gl.send('GET', api('/merge_requests/1'), { token })).status).toBe(200);
+        }
+    });
+
+    it('answers 500 and keeps serving when a handler rejects', async () => {
+        await seed();
+        const { access_token: token } = await gl.signIn();
+        await openMr(token);
+        // a repository that vanished under the fake makes the next read reject
+        rmSync(join(gl.stateDir, 'repos'), { recursive: true, force: true });
+        expect((await gl.send('GET', api('/repository/branches'), { token })).status).toBe(500);
+        expect((await gl.send('GET', '/api/v4/user', { token })).status).toBe(200);
     });
 
     it('refuses to merge a draft', async () => {

@@ -135,11 +135,20 @@ export const createRepos = (root) => {
                 return null;
             }
         },
-        /** The target takes the source's tree: one commit when squashed, else a merge commit that also parents the source. */
+        /** Three-way merge of the source into the target: the merged tree's id, or null when the two conflict. */
+        async mergeTree(id, source, target) {
+            const into = await resolve(id, `refs/heads/${target}`);
+            const from = await resolve(id, `refs/heads/${source}`);
+            if (!into || !from) return null;
+            const out = await attempt(id, ['merge-tree', '--write-tree', into, from]);
+            return out === null ? null : out.split('\n')[0];
+        },
+        /** Merge the source into the target keeping both sides' changes: one commit when squashed, else a merge commit that also parents the source. Null on a conflict, no ref moved. */
         async merge(id, { source, target, squash, message, author, date }) {
+            const tree = await this.mergeTree(id, source, target);
+            if (!tree) return null;
             const from = await text(id, ['rev-parse', `refs/heads/${source}`]);
             const into = await text(id, ['rev-parse', `refs/heads/${target}`]);
-            const tree = await text(id, ['rev-parse', `${from}^{tree}`]);
             const sha = await commitTree(id, tree, squash ? [into] : [into, from], message, author, date);
             await text(id, ['update-ref', `refs/heads/${target}`, sha, into]);
             return sha;

@@ -319,10 +319,12 @@ export const registerGitlab = (forge) => {
         if (branch) mr.lastSha = branch.sha;
         return mr.lastSha;
     };
-    const mergeStatus = (project, mr, sha) => {
+    const mergeStatus = (project, mr, sha, { broken = false, conflict = false } = {}) => {
         if (mr.state !== 'opened') return 'not_open';
         if (mr.statusOverride) return mr.statusOverride;
+        if (broken) return 'broken_status';
         if (DRAFT_TITLE.test(mr.title)) return 'draft_status';
+        if (conflict) return 'conflict';
         if (project.onlyDiscussions && hasUnresolved(mr)) return 'discussions_not_resolved';
         if (project.onlyPipeline) {
             const head = headPipeline(project, sha);
@@ -331,9 +333,16 @@ export const registerGitlab = (forge) => {
         }
         return 'mergeable';
     };
+    /** Whether either branch is gone, and whether the source conflicts with the target; only an open MR is asked. */
+    const mergeFacts = async (project, mr) => {
+        if (mr.state !== 'opened') return {};
+        const [source, target] = await Promise.all([repos.branch(project.id, mr.source), repos.branch(project.id, mr.target)]);
+        if (!source || !target) return { broken: true };
+        return { conflict: (await repos.mergeTree(project.id, mr.source, mr.target)) === null };
+    };
     const mrJson = async (project, mr, request) => {
         const sha = await headSha(project, mr);
-        const status = mergeStatus(project, mr, sha);
+        const status = mergeStatus(project, mr, sha, await mergeFacts(project, mr));
         const head = headPipeline(project, sha);
         return {
             id: mr.id,
@@ -454,8 +463,9 @@ export const registerGitlab = (forge) => {
         if (input.sha && input.sha !== sha) {
             return forge.json(ctx.response, 409, { message: `SHA does not match HEAD of source branch: ${sha}` });
         }
-        if (mergeStatus(project, mr, sha) !== 'mergeable') {
-            return forge.json(ctx.response, 422, { message: 'Branch cannot be merged' });
+        const status = mergeStatus(project, mr, sha, await mergeFacts(project, mr));
+        if (status !== 'mergeable') {
+            return forge.json(ctx.response, status === 'conflict' ? 406 : 422, { message: 'Branch cannot be merged' });
         }
         const squash = project.squashOption === 'always' || (project.squashOption !== 'never' && flag(input.squash));
         const merged = await repos.merge(project.id, {
@@ -468,6 +478,7 @@ export const registerGitlab = (forge) => {
             author: authorOf(ctx.token.login),
             date: now(),
         });
+        if (!merged) return forge.json(ctx.response, 406, { message: 'Branch cannot be merged' });
         mr.state = 'merged';
         mr.squash = squash;
         mr.mergeCommitSha = merged;

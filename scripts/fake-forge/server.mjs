@@ -131,7 +131,14 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
             });
         });
 
-    const server = createServer(async (request, response) => {
+    const server = createServer((request, response) => {
+        // A handler that rejects answers 500 (when nothing was sent yet) and never takes the process down.
+        dispatch(request, response).catch(() => {
+            if (!response.headersSent) forge.json(response, 500, { message: '500 Internal Server Error' });
+            else response.destroy();
+        });
+    });
+    async function dispatch(request, response) {
         const url = new URL(request.url, 'http://fake-forge');
         const credential = credentialOf(request);
         const holder = credential ? forge.resolve(credential) : null;
@@ -171,7 +178,7 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
             });
         }
         return forge.json(response, 404, { message: 'Not Found' });
-    });
+    }
 
     return {
         listen: (port, host = '127.0.0.1') =>
