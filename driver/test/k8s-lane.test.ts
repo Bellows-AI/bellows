@@ -552,7 +552,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         expect(takeover).toContain('tk_kill');
         expect(script).toContain('expired="$(expire_claim_one "$1")"');
         expect(takeover).toContain('factory-stub-commit');
-        expect(takeover).toContain('lane-gh-hold');
+        expect(takeover).toContain('lane-push-hold');
         // Barriers sit on the job's own task volume, reached through its pods, never the dashboard's claim.
         expect(script).toContain('TK_D="/task/.lane-kill-"');
         expect(takeover).toContain('tk_use "$t5"');

@@ -395,6 +395,7 @@ describe('test-jobs --changed path-to-phase map', () => {
             'driver',
             'driver-kill',
             'compose-driver',
+            'publish-member',
         ]);
     });
 

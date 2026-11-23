@@ -38,6 +38,7 @@ export const PHASES = [
     'question-round-trip',
     'finish-gate',
     'pinned-skills',
+    'publish-member',
     'mcp',
     'gitlab',
 ];
@@ -53,7 +54,7 @@ const RECOVERY = ['node-disruption', 'driver-kill'];
 // [pattern, phases | FULL | NONE, reason]. First match wins, so a specific file precedes its directory.
 export const RULES = [
     // --- the shared fixture: every board phase builds on it -------------------------------------
-    [/^scripts\/(test-jobs\.sh|test-jobs-changed\.mjs|stub-agent\.sh|stub-runner\.Dockerfile|lane-gh\.sh|lane-lib\.sh|lane-api\.mjs|lane-slow-jobs\.mjs)$/, FULL, 'lane harness and stub image'],
+    [/^scripts\/(test-jobs\.sh|test-jobs-changed\.mjs|stub-agent\.sh|stub-runner\.Dockerfile|lane-lib\.sh|lane-api\.mjs|lane-slow-jobs\.mjs)$/, FULL, 'lane harness and stub image'],
     [/^scripts\/fake-forge\/[^/]+\.mjs$/, FULL, 'the fake forge the lane serves'],
     // One file per phase (scripts/lanes/jobs): a phase file runs that phase; the fixture the services phases share runs them all.
     [/^scripts\/lanes\/jobs\/service-fixture\.sh$/, ['services', 'orphan-reaper', 'node-disruption'], 'the service fixture three phases build on'],
@@ -133,7 +134,9 @@ export const RULES = [
     [/^driver\/src\/(skill-inputs\.ts|scripts\/skill-install\.cjs|board\/board-skills\.ts)$/, ['driver', 'pinned-skills'], 'pinned skill delivery'],
     [/^driver\/src\/(input-control\.ts|task-inputs\.ts|loop\/loop-inputs\.ts|scripts\/attachment-(?:fetch|extract)\.cjs)$/, ['driver', 'pinned-skills'], 'task input and pinned skill delivery'],
     [/^scripts\/lane-skills\.mjs$/, ['pinned-skills'], 'the pinned-skills phase publisher'],
-    [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish(-retry)?|loop\/loop-pr-operation)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
+    [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish(-retry)?|loop\/loop-pr-operation|board\/board-pull-request)\.ts$/, ['driver', 'driver-kill', 'compose-driver', 'publish-member'], 'publish'],
+    [/^(server\/src\/github\/pr-write|server\/src\/forge\/pr-token|server\/src\/routes\/jobs\/job-handlers-pull-request|server\/src\/db\/jobs\/job-store-pr-write)\.ts$/, ['publish-member'], 'the board\'s PR write as the member'],
+    [/^scripts\/publish-member-client\.mjs$/, ['publish-member'], 'the publish-member phase member'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
     [/^driver\/src\/(loop\/loop-gates|loop\/loop-gate-pass|loop\/loop-finish|loop\/loop-run-control|gate-manager|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs|dockerd-loss)\.ts$/, ['driver', 'workflows', 'finish-gate'], 'gates and phases'],
     [/^driver\/src\/scripts\/gate-(loop|shell|github)\.sh$/, ['driver', 'workflows'], 'gates'],

@@ -1,10 +1,8 @@
 # The takeover and drain phases share these.
 # Barriers are flat files at /task/.lane-kill-<case>.* on the job's own task volume: a
 # volume only the pods of its thread mount, so they are reached through whichever of the job's pods
-# mounts /task — the origin's state and push log through the origin pod. The stub gh keeps its PR list
-# and hold in /task/.lane-gh.
+# mounts /task — the origin's state, push log and push hold through the origin pod.
 TK_D="/task/.lane-kill-"
-TK_GH="/task/.lane-gh"
 TK_REPO="/origins/$SMOKE_REPO.git"
 TK_JOB=''
 
@@ -185,10 +183,13 @@ tk_check() { # tk_check <name> <got> <want>
     [ "$2" = "$3" ] && ok "$1" || bad "$1" "got '$2', want '$3'"
 }
 
-tk_prepare() { # tk_prepare -> the origin's push log hook exists; the lane stops when it cannot
-    # The origin keeps a push log (a hook): its daemon user owns the repository, so nothing else need write it.
+tk_prepare() { # tk_prepare -> the origin's push log and push hold hooks exist; the lane stops when they cannot
+    # The origin keeps a push log (a hook): its daemon user owns the repository, so nothing else need write it. Its
+    # pre-receive hook parks a push while lane-push-hold exists (it touches lane-push-hold.ready, then waits for
+    # lane-push-hold.go): the publish is held at the push, since the PR is the board's write and this board holds no GitHub.
     tk_origin sh -c 'printf "%s\n" "#!/bin/sh" "while read old new ref; do echo \"\$ref\" >>lane-pushes.log; done" >"$1/hooks/post-receive" &&
-        chmod 0755 "$1/hooks/post-receive"' sh "$TK_REPO" >/dev/null 2>&1 &&
+        printf "%s\n" "#!/bin/sh" "if [ -e lane-push-hold ]; then : >lane-push-hold.ready; t=\$((\$(date +%s)+600)); while [ ! -e lane-push-hold.go ] && [ \"\$(date +%s)\" -lt \"\$t\" ]; do sleep 0.2; done; fi" >"$1/hooks/pre-receive" &&
+        chmod 0755 "$1/hooks/post-receive" "$1/hooks/pre-receive"' sh "$TK_REPO" >/dev/null 2>&1 &&
         ok 'the origin push log is prepared' || {
         bad 'the origin push log is prepared' 'the origin pod could not write its repository'
         give_up
@@ -407,19 +408,21 @@ else
     expect_contains 't4b: the next claim resumes the session' "$(driver_logs)" "job $t4b: attempt 1 resuming session"
 fi
 
-# T5. The publish: the agent commits, the stub gh holds `pr create`, the driver dies there. The next
-#     claim resumes from the gates' checkpoint and publishes without a second push or a second PR.
+# T5. The publish: the agent commits, the origin holds the publish's push at its pre-receive hook, the driver dies
+#     there. The next claim resumes from the gates' checkpoint and publishes without a second push. The board of this
+#     lane holds no GitHub, so the PR ask is answered 409 GITHUB_UNAVAILABLE: the push landed and there is no PR; the
+#     board's PR write and its lost-answer reuse are the docker lane's publish-member phase (p2) and takeover-sim t5b.
 begin_phase takeover-publish
 n="$RELEASE-t5"
 commit_plan takeover-publish "$(tk_plan "echo x >>$TK_D$n.gate.count")" || bad 'the publish plan is committed' 'the plan pod did not commit'
 t5_pushes="$(tk_origin_count "$TK_REPO/lane-pushes.log")"
-t5_prs=0 # the stub gh's PR list is the task's own, born with its volume
+tk_origin sh -c ': >"$1/lane-push-hold"' sh "$TK_REPO" >/dev/null 2>&1 || bad 't5: the push hold is set' 'the origin pod could not write its repository'
 t5="$(queue_job "factory-stub-commit factory-stub-wait-$TK_D$n.agent")"
 tk_use "$t5"
 if [ -z "$t5" ]; then
     bad 'the publish job is queued' 'the board refused it'
 else
-    # The hold lives on the task's volume, which exists once the agent stands at its barrier: set it there, then release the agent.
+    # The agent stands at its barrier first; releasing it lets the publish run into the origin's hold.
     at_barrier=""
     until=$(($(date +%s) + 300))
     while [ "$(date +%s)" -lt "$until" ]; do
@@ -429,35 +432,33 @@ else
         }
         sleep 2
     done
-    tk_touch "$TK_GH/lane-gh-hold" && tk_touch "$TK_D$n.agent" || bad 't5: the gh hold is set' "the hold or the release was not written (agent at its barrier: '$at_barrier')"
+    tk_touch "$TK_D$n.agent" || bad 't5: the agent is released' "the release was not written (agent at its barrier: '$at_barrier')"
     held=""
     until=$(($(date +%s) + 300))
     while [ "$(date +%s)" -lt "$until" ]; do
-        [ "$(tk_exec sh -c 'test -e "$1" && echo yes' sh "$TK_GH/lane-gh-hold.ready")" = yes ] && {
+        [ "$(tk_origin sh -c 'test -e "$1" && echo yes' sh "$TK_REPO/lane-push-hold.ready" 2>/dev/null)" = yes ] && {
             held=1
             break
         }
         sleep 1
     done
-    [ -n "$held" ] && ok 't5: the publish is at the PR' || bad 't5: the publish is at the PR' "job: $(job_brief "$t5"): $(job_output "$t5" | tail -c 600)"
+    [ -n "$held" ] && ok 't5: the publish is at the push' || bad 't5: the publish is at the push' "job: $(job_brief "$t5"): $(job_output "$t5" | tail -c 600)"
     tk_kill "$t5"
-    tk_touch "$TK_GH/lane-gh-hold.go" || bad 't5: the hold is released' 'the touch failed'
+    tk_origin sh -c ': >"$1/lane-push-hold.go"' sh "$TK_REPO" >/dev/null 2>&1 || bad 't5: the hold is released' 'the origin pod could not write its repository'
     tk_settled t5 "$t5" "$EXPIRED"
     t5_pushes_now="$(tk_origin_count "$TK_REPO/lane-pushes.log")"
-    t5_prs_now="$(tk_final tk_count "$TK_GH/lane-gh-prs")"
     case "$t5_pushes$t5_pushes_now" in *'?'*) t5_pushed='?' ;; *) t5_pushed=$((t5_pushes_now - t5_pushes)) ;; esac
-    case "$t5_prs$t5_prs_now" in *'?'*) t5_opened='?' ;; *) t5_opened=$((t5_prs_now - t5_prs)) ;; esac
     # The origin's post-receive hook logs ref updates: a no-op push of the same commit fires none, so this
-    # counts updates; the PR count is the check against a duplicate publication.
+    # counts updates.
     tk_check 't5: the branch ref is updated once' "$t5_pushed" 1
-    tk_check 't5: one PR is opened' "$t5_opened" 1
     tk_check 't5: the gate ran once' "$(tk_final tk_count "$TK_D$n.gate.count")" 1
     tk_check 't5: the agent ran once' "$(tk_final tk_ready "$TK_D$n.agent.ready-")" 1
     expect_contains 't5: the next claim takes over the group whose agent exited' "$(driver_logs)" "job $t5: $TOOK_OVER"
     expect_not_contains 't5: the finished runner was not waited out' "$(driver_logs)" "job $t5: $ADOPTED"
     expect_contains 't5: the gates are resumed from their checkpoint' "$(driver_logs)" "job $t5: resumed gates from claim 1's checkpoint"
-    expect_contains 't5: the verdict carries the stub PR' "$(job_output "$t5")" 'factory-smoke/demo/pull/'
+    expect_not_contains 't5: the verdict carries no PR: the board holds no GitHub' "$(job_output "$t5")" 'pull/'
 fi
+tk_origin sh -c 'rm -f "$1/lane-push-hold" "$1/lane-push-hold.ready" "$1/lane-push-hold.go"' sh "$TK_REPO" >/dev/null 2>&1
 
 # The origin carries no plan again: a later phase runs as it always did.
 commit_plan takeover-restore '' && ok 'the plan is removed again' || bad 'the plan is removed again' 'the plan pod did not commit'

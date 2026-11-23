@@ -48,6 +48,7 @@ const JOBS_PHASES = [
     'capacity',
     'mcp',
     'gitlab',
+    'publish-member',
 ];
 // What `scripts/test-k8s.sh --help` lists after `smoke`; smoke is the lane's own prerequisites, not a file.
 const K8S_PHASES = [

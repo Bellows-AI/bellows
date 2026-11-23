@@ -22,7 +22,7 @@ PARALLEL_SLOTS=2
 WATCH_STALLS="${LANE_WATCH_STALLS:-0}"
 valid_phase() {
     case "$1" in
-    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|image-checks|ask-user-question|question-round-trip|finish-gate|pinned-skills|repo-skills|mcp|gitlab) return 0 ;;
+    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|image-checks|ask-user-question|question-round-trip|finish-gate|pinned-skills|repo-skills|mcp|gitlab|publish-member) return 0 ;;
     esac
     return 1
 }
@@ -62,7 +62,7 @@ while [ "$#" -gt 0 ]; do
         echo 'Usage: scripts/test-jobs.sh [--phase PHASE[,PHASE...] | --changed BASE] [--cli-workers 1|2] [--watch-stalls] [--parallel [--slots 2|3|4]]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, run-deadline, review, workflows, acceptance, compose-driver, auth, cooperative-stop,'
-        echo '        tool-isolation, image-checks, ask-user-question, question-round-trip, finish-gate, pinned-skills, repo-skills, driver-kill, capacity, mcp, gitlab'
+        echo '        tool-isolation, image-checks, ask-user-question, question-round-trip, finish-gate, pinned-skills, repo-skills, driver-kill, capacity, mcp, gitlab, publish-member'
         echo 'A comma list (--phase driver,services) runs those phases, in lane order, on one board fixture.'
         echo '--changed BASE runs the phases scripts/test-jobs-changed.mjs maps from `git diff --name-only` since the merge base with BASE'
         echo '        (uncommitted and untracked files included), prints why, and falls back to the full lane for'
@@ -143,6 +143,7 @@ MINT_PORT=$((PORT + 2))
 AUTH_PORT=$((PORT + 3))
 MCP_PORT=$((PORT + 4))
 MCP_IDP_PORT=$((PORT + 5))
+PM_PORT=$((PORT + 7)) # the publish-member board
 # The smoke origin's loopback port (PLAN_BASE). Fixed, not ephemeral: native Linux docker re-allocates an ephemeral
 # published port on every network connect or disconnect, which the compose-driver phase does to the origin.
 ORIGIN_PORT=$((PORT + 6))
@@ -169,8 +170,6 @@ IMAGE_REVIEW="factory-jobs-$RUN_ID-review"
 IMAGE_GH="factory-jobs-$RUN_ID-github"
 IMAGE_KILL="factory-jobs-$RUN_ID-kill"
 IMAGE_ACC="factory-jobs-$RUN_ID-acceptance"
-# The finish-gate phase's real executor images with the lane's `gh` stand-in: <prefix>-claude, <prefix>-opencode.
-IMAGE_FINISH="factory-jobs-$RUN_ID-finish"
 # The smoke origin: a bare repository on a named volume, served by a git daemon on a
 # network the runners join (RUNNER_NETWORK), because a runner clones its task's checkout onto its
 # own task volume and mounts nothing else. REPO_CLONE_BASE names the daemon.
@@ -475,7 +474,7 @@ cleanup() {
         docker rm -f "$ORIGIN_NAME" >/dev/null 2>&1
         docker network rm "$NETWORK" >/dev/null 2>&1
         docker volume rm "$ORIGIN_VOLUME" >/dev/null 2>&1
-        docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_ACC" "$IMAGE_FINISH-claude" "$IMAGE_FINISH-opencode" "$IMAGE_BASE" >/dev/null 2>&1
+        docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_ACC" "$IMAGE_BASE" >/dev/null 2>&1
     fi
     # Which attempts held a slot past LANE_SLOW_S, and which never ended; a report, never a verdict.
     if [ -f "$work/driver.log" ]; then
@@ -501,9 +500,9 @@ trap 'exit 143' TERM
 }
 
 # LANE_FAKE_FORGE=1: the fake forge (scripts/fake-forge) listens on the host for the phases that
-# talk to GitHub's or GitLab's API; its URL is $LANE_FAKE_FORGE_URL, one server for both. Off until the
-# publish switch flips it, except for the gitlab phase, which is about the fixture itself.
-if [ "${LANE_FAKE_FORGE:-0}" = 1 ] || selected_phase gitlab; then
+# talk to GitHub's or GitLab's API; its URL is $LANE_FAKE_FORGE_URL, one server for both. The gitlab phase is about
+# the fixture itself, and the publish-member phase publishes through it (the board opens the PR as the member).
+if [ "${LANE_FAKE_FORGE:-0}" = 1 ] || selected_phase gitlab || selected_phase publish-member; then
     mkdir -p "$work/fake-forge"
     node "$REPO/scripts/fake-forge/server.mjs" "$work/fake-forge" >"$work/fake-forge.port" 2>"$work/fake-forge.log" &
     lane_extra_pids="$lane_extra_pids $!"
@@ -754,12 +753,10 @@ ADOPT_S=$((LANE_ORPHAN_S + LANE_LEASE_S + ${LANE_REBIND_GRACE_MS:-20000} / 1000 
 
 # Barriers and counters for the driver-kill phase. Every container of a run — setup,
 # gates, the agent, the publish steps — mounts the thread's task volume at /task, so a file under
-# $LANE_DIR is one every one of them sees; the publish's own state (the gh stand-in's PR list and
-# hold) sits beside it in /task/.lane-gh, the origin's push log in the bare origin on $ORIGIN_VOLUME.
+# $LANE_DIR is one every one of them sees; the origin's push log is in the bare origin on $ORIGIN_VOLUME.
 # lane_use names the volume of the job under test: the driver creates it at the claim, so a read
 # before then finds it absent, never creates it (a volume docker makes is not one the driver owns).
 LANE_DIR='/task/.lane-kill'
-LANE_GH_DIR='/task/.lane-gh'
 LANE_VOL=''
 LANE_MNT='/task'
 
@@ -1062,7 +1059,7 @@ echo 'building the stub runner images'
 # scripts/stub-agent.sh, beside ctl-agent.cjs, over the node-owned mailbox mount points: the task
 # supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real entrypoints honor.
 cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
-    docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
+    docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/stub-runner.Dockerfile "$work/"
 printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; skip=; line=; for a; do if [ -n \\"$skip\\" ]; then skip=; elif [ \\"$a\\" = --append-system-prompt ]; then skip=1; else line=\\"$line $a\\"; fi; done; echo \\"${line# }\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' "$IMAGE_BASE" >"$work/Dockerfile.ok"
 printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo boom >&2; exit 3"]\n' "$IMAGE_BASE" >"$work/Dockerfile.fail"
 # Issue #814: an agent whose one tool signals everything its uid may, through the CLI's shell.
@@ -1234,6 +1231,8 @@ fi
 . "$REPO/scripts/lanes/jobs/finish-gate.sh"
 
 . "$REPO/scripts/lanes/jobs/pinned-skills.sh"
+
+. "$REPO/scripts/lanes/jobs/publish-member.sh"
 
 . "$REPO/scripts/lanes/jobs/mcp.sh"
 
