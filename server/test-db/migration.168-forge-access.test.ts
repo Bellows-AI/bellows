@@ -4,12 +4,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { assertTestDatabase } from './harness.js';
 
-/** 167 widens the requirement's reason with `forge-access`, the wait of a member who cannot write to the repository. */
+/** 168 widens the requirement's reason with `forge-access`, the wait of a member who cannot write to the repository. */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);
 
-const VERSION = '167_forge_access.sql';
+const VERSION = '168_forge_access.sql';
 const DIR = new URL('../migrations/', import.meta.url);
 let admin: Sql;
 let pool: Sql;
@@ -35,7 +35,7 @@ const versioned = (filter: (name: string) => boolean): string[] =>
         .filter((name) => name.endsWith('.sql') && !name.endsWith('.repeatable.sql') && filter(name))
         .sort();
 
-describe.skipIf(!enabled)('167_forge_access', () => {
+describe.skipIf(!enabled)('168_forge_access', () => {
     it('accepts the new reason, keeps the old ones and refuses an unknown one', async () => {
         await pool`create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now())`;
         for (const name of versioned((n) => n < VERSION)) {

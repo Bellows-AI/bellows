@@ -485,6 +485,28 @@ describe.skipIf(!enabled)('POST /api/jobs/:id/pull-request — a member without 
             await stillOpen(id);
         });
 
+        it('survives a grant that needs reconnecting and a re-link: only the member’s write ends it', async () => {
+            await signMemberIn(grantsOver());
+            const { id, claim } = await running();
+            await openWait(id, claim.leaseToken);
+            await sql`update integration_grant set status = 'reconnect_required' where org_id = ${ORG}`;
+            const broken = await boot({ grants: grantsOver(), writer: writerOver() });
+
+            expect((await ask(broken, id, claim.leaseToken)).json()).toMatchObject({
+                answer: 'waiting',
+                reason: 'reconnect',
+            });
+            await stillOpen(id);
+
+            await signMemberIn(grantsOver());
+            await stillOpen(id);
+
+            await app?.close();
+            const relinked = await boot({ grants: grantsOver(), writer: writerOver() });
+            expect((await ask(relinked, id, claim.leaseToken)).json()).toMatchObject({ operation: 'created' });
+            expect((await requirements(id))[0]!.satisfied_at).toEqual(expect.any(Date));
+        });
+
         it('a successful create closes it', async () => {
             await signMemberIn(grantsOver());
             const instance = await boot({ grants: grantsOver(), writer: writerOver() });

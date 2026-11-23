@@ -21,7 +21,7 @@ export const FORGE_ACCESS_RETRY_SECONDS = 600;
 /** Why the thread waits: no grant, a grant needing reconnect, a starter that no longer exists, or no write access. */
 export type ForgeRequirementReason = 'missing' | 'reconnect' | 'starter-removed' | typeof FORGE_ACCESS_REASON;
 
-/** Opens the root's forge requirement, or restates its reason when one is already open. */
+/** Opens the root's forge requirement, or restates its reason when one is already open (never over `forge-access`). */
 export async function openForgeRequirement(
     db: Db,
     args: { orgId: string; rootJobId: string; forge: string; reason: ForgeRequirementReason }
@@ -30,7 +30,10 @@ export async function openForgeRequirement(
         insert into job_integration_requirement (org_id, root_job_id, provider, reason, target, source)
         values (${args.orgId}, ${args.rootJobId}, ${FORGE_REQUIREMENT_PROVIDER}, ${args.reason}, ${args.forge}, 'create')
         on conflict (org_id, root_job_id, provider) where satisfied_at is null
-        do update set reason = excluded.reason, target = excluded.target
+        do update set target = excluded.target,
+            -- An open write-access wait survives a later grant failure: only a successful member write ends it.
+            reason = case when job_integration_requirement.reason = ${FORGE_ACCESS_REASON}
+                          then job_integration_requirement.reason else excluded.reason end
     `;
 }
 
