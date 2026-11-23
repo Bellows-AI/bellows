@@ -99,6 +99,11 @@ describe('test:changed plan', () => {
         expect(steps.some((step) => step.label.startsWith('widened'))).toBe(false);
     });
 
+    it('leaves a changed DB suite to the DB gate: unit mode does not widen for it', () => {
+        const steps = run(['server/test-db/migration.170-x.test.ts']);
+        expect(steps.some((step) => step.label.startsWith('widened'))).toBe(false);
+    });
+
     it('routes a test helper that reads a changed file through vitest related', () => {
         const steps = run(['server/migrations/reader.sql']);
         expect(vitestArgs(steps).at(-2)).toEqual(['run', 'server/test/job-store.test.ts']);

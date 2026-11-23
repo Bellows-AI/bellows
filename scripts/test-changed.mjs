@@ -33,6 +33,7 @@ const SOURCE_SCANNERS = {
 
 // The DB suites (`vitest.db.config.ts` includes `server/test-db/**/*.test.ts`).
 const DB_ROOT = 'server/test-db';
+const DB_SUITE = new RegExp(`^${DB_ROOT}/.*\\.test\\.ts$`);
 // The DB config's globalSetup and setupFiles, and the modules they load: every DB suite runs under them.
 const DB_SETUP = [
     'global-setup',
@@ -92,6 +93,8 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
             if (addedSet.has(file)) widen(pkg, `${file} was added or removed: directory scans see it`);
             else for (const scanner of SOURCE_SCANNERS[pkg] ?? []) named.add(scanner);
             classify(namedBy([baseName(file)])); // a test that reads the module by path
+        } else if (DB_SUITE.test(file)) {
+            // Run by `--db` alone (vitest.db.config.ts): no unit project includes it, so unit mode has nothing to select.
         } else if (/\.md$/.test(file) && !SHARED_NAME.test(baseName(file))) {
             classify(namedBy([baseName(file)]));
             if (file.startsWith('docs/design-system/')) named.add('web/test/styles.test.ts');
