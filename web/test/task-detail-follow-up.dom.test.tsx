@@ -195,6 +195,31 @@ describe('the follow-up composer drafts', () => {
         expect(screen.queryByText('spec.txt')).toBeNull();
     });
 
+    it('a forge gate refusal says so beside the draft, with the Connect GitHub link', async () => {
+        const user = userEvent.setup();
+        const link = 'http://board.test/api/auth/github?returnTo=%2Ftasks%2Fx&org=o1';
+        board({
+            followUp: () => ({
+                status: 409,
+                body: {
+                    error: `Your GitHub connection needs reconnecting. Connect it to start work on this repository: ${link}`,
+                    code: 'FORGE_GRANT_REQUIRED',
+                    forge: 'github',
+                    standing: 'broken',
+                    connectUrl: link,
+                },
+            }),
+        });
+        renderApp(`/tasks/${A[0]!.id}`);
+        const text = await box();
+        await user.type(text, 'go');
+        await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
+
+        expect(await screen.findByText(/connection needs reconnecting/)).toBeTruthy();
+        expect(screen.getByRole('link', { name: 'Connect GitHub' }).getAttribute('href')).toBe(link);
+        expect(text.value).toBe('go');
+    });
+
     it('releases the lock on a refusal and keeps the draft and its key', async () => {
         const user = userEvent.setup();
         const { sent } = board({

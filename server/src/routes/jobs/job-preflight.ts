@@ -21,6 +21,7 @@ import {
     type ExecutorTypeRead,
 } from '../../skill-catalog.js';
 import { executorTypeOf, modelStanding } from './executor-usable.js';
+import { type ForgeGatedDeps, forgeCheck } from './forge-usable.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body } from '../helpers.js';
 import { parseConnectionIds } from '../connections.js';
@@ -46,7 +47,7 @@ const HTTP_UNAUTHORIZED = 401;
 type Status = 'ok' | 'blocked' | 'unverified';
 
 interface Check {
-    subject: 'repo' | 'executor' | 'model' | 'skill' | 'connection';
+    subject: 'repo' | 'forge' | 'executor' | 'model' | 'skill' | 'connection';
     name: string | null;
     status: Status;
     /** The refusal code create would answer for this blocked check (`NO_MODEL`); absent on the others. */
@@ -427,7 +428,7 @@ function openDetail(provider: string, reason: IntegrationReason): string {
     return `no ${provider} connection of yours: connect one, then pass connections`;
 }
 
-async function handlePreflight(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+async function handlePreflight({ orgs, forgeGate }: ForgeGatedDeps, request: FastifyRequest, reply: FastifyReply) {
     const caller = callerOf(request);
     if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
     const rt = await orgs.for(orgOf(request));
@@ -450,8 +451,10 @@ async function handlePreflight(orgs: OrgRegistry, request: FastifyRequest, reply
     });
     const standing = await connectionStanding(log, selection, { userId, rt }, catalog);
     const model = await modelCheck(log, selection, userId, { rt, executor });
+    const forge = await forgeCheck(log, forgeGate, { orgId: orgOf(request), userId, repo: selection.repo });
     const checks = [
         await repoCheck(log, selection.repo, rt),
+        ...(forge ? [forge] : []),
         executor.check,
         ...(model ? [model] : []),
         ...skillChecks(selection, standing, catalog),
@@ -465,9 +468,9 @@ async function handlePreflight(orgs: OrgRegistry, request: FastifyRequest, reply
  * plugin beside `jobRoutes`; the static segment wins over `/api/jobs/:id`, and no `POST /api/jobs/:id` exists.
  */
 export const preflightRoutes =
-    (orgs: OrgRegistry): FastifyPluginAsync =>
+    (deps: ForgeGatedDeps): FastifyPluginAsync =>
     async (app) => {
         app.post('/api/jobs/preflight', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handlePreflight(orgs, request, reply)
+            handlePreflight(deps, request, reply)
         );
     };

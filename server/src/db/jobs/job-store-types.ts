@@ -13,6 +13,7 @@ import type { HiddenSkill, PinnedSkill } from './job-store-skill-pin.js';
 import type { JobTitleStore } from './job-store-title.js';
 import type { TranscriptToolStore } from './job-store-transcript-tools.js';
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
+import type { ForgeStandingReader } from '../forge-grant-standing.js';
 import type { JobActionStore } from './job-store-action-types.js';
 import type { JobMergeStore } from './job-store-merge.js';
 import type { JobQuestionStore } from './job-store-questions.js';
@@ -447,13 +448,15 @@ export interface JobIntegrationRequirement {
     provider: string;
     /** What a person calls the provider. */
     label: string;
-    reason: 'missing' | 'ambiguous' | 'reconnect';
+    reason: 'missing' | 'ambiguous' | 'reconnect' | 'starter-removed';
     /** `create`: never started; `runtime`: it ran, asked, and was handed back. */
     source: 'create' | 'runtime';
     /** The bound connection a `reconnect` is about; null otherwise. */
     connectionId: string | null;
     /** What the asking helper needs of the provider (for Jira the site); null when it named none. */
     target: string | null;
+    /** The sign-in that clears a `forge` wait, relative to the board's origin; null for every other provider. */
+    connectPath: string | null;
     createdAt: string;
 }
 
@@ -1156,6 +1159,13 @@ export interface CreateJobStoreDeps {
      */
     commitAuthor?: boolean;
     /**
+     * The forge start gate's claim half (docs/connections.md): reads the member's standing on a forge inside the
+     * claim's transaction. Present when `config.auth.mode !== 'none'`; absent — the default, and AUTH_MODE=none, which
+     * has no member to hold a grant and acts as the App — no claim is held for a forge, and a leftover forge
+     * requirement is ignored. A read that throws rolls the claim back.
+     */
+    forgeStanding?: ForgeStandingReader;
+    /**
      * The execution-plan reader, when the deployment has a GitHub App installation to read through.
      * Declared inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a
      * claim hands it the repo label and the thread's base branch and gets the plan at that
@@ -1298,6 +1308,7 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     env: CreateJobStoreDeps['env'];
     githubApp: boolean;
     commitAuthor: boolean;
+    forgeStanding: ForgeStandingReader | undefined;
     planReader: CreateJobStoreDeps['plan'];
     executorConfig: CreateJobStoreDeps['executorConfig'];
     prs: JobStorePrs | undefined;

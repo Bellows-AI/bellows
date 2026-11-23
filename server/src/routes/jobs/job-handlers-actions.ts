@@ -34,6 +34,7 @@ import {
     noBoard,
     notFoundJob,
 } from './job-limits.js';
+import { type ForgeGatedDeps, refusedOnThread } from './forge-usable.js';
 import type { JobActionStore } from '../../db/jobs/job-store-action-types.js';
 import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
 import type { JobReclaimStore } from '../../db/jobs/job-store-reclaims.js';
@@ -87,10 +88,11 @@ export async function handleBindConnection(orgs: OrgRegistry, request: FastifyRe
 // command, repo, executor and thread all come from the thread head at insert — and the store
 // decides every refusal atomically with the insert, exactly as the follow-up's does. No lease
 // token: the task is finished, nobody holds it.
-export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
+export async function handleRetry({ orgs, forgeGate }: ForgeGatedDeps, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute<keyof JobActionStore | 'get'>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
+    if (await refusedOnThread(request, reply, forgeGate, { store, id })) return reply;
 
     // Read off the authenticated request, never off the body — the create route's rule about
     // impersonation applies word for word here.
@@ -329,10 +331,11 @@ export async function handleWaitPoke(orgs: OrgRegistry, request: FastifyRequest,
 // reason. The store refuses atomically: a task that was never done, one whose worktree a reclaim
 // already removed (a follow-up would have nothing to resume in), and one whose worktree is being
 // removed right now (retry once the reclaim settles) are all conflicts.
-export async function handleReopen(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
+export async function handleReopen({ orgs, forgeGate }: ForgeGatedDeps, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute<keyof JobActionStore | 'get'>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
+    if (await refusedOnThread(request, reply, forgeGate, { store, id })) return reply;
 
     const result = await guard(
         reply,

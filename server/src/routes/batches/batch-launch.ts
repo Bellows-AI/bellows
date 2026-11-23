@@ -13,6 +13,8 @@ import type { BatchRecord } from '../../db/batches/batch-store-types.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from '../helpers.js';
 import { HTTP_CONFLICT } from '../jobs/job-limits.js';
+import { forgeOfRepo } from '../../forge/forges.js';
+import { refusedAsNoForgeGrant } from '../jobs/forge-usable.js';
 import { defaultExecutorOf, executorTypeOf, refusedAsNoModel, refusedAsUnusable } from '../jobs/executor-usable.js';
 import { validateExecutorField } from '../jobs/job-field-validation.js';
 
@@ -172,7 +174,52 @@ export async function launchChecks(
     const stamped = await withDefaultExecutor(ctx, request, reply, resolved);
     if (!stamped) return null;
     if (!(await executorsUsable(ctx, request, reply, stamped))) return null;
-    return (await modelKeysPresent(ctx, request, reply, stamped)) ? stamped : null;
+    if (!(await modelKeysPresent(ctx, request, reply, stamped))) return null;
+    return (await forgeGrantsLive(ctx, request, reply, { plan: stamped, returnTo: `/batches/${record.id}` }))
+        ? stamped
+        : null;
+}
+
+/**
+ * The starter must hold a live grant for every forge the plan's targets live on (`refusedAsNoForgeGrant`), judged once
+ * per forge over the whole plan before anything is written: 409 `FORGE_GRANT_REQUIRED`, or 503 when the standing cannot
+ * be read. False once a refusal is sent.
+ */
+async function forgeGrantsLive(
+    ctx: Context,
+    request: FastifyRequest,
+    reply: FastifyReply,
+    launch: { plan: ResolvedBatchPlan; returnTo: string }
+) {
+    const repoOfForge = new Map<string, string>();
+    for (const { repo } of launch.plan.targets) {
+        const forge = forgeOfRepo(repo);
+        if (forge !== null && !repoOfForge.has(forge)) repoOfForge.set(forge, repo);
+    }
+    for (const repo of repoOfForge.values()) {
+        if (await refusedAsNoForgeGrant(request, reply, ctx.forgeGate, { repo, returnTo: launch.returnTo })) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** A task retry runs on its target's repo: the requester's grant for it, or true once a refusal is on `reply`. */
+export async function retryRefusedAsNoGrant(ctx: Context, request: FastifyRequest, reply: FastifyReply) {
+    if (!ctx.forgeGate) return false;
+    const { id, key } = request.params as { id: string; key: string };
+    const found = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'batch read failed'),
+        () => ctx.store.get(id)
+    );
+    if (!found.ok) return true;
+    const plan = found.value?.plan;
+    const target = plan?.stages.flatMap((stage) => stage.tasks).find((task) => task.key === key)?.target;
+    const repo = plan?.targets.find((candidate) => candidate.key === (target ?? plan.defaultTarget))?.repo;
+    // A batch or task the board does not hold is the store's own 404.
+    if (repo === undefined) return false;
+    return refusedAsNoForgeGrant(request, reply, ctx.forgeGate, { repo, returnTo: `/batches/${id}` });
 }
 
 /**

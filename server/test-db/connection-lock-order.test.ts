@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bindingsOf, requirementsOf } from '../src/db/connection-bindings.js';
 import { createConnectionGrants } from '../src/db/connection-grants.js';
 import { createConnectionStore, type ConnectionStore } from '../src/db/connection-store.js';
+import { readGrantStanding } from '../src/db/forge-grant-standing.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import { bindConnectionRow } from '../src/db/jobs/job-store-connections.js';
 import { createGrantLineage } from '../src/integrations/grant-lineage.js';
@@ -310,5 +311,31 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
             expect(value(bound)).toBeDefined();
             expect(value(dismissed)).toBeDefined();
         }
+    });
+    it('T11: the forge hold reads the starter’s grant without locking it: a claim completes while the grant row is held', async () => {
+        const root = await create();
+        const running = (await plain.claim(WORKER, LEASE_SECONDS)) as Claim;
+        await plain.complete(running.id, running.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
+        const followUp = await plain.createFollowUp(root, 'again', ALICE.id);
+        if (typeof followUp === 'string') throw new Error(followUp);
+        await sql`
+            insert into integration_grant
+                (org_id, principal_kind, principal_user_id, provider, external_account_id, status, secret_ref,
+                 secret_version)
+            values (${ORG}, 'user', ${ALICE.id}, 'github', ${randomUUID()}, 'active', ${createSecretRef()}, 'v1')
+        `;
+        // Another transaction holds the grant row for update, as a refresh or a reconnect does mid-exchange.
+        const held = await holder(
+            sql,
+            (tx) =>
+                tx`select id from integration_grant where org_id = ${ORG} and principal_user_id = ${ALICE.id} for update`
+        );
+        const gated = createJobStore({ sql: claimPool, orgId: ORG, forgeStanding: readGrantStanding });
+
+        const [answer] = await settledWithin([gated.claim(WORKER, LEASE_SECONDS) as Promise<Claim | null>]);
+
+        expect(value(answer)).toMatchObject({ id: followUp.id });
+        held.release();
+        await held.done;
     });
 });

@@ -16,7 +16,7 @@ import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
-import { expireLease, randomGithubId, testOrg } from './fixtures.js';
+import { expireLease, liveForgeGrant, randomGithubId, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -70,6 +70,7 @@ async function personIn(orgId: string): Promise<Person> {
     const caller = await auth.signIn({ githubUserId, login, displayName: login, avatarUrl: null }, orgId, [
         { id: orgId, name: `acct-${orgId}` },
     ]);
+    await liveForgeGrant(sql, orgId, caller.user.id);
     const token = `fat_${randomUUID()}`;
     await auth.createAccessToken({
         kind: 'personal',

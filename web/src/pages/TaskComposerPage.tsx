@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { QueueTaskInput } from '../api/taskWrites.js';
+import type { ConnectPrompt } from '../api/useJobs.js';
 import { trackedRepos } from '../api/useRepos.js';
 import { useComposerDraftStore } from '../composer-draft.js';
 import { PageHeader } from '../components/PageHeader.js';
@@ -32,15 +33,18 @@ export function TaskComposerPage() {
     const navigate = useNavigate();
     const [sending, setSending] = useState(false);
     const [actionError, setActionError] = useState<string | null>(null);
+    const [actionConnect, setActionConnect] = useState<ConnectPrompt | null>(null);
     const tracked = trackedRepos(repos);
 
     const send = async (input: QueueTaskInput): Promise<string | null> => {
         setActionError(null);
+        setActionConnect(null);
         setSending(true);
         try {
             const result = await tasks.actions.queue(input);
             if (result.error !== null) {
                 setActionError(result.error);
+                setActionConnect(result.connect);
                 return result.error;
             }
             await navigate(`/tasks/${result.id}`);
@@ -72,6 +76,7 @@ export function TaskComposerPage() {
                     agentDefault={workspace.data?.agentDefault ?? null}
                     workflows={null}
                     actionError={actionError}
+                    actionConnect={actionConnect}
                     sending={sending}
                     onSend={send}
                     draftStore={draftStore}

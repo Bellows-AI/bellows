@@ -1,3 +1,4 @@
+import type { ForgeGate } from '../../forge/forge-gate.js';
 import { batchStanding, ERROR_CODES, validateBatchPlan, type BatchPlan, type BatchStanding } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
@@ -27,6 +28,8 @@ export interface Context {
     runtime: OrgRuntime;
     store: BatchStore;
     createdBy: string | null;
+    /** The forge start gate; absent when no member holds a grant (AUTH_MODE=none). */
+    forgeGate?: ForgeGate | undefined;
 }
 
 export const notFoundBatch = (reply: FastifyReply) =>
@@ -39,7 +42,8 @@ export const startedConflict = (reply: FastifyReply) =>
 export async function contextOf(
     orgs: OrgRegistry,
     request: FastifyRequest,
-    reply: FastifyReply
+    reply: FastifyReply,
+    forgeGate?: ForgeGate
 ): Promise<Context | null> {
     // The hook already walls these paths; this is the route's own statement that no batch write
     // has a non-person behind it, for the day a path joins an allowlist by mistake.
@@ -54,7 +58,7 @@ export async function contextOf(
         await bad(reply, ERROR_CODES.BATCHES_UNAVAILABLE, 'Batches need the board database', HTTP_UNAVAILABLE);
         return null;
     }
-    return { runtime, store: runtime.batches, createdBy: callerOf(request)?.user.id ?? null };
+    return { runtime, store: runtime.batches, createdBy: callerOf(request)?.user.id ?? null, forgeGate };
 }
 
 /** The body, with only `allowed` keys: the rest are refused 400, the board-decided ones by name. */

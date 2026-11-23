@@ -11,6 +11,7 @@ import { createBatchStore } from '../src/db/batches/batch-store.js';
 import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
+import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry } from '../src/orgs.js';
@@ -83,7 +84,7 @@ const SCOPES: Record<Who, McpCaller['scopes']> = {
 };
 const tokenOf = (who: Who) => `mat_dbwrite-${who}-token-0123456789`;
 
-async function boot() {
+async function boot(options: { memberGrants?: MemberForgeGrants } = {}) {
     const port = await freePort();
     const publicUrl = `http://${LOCALHOST}:${port}`;
     const resource = `${publicUrl}/api/mcp`;
@@ -118,6 +119,7 @@ async function boot() {
         store: telemetryStoreStub(),
         auth,
         oauth: oauth as OAuthStore,
+        memberGrants: options.memberGrants,
     });
     closers.push(() => app.close());
     await app.listen({ port, host: LOCALHOST });
@@ -193,6 +195,19 @@ const WRITE_TOOLS: readonly (readonly [string, (id: string) => Record<string, un
 ];
 
 describe.skipIf(!enabled)('the task write tools — database', () => {
+    it('refuses create_task with FORGE_GRANT_REQUIRED and the connect URL when the member has no GitHub grant', async () => {
+        const memberGrants = { standing: async () => 'missing' } as unknown as MemberForgeGrants;
+        const { url } = await boot({ memberGrants });
+        const before = await countJobs();
+
+        const refused = await call(url, 'alice', 'create_task', { command: 'nope', repo: REPO });
+
+        expect(refused.isError).toBe(true);
+        expect(refused.data).toMatchObject({ outcome: 'refused', code: 'FORGE_GRANT_REQUIRED', status: 409 });
+        expect(refused.data.message).toContain('/api/auth/github?');
+        expect(await countJobs()).toBe(before);
+    });
+
     it('keeps command text exactly, and refuses empty and over-long text with nothing created', async () => {
         const { url, userOf } = await boot();
         const text = `line one\r\n\ttabbed — ünïcødé 日本語 🚀 ${'é'.repeat(50)}\n\ntrailing newline\n`;

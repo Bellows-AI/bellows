@@ -39,6 +39,21 @@ export const testUser = (login: string): TestUser => ({ id: randomUUID(), github
 /** A generated org id for `useTestDb({ orgs })` — numeric, because a real org id is an installation id. */
 export const testOrg = (): string => String(randomGithubId());
 
+/**
+ * A live GitHub grant for `userId` in `orgId`, planted without a sign-in: what the forge start gate's claim hold reads
+ * (docs/connections.md). A suite that queues work as a member through a board in `github` auth mode needs one, or the
+ * claim waits on the member's grant.
+ */
+export const liveForgeGrant = async (sql: Sql, orgId: string, userId: string): Promise<void> => {
+    await sql`
+        insert into integration_grant
+            (org_id, principal_kind, principal_user_id, provider, external_account_id, authority, status, secret_ref,
+             secret_version)
+        values (${orgId}, 'user', ${userId}, 'github', ${randomUUID()}, '{}'::jsonb, 'active', ${`ref-${randomUUID()}`},
+                'v1')
+    `;
+};
+
 /** Upserts an account by github id and answers its row id. */
 export const account = async (sql: Sql, githubUserId: number, login: string): Promise<string> => {
     const [row] = await sql<{ id: string }[]>`

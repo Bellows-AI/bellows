@@ -20,7 +20,7 @@ import type { SecretStore } from '../src/secrets/secret-store.js';
 import { metricsHarness } from '../test/helpers-metrics.js';
 import { githubAuth, testConfig, TEST_DRIVER_CREDENTIAL, testDriverCredentials } from '../test/helpers-config.js';
 import { seedEncryptedRow, testSecretStore } from './env-secrets-harness.js';
-import { account, craftJob, legacyConnection, randomGithubId, testOrg } from './fixtures.js';
+import { account, craftJob, legacyConnection, liveForgeGrant, randomGithubId, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -178,6 +178,8 @@ describe.skipIf(!enabled)('driver and board claim spans', () => {
             { orgId: ORG, scope: { kind: 'workspace', userId: author }, name: 'PERSONAL_TOKEN' },
             TOKEN
         );
+        // The claim hold reads the starter's GitHub grant (docs/connections.md): this member holds a live one.
+        await liveForgeGrant(sql, ORG, author);
         const id = await craftJob({ sql, org: ORG, author }, { repo: REPO, command: PROMPT });
         await sql`update job set base_branch = ${BRANCH} where id = ${id}`;
         const board = createBoard({ url: boardUrl, leaseSeconds: LEASE_S, credential: () => TEST_DRIVER_CREDENTIAL });

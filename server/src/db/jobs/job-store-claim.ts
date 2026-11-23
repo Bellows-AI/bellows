@@ -5,6 +5,7 @@
  */
 
 import { OBJECTIVE_MODE, type JobMode } from '@factory-ai/core';
+import { forgeWaitIgnored } from '../forge-requirement.js';
 import { type ClaimConnections, claimConnectionsInTx, rowHeld } from './job-store-connections.js';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../../workspace/bellows.js';
@@ -275,9 +276,11 @@ async function reserveCandidate(
               and j.id <> all(${refused}::uuid[])
               -- A queued root whose thread waits on an integration is not offered: it has not
               -- started, so no attempt is spent on it. A running row (a takeover) is never blocked.
+              -- A forge wait is the exception while its starter's grant is live (or the gate is off): the acquire closes it.
               and not (j.status = 'queued' and exists (
                   select 1 from job_integration_requirement q
                   where q.org_id = j.org_id and q.root_job_id = j.root_job_id and q.satisfied_at is null
+                    and not ${forgeWaitIgnored(sql, ctx.forgeStanding !== undefined, sql`q`)}
               ))
               -- Only an active org's rows (cloud; a missing org row is not active), a takeover included: a suspended
               -- org's attempts are handed back resumably (the heartbeat's release) and wait for its reactivation.

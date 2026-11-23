@@ -17,7 +17,7 @@ import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
 import { githubAuth, testConfig, TEST_DRIVER_CREDENTIAL, testDriverCredentials } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
-import { randomGithubId, testOrg } from './fixtures.js';
+import { liveForgeGrant, randomGithubId, testOrg } from './fixtures.js';
 
 /**
  * The CLI's scripting contract against the real board: the CLI's own `run` over HTTP to a
@@ -60,6 +60,7 @@ beforeEach(async () => {
         orgId,
         [{ id: orgId, name: orgId }]
     );
+    await liveForgeGrant(sql, orgId, caller.user.id);
     token = `fat_${randomUUID()}`;
     await auth.createAccessToken({
         kind: 'personal',

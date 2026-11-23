@@ -12,6 +12,7 @@ import {
     handleInterrupt,
     handleConclusion,
 } from './job-handlers-worker.js';
+import type { ForgeGatedDeps } from './forge-usable.js';
 import { handleFollowUp } from './job-handlers-follow-up.js';
 import {
     handleCompleteJob,
@@ -49,11 +50,14 @@ import { phaseCheckpointRoutes } from './job-handlers-phase-checkpoints.js';
 import { registerRestoreRoutes } from './job-handlers-restore.js';
 import { BODY_LIMIT, CONCLUSION_BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LIMIT } from './job-limits.js';
 import type { ClaimPollOutcome } from '../../metrics.js';
+import type { ForgeGate } from '../../forge/forge-gate.js';
 import type { OrgRegistry } from '../../orgs.js';
 
 export interface JobRouteDeps {
     /** The per-org runtimes; the store a request touches is the CALLER's org's. */
     orgs: OrgRegistry;
+    /** The forge start gate; absent when no member holds a grant (AUTH_MODE=none). */
+    forgeGate?: ForgeGate | undefined;
     /** Counts each claim poll by outcome; absent in the route tests. */
     claimPoll?: (outcome: ClaimPollOutcome) => void;
 }
@@ -72,6 +76,24 @@ function reclaimRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
     );
 }
 
+/** The routes that start or continue a run: each asks the forge gate first (docs/connections.md). */
+function startRoutes(app: FastifyInstance, { orgs, forgeGate }: ForgeGatedDeps): void {
+    app.post('/api/jobs', { bodyLimit: BODY_LIMIT }, (request, reply) =>
+        handleCreateJob({ orgs, forgeGate }, request, reply)
+    );
+    app.post('/api/jobs/:id/follow-up', { bodyLimit: BODY_LIMIT }, (request, reply) =>
+        handleFollowUp({ orgs, forgeGate }, request, reply)
+    );
+    app.post('/api/jobs/:id/retry', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleRetry({ orgs, forgeGate }, request, reply)
+    );
+    // Done's inverse: the mistake undone, while the worktree it would resume in
+    // still exists. Person-gated like done, beside which it is registered.
+    app.post('/api/jobs/:id/reopen', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleReopen({ orgs, forgeGate }, request, reply)
+    );
+}
+
 /**
  * The job board's HTTP surface. The validation and the per-route logic live beside it in
  * `job-limits.ts` (sizes, status codes, the shared refusals), `job-field-validation.ts` (body/query
@@ -80,11 +102,10 @@ function reclaimRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
  * the repo's line-count ceiling. See docs/jobs.md for the protocol these routes implement.
  */
 export const jobRoutes =
-    ({ orgs, claimPoll }: JobRouteDeps): FastifyPluginAsync =>
+    ({ orgs, forgeGate, claimPoll }: JobRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const firstJobClaim = fairBoardScan();
-
-        app.post('/api/jobs', { bodyLimit: BODY_LIMIT }, (request, reply) => handleCreateJob(orgs, request, reply));
+        startRoutes(app, { orgs, forgeGate });
 
         // POST, not GET: claiming mutates. The worker id is required — it is the only thing that
         // says which container is holding a job when one has to be found and killed.
@@ -117,17 +138,11 @@ export const jobRoutes =
         app.post('/api/jobs/:id/interrupt', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleInterrupt(orgs, request, reply)
         );
-        app.post('/api/jobs/:id/follow-up', { bodyLimit: BODY_LIMIT }, (request, reply) =>
-            handleFollowUp(orgs, request, reply)
-        );
         app.post('/api/jobs/:id/connections', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleBindConnection(orgs, request, reply)
         );
         app.post('/api/jobs/:id/requirements/:provider/dismiss', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleDismissRequirement(orgs, request, reply)
-        );
-        app.post('/api/jobs/:id/retry', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleRetry(orgs, request, reply)
         );
         // The edit of a queued task's command: person-gated like the follow-up it
         // sits beside, no lease token — a queued task is nobody's. The command can be 16 KiB,
@@ -141,11 +156,6 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/remove', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleRemove(orgs, request, reply)
-        );
-        // Done's inverse: the mistake undone, while the worktree it would resume in
-        // still exists. Person-gated like done, beside which it is registered.
-        app.post('/api/jobs/:id/reopen', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleReopen(orgs, request, reply)
         );
         // Both control a thread parked on a durable PR wait — person's actions on a
         // wait no worker holds a lease on, so no token and the actor off the session, exactly as

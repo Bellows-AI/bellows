@@ -2,6 +2,8 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
 import type { QueueTaskInput } from '../api/taskWrites.js';
+import type { ConnectPrompt } from '../api/useJobs.js';
+import { ConnectLink } from '../components/ConnectLink.js';
 import { AttachmentDropZone } from './AttachmentDropZone.js';
 import { attachmentHandlers } from './AttachmentPicker.js';
 import { ChatInput, type ChatInputSend } from './ChatInput.js';
@@ -412,6 +414,7 @@ export function TaskComposer({
     agentDefault = null,
     workflows,
     actionError,
+    actionConnect = null,
     sending,
     onSend,
     onRepoChange,
@@ -449,6 +452,8 @@ export function TaskComposer({
     workflows: readonly ComposerWorkflowOption[] | null;
     /** Why the last start did not queue anything. Said in place, as an alert, never silently. */
     actionError: string | null;
+    /** The link that clears a start the forge gate refused; null for any other refusal. */
+    actionConnect?: ConnectPrompt | null;
     sending: boolean;
     /** `workflow` is a chosen name, or null for no workflow (objective mode). */
     onSend: (input: QueueTaskInput) => Promise<string | null>;
@@ -546,7 +551,7 @@ export function TaskComposer({
             >
                 {actionError !== null ? (
                     <p className="status" role="alert">
-                        {actionError}
+                        {actionError} <ConnectLink connect={actionConnect} />
                     </p>
                 ) : null}
                 <RestoredNotices notices={composer.notices} onDismiss={composer.dismissNotices} />

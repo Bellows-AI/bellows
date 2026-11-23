@@ -55,6 +55,12 @@ export const INTEGRATION_PROVIDERS = {
     { kind: 'connection' | 'legacy-repository-capability'; label: string }
 >;
 
+/**
+ * The provider of a forge start gate wait (docs/connections.md): the requirement row that says a queued task waits on
+ * its starter's grant for a forge (the row's `target`). It names no connection and no skill's provider.
+ */
+export const FORGE_REQUIREMENT_PROVIDER = 'forge';
+
 /** The field that selects a provider for a task, or null for a provider the task never selects. */
 export function selectedBy(provider: string): 'connections' | null {
     return Object.hasOwn(INTEGRATION_PROVIDERS, provider) &&

@@ -174,3 +174,52 @@ describe('the Connect block on the task page', () => {
         expect(screen.getByRole('button', { name: 'Connect Acme' })).toBeTruthy();
     });
 });
+
+describe('the forge wait on the task page', () => {
+    const CONNECT = '/api/auth/github?returnTo=%2Ftasks%2Fx&org=o1';
+    const forge = (over: Partial<ThreadRequirement> = {}) =>
+        requirement({
+            provider: 'forge',
+            label: 'GitHub',
+            reason: 'reconnect',
+            source: 'create',
+            target: 'github',
+            connectPath: CONNECT,
+            ...over,
+        });
+
+    it('offers the starter a Reconnect GitHub link, no picker and no way to continue without it', async () => {
+        const jobs = held(forge());
+        const calls = board({ jobs });
+        open(jobs);
+        const link = await screen.findByRole('link', { name: 'Reconnect GitHub' });
+        expect(link.getAttribute('href')).toBe(CONNECT);
+        expect(screen.queryByRole('button', { name: /Continue without it/ })).toBeNull();
+        expect(screen.queryByRole('button', { name: /Use selected connection/ })).toBeNull();
+        expect(calls.some((c) => c.url === '/api/connections')).toBe(false);
+    });
+
+    it('says Connect GitHub when the starter has no grant at all', async () => {
+        const jobs = held(forge({ reason: 'missing' }));
+        board({ jobs });
+        open(jobs);
+        expect((await screen.findByRole('link', { name: 'Connect GitHub' })).getAttribute('href')).toBe(CONNECT);
+    });
+
+    it('tells anyone else who the task waits for, with no link', async () => {
+        const owner = { ...LOCAL_AUTHOR, id: 'cccccccc-0000-4000-8000-000000000009', name: 'Octo Owner' };
+        const jobs = authoredBy(heldThread(forge()), owner);
+        board({ jobs });
+        open(jobs);
+        expect(await screen.findByText(/waiting for Octo Owner to reconnect GitHub/i)).toBeTruthy();
+        expect(screen.queryByRole('link', { name: /GitHub/ })).toBeNull();
+    });
+
+    it('says an owner or admin can stop or remove a task whose starter was removed', async () => {
+        const jobs = held(forge({ reason: 'starter-removed', connectPath: null }));
+        board({ jobs });
+        open(jobs);
+        expect(await screen.findByText(/starter was removed.*stop or remove it/i)).toBeTruthy();
+        expect(screen.queryByRole('link', { name: /GitHub/ })).toBeNull();
+    });
+});

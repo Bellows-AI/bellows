@@ -69,7 +69,9 @@ Flags for `job create`:
 | `--attach <path>` | Attach a file. Repeat for several. |
 | `--idempotency-key <key>` | Make a retry of the same command safe. |
 
-`job preflight` takes `--repo`, `--executor`, `--executor-scope`, `--skill` and `--connection`.
+`job preflight` takes `--repo`, `--executor`, `--executor-scope`, `--skill` and `--connection`. On a board where you sign in with GitHub it also reports a `forge` check: `blocked` with the code `FORGE_GRANT_REQUIRED` and a link when your GitHub connection is missing or needs reconnecting, `unverified` when the board could not read it.
+
+`job create`, `job follow-up`, `job retry` and `job reopen` are refused with the same code, and print the link, when your GitHub connection is missing or needs reconnecting. Open the link, then run the command again. See [Your GitHub connection](/guides/run-tasks#your-github-connection).
 
 The prompt comes from the arguments, `--file <path>` or `--stdin`. Give one source. It is sent exactly as written and may be at most 16,384 characters. To pass flags of your own in the prompt, end option parsing with `--`:
 

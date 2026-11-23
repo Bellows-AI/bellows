@@ -82,6 +82,10 @@ Each entry reads symptom, cause, fix. For every failure badge, see [Task lifecyc
     **Cause.** In Bellows Cloud, a task needs a model key its agent can use, and none was found. Claude Code runs on `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `OPENROUTER_API_KEY`. OpenCode runs on `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`. The key can sit in your variables, the organization's or the repository's, or in the executor profile. The task is refused before it starts, and a key removed after you start it fails the task the same way. Preflight shows it as the `model` check. A self-hosted server does not check this.
     **Fix.** Connect a model in **Settings → Model**, or ask an admin to connect one for the organization. Then start the task again. See [Variables and secrets](/guides/env-and-secrets).
   </Accordion>
+  <Accordion title="GitHub connection required (“FORGE_GRANT_REQUIRED”)">
+    **Cause.** Starting work on a repository needs your own live GitHub connection, and yours is missing or needs reconnecting (you revoked Bellows in GitHub, or it expired). The task, follow-up, retry, reopen or batch is refused before anything is queued, with a link to connect. A task already queued waits on the connection of the member who started it instead, and shows **Reconnect GitHub** on its page.
+    **Fix.** Choose **Connect GitHub** (or open the link the CLI or MCP printed). It is the sign-in, so it needs no new consent if you already approved Bellows. Then start the task again; a waiting task starts by itself. See [Your GitHub connection](/guides/run-tasks#your-github-connection).
+  </Accordion>
   <Accordion title="The task says it needs a Jira or Linear connection">
     **Cause.** The task mentions a ticket, but you have not connected Jira or Linear, or the connection needs reconnecting.
     **Fix.** Choose **Connect Jira** (or **Connect Linear**), **Use selected connection** or **Continue without it** on the task page. If you turned on comments after the task started, start a new task. See [Connections](/guides/connections#using-jira-on-a-task).

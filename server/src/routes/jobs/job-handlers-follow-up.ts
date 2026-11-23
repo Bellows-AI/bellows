@@ -2,7 +2,7 @@ import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../../auth/plugin.js';
 import type { JobActionStore } from '../../db/jobs/job-store-action-types.js';
-import type { OrgRegistry } from '../../orgs.js';
+import { type ForgeGatedDeps, refusedOnThread } from './forge-usable.js';
 import { bad, body } from '../helpers.js';
 import { resolveJobRoute } from '../route-guards.js';
 import { validateCommandField, validateModelField } from './job-field-validation.js';
@@ -22,8 +22,12 @@ export const adminOf = (request: FastifyRequest): boolean => callerOf(request)?.
 // holds it, and this is a person's action for exactly that reason. The executor is NOT taken from
 // the body: the adjustment is bound to the executor that ran the task, copied from the parent at
 // insert like the repo and the session. Only `model` may change: the parent's otherwise.
-export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
+export async function handleFollowUp(
+    { orgs, forgeGate }: ForgeGatedDeps,
+    request: FastifyRequest,
+    reply: FastifyReply
+) {
+    const route = await resolveJobRoute<keyof JobActionStore | 'get'>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -37,6 +41,7 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
     // Read off the authenticated request, never off the body — the create route's rule about
     // impersonation applies word for word here.
     const createdBy = callerOf(request)?.user.id ?? null;
+    if (await refusedOnThread(request, reply, forgeGate, { store, id })) return reply;
 
     const refs = taskRefsOf(reply, fields);
     if (!refs) return reply;

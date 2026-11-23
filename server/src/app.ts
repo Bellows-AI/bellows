@@ -48,6 +48,7 @@ import { operatorRoutes } from './routes/operator.js';
 import { operatorDriverCredentialRoutes } from './routes/operator-driver-credentials.js';
 import { orgExportRoutes } from './routes/org-export.js';
 import { authRoutes } from './routes/auth.js';
+import { createForgeGate } from './forge/forge-gate.js';
 import { forgeGrantRoutes } from './routes/forge-grants.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
@@ -435,6 +436,8 @@ export async function buildApp({
 }: AppDeps): Promise<FastifyInstance> {
     const app = Fastify({ ...loggingOf(loggerInstance, logger), trustProxy: trustProxyOf(config.trustedProxies) });
     app.setErrorHandler(errorHandler);
+    const publicUrl = config.auth.mode === 'github' ? config.auth.publicUrl : '';
+    const forgeGate = createForgeGate({ memberGrants, publicUrl });
 
     // Aborted the moment `app.close()` begins, before it waits for the open requests: the long-polls (settle, batch
     // settle, the MCP waits) read it as `request.closing` and answer at once instead of holding the close up to
@@ -500,9 +503,9 @@ export async function buildApp({
     if (store) await app.register(ingestRoutes(store, orgs));
     // The board and the workflow definitions it resolves against: per-org runtimes, the routes
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
-    await app.register(jobRoutes({ orgs, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
+    await app.register(jobRoutes({ orgs, forgeGate, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
     registerTitleRoute(app, orgs);
-    await app.register(preflightRoutes(orgs));
+    await app.register(preflightRoutes({ orgs, forgeGate }));
     await app.register(
         attachmentRoutes({
             orgs,
@@ -515,7 +518,7 @@ export async function buildApp({
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.
-    await app.register(batchRoutes({ orgs, enabled: config.batches.enabled }));
+    await app.register(batchRoutes({ orgs, enabled: config.batches.enabled, forgeGate }));
     await app.register(envRoutes({ config, orgs }));
     // The provider catalog exists on every board; where no OAuth client is wired every OAuth provider reads `unavailable`.
     await app.register(integrationCatalogRoutes({ orgs, configured: integrations?.configured }));

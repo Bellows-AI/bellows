@@ -15,7 +15,7 @@ import {
     workflowsFor,
 } from './job-context.js';
 import { taskRefsOf } from './job-task-refs.js';
-import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
+import { paramsWithoutWorkflow, resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import { createIdempotencyOf, guardKeyed, sendQueued } from './job-idempotency.js';
 import {
     type ResolvedWorkflow,
@@ -57,6 +57,7 @@ import {
     runtimeVitals,
 } from './job-limits.js';
 import type { JobActionStore } from '../../db/jobs/job-store-action-types.js';
+import { type ForgeGatedDeps, refusedAsNoForgeGrant, TASK_COMPOSER_PATH } from './forge-usable.js';
 import type { JobAdmissionStore } from '../../db/jobs/job-store-admission.js';
 import type { JobClaimStore } from '../../db/jobs/job-store-claim.js';
 import type { JobConclusionStore } from '../../db/jobs/job-store-conclusions.js';
@@ -233,7 +234,11 @@ function checkedFields(reply: FastifyReply, fields: Record<string, unknown>) {
     };
 }
 
-export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+export async function handleCreateJob(
+    { orgs, forgeGate }: ForgeGatedDeps,
+    request: FastifyRequest,
+    reply: FastifyReply
+) {
     const store = await storeFor<keyof JobActionStore>(orgs, request);
     if (!store) return noBoard(reply);
     const fields = body(request.body);
@@ -258,6 +263,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     // impersonation. Null only when the app was built with no auth store at all, which is the
     // route tests' configuration rather than a deployment's.
     const createdBy = callerOf(request)?.user.id ?? null;
+    if (await refusedAsNoForgeGrant(request, reply, forgeGate, { repo, returnTo: TASK_COMPOSER_PATH })) return reply;
 
     /*
      * The workflow the task walks (issue #543's launch contract): an explicit `workflow` name
@@ -293,7 +299,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     // Parameters are workflow-bound: sent beside an objective-mode task they are a client bug —
     // refused, never silently dropped. A named workflow already validated `workflowParams`
     // against its own definition's declarations before returning here.
-    if (fields.workflowParams !== undefined && fields.workflowParams !== null && workflow === null) {
+    if (paramsWithoutWorkflow(fields, workflow)) {
         return bad(reply, ERROR_CODES.BAD_WORKFLOW_PARAMS, 'workflowParams requires a resolved workflow');
     }
 

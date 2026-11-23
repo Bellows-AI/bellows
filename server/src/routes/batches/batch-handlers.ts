@@ -10,7 +10,8 @@ import {
     type BatchStore,
 } from '../../db/batches/batch-store-types.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { launchChecks } from './batch-launch.js';
+import { launchChecks, retryRefusedAsNoGrant } from './batch-launch.js';
+import type { ForgeGatedDeps } from '../jobs/forge-usable.js';
 import {
     batchIdOf,
     contextOf,
@@ -140,8 +141,8 @@ async function holdUntilSettled(
 }
 
 /** The context, batch id and task key of a body-less task action — or null once the refusal is sent. */
-async function taskRouteOf(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const ctx = await contextOf(orgs, request, reply);
+async function taskRouteOf(deps: ForgeGatedDeps, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await contextOf(deps.orgs, request, reply, deps.forgeGate);
     if (!ctx) return null;
     if (!envelopeOf(request, reply, [])) return null;
     const id = batchIdOf(request, reply);
@@ -151,10 +152,11 @@ async function taskRouteOf(orgs: OrgRegistry, request: FastifyRequest, reply: Fa
 }
 
 /** A started batch's retry of one task: the task goes back to the scheduler, which launches it when a slot is free. */
-export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await taskRouteOf(orgs, request, reply);
+export async function handleRetry(deps: ForgeGatedDeps, request: FastifyRequest, reply: FastifyReply) {
+    const route = await taskRouteOf(deps, request, reply);
     if (!route) return reply;
     const { ctx, id, key } = route;
+    if (await retryRefusedAsNoGrant(ctx, request, reply)) return reply;
 
     const retried = await guard(
         reply,
@@ -246,8 +248,12 @@ export async function handleReplace(orgs: OrgRegistry, request: FastifyRequest, 
     return reply.code(HTTP_OK).send({ id, status: BATCH_DRAFT, version: written.value.version });
 }
 
-export async function handleValidate(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const ctx = await contextOf(orgs, request, reply);
+export async function handleValidate(
+    { orgs, forgeGate }: ForgeGatedDeps,
+    request: FastifyRequest,
+    reply: FastifyReply
+) {
+    const ctx = await contextOf(orgs, request, reply, forgeGate);
     if (!ctx) return reply;
     if (!envelopeOf(request, reply, [])) return reply;
     const record = await loadBatch(ctx, request, reply);
@@ -283,8 +289,8 @@ async function answeredAsReplay(
     return true;
 }
 
-export async function handleStart(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const ctx = await contextOf(orgs, request, reply);
+export async function handleStart({ orgs, forgeGate }: ForgeGatedDeps, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await contextOf(orgs, request, reply, forgeGate);
     if (!ctx) return reply;
     const fields = envelopeOf(request, reply, [VERSION_FIELD]);
     if (!fields) return reply;
@@ -331,7 +337,7 @@ const ACCEPT_REFUSALS = {
 
 /** A person's recorded acceptance of a finished `accepted`-completion task; its gate passes and the stage may advance. */
 export async function handleAccept(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await taskRouteOf(orgs, request, reply);
+    const route = await taskRouteOf({ orgs }, request, reply);
     if (!route) return reply;
     const { ctx, id, key } = route;
 

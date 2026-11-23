@@ -20,6 +20,7 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
 | The prompt's `/` skill menu: a small list of names opening above the prompt, the highlighted skill's description in a tooltip beside it; built-ins and the repository's at the chosen branch; the picked `/name` stays in the text | `web/src/components/SlashSkillMenu.tsx`, `web/src/slash-skills.ts`, `web/src/api/useRepoSkills.ts` | `web/test/slash-skills.test.ts`, `web/test/task-composer.dom.test.tsx`, `e2e/composer.spec.ts` |
 | A workflow's declared parameter fields | `web/src/components/WorkflowParameterFields.tsx` | `web/test/task-composer.render.test.tsx` |
 | The no-tracked-repository banner | `web/src/panels/TaskComposer.tsx` | `web/test/task-composer.dom.test.tsx` |
+| A start the forge gate refused: the sentence in the alert and a Connect link beside it (composer and follow-up) | `web/src/components/ConnectLink.tsx`, `web/src/api/taskWrites.ts` | `web/test/task-composer.dom.test.tsx`, `web/test/task-detail-follow-up.dom.test.tsx`, `e2e/forge-gate.spec.ts` |
 
 ## Invariants
 

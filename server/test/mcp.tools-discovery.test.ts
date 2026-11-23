@@ -1,3 +1,4 @@
+import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import { createServer } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
@@ -83,6 +84,8 @@ interface Scenario {
     opencodeExecutor?: boolean;
     /** Bellows Cloud: the task's model credential is judged on this env store. */
     cloudEnv?: EnvVarStore;
+    /** The member grant store: present, the forge start gate is on and preflight carries its check. */
+    memberGrants?: MemberForgeGrants;
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -176,6 +179,7 @@ async function boot(scenario: Scenario = {}) {
             store: telemetryStoreStub(),
             auth: store,
             oauth: oauth as OAuthStore,
+            memberGrants: scenario.memberGrants,
             ...(scenario.withFlow === false
                 ? {}
                 : {
@@ -548,6 +552,37 @@ describe('preflight_task', () => {
             code: 'NO_MODEL',
             detail: NO_MODEL_MESSAGE,
         });
+    });
+
+    it('carries the forge start gate: a missing GitHub grant is blocked with its code and link, an unread one unverified', async () => {
+        const grants = (standing: () => Promise<'missing' | 'live'>) => ({ standing }) as unknown as MemberForgeGrants;
+        const missing = await call(
+            await boot({ memberGrants: grants(async () => 'missing') }),
+            'alice',
+            'preflight_task',
+            selection
+        );
+        expect(missing.isError).toBeFalsy();
+        expect(missing.data).toMatchObject({ verdict: 'blocked', ready: false, integrationRequired: [] });
+        expect(missing.data.checks).toContainEqual(
+            expect.objectContaining({
+                subject: 'forge',
+                name: 'github',
+                status: 'blocked',
+                code: 'FORGE_GRANT_REQUIRED',
+            })
+        );
+        const unread = await call(
+            await boot({
+                memberGrants: grants(async () => {
+                    throw new Error('read failed');
+                }),
+            }),
+            'alice',
+            'preflight_task',
+            selection
+        );
+        expect(unread.data).toMatchObject({ verdict: 'unverified' });
     });
 
     it('keeps blocked apart: an untracked repo is blocked, not integration_required', async () => {

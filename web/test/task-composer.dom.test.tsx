@@ -233,6 +233,33 @@ describe('the composer launch triggers', () => {
         expect(reads('/api/repos')).toHaveLength(1);
     });
 
+    it('the forge gate refusal names GitHub, offers the Connect GitHub link and keeps the draft', async () => {
+        const user = userEvent.setup();
+        const link = 'http://board.test/api/auth/github?returnTo=%2Ftasks%2Fnew&org=o1';
+        const { launches } = openComposer(reposReply(['web']), {
+            status: 409,
+            body: {
+                error: `Your GitHub connection is missing. Connect it to start work on this repository: ${link}`,
+                code: 'FORGE_GRANT_REQUIRED',
+                forge: 'github',
+                standing: 'missing',
+                connectUrl: link,
+            },
+        });
+        const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+        await user.type(prompt, 'fix the login crash');
+        const start = screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement;
+        await waitFor(() => expect(start.disabled).toBe(false));
+        await user.click(start);
+
+        const composer = document.querySelector<HTMLElement>('.composer')!;
+        await waitFor(() => expect(within(composer).getByRole('alert').textContent).toContain('GitHub'));
+        expect(within(composer).getByRole('alert').textContent).not.toContain(link);
+        expect(within(composer).getByRole('link', { name: 'Connect GitHub' }).getAttribute('href')).toBe(link);
+        expect(launches()).toHaveLength(1);
+        expect(prompt.value).toBe('fix the login crash');
+    });
+
     it("the board's refusal shows in the composer as an alert and keeps the draft", async () => {
         const user = userEvent.setup();
         const { router, launches } = openComposer(reposReply(['web']), {
