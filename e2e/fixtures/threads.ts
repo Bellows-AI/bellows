@@ -169,7 +169,7 @@ export interface ThreadJob {
 export interface ThreadRequirement {
     provider: string;
     label: string;
-    reason: 'missing' | 'ambiguous' | 'reconnect' | 'starter-removed';
+    reason: 'missing' | 'ambiguous' | 'reconnect' | 'starter-removed' | 'forge-access';
     source: 'create' | 'runtime';
     connectionId: string | null;
     target: string | null;
