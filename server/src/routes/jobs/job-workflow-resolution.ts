@@ -79,3 +79,9 @@ export async function resolveLaunchWorkflow(
     if (!named || !workflowsStore) return { handled: false, workflow: null, command };
     return resolveNamedWorkflow(request, reply, { workflowsStore, fields, repo, createdBy, command });
 }
+
+/** A launch that names workflow parameters but resolved no workflow: a client bug, refused rather than dropped. */
+export const paramsWithoutWorkflow = (
+    fields: { workflowParams?: unknown },
+    workflow: ResolvedWorkflow | null
+): boolean => fields.workflowParams !== undefined && fields.workflowParams !== null && workflow === null;
