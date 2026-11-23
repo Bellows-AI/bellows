@@ -4,9 +4,14 @@
 --
 -- EXPAND-ONLY (docs/persistence.md): no column is dropped, renamed or made nullable-to-not-null, every new column
 -- is `not null` with a constant default (metadata-only on PG >= 11), every check is `not valid` (new writes are
--- held to it, existing rows all hold the default), and the narrow keys the previous release infers or relies on
--- stay: pr_merge_pk (its `on conflict (org_id, repo, pr_number)`), batch_merge_slot_idx and job_admission_repo_uk.
--- The contract migration (one release later) drops those, the defaults and tracked_repo.owner/name.
+-- held to it, existing rows all hold the default). Every existing key and index stays as it is, beside a new wide
+-- one, because a previous-release pod runs against this schema mid-rollout and after a rollback: tracked_repo_pk,
+-- env_var_key_uk, workflow_name_uk, pr_follow_pk, pr_merge_pk (its `on conflict (org_id, repo, pr_number)`),
+-- batch_merge_slot_idx and job_admission_repo_uk. The contract migration (one release later) drops those, the
+-- defaults and tracked_repo.owner/name. Until then one path on two hosts still collides in them.
+--
+-- The wide indexes on tables that grow (job, pr_merge, pr_follow, batch_merge) are built outside this transaction:
+-- migrations/concurrent/167_repo_ref_indexes.sql.
 --
 -- `path` stays in the existing `repo` column (tracked_repo: owner/name, env_var and workflow: repo_owner/repo_name)
 -- until then. Left out by design: session_branch, github_delivery, transcript_tool_event.pr_repo and
@@ -104,23 +109,20 @@ alter table notification_event
     add column if not exists host text not null default 'github.com';
 alter table notification_event add constraint notification_event_forge_ck check (forge in ('github', 'gitlab')) not valid;
 
--- tracked_repo: a surrogate id, the full path, and identity by (org, forge, host, path). Small table (one row per
--- selected repository), so the rewrite the stored column causes is brief. The id takes no default in its `add`
--- (migrations-rewrite.test.ts): the default for new rows is set apart, the few existing rows are backfilled, and the
--- primary key makes it not null. The previous release deletes and inserts with no conflict target and no id, so the
--- new keys and the default cannot trip it.
+-- tracked_repo: a surrogate id and the full path. The path is a stored generated column, which rewrites this small
+-- table (one row per selected repository). The id takes no default in its `add` (migrations-rewrite.test.ts): the
+-- default for new rows is set apart and the few existing rows are backfilled. It stays nullable here, as a column
+-- the previous release writes without; `set not null` and the primary key are the contract's.
 alter table tracked_repo
     add column id uuid,
     add column path text generated always as (owner || '/' || name) stored;
 alter table tracked_repo alter column id set default gen_random_uuid();
 update tracked_repo set id = gen_random_uuid() where id is null;
-alter table tracked_repo drop constraint tracked_repo_pk;
-alter table tracked_repo add primary key (id);
+create unique index tracked_repo_id_uk on tracked_repo (id);
 alter table tracked_repo add constraint tracked_repo_ref_uk unique (org_id, forge, host, path);
 
--- env_var and workflow: the scope's uniqueness gains the forge and host. Neither store has an `on conflict`.
-drop index if exists env_var_key_uk;
-create unique index env_var_key_uk on env_var (
+-- env_var and workflow: the scope's uniqueness by forge and host, beside the narrow indexes. Both tables are small.
+create unique index env_var_ref_uk on env_var (
     org_id,
     forge,
     host,
@@ -129,8 +131,7 @@ create unique index env_var_key_uk on env_var (
     coalesce(repo_name, ''),
     name
 );
-drop index if exists workflow_name_uk;
-create unique index workflow_name_uk on workflow (
+create unique index workflow_ref_uk on workflow (
     org_id,
     forge,
     host,
@@ -139,19 +140,3 @@ create unique index workflow_name_uk on workflow (
     coalesce(repo_name, ''),
     name
 );
-
--- pr_follow: its only insert is `on conflict do nothing` with no target, so the key can widen now.
-alter table pr_follow drop constraint pr_follow_pk;
-alter table pr_follow add primary key (org_id, forge, host, repo, pr_number);
-
--- pr_merge keeps pr_merge_pk; the wide key is a unique index beside it.
-create unique index pr_merge_ref_uk on pr_merge (org_id, forge, host, repo, pr_number);
-
--- The wide merge slot, beside the narrow one (which is stricter, so the slot stays exclusive).
-create unique index batch_merge_ref_slot_idx
-    on batch_merge (org_id, forge, lower(host), (case when forge = 'github' then lower(repo) else repo end), target_branch)
-    where state in ('dispatching', 'uncertain');
-
--- The wide admission slot, beside job_admission_repo_uk.
-create unique index job_admission_repo_ref_uk on job (org_id, forge, host, repo, admission_slot_repo)
-    where status = 'running' and review_of is null and admission_slot_repo is not null;

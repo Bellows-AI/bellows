@@ -13,6 +13,20 @@ import { ADMIN_ROLE } from '@factory-ai/core';
  */
 const DIR = new URL('../../migrations/', import.meta.url);
 
+/** Where index builds that must not hold the schema transaction live, beside the versioned files. */
+const CONCURRENT_SUBDIR = 'concurrent/';
+
+/**
+ * The lock the index step holds, apart from the schema transaction's: `create index concurrently` waits for every open
+ * transaction, so holding the migration lock would deadlock with a peer's transaction waiting on it.
+ */
+export const INDEX_LOCK_KEY = 'factory:migrate:indexes';
+
+/** How often a process waiting for the index lock tries it again. */
+const INDEX_LOCK_POLL_MS = 200;
+
+const CONCURRENT_INDEX = /^create\s+(?:unique\s+)?index\s+concurrently\s+if\s+not\s+exists\s+([a-z_][a-z0-9_]*)\s/i;
+
 export interface MigrateOptions {
     /**
      * Whether to prepare the single LOCAL organization AUTH_MODE=none lives in: the
@@ -158,6 +172,74 @@ function files(dir: URL): { version: string; sql: string; repeatable: boolean }[
 }
 
 /**
+ * The statements of `concurrent/*.sql`, in file order: `create [unique] index concurrently if not exists <name> on …`,
+ * one per statement, because postgres refuses `concurrently` inside a transaction block. Anything else is refused.
+ */
+function concurrentIndexes(dir: URL): { name: string; statement: string }[] {
+    const subdir = new URL(CONCURRENT_SUBDIR, dir);
+    let names: string[];
+    try {
+        names = readdirSync(subdir).filter((name) => name.endsWith('.sql'));
+    } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+        throw e;
+    }
+    return names.sort().flatMap((file) =>
+        readFileSync(new URL(file, subdir), 'utf8')
+            .replace(/--[^\n]*/g, '')
+            .split(';')
+            .map((statement) => statement.trim())
+            .filter(Boolean)
+            .map((statement) => {
+                const name = CONCURRENT_INDEX.exec(`${statement} `)?.[1];
+                if (!name) throw new Error(`concurrent/${file} holds a statement that is not a concurrent index build`);
+                return { name: name.toLowerCase(), statement };
+            })
+    );
+}
+
+/**
+ * Builds the indexes a big table must not scan under the boot lock, after the schema transaction committed. Every boot
+ * runs them: `if not exists` makes a built index a no-op, and a crashed build leaves an INVALID index that
+ * `create … if not exists` would trust, so an invalid one is dropped and rebuilt. One process at a time, under its own
+ * session lock (`INDEX_LOCK_KEY`).
+ */
+async function buildConcurrentIndexes(pool: Sql, options: MigrateOptions, log: (message: string) => void) {
+    const indexes = concurrentIndexes(options.dir ?? DIR);
+    if (indexes.length === 0) return;
+    const conn = await pool.reserve();
+    try {
+        await conn`set statement_timeout = 0`;
+        // Polled, never waited on in one statement: a statement blocked on the lock is an open transaction, which the
+        // holder's `create index concurrently` would wait for in turn.
+        for (;;) {
+            const [lock] = await conn<{ held: boolean }[]>`
+                select pg_try_advisory_lock(hashtextextended(${INDEX_LOCK_KEY}, 0)) as held`;
+            if (lock?.held) break;
+            await new Promise((resolve) => setTimeout(resolve, INDEX_LOCK_POLL_MS));
+        }
+        try {
+            for (const { name, statement } of indexes) {
+                const [state] = await conn<{ valid: boolean }[]>`
+                    select i.indisvalid as valid from pg_class c join pg_index i on i.indexrelid = c.oid
+                    where c.relname = ${name} and c.relnamespace = current_schema()::regnamespace`;
+                if (state && !state.valid) {
+                    log(`rebuilding invalid index ${name}`);
+                    await conn.unsafe(`drop index concurrently if exists ${name}`);
+                }
+                if (!state?.valid) log(`building index ${name}`);
+                await conn.unsafe(statement);
+            }
+        } finally {
+            await conn`select pg_advisory_unlock(hashtextextended(${INDEX_LOCK_KEY}, 0))`;
+        }
+        await conn`reset statement_timeout`;
+    } finally {
+        conn.release();
+    }
+}
+
+/**
  * One attempt's worth of `migrate()`'s work: one transaction under the migration lock, so two
  * processes booting together serialize, and the second reads `schema_migrations` only after the
  * first committed. A lock wait past `lockWaitMs` fails the attempt; the xact lock cannot outlive
@@ -284,6 +366,7 @@ export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
         try {
             await applyMigrations(sql, options, lockWaitMs, log);
+            await buildConcurrentIndexes(sql, options, log);
             return;
         } catch (e) {
             if (e instanceof MigrationChecksumError) throw e;

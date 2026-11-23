@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
+import { migrate } from '../src/db/migrate.js';
 import { assertTestDatabase } from './harness.js';
 
 /** 167 gives every repo-bearing table a forge and host, and tracked_repo a surrogate id and a full path. */
@@ -92,7 +93,8 @@ describe.skipIf(!enabled)('167_repo_ref', () => {
         await pool`insert into notification_event (org_id, id, kind, job_id, root_job_id, repo, command)
                    values (${org}, ${randomUUID()}, 'task.ready', ${root}, ${root}, 'acme/web', 'work')`;
 
-        await pool.unsafe(readFileSync(new URL(VERSION, DIR), 'utf8'));
+        // Through the migrator, so the concurrent index step runs too.
+        await migrate(pool, { attempts: 1 });
 
         for (const table of [
             'job',
@@ -155,57 +157,65 @@ describe.skipIf(!enabled)('167_repo_ref', () => {
         expect(tracked.map((r) => [r.forge, r.host, r.path])).toEqual([['github', 'github.com', 'acme/api']]);
     });
 
-    it('keys tracked_repo, env_var, workflow and pr_follow by forge and host', async () => {
-        await pool`insert into tracked_repo (org_id, owner, name, forge, host) values (${org}, 'acme', 'web', 'gitlab', 'gl.example')`;
+    it('keeps every narrow key and index beside a new wide one', async () => {
+        const indexes = await pool<{ indexname: string; indexdef: string }[]>`
+            select indexname, indexdef from pg_indexes where schemaname = ${schema}`;
+        const defs = new Map(indexes.map((r) => [r.indexname, r.indexdef]));
+        const narrow = [
+            'tracked_repo_pk',
+            'env_var_key_uk',
+            'workflow_name_uk',
+            'pr_follow_pk',
+            'pr_merge_pk',
+            'batch_merge_slot_idx',
+            'job_admission_repo_uk',
+        ];
+        for (const name of narrow) {
+            expect(defs.has(name), name).toBe(true);
+            expect(defs.get(name), name).not.toMatch(/\bforge\b/);
+        }
+        const wide = [
+            'tracked_repo_ref_uk',
+            'env_var_ref_uk',
+            'workflow_ref_uk',
+            'pr_follow_ref_uk',
+            'pr_merge_ref_uk',
+            'batch_merge_ref_slot_idx',
+            'job_admission_repo_ref_uk',
+        ];
+        for (const name of wide) expect(defs.get(name), name).toMatch(/\(org_id, forge,/);
+        expect(defs.get('tracked_repo_id_uk')).toMatch(/UNIQUE.*\(id\)/);
+        const invalid = await pool`
+            select c.relname from pg_index i join pg_class c on c.oid = i.indexrelid
+            where i.indrelid = any(${FORGED.map((t) => `${schema}.${t}`)}::regclass[]) and not i.indisvalid`;
+        expect(invalid).toEqual([]);
+    });
+
+    it('keys the new rows by forge and host, and still refuses one path on two hosts until the contract', async () => {
         await pool`insert into tracked_repo (org_id, owner, name, forge, host) values (${org}, 'g/sub', 'p', 'gitlab', 'gl.example')`;
+        const nested = await pool`select path, id from tracked_repo where org_id = ${org} and forge = 'gitlab'`;
+        expect(nested).toHaveLength(1);
+        expect(nested[0]!.path).toBe('g/sub/p');
+        expect(nested[0]!.id).toEqual(expect.any(String));
+        await expect(
+            pool`insert into tracked_repo (org_id, owner, name, forge, host) values (${org}, 'g/sub', 'p', 'gitlab', 'gl.example')`
+        ).rejects.toMatchObject({ code: '23505' });
+        // The narrow key (org, owner, name) is still there: the same owner/name on another host collides.
         await expect(
             pool`insert into tracked_repo (org_id, owner, name, forge, host) values (${org}, 'acme', 'web', 'gitlab', 'gl.example')`
         ).rejects.toMatchObject({ code: '23505' });
-        const pk = await pool`
-            select a.attname from pg_index i join pg_attribute a on a.attrelid = i.indrelid and a.attnum = any(i.indkey)
-            where i.indrelid = 'tracked_repo'::regclass and i.indisprimary`;
-        expect(pk.map((r) => r.attname)).toEqual(['id']);
-        const nested =
-            await pool`select path from tracked_repo where org_id = ${org} and forge = 'gitlab' and name = 'p'`;
-        expect(nested.map((r) => r.path)).toEqual(['g/sub/p']);
 
-        await pool`insert into env_var (org_id, repo_owner, repo_name, name, value, forge, host)
-                   values (${org}, 'acme', 'web', 'A', '2', 'gitlab', 'gl.example')`;
         await expect(
             pool`insert into env_var (org_id, repo_owner, repo_name, name, value, forge, host)
-                 values (${org}, 'acme', 'web', 'A', '3', 'gitlab', 'gl.example')`
+                 values (${org}, 'acme', 'web', 'A', '2', 'gitlab', 'gl.example')`
         ).rejects.toMatchObject({ code: '23505' });
-        await pool`insert into workflow (org_id, name, repo_owner, repo_name, definition, forge, host)
-                   values (${org}, 'wf', 'acme', 'web', '{}'::jsonb, 'gitlab', 'gl.example')`;
-        await expect(
-            pool`insert into workflow (org_id, name, repo_owner, repo_name, definition, forge, host)
-                 values (${org}, 'wf', 'acme', 'web', '{}'::jsonb, 'gitlab', 'gl.example')`
-        ).rejects.toMatchObject({ code: '23505' });
-
-        await pool`insert into pr_follow (org_id, repo, pr_number, forge, host) values (${org}, 'acme/web', 7, 'gitlab', 'gl.example')`;
         await expect(
             pool`insert into pr_follow (org_id, repo, pr_number, forge, host) values (${org}, 'acme/web', 7, 'gitlab', 'gl.example')`
         ).rejects.toMatchObject({ code: '23505' });
-    });
-
-    it('adds the wide pr_merge, merge-slot and admission-slot keys and keeps the narrow ones', async () => {
-        const names = (
-            await pool<{ indexname: string }[]>`select indexname from pg_indexes where schemaname = ${schema}`
-        ).map((r) => r.indexname);
-        expect(names).toEqual(
-            expect.arrayContaining([
-                'pr_merge_pk',
-                'pr_merge_ref_uk',
-                'batch_merge_slot_idx',
-                'batch_merge_ref_slot_idx',
-                'job_admission_repo_uk',
-                'job_admission_repo_ref_uk',
-            ])
-        );
         await expect(
             pool`insert into pr_merge (org_id, repo, pr_number, delivery_id, forge, host)
                  values (${org}, 'acme/web', 7, 'd9', 'gitlab', 'gl.example')`
-        ).rejects.toMatchObject({ code: '23505' }); // the narrow key still holds until the contract release
+        ).rejects.toMatchObject({ code: '23505' });
     });
 
     it('refuses an unknown forge on every table', async () => {
