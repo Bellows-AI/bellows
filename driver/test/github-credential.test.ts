@@ -373,6 +373,33 @@ describe('the gh wrapper and the helper in both images', () => {
             expect(out.stderr.trim()).toBe(REFUSAL);
         });
 
+        // Flags before and between the command words do not change what the command is.
+        it.each([
+            ['--repo', 'o/r', 'pr', 'create'],
+            ['-R', 'o/r', 'pr', 'new', '--title', 't'],
+            ['--repo=o/r', 'pr', 'edit', '3'],
+            ['-Ro/r', 'pr', 'create'],
+            ['pr', '--repo', 'o/r', 'edit', '3'],
+            ['pr', '-R', 'o/r', 'create'],
+            ['pr', '--repo=o/r', 'new'],
+            ['--repo', 'o/r', 'pr', '--repo', 'o/r', 'create'],
+        ])('refuses gh %s %s %s %s however the flags are placed', async (...args) => {
+            const out = await wrapped(args);
+            expect(out.code).toBe(2);
+            expect(out.stderr.trim()).toBe(REFUSAL);
+        });
+
+        it.each([
+            ['--repo', 'o/r', 'pr', 'view', '1'],
+            ['pr', '--repo', 'o/r', 'view', '1'],
+            ['-R', 'o/r', 'issue', 'create', '--title', 'pr'],
+            ['issue', 'comment', '1', '--body', 'pr', 'create'],
+        ])('still reaches the real gh for gh %s %s %s %s', async (...args) => {
+            const out = await wrapped(args, { GH_TOKEN: 'ghs_x' });
+            expect(out.code).not.toBe(2);
+            expect(out.stderr).not.toContain('factory-control publish');
+        });
+
         it('refuses even when a token is already set: the block is not about credentials', async () => {
             const out = await wrapped(['pr', 'create'], { GH_TOKEN: 'ghs_x' });
             expect(out.code).toBe(2);
