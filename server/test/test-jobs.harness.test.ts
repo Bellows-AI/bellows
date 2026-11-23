@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -392,6 +392,16 @@ describe('the test-jobs harness', () => {
         // The shared recovery helpers sit at file scope, where node-disruption and this phase both see them.
         expect(SCRIPT.indexOf('\ndisruption_driver() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
         expect(SCRIPT.indexOf('\nawait_released() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
+    });
+
+    // The publish is the board's write, so no lane stands a `gh` in the runner: the stand-in is gone and the
+    // publish is held at the origin's pre-receive hook instead.
+    it('holds the publish at the origin, with no gh stand-in left', () => {
+        expect(existsSync(join(ROOT, 'scripts/lane-gh.sh'))).toBe(false);
+        const hold = readFileSync(join(ROOT, 'scripts/lanes/jobs/driver-kill.sh'), 'utf8');
+        expect(hold).toContain('hooks/pre-receive');
+        expect(hold).toContain('lane-push-hold.go');
+        expect(hold).not.toContain('lane-gh');
     });
 
     // The board opens the task's PR as the member (docs/connections.md): this phase is where that runs on real containers.

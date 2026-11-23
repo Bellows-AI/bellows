@@ -543,6 +543,13 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         expect(phase).toContain('MCP_ENABLED=false');
     });
 
+    it('holds the takeover publish at the origin pre-receive hook, since the PR is the board’s write', () => {
+        const hold = readFileSync(join(REPO_ROOT, 'scripts/lanes/k8s/takeover.sh'), 'utf8');
+        expect(hold).toContain('hooks/pre-receive');
+        expect(hold).toContain('lane-push-hold.go');
+        expect(hold).not.toContain('lane-gh');
+    });
+
     it('kills the driver pod at setup, agent, gates and publish, counting from outside the pods', () => {
         expect(script).toContain('.lane-kill');
         for (const step of ['t1', 't2', 't4', 't5']) {
