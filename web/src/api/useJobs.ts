@@ -296,7 +296,7 @@ export interface JobConnection {
 export interface JobIntegrationRequirement {
     provider: string;
     label: string;
-    reason: 'missing' | 'ambiguous' | 'reconnect' | 'starter-removed';
+    reason: 'missing' | 'ambiguous' | 'reconnect' | 'starter-removed' | 'forge-access';
     /** `create`: the task never started; `runtime`: it ran, asked and was handed back. */
     source: 'create' | 'runtime';
     /** The bound connection a `reconnect` is about; null otherwise. */

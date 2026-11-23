@@ -30,6 +30,20 @@ describe('the in-process fake GitHub helper', () => {
         expect(fake.calls().some((call) => call.method === 'POST' && call.tokenKind === 'user')).toBe(true);
     });
 
+    it('refuses a member’s PR create while write access is off', async () => {
+        const { access_token: token } = await fake.signIn();
+        const create = () =>
+            fake.send('POST', '/repos/acme/widgets/pulls', {
+                token,
+                body: { head: 'task/one', base: 'main', title: 'T', body: 'B', draft: false },
+            });
+
+        await fake.writeAccess(false);
+        expect((await create()).status).toBe(404);
+        await fake.writeAccess(true);
+        expect((await create()).status).toBe(201);
+    });
+
     it('shares one boot with the fake GitLab helper, which signs in beside it', async () => {
         const forge = await startFakeForge();
         expect((await forge.read('calls')).status).toBe(200);

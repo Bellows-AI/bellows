@@ -28,6 +28,7 @@ import {
     renewLease,
     resolveMerge,
     unresolvedMerges,
+    type MergeCandidate,
     type MergeDeps,
     type MergeIntent,
     type MergeOutcome,
@@ -35,6 +36,7 @@ import {
 } from './db/batches/batch-store-merge.js';
 import { GitHubMergeError, type MergeResult } from './github/pr-merge.js';
 import type { BranchState } from './github/pr-read.js';
+import type { MergeTokenSource } from './forge/pr-token.js';
 import { logger } from './log.js';
 
 /**
@@ -51,11 +53,18 @@ export const MERGE_CONCURRENCY = 4;
 const VERIFY_BATCH = 10;
 /** `pr_merge.delivery_id` is bounded to 64 characters (048). */
 const DELIVERY_ID_LIMIT = 64;
+/** Token read and refresh for one batch's starter; the merge request has its own timeout after it. */
+export const MERGE_TOKEN_DEADLINE_MS = 15_000;
 
 /** What the merger needs of the GitHub client. */
 export interface MergeClient {
     readPullRequest(repo: string, number: number): Promise<PrFacts>;
-    mergePullRequest(repo: string, number: number, request: { sha: string; method: string }): Promise<MergeResult>;
+    mergePullRequest(
+        repo: string,
+        number: number,
+        request: { sha: string; method: string },
+        token: string
+    ): Promise<MergeResult>;
     readBranchState(repo: string, branch: string, shas: readonly string[]): Promise<BranchState>;
 }
 
@@ -69,6 +78,8 @@ export interface BatchMergerDeps {
     recordMerge: (repo: string, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
     /** Lets the gate judge the merge just recorded and the scheduler advance a verified stage. */
     reconcile: (batchId: string) => Promise<unknown>;
+    /** The token a merge is sent with: the batch starter's (docs/batches.md). Reads stay on `client`'s installation. */
+    mergeToken: MergeTokenSource;
     now?: (() => Date) | undefined;
     concurrency?: number | undefined;
 }
@@ -84,6 +95,8 @@ interface Run {
     recordMerge: BatchMergerDeps['recordMerge'];
     reconcile: BatchMergerDeps['reconcile'];
     clock: () => Date;
+    /** The starter's token per claimed batch, resolved before its intent was claimed and held only for this pass. */
+    tokens: Map<string, string>;
 }
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -161,16 +174,40 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
     if (await batchFenced(run.store, intent.batchId)) return void (await resolveMerge(run.store, intent, FENCED));
     // The lease covers the request itself: if another pass already reconciled this intent as expired, nothing is sent.
     if (!(await renewLease(run.store, intent))) return;
+    const token = run.tokens.get(intent.batchId);
+    if (token === undefined) {
+        return settled(run, intent, { state: MERGE_LAPSED, detail: 'no merge token was resolved', retryAfterMs: null });
+    }
     let result: MergeResult;
     try {
-        result = await run.client.mergePullRequest(intent.repo, intent.prNumber, {
-            sha: fresh.headSha,
-            method: MERGE_METHOD,
-        });
+        result = await run.client.mergePullRequest(
+            intent.repo,
+            intent.prNumber,
+            { sha: fresh.headSha, method: MERGE_METHOD },
+            token
+        );
     } catch (e) {
         return settled(run, intent, outcomeOfMergeError(e));
     }
     return merged(run, intent, { mergeCommitSha: result.mergeCommitSha, mergedAt: undefined });
+}
+
+/**
+ * Resolves the starter's token before an intent exists (once per batch per pass): a starter whose grant is not
+ * live, a deleted starter or an unreadable token claims nothing, so no attempt is spent and nothing parks the task.
+ */
+async function admitMerge(run: Run, deps: BatchMergerDeps, candidate: MergeCandidate): Promise<boolean> {
+    if (run.tokens.has(candidate.batchId)) return true;
+    const token = await deps.mergeToken(
+        { orgId: deps.orgId, repo: candidate.repo, startedBy: candidate.startedBy },
+        AbortSignal.timeout(MERGE_TOKEN_DEADLINE_MS)
+    );
+    if (!token.ok) {
+        logger('batches').info({ batchId: candidate.batchId, detail: token.detail }, 'a merge waits for its token');
+        return false;
+    }
+    run.tokens.set(candidate.batchId, token.token);
+    return true;
 }
 
 /** A request whose answer is unknown is read back from the PR, never sent again. */
@@ -234,6 +271,7 @@ export function createBatchMerger(deps: BatchMergerDeps): BatchMerger {
                 recordMerge: deps.recordMerge,
                 reconcile: deps.reconcile,
                 clock: () => (now ? now() : new Date()),
+                tokens: new Map(),
             };
             const unresolved = await unresolvedMerges(store, concurrency);
             await Promise.all(
@@ -243,7 +281,7 @@ export function createBatchMerger(deps: BatchMergerDeps): BatchMerger {
                     )
                 )
             );
-            const intents = await claimMerges(store, concurrency);
+            const intents = await claimMerges(store, concurrency, (candidate) => admitMerge(run, deps, candidate));
             await Promise.all(
                 intents.map((intent) =>
                     guarded('merging', { batchId: intent.batchId, taskKey: intent.taskKey }, () =>

@@ -351,6 +351,87 @@ describe('the gh wrapper and the helper in both images', () => {
         await expect(run('sh', ['-n', join(ROOT, 'docker/executor-common/gh-wrapper.sh')])).resolves.toBeDefined();
     });
 
+    describe('the agent never opens or edits the task’s pull request with gh', () => {
+        const WRAPPER = join(ROOT, 'docker/executor-common/gh-wrapper.sh');
+        const REFUSAL =
+            'the board opens and edits this task’s pull request as the member who started it: ask it with `factory-control publish`; do not run gh pr create or gh pr edit';
+        /** The wrapper on the host with an empty environment: a refusal exits before any absolute path or token ask. */
+        const wrapped = (args: string[], env: Record<string, string> = {}) =>
+            run('sh', [WRAPPER, ...args], { env }).then(
+                (out) => ({ code: 0, ...out }),
+                (error: { code: number; stdout: string; stderr: string }) => error
+            );
+
+        it.each([
+            ['pr', 'create', '--title', 't'],
+            ['pr', 'new', '--title', 't'],
+            ['pr', 'edit', '3', '--title', 't'],
+        ])('refuses gh %s %s with exit 2 and the board publish as the way', async (...args) => {
+            const out = await wrapped(args);
+            expect(out.code).toBe(2);
+            expect(out.stdout).toBe('');
+            expect(out.stderr.trim()).toBe(REFUSAL);
+        });
+
+        // The guard fails closed: `pr` followed anywhere later by create, new or edit is refused, whatever the flags
+        // between them are and whether they take a value, so no flag grammar is known to it.
+        it.each([
+            ['--repo', 'o/r', 'pr', 'create'],
+            ['-R', 'o/r', 'pr', 'new', '--title', 't'],
+            ['--repo=o/r', 'pr', 'edit', '3'],
+            ['-Ro/r', 'pr', 'create'],
+            ['pr', '--repo', 'o/r', 'edit', '3'],
+            ['pr', '-R', 'o/r', 'create'],
+            ['pr', '--repo=o/r', 'new'],
+            ['--repo', 'o/r', 'pr', '--repo', 'o/r', 'create'],
+            ['--title', 't', 'pr', 'create'],
+            ['pr', '--body', 'b', 'new'],
+            ['pr', '--title', 't', 'edit', '3'],
+            ['--some-unknown-flag', 'value', 'pr', '--other', 'x', 'create'],
+            // The accepted false refusal: a value that is exactly the word is indistinguishable from the command.
+            ['pr', 'comment', '1', '--body', 'edit'],
+        ])('refuses gh %s however the flags are placed', async (...args) => {
+            const out = await wrapped(args);
+            expect(out.code).toBe(2);
+            expect(out.stderr.trim()).toBe(REFUSAL);
+        });
+
+        it.each([
+            ['pr', 'view', '3'],
+            ['--repo', 'o/r', 'pr', 'list'],
+            ['pr', '--repo', 'o/r', 'view', '1'],
+            ['-R', 'o/r', 'issue', 'create', '--title', 'pr'],
+            ['issue', 'create'],
+            ['api', 'repos/o/r/issues'],
+        ])('still reaches the real gh for gh %s', async (...args) => {
+            const out = await wrapped(args, { GH_TOKEN: 'ghs_x' });
+            expect(out.code).not.toBe(2);
+            expect(out.stderr).not.toContain('factory-control publish');
+        });
+
+        it('refuses even when a token is already set: the block is not about credentials', async () => {
+            const out = await wrapped(['pr', 'create'], { GH_TOKEN: 'ghs_x' });
+            expect(out.code).toBe(2);
+            expect(out.stderr).not.toContain('/usr/local/libexec/gh');
+        });
+
+        it.each([
+            ['pr', 'view', '1'],
+            ['pr', 'comment', '1', '--body', 'x'],
+        ])('still reaches the real gh for gh %s %s', async (...args) => {
+            const out = await wrapped(args, { GH_TOKEN: 'ghs_x' });
+            // Whatever the real gh answers on this host, it is not the wrapper's refusal.
+            expect(out.code).not.toBe(2);
+            expect(out.stderr).not.toContain('factory-control publish');
+        });
+
+        it('has no trailing whitespace on any line', () => {
+            for (const line of read('docker/executor-common/gh-wrapper.sh').split('\n')) {
+                expect(line).toBe(line.trimEnd());
+            }
+        });
+    });
+
     it('needs no write to anything but the cache directory it is given', () => {
         // The cache path is a constant, never an env name a member could point at a shared volume.
         const source = read('docker/executor-common/credential-broker.cjs');

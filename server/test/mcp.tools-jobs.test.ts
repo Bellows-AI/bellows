@@ -409,7 +409,7 @@ describe('investigate_job and list_questions', () => {
         ]);
     });
 
-    it.each(['reconnect', 'starter-removed'])(
+    it.each(['reconnect', 'starter-removed', 'forge-access'])(
         'surfaces a forge start gate wait (%s) as needs_attention, never as an unreadable thread',
         async (reason) => {
             const requirement = {

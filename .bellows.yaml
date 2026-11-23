@@ -10,7 +10,7 @@ environment:
          # (scripts/gate-test-changed.sh); a shared file still runs everything in the test gate.
          # CI's npm test and npm run test:db stay the merge gate.
          # The gates run one after another. Run side by side in one microVM they shared one gate
-         # container and its I/O, and every one of them hit its deadline (BEL-564). build:core builds
+         # container and its I/O, and every one of them hit its deadline. build:core builds
          # core into core/dist once, first, so each later gate's build is an up-to-date no-op.
          - name: "build:core"
            command: "npm run build -w core"

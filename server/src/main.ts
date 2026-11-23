@@ -383,6 +383,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         admission: config.admission,
         occupancy: (signal) => admissionOccupancy(sql, { signal }),
     });
+    const { registry, integrations, memberGrants } = composeIntegrations({ config, sql, crossOrg, secrets, ready });
     const orgs = createOrgRegistry({
         sql,
         ready,
@@ -393,6 +394,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         artifacts,
         claimMetrics: metrics.claim,
         orgKeyOf: orgKeyDeriver(secretBackend.keys.fingerprintKey),
+        memberGrants,
     });
 
     // Unconditional, for the same reason the job store is: the database is mandatory, so there is
@@ -423,8 +425,6 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
             'AUTH_MODE=none: every route is open to anyone who can reach this port, including POST /api/jobs, which runs shell commands'
         );
     }
-
-    const { registry, integrations, memberGrants } = composeIntegrations({ config, sql, crossOrg, secrets, ready });
 
     const driverCredentials = bootstrappedDriverCredentials(crossOrg, config, (m) => logger('auth').info(m));
     const app = await buildApp({

@@ -46,6 +46,13 @@ case "$got" in
 *) bad "the CLI is the pinned $VERSION" "got: $got" ;;
 esac
 
+# The gh wrapper refuses the agent's PR create: the board opens it as the member who started the task.
+refused="$(docker run --rm --entrypoint gh "$IMAGE" pr create --title t 2>&1)"
+case "$refused" in
+*"factory-control publish"*) ok "gh pr create is refused through the installed wrapper" ;;
+*) bad "gh pr create is refused through the installed wrapper" "got: $refused" ;;
+esac
+
 # npm resolves two 177MB platform packages and wires up one; the Dockerfile deletes the unreachable
 # baseline build. Asserted here because the saving is invisible from the outside — the image still
 # works with the duplicate present, so nothing else would notice it coming back. The companion

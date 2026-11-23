@@ -215,6 +215,27 @@ describe('the forge wait on the task page', () => {
         expect(screen.queryByRole('link', { name: /GitHub/ })).toBeNull();
     });
 
+    it('tells the starter the pull request waits for write access, with no reconnect link', async () => {
+        const jobs = held(forge({ reason: 'forge-access' }));
+        board({ jobs });
+        open(jobs);
+        const wait = await screen.findByRole('region', { name: 'GitHub connection needed' });
+        expect(wait.textContent).toMatch(
+            /pull request is waiting.*needs write access to the repository on GitHub.*retries on its own/i
+        );
+        expect(wait.textContent).not.toMatch(/has not started/i);
+        expect(screen.queryByRole('link', { name: /GitHub/ })).toBeNull();
+    });
+
+    it('tells anyone else who the pull request waits for', async () => {
+        const owner = { ...LOCAL_AUTHOR, id: 'cccccccc-0000-4000-8000-000000000009', name: 'Octo Owner' };
+        const jobs = authoredBy(heldThread(forge({ reason: 'forge-access' })), owner);
+        board({ jobs });
+        open(jobs);
+        expect(await screen.findByText(/waiting for Octo Owner to get write access/i)).toBeTruthy();
+        expect(screen.queryByRole('link', { name: /GitHub/ })).toBeNull();
+    });
+
     it('says an owner or admin can stop or remove a task whose starter was removed', async () => {
         const jobs = held(forge({ reason: 'starter-removed', connectPath: null }));
         board({ jobs });

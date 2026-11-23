@@ -44,6 +44,8 @@ import type { TelemetryClient } from './telemetry/client.js';
 import { createPlanReader } from './workspace/bellows-plan.js';
 import { createOriginPlanReader } from './github/local-origin-plan.js';
 import { logger } from './log.js';
+import { createMergeTokenSource } from './forge/pr-token.js';
+import type { MemberForgeGrants } from './integrations/member-forge-grant.js';
 
 /**
  * Everything one organization needs at runtime, built lazily and cached.
@@ -136,6 +138,8 @@ export type OrgRegistryDeps = {
     claimMetrics?: ClaimObserver;
     /** The per-organization key every claim carries (`auth/org-key.ts`); absent (route tests), claims carry none. */
     orgKeyOf?: (orgId: string) => string;
+    /** The members' forge grants (`AUTH_MODE=github`): automerge merges with the batch starter's token. Absent under `AUTH_MODE=none`, where the installation merges. */
+    memberGrants?: MemberForgeGrants | undefined;
 } & (
     | {
           withStores: true;
@@ -175,7 +179,9 @@ function buildOrgStores({
     orgKey,
     secrets,
     secretLog,
+    memberGrants,
 }: {
+    memberGrants: MemberForgeGrants | undefined;
     claimMetrics: ClaimObserver | undefined;
     orgKey: string | undefined;
     secrets: SecretStore;
@@ -281,19 +287,21 @@ function buildOrgStores({
         pause,
         recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
     });
-    // The merger (064): needs the installation to merge through; offline the board cannot merge and
-    // refuses an automerge plan at start.
-    const batchMerger = client
-        ? createBatchMerger({
-              sql,
-              orgId,
-              ready,
-              client,
-              recordMerge: (repo, prNumber, deliveryId, mergedAt) =>
-                  jobs.closeMergedPr(githubRepo(repo), prNumber, deliveryId, mergedAt),
-              reconcile: (batchId) => batches.reconcile(batchId),
-          })
-        : undefined;
+    // The merger (064): needs the installation to read through; offline the board cannot merge and
+    // refuses an automerge plan at start. It merges as the batch's starter, as the installation without member grants.
+    const batchMerger =
+        client && tokens
+            ? createBatchMerger({
+                  sql,
+                  orgId,
+                  ready,
+                  client,
+                  mergeToken: createMergeTokenSource({ memberGrants, installation: () => tokens.get() }),
+                  recordMerge: (repo, prNumber, deliveryId, mergedAt) =>
+                      jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
+                  reconcile: (batchId) => batches.reconcile(batchId),
+              })
+            : undefined;
     // Workflow definitions (027): the process a task walks, stored per scope inside this org.
     const workflows = createWorkflowStore({ sql, orgId, ready });
     return {
@@ -462,16 +470,11 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
 
         if (deps.withStores) {
             const stores = buildOrgStores({
-                sql,
-                orgId,
-                ready,
-                config,
-                tokens,
-                client,
-                claimMetrics,
+                ...{ sql, orgId, ready, config, tokens, client, claimMetrics },
                 orgKey: deps.orgKeyOf?.(orgId),
                 secrets: deps.secrets,
                 secretLog: deps.secretLog,
+                memberGrants: deps.memberGrants,
             });
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });

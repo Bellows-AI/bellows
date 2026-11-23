@@ -231,7 +231,7 @@ export async function rowHeld(
  * The forge start gate at the claim (docs/connections.md): true when the thread's STARTER (the root's execution user,
  * whoever queued this continuation) holds no live grant for the repo's forge, after opening the thread's `forge`
  * requirement (`missing`, `reconnect`, or `starter-removed` when the starter no longer exists). A live grant closes
- * an open one and holds nothing: the claim heals what a re-link's own bookkeeping missed. Off without
+ * an open grant wait (never a `forge-access` one) and holds nothing: the claim heals what a re-link's own bookkeeping missed. Off without
  * `forgeStanding`. The standing read throws on an unconfirmed answer, which rolls the claim back: no requirement is
  * written and no verdict is given.
  */

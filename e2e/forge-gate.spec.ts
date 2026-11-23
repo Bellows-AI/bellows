@@ -24,7 +24,7 @@ async function withSql<T>(run: (sql: postgres.Sql) => Promise<T>): Promise<T> {
 }
 
 /** A queued task of the signed-in member, waiting on their GitHub grant. */
-const seedHeld = () =>
+const seedHeld = (reason = 'reconnect') =>
     withSql(async (sql) => {
         const [member] = await sql<{ userId: string; orgId: string }[]>`
             select u.id as "userId", m.org_id as "orgId"
@@ -39,7 +39,7 @@ const seedHeld = () =>
         `;
         await sql`
             insert into job_integration_requirement (org_id, root_job_id, provider, reason, source, target)
-            values (${member!.orgId}, ${id}, 'forge', 'reconnect', 'create', 'github')
+            values (${member!.orgId}, ${id}, 'forge', ${reason}, 'create', 'github')
         `;
         return id;
     });
@@ -100,4 +100,16 @@ test('a task held on the grant says so, offers the starter the reconnect, and th
     await expect(page).toHaveURL(new RegExp(`/tasks/${id}`));
     await expect(wait).toHaveCount(0);
     await expect.poll(async () => (await openRequirements(id)).length).toBe(0);
+});
+
+test('a task whose pull request waits for write access says so and offers no reconnect', async ({ page }) => {
+    const id = await seedHeld('forge-access');
+
+    await page.goto(`/tasks/${id}`);
+
+    const wait = page.getByRole('region', { name: 'GitHub connection needed' });
+    await expect(wait).toContainText('needs write access to the repository');
+    await expect(wait).not.toContainText('has not started');
+    await expect(wait.getByRole('link')).toHaveCount(0);
+    await page.screenshot({ path: `${SHOTS}/forge-gate-forge-access.png`, fullPage: true });
 });

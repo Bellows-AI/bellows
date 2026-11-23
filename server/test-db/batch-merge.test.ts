@@ -41,6 +41,7 @@ let observer: BatchPrObserver;
 let merger: BatchMerger;
 /** Real time plus an offset the test moves, so a recorded merge is never "before" a row the database stamped. */
 const clock = { offset: 0 };
+const admitAll = async () => true;
 const now = () => new Date(Date.now() + clock.offset);
 
 /** The fake GitHub: what each PR answers, what a merge request does, and the target branch. */
@@ -124,6 +125,7 @@ beforeAll(() => {
         sql,
         orgId: ORG,
         client,
+        mergeToken: async () => ({ ok: true, token: 'ghs_installation' }),
         recordMerge: (repo, number, deliveryId, mergedAt) =>
             jobs.closeMergedPr(githubRepo(repo), number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
@@ -489,7 +491,7 @@ describe.skipIf(!enabled)('automerge', () => {
         const first = await readyBatch(plan([policyStage('automerge', ['a'])]));
         const second = await readyBatch(plan([policyStage('automerge', ['a'])]));
 
-        const claimed = await claimMerges({ sql, orgId: ORG, now }, 4);
+        const claimed = await claimMerges({ sql, orgId: ORG, now }, 4, admitAll);
 
         expect(claimed).toHaveLength(1);
         expect([first.id, second.id]).toContain(claimed[0]!.batchId);
@@ -534,7 +536,7 @@ describe.skipIf(!enabled)('automerge', () => {
 
     it('reconciles an intent a dead process left dispatching, and never sends the request again itself', async () => {
         const { id, number } = await readyBatch(plan([policyStage('automerge', ['a'])]));
-        const claimed = await claimMerges({ sql, orgId: ORG, now }, 1);
+        const claimed = await claimMerges({ sql, orgId: ORG, now }, 1, admitAll);
         expect(claimed).toHaveLength(1);
         // The process died here: the intent stands, its lease runs out, the provider merged it.
         land(number);
@@ -549,7 +551,7 @@ describe.skipIf(!enabled)('automerge', () => {
 
     it('records a dispatching intent left by a dead process as never accepted when the PR is still open', async () => {
         const { id } = await readyBatch(plan([policyStage('automerge', ['a'])]));
-        await claimMerges({ sql, orgId: ORG, now }, 1);
+        await claimMerges({ sql, orgId: ORG, now }, 1, admitAll);
         clock.offset += HOURS;
 
         await merger.mergeDue();
@@ -621,7 +623,7 @@ describe.skipIf(!enabled)('automerge', () => {
 
     it('records a merge the provider accepted before the fence, without advancing a fenced batch', async () => {
         const { id, number } = await readyBatch(plan([policyStage('automerge', ['a'])]));
-        const [claimed] = await claimMerges({ sql, orgId: ORG, now }, 1);
+        const [claimed] = await claimMerges({ sql, orgId: ORG, now }, 1, admitAll);
         expect(claimed).toBeDefined();
         await store.cancel(id, ALICE);
         land(number);
@@ -653,7 +655,7 @@ describe.skipIf(!enabled)('task.blocked from a refused merge', () => {
     // resolveMerge alone sets attention; the "merge refused" wait text arrives with a later reconcile.
     async function refuse(source: BatchPlan) {
         const ready = await readyBatch(source);
-        const [intent] = await claimMerges({ sql, orgId: ORG, now }, 1);
+        const [intent] = await claimMerges({ sql, orgId: ORG, now }, 1, admitAll);
         expect(intent).toBeDefined();
         const outcome = { state: 'refused', detail: 'required checks are expected' } as const;
         expect(await resolveMerge({ sql, orgId: ORG, now }, intent!, outcome)).toBe(true);

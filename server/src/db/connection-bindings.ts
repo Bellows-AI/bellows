@@ -422,7 +422,7 @@ export interface RequirementRecord {
     provider: string;
     /** What a person calls the provider (`INTEGRATION_PROVIDERS`). */
     label: string;
-    reason: 'missing' | 'ambiguous' | 'reconnect' | 'starter-removed';
+    reason: 'missing' | 'ambiguous' | 'reconnect' | 'starter-removed' | 'forge-access';
     /** `create`: the task never started and waits to; `runtime`: it ran, asked, and was handed back. */
     source: 'create' | 'runtime';
     /** The bound connection a `reconnect` requirement is about; null for every other reason. */

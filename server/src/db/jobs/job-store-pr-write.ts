@@ -5,7 +5,7 @@
  */
 
 import { lockThreadRootInTx } from '../connection-bindings.js';
-import { openForgeRequirement, type ForgeRequirementReason } from '../forge-requirement.js';
+import { closeForgeAccessWait, openForgeRequirement, type ForgeRequirementReason } from '../forge-requirement.js';
 import { leaseRefusal, lockRunningAttempt } from './job-store-rows.js';
 import type { JobStoreContext } from './job-store-types.js';
 
@@ -33,6 +33,8 @@ export interface PrWriteStore {
         leaseToken: string,
         wait: { forge: string; reason: ForgeRequirementReason }
     ): Promise<{ result: 'ok' | 'lost' | 'missing' }>;
+    /** Closes the thread's open forge wait, whatever its reason, after the starter's own write succeeded. */
+    closePrForgeWait(rootJobId: string, userId: string): Promise<void>;
 }
 
 export async function prWriteContext(
@@ -78,4 +80,8 @@ export async function openPrForgeWait(
         await openForgeRequirement(tx, { orgId, rootJobId: row.root_job_id, ...wait });
         return { result: 'ok' } as const;
     });
+}
+
+export async function closePrForgeWait(ctx: JobStoreContext, rootJobId: string, userId: string): Promise<void> {
+    await closeForgeAccessWait(ctx.sql, { orgId: ctx.orgId, rootJobId, userId });
 }

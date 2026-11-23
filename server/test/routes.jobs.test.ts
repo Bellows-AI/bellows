@@ -535,6 +535,9 @@ function stubStore(
             boom();
             return { result: 'ok' };
         },
+        async closePrForgeWait() {
+            boom();
+        },
         async ingestTranscriptTools() {
             boom();
             return { result: 'ok', written: 0 };

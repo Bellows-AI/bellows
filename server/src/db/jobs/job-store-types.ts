@@ -449,7 +449,7 @@ export interface JobIntegrationRequirement {
     provider: string;
     /** What a person calls the provider. */
     label: string;
-    reason: 'missing' | 'ambiguous' | 'reconnect' | 'starter-removed';
+    reason: 'missing' | 'ambiguous' | 'reconnect' | 'starter-removed' | 'forge-access';
     /** `create`: never started; `runtime`: it ran, asked, and was handed back. */
     source: 'create' | 'runtime';
     /** The bound connection a `reconnect` is about; null otherwise. */
