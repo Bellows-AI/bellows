@@ -8,6 +8,7 @@ import {
     READ_NOT_FOUND,
     READ_RATE_LIMITED,
     READ_TRANSPORT,
+    githubRepo,
     sameRepo,
     type CheckItem,
     type PrFacts,
@@ -280,7 +281,7 @@ export async function readPullRequest(call: ApiCall, repo: string, number: numbe
     if (!baseRepo || !headSha || !baseBranch) {
         throw new GitHubReadError(`GET ${base}/pulls/${number} returned an unreadable pull request`, READ_TRANSPORT);
     }
-    if (!sameRepo(baseRepo, repo) || pull.number !== number) {
+    if (!sameRepo(githubRepo(baseRepo), githubRepo(repo)) || pull.number !== number) {
         throw new GitHubReadError(`pull request ${repo}#${number} belongs to ${baseRepo}`, READ_NOT_FOUND);
     }
     const { state, merged } = confirmedState(pull, `${base}/pulls/${number}`);

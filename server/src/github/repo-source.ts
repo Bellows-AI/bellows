@@ -1,6 +1,6 @@
+import { githubRepo, type RepoRef, repoKey } from '@factory-ai/core';
 import { createCache } from '../cache.js';
 import type { Repo } from '../config.js';
-import { fullName } from '../identifiers.js';
 import type { GitHubAppClient, Installation, InstallationRepo } from './app-client.js';
 
 /**
@@ -69,17 +69,20 @@ export interface RepoSourceDeps {
      */
     readonly stored?: (() => Promise<readonly string[]>) | undefined;
     /**
-     * The org's tracked-repo allowlist, as "owner/name" — the onboarding screen's per-org
+     * The org's tracked-repo allowlist, as refs — the onboarding screen's per-org
      * checkbox answer, read from `tracked_repo`. Empty or absent means everything the
      * installation reports: the default, and the reason a confirm-with-everything-checked writes
      * nothing. The intersection is applied to whatever the source produced (client listing or
      * stored fallback), so stats scoping, `otherRepoSessions` and the workspace/env writes all
      * follow one truth — a session on an unselected repo stays counted, in `otherRepoSessions`.
      */
-    readonly allowlist?: (() => Promise<readonly string[]>) | undefined;
+    readonly allowlist?: (() => Promise<readonly RepoRef[]>) | undefined;
     readonly ttlMs?: number;
     readonly now?: () => number;
 }
+
+/** The installation listing's "owner/name" spelling, the one telemetry scopes sessions by. */
+const ownerName = (repo: Repo): string => `${repo.owner}/${repo.name}`;
 
 /** "owner/name" back to a Repo. A repo name cannot contain a slash, so the first one splits it. */
 function parseFullName(name: string): InstallationRepo | null {
@@ -120,7 +123,7 @@ export function createRepoSource({
     const narrow = async (listing: Listing): Promise<{ listing: Listing; error: string | null }> => {
         if (!allowlist) return { listing, error: null };
         let read: number;
-        let tracked: readonly string[];
+        let tracked: readonly RepoRef[];
         try {
             // An invalidate() while the read is in flight means the allowlist was just written
             // here: the answer in hand may predate it, so ask again. Each attempt takes its own
@@ -140,10 +143,12 @@ export function createRepoSource({
             tracked.length === 0
                 ? listing
                 : (() => {
-                      const allowed = new Set(tracked);
+                      const allowed = new Set(tracked.map(repoKey));
                       return {
                           ...listing,
-                          repos: Object.freeze(listing.repos.filter((r) => allowed.has(fullName(r)))),
+                          repos: Object.freeze(
+                              listing.repos.filter((r) => allowed.has(repoKey(githubRepo(ownerName(r)))))
+                          ),
                       };
                   })();
         // An older read resolving after a newer one never overwrites it.
@@ -211,7 +216,7 @@ export function createRepoSource({
         (allowlist ? narrowed?.repos : cache.peek()?.value.repos) ?? empty;
     return {
         snapshot: current,
-        snapshotNames: () => current().map(fullName),
+        snapshotNames: () => current().map(ownerName),
         list: async () => (await load()).repos,
         detail: load,
         lastError: () => error ?? allowlistError,
@@ -239,7 +244,7 @@ export function staticRepoSource(
     let invalidations = 0;
     return {
         snapshot: () => detailed,
-        snapshotNames: () => detailed.map(fullName),
+        snapshotNames: () => detailed.map(ownerName),
         list: async () => detailed,
         detail: async () => ({ repos: detailed, installation: null, error }),
         lastError: () => error,

@@ -1,5 +1,5 @@
 import type { GitHubIdentity } from '../src/auth/github.js';
-import type { Role } from '@factory-ai/core';
+import type { RepoRef, Role } from '@factory-ai/core';
 import type { AccessTokenKind, AccessTokenView, AuthStore, Caller, InstallationRef } from '../src/auth/store.js';
 import type { MembershipSetup } from '../src/auth/setup-store.js';
 
@@ -134,7 +134,7 @@ export interface AuthState {
     sessions: Map<string, { userId: string; orgId: string; expiresAt: number }>;
     accessTokenRows: AccessTokenRow[];
     pendingRows: PendingRow[];
-    trackedRepoRows: Map<string, string[]>;
+    trackedRepoRows: Map<string, RepoRef[]>;
     trackedRepoWritesUntilFailure: number | null;
     nextId: number;
 }

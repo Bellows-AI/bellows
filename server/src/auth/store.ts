@@ -1,4 +1,4 @@
-import { ADMIN_ROLE, MEMBER_ROLE, type Role } from '@factory-ai/core';
+import { ADMIN_ROLE, MEMBER_ROLE, type RepoRef, type Role } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import type { GitHubIdentity } from './github.js';
 import type { MembershipVerdict } from './membership.js';
@@ -178,14 +178,14 @@ export interface AuthStore extends OrgStatusStore, MembershipSetupStore {
      * it. True when this call spent the row; false means it was already gone (single-use).
      */
     deletePendingSignIn(tokenHash: Buffer): Promise<boolean>;
-    /** The org's tracked-repo allowlist, as "owner/name" strings. Empty when everything is tracked. */
-    trackedRepos(orgId: string): Promise<string[]>;
+    /** The org's tracked-repo allowlist, as refs. Empty when everything is tracked. */
+    trackedRepos(orgId: string): Promise<RepoRef[]>;
     /**
-     * Replaces an org's tracked-repo allowlist with `repos` ("owner/name" strings). Empty means
+     * Replaces an org's tracked-repo allowlist with `repos`. Empty means
      * the org tracks everything its installation reports — the completion route runs this only
      * for orgs whose checkbox set was actually narrowed.
      */
-    replaceTrackedRepos(orgId: string, repos: readonly string[]): Promise<void>;
+    replaceTrackedRepos(orgId: string, repos: readonly RepoRef[]): Promise<void>;
     /** A sign-in's session row, and its `auth.sign_in` audit row in the same transaction. */
     createSession(tokenHash: Buffer, userId: string, expiresAt: Date, orgId: string): Promise<void>;
     /**

@@ -11,6 +11,7 @@ import {
     PR_CLOSED,
     PR_OPEN,
     RECOVERY_REPAIR,
+    githubRepo,
     sameRepo,
     TASK_RETRY,
     TASK_SUCCEEDED,
@@ -245,7 +246,10 @@ export async function commitObservation(
         const stale = Number(row.hint_seq) !== claim.hintSeq;
         const at = { orgId, batchId: claim.batchId, taskKey: claim.taskKey };
         if (result.kind === 'error') return writeError(tx, { at, row, result, now, stale });
-        if (!sameRepo(result.facts.repo, claim.repo) || result.facts.number !== claim.prNumber) {
+        if (
+            !sameRepo(githubRepo(result.facts.repo), githubRepo(claim.repo)) ||
+            result.facts.number !== claim.prNumber
+        ) {
             const mismatch: ObservationResult = {
                 kind: 'error',
                 error: 'binding',

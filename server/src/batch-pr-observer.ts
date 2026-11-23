@@ -1,4 +1,11 @@
-import { nextObservationDelayMs, READ_BINDING, READ_RATE_LIMITED, READ_TRANSPORT, sameRepo } from '@factory-ai/core';
+import {
+    githubRepo,
+    nextObservationDelayMs,
+    READ_BINDING,
+    READ_RATE_LIMITED,
+    READ_TRANSPORT,
+    sameRepo,
+} from '@factory-ai/core';
 import type { PrFacts } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import {
@@ -121,7 +128,7 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
 
     const read = async (claim: ObservationClaim): Promise<ObservationResult> => {
         // The recorded PR must be in the plan's own repository; a number alone identifies nothing.
-        if (!sameRepo(claim.repo, claim.targetRepo)) {
+        if (!sameRepo(githubRepo(claim.repo), githubRepo(claim.targetRepo))) {
             return {
                 kind: 'error',
                 error: READ_BINDING,
@@ -141,7 +148,7 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
         if (
             result.kind === 'facts' &&
             result.facts.merged &&
-            sameRepo(result.facts.repo, claim.repo) &&
+            sameRepo(githubRepo(result.facts.repo), githubRepo(claim.repo)) &&
             result.facts.number === claim.prNumber
         ) {
             await recordMergeOf(claim, result.facts);

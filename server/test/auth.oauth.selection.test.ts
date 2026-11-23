@@ -1,3 +1,4 @@
+import { formatRepoRef, githubRepo } from '@factory-ai/core';
 import type { FastifyInstance } from 'fastify';
 import { describe, expect, it, vi } from 'vitest';
 import type { InstallationRepo } from '../src/github/app-client.js';
@@ -70,7 +71,7 @@ describe('the selection screen (#125)', () => {
             { id: '888888', account: 'other-org', tracked: null },
             { id: ORG, account: 'acme', tracked: ['acme/web'] },
         ]);
-        expect(await auth.trackedRepos(ORG)).toEqual(['acme/web']);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual(['acme/web']);
     });
 
     it('the pending payload reports the stored narrowing as stored — the screen intersects with the listing', async () => {
@@ -90,7 +91,7 @@ describe('the selection screen (#125)', () => {
         // listing anyway and intersects when seeding and before posting, so a name the listing
         // cannot render is never seeded and never submitted (posting it would 400 UNKNOWN_REPO
         // with no checkbox anywhere to uncheck).
-        await auth.replaceTrackedRepos(ORG, ['acme/gone', 'acme/web']);
+        await auth.replaceTrackedRepos(ORG, ['acme/gone', 'acme/web'].map(githubRepo));
 
         const cookie = await beginOnboarding(app, '/', undefined, true);
         const screen = await pendingRoute(app, cookie);
@@ -120,7 +121,7 @@ describe('the selection screen (#125)', () => {
             installations: TWO,
             installationListing: async (id) => listing[id] ?? null,
         });
-        await auth.replaceTrackedRepos(ORG, ['acme/gone', 'acme/also-gone']);
+        await auth.replaceTrackedRepos(ORG, ['acme/gone', 'acme/also-gone'].map(githubRepo));
 
         const cookie = await beginOnboarding(app, '/', undefined, true);
         const screen = await pendingRoute(app, cookie);
@@ -131,7 +132,7 @@ describe('the selection screen (#125)', () => {
         ]);
         // The dead rows are retained — [] would read as track-everything — so the org tracks
         // nothing effective until the choice is explicitly rewritten.
-        expect(await auth.trackedRepos(ORG)).toEqual(['acme/gone', 'acme/also-gone']);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual(['acme/gone', 'acme/also-gone']);
     });
 
     it('a partially stale narrowing rides raw in the payload — the dead entry drops in the screen', async () => {
@@ -150,7 +151,7 @@ describe('the selection screen (#125)', () => {
             installations: TWO,
             installationListing: async (id) => listing[id] ?? null,
         });
-        await auth.replaceTrackedRepos(ORG, ['acme/gone', 'acme/web']);
+        await auth.replaceTrackedRepos(ORG, ['acme/gone', 'acme/web'].map(githubRepo));
 
         const cookie = await beginOnboarding(app, '/', undefined, true);
         const screen = await pendingRoute(app, cookie);
@@ -159,7 +160,7 @@ describe('the selection screen (#125)', () => {
             { id: '888888', account: 'other-org', tracked: null },
             { id: ORG, account: 'acme', tracked: ['acme/gone', 'acme/web'] },
         ]);
-        expect(await auth.trackedRepos(ORG)).toEqual(['acme/gone', 'acme/web']);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual(['acme/gone', 'acme/web']);
     });
 
     it('completing tracks only the chosen orgs, signs in, and spends the pending row', async () => {
@@ -208,7 +209,7 @@ describe('the selection screen (#125)', () => {
         // Nothing half-landed: no session, no membership, no allowlist row.
         expect(auth.sessions()).toEqual([]);
         expect(await auth.storedSelection(4242)).toEqual([]);
-        expect(await auth.trackedRepos(ORG)).toEqual([]);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual([]);
 
         // And the next sign-in re-enters the screen rather than bypassing it.
         const state = await begin(app);
@@ -248,8 +249,8 @@ describe('the selection screen (#125)', () => {
             repos: { [ORG]: ['acme/web'], '888888': ['other-org/api'] },
         });
         expect(done.statusCode).toBe(200);
-        expect(await auth.trackedRepos(ORG)).toEqual([]);
-        expect(await auth.trackedRepos('888888')).toEqual(['other-org/api']);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual([]);
+        expect((await auth.trackedRepos('888888')).map(formatRepoRef)).toEqual(['other-org/api']);
     });
 
     it('a failed reselect restores the prior choice instead of destroying it', async () => {
@@ -297,8 +298,8 @@ describe('the selection screen (#125)', () => {
         // each org's ORIGINAL narrowing, not a cleared allowlist and not the reselect's new one.
         expect(auth.sessions()).toHaveLength(1);
         expect((await auth.storedSelection(4242)).sort()).toEqual(['888888', ORG]);
-        expect(await auth.trackedRepos(ORG)).toEqual(['acme/web']);
-        expect(await auth.trackedRepos('888888')).toEqual(['other-org/api']);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual(['acme/web']);
+        expect((await auth.trackedRepos('888888')).map(formatRepoRef)).toEqual(['other-org/api']);
     });
 
     it('refuses an empty or foreign selection, an expired row, and no cookie at all', async () => {
@@ -503,7 +504,7 @@ describe('the selection screen (#125)', () => {
 
         const narrowed = await finishOnboarding(app, cookie, { orgs: [ORG], repos: { [ORG]: ['acme/web'] } });
         expect(narrowed.statusCode).toBe(200);
-        expect(await auth.trackedRepos(ORG)).toEqual(['acme/web']);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual(['acme/web']);
 
         // A second onboarding — reselect, since the account now has a stored choice — narrowing
         // to a repo the listing did not name is refused.
@@ -545,8 +546,8 @@ describe('the selection screen (#125)', () => {
         // The default confirmation — everything checked — writes no allowlist at all.
         const all = await finishOnboarding(app, cookie, { orgs: [ORG, '888888'] });
         expect(all.statusCode).toBe(200);
-        expect(await auth.trackedRepos(ORG)).toEqual([]);
-        expect(await auth.trackedRepos('888888')).toEqual([]);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual([]);
+        expect((await auth.trackedRepos('888888')).map(formatRepoRef)).toEqual([]);
     });
 
     it('an empty repos list is the widening move: it clears a stored narrowing back to everything', async () => {
@@ -563,14 +564,14 @@ describe('the selection screen (#125)', () => {
         });
         const first = await beginOnboarding(app);
         await finishOnboarding(app, first, { orgs: [ORG], repos: { [ORG]: ['acme/web'] } });
-        expect(await auth.trackedRepos(ORG)).toEqual(['acme/web']);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual(['acme/web']);
 
         // The reselect posts the org back as all-checked: an empty list, which the store writes
         // as zero rows — track everything again, future repos included.
         const second = await beginOnboarding(app, '/', undefined, true);
         const widened = await finishOnboarding(app, second, { orgs: [ORG], repos: { [ORG]: [] } });
         expect(widened.statusCode).toBe(200);
-        expect(await auth.trackedRepos(ORG)).toEqual([]);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual([]);
     });
 
     it('a reselect completion without a repos key leaves the stored narrowing standing (issue 187)', async () => {
@@ -588,12 +589,12 @@ describe('the selection screen (#125)', () => {
         });
         const first = await beginOnboarding(app);
         await finishOnboarding(app, first, { orgs: [ORG], repos: { [ORG]: ['acme/web'] } });
-        expect(await auth.trackedRepos(ORG)).toEqual(['acme/web']);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual(['acme/web']);
 
         const second = await beginOnboarding(app, '/', undefined, true);
         const preserved = await finishOnboarding(app, second, { orgs: [ORG] });
         expect(preserved.statusCode).toBe(200);
-        expect(await auth.trackedRepos(ORG)).toEqual(['acme/web']);
+        expect((await auth.trackedRepos(ORG)).map(formatRepoRef)).toEqual(['acme/web']);
     });
 });
 

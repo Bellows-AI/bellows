@@ -1,4 +1,4 @@
-import { READ_BINDING, sameRepo } from '@factory-ai/core';
+import { githubRepo, READ_BINDING, sameRepo } from '@factory-ai/core';
 import type { PrFacts } from '@factory-ai/core';
 import { createHash } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
@@ -114,7 +114,10 @@ export function createPrFollower(deps: PrFollowerDeps): PrFollower {
         return withFollowClaim(store, claim, async (tx): Promise<PrFollowResult> => {
             if (read.kind === 'error') return { kind: 'failed', error: read.error, retryAfterMs: read.retryAfterMs };
             // Facts about another PR are never applied to this one.
-            if (!sameRepo(read.facts.repo, claim.repo) || read.facts.number !== claim.prNumber) {
+            if (
+                !sameRepo(githubRepo(read.facts.repo), githubRepo(claim.repo)) ||
+                read.facts.number !== claim.prNumber
+            ) {
                 return { kind: 'failed', error: READ_BINDING, retryAfterMs: null };
             }
             return apply(read.facts, tx);
