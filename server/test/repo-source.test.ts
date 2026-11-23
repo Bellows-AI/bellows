@@ -160,7 +160,7 @@ describe('the tracked-repo allowlist (#125)', () => {
         // scope as fresh for another full TTL.
         const clock = 1_000;
         let tracked: readonly RepoRef[] = ['acme/web'].map(githubRepo);
-        const resolvers: Array<(value: readonly string[]) => void> = [];
+        const resolvers: Array<(value: readonly RepoRef[]) => void> = [];
         const source = createRepoSource({
             client: clientWith('acme/web', 'acme/other'),
             allowlist: () => new Promise<readonly RepoRef[]>((resolve) => resolvers.push(resolve)),
