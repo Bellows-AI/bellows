@@ -249,3 +249,89 @@ describe.skipIf(!enabled)('the claim holds a continuation whose starter has no l
         expect(await openForgeRows(root)).toHaveLength(1);
     });
 });
+
+/**
+ * The post-run `forge-access` wait (docs/connections.md): the route opened it because the member cannot write to the
+ * repository, so a live grant is no evidence the wait is over. The hand-back defers the row's next claim by the retry
+ * window; only the route's successful write closes the wait.
+ */
+describe.skipIf(!enabled)('a forge-access wait', () => {
+    const NO_WRITE_REASON = 'forge-access';
+    const RETRY_SECONDS = 600;
+    const SLACK_SECONDS = 10;
+
+    const deferralSeconds = async (id: string): Promise<number | null> =>
+        (
+            await sql<{ seconds: number | null }[]>`
+                select extract(epoch from claim_deferred_until - now())::float as seconds from job
+                where org_id = ${ORG} and id = ${id}
+            `
+        )[0]!.seconds;
+
+    /** The follow-up claimed and running, its publish asked the board, which opened `forge-access` and handed the run back. */
+    async function handedBack(open = true) {
+        const root = await finishedRoot(ALICE);
+        const next = await followUp(root, ALICE);
+        const claim = (await claimNext())!;
+        expect(claim.id).toBe(next);
+        if (open) {
+            expect(
+                await store.openPrForgeWait(next, claim.leaseToken, { forge: 'github', reason: NO_WRITE_REASON })
+            ).toEqual({
+                result: 'ok',
+            });
+        }
+        expect(
+            await store.interrupt(next, claim.leaseToken, {
+                reason: 'no write access',
+                release: true,
+                requirement: true,
+            })
+        ).toMatchObject({ result: 'ok', status: 'queued' });
+        return { root, next };
+    }
+
+    it('defers the hand-back by the retry window, then offers the row with the wait still open', async () => {
+        const { root, next } = await handedBack();
+
+        const seconds = await deferralSeconds(next);
+        expect(seconds).toBeGreaterThan(RETRY_SECONDS - SLACK_SECONDS);
+        expect(seconds).toBeLessThan(RETRY_SECONDS + SLACK_SECONDS);
+        expect(await claimNext()).toBeNull();
+
+        await sql`update job set claim_deferred_until = now() - interval '1 second' where org_id = ${ORG} and id = ${next}`;
+
+        expect((await claimNext())?.id).toBe(next);
+        expect(await openForgeRows(root)).toEqual([{ target: 'github', reason: NO_WRITE_REASON, source: 'create' }]);
+    });
+
+    it('a broken grant at the retry still holds the row, and a re-link then lets it through with the wait open', async () => {
+        const { root, next } = await handedBack();
+        await revoke(ALICE);
+        await sql`update job set claim_deferred_until = now() - interval '1 second' where org_id = ${ORG} and id = ${next}`;
+
+        expect(await claimNext()).toBeNull();
+
+        await link(ALICE);
+        expect((await claimNext())?.id).toBe(next);
+        expect(await openForgeRows(root)).toEqual([{ target: 'github', reason: NO_WRITE_REASON, source: 'create' }]);
+    });
+
+    it('a re-link leaves it open, while it still closes a reconnect wait', async () => {
+        const { root } = await handedBack();
+
+        await link(ALICE);
+
+        expect(await openForgeRows(root)).toEqual([{ target: 'github', reason: NO_WRITE_REASON, source: 'create' }]);
+        await sql`update job_integration_requirement set reason = 'reconnect' where org_id = ${ORG} and root_job_id = ${root}`;
+        await link(ALICE);
+        expect(await openForgeRows(root)).toEqual([]);
+    });
+
+    // Pin, green before the change: a requirement hand-back with no open forge-access wait defers nothing.
+    it('defers nothing when no forge-access wait is open', async () => {
+        const { next } = await handedBack(false);
+
+        expect(await deferralSeconds(next)).toBeNull();
+    });
+});

@@ -16,6 +16,7 @@ const PROJECTS = ['core', 'server', 'web', 'driver', 'cli', 'dom', 'spawn'];
 const CORE_CONSUMERS = ['server', 'web', 'dom'];
 const UNIT_TEST = /^(core|server|web|driver|cli)\/test\/.*\.test\.tsx?$/;
 const TEST_TREE = /^(core|server|web|driver|cli)\/test\//;
+const NOT_UNIT = /^(server\/test-db|e2e)\//;
 // Names too common for a source to be said to load them, and files every package builds from or
 // runs under: a change to one is not narrowed, it runs everything.
 const SHARED_NAME = /^(package(-lock)?\.json|tsconfig[\w.]*\.json|Makefile|VERSION|README\.md|Dockerfile[\w.]*|index\.[a-z]+)$/;
@@ -30,6 +31,14 @@ const SOURCE_SCANNERS = {
     driver: [POLLING, 'driver/test/loop-fence.test.ts', 'driver/test/k8s/pod-spec.test.ts'],
     web: ['web/test/styles.test.ts'],
 };
+
+// Suites that walk a directory and import nothing from it: a change anywhere under it selects them, whatever else
+// names the file (the import graph and the name grep cannot see a directory walk).
+const DIRECTORY_SCANNERS = [
+    [/^docker\/skills\//, ['core/test/skills.test.ts', 'driver/test/executor-images.test.ts', 'driver/test/skill-helper-paths.test.ts']],
+    [/^server\/test-db\//, ['server/test/test-db.harness.test.ts']],
+    [/^e2e\/specimen\//, ['web/test/styles.test.ts']],
+];
 
 // The DB suites (`vitest.db.config.ts` includes `server/test-db/**/*.test.ts`).
 const DB_ROOT = 'server/test-db';
@@ -55,6 +64,9 @@ const DB_FULL = [
 
 const projectArgs = (projects) => projects.flatMap((name) => ['--project', name]);
 const baseName = (file) => file.slice(file.lastIndexOf('/') + 1);
+// Names many directories share: tests name them with their directory (`factory-github/SKILL.md`), so that is the grep key.
+const SHARED_DOC_NAME = /^(SKILL|AGENTS|CLAUDE)\.md$/;
+const nameOf = (file) => (SHARED_DOC_NAME.test(baseName(file)) ? file.split('/').slice(-2).join('/') : baseName(file));
 
 /**
  * The ordered steps for a set of changed files. Fail open: a changed path the selector cannot
@@ -84,16 +96,20 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
 
     for (const file of changed) {
         const pkg = file.split('/')[0];
+        for (const [directory, scanners] of DIRECTORY_SCANNERS) if (directory.test(file)) for (const s of scanners) named.add(s);
         if (TEST_TREE.test(file)) {
             // A test file or helper added, moved or changed moves the project lists and the test scans.
             named.add('core/test/vitest-projects.test.ts');
             if (GRAPH_FILE.test(file)) classify(namedBy([baseName(file)])); // launched by path
+        } else if (NOT_UNIT.test(file)) {
+            // No unit project runs these: the db and ui gates do. A unit test that reads one by path is still reached.
+            classify(namedBy([baseName(file)]));
         } else if (SRC_MODULE.test(file)) {
             if (addedSet.has(file)) widen(pkg, `${file} was added or removed: directory scans see it`);
             else for (const scanner of SOURCE_SCANNERS[pkg] ?? []) named.add(scanner);
             classify(namedBy([baseName(file)])); // a test that reads the module by path
         } else if (/\.md$/.test(file) && !SHARED_NAME.test(baseName(file))) {
-            classify(namedBy([baseName(file)]));
+            classify(namedBy([nameOf(file)]));
             if (file.startsWith('docs/design-system/')) named.add('web/test/styles.test.ts');
         } else if (SHARED_NAME.test(baseName(file))) {
             widen('all', `${file}: shared by every package`);

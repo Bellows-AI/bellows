@@ -91,7 +91,7 @@ const QuestionSchema = z.object({
 });
 
 /** Why a thread waits on an integration; `starter-removed` is the forge start gate's (docs/connections.md). */
-export const REQUIREMENT_REASONS = ['missing', 'ambiguous', 'reconnect', 'starter-removed'] as const;
+export const REQUIREMENT_REASONS = ['missing', 'ambiguous', 'reconnect', 'starter-removed', 'forge-access'] as const;
 
 const RequirementSchema = z.object({
     provider: z.string(),

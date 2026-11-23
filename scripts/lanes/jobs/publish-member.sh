@@ -11,6 +11,10 @@ begin_phase publish-member
 #   p2  the driver dies while the board's create is parked: the next claim finds the PR by head, so one PR exists
 #   p3  the member's grant breaks: the publish waits (forge requirement, never a failure), and signing in again
 #       lets the task finish with one PR and no second push
+#   p4  the member cannot write to the repository (the fake answers 404 to their create): the publish waits as a
+#       `forge-access` requirement (the task is queued, never failed), and once access is back and the retry time is
+#       due (the lane sets claim_deferred_until itself: the real wait is ten minutes) the task finishes with one PR
+#       and no second push
 # The member's runner holds no user token: the only credential the publish steps carry is the installation token
 # the push reads, and this board has no App, so none. server/test-db/pr-as-member.test.ts runs the route on a real store.
 
@@ -36,6 +40,9 @@ pm_creates() { # pm_creates <token kind> -> how many PR creates the fake saw und
 const calls = JSON.parse(process.argv[1] || "[]");
 process.stdout.write(String(calls.filter((c) => c.method === "POST" && /\/pulls$/.test(c.path) && c.tokenKind === process.argv[2]).length));' \
         "$(pm_forge /_control/calls)" "$1"
+}
+pm_write_access() { # pm_write_access <true|false> -> whether the fake lets a member's token write PRs
+    BASE="$LANE_FAKE_FORGE_URL" AUTH_HEADER='' api POST /_control/write-access "{\"user\": $1}" >/dev/null
 }
 pm_member_job() { # pm_member_job <command> -> the member's new task id
     BASE="$PM_BASE" AUTH_HEADER="Bearer $PM_MEMBER" create_job "$1"
@@ -175,6 +182,41 @@ else
         [ "$pm3_pushed" = 1 ] && ok 'p3: the branch was pushed once, not again after the wait' ||
             bad 'p3: the branch was pushed once, not again after the wait' "ref updates added: $pm3_pushed"
         expect_contains 'p3: the verdict carries the fake PR' "$(field "$(pm_job "$pm3")" output)" "$SMOKE_REPO/pull/"
+
+        # P4. The member cannot write to the repository: the publish waits as forge-access, then lands once access is back.
+        pm4_pushes="$(pm_pushes)"
+        pm_write_access false
+        pm4="$(pm_member_job "$PM_COMMIT && echo \"p4 ran in \$HOSTNAME\"")"
+        pm_wait=""
+        for _ in $(seq 1 180); do
+            pm_wait="$(pm_psql "select reason from job_integration_requirement where root_job_id = '$pm4' and provider = 'forge' and satisfied_at is null")"
+            [ -n "$pm_wait" ] && break
+            sleep 1
+        done
+        [ "$pm_wait" = 'forge-access' ] && ok 'p4: the publish waits on a forge-access requirement' ||
+            bad 'p4: the publish waits on a forge-access requirement' "requirement: '$pm_wait', job: $(field "$(pm_job "$pm4")" status)"
+        pm4_status=""
+        for _ in $(seq 1 60); do # the requirement opens before the driver hands the run back
+            pm4_status="$(pm_psql "select status from job where id = '$pm4'")"
+            [ "$pm4_status" = queued ] && break
+            sleep 1
+        done
+        [ "$pm4_status" = queued ] && ok 'p4: the task is queued, not failed' ||
+            bad 'p4: the task is queued, not failed' "job: $pm4_status"
+        [ "$(pm_pulls)" = '3 user,user,user' ] && ok 'p4: no PR was created while access was off' ||
+            bad 'p4: no PR was created while access was off' "PRs: '$(pm_pulls)'"
+        pm_write_access true
+        # The retry is the claim's clock (ten minutes): the lane makes it due instead of waiting.
+        pm_psql "update job set claim_deferred_until = now() where id = '$pm4'" >/dev/null
+        expect_contains 'p4: the task finishes once access is back' "$(pm_settled "$pm4" "$ADOPT_S")" succeeded
+        [ "$(pm_pulls)" = '4 user,user,user,user' ] && ok 'p4: one more PR exists, created with the user token' ||
+            bad 'p4: one more PR exists, created with the user token' "PRs: '$(pm_pulls)'"
+        pm4_pushed=$(($(pm_pushes) - pm4_pushes))
+        [ "$pm4_pushed" = 1 ] && ok 'p4: the branch was pushed once, not again after the wait' ||
+            bad 'p4: the branch was pushed once, not again after the wait' "ref updates added: $pm4_pushed"
+        pm4_open="$(pm_psql "select count(*) from job_integration_requirement where root_job_id = '$pm4' and provider = 'forge' and satisfied_at is null")"
+        [ "$pm4_open" = 0 ] && ok 'p4: the forge-access requirement is closed' ||
+            bad 'p4: the forge-access requirement is closed' "open requirements: $pm4_open"
     fi
     stop_driver
 fi

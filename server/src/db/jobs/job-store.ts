@@ -68,7 +68,7 @@ import { stageConclusion } from './job-store-conclusions.js';
 import { readFinishRounds, writeFinishPass } from './job-store-finish-passes.js';
 import { readGateRuns, writeGateRun } from './job-store-gate-runs.js';
 import { writePrOperation } from './job-store-pr-operations.js';
-import { openPrForgeWait, prWriteContext } from './job-store-pr-write.js';
+import { closePrForgeWait, openPrForgeWait, prWriteContext } from './job-store-pr-write.js';
 import { createTitledJob, renameTaskRow } from './job-store-title.js';
 import { ingestTranscriptTools } from './job-store-transcript-tools.js';
 import { readPhaseCheckpoints, writePhaseCheckpoint } from './job-store-phase-checkpoints.js';
@@ -103,6 +103,7 @@ function workerMethods(
     | 'writePrOperation'
     | 'prWriteContext'
     | 'openPrForgeWait'
+    | 'closePrForgeWait'
     | 'ingestTranscriptTools'
     | 'leases'
     | 'artifactScope'
@@ -196,6 +197,10 @@ function workerMethods(
 
         async openPrForgeWait(id, leaseToken, wait) {
             return openPrForgeWait(ctx, { id, leaseToken }, wait);
+        },
+
+        async closePrForgeWait(rootJobId, userId) {
+            return closePrForgeWait(ctx, rootJobId, userId);
         },
 
         async ingestTranscriptTools(id, input) {

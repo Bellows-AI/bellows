@@ -21,13 +21,12 @@ gh pr diff <N>
 
 ## Opening and updating pull requests
 
-Opening and updating the pull request is yours, whenever your work is worth showing — before the
-task is done too. Run the declared gates that cover your change first (see the factory-gates skill), fix a red one
-before you push, and say in the pull request which did not run (an unavailable gate is reported,
-not a blocker). Commit on the task branch, push it, and open the pull request with `gh pr create`
-(`gh pr edit` updates it). Never state in a title or description that a gate passed unless it did.
-
-Or ask the driver to do the push and the pull request:
+Opening and updating the pull request is done by asking the driver, whenever your work is worth
+showing — before the task is done too. The board opens it, and rewrites its title and description,
+as the member who started the task: `gh pr create` and `gh pr edit` are refused. Run the declared
+gates that cover your change first (see the factory-gates skill), fix a red one before you push, and
+say in the pull request which did not run (an unavailable gate is reported, not a blocker). Commit
+on the task branch, then ask the driver to push it and open the pull request:
 
 ```bash
 factory-control publish
@@ -35,9 +34,9 @@ factory-control publish
 
 The driver pushes the branch and opens (or reuses) the pull request — a draft when it opens one —
 with a title and description summarized from the branch's commits, and answers
-`{"published":true,"prUrl":"…","prNumber":N,…}`. A pull request you opened on the task branch is
+`{"published":true,"prUrl":"…","prNumber":N,…}`. The pull request on the task branch is
 the one the driver reuses: the same pull request is updated, never duplicated, and a retried or
-resumed task lands on it too. `published: false` means there was nothing new to push. `403` means
+resumed task lands on it too. Never state in a title or description that a gate passed unless it did. `published: false` means there was nothing new to push. `403` means
 this task's workflow publishes at its own step; `409` means a publish is already running, or the
 repository's explicit `policy:` refused it (the body says why); `502` carries the failure's
 reason. If `/run/factory-control/control.sock` does not exist this environment cannot publish for you.

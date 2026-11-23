@@ -54,7 +54,7 @@ const clientOf = (routes: Parameters<typeof fakeFetch>[0], seen?: Seen[]) =>
     createGitHubAppClient(github, tokens, fakeFetch(routes, seen), () => 1_000_000);
 
 const mergeOf = (client: ReturnType<typeof clientOf>) =>
-    client.mergePullRequest('acme/web', 7, { sha: 'head1', method: 'squash' });
+    client.mergePullRequest('acme/web', 7, { sha: 'head1', method: 'squash' }, 'ghu_member');
 
 const failureOf = async (client: ReturnType<typeof clientOf>) => {
     const error = await mergeOf(client).catch((e: unknown) => e);
@@ -116,16 +116,19 @@ describe('mergePullRequest', () => {
         expect(result).toEqual({ mergeCommitSha: null });
     });
 
-    it('sends nothing when no installation token can be minted', async () => {
-        const seen: Seen[] = [];
-        const noToken = createGitHubAppClient(
+    it('sends the caller’s token and never asks the installation for one', async () => {
+        const seen: { authorization: string | null }[] = [];
+        const noInstallation = createGitHubAppClient(
             github,
-            { ...tokens, get: async () => Promise.reject(new Error('no token')) },
-            fakeFetch({}, seen)
+            { ...tokens, get: async () => Promise.reject(new Error('no installation token')) },
+            (async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+                seen.push({ authorization: new Headers(init?.headers).get('authorization') });
+                return Response.json({ merged: true, sha: 'm7' });
+            }) as typeof fetch
         );
-        const error = await noToken.mergePullRequest('acme/web', 7, { sha: 'h', method: 'squash' }).catch((e) => e);
-        expect(error).toMatchObject({ kind: 'not_sent' });
-        expect(seen).toEqual([]);
+
+        expect(await mergeOf(noInstallation)).toEqual({ mergeCommitSha: 'm7' });
+        expect(seen).toEqual([{ authorization: 'Bearer ghu_member' }]);
     });
 });
 

@@ -210,6 +210,27 @@ describe('fake GitHub: pull requests', () => {
         expect(calls).toContain('GET none 401');
     });
 
+    it('refuses a user token’s PR writes with 404 while write access is off, and restores them when it is on', async () => {
+        const { access_token: user } = await signIn();
+        const installation = forge.mintInstallationToken();
+        const created = await open(user);
+        expect(created.status).toBe(201);
+
+        expect((await send('POST', '/_control/write-access', undefined, { user: false })).status).toBe(200);
+
+        const refused = await open(user, 'task/two');
+        expect(refused).toMatchObject({ status: 404, body: { message: 'Not Found' } });
+        expect((await send('PATCH', `${pulls}/1`, user, { title: 'New' })).status).toBe(404);
+        // Reads and the installation's writes are unaffected.
+        expect((await send('GET', `${pulls}?head=task/one`, user)).status).toBe(200);
+        expect((await open(installation, 'task/three')).status).toBe(201);
+        expect((await send('PATCH', `${pulls}/1`, installation, { title: 'Bot' })).status).toBe(200);
+
+        await send('POST', '/_control/write-access', undefined, { user: true });
+        expect((await open(user, 'task/two')).status).toBe(201);
+        expect((await send('PATCH', `${pulls}/1`, user, { title: 'Back' })).status).toBe(200);
+    });
+
     it('answers 401 to an unauthenticated PR call', async () => {
         expect((await send('POST', pulls, undefined, { head: 'x', base: 'main', title: 't' })).status).toBe(401);
     });

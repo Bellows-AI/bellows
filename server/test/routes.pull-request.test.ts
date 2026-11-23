@@ -35,6 +35,7 @@ async function harness(options: { writer?: boolean | PrWriter; mint?: boolean; s
     const store = jobStoreSlice<PrWriteStore>({
         prWriteContext: async () => context(),
         openPrForgeWait: async () => ({ result: 'ok' }),
+        closePrForgeWait: async () => {},
         ...options.store,
     });
     const instance: FastifyInstance = await buildApp({

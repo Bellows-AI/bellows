@@ -15,7 +15,9 @@ export type PrWriteErrorKind = 'denied' | 'uncertain' | 'refused';
 export class GitHubWriteError extends GitHubAppError {
     constructor(
         message: string,
-        readonly kind: PrWriteErrorKind
+        readonly kind: PrWriteErrorKind,
+        /** GitHub's HTTP status when the failure is its answer; null for a failure with none (transport, abort, a bad body). */
+        readonly status: number | null = null
     ) {
         super(message);
     }
@@ -153,12 +155,12 @@ export function createPrWriter({ apiUrl, fetchFn = fetch }: PrWriterDeps): PrWri
         const detail = content.slice(0, ERROR_DETAIL_LIMIT);
         const message = `${what} failed with ${status}${detail ? `: ${detail}` : ''}`;
         const read = classifyReadFailure(what, { status, headers: response.headers, detail }, Date.now());
-        if (read.kind === READ_RATE_LIMITED) return new GitHubWriteError(message, 'uncertain');
+        if (read.kind === READ_RATE_LIMITED) return new GitHubWriteError(message, 'uncertain', status);
         if (status === HTTP_UNAUTHORIZED || status === HTTP_FORBIDDEN || status === HTTP_NOT_FOUND) {
-            return new GitHubWriteError(message, 'denied');
+            return new GitHubWriteError(message, 'denied', status);
         }
-        if (status === HTTP_UNPROCESSABLE) return new GitHubWriteError(message, 'refused');
-        return new GitHubWriteError(message, 'uncertain');
+        if (status === HTTP_UNPROCESSABLE) return new GitHubWriteError(message, 'refused', status);
+        return new GitHubWriteError(message, 'uncertain', status);
     };
 
     const owned = (payload: unknown, what: string): PullRequestFacts => {

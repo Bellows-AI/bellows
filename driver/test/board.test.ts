@@ -649,6 +649,11 @@ describe('the pull request ask (docs/connections.md)', () => {
             { answer: 'waiting', forge: 'github', reason: 'reconnect' },
             { kind: 'waiting', forge: 'github', reason: 'reconnect' },
         ],
+        // The board's `forge-access` reason (a member without write access) needs no driver change: any reason is a wait.
+        [
+            { answer: 'waiting', forge: 'github', reason: 'forge-access' },
+            { kind: 'waiting', forge: 'github', reason: 'forge-access' },
+        ],
     ])('reads %j as %j', async (body, expected) => {
         expect(await boardOn(answering(body).fetch).pullRequest(job, ask, deadline())).toEqual(expected);
     });

@@ -160,6 +160,34 @@ describe('test:changed plan', () => {
             expect(steps.at(-1)?.label).toContain('charts/factory/templates/unknown-thing.yaml');
         });
 
+        it('does not widen the unit run for a DB suite or an e2e spec: the db and ui gates own them', () => {
+            const steps = run(['server/test-db/new-suite.test.ts', 'server/test-db/new-rig.ts', 'e2e/new.spec.ts']);
+            expect(steps.some((step) => step.label.startsWith('widened'))).toBe(false);
+        });
+
+        it.each([
+            [
+                'docker/skills/factory-github/SKILL.md',
+                ['core/test/skills.test.ts', 'driver/test/skill-helper-paths.test.ts'],
+            ],
+            ['server/test-db/new-suite.test.ts', ['server/test/test-db.harness.test.ts']],
+            ['e2e/specimen/index.html', ['web/test/styles.test.ts']],
+        ])('selects the suites that walk the directory of %s', (file, scanners) => {
+            const selected = run([file]).flatMap((step) => step.vitest ?? []);
+            for (const scanner of scanners) expect(selected, scanner).toContain(scanner);
+        });
+
+        it('greps a SKILL.md by its directory, not by the name every skill shares', () => {
+            const asked: string[][] = [];
+            run(['docker/skills/factory-github/SKILL.md'], {
+                namedBy: (names) => {
+                    asked.push(names);
+                    return [];
+                },
+            });
+            expect(asked).toEqual([['factory-github/SKILL.md']]);
+        });
+
         it('runs everything for a file every package builds from, though a test names it', () => {
             const steps = run(['Makefile'], { namedBy: () => ['driver/test/executor-images.test.ts'] });
             expect(steps.at(-1)?.label).toContain('shared by every package');

@@ -10,9 +10,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrWriter, type PrWriter } from '../src/github/pr-write.js';
 import type { MintedToken } from '../src/github/app-token.js';
-import { createIntegrationRuntime } from '../src/integrations/integration-recovery.js';
-import { createMemberForgeGrants, type MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
-import { createGitHubUserHooks, GITHUB_FORGE } from '../src/integrations/providers/github-user.js';
+import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
 import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import { createOrgRegistry } from '../src/orgs.js';
@@ -21,6 +19,7 @@ import { testSecretStore } from './env-secrets-harness.js';
 import { type FakeGithub, startFakeGithub } from './fake-github.js';
 import { expireLease, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
+import { memberGrantsOver, signMemberIn as signMemberInAs } from './member-grant-rig.js';
 
 /**
  * The board writes the task's PR as the acting member (docs/connections.md): `POST /api/jobs/:id/pull-request` on a real
@@ -34,9 +33,9 @@ const REPO = 'acme/widgets';
 const LEASE_SECONDS = 300;
 const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
+const HTTP_FORBIDDEN = 403;
 const HTTP_CONFLICT = 409;
 const HTTP_UNAVAILABLE = 503;
-const TOKEN_PATH = '/login/oauth/access_token';
 const ASK = { branch: 'task/one', base: 'main', create: { title: 'Fix it', body: 'Body', draft: false, base: 'main' } };
 const db = useTestDb({ orgs: [ORG, LOCAL_ORG_ID], users: [AUTHOR], max: 12 });
 
@@ -69,46 +68,11 @@ afterEach(async () => {
 });
 
 /** The grants reader as main.ts composes it, its refresh going through `tokenFetch` to the fake's token endpoint. */
-function grantsOver(store: SecretStore = secrets): MemberForgeGrants {
-    const hooks = createGitHubUserHooks(
-        {
-            clientId: 'client-1',
-            clientSecret: 'client-secret-1',
-            authorizeUrl: `${fake.base}/login/oauth/authorize`,
-            tokenUrl: `${fake.base}${TOKEN_PATH}`,
-            userUrl: `${fake.base}/user`,
-        },
-        (input, init) => tokenFetch(input, init)
-    );
-    const runtime = createIntegrationRuntime({
-        sql,
-        crossOrgSql: sql,
-        secrets: store,
-        providers: (provider) => (provider === GITHUB_FORGE ? hooks : undefined),
-        clients: () => undefined,
-        callbackOrigin: null,
-        timing: { retryDelayMs: 0 },
-    });
-    return createMemberForgeGrants({ sql, crossOrgSql: sql, secrets: store, lineageOf: runtime.lineageOf });
-}
+const grantsOver = (store: SecretStore = secrets): MemberForgeGrants =>
+    memberGrantsOver({ sql, fake, secrets: store, tokenFetch: () => tokenFetch });
 
-/** The member's sign-in through the fake: its pair becomes the stored grant. `expiresIn` short enough puts it inside the refresh skew. */
-async function signMemberIn(grants: MemberForgeGrants, options: { expiresIn?: number; refreshToken?: string } = {}) {
-    const pair = await fake.signIn();
-    const stored = await grants.store({
-        orgId: ORG,
-        userId: AUTHOR.id,
-        forge: GITHUB_FORGE,
-        externalAccountId: String(AUTHOR.githubUserId),
-        tokens: {
-            accessToken: pair.access_token,
-            refreshToken: options.refreshToken ?? pair.refresh_token,
-            expiresIn: options.expiresIn ?? pair.expires_in,
-        },
-    });
-    expect(stored).toEqual({ ok: true });
-    return pair;
-}
+const signMemberIn = (grants: MemberForgeGrants, options: { expiresIn?: number; refreshToken?: string } = {}) =>
+    signMemberInAs({ grants, fake, orgId: ORG, user: AUTHOR }, options);
 
 interface BootOptions {
     grants?: MemberForgeGrants | undefined;
@@ -427,20 +391,185 @@ describe.skipIf(!enabled)('POST /api/jobs/:id/pull-request — AUTH_MODE=none us
     });
 });
 
-describe.skipIf(!enabled)('POST /api/jobs/:id/pull-request — a member the forge denies', () => {
-    it('answers denied on a 404 create, with no requirement in this slice', async () => {
-        await signMemberIn(grantsOver());
-        const refusing = writerOver(async (input, init) =>
-            init?.method === 'POST'
-                ? new Response('{"message":"Not Found"}', { status: HTTP_NOT_FOUND })
-                : fetch(input, init)
+describe.skipIf(!enabled)('POST /api/jobs/:id/pull-request — a member without write access waits', () => {
+    const HTTP_UNAUTHORIZED = 401;
+    const FORGE_ACCESS = { answer: 'waiting', forge: 'github', reason: 'forge-access' };
+    const VIEW_ONLY = { branch: ASK.branch, base: ASK.base };
+    /** The fake GitHub, except that a request `refused` matches is answered with `status`. */
+    const answering = (status: number, refused: (init?: RequestInit) => boolean = (init) => init?.method === 'POST') =>
+        writerOver(async (input, init) =>
+            refused(init) ? new Response('{"message":"Not Found"}', { status }) : fetch(input, init)
         );
-        const instance = await boot({ grants: grantsOver(), writer: refusing });
+
+    it.each([HTTP_NOT_FOUND, HTTP_FORBIDDEN])(
+        'answers waiting forge-access on a %s create, keeps the grant active and creates nothing',
+        async (status) => {
+            await signMemberIn(grantsOver());
+            const instance = await boot({ grants: grantsOver(), writer: answering(status) });
+            const { id, claim } = await running();
+
+            const response = await ask(instance, id, claim.leaseToken);
+
+            expect(response.statusCode).toBe(HTTP_OK);
+            expect(response.json()).toEqual(FORGE_ACCESS);
+            expect(await requirements(id)).toEqual([
+                { provider: 'forge', target: 'github', reason: 'forge-access', satisfied_at: null },
+            ]);
+            expect(await grantStatus()).toBe('active');
+            expect(await fake.pulls()).toEqual([]);
+        }
+    );
+
+    it('answers waiting forge-access when the member cannot even see the repository on the view', async () => {
+        await signMemberIn(grantsOver());
+        const instance = await boot({
+            grants: grantsOver(),
+            writer: answering(HTTP_NOT_FOUND, (init) => init?.method !== 'POST'),
+        });
         const { id, claim } = await running();
+
+        const response = await ask(instance, id, claim.leaseToken, VIEW_ONLY);
+
+        expect(response.json()).toEqual(FORGE_ACCESS);
+        expect((await requirements(id))[0]).toMatchObject({ reason: 'forge-access', satisfied_at: null });
+    });
+
+    it('closes the wait as bound when the member’s next ask creates the PR', async () => {
+        await signMemberIn(grantsOver());
+        const refusing = await boot({ grants: grantsOver(), writer: answering(HTTP_NOT_FOUND) });
+        const { id, claim } = await running();
+        expect((await ask(refusing, id, claim.leaseToken)).json()).toEqual(FORGE_ACCESS);
+        await app?.close();
+
+        const allowed = await boot({ grants: grantsOver(), writer: writerOver() });
+        const response = await ask(allowed, id, claim.leaseToken);
+
+        expect(response.json()).toMatchObject({ answer: 'pr', operation: 'created' });
+        expect(await requirements(id)).toEqual([
+            { provider: 'forge', target: 'github', reason: 'forge-access', satisfied_at: expect.any(Date) },
+        ]);
+        const [closed] = await sql<
+            { outcome: string }[]
+        >`select outcome from job_integration_requirement where root_job_id = ${id}`;
+        expect(closed!.outcome).toBe('bound');
+    });
+
+    describe('only a write by the member ends the wait', () => {
+        const openWait = async (id: string, leaseToken: string) =>
+            expect(await jobs.openPrForgeWait(id, leaseToken, { forge: 'github', reason: 'forge-access' })).toEqual({
+                result: 'ok',
+            });
+        const stillOpen = async (id: string) =>
+            expect((await requirements(id)).map((r) => [r.reason, r.satisfied_at])).toEqual([['forge-access', null]]);
+
+        it('a view that finds no PR leaves it open', async () => {
+            await signMemberIn(grantsOver());
+            const instance = await boot({ grants: grantsOver(), writer: writerOver() });
+            const { id, claim } = await running();
+            await openWait(id, claim.leaseToken);
+
+            expect((await ask(instance, id, claim.leaseToken, VIEW_ONLY)).json()).toEqual({ answer: 'none' });
+
+            await stillOpen(id);
+        });
+
+        it('a reused PR left unchanged leaves it open', async () => {
+            await signMemberIn(grantsOver());
+            const instance = await boot({ grants: grantsOver(), writer: writerOver() });
+            const { id, claim } = await running();
+            expect((await ask(instance, id, claim.leaseToken)).json()).toMatchObject({ operation: 'created' });
+            await openWait(id, claim.leaseToken);
+
+            expect((await ask(instance, id, claim.leaseToken)).json()).toMatchObject({ operation: 'reused' });
+
+            await stillOpen(id);
+        });
+
+        it('survives a grant that needs reconnecting and a re-link: only the member’s write ends it', async () => {
+            await signMemberIn(grantsOver());
+            const { id, claim } = await running();
+            await openWait(id, claim.leaseToken);
+            await sql`update integration_grant set status = 'reconnect_required' where org_id = ${ORG}`;
+            const broken = await boot({ grants: grantsOver(), writer: writerOver() });
+
+            expect((await ask(broken, id, claim.leaseToken)).json()).toMatchObject({
+                answer: 'waiting',
+                reason: 'reconnect',
+            });
+            await stillOpen(id);
+
+            await signMemberIn(grantsOver());
+            await stillOpen(id);
+
+            await app?.close();
+            const relinked = await boot({ grants: grantsOver(), writer: writerOver() });
+            expect((await ask(relinked, id, claim.leaseToken)).json()).toMatchObject({ operation: 'created' });
+            expect((await requirements(id))[0]!.satisfied_at).toEqual(expect.any(Date));
+        });
+
+        it('a successful create closes it', async () => {
+            await signMemberIn(grantsOver());
+            const instance = await boot({ grants: grantsOver(), writer: writerOver() });
+            const { id, claim } = await running();
+            await openWait(id, claim.leaseToken);
+
+            expect((await ask(instance, id, claim.leaseToken)).json()).toMatchObject({ operation: 'created' });
+
+            expect((await requirements(id))[0]!.satisfied_at).toEqual(expect.any(Date));
+        });
+
+        it('a successful edit of the existing PR closes it', async () => {
+            await signMemberIn(grantsOver());
+            const instance = await boot({ grants: grantsOver(), writer: writerOver() });
+            const { id, claim } = await running();
+            await ask(instance, id, claim.leaseToken);
+            await openWait(id, claim.leaseToken);
+
+            const edited = await ask(instance, id, claim.leaseToken, { ...ASK, edit: { title: 'New', body: 'B' } });
+
+            expect(edited.json()).toMatchObject({ operation: 'reused' });
+            expect((await requirements(id))[0]!.satisfied_at).toEqual(expect.any(Date));
+        });
+    });
+
+    it('answers denied, never a wait, on a 401: the authorization itself is refused', async () => {
+        await signMemberIn(grantsOver());
+        const instance = await boot({ grants: grantsOver(), writer: answering(HTTP_UNAUTHORIZED) });
+        const { id, claim } = await running();
+
         const response = await ask(instance, id, claim.leaseToken);
-        expect(response.statusCode).toBe(HTTP_OK);
+
         expect(response.json()).toEqual({ answer: 'denied' });
         expect(await requirements(id)).toEqual([]);
-        expect(await grantStatus()).toBe('active');
+    });
+
+    it('opens nothing when the lease was superseded while GitHub answered', async () => {
+        await signMemberIn(grantsOver());
+        let release: () => void = () => {};
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let entered: () => void = () => {};
+        const reached = new Promise<void>((resolve) => {
+            entered = resolve;
+        });
+        const slow = writerOver(async () => {
+            entered();
+            await gate;
+            return new Response('{"message":"Not Found"}', { status: HTTP_NOT_FOUND });
+        });
+        const instance = await boot({ grants: grantsOver(), writer: slow });
+        const { id, claim } = await running();
+        const pending = ask(instance, id, claim.leaseToken);
+        await reached;
+        await expireLease(sql, id);
+        expect(((await jobs.claim('w2', LEASE_SECONDS)) as Claim).id).toBe(id);
+        release();
+
+        const response = await pending;
+
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json()).toMatchObject({ code: 'LEASE_LOST' });
+        expect(await requirements(id)).toEqual([]);
     });
 });
