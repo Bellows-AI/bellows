@@ -89,7 +89,8 @@ const followerFor = (
         orgId,
         reader: options.reader ?? reader,
         prs: lifecycle,
-        recordMerge: (repo, number, deliveryId, mergedAt) => jobStore.closeMergedPr(repo, number, deliveryId, mergedAt),
+        recordMerge: (repo, number, deliveryId, mergedAt) =>
+            jobStore.closeMergedPr(githubRepo(repo), number, deliveryId, mergedAt),
         // The first poll of a new row is spread over the interval in production; a test wants it due.
         spreadMs: 0,
         ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
@@ -294,7 +295,7 @@ describe.skipIf(!enabled)('PR follower — idempotent beside the webhook', () =>
 
     it('does not read a PR whose merge the webhook already recorded', async () => {
         const { root, number } = await plainThread();
-        await jobs.closeMergedPr(REPO, number, 'guid-merge');
+        await jobs.closeMergedPr(githubRepo(REPO), number, 'guid-merge');
         github.replies.set(number, mergedPr(number));
         const closedAt = await doneAtOf(root);
 

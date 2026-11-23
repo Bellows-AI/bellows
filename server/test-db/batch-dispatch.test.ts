@@ -817,7 +817,7 @@ async function publish(root: string, base = 'main', repo = REPO): Promise<number
     return nextPr;
 }
 
-const merge = (repo: string, number: number) => jobs.closeMergedPr(repo, number, randomUUID());
+const merge = (repo: string, number: number) => jobs.closeMergedPr(githubRepo(repo), number, randomUUID());
 
 /** A two-stage batch whose first task has run and succeeded. */
 async function succeededFirst() {

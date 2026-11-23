@@ -96,6 +96,30 @@ const finishPublished = async (command: string, status: 'succeeded' | 'failed' =
     return id;
 };
 
+const GITLAB_HOST = 'gl.example';
+
+/** The thread `finishPublished` makes, on a GitLab host: the same path REPO, published to the same PR number. */
+const finishPublishedOnGitlab = async (command: string): Promise<string> => {
+    const { id } = await mustCreate(store.create(command, null, { repo: githubRepo(REPO), executor: null }));
+    await sql`update job set forge = 'gitlab', host = ${GITLAB_HOST} where org_id = ${ORG} and id = ${id}`;
+    const claim = await store.claim(WORKER, LEASE_SECONDS);
+    if (claim === null) throw new Error('claim refused');
+    await store.session(id, claim.leaseToken, SESSION);
+    await store.complete(id, claim.leaseToken, {
+        status: 'succeeded',
+        exitCode: 0,
+        output: `${command} output`,
+        publication: {
+            repo: REPO,
+            prNumber: PULL,
+            prUrl: `https://${GITLAB_HOST}/${REPO}/-/merge_requests/${PULL}`,
+            headBranch: `factory/${id}`,
+            baseBranch: 'main',
+        },
+    });
+    return id;
+};
+
 const mustRetry = (id: string): Promise<{ id: string }> =>
     store.createRetry(id, null).then((ref) => {
         if (typeof ref === 'string') throw new Error(`createRetry refused: ${ref}`);
@@ -164,7 +188,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         const failedRoot = await finishPublished('the failed task', 'failed');
         await prs.enterWait({ root: failedRoot, reason: 'review', repo: githubRepo(REPO), prNumber: PULL });
 
-        const result = await store.closeMergedPr(REPO, PULL, 'guid-multi');
+        const result = await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-multi');
         expect(result).toEqual({ outcome: 'applied', closedRoots: 2 });
 
         for (const root of [okRoot, failedRoot]) {
@@ -218,16 +242,22 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
             baseBranch: 'main',
         });
 
-        expect(await store.closeMergedPr(OTHER_REPO, PULL, 'guid-repo')).toEqual({
+        expect(await store.closeMergedPr(githubRepo(OTHER_REPO), PULL, 'guid-repo')).toEqual({
             outcome: 'applied',
             closedRoots: 0,
         });
-        expect(await store.closeMergedPr(REPO, 999, 'guid-pr')).toEqual({ outcome: 'applied', closedRoots: 0 });
+        expect(await store.closeMergedPr(githubRepo(REPO), 999, 'guid-pr')).toEqual({
+            outcome: 'applied',
+            closedRoots: 0,
+        });
 
-        await store.closeMergedPr(REPO, PULL, 'guid-org');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-org');
         expect((await jobRowOf(root)).done_at).not.toBeNull();
         // The other PR's thread and the other org's ledger were never this delivery's business.
-        expect(await store.closeMergedPr(REPO, 8, 'guid-after')).toEqual({ outcome: 'applied', closedRoots: 1 });
+        expect(await store.closeMergedPr(githubRepo(REPO), 8, 'guid-after')).toEqual({
+            outcome: 'applied',
+            closedRoots: 1,
+        });
         expect((await jobRowOf(elsewhere)).done_at).not.toBeNull();
         expect(await otherOrgPrs.publicationOf(otherOrgRoot)).not.toBeNull();
     });
@@ -238,7 +268,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         expect(await store.claim(WORKER, LEASE_SECONDS)).toBeNull();
         expect((await prs.waitOf(root))?.terminalReason).toBeNull();
 
-        const result = await store.closeMergedPr(REPO, PULL, 'guid-parked');
+        const result = await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-parked');
         expect(result).toEqual({ outcome: 'applied', closedRoots: 1 });
 
         expect((await jobRowOf(root)).done_at).not.toBeNull();
@@ -256,7 +286,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         const successorId = successor[0]!.id;
         expect((await jobRowOf(successorId)).status).toBe('queued');
 
-        await store.closeMergedPr(REPO, PULL, 'guid-queued');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-queued');
 
         const row = await jobRowOf(successorId);
         expect(row.status).toBe('stopped');
@@ -277,7 +307,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         )[0]!.id;
         const claim = await claimOf(successorId);
         await store.session(successorId, claim.leaseToken, SESSION);
-        await store.closeMergedPr(REPO, PULL, 'guid-running');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-running');
         expect((await jobRowOf(successorId)).status).toBe('running');
         expect((await jobRowOf(successorId)).done_at).toBeNull();
         expect((await reclaimRowsOf(root)).length).toBe(0);
@@ -324,7 +354,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
             `
         )[0]!.id;
         const lease = (await claimOf(successorId)).leaseToken;
-        await store.closeMergedPr(REPO, PULL, 'guid-quiet');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-quiet');
         expect((await jobRowOf(successorId)).status).toBe('running');
 
         // No publication report — the closure still lands: the marker rests the transition and
@@ -354,7 +384,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         )[0]!.id;
         const claim = await claimOf(successorId);
         await store.session(successorId, claim.leaseToken, SESSION);
-        await store.closeMergedPr(REPO, PULL, 'guid-stop');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-stop');
         expect((await reclaimRowsOf(root)).length).toBe(0);
 
         // An expired lease makes the stop settle the row here instead of stamping a request.
@@ -375,7 +405,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
             `
         )[0]!.id;
         const claim = await claimOf(successorId);
-        await store.closeMergedPr(REPO, PULL, 'guid-suspend');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-suspend');
         expect((await reclaimRowsOf(root)).length).toBe(0);
 
         expect(await store.suspend(successorId, claim.leaseToken)).toEqual({ result: 'ok', status: 'stopped' });
@@ -397,7 +427,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         )[0]!.id;
         const claim = await claimOf(successorId);
         await store.session(successorId, claim.leaseToken, SESSION);
-        await store.closeMergedPr(REPO, PULL, 'guid-stamped-stop');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-stamped-stop');
         expect(await store.stop(successorId, null)).toEqual({
             result: 'requested',
             cancelRequestedAt: expect.any(String),
@@ -421,7 +451,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
             `
         )[0]!.id;
         await claimOf(successorId);
-        await store.closeMergedPr(REPO, PULL, 'guid-dead');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-dead');
         expect((await reclaimRowsOf(root)).length).toBe(0);
 
         // Burn the attempt and the interruption budget, expire the lease: the claim's dead sweep
@@ -469,12 +499,18 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
 
     it('a redelivery — same or different GUID — answers duplicate and repeats nothing', async () => {
         const root = await finishPublished('the deduped task');
-        const first = await store.closeMergedPr(REPO, PULL, 'guid-first');
+        const first = await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-first');
         expect(first).toEqual({ outcome: 'applied', closedRoots: 1 });
         const stampedAt = (await jobRowOf(root)).done_at;
 
-        expect(await store.closeMergedPr(REPO, PULL, 'guid-first')).toEqual({ outcome: 'duplicate', closedRoots: 0 });
-        expect(await store.closeMergedPr(REPO, PULL, 'guid-second')).toEqual({ outcome: 'duplicate', closedRoots: 0 });
+        expect(await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-first')).toEqual({
+            outcome: 'duplicate',
+            closedRoots: 0,
+        });
+        expect(await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-second')).toEqual({
+            outcome: 'duplicate',
+            closedRoots: 0,
+        });
 
         expect((await jobRowOf(root)).done_at).toEqual(stampedAt);
         expect((await reclaimRowsOf(root)).length).toBe(1);
@@ -485,7 +521,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         await store.markDone(root, ALICE.id);
         const manual = await jobRowOf(root);
 
-        await store.closeMergedPr(REPO, PULL, 'guid-manual');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-manual');
 
         const after = await jobRowOf(root);
         expect(after.done_at).toEqual(manual.done_at);
@@ -495,7 +531,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
     it('a merge delivery before any publication waits in the ledger and applies when the association lands', async () => {
         // The delivery names a PR nothing has published to yet: applied honestly with zero roots,
         // the fact kept durably.
-        const before = await store.closeMergedPr(REPO, PULL, 'guid-early');
+        const before = await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-early');
         expect(before).toEqual({ outcome: 'applied', closedRoots: 0 });
 
         const root = await startWorkflowThread('early-merge', waitingWorkflow, PULL);
@@ -512,12 +548,15 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         ]);
         expect(await reclaimedAtOf(root)).toBeNull();
         // A redelivery of the early GUID is a duplicate — the closure ran exactly once.
-        expect(await store.closeMergedPr(REPO, PULL, 'guid-early')).toEqual({ outcome: 'duplicate', closedRoots: 0 });
+        expect(await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-early')).toEqual({
+            outcome: 'duplicate',
+            closedRoots: 0,
+        });
     });
 
     it('follow-up and retry refuse a merge-closed thread with task_done — until Reopen', async () => {
         const root = await finishPublished('the reopened task');
-        await store.closeMergedPr(REPO, PULL, 'guid-reopen');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-reopen');
         expect(await store.createFollowUp(root, 'after merge', null)).toBe('task_done');
         expect(await store.createRetry(root, null)).toBe('task_done');
 
@@ -533,7 +572,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         expect(await store.createFollowUp(root, 'after reopen', null)).toBe('not_finished');
 
         // The ledger row survives reopen: the redelivered merge cannot re-close the thread.
-        expect(await store.closeMergedPr(REPO, PULL, 'guid-reopen-again')).toEqual({
+        expect(await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-reopen-again')).toEqual({
             outcome: 'duplicate',
             closedRoots: 0,
         });
@@ -550,7 +589,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
 
         // The merge stops the queued `second`; the thread is closed and reopen clears both the
         // stamps and the marker.
-        await store.closeMergedPr(REPO, PULL, 'guid-walk');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-walk');
         expect((await jobRowOf(secondId)).status).toBe('stopped');
         await store.reopen(root);
 
@@ -573,7 +612,7 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
 
     it('reopen refuses once the worktree is gone (reclaim acked)', async () => {
         const root = await finishPublished('the reclaimed task');
-        await store.closeMergedPr(REPO, PULL, 'guid-ack');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-ack');
         const claimed = await store.claimReclaim('reaper-1', LEASE_SECONDS);
         expect(claimed?.rootJobId).toBe(root);
         expect(await store.ackReclaim(claimed!.id, claimed!.token)).toBe('ok');
@@ -584,8 +623,8 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
     it('two concurrent merge deliveries apply exactly once', async () => {
         const root = await finishPublished('the raced task');
         const outcomes = await Promise.all([
-            store.closeMergedPr(REPO, PULL, 'guid-race-a'),
-            store.closeMergedPr(REPO, PULL, 'guid-race-b'),
+            store.closeMergedPr(githubRepo(REPO), PULL, 'guid-race-a'),
+            store.closeMergedPr(githubRepo(REPO), PULL, 'guid-race-b'),
         ]);
         const applied = outcomes.filter((o) => o.outcome === 'applied');
         expect(applied.length).toBe(1);
@@ -593,5 +632,76 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
         expect(applied[0]!.closedRoots).toBe(1);
         expect((await jobRowOf(root)).done_at).not.toBeNull();
         expect((await reclaimRowsOf(root)).length).toBe(1);
+    });
+});
+
+/** The same path on GitHub and on a GitLab host is two repositories: a GitHub merge closes only the GitHub thread. */
+describe.skipIf(!enabled)('a merged PR closes by repository ref, not by path', () => {
+    it('closes only the GitHub thread when a GitLab thread publishes the same path and number', async () => {
+        const github = await finishPublished('the github thread');
+        const gitlab = await finishPublishedOnGitlab('the gitlab thread');
+
+        expect(await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-gh')).toEqual({
+            outcome: 'applied',
+            closedRoots: 1,
+        });
+
+        expect((await jobRowOf(github)).done_at).not.toBeNull();
+        expect((await jobRowOf(gitlab)).done_at).toBeNull();
+    });
+
+    it('does not apply a GitHub merge to a GitLab publication that lands after it', async () => {
+        await finishPublished('the github thread');
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-gh');
+
+        const gitlab = await finishPublishedOnGitlab('the late gitlab thread');
+
+        expect((await jobRowOf(gitlab)).done_at).toBeNull();
+        expect(await store.get(gitlab)).toMatchObject({ publication: expect.objectContaining({ prNumber: PULL }) });
+    });
+
+    it('records the merge under the ref and answers duplicate to a redelivery', async () => {
+        await finishPublished('the github thread');
+
+        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-first');
+        expect(await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-again')).toEqual({
+            outcome: 'duplicate',
+            closedRoots: 0,
+        });
+        expect(await sql`select forge, host, repo, pr_number from pr_merge where org_id = ${ORG}`).toEqual([
+            { forge: 'github', host: 'github.com', repo: REPO, pr_number: PULL },
+        ]);
+    });
+
+    it('parks a workflow round on the publication forge and host', async () => {
+        const { id } = await mustCreate(
+            store.create('walk', null, {
+                repo: githubRepo(REPO),
+                executor: null,
+                workflow: { id: randomUUID(), name: 'gl-park', node: 'verify', snapshot: waitingWorkflow, params: {} },
+            })
+        );
+        await sql`update job set forge = 'gitlab', host = ${GITLAB_HOST} where org_id = ${ORG} and id = ${id}`;
+        const claim = await claimOf(id);
+        await store.session(id, claim.leaseToken, SESSION);
+        await store.complete(id, claim.leaseToken, {
+            status: 'succeeded',
+            exitCode: 0,
+            output: 'published',
+            publication: {
+                repo: REPO,
+                prNumber: PULL,
+                prUrl: `https://${GITLAB_HOST}/${REPO}/-/merge_requests/${PULL}`,
+                headBranch: `factory/${id}`,
+                baseBranch: 'main',
+            },
+        });
+
+        expect(
+            await sql`select forge, host, repo, job_repo from workflow_round where org_id = ${ORG} and root_job_id = ${id}`
+        ).toEqual([{ forge: 'gitlab', host: GITLAB_HOST, repo: REPO, job_repo: REPO }]);
+        expect(await sql`select forge, host from workflow_wait where org_id = ${ORG} and root_job_id = ${id}`).toEqual([
+            { forge: 'gitlab', host: GITLAB_HOST },
+        ]);
     });
 });

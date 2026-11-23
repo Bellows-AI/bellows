@@ -6,8 +6,9 @@
  */
 
 import { waitAdvisoryXactLock } from '../pool.js';
-import { githubRepo } from '@factory-ai/core';
+import { formatRepoRef, type RepoRef } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
+import { repoIs } from '../repo-ref-row.js';
 import { backsBatchTask } from './job-store-rows.js';
 import { queueReclaimIfThreadDone } from './job-store-reclaim-queue.js';
 import { lockRootRowsInTx, lockThreadRootInTx } from '../connection-bindings.js';
@@ -30,7 +31,7 @@ export interface JobMergeStore {
      * to apply).
      */
     closeMergedPr(
-        repo: string,
+        repo: RepoRef,
         prNumber: number,
         deliveryId: string,
         /** When GitHub says the merge happened; absent is "now", which is all a webhook knows. */
@@ -47,11 +48,13 @@ const MERGE_TERMINAL_REASON = 'pr merged';
  * The PR-scoped advisory lock both merge writers serialize on (issue #390's concurrent race): a merge delivery and the
  * publishing verdict that names the same PR, so whichever commits second sees the other's rows — a verdict landing
  * after the delivery reads the ledger and applies the closure inline; a delivery landing after the verdict finds the
- * fresh `job_pr` row and closes the thread, cancelling the wait it just parked. Keyed per (org, repo, PR). Lock order:
+ * fresh `job_pr` row and closes the thread, cancelling the wait it just parked. Keyed per (org, repo, PR); for GitHub on
+ * github.com the repo part is the bare path, so a previous-release pod and this one still share one lock mid-rollout. Lock order:
  * the thread root rows first, then this lock, then each root's advisory lock; the verdict takes its root
  * row first for the same reason.
  */
-export const prLockKey = (orgId: string, repo: string, prNumber: number): string => `${orgId}/${repo}/${prNumber}`;
+export const prLockKey = (orgId: string, repo: RepoRef, prNumber: number): string =>
+    `${orgId}/${formatRepoRef(repo)}/${prNumber}`;
 
 /** The root set changed between the unlocked read and the locks: roll back and read again. */
 class RetryMergeClose extends Error {}
@@ -64,10 +67,10 @@ const MERGE_CLOSE_ATTEMPTS = 3;
  * removed thread's orphaned `job_pr` row (nothing deletes them) from being counted — or marked — as closed. The order
  * is deterministic so two closures of one PR cannot take the same root locks in opposite orders.
  */
-async function mergedRootsOf(tx: TransactionSql, orgId: string, repo: string, prNumber: number): Promise<string[]> {
+async function mergedRootsOf(tx: TransactionSql, orgId: string, repo: RepoRef, prNumber: number): Promise<string[]> {
     const rows = await tx<{ root_job_id: string }[]>`
         select p.root_job_id from job_pr p
-        where p.org_id = ${orgId} and p.repo = ${repo} and p.pr_number = ${prNumber}
+        where p.org_id = ${orgId} and ${repoIs(tx, 'p', repo)} and p.pr_number = ${prNumber}
           and exists (select 1 from job j where j.org_id = ${orgId} and j.id = p.root_job_id)
         order by p.root_job_id
     `;
@@ -76,7 +79,7 @@ async function mergedRootsOf(tx: TransactionSql, orgId: string, repo: string, pr
 
 export async function closeMergedPr(
     ctx: JobStoreContext,
-    repo: string,
+    repo: RepoRef,
     prNumber: number,
     delivery: { deliveryId: string; mergedAt?: Date }
 ): Promise<CloseMergedPrResult> {
@@ -100,7 +103,7 @@ export async function closeMergedPr(
  */
 async function closeMergedPrOnce(
     ctx: JobStoreContext,
-    repo: string,
+    repo: RepoRef,
     prNumber: number,
     { deliveryId, mergedAt }: { deliveryId: string; mergedAt?: Date }
 ): Promise<CloseMergedPrResult> {
@@ -110,9 +113,9 @@ async function closeMergedPrOnce(
         await waitAdvisoryXactLock(tx, prLockKey(orgId, repo, prNumber));
 
         const [recorded] = await tx<{ org_id: string }[]>`
-            insert into pr_merge (org_id, repo, pr_number, delivery_id, merged_at)
-            values (${orgId}, ${repo}, ${prNumber}, ${deliveryId}, coalesce(${mergedAt ?? null}::timestamptz, now()))
-            on conflict (org_id, repo, pr_number) do nothing
+            insert into pr_merge (org_id, forge, host, repo, pr_number, delivery_id, merged_at)
+            values (${orgId}, ${repo.forge}, ${repo.host}, ${repo.path}, ${prNumber}, ${deliveryId}, coalesce(${mergedAt ?? null}::timestamptz, now()))
+            on conflict (org_id, forge, host, repo, pr_number) do nothing
             returning org_id
         `;
         if (!recorded) return { outcome: 'duplicate', closedRoots: 0 };
@@ -120,7 +123,7 @@ async function closeMergedPrOnce(
         // The merge-specific cancel: every open wait addressed to this PR ends here, so parked rounds become
         // permanently unwakeable and a continuation woken before this commit is settled at claim by the existing
         // cancellation fence.
-        if (prs) await prs.cancelForRepoPr(githubRepo(repo), prNumber, MERGE_TERMINAL_REASON, tx);
+        if (prs) await prs.cancelForRepoPr(repo, prNumber, MERGE_TERMINAL_REASON, tx);
 
         const roots = await mergedRootsOf(tx, orgId, repo, prNumber);
         if (roots.some((root) => !locked.has(root))) throw new RetryMergeClose();
@@ -145,13 +148,13 @@ async function closeMergedPrOnce(
 export async function applyMergeClosureIfMerged(
     tx: TransactionSql,
     ctx: JobStoreContext,
-    publication: { repo: string; prNumber: number },
+    publication: { repo: RepoRef; prNumber: number },
     rootJobId: string
 ): Promise<void> {
     const { orgId } = ctx;
     const [merged] = await tx<{ one: number }[]>`
         select 1 as one from pr_merge
-        where org_id = ${orgId} and repo = ${publication.repo} and pr_number = ${publication.prNumber}
+        where org_id = ${orgId} and ${repoIs(tx, 'pr_merge', publication.repo)} and pr_number = ${publication.prNumber}
     `;
     if (merged) await applyMergeCloseToRoot(tx, ctx, rootJobId);
 }

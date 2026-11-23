@@ -5,7 +5,7 @@
  */
 
 import { waitAdvisoryXactLock } from '../pool.js';
-import { refOfNullableRow } from '../repo-ref-row.js';
+import { refOfNullableRow, refOfRow } from '../repo-ref-row.js';
 import type { TransactionSql } from 'postgres';
 import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
 import { lockRootRowsInTx, requirementWaitOf } from '../connection-bindings.js';
@@ -665,9 +665,16 @@ async function maybeRecordPublicationAndClose(
 ): Promise<void> {
     const { rootJobId, jobRepo, publication } = verdict;
     if (!(publication && ctx.prs && publication.repo === jobRepo)) return;
-    await waitAdvisoryXactLock(tx, prLockKey(ctx.orgId, publication.repo, publication.prNumber));
+    // The publication's repository is the thread's: its forge and host are the root's, read in this transaction, and
+    // its path the driver's (checked above against the job's own).
+    const [root] = await tx<{ forge: string; host: string }[]>`
+        select forge, host from job where org_id = ${ctx.orgId} and id = ${rootJobId}
+    `;
+    if (!root) return;
+    const repo = refOfRow({ ...root, repo: publication.repo });
+    await waitAdvisoryXactLock(tx, prLockKey(ctx.orgId, repo, publication.prNumber));
     await maybeRecordPublication(tx, ctx.prs, verdict);
-    await applyMergeClosureIfMerged(tx, ctx, publication, rootJobId);
+    await applyMergeClosureIfMerged(tx, ctx, { repo, prNumber: publication.prNumber }, rootJobId);
 }
 
 export interface WorkflowTransitionRoot {

@@ -1,3 +1,4 @@
+import { githubRepo, type RepoRef } from '@factory-ai/core';
 import { createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -420,8 +421,10 @@ describe('POST /api/github/webhook: PR families (036) — no-op guards', () => {
 function mergeCloseStub() {
     const closed: { repo: string; prNumber: number; deliveryId: string }[] = [];
     const store = {
-        closeMergedPr: async (repo: string, prNumber: number, deliveryId: string) => {
-            closed.push({ repo, prNumber, deliveryId });
+        closeMergedPr: async (repo: RepoRef, prNumber: number, deliveryId: string) => {
+            // A GitHub delivery addresses the GitHub ref.
+            expect(repo).toEqual(githubRepo(repo.path));
+            closed.push({ repo: repo.path, prNumber, deliveryId });
             return { outcome: 'applied' as const, closedRoots: 0 };
         },
     };

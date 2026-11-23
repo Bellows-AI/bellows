@@ -204,7 +204,7 @@ describe.skipIf(!enabled)('claim vs thread writers', () => {
         const root = await terminalRoot(true);
         const member = await followUpOf(root);
         const { result } = await raceWithClaim(member, undefined, () =>
-            writer.closeMergedPr(REPO, PULL, `guid-${randomUUID()}`)
+            writer.closeMergedPr(githubRepo(REPO), PULL, `guid-${randomUUID()}`)
         );
         expect(result).toEqual({ outcome: 'applied', closedRoots: 1 });
         expect(await rowOf(member)).toMatchObject({ status: 'stopped', done_at: expect.any(Date) });

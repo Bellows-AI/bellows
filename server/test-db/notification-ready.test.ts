@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { BatchPlan, PrFacts } from '@factory-ai/core';
@@ -70,7 +71,8 @@ beforeEach(() => {
         sql,
         orgId: ORG,
         reader,
-        recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
+        recordMerge: (repo, number, deliveryId, mergedAt) =>
+            jobs.closeMergedPr(githubRepo(repo), number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
         now,
     });

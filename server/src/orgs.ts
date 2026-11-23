@@ -1,6 +1,6 @@
 import { readGrantStanding } from './db/forge-grant-standing.js';
 import type { Sql } from 'postgres';
-import { modelKeyRequired } from '@factory-ai/core';
+import { githubRepo, modelKeyRequired } from '@factory-ai/core';
 import { orgSql } from './db/org-sql.js';
 import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
 import { createAttachmentRows } from './attachments/attachment-rows.js';
@@ -266,7 +266,8 @@ function buildOrgStores({
         ready,
         reader: client,
         pause,
-        recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
+        recordMerge: (repo, prNumber, deliveryId, mergedAt) =>
+            jobs.closeMergedPr(githubRepo(repo), prNumber, deliveryId, mergedAt),
         reconcile: (batchId) => batches.reconcile(batchId),
     });
     // The PR follower (docs/workflows.md): the periodic read behind the webhook-only paths, so a lost
@@ -278,7 +279,8 @@ function buildOrgStores({
         reader: client,
         prs,
         pause,
-        recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
+        recordMerge: (repo, prNumber, deliveryId, mergedAt) =>
+            jobs.closeMergedPr(githubRepo(repo), prNumber, deliveryId, mergedAt),
     });
     // The merger (064): needs the installation to merge through; offline the board cannot merge and
     // refuses an automerge plan at start.
@@ -289,7 +291,7 @@ function buildOrgStores({
               ready,
               client,
               recordMerge: (repo, prNumber, deliveryId, mergedAt) =>
-                  jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
+                  jobs.closeMergedPr(githubRepo(repo), prNumber, deliveryId, mergedAt),
               reconcile: (batchId) => batches.reconcile(batchId),
           })
         : undefined;

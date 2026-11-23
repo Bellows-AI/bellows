@@ -84,6 +84,7 @@ export async function enterRuntimeBoundary(
         // count, untouched by enterWait on an already-active wait) both carry over unchanged.
         await tx`
             update workflow_round set
+                forge = ${publication.repo.forge}, host = ${publication.repo.host},
                 repo = ${publication.repo.path}, pr_number = ${publication.prNumber},
                 command = ${successor.command}, session_id = ${successor.sessionId},
                 job_repo = ${successor.repo?.path ?? null}, executor = ${successor.executor},
@@ -103,11 +104,11 @@ export async function enterRuntimeBoundary(
     const round = (previous?.max ?? 0) + 1;
     await tx`
         insert into workflow_round (
-            org_id, root_job_id, workflow_node, round, repo, pr_number,
+            org_id, root_job_id, workflow_node, round, forge, host, repo, pr_number,
             command, session_id, job_repo, executor, executor_scope, agent_type, agent_model, parent_job_id
         ) values (
             ${successor.orgId}, ${successor.rootJobId}, ${successor.workflowNode}, ${round},
-            ${publication.repo.path}, ${publication.prNumber},
+            ${publication.repo.forge}, ${publication.repo.host}, ${publication.repo.path}, ${publication.prNumber},
             ${successor.command}, ${successor.sessionId}, ${successor.repo?.path ?? null}, ${successor.executor},
             ${successor.executorScope}, ${successor.agentType ?? null}, ${successor.agentModel ?? null},
             ${successor.parentJobId}

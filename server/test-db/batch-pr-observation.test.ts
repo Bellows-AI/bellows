@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -74,7 +75,8 @@ const observerFor = (orgId: string, jobStore: JobStore, batchStore: BatchStore) 
         sql,
         orgId,
         reader,
-        recordMerge: (repo, number, deliveryId, mergedAt) => jobStore.closeMergedPr(repo, number, deliveryId, mergedAt),
+        recordMerge: (repo, number, deliveryId, mergedAt) =>
+            jobStore.closeMergedPr(githubRepo(repo), number, deliveryId, mergedAt),
         reconcile: (id) => batchStore.reconcile(id),
         now,
     });
@@ -432,7 +434,7 @@ describe.skipIf(!enabled)('merge observation', () => {
 
     it('is idempotent with the webhook path: a merge delivered first is not recorded twice', async () => {
         const { number } = await succeededWithPr();
-        await jobs.closeMergedPr(REPO, number, randomUUID());
+        await jobs.closeMergedPr(githubRepo(REPO), number, randomUUID());
         github.replies.set(number, facts(number, { state: 'closed', merged: true, mergeCommitSha: 'mc2' }));
 
         await observer.observeDue();
@@ -713,7 +715,7 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
         expect(await taskOf(id)).toMatchObject({ execution: 'succeeded', gate: 'open', attention: null });
 
         // A merge stamped before the repair began is about the old head.
-        await jobs.closeMergedPr(REPO, number, randomUUID(), new Date(Date.now() - 3_600_000));
+        await jobs.closeMergedPr(githubRepo(REPO), number, randomUUID(), new Date(Date.now() - 3_600_000));
         await store.reconcile(id);
         expect(await taskOf(id)).toMatchObject({ gate: 'open' });
         expect(await repairsOf(id)).toHaveLength(1);
@@ -792,7 +794,7 @@ describe.skipIf(!enabled)('observed recovery (#581)', () => {
 
     it('withdraws a waiting repair whose PR a delivered merge closed before the row was re-read', async () => {
         const { id, number } = await repairWaitingForSlot();
-        await jobs.closeMergedPr(REPO, number, randomUUID());
+        await jobs.closeMergedPr(githubRepo(REPO), number, randomUUID());
 
         await setSucceeded(sql, await rootOf(id, 'b'));
         await store.reconcile(id);

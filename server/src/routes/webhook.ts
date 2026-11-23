@@ -289,7 +289,7 @@ async function handlePrMerged(
         return;
     }
 
-    await merges.closeMergedPr(activity.repo, activity.number, activity.deliveryId);
+    await merges.closeMergedPr(githubRepo(activity.repo), activity.number, activity.deliveryId);
     reply.code(HTTP_OK).send({ ok: true });
 }
 
