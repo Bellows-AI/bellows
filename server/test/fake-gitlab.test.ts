@@ -49,6 +49,13 @@ describe('fake GitLab: OAuth', () => {
         expect((await gl.send('GET', '/api/v4/user')).status).toBe(401);
     });
 
+    it('signs a member in through the lane door, without the redirect round trip', async () => {
+        const pair = (await gl.control('gitlab/sign-in', { login: 'lane-dev' })).body;
+        expect(pair).toMatchObject({ token_type: 'Bearer', expires_in: GITLAB_TOKEN_TTL_S });
+        expect((await gl.send('GET', '/api/v4/user', { token: pair.access_token })).body.username).toBe('lane-dev');
+        expect((await gl.refresh(pair.refresh_token)).status).toBe(200);
+    });
+
     it('answers as the login the authorize call names', async () => {
         const pair = await gl.signIn('reviewer');
         expect((await gl.send('GET', '/api/v4/user', { token: pair.access_token })).body.username).toBe('reviewer');

@@ -906,6 +906,7 @@ export const registerGitlab = (forge) => {
         if (!project) notFound(ctx.response, 'Project Not Found');
         return project;
     };
+    control('sign-in', ({ response, body }) => forge.json(response, 200, issuePair(body.login ?? DEFAULT_MEMBER)));
     control('projects', async ({ response, body, request }) => {
         if (!body.path || projectOf(body.path)) return badRequest(response, 'a project path is required and must be new');
         const id = forge.nextId();
