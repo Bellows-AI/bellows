@@ -280,22 +280,20 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         ]);
         expect(gates.slice(0, 3)).toEqual([
             { name: 'build:core', command: 'npm run build -w core' },
-            { name: 'test', command: 'sh scripts/gate-test-changed.sh', timeoutMinutes: 30, parallel: true },
-            { name: 'lint', command: 'npm run lint', parallel: true },
+            { name: 'test', command: 'sh scripts/gate-test-changed.sh', timeoutMinutes: 30 },
+            { name: 'lint', command: 'npm run lint' },
         ]);
     });
 
-    // Every end-of-run gate but the first runs side by side. They share one checkout, and
-    // test, test:db, test:executors (their pretest) and typecheck (tsc -b) each build core into
-    // core/dist, which the suites import: building it once, alone, first leaves each later tsc -b an
-    // up-to-date no-op instead of a concurrent rewrite under another gate's reads. An on_demand gate
-    // is not part of that pass.
-    it('builds core alone, then runs every other end-of-run gate in parallel', async () => {
+    // The end-of-run gates run one after another: side by side in one microVM they shared one gate
+    // container and its I/O, and every one hit its deadline (BEL-564). build:core runs first, so each
+    // later tsc -b of core is an up-to-date no-op. An on_demand gate is not part of that pass.
+    it('builds core first, then runs every other end-of-run gate one after another', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const [first, ...rest] = (parseBellows(text)?.gates ?? []).filter((gate) => !gate.onDemand);
         expect(first).toEqual({ name: 'build:core', command: 'npm run build -w core' });
         expect(rest.length).toBeGreaterThan(0);
-        for (const gate of rest) expect(gate.parallel, gate.name).toBe(true);
+        for (const gate of rest) expect(gate.parallel, gate.name).toBeUndefined();
     });
 
     // The test and test:db gates run only the suites the change reaches; the full suites stay CI's merge
@@ -339,7 +337,6 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
             name: 'test:executors',
             command: 'npm run test:executors',
             timeoutMinutes: 15,
-            parallel: true,
         });
         expect(gates.filter((g) => /test:jobs|make runners|docker/.test(`${g.name} ${g.command}`))).toEqual([]);
     });
