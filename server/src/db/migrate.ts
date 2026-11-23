@@ -175,7 +175,7 @@ function files(dir: URL): { version: string; sql: string; repeatable: boolean }[
  * The statements of `concurrent/*.sql`, in file order: `create [unique] index concurrently if not exists <name> on …`,
  * one per statement, because postgres refuses `concurrently` inside a transaction block. Anything else is refused.
  */
-export function concurrentIndexes(dir: URL): { name: string; statement: string }[] {
+function concurrentIndexes(dir: URL): { name: string; statement: string }[] {
     const subdir = new URL(CONCURRENT_SUBDIR, dir);
     let names: string[];
     try {
