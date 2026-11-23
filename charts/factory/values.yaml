@@ -618,32 +618,40 @@ runner:
             nodeSelector: {}
             tolerations: []
             affinity: {}
-            # Requests and limits on every pod of the class but its gates (kubernetes quantities:
-            # "500m", "1Gi"). Requests keep a runner fleet Burstable rather than BestEffort so the
-            # autoscaler (Karpenter, Cluster Autoscaler) can size for it — a zero-request pod
-            # schedules onto any free pod slot and provisions nothing. Limits bound a runaway or
-            # hostile run so it cannot starve the node, the board, the driver or sibling tasks;
-            # they are generous because a memory limit turns a big build into an OOM kill mid-work
-            # — raise them on a cloud install with big builds. In override files, use
-            # requests: null / limits: null to remove the defaults; {} retains them through Helm's
-            # map merge.
+            # Requests and limits of the class's agent, reviewer and aux Jobs (kubernetes quantities:
+            # "500m", "1Gi"), and the memory of its services. Requests keep a runner fleet Burstable
+            # rather than BestEffort so the autoscaler (Karpenter, Cluster Autoscaler) can size for
+            # it — a zero-request pod schedules onto any free pod slot and provisions nothing.
+            # Limits bound a runaway or hostile run so it cannot starve the node, the board, the
+            # driver or sibling tasks; memory is generous because a memory limit turns a big build
+            # into an OOM kill mid-work — raise it on a cloud install with big builds. Every runner-pod
+            # container is sized by its role: each service takes a fixed 1 cpu cap (its memory is
+            # these slots plus its tmpfs), the supervisor and the helpers fixed pairs, and the gate,
+            # which runs the parallel gates, the largest cpu cap. Under a microVM (Kata)
+            # RuntimeClass the guest gets the SUM of the limits plus one vCPU: these defaults give
+            # the measured pod (agent, supervisor, exporter, gate, two services) 10.75 cpu, a 12-vCPU
+            # guest — 1.5x an 8-vCPU node; a reviewer adds this block's cpu limit, each further
+            # service 1. In override files, use requests: null / limits: null to remove the
+            # defaults; {} retains them through Helm's map merge.
             resources:
                 requests:
                     cpu: 500m
                     memory: 1Gi
                 limits:
-                    cpu: '4'
+                    cpu: '2'
                     memory: 8Gi
             # The class's gate Jobs' own requests and limits. A gate runs the whole test suite
             # while the runner mostly waits on a model, and a 500m floor starves vitest's workers
-            # into RPC timeouts on a busy node. Each unset slot falls back to `resources` above —
-            # the limits here are the runner's. null / empty behave as they do there. Runner limits
-            # below these requests refuse the driver's boot, naming both values: lower these, or
-            # set gate limits.
+            # into RPC timeouts on a busy node; its cpu limit is the pod's largest. Each unset slot
+            # falls back to `resources` above — the memory limit here is the runner's. null / empty
+            # behave as they do there. Gate limits below these requests refuse the driver's boot,
+            # naming both values.
             gateResources:
                 requests:
                     cpu: '2'
                     memory: 2Gi
+                limits:
+                    cpu: '6'
             # Whether the class's groups get a Docker daemon. True requires a runtimeClassName, a
             # microVM (Kata) one, which the chart checks is set at render time and the driver checks
             # is Kata at boot (a ClusterRole `get` on that RuntimeClass): a `dockerd` sidecar of the

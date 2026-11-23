@@ -84,30 +84,6 @@ export const dockerVolumes = (runnerClass: RunnerClass): RunnerVolume[] => [
 export const DOCKERD_ENV = [{ name: 'DOCKER_TLS_CERTDIR', value: '' }] as const;
 
 /**
- * A docker class's two small helpers, `task-init` (one `mkdir`/`chgrp`/`chmod`) and the transcript
- * `exporter` (node reading 4 MiB windows, a record held whole up to its 64 MiB cut): a microVM
- * RuntimeClass sizes the VM by its containers' limits, so neither runs unbounded. The requests are
- * the idle figures; the limits leave the exporter room for a cut record and node's own heap.
- */
-export const DOCKER_CLASS_HELPER_RESOURCES = {
-    requests: { cpu: '50m', memory: '64Mi' },
-    limits: { cpu: '500m', memory: '512Mi' },
-} as const;
-
-/**
- * A docker class's supervisor: node running the supervisor script plus the git of its steps (the
- * sync's fetch and checkout, the publish's push, the reclaim). A microVM RuntimeClass sizes the VM
- * by the SUM of its containers' limits, so the supervisor never repeats the runner's: a fixed pair,
- * idle requests and a limit that holds node's heap beside one `git index-pack` of a large fetch
- * (git's own pack windows are bounded well under it). A repository whose fetch needs more is a
- * stated sizing limit, not the runner's memory counted twice.
- */
-export const DOCKER_CLASS_SUPERVISOR_RESOURCES = {
-    requests: { cpu: '50m', memory: '64Mi' },
-    limits: { cpu: '1', memory: '1Gi' },
-} as const;
-
-/**
  * The daemon's security context: privileged inside the class's microVM, which is the boundary (a
  * Kata RuntimeClass: its own guest kernel, the driver checks the handler at boot). A capability set
  * was measured and is not enough — the dind entrypoint needs a writable cgroup tree, the daemon a

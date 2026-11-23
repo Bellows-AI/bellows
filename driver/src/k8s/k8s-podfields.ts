@@ -55,21 +55,50 @@ export function resourcesField(block: RunnerResources): { resources?: PodResourc
 }
 
 /**
+ * The runner pod's two small helpers, `task-init` (one `mkdir`/`chgrp`/`chmod`) and the transcript
+ * `exporter` (node reading 4 MiB windows, a record held whole up to its 64 MiB cut), on every class:
+ * a microVM RuntimeClass sizes the VM by the SUM of its containers' limits, and an unsized container
+ * takes the namespace LimitRange's. The requests are the idle figures; the limits leave the exporter
+ * room for a cut record and node's own heap.
+ */
+export const HELPER_RESOURCES = {
+    requests: { cpu: '50m', memory: '64Mi' },
+    limits: { cpu: '250m', memory: '512Mi' },
+} as const;
+
+/**
+ * The runner pod's supervisor on every class: node running the supervisor script plus the git of its
+ * steps (the sync's fetch and checkout, the publish's push, the reclaim). A microVM RuntimeClass sizes
+ * the VM by the SUM of its containers' limits, so the supervisor never repeats the runner's: a fixed
+ * pair, idle requests and a limit that holds node's heap beside one `git index-pack` of a large fetch
+ * (git's own pack windows are bounded well under it). A repository whose fetch needs more is a stated
+ * sizing limit, not the runner's memory counted twice.
+ */
+export const SUPERVISOR_RESOURCES = {
+    requests: { cpu: '50m', memory: '64Mi' },
+    limits: { cpu: '500m', memory: '1Gi' },
+} as const;
+
+/** Every service sidecar's cpu limit, whatever its class sets: the pod's cpu goes to the gate. */
+export const SERVICE_CPU_LIMIT = '1';
+
+/**
  * A service sidecar's resources: the class's runner block with the service's tmpfs total added to
  * each memory slot the class sets, as a plain byte count. A memory emptyDir's pages are charged to
  * the writer's memory cgroup, and a microVM guest ignores `sizeLimit`, so the limit is the only bound
- * and must hold the data on top of the process. An unset slot stays unset; cpu is untouched.
+ * and must hold the data on top of the process. An unset memory slot stays unset. Cpu is capped at
+ * `SERVICE_CPU_LIMIT`, the request clamped under it so the API server never refuses the pod.
  */
 export function serviceResourcesField(
     block: RunnerResources,
     tmpfs: readonly { size: string }[] | undefined
 ): { resources?: PodResources } {
     const total = (tmpfs ?? []).reduce((sum, { size }) => sum + BigInt(memoryQuantityToBytes(size)), 0n);
-    if (total === 0n) return resourcesField(block);
     const plus = (quantity: string | null) =>
-        quantity ? (BigInt(memoryQuantityToBytes(quantity)) + total).toString() : quantity;
+        quantity && total > 0n ? (BigInt(memoryQuantityToBytes(quantity)) + total).toString() : quantity;
     return resourcesField({
-        ...block,
+        cpuRequest: block.cpuRequest ? smaller(block.cpuRequest, SERVICE_CPU_LIMIT, cpuQuantityToCores) : null,
+        cpuLimit: SERVICE_CPU_LIMIT,
         memoryRequest: plus(block.memoryRequest),
         memoryLimit: plus(block.memoryLimit),
     });
