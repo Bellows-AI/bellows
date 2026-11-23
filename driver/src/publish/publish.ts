@@ -1,3 +1,4 @@
+import { authorEnv } from '../commit-author.js';
 import type { BoardJob, FailureCause } from '../board/board.js';
 import type { DriverConfig } from '../config.js';
 import { containerScript as script } from '../container-scripts.js';
@@ -631,12 +632,18 @@ const gitRead = async (step: RunPublishStep, label: string, args: string[]): Pro
 /**
  * Stages and commits the checkout's dirty tree. The checkout usually has no committer identity
  * (the agent does not need one to edit); a fallback is applied only when the probe found none,
- * so a member-configured identity is never overridden. The supervisor's git runs no hook of the
+ * so a member-configured identity is never overridden. The committer is that identity, the bot; the claim's author
+ * (the starting member) rides as `GIT_AUTHOR_*` env on the commit alone. The supervisor's git runs no hook of the
  * checkout (`scripts/git-harden.cjs`: the tool uid writes them), so nothing rewrites the staged
  * tree. A `bound` publish still stages hook-free by argument and answers whether the
  * commit still holds exactly the staged tree; an unbound one answers true.
  */
-async function commitDirtyTree(step: RunPublishStep, state: GitState, title: string, bound: boolean): Promise<boolean> {
+async function commitDirtyTree(
+    step: RunPublishStep,
+    state: GitState,
+    commit: { title: string; bound: boolean; author: BoardJob['author'] }
+): Promise<boolean> {
+    const { title, bound, author } = commit;
     const hookless = bound ? ['-c', 'core.hooksPath=/dev/null'] : [];
     for (const args of GIT_STAGE_STEPS) {
         await step({
@@ -656,6 +663,8 @@ async function commitDirtyTree(step: RunPublishStep, state: GitState, title: str
         entrypoint: 'git',
         args: [...identity, 'commit', '-m', title],
         env: false,
+        // The member authors, the identity above (or the checkout's own) commits: the author is no credential.
+        ...(author ? { envLiterals: Object.fromEntries(authorEnv({ author })) } : {}),
         inRepo: true,
     });
     if (staged === null) return true;
@@ -678,7 +687,11 @@ async function branchAndCommit(
         const after = await probeCheckout(runStep, repo, baseBranchOf(job));
         if (after.fingerprint !== revision) return null;
     }
-    if (state.dirty && !(await commitDirtyTree(step, state, plan.title, revision !== undefined))) return null;
+    if (
+        state.dirty &&
+        !(await commitDirtyTree(step, state, { title: plan.title, bound: revision !== undefined, author: job.author }))
+    )
+        return null;
     return branch;
 }
 

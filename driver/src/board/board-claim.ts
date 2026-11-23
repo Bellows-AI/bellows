@@ -1,3 +1,4 @@
+import { commitAuthorOf } from '../commit-author.js';
 import type { BoardJob } from './board.js';
 import type { ServiceSpec } from '../services.js';
 import { connectionOutcomesOf } from './board-connection.js';
@@ -7,6 +8,12 @@ import { isExecutorType } from '../executors.js';
 /** The claim off the wire: every optional field read defensively, defaulted or dropped (reviewer profiles, the plan, the skill pin). */
 
 /** A claim text field read defensively: the string the board sent, else null. */
+/** The claim's commit author, or nothing: a malformed one must not reach git's env. */
+const authorField = (value: unknown): Pick<BoardJob, 'author'> => {
+    const author = commitAuthorOf(value);
+    return author ? { author } : {};
+};
+
 const textOrNull = (value: unknown): string | null => (typeof value === 'string' ? value : null);
 
 /** The claim's `turnContext` when it is a non-empty string, else absent. */
@@ -131,6 +138,7 @@ export function claimOf(wire: Partial<BoardJob>): BoardJob {
         skillHidden,
         orgKey,
         finishRounds,
+        author,
         ...claimed
     } = wire;
     const plan = servicePlanOf(services);
@@ -143,6 +151,7 @@ export function claimOf(wire: Partial<BoardJob>): BoardJob {
         ...reviewerProfilesOf(reviewerProfiles),
         ...connectionOutcomesOf(connectionOutcomes),
         ...knownTurnContext(turnContext),
+        ...authorField(author),
         ...(typeof orgKey === 'string' && orgKey.length > 0 ? { orgKey } : {}),
         // The round cap: a non-negative integer or absent (unknown), never defaulted to 0.
         ...(typeof finishRounds === 'number' && Number.isSafeInteger(finishRounds) && finishRounds >= 0

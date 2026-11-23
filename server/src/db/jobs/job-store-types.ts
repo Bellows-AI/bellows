@@ -571,6 +571,12 @@ export interface ClaimHelperPlan {
     input: unknown;
 }
 
+/** The commit author a claim names (`Claim.author`); `driver/src/claim.ts` copies the shape. */
+export interface ClaimAuthor {
+    name: string;
+    email: string;
+}
+
 /** What a worker gets back from a successful claim. The lease token is its proof for later. */
 export interface Claim {
     id: string;
@@ -656,6 +662,12 @@ export interface Claim {
      * credential is still to come, and this field is what it will read.
      */
     userId: string | null;
+    /**
+     * Who authors the run's commits: the thread starter's display name (else login) and their GitHub noreply
+     * address, so GitHub shows "<member> authored and Bellows committed". Absent for an unattributed job, in
+     * `AUTH_MODE=none` and for a reviewer; the committer is always the bot. A name and a public address, never a token.
+     */
+    author?: ClaimAuthor;
     /**
      * The board-owned Factory execution context, rendered by `master-prompt.ts` from
      * trusted claim metadata alone — never from `job.command`, a node's own prompt text, or any
@@ -1138,6 +1150,12 @@ export interface CreateJobStoreDeps {
      */
     githubApp?: boolean;
     /**
+     * Whether a claim names the thread starter as the commit author: `config.auth.mode !== 'none'`. Off — the
+     * default, and `AUTH_MODE=none`, whose one local account is no real person — the claim carries no author and the
+     * bot authors as well as commits.
+     */
+    commitAuthor?: boolean;
+    /**
      * The execution-plan reader, when the deployment has a GitHub App installation to read through.
      * Declared inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a
      * claim hands it the repo label and the thread's base branch and gets the plan at that
@@ -1279,6 +1297,7 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     platformModelProvided: boolean;
     env: CreateJobStoreDeps['env'];
     githubApp: boolean;
+    commitAuthor: boolean;
     planReader: CreateJobStoreDeps['plan'];
     executorConfig: CreateJobStoreDeps['executorConfig'];
     prs: JobStorePrs | undefined;

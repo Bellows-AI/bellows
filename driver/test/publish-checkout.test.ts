@@ -288,6 +288,22 @@ describe('the publish workflow', () => {
         });
     });
 
+    it('commits with the claim author as GIT_AUTHOR env and leaves the committer to the identity', async () => {
+        const author = { name: 'Octo Member', email: '1234+octo-member@users.noreply.github.com' };
+        const t = transport(DIRTY_ON_MAIN);
+        await publish(t, undefined, { ...ISSUE_JOB, author });
+        const commit = t.find('git commit');
+        expect(commit.envLiterals).toEqual({ GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email });
+        expect(commit.args).toContain('user.email=factory-ai@users.noreply.github.com');
+        expect(commit.env).toBe(false);
+    });
+
+    it('sets no author env when the claim names none', async () => {
+        const t = transport(DIRTY_ON_MAIN);
+        await publish(t);
+        expect(t.find('git commit').envLiterals).toBeUndefined();
+    });
+
     it('keeps a member-configured committer identity', async () => {
         const t = transport({ ...DIRTY_ON_MAIN, hasIdentity: true });
         await publish(t);

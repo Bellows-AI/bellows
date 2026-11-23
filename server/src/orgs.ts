@@ -225,6 +225,8 @@ function buildOrgStores({
         // The github skill connection: the runner obtains the org's installation token from the
         // board's credential endpoint, so a claim only needs to know the installation exists.
         githubApp: tokens !== undefined,
+        // Commits are authored by the member who started the task; AUTH_MODE=none has no such person.
+        commitAuthor: config.auth.mode !== 'none',
         // The completion surface records the thread's publication identity in the same
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
