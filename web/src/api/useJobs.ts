@@ -296,7 +296,7 @@ export interface JobConnection {
 export interface JobIntegrationRequirement {
     provider: string;
     label: string;
-    reason: 'missing' | 'ambiguous' | 'reconnect';
+    reason: 'missing' | 'ambiguous' | 'reconnect' | 'starter-removed';
     /** `create`: the task never started; `runtime`: it ran, asked and was handed back. */
     source: 'create' | 'runtime';
     /** The bound connection a `reconnect` is about; null otherwise. */

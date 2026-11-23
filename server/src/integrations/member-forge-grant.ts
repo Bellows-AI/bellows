@@ -1,5 +1,8 @@
 import type { IntegrationOutcome, UnavailableReason } from '@factory-ai/core';
 import type { Sql } from 'postgres';
+import { closeForgeRequirementsOfMember } from '../db/forge-requirement.js';
+import { errorClass, logger } from '../log.js';
+import { type GrantStanding, readGrantStanding } from '../db/forge-grant-standing.js';
 import { grantSecretIdentity } from '../db/connection-grants.js';
 import { orgSql } from '../db/org-sql.js';
 import type { SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
@@ -16,7 +19,7 @@ import type { GrantLineage } from './grant-lineage.js';
  * Every read here either confirms an answer or throws: a failed or timed-out read is never "missing" (AGENTS.md).
  */
 
-export type MemberGrantStanding = 'live' | 'broken' | 'missing';
+export type MemberGrantStanding = GrantStanding;
 
 /** What a sign-in's code exchange hands over: the forge's own token pair, lifetimes in seconds. */
 export interface MemberGrantTokens {
@@ -107,9 +110,6 @@ async function readMemberGrant(deps: Settings, orgId: string, userId: string, fo
     return rows[0] ?? null;
 }
 
-const usable = (row: GrantRow): boolean =>
-    row.status === 'active' && row.secret_ref !== null && row.secret_version !== null && row.secret_wedged_at === null;
-
 /**
  * The row a sign-in's tokens land on. A first sign-in inserts it as `reconnect_required` with no secret: it is not
  * usable until the lineage's `reconsent` commit has stored the secret and activated it, so a half-stored grant is never
@@ -141,6 +141,19 @@ const payloadOf = (deps: Settings, tokens: MemberGrantTokens): GrantPayload => (
     authority: { scopes: [] },
 });
 
+/**
+ * The grant is live again: the member's threads waiting on it stop saying so. Presentation only — the claim re-reads the
+ * grant and heals any wait this misses — so it takes no lock, runs after the lineage's commit, and a failure is logged,
+ * never the sign-in's.
+ */
+async function closeOpenForgeWaits(deps: Settings, { orgId, userId, forge }: StoreMemberGrantInput): Promise<void> {
+    try {
+        await closeForgeRequirementsOfMember(orgSql(deps.sql, orgId), { orgId, userId, forge });
+    } catch (err) {
+        logger('integrations').error({ err: errorClass(err) }, 'closing the forge waits of a re-linked member failed');
+    }
+}
+
 async function storeGrant(deps: Settings, input: StoreMemberGrantInput): Promise<StoreMemberGrantResult> {
     await deps.ready;
     const grantId = await rowForSignIn(deps, input);
@@ -150,7 +163,10 @@ async function storeGrant(deps: Settings, input: StoreMemberGrantInput): Promise
     const claimed = await lineage.claimLineage(grantId, 'reconsent', { rotates: true });
     if (!claimed.ok) return { ok: false, reason: claimed.reason === 'held' ? 'busy' : 'unavailable' };
     const committed = await lineage.commitLineage(claimed.claim, payloadOf(deps, input.tokens));
-    if (committed.ok) return { ok: true };
+    if (committed.ok) {
+        await closeOpenForgeWaits(deps, input);
+        return { ok: true };
+    }
     return { ok: false, reason: committed.reason === 'persistence-pending' ? 'pending' : 'lost' };
 }
 
@@ -211,9 +227,7 @@ export function createMemberForgeGrants(deps: MemberForgeGrantsDeps): MemberForg
 
         async standing(orgId, userId, forge) {
             await deps.ready;
-            const row = await readMemberGrant(settings, orgId, userId, forge);
-            if (!row) return 'missing';
-            return usable(row) ? 'live' : 'broken';
+            return readGrantStanding(orgSql(deps.sql, orgId), { orgId, userId, forge });
         },
 
         async accessToken(orgId, userId, forge, options = {}) {

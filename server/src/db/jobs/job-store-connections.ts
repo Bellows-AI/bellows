@@ -6,6 +6,9 @@
 
 import type { Sql, TransactionSql } from 'postgres';
 import { type DeploymentMode, requiredProviders } from '@factory-ai/core';
+import { forgeOfRepo } from '../../forge/forges.js';
+import type { ForgeStandingReader } from '../forge-grant-standing.js';
+import { closeForgeRequirement, openForgeRequirement } from '../forge-requirement.js';
 import { orgActiveForClaim } from '../org-status.js';
 import { skillCatalog } from '../../skills.js';
 import {
@@ -212,12 +215,56 @@ export async function markRequirementAmbiguousRow(
  */
 export async function rowHeld(
     tx: TransactionSql,
-    ctx: { orgId: string; deploymentMode: DeploymentMode },
+    ctx: { orgId: string; deploymentMode: DeploymentMode; forgeStanding: ForgeStandingReader | undefined },
     status: string,
     rootJobId: string
 ): Promise<boolean> {
     if (!(await orgActiveForClaim(tx, ctx.orgId, ctx.deploymentMode))) return true;
-    return status === 'queued' && (await recordUnboundRequirements(tx, ctx.orgId, rootJobId));
+    if (status !== 'queued') return false;
+    // Both are evaluated, so a thread waiting on a skill's connection and on the starter's grant shows both waits.
+    const unbound = await recordUnboundRequirements(tx, ctx.orgId, rootJobId);
+    const forge = await recordForgeHold(tx, ctx, rootJobId);
+    return unbound || forge;
+}
+
+/**
+ * The forge start gate at the claim (docs/connections.md): true when the thread's STARTER (the root's execution user,
+ * whoever queued this continuation) holds no live grant for the repo's forge, after opening the thread's `forge`
+ * requirement (`missing`, `reconnect`, or `starter-removed` when the starter no longer exists). A live grant closes
+ * an open one and holds nothing: the claim heals what a re-link's own bookkeeping missed. Off without
+ * `forgeStanding`. The standing read throws on an unconfirmed answer, which rolls the claim back: no requirement is
+ * written and no verdict is given.
+ */
+export async function recordForgeHold(
+    tx: TransactionSql,
+    ctx: { orgId: string; forgeStanding: ForgeStandingReader | undefined },
+    rootJobId: string
+): Promise<boolean> {
+    const { orgId, forgeStanding } = ctx;
+    if (!forgeStanding) return false;
+    await lockThreadInTx(tx, rootJobId);
+    const [root] = await tx<
+        { repo: string | null; execution_user_id: string | null }[]
+    >`select repo, execution_user_id from job where org_id = ${orgId} and id = ${rootJobId}`;
+    const forge = forgeOfRepo(root?.repo ?? null);
+    if (!root || forge === null) return false;
+    const userId = root.execution_user_id;
+    if (userId === null) {
+        await openForgeRequirement(tx, { orgId, rootJobId, forge, reason: 'starter-removed' });
+        return true;
+    }
+    const standing = await forgeStanding(tx, { orgId, userId, forge });
+    if (standing === 'live') {
+        await closeForgeRequirement(tx, { orgId, rootJobId, userId });
+        return false;
+    }
+    await openForgeRequirement(tx, {
+        orgId,
+        rootJobId,
+        forge,
+        reason: standing === 'missing' ? 'missing' : 'reconnect',
+    });
+    return true;
 }
 
 /**

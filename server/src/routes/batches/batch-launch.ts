@@ -13,7 +13,7 @@ import type { BatchRecord } from '../../db/batches/batch-store-types.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from '../helpers.js';
 import { HTTP_CONFLICT } from '../jobs/job-limits.js';
-import { forgeOfRepo } from '../../forge/forge-gate.js';
+import { forgeOfRepo } from '../../forge/forges.js';
 import { refusedAsNoForgeGrant } from '../jobs/forge-usable.js';
 import { defaultExecutorOf, executorTypeOf, refusedAsNoModel, refusedAsUnusable } from '../jobs/executor-usable.js';
 import { validateExecutorField } from '../jobs/job-field-validation.js';

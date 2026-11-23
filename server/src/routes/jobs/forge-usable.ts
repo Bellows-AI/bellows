@@ -2,7 +2,8 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from 'fastify';
 import type { OrgRegistry } from '../../orgs.js';
 import { callerOf, orgOf } from '../../auth/plugin.js';
-import { type ForgeGate, forgeLabel, forgeOfRepo, type ForgeVerdict } from '../../forge/forge-gate.js';
+import type { ForgeGate, ForgeVerdict } from '../../forge/forge-gate.js';
+import { forgeLabel, forgeOfRepo } from '../../forge/forges.js';
 import type { JobStore } from '../../db/jobs/job-store-types.js';
 import { HTTP_CONFLICT, HTTP_UNAVAILABLE } from './job-limits.js';
 

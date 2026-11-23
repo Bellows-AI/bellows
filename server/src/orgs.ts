@@ -1,3 +1,4 @@
+import { readGrantStanding } from './db/forge-grant-standing.js';
 import type { Sql } from 'postgres';
 import { modelKeyRequired } from '@factory-ai/core';
 import { orgSql } from './db/org-sql.js';
@@ -227,6 +228,8 @@ function buildOrgStores({
         githubApp: tokens !== undefined,
         // Commits are authored by the member who started the task; AUTH_MODE=none has no such person.
         commitAuthor: config.auth.mode !== 'none',
+        // The forge start gate's claim half: a member holds the grant, so the claim reads it (no member, no gate).
+        ...(config.auth.mode !== 'none' ? { forgeStanding: readGrantStanding } : {}),
         // The completion surface records the thread's publication identity in the same
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
