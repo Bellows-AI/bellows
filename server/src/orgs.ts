@@ -279,8 +279,7 @@ function buildOrgStores({
         reader: client,
         prs,
         pause,
-        recordMerge: (repo, prNumber, deliveryId, mergedAt) =>
-            jobs.closeMergedPr(githubRepo(repo), prNumber, deliveryId, mergedAt),
+        recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
     });
     // The merger (064): needs the installation to merge through; offline the board cannot merge and
     // refuses an automerge plan at start.

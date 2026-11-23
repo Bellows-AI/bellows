@@ -11,6 +11,7 @@ import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { GitHubReadError } from '../src/github/pr-read.js';
+import { claimDue, withFollowClaim } from '../src/db/pr-follow-store.js';
 import { createPrFollower, type PrFollower } from '../src/pr-follower.js';
 import { useTestDb } from './harness.js';
 import { mustCreate, testOrg, testUser } from './fixtures.js';
@@ -89,8 +90,7 @@ const followerFor = (
         orgId,
         reader: options.reader ?? reader,
         prs: lifecycle,
-        recordMerge: (repo, number, deliveryId, mergedAt) =>
-            jobStore.closeMergedPr(githubRepo(repo), number, deliveryId, mergedAt),
+        recordMerge: (repo, number, deliveryId, mergedAt) => jobStore.closeMergedPr(repo, number, deliveryId, mergedAt),
         // The first poll of a new row is spread over the interval in production; a test wants it due.
         spreadMs: 0,
         ...(options.concurrency === undefined ? {} : { concurrency: options.concurrency }),
@@ -590,5 +590,74 @@ describe.skipIf(!enabled)('PR follower — the cursor identifies what was observ
         }
         expect(github.reads).toHaveLength(5);
         expect((await prs.waitOf(root))?.pending).toBe(1);
+    });
+});
+
+/** One path on GitHub and on a GitLab host is two repositories: the follow rows and their claims keep them apart. */
+describe.skipIf(!enabled)('PR follower — a GitLab repository on the same path', () => {
+    const GITLAB_HOST = 'gl.example';
+
+    /** `plainThread`, on a GitLab host. */
+    async function gitlabPlainThread(): Promise<{ root: string; number: number }> {
+        nextPr += 1;
+        const number = nextPr;
+        const { id: root } = await mustCreate(
+            jobs.create('plain work', null, { repo: githubRepo(REPO), executor: null })
+        );
+        await sql`update job set forge = 'gitlab', host = ${GITLAB_HOST} where org_id = ${ORG} and id = ${root}`;
+        const claim = (await jobs.claim(WORKER, LEASE_SECONDS)) as Claim;
+        await jobs.complete(claim.id, claim.leaseToken, {
+            status: 'succeeded',
+            exitCode: 0,
+            output: 'published',
+            publication: {
+                repo: REPO,
+                prNumber: number,
+                prUrl: `https://${GITLAB_HOST}/${REPO}/-/merge_requests/${number}`,
+                headBranch: `factory/${root}`,
+                baseBranch: 'main',
+            },
+        });
+        return { root, number };
+    }
+
+    it('follows the PR a GitLab thread published under that forge and host', async () => {
+        const { number } = await gitlabPlainThread();
+
+        const claims = await claimDue({ sql, orgId: ORG }, 10, 0);
+
+        expect(claims).toEqual([expect.objectContaining({ repo: { forge: 'gitlab', host: GITLAB_HOST, path: REPO } })]);
+        expect(await sql`select forge, host, repo, pr_number from pr_follow where org_id = ${ORG}`).toEqual([
+            { forge: 'gitlab', host: GITLAB_HOST, repo: REPO, pr_number: number },
+        ]);
+    });
+
+    it('never updates a GitLab follow row through a GitHub claim on the same path', async () => {
+        nextPr += 1;
+        const token = randomUUID();
+        await sql`
+            insert into pr_follow (org_id, forge, host, repo, pr_number, next_poll_at, claim_token, claimed_until)
+            values (${ORG}, 'gitlab', ${GITLAB_HOST}, ${REPO}, ${nextPr}, now(), ${token}::uuid, now() + interval '1 hour')
+        `;
+
+        const applied = await withFollowClaim(
+            { sql, orgId: ORG },
+            { repo: githubRepo(REPO), prNumber: nextPr, token },
+            async () => ({ kind: 'seen', closed: false })
+        );
+
+        expect(applied).toBe(false);
+    });
+
+    it('answers a GitLab claim given GitHub facts for the same path as a failed read, applying nothing', async () => {
+        const { root, number } = await gitlabPlainThread();
+        github.replies.set(number, mergedPr(number));
+
+        await follower.observeDue();
+
+        expect(github.reads).toEqual([number]);
+        expect(await mergeRows(number)).toEqual([]);
+        expect(await doneAtOf(root)).toBeNull();
+        expect(await followRow(number)).toMatchObject({ failures: 1, error_code: 'binding' });
     });
 });

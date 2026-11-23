@@ -1,5 +1,5 @@
 import { githubRepo, READ_BINDING, sameRepo } from '@factory-ai/core';
-import type { PrFacts } from '@factory-ai/core';
+import type { PrFacts, RepoRef } from '@factory-ai/core';
 import { createHash } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import {
@@ -37,7 +37,7 @@ export interface PrFollowerDeps {
     reader?: PrReader | undefined;
     prs: Pick<PrLifecycleStore, 'cancelForRepoPr' | 'foldObservedActivity'>;
     /** Records a merge GitHub reports: the job store's `closeMergedPr`, the batch observer's own hand-off. */
-    recordMerge: (repo: string, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
+    recordMerge: (repo: RepoRef, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
     now?: (() => Date) | undefined;
     concurrency?: number | undefined;
     /** How far a newly followed PR's first read is spread; the follow interval when absent. */
@@ -88,21 +88,21 @@ export function createPrFollower(deps: PrFollowerDeps): PrFollower {
      * transaction. A merge is the exception that cannot join it (the job store opens its own); it is
      * safe regardless: it is idempotent and a merge is never undone.
      */
-    const apply = async (facts: PrFacts, tx: TransactionSql): Promise<PrFollowResult> => {
+    const apply = async (repo: RepoRef, facts: PrFacts, tx: TransactionSql): Promise<PrFollowResult> => {
         if (facts.merged) {
             const mergedAt = validDate(facts.mergedAt);
-            await recordMerge(facts.repo, facts.number, observedMergeId(facts), mergedAt);
+            await recordMerge(repo, facts.number, observedMergeId(facts), mergedAt);
             return { kind: 'seen', closed: true };
         }
         if (facts.state === 'closed') {
-            await prs.cancelForRepoPr(githubRepo(facts.repo), facts.number, CLOSED_REASON, tx);
+            await prs.cancelForRepoPr(repo, facts.number, CLOSED_REASON, tx);
             return { kind: 'seen', closed: true };
         }
         const activityAt = validDate(facts.updatedAt);
         if (activityAt !== undefined) {
             await prs.foldObservedActivity(
                 {
-                    repo: githubRepo(facts.repo),
+                    repo,
                     prNumber: facts.number,
                     activityAt,
                     fingerprint: observedFingerprint(facts),
@@ -114,18 +114,15 @@ export function createPrFollower(deps: PrFollowerDeps): PrFollower {
     };
 
     const followOne = async (claim: PrFollowClaim): Promise<boolean> => {
-        const read = await readFacts(reader!, claim.repo, claim.prNumber);
+        const read = await readFacts(reader!, claim.repo.path, claim.prNumber);
         pause.note(read);
         return withFollowClaim(store, claim, async (tx): Promise<PrFollowResult> => {
             if (read.kind === 'error') return { kind: 'failed', error: read.error, retryAfterMs: read.retryAfterMs };
             // Facts about another PR are never applied to this one.
-            if (
-                !sameRepo(githubRepo(read.facts.repo), githubRepo(claim.repo)) ||
-                read.facts.number !== claim.prNumber
-            ) {
+            if (!sameRepo(githubRepo(read.facts.repo), claim.repo) || read.facts.number !== claim.prNumber) {
                 return { kind: 'failed', error: READ_BINDING, retryAfterMs: null };
             }
-            return apply(read.facts, tx);
+            return apply(claim.repo, read.facts, tx);
         });
     };
 
