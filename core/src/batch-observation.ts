@@ -252,6 +252,3 @@ export function nextObservationDelayMs(
     if (state.ok) return state.mergeabilityUnknown ? OBSERVE_MERGEABILITY_RETRY_MS : OBSERVE_INTERVAL_MS;
     return Math.max(recoveryBackoffMs(state.failures), state.retryAfterMs ?? 0);
 }
-
-/** Whether `a` and `b` name one repository: GitHub owner/name is case-insensitive. */
-export const sameRepo = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();

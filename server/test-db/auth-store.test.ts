@@ -1,3 +1,4 @@
+import { formatRepoRef, githubRepo, type RepoRef } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { hashToken } from '../src/auth/session.js';
@@ -448,34 +449,62 @@ describe.skipIf(!enabled)('the stored selection (issue 125)', () => {
     });
 });
 
+const trackedPaths = async (orgId: string) => (await trackedRepos({ sql, orgId })).map(formatRepoRef);
+
 describe.skipIf(!enabled)('the tracked-repo allowlist (issue 125)', () => {
     it('writes, replaces and clears the org allowlist wholesale', async () => {
-        await store.replaceTrackedRepos(ORG, ['acme/web', 'acme/other']);
-        expect(await trackedRepos({ sql, orgId: ORG })).toEqual(['acme/other', 'acme/web']);
+        await store.replaceTrackedRepos(ORG, ['acme/web', 'acme/other'].map(githubRepo));
+        expect(await trackedPaths(ORG)).toEqual(['acme/other', 'acme/web']);
 
         // Replace, not append: the second narrowing is the whole truth, not a delta.
-        await store.replaceTrackedRepos(ORG, ['acme/web']);
-        expect(await trackedRepos({ sql, orgId: ORG })).toEqual(['acme/web']);
+        await store.replaceTrackedRepos(ORG, ['acme/web'].map(githubRepo));
+        expect(await trackedPaths(ORG)).toEqual(['acme/web']);
 
         // Empty means "track everything": the rows go, the narrowing with them.
-        await store.replaceTrackedRepos(ORG, []);
-        expect(await trackedRepos({ sql, orgId: ORG })).toEqual([]);
+        await store.replaceTrackedRepos(ORG, [].map(githubRepo));
+        expect(await trackedPaths(ORG)).toEqual([]);
     });
 
     it('is per-org: one org allowlist never leaks into another', async () => {
-        await store.replaceTrackedRepos(ORG, ['acme/web']);
-        await store.replaceTrackedRepos(SECOND_ORG, ['other/one']);
+        await store.replaceTrackedRepos(ORG, ['acme/web'].map(githubRepo));
+        await store.replaceTrackedRepos(SECOND_ORG, ['other/one'].map(githubRepo));
 
-        expect(await trackedRepos({ sql, orgId: ORG })).toEqual(['acme/web']);
-        expect(await trackedRepos({ sql, orgId: SECOND_ORG })).toEqual(['other/one']);
-        expect(await trackedRepos({ sql, orgId: ABSENT_ORG })).toEqual([]);
+        expect(await trackedPaths(ORG)).toEqual(['acme/web']);
+        expect(await trackedPaths(SECOND_ORG)).toEqual(['other/one']);
+        expect(await trackedPaths(ABSENT_ORG)).toEqual([]);
     });
 
     it('takes the rows with the organization, whose repo scope they are', async () => {
-        await store.replaceTrackedRepos(ORG, ['acme/web']);
+        await store.replaceTrackedRepos(ORG, ['acme/web'].map(githubRepo));
         await sql`delete from organization where id = ${ORG}`;
 
-        expect(await trackedRepos({ sql, orgId: ORG })).toEqual([]);
+        expect(await trackedPaths(ORG)).toEqual([]);
+    });
+
+    it('keeps the forge, the host and a nested path through a write and a read', async () => {
+        const gitlab: RepoRef = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' };
+        await store.replaceTrackedRepos(ORG, [githubRepo('acme/web'), gitlab]);
+
+        const read = await trackedRepos({ sql, orgId: ORG });
+        expect([...read].sort((a, b) => formatRepoRef(a).localeCompare(formatRepoRef(b)))).toEqual([
+            githubRepo('acme/web'),
+            gitlab,
+        ]);
+        const [row] = await sql`select owner, name from tracked_repo where org_id = ${ORG} and forge = 'gitlab'`;
+        expect(row).toEqual({ owner: 'g/sub', name: 'p' });
+    });
+
+    it('refuses a path with no group instead of dropping it', async () => {
+        await expect(store.replaceTrackedRepos(ORG, [githubRepo('web')])).rejects.toThrow();
+        expect(await trackedPaths(ORG)).toEqual([]);
+    });
+
+    it('reads a malformed row as inconclusive, never as an allowlist with the row dropped', async () => {
+        // An empty answer means "track everything", so a dropped row would widen the org on a bad read.
+        await store.replaceTrackedRepos(ORG, [githubRepo('acme/web')]);
+        await sql`insert into tracked_repo (org_id, owner, name, forge, host) values (${ORG}, 'g', 'p', 'gitlab', '')`;
+
+        await expect(trackedRepos({ sql, orgId: ORG })).rejects.toThrow(/tracked_repo/);
     });
 });
 

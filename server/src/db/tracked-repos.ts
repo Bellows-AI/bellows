@@ -1,3 +1,4 @@
+import { REPO_FORGES, REPO_PATH_PATTERN, type RepoForge, type RepoRef } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 
 /**
@@ -9,7 +10,12 @@ import type { Sql } from 'postgres';
  * workspace/env writes all follow one truth.
  */
 
-/** The org's allowlist, as "owner/name" strings. Empty when everything is tracked. */
+const isForge = (forge: string): forge is RepoForge => (REPO_FORGES as readonly string[]).includes(forge);
+
+/**
+ * The org's allowlist as refs, ordered by path. Empty when everything is tracked. A row that is not a well-formed ref
+ * throws: dropping it could leave `[]`, which the repo source reads as "track everything" — a widening on a bad read.
+ */
 export async function trackedRepos({
     sql,
     orgId,
@@ -18,14 +24,19 @@ export async function trackedRepos({
     sql: Sql;
     orgId: string;
     ready?: Promise<unknown>;
-}): Promise<string[]> {
+}): Promise<RepoRef[]> {
     if (ready) await ready;
-    const rows = await sql<{ repo: string }[]>`
-        select owner || '/' || name as repo from tracked_repo
+    const rows = await sql<{ forge: string; host: string; path: string }[]>`
+        select forge, host, path from tracked_repo
         where org_id = ${orgId}
-        order by repo
+        order by forge, host, path
     `;
-    return rows.map((row) => row.repo);
+    return rows.map(({ forge, host, path }) => {
+        if (!isForge(forge) || host === '' || !REPO_PATH_PATTERN.test(path)) {
+            throw new Error('tracked_repo holds a row that is not a repository reference');
+        }
+        return { forge, host, path };
+    });
 }
 
 /** Replaces the org's allowlist in one transaction — the completion route's whole write. */
@@ -37,17 +48,16 @@ export async function replaceTrackedRepos({
 }: {
     sql: Sql;
     orgId: string;
-    repos: readonly string[];
+    repos: readonly RepoRef[];
     ready?: Promise<unknown>;
 }): Promise<void> {
     if (ready) await ready;
-    // "owner/name", the one spelling every repo identity takes here — the same split parseFullName
-    // makes. A malformed name has no owner column to land in, and the route has already validated
-    // every entry against the installation listing.
-    const rows = repos.flatMap((repo) => {
-        const slash = repo.indexOf('/');
-        if (slash <= 0 || slash === repo.length - 1) return [];
-        return [{ org_id: orgId, owner: repo.slice(0, slash), name: repo.slice(slash + 1) }];
+    // The path splits at its last "/": the owner column holds the group chain, the name column the project. `path` is
+    // generated from the two.
+    const rows = repos.map(({ forge, host, path }) => {
+        const slash = path.lastIndexOf('/');
+        if (slash <= 0 || slash === path.length - 1) throw new Error('a tracked repository path is group/name');
+        return { org_id: orgId, forge, host, owner: path.slice(0, slash), name: path.slice(slash + 1) };
     });
     await sql.begin(async (tx) => {
         await tx`delete from tracked_repo where org_id = ${orgId}`;

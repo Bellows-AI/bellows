@@ -13,6 +13,7 @@ import {
     MERGE_REFUSED,
     MERGE_UNCERTAIN,
     reconcileUncertainMerge,
+    githubRepo,
     sameRepo,
     VERIFY_UNKNOWN,
     type PrFacts,
@@ -162,7 +163,7 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
     const fetched = await readFresh(run, intent);
     if ('unread' in fetched) return settled(run, intent, fetched.unread);
     const read = fetched.facts;
-    if (!sameRepo(read.repo, intent.repo) || read.number !== intent.prNumber) {
+    if (!sameRepo(githubRepo(read.repo), githubRepo(intent.repo)) || read.number !== intent.prNumber) {
         return settled(run, intent, { state: MERGE_CHANGED, detail: 'GitHub answered for another pull request' });
     }
     const fresh = judgeFreshFacts(intent, read);
@@ -222,7 +223,7 @@ async function reconcileOne(run: Run, intent: MergeIntent): Promise<void> {
 
 async function mergeCommitOf(run: Run, repo: string, prNumber: number): Promise<string | null> {
     const facts = await run.client.readPullRequest(repo, prNumber);
-    return facts.merged && sameRepo(facts.repo, repo) ? facts.mergeCommitSha : null;
+    return facts.merged && sameRepo(githubRepo(facts.repo), githubRepo(repo)) ? facts.mergeCommitSha : null;
 }
 
 /** What the stage's merges and the target say, or an `unknown` that waits: an unreadable target is never a pass. */

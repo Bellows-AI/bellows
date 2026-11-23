@@ -8,7 +8,6 @@ import {
     BATCH_PLAN_VERSION,
     BATCH_POLICIES,
     BATCH_REPO_LIMIT,
-    BATCH_REPO_PATTERN,
     BATCH_TEXT_LIMIT,
     BATCH_TITLE_LIMIT,
     DEFAULT_BATCH_CONCURRENCY,
@@ -29,6 +28,7 @@ import {
 } from './batch-plan.js';
 import { BRANCH_NAME_PATTERN } from './branch-name.js';
 import { EXECUTOR_SCOPES } from './executors.js';
+import { GITHUB_REPO_PATH_PATTERN } from './repo-ref.js';
 
 /**
  * The batch plan (`batch-plan.ts`) as a plain JSON Schema, for clients that need to write one before the board reads it.
@@ -63,7 +63,7 @@ const target: Record<string, unknown> = {
         key,
         repo: {
             type: 'string',
-            pattern: BATCH_REPO_PATTERN.source,
+            pattern: GITHUB_REPO_PATH_PATTERN.source,
             maxLength: BATCH_REPO_LIMIT,
             description: 'owner/name',
         },

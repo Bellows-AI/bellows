@@ -1,4 +1,4 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { ERROR_CODES, formatRepoRef, githubRepo, type RepoRef } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { PENDING_COOKIE, hashToken, pendingCookieOptions, unsign } from '../auth/session.js';
 import type { AuthStore, Caller, PendingSignIn } from '../auth/store.js';
@@ -138,7 +138,7 @@ interface RollbackState {
     pending: PendingSignIn;
     orgIds: string[];
     rewroteAllowlist: string[];
-    priorAllowlists: Map<string, string[]>;
+    priorAllowlists: Map<string, RepoRef[]>;
     priorSelection: string[];
     caller: Caller | undefined;
 }
@@ -226,7 +226,7 @@ async function materializeOnboarding(
     const rewroteAllowlist: string[] = [];
     // The prior state the rollback restores — read before anything is written, because the
     // rollback must put back what STOOD here, not a default.
-    const priorAllowlists = new Map<string, string[]>();
+    const priorAllowlists = new Map<string, RepoRef[]>();
     let priorSelection: string[] = [];
     try {
         for (const orgId of reposByOrg.keys()) {
@@ -252,7 +252,7 @@ async function materializeOnboarding(
         const admitted = new Set((await ctx.store.membershipsOf(caller.user.id)).map((org) => org.id));
         for (const [orgId, names] of reposByOrg) {
             if (!admitted.has(orgId)) continue;
-            await ctx.store.replaceTrackedRepos(orgId, names);
+            await ctx.store.replaceTrackedRepos(orgId, names.map(githubRepo));
             rewroteAllowlist.push(orgId);
         }
         await startSession(ctx.sessionDeps, reply, caller);
@@ -351,7 +351,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
                     return {
                         id: install.id,
                         account: install.name,
-                        tracked: narrowed.length > 0 ? narrowed : null,
+                        tracked: narrowed.length > 0 ? narrowed.map(formatRepoRef) : null,
                     };
                 })
             ),

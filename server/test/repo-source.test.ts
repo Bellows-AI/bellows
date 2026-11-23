@@ -1,3 +1,4 @@
+import { githubRepo, type RepoRef } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { createRepoSource, staticRepoSource } from '../src/github/repo-source.js';
 import type { GitHubAppClient, InstallationRepo } from '../src/github/app-client.js';
@@ -27,7 +28,7 @@ describe('the tracked-repo allowlist (#125)', () => {
     it('narrows the client listing to the allowlist', async () => {
         const source = createRepoSource({
             client: clientWith('acme/web', 'acme/other'),
-            allowlist: async () => ['acme/web'],
+            allowlist: async () => ['acme/web'].map(githubRepo),
         });
         // The snapshot never fetches: empty until the first list.
         expect(source.snapshotNames()).toEqual([]);
@@ -38,6 +39,20 @@ describe('the tracked-repo allowlist (#125)', () => {
         // exactly when the list that produced them is named.
         expect(source.snapshotNames()).toEqual(['acme/web']);
         expect((await source.detail()).repos.map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web']);
+    });
+
+    it('matches the allowlist by repository identity: GitHub folds case, another forge never admits it', async () => {
+        const folded = createRepoSource({
+            client: clientWith('acme/web', 'acme/other'),
+            allowlist: async () => [githubRepo('Acme/Web')],
+        });
+        expect((await folded.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web']);
+
+        const elsewhere = createRepoSource({
+            client: clientWith('acme/web', 'acme/other'),
+            allowlist: async () => [{ forge: 'gitlab', host: 'gl.example', path: 'acme/web' }],
+        });
+        expect(await elsewhere.list()).toEqual([]);
     });
 
     it('treats an empty allowlist as no narrowing — everything the installation reports', async () => {
@@ -54,7 +69,7 @@ describe('the tracked-repo allowlist (#125)', () => {
     it('narrows the stored fallback the same way', async () => {
         const source = createRepoSource({
             stored: async () => ['acme/web', 'acme/other'],
-            allowlist: async () => ['acme/other'],
+            allowlist: async () => ['acme/other'].map(githubRepo),
         });
 
         expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/other']);
@@ -68,7 +83,7 @@ describe('the tracked-repo allowlist (#125)', () => {
                 repos: names.map(repo),
                 installation: { id: '123', account: 'acme', repositorySelection: null },
             })),
-            allowlist: async () => ['acme/web'],
+            allowlist: async () => ['acme/web'].map(githubRepo),
             ttlMs: 1_000,
             now: () => clock,
         });
@@ -83,14 +98,14 @@ describe('the tracked-repo allowlist (#125)', () => {
     });
 
     it('re-reads the allowlist on a cached read, so a write another replica handled lands without invalidate()', async () => {
-        let tracked: readonly string[] = ['acme/web', 'acme/other'];
+        let tracked: readonly RepoRef[] = ['acme/web', 'acme/other'].map(githubRepo);
         const source = createRepoSource({
             client: clientWith('acme/web', 'acme/other'),
             allowlist: async () => tracked,
         });
         expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web', 'acme/other']);
 
-        tracked = ['acme/web'];
+        tracked = ['acme/web'].map(githubRepo);
         expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web']);
         expect(source.snapshotNames()).toEqual(['acme/web']);
     });
@@ -144,11 +159,11 @@ describe('the tracked-repo allowlist (#125)', () => {
         // hand — when invalidate() runs. Publishing that result would re-validate the pre-choice
         // scope as fresh for another full TTL.
         const clock = 1_000;
-        let tracked: readonly string[] = ['acme/web'];
-        const resolvers: Array<(value: readonly string[]) => void> = [];
+        let tracked: readonly RepoRef[] = ['acme/web'].map(githubRepo);
+        const resolvers: Array<(value: readonly RepoRef[]) => void> = [];
         const source = createRepoSource({
             client: clientWith('acme/web', 'acme/other'),
-            allowlist: () => new Promise<readonly string[]>((resolve) => resolvers.push(resolve)),
+            allowlist: () => new Promise<readonly RepoRef[]>((resolve) => resolvers.push(resolve)),
             ttlMs: 10_000,
             now: () => clock,
         });
@@ -158,7 +173,7 @@ describe('the tracked-repo allowlist (#125)', () => {
         expect(resolvers.length).toBe(1); // the produce is parked on the allowlist read
         resolvers[0]!(tracked); // it now holds the old choice …
         source.invalidate(); // …and the invalidation lands before it publishes
-        tracked = ['acme/other'];
+        tracked = ['acme/other'].map(githubRepo);
         await tick();
         while (resolvers.length > 0) resolvers.shift()!(tracked); // answer whoever is asking now
 
@@ -168,42 +183,42 @@ describe('the tracked-repo allowlist (#125)', () => {
     });
 
     it('a read retried after invalidate() lands its answer in the snapshot over a read that finished meanwhile', async () => {
-        const pending: Array<{ resolve: (value: readonly string[]) => void }> = [];
+        const pending: Array<{ resolve: (value: readonly RepoRef[]) => void }> = [];
         const source = createRepoSource({
             client: clientWith('acme/web', 'acme/other'),
-            allowlist: () => new Promise<readonly string[]>((resolve) => pending.push({ resolve })),
+            allowlist: () => new Promise<readonly RepoRef[]>((resolve) => pending.push({ resolve })),
         });
         const a = source.list();
         await tick();
         const b = source.list();
         await tick();
         expect(pending.length).toBe(2);
-        pending[1]!.resolve(['acme/web']); // B lands the old choice
+        pending[1]!.resolve(['acme/web'].map(githubRepo)); // B lands the old choice
         await b;
         source.invalidate(); // the choice changes while A is still in flight
-        pending[0]!.resolve(['acme/web']); // A's first answer predates it …
+        pending[0]!.resolve(['acme/web'].map(githubRepo)); // A's first answer predates it …
         await tick();
         expect(pending.length).toBe(3);
-        pending[2]!.resolve(['acme/other']); // … so it asks again and gets the new one
+        pending[2]!.resolve(['acme/other'].map(githubRepo)); // … so it asks again and gets the new one
         expect((await a).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/other']);
         expect(source.snapshotNames()).toEqual(['acme/other']);
     });
 
     it("carries each read's own allowlist failure, which a concurrent success never clears", async () => {
-        let tracked: readonly string[] = ['acme/web'];
-        const pending: Array<{ resolve: (value: readonly string[]) => void; reject: (e: Error) => void }> = [];
+        let tracked: readonly RepoRef[] = ['acme/web'].map(githubRepo);
+        const pending: Array<{ resolve: (value: readonly RepoRef[]) => void; reject: (e: Error) => void }> = [];
         let deferred = false;
         const source = createRepoSource({
             client: clientWith('acme/web', 'acme/other'),
             allowlist: () =>
                 deferred
-                    ? new Promise<readonly string[]>((resolve, reject) => pending.push({ resolve, reject }))
+                    ? new Promise<readonly RepoRef[]>((resolve, reject) => pending.push({ resolve, reject }))
                     : Promise.resolve(tracked),
         });
         expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web']);
 
         deferred = true;
-        tracked = ['acme/web', 'acme/other'];
+        tracked = ['acme/web', 'acme/other'].map(githubRepo);
         const failing = source.detail();
         const succeeding = source.detail();
         await tick();
