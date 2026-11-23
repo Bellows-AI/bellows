@@ -39,6 +39,7 @@ Which repositories an organization sees, where that list comes from, and what it
   Underneath, a repo's identity is `(forge, host, path)` (`RepoRef`): GitHub folds path case, no other forge does,
   and one path on two hosts is two repos. The tracked allowlist stores and returns refs; a malformed row throws,
   because dropping it could read as "track everything". The wire spelling stays `owner/name`.
+  Stored rows carry the triple and a derived row copies its parent's (`server/src/db/repo-ref-row.ts`, `server/test-db/job-store.repo-ref.test.ts`); until the contract (BEL-562) a narrow key makes one path on two forges or hosts collide (23505), never a silent skip, except the follow and merge-slot sweeps (`on conflict do nothing`).
 - **Installation access is the whole boundary.** Any member sees every repo the org tracks; GitHub
   repo permissions are not projected into Factory ([organizations.md](organizations.md)). A write that
   names a repo (`POST /api/jobs`, a batch, env) validates it against the tracked list: `400 UNKNOWN_REPO`,
