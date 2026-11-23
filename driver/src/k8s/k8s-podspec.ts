@@ -429,9 +429,23 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string, docker:
         command: gateLoopArgv(),
         workingDir: MAILBOXES.gate.path,
         env: [...gateEnv(job), ...(docker ? dockerClientEnv() : [])].map(([name, value]) => ({ name, value })),
-        volumeMounts: [taskMount(), mailboxMount(MAILBOXES.gate, 'rw'), ...(docker ? dockerClientMounts() : [])],
+        volumeMounts: [
+            taskMount(),
+            mailboxMount(MAILBOXES.gate, 'rw'),
+            { name: GATE_TMP_VOLUME, mountPath: '/tmp' },
+            ...(docker ? dockerClientMounts() : []),
+        ],
     };
 }
+
+/**
+ * The gate's /tmp — its HOME, the suites' temp dirs and their test git clones — in memory:
+ * a microVM's root filesystem is virtiofs, where that scratch waited on FUSE until every gate hit its
+ * deadline. A memory emptyDir is the guest's tmpfs; its pages are charged to the gate's memory limit,
+ * which bounds it (a Kata guest ignores `sizeLimit`, so none is set). It outlives a gate container
+ * restart and goes with the pod.
+ */
+const GATE_TMP_VOLUME = 'gate-tmp';
 
 /**
  * A docker class's daemon: the digest-pinned dind image as a native sidecar, first of the init
@@ -761,6 +775,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                         ...mailboxVolumes(reviewing),
                         bindingVolume(secretName(job)),
                         ...servicesFields.volumes,
+                        ...(gateImage ? [{ name: GATE_TMP_VOLUME, emptyDir: { medium: 'Memory' as const } }] : []),
                         ...(docker ? dockerVolumes(runnerClass) : []),
                     ],
                 },

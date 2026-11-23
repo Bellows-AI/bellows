@@ -929,6 +929,32 @@ describe('the pod hardening on every pod the driver specs (#382)', () => {
             runAsGroup: 1000,
         });
     });
+
+    // A microVM's root filesystem is virtiofs: the suites' scratch (vitest temp dirs, test git
+    // clones, the gate's HOME) waited on FUSE there until every gate hit its deadline.
+    // A memory emptyDir is the guest's tmpfs, charged to the gate's own memory limit.
+    it('gives the gate sidecar alone a memory-backed /tmp', () => {
+        const spec = runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+            { ...gatedOf(job), executorType: 'claude-code', ...SUPERVISED },
+            { id: SESSION, resume: false }
+        );
+        const pod = spec.spec.template.spec;
+        expect(pod.volumes).toContainEqual({ name: 'gate-tmp', emptyDir: { medium: 'Memory' } });
+        const members = [...(pod.initContainers ?? []), ...pod.containers];
+        const mounting = members.filter((c) => c.volumeMounts.some((mount) => mount.name === 'gate-tmp'));
+        expect(mounting.map((c) => c.name)).toEqual(['gate']);
+        expect(mounting[0]!.volumeMounts).toContainEqual({ name: 'gate-tmp', mountPath: '/tmp' });
+    });
+
+    it('declares no gate /tmp volume on a pod without a gate', () => {
+        const spec = runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+            { ...job, executorType: 'claude-code', ...SUPERVISED },
+            { id: SESSION, resume: false }
+        );
+        expect(spec.spec.template.spec.volumes.map((volume) => volume.name)).not.toContain('gate-tmp');
+    });
 });
 
 // A docker class's group gets a daemon of its own: a `dockerd` native sidecar, up before the gate,
