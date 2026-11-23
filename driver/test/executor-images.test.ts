@@ -1428,8 +1428,10 @@ describe('the shared executor skills', () => {
 });
 
 /*
- * The PR boundary: an agent may open and update a pull request itself — the
- * driver's publish reuses it. These pins keep the INSTRUCTIONS from teaching a publication denial
+ * The PR boundary. The board opens and edits the task's pull request as the member who started it, so the agent no
+ * longer runs `gh pr create` or `gh pr edit`: `gh-wrapper.sh` refuses both and every instruction points at
+ * `factory-control publish`. This REVERSES the issue #550 rule that the agent may open the pull request itself, on
+ * purpose, so the pins below flip with it. They still keep the INSTRUCTIONS from teaching a publication denial
  * or a green-gate precondition.
  */
 describe('the executor PR boundary', () => {
@@ -1445,13 +1447,29 @@ describe('the executor PR boundary', () => {
         ];
         for (const skill of skills) {
             const text = read(skill);
-            expect(text).not.toMatch(/never run `gh pr create`|do not run `gh pr create`|do not push or open PRs/i);
+            expect(text).not.toMatch(/do not push or open PRs/i);
             expect(text).not.toMatch(/gates green|do not mark work finished while|never leave the tree failing/i);
             expect(text).not.toMatch(/only the driver (may|can) (open|publish)/i);
         }
     });
 
-    it('no baked skill tells the agent to cut a branch or add a worktree', () => {
+    it('no baked skill or home guide tells the agent to run gh pr create or gh pr edit', () => {
+        const guides = [
+            GITHUB_SKILL,
+            'docker/skills/factory-gates/SKILL.md',
+            'docker/skills/factory-fix/SKILL.md',
+            'docker/skills/factory-pr-land/SKILL.md',
+            'docker/opencode-executor/opencode-home/AGENTS.md',
+        ];
+        for (const guide of guides) {
+            const text = read(guide);
+            expect(text, guide).not.toMatch(/open (or update )?the pull request (yourself )?(with|\()`?gh pr create/i);
+            expect(text, guide).not.toMatch(/`gh pr edit` updates it/);
+            expect(text, guide).not.toMatch(/`git push` and `gh pr\s+create`/);
+        }
+    });
+
+    it('no baked skill or home guide tells the agent to cut a branch or add a worktree', () => {
         const skills = [
             GITHUB_SKILL,
             'docker/skills/factory-gates/SKILL.md',
@@ -1478,10 +1496,13 @@ describe('the executor PR boundary', () => {
         expect(text).not.toMatch(/non-negotiable|Hard rules/);
     });
 
-    it('the github skill lets the agent open the PR and says the driver reuses it', () => {
+    it('the github skill makes the board publish the way to open and update the PR, and says gh refuses both', () => {
         const text = read(GITHUB_SKILL);
-        expect(text).toContain('open the pull request with `gh pr create`');
-        expect(text).toMatch(/is\s+the\s+one\s+the\s+driver\s+reuses/);
+        expect(text).toContain('factory-control publish');
+        expect(text).toMatch(/the board opens.*as the member who started the task/is);
+        expect(text).toMatch(/`gh pr create` and `gh pr edit` are refused/);
+        // Reading, commenting and checks stay with gh.
+        expect(text).toContain('gh pr checks');
         // The one command that moves HEAD onto a PR stays named only as denied policy.
         expect(text).not.toMatch(/^\s*gh pr checkout\b/m);
     });
@@ -1497,7 +1518,7 @@ describe('the executor PR boundary', () => {
         expect(text).not.toMatch(/--auto\b/);
     });
 
-    it('the opencode fence leaves gh pr create and gh pr checkout to the agent', () => {
+    it('the opencode fence leaves gh pr create and gh pr checkout to the wrapper, not the permission table', () => {
         const policy = JSON.parse(read('docker/opencode-executor/opencode-home/opencode.json'));
         const bash: Record<string, string> = policy.permission.bash;
         for (const rule of ['gh pr create', 'gh pr create *', 'gh pr checkout', 'gh pr checkout *']) {

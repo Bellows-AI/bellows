@@ -351,6 +351,51 @@ describe('the gh wrapper and the helper in both images', () => {
         await expect(run('sh', ['-n', join(ROOT, 'docker/executor-common/gh-wrapper.sh')])).resolves.toBeDefined();
     });
 
+    describe('the agent never opens or edits the task’s pull request with gh', () => {
+        const WRAPPER = join(ROOT, 'docker/executor-common/gh-wrapper.sh');
+        const REFUSAL =
+            'the board opens and edits this task’s pull request as the member who started it: ask it with `factory-control publish`; do not run gh pr create or gh pr edit';
+        /** The wrapper on the host with an empty environment: a refusal exits before any absolute path or token ask. */
+        const wrapped = (args: string[], env: Record<string, string> = {}) =>
+            run('sh', [WRAPPER, ...args], { env }).then(
+                (out) => ({ code: 0, ...out }),
+                (error: { code: number; stdout: string; stderr: string }) => error
+            );
+
+        it.each([
+            ['pr', 'create', '--title', 't'],
+            ['pr', 'new', '--title', 't'],
+            ['pr', 'edit', '3', '--title', 't'],
+        ])('refuses gh %s %s with exit 2 and the board publish as the way', async (...args) => {
+            const out = await wrapped(args);
+            expect(out.code).toBe(2);
+            expect(out.stdout).toBe('');
+            expect(out.stderr.trim()).toBe(REFUSAL);
+        });
+
+        it('refuses even when a token is already set: the block is not about credentials', async () => {
+            const out = await wrapped(['pr', 'create'], { GH_TOKEN: 'ghs_x' });
+            expect(out.code).toBe(2);
+            expect(out.stderr).not.toContain('/usr/local/libexec/gh');
+        });
+
+        it.each([
+            ['pr', 'view', '1'],
+            ['pr', 'comment', '1', '--body', 'x'],
+        ])('still reaches the real gh for gh %s %s', async (...args) => {
+            const out = await wrapped(args, { GH_TOKEN: 'ghs_x' });
+            // Whatever the real gh answers on this host, it is not the wrapper's refusal.
+            expect(out.code).not.toBe(2);
+            expect(out.stderr).not.toContain('factory-control publish');
+        });
+
+        it('has no trailing whitespace on any line', () => {
+            for (const line of read('docker/executor-common/gh-wrapper.sh').split('\n')) {
+                expect(line).toBe(line.trimEnd());
+            }
+        });
+    });
+
     it('needs no write to anything but the cache directory it is given', () => {
         // The cache path is a constant, never an env name a member could point at a shared volume.
         const source = read('docker/executor-common/credential-broker.cjs');

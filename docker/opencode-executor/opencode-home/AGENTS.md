@@ -19,9 +19,9 @@ stop to ask; unanswered questions go in the final report (§5).
 - Before every push, run the declared gates (below) that cover your change, filtered to your tests
   when the gate accepts a filter, and fix a red one before you push. An unavailable gate is
   reported, not a blocker.
-- Finish means: the work committed on the task branch and the tree clean. You may push the branch
-  and open or update the pull request yourself (`gh pr create`); the board's own end-of-run
-  publish reuses that same pull request. Never say a gate passed that did not.
+- Finish means: the work committed on the task branch and the tree clean. You may ask the driver to push
+  the branch and open or update the pull request (`factory-control publish`); `gh pr create` and
+  `gh pr edit` are refused, and the board's own end-of-run publish reuses that same pull request. Never say a gate passed that did not.
 
 ## 1. Think before coding
 

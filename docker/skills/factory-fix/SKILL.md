@@ -205,9 +205,9 @@ a commit already on the remote.
 
 ### 5.13 Publish the pull request
 
-Push the task branch and open (or update) the pull request yourself with `git push` and `gh pr
-create`, or ask the driver to do it (see the factory-github skill) —
-either lands on the same pull request. Run the declared gates that cover your change first and fix a red one before you push;
+Ask the driver to push the task branch and open (or update) the pull request with
+`factory-control publish` (see the factory-github skill); `gh pr create` and `gh pr edit` are
+refused. Run the declared gates that cover your change first and fix a red one before you push;
 report any that were unavailable. Finish with the work committed on the task
 branch.
 

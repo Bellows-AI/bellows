@@ -36,6 +36,8 @@ run() { docker run --rm -v "$REPO:/workspace" "$@"; }
 check 'claude runs'            'Claude Code'      run --entrypoint claude "$IMAGE" --version
 check 'acli installed'         'acli version'     run --entrypoint acli "$IMAGE" --version
 check 'gh installed'           'gh version'       run --entrypoint gh "$IMAGE" --version
+# The wrapper refuses the agent's PR create: the board opens it as the member who started the task.
+check 'gh pr create is refused' 'factory-control publish' run --entrypoint gh "$IMAGE" pr create --title t
 # No plugin: context-mode's executions cannot run as the tool uid yet.
 check 'no plugin installed'    'No plugins installed' run --entrypoint claude "$IMAGE" plugin list
 check 'CLAUDE.md present'      'Agent guide'      run --entrypoint head "$IMAGE" -1 /home/node/.claude/CLAUDE.md
