@@ -83,7 +83,7 @@ cap_board() { # cap_board <port> <log> -> a shared-budget AUTH_MODE=github board
         PUBLIC_URL="http://$LANE_HOST:$1" \
         REPO_CLONE_BASE="$PLAN_BASE" \
         AUTH_MODE=github \
-        GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
+        GITHUB_APP_CLIENT_ID=stub-client GITHUB_APP_CLIENT_SECRET=stub-secret \
         SESSION_SECRET=a-job-harness-session-secret-32-chars \
         DRIVER_CREDENTIAL_SHA256="$(credential_sha256 "$CAP_TOKEN")" ADMISSION_MAX_RUNNING=2 \
         node server/dist/offline.js >>"$2" 2>&1 &

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createGitHubIdentityClient } from '../src/auth/github.js';
+import { createGitHubIdentityClient, TokenExpirationOffError } from '../src/auth/github.js';
 import { OAUTH_COOKIE, PENDING_COOKIE, decodeState, encodeState } from '../src/auth/session.js';
 import { githubAuth, harness, memoryAuthStore, oneInstallation, stubIdentityClient } from './helpers.js';
 import { ORG, begin, callback, errorOf, pendingRoute, setup, signIn } from './auth.oauth-fixtures.js';
@@ -16,12 +16,23 @@ describe('github sign-in', () => {
         expect(response.headers.location).toContain(`state=${encodeURIComponent(state)}`);
     });
 
-    it('requests read:org, because listing installations is the membership decision', async () => {
+    it('requests no scope: the App user token lists the installations by itself', async () => {
         // The real client, not the harness stub: the stub's authorize URL is a fixed string.
         const url = createGitHubIdentityClient(
             githubAuth() as Extract<ReturnType<typeof githubAuth>, { mode: 'github' }>
         ).authorizeUrl('s');
-        expect(new URL(url).searchParams.get('scope')).toBe('read:org');
+        expect(new URL(url).searchParams.has('scope')).toBe(false);
+    });
+
+    it('reports an App whose user tokens do not expire as its own outcome, naming the setting', async () => {
+        const { app, auth, identity } = await setup();
+        identity.exchange = async () => {
+            throw new TokenExpirationOffError();
+        };
+        const state = await begin(app);
+        const response = await callback(app, `code=abc&state=${encodeURIComponent(state)}`, state);
+        expect(errorOf(response.headers.location as string)).toBe('token_expiration');
+        expect(auth.sessions()).toEqual([]);
     });
 
     it('materializes the installation as an organization, a membership and a session', async () => {

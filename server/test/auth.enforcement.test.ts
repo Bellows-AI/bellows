@@ -336,6 +336,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/attachments/:id', 'user'],
     ['/api/attachments/:id/content', 'user'],
     // Managing connections is a person's settings act; it falls through to 'user'.
+    ['/api/forge-grants', 'user'],
     ['/api/connections', 'user'],
     ['/api/connections/:id', 'user'],
     // Starting and finishing an outbound OAuth connect is a person's act in their own browser session.

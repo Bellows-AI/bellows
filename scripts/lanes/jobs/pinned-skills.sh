@@ -321,7 +321,7 @@ pinned_skills_lane() {
     env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$PORT" "${LANE_BOARD_BIND[@]}" PUBLIC_URL="$BASE" \
         REPO_CLONE_BASE="$PLAN_BASE" \
         AUTH_MODE=github \
-        GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
+        GITHUB_APP_CLIENT_ID=stub-client GITHUB_APP_CLIENT_SECRET=stub-secret \
         SESSION_SECRET=a-job-harness-session-secret-32-chars \
         DRIVER_CREDENTIAL_SHA256="$(credential_sha256 "$PS_TOKEN")" \
         node server/dist/offline.js >>"$work/pinned-skills-board.log" 2>&1 &

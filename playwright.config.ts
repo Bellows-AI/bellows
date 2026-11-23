@@ -43,6 +43,9 @@ export const E2E_RUNNER_CLASSES = { standard: { docker: false }, builds: { docke
  * Full millisecond precision — a modulus would make two runs collide by birthday bound and the
  * second would inherit the first's stored selection.
  */
+/** The auth board's webhook secret: github-grant.spec.ts signs a revocation delivery with it. */
+export const E2E_WEBHOOK_SECRET = 'an-e2e-webhook-secret-of-at-least-32-chars';
+
 const E2E_USER_ID_BASE = 420000;
 const E2E_USER_ID = E2E_USER_ID_BASE + Date.now();
 
@@ -77,7 +80,7 @@ export const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
 
 /** The specs that need a signed-in member. */
 const AUTH_SPECS =
-    /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|linear-connections|task-connect-auth|oauth-consent|attachment-upload|mcp-connect|skills|members|audit-log|onboarding)\.spec\.ts$/;
+    /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|linear-connections|task-connect-auth|oauth-consent|attachment-upload|mcp-connect|skills|members|audit-log|onboarding|github-grant)\.spec\.ts$/;
 /**
  * Heavy captures that gate nothing — the baseline gallery, the fixed-seed gremlins — carry this tag
  * and run only under playwright.nightly.config.ts (`npm run verify:ui:nightly`), with the specimen.
@@ -183,19 +186,20 @@ export default defineConfig({
                 // Two runner classes, one with Docker, so org-executors.spec.ts picks a class through
                 // the dialog and the board's own validation accepts it. Exported as E2E_RUNNER_CLASSES.
                 RUNNER_CLASSES: JSON.stringify(E2E_RUNNER_CLASSES),
-                GITHUB_OAUTH_CLIENT_ID: 'stub-client-id',
-                GITHUB_OAUTH_CLIENT_SECRET: 'stub-client-secret',
+                GITHUB_APP_CLIENT_ID: 'stub-client-id',
+                GITHUB_APP_CLIENT_SECRET: 'stub-client-secret',
                 SESSION_SECRET: 'an-e2e-session-secret-of-at-least-32-chars',
                 PUBLIC_URL: `http://127.0.0.1:${AUTH_PORT}`,
                 // The MCP authorization server: an http loopback PUBLIC_URL needs a loopback bind.
                 MCP_ENABLED: 'true',
                 HOST: '127.0.0.1',
-                // The three overrides that point the exchange at the stub. Environment only — and
+                // The two overrides that point the exchange at the stub: authorize and token follow the
+                // web URL, `/user` and `/user/installations` the API URL. Environment only — and
                 // the server logs loudly when they are in use, because a configurable authorize
                 // URL reaching a real deployment would be a phishing vector.
-                GITHUB_OAUTH_AUTHORIZE_URL: `http://127.0.0.1:${IDP_PORT}/login/oauth/authorize`,
-                GITHUB_OAUTH_TOKEN_URL: `http://127.0.0.1:${IDP_PORT}/login/oauth/access_token`,
-                GITHUB_OAUTH_USER_URL: `http://127.0.0.1:${IDP_PORT}/user`,
+                GITHUB_WEBHOOK_SECRET: E2E_WEBHOOK_SECRET,
+                GITHUB_WEB_URL: `http://127.0.0.1:${IDP_PORT}`,
+                GITHUB_API_URL: `http://127.0.0.1:${IDP_PORT}`,
                 // The Jira connect flow against the same stub's /atlassian/* endpoints; the
                 // board logs loudly when an override is in use, like the GitHub ones above.
                 ATLASSIAN_CLIENT_ID: 'stub-atlassian-client-id',

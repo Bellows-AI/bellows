@@ -102,6 +102,8 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['GET', '/api/commerce', 'read', MEMBER_ROLE],
     ['GET', '/api/connections', 'read', MEMBER_ROLE],
     ['GET', '/api/env', 'read', MEMBER_ROLE],
+    // Where the caller stands on a forge's grant: credential-adjacent, so never reachable by a scoped grant.
+    ['GET', '/api/forge-grants', 'none', MEMBER_ROLE],
     ['GET', '/api/integrations', 'read', MEMBER_ROLE],
     ['GET', '/api/integrations/catalog', 'read', MEMBER_ROLE],
     ['GET', '/api/integrations/:provider/callback', 'none', MEMBER_ROLE],

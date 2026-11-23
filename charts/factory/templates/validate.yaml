@@ -314,12 +314,12 @@ the exempt namespaces the admission policy reads (templates/sandbox-admission.ya
 {{- else if or .Values.artifacts.gcs.bucket .Values.artifacts.gcs.kmsKey }}
 {{- fail "artifacts.gcs.* is only valid with artifacts.backend=gcs" }}
 {{- end }}
-{{- if not .Values.auth.oauthClientId }}
-{{- fail "auth.oauthClientId is required" }}
+{{- if not .Values.github.appClientId }}
+{{- fail "github.appClientId is required: sign-in goes through the GitHub App's own user authorization" }}
 {{- end }}
 {{- if .Values.secret.create }}
-{{- if not .Values.secret.oauthClientSecret }}
-{{- fail "secret.oauthClientSecret is required" }}
+{{- if not .Values.secret.githubAppClientSecret }}
+{{- fail "secret.githubAppClientSecret is required: the GitHub App's client secret" }}
 {{- end }}
 {{- if lt (len .Values.secret.sessionSecret) 32 }}
 {{- fail "secret.sessionSecret of at least 32 characters is required (openssl rand -hex 32)" }}

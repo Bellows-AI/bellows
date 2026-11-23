@@ -38,6 +38,8 @@ import {
     startIntegrationRecovery,
 } from './integrations/integration-recovery.js';
 import { combineRegistrations, type ProviderRegistry } from './integrations/provider-registry.js';
+import { createMemberForgeGrants } from './integrations/member-forge-grant.js';
+import { createGitHubUserHooks } from './integrations/providers/github-user.js';
 import { jiraProvider } from './integrations/providers/jira.js';
 import { linearProvider } from './integrations/providers/linear.js';
 import { startTempSweep } from './artifacts/fs-store.js';
@@ -45,6 +47,7 @@ import { startAttachmentSweep } from './attachments/attachment-collector.js';
 import { startSkillSweep } from './skills/skill-collector.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
 import { startMetricPointOrgBackfill } from './telemetry/org-backfill.js';
+import type { SecretStore } from './secrets/secret-store.js';
 import type { CoordinatedSecretStore } from './secrets/postgres-secret-store.js';
 import { startOrgPurge } from './db/org-purge.js';
 import { startOrgRetention } from './db/org-retention.js';
@@ -269,6 +272,36 @@ const providerRegistry = ({ callbackOrigin, jira, linear }: AppConfig['integrati
     combineRegistrations([jiraProvider(jira, callbackOrigin), linearProvider(linear, callbackOrigin)]);
 
 /**
+ * The outbound OAuth runtime over every provider registration; with none configured it serves only the recovery of
+ * rows and the destroy of a revoked grant's secret. In github mode it also looks up the refresh hooks of the member's
+ * GitHub grant (never a provider a person can start) and builds the store a sign-in keeps that grant in.
+ */
+function composeIntegrations(deps: {
+    config: AppConfig;
+    sql: Sql;
+    crossOrg: { sql: Sql };
+    secrets: SecretStore;
+    ready: Promise<unknown>;
+}) {
+    const { config, sql, crossOrg, secrets, ready } = deps;
+    const registry = providerRegistry(config.integrations);
+    const githubUser = config.auth.mode === 'github' ? createGitHubUserHooks(config.auth) : null;
+    const integrations = createIntegrationRuntime({
+        sql,
+        crossOrgSql: crossOrg.sql,
+        secrets,
+        providers: (provider) => (githubUser?.id === provider ? githubUser : registry.providers(provider)),
+        clients: registry.clients,
+        callbackOrigin: config.integrations.callbackOrigin,
+        log: (d) => logger('integrations').info(d, 'integration diagnostic'),
+    });
+    const memberGrants = githubUser
+        ? createMemberForgeGrants({ sql, crossOrgSql: crossOrg.sql, ready, secrets, lineageOf: integrations.lineageOf })
+        : undefined;
+    return { registry, integrations, memberGrants };
+}
+
+/**
  * The whole wiring, from config to `listen`. Every entry is this function plus one decision about
  * GitHub: `index.ts` reads the environment, which can only ever produce the App; `offline.ts`
  * passes the code-only `none` arm for the harnesses that run with no credential and no network, and
@@ -391,19 +424,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         );
     }
 
-    // The outbound OAuth runtime over every provider registration; with none configured it serves only the recovery
-    // of rows and the destroy of a revoked grant's secret.
-    const registry = providerRegistry(config.integrations);
-    const { configured, ids, notConfiguredOf } = registry;
-    const integrations = createIntegrationRuntime({
-        sql,
-        crossOrgSql: crossOrg.sql,
-        secrets,
-        providers: registry.providers,
-        clients: registry.clients,
-        callbackOrigin: config.integrations.callbackOrigin,
-        log: (d) => logger('integrations').info(d, 'integration diagnostic'),
-    });
+    const { registry, integrations, memberGrants } = composeIntegrations({ config, sql, crossOrg, secrets, ready });
 
     const driverCredentials = bootstrappedDriverCredentials(crossOrg, config, (m) => logger('auth').info(m));
     const app = await buildApp({
@@ -413,7 +434,12 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         notificationConnectors: connectors,
         store,
         secrets,
-        integrations: { ...integrations, configured, ids, notConfiguredOf },
+        integrations: {
+            ...integrations,
+            configured: registry.configured,
+            ids: registry.ids,
+            notConfiguredOf: registry.notConfiguredOf,
+        },
         auth: membership.store,
         githubRoster: membership.roster,
         ...mcp,
@@ -433,6 +459,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         ...runnerCredentialDeps({ sql, ready }, crossOrg, options, registry.apiBaseOf),
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,
+        memberGrants,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
         providerKeys: createProviderKeys({ deploymentMode: config.deploymentMode }),
         metrics,

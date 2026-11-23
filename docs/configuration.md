@@ -43,7 +43,7 @@ the shell). `.env.example` is the list; `server/src/config.ts` is the contract.
 - **`AUTH_MODE` is an explicit enum and `AuthConfig` a discriminated union** — never inferred from a client id ([auth.md](auth.md)). `server/test/config.auth.test.ts`.
 - **A secret under 32 characters refuses to boot** (`SESSION_SECRET`, `GITHUB_WEBHOOK_SECRET`); unset, `GITHUB_WEBHOOK_SECRET` does not register the route.
 - **Both artifact backends pass one contract** (create-only writes, a 412 that never overwrites, idempotent delete); the filesystem backend is single replica only, and an S3-compatible endpoint is sent no SSE-S3 header. Two replicas over one database and store serve each other's writes and decide a race once. `server/test/artifacts.object-store.test.ts`, `server/test-db/artifact-store.test.ts`.
-- **`GITHUB_API_URL` and `GITHUB_OAUTH_*_URL` are test seams, undocumented on purpose**; `server/src/main.ts` warns when the API URL is not `api.github.com`, and `playwright.config.ts` points them at `e2e/stub-idp.mjs`.
+- **`GITHUB_API_URL` and `GITHUB_WEB_URL` are test seams, undocumented on purpose** (`/user` follows the first; authorize and token the second); `server/src/main.ts` warns when either is not GitHub's, and `playwright.config.ts` points them at `e2e/stub-idp.mjs`. Sign-in uses the App's `GITHUB_APP_CLIENT_ID`/`_SECRET`; any set `GITHUB_OAUTH_*` is fatal. `server/test/config.auth.test.ts`.
 - **Never log the merged environment** — it holds the App private key. `driver/test/loop/` pins the driver's side.
 
 ## Stated limits

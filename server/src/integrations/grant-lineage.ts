@@ -77,7 +77,15 @@ export interface GrantLineage {
         claim: Pick<LineageClaim, 'token' | 'grantId'>,
         options?: { operation?: boolean; reconnect?: boolean; unrecordedOnly?: boolean }
     ): Promise<boolean>;
-    refreshGrant(grantId: string, options?: { signal?: AbortSignal | undefined }): Promise<RefreshResult>;
+    /**
+     * `observedVersion` is the secret version the caller saw expired: a claim that finds another version stored was
+     * beaten by a replica that already refreshed, and releases without exchanging (GitHub rotates both tokens on
+     * every refresh, so a second exchange would kill the first caller's token).
+     */
+    refreshGrant(
+        grantId: string,
+        options?: { signal?: AbortSignal | undefined; observedVersion?: string | undefined }
+    ): Promise<RefreshResult>;
     recoverLineage(grantId: string): Promise<RecoverResult>;
     destroyRevokedSecret(grantId: string): Promise<DestroyResult>;
     /** Resolves when no refresh, detached persistence or abandoned SecretStore mutation is running in this process. */
@@ -98,12 +106,12 @@ async function failedExchange(
     ctx: LineageCtx,
     claim: LineageClaim,
     answer: Extract<ExchangeResult, { ok: false }>,
-    options: { rotating: boolean; aborted: boolean }
+    options: { rotating: boolean; retryTransient: boolean; aborted: boolean }
 ): Promise<{ result: RefreshResult; settled: boolean }> {
     if (answer.failure === 'not-sent') {
         return { result: unavailable(options.aborted ? 'aborted' : 'transport'), settled: false };
     }
-    if (answer.failure === 'definitive' || options.rotating) {
+    if (answer.failure === 'definitive' || (options.rotating && !options.retryTransient)) {
         // A spent (or possibly spent) rotating token is never replayed: the person must reconnect.
         await endClaim(ctx, claim, { reconnect: true });
         ctx.log('reconnect-required', claim.grantId);
@@ -138,10 +146,13 @@ async function exchangeUnderClaim(
     ctx: LineageCtx,
     claim: LineageClaim,
     hooks: OAuthProviderHooks,
-    signal: AbortSignal | undefined
+    attempt: { signal: AbortSignal | undefined; observedVersion: string | undefined }
 ): Promise<RefreshResult> {
+    const { signal, observedVersion } = attempt;
     let settled = false;
     try {
+        // 1. Under the claim, a version other than the one the caller saw expired is already a fresh credential.
+        if (observedVersion !== undefined && claim.secretVersion !== observedVersion) return { ok: true };
         // 2. Read: any answer that is not a confirmed value of the stored version releases the claim.
         const read = await readConfirmed(ctx, claim, signal);
         if (!read.ok) return unavailable('secret-unavailable');
@@ -161,6 +172,7 @@ async function exchangeUnderClaim(
         if (!answer.ok) {
             const failed = await failedExchange(ctx, claim, answer, {
                 rotating: hooks.rotatesRefreshToken,
+                retryTransient: hooks.retryTransientRefresh === true,
                 aborted: signal?.aborted === true,
             });
             settled = failed.settled;
@@ -175,14 +187,18 @@ async function exchangeUnderClaim(
     }
 }
 
-async function runRefresh(ctx: LineageCtx, grantId: string, signal: AbortSignal | undefined): Promise<RefreshResult> {
+async function runRefresh(
+    ctx: LineageCtx,
+    grantId: string,
+    attempt: { signal: AbortSignal | undefined; observedVersion: string | undefined }
+): Promise<RefreshResult> {
     const info = await readLineage(ctx, grantId);
     if (!info) return required('missing', '');
     const hooks = ctx.providers(info.provider);
     if (!hooks) return unavailable('secret-unavailable');
     for (let round = 0; ; round += 1) {
         const claimed = await claimStatement(ctx, grantId, 'refresh', { rotates: hooks.rotatesRefreshToken });
-        if (claimed.ok) return exchangeUnderClaim(ctx, claimed.claim, hooks, signal);
+        if (claimed.ok) return exchangeUnderClaim(ctx, claimed.claim, hooks, attempt);
         switch (claimed.reason) {
             case 'held':
                 return unavailable('refresh-in-progress');
@@ -224,13 +240,16 @@ export function createGrantLineage(deps: GrantLineageDeps): GrantLineage {
     const inflight = new Map<string, Promise<RefreshResult>>();
 
     /** One flight per grant per process; a caller that goes away leaves the flight (and its persistence) running. */
-    function refreshGrant(grantId: string, options: { signal?: AbortSignal | undefined } = {}): Promise<RefreshResult> {
-        const { signal } = options;
+    function refreshGrant(
+        grantId: string,
+        options: { signal?: AbortSignal | undefined; observedVersion?: string | undefined } = {}
+    ): Promise<RefreshResult> {
+        const { signal, observedVersion } = options;
         let run = inflight.get(grantId);
         if (run) {
             ctx.log('refresh-joined', grantId);
         } else {
-            const started: Promise<RefreshResult> = runRefresh(ctx, grantId, signal)
+            const started: Promise<RefreshResult> = runRefresh(ctx, grantId, { signal, observedVersion })
                 .catch((): RefreshResult => unavailable('secret-unavailable'))
                 .finally(() => {
                     if (inflight.get(grantId) === started) inflight.delete(grantId);

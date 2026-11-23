@@ -4,8 +4,8 @@
  *
  * There is no way to complete a genuine GitHub round trip offline, and the alternative — seeding a
  * session cookie straight into the browser context — would need a test-only login route, i.e. a back
- * door living in production code. A stub the server is pointed at through three environment
- * variables keeps the whole flow real on this side of the wire while nothing leaves the machine.
+ * door living in production code. A stub the server is pointed at through two environment
+ * variables (GITHUB_WEB_URL and GITHUB_API_URL) keeps the whole flow real on this side of the wire while nothing leaves the machine.
  *
  * The server logs loudly at boot when these overrides are in use, because a configurable authorize
  * URL that reached a real deployment would be a phishing vector.
@@ -246,11 +246,79 @@ async function linearRoute(url, request, response) {
     return false;
 }
 
+// ── GitHub App user authorization ──
+// The App's code exchange answers an access token (8 h) AND a refresh token (6 months). A refresh answers a NEW pair
+// and spends the old refresh token, as GitHub does; a spent or unknown one is `bad_refresh_token`, reported with a 200
+// like every GitHub token error. `POST /_control/github` steers it: `{ refreshFailure: 'bad_refresh_token' | 'server_error' }`
+// makes the next refreshes fail that way until `{}` clears it, `{ noRefreshToken: true }` answers an exchange without
+// a refresh token (the App's expiry setting off), and `GET` reports every refresh call it saw.
+const githubTokens = {
+    counter: 0,
+    refresh: new Map(),
+    refreshFailure: null,
+    noRefreshToken: false,
+    refreshCalls: [],
+};
+
+const issueGithubPair = (account) => {
+    githubTokens.counter += 1;
+    const n = githubTokens.counter;
+    githubTokens.refresh.set(`ghr_stub_${n}`, account);
+    return {
+        access_token: `ghu_stub_${n}`,
+        expires_in: 28800,
+        refresh_token: `ghr_stub_${n}`,
+        refresh_token_expires_in: 15811200,
+        token_type: 'bearer',
+        scope: '',
+    };
+};
+
+async function githubTokenRoute(response, body) {
+    if (body.grant_type === 'refresh_token') {
+        githubTokens.refreshCalls.push(body.refresh_token ?? '');
+        if (githubTokens.refreshFailure === 'server_error') {
+            json(response, { message: 'stub upstream failure' }, 502);
+            return;
+        }
+        const account = githubTokens.refresh.get(body.refresh_token);
+        if (githubTokens.refreshFailure === 'bad_refresh_token' || !account) {
+            json(response, {
+                error: 'bad_refresh_token',
+                error_description: 'The refresh token passed is incorrect or expired.',
+            });
+            return;
+        }
+        githubTokens.refresh.delete(body.refresh_token);
+        json(response, issueGithubPair(account));
+        return;
+    }
+    if (githubTokens.noRefreshToken) {
+        json(response, { access_token: 'ghu_stub_no_refresh', token_type: 'bearer' });
+        return;
+    }
+    json(response, issueGithubPair(identity.id));
+}
+
 createServer(async (request, response) => {
     const url = new URL(request.url, `http://127.0.0.1:${port}`);
 
     if (url.pathname.startsWith('/atlassian/') && (await atlassianRoute(url, request, response))) return;
     if (url.pathname.startsWith('/linear/') && (await linearRoute(url, request, response))) return;
+
+    if (url.pathname === '/_control/github') {
+        if (request.method === 'POST') {
+            const body = await readJson(request);
+            githubTokens.refreshFailure = body.refreshFailure ?? null;
+            githubTokens.noRefreshToken = body.noRefreshToken === true;
+        }
+        json(response, {
+            refreshFailure: githubTokens.refreshFailure,
+            noRefreshToken: githubTokens.noRefreshToken,
+            refreshCalls: githubTokens.refreshCalls,
+        });
+        return;
+    }
 
     if (url.pathname === '/_control/identity' && request.method === 'POST') {
         const body = await readJson(request);
@@ -273,8 +341,8 @@ createServer(async (request, response) => {
         return;
     }
 
-    if (url.pathname === '/login/oauth/access_token') {
-        json(response, { access_token: 'stub-access-token', token_type: 'bearer' });
+    if (url.pathname === '/login/oauth/access_token' && request.method === 'POST') {
+        await githubTokenRoute(response, await readJson(request));
         return;
     }
 

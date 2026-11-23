@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createGitHubIdentityClient, GitHubAuthError } from '../src/auth/github.js';
+import { createGitHubIdentityClient, GitHubAuthError, TokenExpirationOffError } from '../src/auth/github.js';
 import { githubAuth } from './helpers.js';
 import { HTTP_FORBIDDEN } from './helpers-http.js';
 
@@ -89,5 +89,59 @@ describe('the installations seam (#99)', () => {
         // A 403 here is a missing scope or a secondary rate limit, never "no installations".
         const { fetchFn } = stubInstallations({ message: 'rate limited' }, HTTP_FORBIDDEN);
         await expect(client(fetchFn).installations('t')).rejects.toBeInstanceOf(GitHubAuthError);
+    });
+});
+
+/** The token endpoint, answering with `body` (GitHub reports a bad code with a 200 and an `error` field). */
+function stubTokenEndpoint(body: unknown, status = 200) {
+    const requests: { url: string; body: Record<string, unknown> }[] = [];
+    const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+        requests.push({ url: String(input), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+        return new Response(JSON.stringify(body), { status });
+    }) as typeof fetch;
+    return { requests, fetchFn };
+}
+
+describe('the code exchange keeps the App user-token pair', () => {
+    it('returns the access token, the refresh token and both lifetimes', async () => {
+        const { requests, fetchFn } = stubTokenEndpoint({
+            access_token: 'ghu_access',
+            expires_in: 28_800,
+            refresh_token: 'ghr_refresh',
+            refresh_token_expires_in: 15_811_200,
+            token_type: 'bearer',
+        });
+
+        await expect(client(fetchFn).exchange('the-code')).resolves.toEqual({
+            accessToken: 'ghu_access',
+            refreshToken: 'ghr_refresh',
+            expiresIn: 28_800,
+            refreshExpiresIn: 15_811_200,
+        });
+        expect(requests[0]!.url).toBe('https://github.test/login/oauth/access_token');
+        expect(requests[0]!.body).toMatchObject({ client_id: 'test-client-id', code: 'the-code' });
+    });
+
+    it('names the App setting when GitHub issues no refresh token', async () => {
+        // "Expire user authorization tokens" off: a token that never expires has no refresh token, so there is no
+        // grant to keep. The sign-in fails with the setting named rather than succeeding with nothing stored.
+        const { fetchFn } = stubTokenEndpoint({ access_token: 'ghu_access', token_type: 'bearer' });
+        const failure = await client(fetchFn)
+            .exchange('c')
+            .catch((e: unknown) => e);
+        expect(failure).toBeInstanceOf(TokenExpirationOffError);
+        expect((failure as Error).message).toMatch(/Expire user authorization tokens/);
+    });
+
+    it('still fails a refused code with the provider reason', async () => {
+        const { fetchFn } = stubTokenEndpoint({ error: 'bad_verification_code', error_description: 'bad code' });
+        await expect(client(fetchFn).exchange('c')).rejects.toThrow('bad code');
+    });
+
+    it('requests no scope: the App user token carries the App permissions', () => {
+        const url = new URL(client(fetch).authorizeUrl('state-1'));
+        expect(url.searchParams.has('scope')).toBe(false);
+        expect(url.searchParams.get('client_id')).toBe('test-client-id');
+        expect(url.searchParams.get('state')).toBe('state-1');
     });
 });

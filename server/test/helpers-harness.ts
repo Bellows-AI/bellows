@@ -2,6 +2,7 @@ import { modelKeyRequired } from '@factory-ai/core';
 import { type AppDeps, buildApp } from '../src/app.js';
 import type { GitHubIdentityClient } from '../src/auth/github.js';
 import type { AuthStore } from '../src/auth/store.js';
+import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import type { AppConfig, AuthConfig } from '../src/config.js';
 import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
@@ -107,6 +108,7 @@ export async function harness({
     telemetry: telemetryOption,
     auth,
     identity,
+    memberGrants,
     repos: repoList,
     userExecutors,
     envVars,
@@ -126,6 +128,8 @@ export async function harness({
      */
     auth?: AuthStore;
     identity?: GitHubIdentityClient;
+    /** The member forge grants a sign-in keeps; absent, sign-in keeps none (the offline shape). */
+    memberGrants?: MemberForgeGrants;
     /** Which repos this org measures. Defaults to the one the fixture PRs are stamped with. */
     repos?: readonly { owner: string; name: string }[];
     /** Absent by default, which leaves the executor routes answering 503. */
@@ -177,6 +181,7 @@ export async function harness({
         orgs,
         auth,
         identity,
+        memberGrants,
         appSlug,
         installationListing,
         now: () => clock,

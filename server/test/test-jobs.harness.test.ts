@@ -323,7 +323,7 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('MCP_ENABLED=true');
         expect(phase).toContain('AUTH_MODE=github');
         expect(phase).toContain('node e2e/stub-idp.mjs');
-        expect(phase).toContain('GITHUB_OAUTH_AUTHORIZE_URL=');
+        expect(phase).toContain('GITHUB_WEB_URL="$MCP_IDP"');
         expect(phase).toContain('scripts/mcp-phase-client.mjs');
         expect(phase).toContain('disruption_driver JOB_BOARD_URL="$MCP_BASE"');
         const client = readFileSync(join(ROOT, 'scripts/mcp-phase-client.mjs'), 'utf8');

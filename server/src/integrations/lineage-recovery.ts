@@ -20,9 +20,13 @@ interface Held {
     ref: SecretRef;
 }
 
-/** The credentials are lost: recorded but never run, or run and failed. */
+/**
+ * The credentials are lost: recorded but never run, or run and failed. A replacement consent spent nothing: the
+ * previous secret is untouched, so the grant keeps the standing it had and only the staged attempt is dropped. A
+ * rotating refresh may have spent the old token, so the person must reconnect.
+ */
 async function lost(ctx: LineageCtx, held: Held): Promise<RecoverResult> {
-    if (held.kind !== 'destroy' && held.rotating) {
+    if (held.kind === 'refresh' && held.rotating) {
         await endClaim(ctx, held, { operation: true, reconnect: true });
         ctx.log('reconnect-required', held.grantId);
         return 'reconnect-required';

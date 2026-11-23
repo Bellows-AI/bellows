@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { OPEN_BOARD_SESSION, renderApp, stubFetch, type FetchHandler } from './dom.js';
-import { boardHandler, connection, settingsBoard } from './settings-board.js';
+import { boardHandler, connection, forgeGrant, settingsBoard } from './settings-board.js';
 
 /** The Integrations overview mounted on its real route over a stubbed board. */
 
@@ -155,5 +155,67 @@ describe('the Integrations overview', () => {
 
         expect(await screen.findByRole('link', { name: /acme-example\.atlassian\.net/ })).toBeTruthy();
         await waitFor(() => expect(calls.some((call) => call.url === '/api/connections')).toBe(true));
+    });
+
+    describe('the GitHub card', () => {
+        const board = (forgeGrants: ReturnType<typeof forgeGrant>[], connections = []) =>
+            boardHandler(settingsBoard({ forgeGrants, connections }));
+
+        it('says who the member is connected as, with no reconnect, when the grant is live', async () => {
+            stubFetch(board([forgeGrant({ login: 'octocat' })]));
+            renderApp(PATH);
+
+            const card = await screen.findByRole('listitem', { name: 'GitHub connection' });
+            expect(within(card).getByText('Connected as octocat')).toBeTruthy();
+            expect(within(card).getByText('Connected')).toBeTruthy();
+            expect(within(card).queryByRole('link')).toBeNull();
+            // A live GitHub grant is a connected integration: the empty sentence would contradict it.
+            expect(screen.queryByText('No integrations connected yet.')).toBeNull();
+        });
+
+        it('says Needs reconnect and links the sign-in round trip when the grant is broken', async () => {
+            const connectPath = '/api/auth/github?returnTo=%2Fsettings%2Fintegrations&org=424242';
+            stubFetch(board([forgeGrant({ standing: 'broken', connectPath })]));
+            renderApp(PATH);
+
+            const card = await screen.findByRole('listitem', { name: 'GitHub connection' });
+            expect(within(card).getByText('Needs reconnect')).toBeTruthy();
+            expect(within(card).queryByText('Connected')).toBeNull();
+            expect(within(card).getByRole('link', { name: 'Reconnect GitHub' }).getAttribute('href')).toBe(connectPath);
+        });
+
+        it('offers Connect when the member has no grant yet', async () => {
+            stubFetch(board([forgeGrant({ standing: 'missing' })]));
+            renderApp(PATH);
+
+            const card = await screen.findByRole('listitem', { name: 'GitHub connection' });
+            expect(within(card).getByText('Not connected')).toBeTruthy();
+            expect(within(card).getByRole('link', { name: 'Connect GitHub' })).toBeTruthy();
+        });
+
+        it('shows no card where the board keeps no grant, and keeps the organization preview', async () => {
+            stubFetch(board([]));
+            renderApp(PATH);
+
+            expect(await screen.findByText('No integrations connected yet.')).toBeTruthy();
+            expect(screen.queryByRole('listitem', { name: 'GitHub connection' })).toBeNull();
+            expect(
+                within(screen.getByRole('list', { name: 'Available integrations' })).getByText('Organization')
+            ).toBeTruthy();
+        });
+
+        it('announces an unreadable standing as an alert, never as not connected', async () => {
+            stubFetch(
+                boardHandler(settingsBoard(), ({ method, url }) =>
+                    method === 'GET' && url === '/api/forge-grants'
+                        ? ({ status: 503, body: { error: 'The GitHub connection could not be read' } } as never)
+                        : undefined
+                )
+            );
+            renderApp(PATH);
+
+            expect((await screen.findByRole('alert')).textContent).toContain('The GitHub connection could not be read');
+            expect(screen.queryByText('Not connected')).toBeNull();
+        });
     });
 });

@@ -4,6 +4,8 @@ import type { AuthStore } from '../auth/store.js';
 import type { JobMergeStore } from '../db/jobs/job-store-merge.js';
 import { INSTALLATION_ACTIONS } from '../db/org-status.js';
 import { describeError } from '../log.js';
+import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
+import { GITHUB_FORGE } from '../integrations/providers/github-user.js';
 import type { OrgRegistry } from '../orgs.js';
 import { ERROR_CODES, JSON_CONTENT_TYPE } from '@factory-ai/core';
 
@@ -46,6 +48,8 @@ interface WebhookPayload {
     sha?: unknown;
     /** An issue # addresses a number here too; the PR clincher is `pull_request` on the issue. */
     issue?: { number?: unknown; pull_request?: unknown } | null;
+    /** `github_app_authorization` names the account that revoked it as the sender. */
+    sender?: { id?: unknown } | null;
 }
 
 /** `'invalid'` rather than throwing: a body GitHub signed that does not parse is a 200, not a fault. */
@@ -186,11 +190,38 @@ async function handleInstallationEvent(store: AuthStore, payload: WebhookPayload
     reply.code(HTTP_OK).send({ ok: true });
 }
 
+/**
+ * A member revoked the App's user authorization (`github_app_authorization`, action `revoked`): the token pair they
+ * gave the board no longer works, so every grant of that account is broken until they sign in again. Nothing else the
+ * event can say changes a grant, and an unconfirmed delivery (no numeric sender) breaks nothing.
+ */
+async function handleAuthorizationEvent(
+    grants: MemberForgeGrants | undefined,
+    payload: WebhookPayload,
+    reply: FastifyReply
+): Promise<void> {
+    const sender = payload.sender?.id;
+    if (grants && payload.action === 'revoked' && typeof sender === 'number') {
+        await grants.revokeAuthorization(GITHUB_FORGE, String(sender));
+    }
+    reply.code(HTTP_OK).send({ ok: true });
+}
+
 /** The events that move an org or its members rather than a PR wait: answered here, never folded. */
-const ORG_EVENTS = new Map<string, (store: AuthStore, payload: WebhookPayload, reply: FastifyReply) => Promise<void>>([
-    ['organization', handleOrganizationEvent],
-    ['installation', handleInstallationEvent],
+const ORG_EVENTS = new Map<string, (deps: AccountDeps, payload: WebhookPayload, reply: FastifyReply) => Promise<void>>([
+    ['organization', ({ store }, payload, reply) => handleOrganizationEvent(store, payload, reply)],
+    ['installation', ({ store }, payload, reply) => handleInstallationEvent(store, payload, reply)],
+    [
+        'github_app_authorization',
+        ({ memberGrants }, payload, reply) => handleAuthorizationEvent(memberGrants, payload, reply),
+    ],
 ]);
+
+/** What the account-level events act on: the auth store, and where the members' GitHub grants live. */
+interface AccountDeps {
+    store: AuthStore;
+    memberGrants: MemberForgeGrants | undefined;
+}
 
 interface PrActivity {
     installation: number;
@@ -304,7 +335,17 @@ async function handlePrEvent(orgs: OrgRegistry, input: PrEventInput, reply: Fast
 }
 
 export const webhookRoutes =
-    ({ store, orgs, secret }: { store: AuthStore; orgs: OrgRegistry; secret: string }): FastifyPluginAsync =>
+    ({
+        store,
+        orgs,
+        secret,
+        memberGrants,
+    }: {
+        store: AuthStore;
+        orgs: OrgRegistry;
+        secret: string;
+        memberGrants?: MemberForgeGrants | undefined;
+    }): FastifyPluginAsync =>
     async (app) => {
         // The signature is computed over the raw bytes, so this scope's parser hands the route the
         // Buffer and verification runs before any parse. Scoped to this plugin: every other route
@@ -332,7 +373,7 @@ export const webhookRoutes =
             const event = request.headers['x-github-event'];
 
             const orgEvent = ORG_EVENTS.get(String(event));
-            if (orgEvent) return orgEvent(store, payload, reply);
+            if (orgEvent) return orgEvent({ store, memberGrants }, payload, reply);
 
             // Any delivery that can move a check or a mergeability asks the observer to re-read,
             // whatever else the delivery does below.

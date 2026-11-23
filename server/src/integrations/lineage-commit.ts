@@ -206,7 +206,8 @@ export async function commitLineage(
 ): Promise<CommitResult> {
     if (claim.kind === 'destroy') throw new Error('commitLineage: a destroy claim carries no credentials');
     const hooks = ctx.providers(claim.provider);
-    const rotating = claim.kind === 'reconsent' || (hooks?.rotatesRefreshToken ?? true);
+    // A consent that fails to store spent no refresh token: only a refresh of a rotating provider needs the person.
+    const rotating = claim.kind === 'refresh' && (hooks?.rotatesRefreshToken ?? true);
     const fresh =
         claim.kind === 'reconsent' && (claim.wedged || claim.secretRef === null || claim.secretVersion === null);
     const ref = (fresh ? createSecretRef() : claim.secretRef) as SecretRef;

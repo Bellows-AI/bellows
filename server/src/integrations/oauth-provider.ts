@@ -34,6 +34,12 @@ export interface OAuthProviderHooks {
     supportsPkce: boolean;
     /** True when a refresh answer carries a new refresh token and spends the old one. */
     rotatesRefreshToken: boolean;
+    /**
+     * A rotating refresh whose answer is unconfirmed (a 5xx, a transport error) did not spend the token: the claim is
+     * released, the grant stays active and the next refresh retries, instead of ending in `reconnect_required`. Only a
+     * provider that rotates on success alone may say so; absent, an unconfirmed rotating refresh needs the person.
+     */
+    retryTransientRefresh?: boolean;
     revokeScope: 'token' | 'grant' | 'none';
     /** The provider's form of a site a start names, or null when it is not one; absent, a named site is refused. */
     siteOf?(raw: unknown): string | null;

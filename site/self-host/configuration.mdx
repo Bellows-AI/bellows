@@ -28,7 +28,7 @@ Bellows is configured with environment variables only. Locally they come from `.
 | `RATE_LIMIT_PER_ORG` | | `3000` | Requests per minute all of one organization's credentials may make together, per replica. Helm: `dashboard.limits.requestsPerOrg`. |
 | `MCP_STREAMS_PER_ORG` | | `16` | MCP requests one organization may have open at once, per replica. Helm: `dashboard.limits.mcpStreamsPerOrg`. |
 | `WEB_ROOT` | | unset | Directory of the built web app. Unset serves no web app. |
-| `PUBLIC_URL` | github mode, non-loopback bind | `http://<HOST>:<PORT>` on a loopback bind | Absolute origin of the board. Used for the OAuth redirect and as the MCP resource. |
+| `PUBLIC_URL` | github mode, non-loopback bind | `http://<HOST>:<PORT>` on a loopback bind | Absolute origin of the board. Used for the sign-in redirect and as the MCP resource. |
 
 ### Authentication
 
@@ -36,8 +36,8 @@ Bellows is configured with environment variables only. Locally they come from `.
 | --- | --- | --- | --- |
 | `AUTH_MODE` | | `none` | `github` requires sign-in. `none` leaves every route open, including `POST /api/jobs`, which runs shell commands. Any other value is fatal. |
 | `AUTH_ALLOW_PUBLIC_BIND` | | off | Lets `AUTH_MODE=none` start on a non-loopback `HOST`. Use only if something in front of the port authenticates. |
-| `GITHUB_OAUTH_CLIENT_ID` | github mode | none | Client id of the GitHub OAuth App. |
-| `GITHUB_OAUTH_CLIENT_SECRET` | github mode | none | Client secret of the OAuth App. |
+| `GITHUB_APP_CLIENT_ID` | github mode | none | Client id of the GitHub App, used for sign-in. |
+| `GITHUB_APP_CLIENT_SECRET` | github mode | none | Client secret of the GitHub App. Any `GITHUB_OAUTH_*` variable refuses to boot. |
 | `SESSION_SECRET` | github mode | none | Signs the session cookie. At least 32 characters. Changing it signs everyone out. |
 | `SESSION_TTL_HOURS` | | `336` (14 days) | Session lifetime in hours. Positive integer. |
 | `COOKIE_SECURE` | | follows `PUBLIC_URL` | Sets `Secure` on the session cookie: on for an `https` `PUBLIC_URL`, off for `http`. Set `0` or `1` to override. |

@@ -84,8 +84,8 @@ auth_sets() { # auth_sets <publicUrl> <sessionSecret> <driverCredential> — (re
     AUTH_SETS=(
         "${SECRET_STORE_SETS[@]}"
         --set "auth.publicUrl=$1"
-        --set auth.oauthClientId=client
-        --set secret.oauthClientSecret=secret
+        --set github.appClientId=client
+        --set secret.githubAppClientSecret=secret
         --set "secret.sessionSecret=$2"
         --set "driver.credential.value=$3"
     )
@@ -323,7 +323,7 @@ expect_not_contains 'the collector config stays inside its block scalar' "$(cat 
 # rule — the executor reading its credentials from RUNNER_CREDENTIALS_SECRET — is pinned in
 # driver/test/k8s/, where the runner spec lives.)
 credentials_clean=1
-for cred in GITHUB_APP_PRIVATE_KEY GITHUB_OAUTH_CLIENT_SECRET SESSION_SECRET DATABASE_URL \
+for cred in GITHUB_APP_PRIVATE_KEY GITHUB_APP_CLIENT_SECRET SESSION_SECRET DATABASE_URL \
     SECRETS_DATA_KEYS SECRETS_OPERATION_KEY SECRETS_FINGERPRINT_KEY; do
     next="$(grep -A1 -- "- name: $cred\$" "$work/rendered.yaml" | sed -n '2p' | tr -d ' ')"
     if [ "$next" = 'valueFrom:' ]; then
@@ -873,7 +873,7 @@ expect_not_contains 'selectors carry no managed-by'     "$selectors" 'managed-by
 # deployment-wide ingest secret, so a managed Secret changes nothing about an export's auth.
 byo="$(helm template "$RELEASE" charts/factory --set secret.create=false --set secret.existingSecret=mine \
     --set driver.credential.existingSecret=driver-managed \
-    --set auth.publicUrl=https://f.example --set auth.oauthClientId=c --set github.appId=1 \
+    --set auth.publicUrl=https://f.example --set github.appClientId=c --set github.appId=1 \
     --set artifacts.s3.bucket=factory-artifacts --set artifacts.s3.region=us-east-1 \
     --set secretStore.backend=database --set secretStore.existingSecret=managed-keys --set secretStore.activeKeyId=k1 2>&1)"
 expect_contains 'the collector forwards the attempt credential with a managed Secret' "$byo" \
@@ -1024,10 +1024,14 @@ refuses 'a drain sleep at or past the grace period is refused' \
     "${GH_SETS[@]}" --set dashboard.replicas=2 --set dashboard.preStopSeconds=30
 expect_contains 'the filesystem backend renders at one dashboard replica' \
     "$(gh_render --set artifacts.backend=filesystem)" 'kind: Deployment'
-refuses 'a missing OAuth client id is refused' 'auth.oauthClientId is required' \
-    "${GH_SETS[@]}" --set auth.oauthClientId=
-refuses 'a missing OAuth client secret is refused' 'secret.oauthClientSecret is required' \
-    "${GH_SETS[@]}" --set secret.oauthClientSecret=
+refuses 'a missing App client id is refused' 'github.appClientId is required' \
+    "${GH_SETS[@]}" --set github.appClientId=
+refuses 'a missing App client secret is refused' 'secret.githubAppClientSecret is required' \
+    "${GH_SETS[@]}" --set secret.githubAppClientSecret=
+gh_signin="$(gh_render)"
+expect_contains 'sign-in is the GitHub App: its client id is rendered' "$gh_signin" 'name: GITHUB_APP_CLIENT_ID'
+expect_contains 'the App client secret is read from the Secret' "$gh_signin" 'key: github-app-client-secret'
+expect_not_contains 'no OAuth App variable is rendered' "$gh_signin" 'GITHUB_OAUTH'
 refuses 'a short session secret is refused' 'secret.sessionSecret of at least 32 characters is required' \
     "${GH_SETS[@]}" --set secret.sessionSecret=short
 refuses 'a missing driver credential is refused' 'driver.credential.value' \
@@ -1040,8 +1044,8 @@ refuses 'a malformed bootstrap hash is refused' 'driver.credential.sha256 must b
     "${GH_SETS[@]}" --set driver.credential.value= --set driver.credential.existingSecret=mine --set driver.credential.sha256=abc
 refuses 'a missing App id is refused unless offline' 'github.appId is required' "${GH_SETS[@]}" --set github.appId=
 # Offline waives the App, never the wall: the no-fetch entry still needs every auth value.
-refuses 'offline still refuses a missing OAuth client id' 'auth.oauthClientId is required' \
-    "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set auth.oauthClientId=
+refuses 'offline still refuses a missing App client id' 'github.appClientId is required' \
+    "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set github.appClientId=
 refuses 'offline still refuses a missing driver credential' 'driver.credential.value' \
     "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set driver.credential.value=
 refuses 'no Secret at all is refused' 'secret.existingSecret is empty' "${GH_SETS[@]}" --set secret.create=false

@@ -15,6 +15,8 @@ const REASONS: Record<string, string> = {
     github: 'GitHub could not be reached. Try again.',
     install:
         'This dashboard is organized by GitHub App installation, and none were found for your account. Install the App, then sign in again.',
+    token_expiration:
+        'GitHub did not issue a refreshable token. The operator must turn on "Expire user authorization tokens" in the GitHub App settings.',
     install_cancelled: 'You returned without installing the App. Install it, then sign in again.',
 };
 

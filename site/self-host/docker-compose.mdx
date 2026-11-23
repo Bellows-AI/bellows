@@ -16,7 +16,7 @@ The repository ships a `docker-compose.yml` that starts the board, the driver, P
 ## Before you start
 
 - Docker with the Compose plugin, `make`, and Node.js 22 or newer.
-- A GitHub App and a GitHub OAuth App. Follow [GitHub App](/self-host/github-app). For local use, set the OAuth callback to `<PUBLIC_URL>/api/auth/github/callback` with `PUBLIC_URL=http://127.0.0.1:5173`.
+- A GitHub App. Follow [GitHub App](/self-host/github-app). For local use, set the App's callback URL to `<PUBLIC_URL>/api/auth/github/callback` with `PUBLIC_URL=http://127.0.0.1:5173`.
 - A model credential for the agent, such as `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`.
 
 ## Steps
@@ -49,7 +49,7 @@ The repository ships a `docker-compose.yml` that starts the board, the driver, P
     | --- | --- |
     | `GITHUB_APP_ID` | Your GitHub App id. |
     | `GITHUB_APP_PRIVATE_KEY` | The PEM, or its base64 on one line. Or set `GITHUB_APP_PRIVATE_KEY_FILE`. |
-    | `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` | From the OAuth App. |
+    | `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET` | From the GitHub App's settings. |
     | `SESSION_SECRET` | At least 32 characters. |
     | `DRIVER_CREDENTIAL` | The driver's own credential. Only the driver reads it. |
     | `DRIVER_CREDENTIAL_SHA256` | Its SHA-256. The board records it as the first driver credential and never sees the credential. Compose refuses to start without it. |
@@ -105,7 +105,7 @@ To see the board's and the driver's own telemetry locally, set `COMPOSE_PROFILES
 
 | Mode | Behaviour | Where it applies |
 | --- | --- | --- |
-| `github` | Members sign in with GitHub. Requires the OAuth keys, `SESSION_SECRET`, the driver credential pair and a `PUBLIC_URL`. | Pinned by `docker-compose.yml`. Editing `.env` cannot change it. |
+| `github` | Members sign in with GitHub. Requires the App's client id and secret, `SESSION_SECRET`, the driver credential pair and a `PUBLIC_URL`. | Pinned by `docker-compose.yml`. Editing `.env` cannot change it. |
 | `none` | No sign-in. Every route is open, including `POST /api/jobs`, which runs shell commands. The server refuses a non-loopback `HOST` unless `AUTH_ALLOW_PUBLIC_BIND=1`. | The default of the server itself, for example `npm run dev` on the host. Not available through this Compose file. |
 
 If you want `none`, run the board on the host with `npm run dev` and keep it on `127.0.0.1`. A GitHub App is still required.

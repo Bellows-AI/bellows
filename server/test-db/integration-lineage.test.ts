@@ -813,7 +813,8 @@ describe.skipIf(!enabled)('grant lineage: review r2, a durable fence at the stor
     it.each([
         ['refresh', true, 'reconnect-required'],
         ['refresh', false, 'released'],
-        ['reconsent', true, 'reconnect-required'],
+        // A replacement consent spent no token: the fenced attempt is dropped and the grant keeps its standing.
+        ['reconsent', true, 'released'],
     ] as const)(
         '%s (rotating %s): paused before the store call, recovery fences the operation, the late replace is refused and the next commit works',
         async (kind, rotates, recovered) => {
@@ -828,6 +829,7 @@ describe.skipIf(!enabled)('grant lineage: review r2, a durable fence at the stor
             await expireClaim(r.grant.id);
 
             expect(await b.lineage.recoverLineage(r.grant.id)).toBe(recovered);
+            if (kind === 'reconsent') expect((await columns(r.grant.id)).status).toBe('active');
             // The poison bound the recorded operation to a failure: nothing can apply under that ID any more.
             expect(await reconcileState(r, operationId)).toMatchObject({ ok: true, status: { state: 'failed' } });
 

@@ -15,8 +15,8 @@ const load = (env: NodeJS.ProcessEnv) => loadConfig({ ...BASE, ...env });
 const github = (env: NodeJS.ProcessEnv = {}) =>
     load({
         AUTH_MODE: 'github',
-        GITHUB_OAUTH_CLIENT_ID: 'client-id',
-        GITHUB_OAUTH_CLIENT_SECRET: 'client-secret',
+        GITHUB_APP_CLIENT_ID: 'client-id',
+        GITHUB_APP_CLIENT_SECRET: 'client-secret',
         SESSION_SECRET: SECRET,
         ...env,
     });
@@ -30,12 +30,12 @@ describe('AUTH_MODE', () => {
     it('is an explicit enum, never inferred from whether a client id happens to be set', () => {
         /*
          * The important half of this test is the SECOND assertion. A mode inferred from "is there a
-         * client id?" is a mode reached by typo — set GITHUB_OAUTH_CLIENT_IDD and the deployment
+         * client id?" is a mode reached by typo — set GITHUB_APP_CLIENT_IDD and the deployment
          * silently serves every route to everyone. So a client id with no AUTH_MODE stays `none`,
          * loudly, rather than half-enabling anything.
          */
         expect(github().auth.mode).toBe('github');
-        expect(load({ GITHUB_OAUTH_CLIENT_ID: 'client-id' }).auth.mode).toBe('none');
+        expect(load({ GITHUB_APP_CLIENT_ID: 'client-id' }).auth.mode).toBe('none');
     });
 
     it('refuses a mode it does not recognise', () => {
@@ -44,7 +44,7 @@ describe('AUTH_MODE', () => {
 });
 
 describe('github mode is all-or-nothing', () => {
-    it.each(['GITHUB_OAUTH_CLIENT_ID', 'GITHUB_OAUTH_CLIENT_SECRET', 'SESSION_SECRET'])(
+    it.each(['GITHUB_APP_CLIENT_ID', 'GITHUB_APP_CLIENT_SECRET', 'SESSION_SECRET'])(
         'is fatal when %s is missing, and names it',
         (key) => {
             // Named individually: the operator has one key to fix and should not have to diff the
@@ -64,6 +64,46 @@ describe('github mode is all-or-nothing', () => {
 
     it('holds no shared board secret: each driver presents its own credential', () => {
         expect(github({ JOB_BOARD_TOKEN: SECRET }).auth).not.toHaveProperty('jobBoardToken');
+    });
+});
+
+describe('the retired OAuth App configuration', () => {
+    it.each([
+        'GITHUB_OAUTH_CLIENT_ID',
+        'GITHUB_OAUTH_CLIENT_SECRET',
+        'GITHUB_OAUTH_AUTHORIZE_URL',
+        'GITHUB_OAUTH_TOKEN_URL',
+        'GITHUB_OAUTH_USER_URL',
+    ])('refuses %s, named, with no alias', (key) => {
+        expect(() => github({ [key]: 'anything' })).toThrow(new RegExp(`${key} is no longer supported`));
+        expect(() => load({ [key]: 'anything' })).toThrow(new RegExp(key));
+    });
+
+    it('does not read an empty value as set', () => {
+        expect(github({ GITHUB_OAUTH_CLIENT_ID: '' }).auth.mode).toBe('github');
+    });
+
+    it('signs in through the App: its client id and secret, no scope-bearing OAuth App', () => {
+        const { auth } = github();
+        expect(auth.mode === 'github' && [auth.clientId, auth.clientSecret]).toEqual(['client-id', 'client-secret']);
+    });
+
+    it('derives the endpoints from GITHUB_WEB_URL and GITHUB_API_URL, defaulting to github.com', () => {
+        const urls = (env: Record<string, string> = {}) => {
+            const { auth } = github(env);
+            if (auth.mode !== 'github') throw new Error('github mode expected');
+            return [auth.authorizeUrl, auth.tokenUrl, auth.userUrl];
+        };
+        expect(urls()).toEqual([
+            'https://github.com/login/oauth/authorize',
+            'https://github.com/login/oauth/access_token',
+            'https://api.github.com/user',
+        ]);
+        expect(urls({ GITHUB_WEB_URL: 'http://127.0.0.1:9/', GITHUB_API_URL: 'http://127.0.0.1:9/api/' })).toEqual([
+            'http://127.0.0.1:9/login/oauth/authorize',
+            'http://127.0.0.1:9/login/oauth/access_token',
+            'http://127.0.0.1:9/api/user',
+        ]);
     });
 });
 

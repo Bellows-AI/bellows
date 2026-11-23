@@ -276,13 +276,13 @@ spec:
                       # route that runs shell commands, so the chart has no open mode to select.
                       - name: AUTH_MODE
                         value: github
-                      - name: GITHUB_OAUTH_CLIENT_ID
-                        value: {{ .Values.auth.oauthClientId | quote }}
-                      - name: GITHUB_OAUTH_CLIENT_SECRET
+                      - name: GITHUB_APP_CLIENT_ID
+                        value: {{ .Values.github.appClientId | quote }}
+                      - name: GITHUB_APP_CLIENT_SECRET
                         valueFrom:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
-                                key: github-oauth-client-secret
+                                key: github-app-client-secret
                                 optional: true
                       - name: SESSION_SECRET
                         valueFrom:

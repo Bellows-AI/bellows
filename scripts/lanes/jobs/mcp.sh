@@ -4,7 +4,7 @@ begin_phase mcp
 #
 # The board (AUTH_MODE=github, MCP_ENABLED) and the driver are the real ones, the runner is the prompt-executing
 # stub, and the member is signed in through e2e/stub-idp.mjs: the same stand-in the browser specs use, pointed at by
-# the board's GITHUB_OAUTH_*_URL overrides. scripts/mcp-phase-client.mjs is a real SDK client: it signs the member in
+# the board's GITHUB_WEB_URL and GITHUB_API_URL overrides. scripts/mcp-phase-client.mjs is a real SDK client: it signs the member in
 # over plain HTTP, is sent through discovery, registration, PKCE and consent (approved with the member's session, the
 # two calls the consent page makes), and then create_task -> wait_task -> get_task_result -> read_job_log run a task
 # on the real driver to `succeeded`. No route exists for this phase: the board is configured, not patched.
@@ -42,9 +42,8 @@ MCP_TOKEN="drv_$(openssl rand -hex 32)" # the drivers' credential; their board r
 MCP_IDP="http://127.0.0.1:$MCP_IDP_PORT"
 env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$MCP_PORT" HOST=127.0.0.1 \
     REPO_CLONE_BASE="$PLAN_BASE" AUTH_MODE=github MCP_ENABLED=true PUBLIC_URL="$MCP_BASE" \
-    GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
-    GITHUB_OAUTH_AUTHORIZE_URL="$MCP_IDP/login/oauth/authorize" GITHUB_OAUTH_USER_URL="$MCP_IDP/user" \
-    GITHUB_OAUTH_TOKEN_URL="$MCP_IDP/login/oauth/access_token" \
+    GITHUB_APP_CLIENT_ID=stub-client GITHUB_APP_CLIENT_SECRET=stub-secret \
+    GITHUB_WEB_URL="$MCP_IDP" GITHUB_API_URL="$MCP_IDP" \
     SESSION_SECRET=a-job-harness-session-secret-32-chars DRIVER_CREDENTIAL_SHA256="$(credential_sha256 "$MCP_TOKEN")" \
     node server/dist/offline.js >>"$work/mcp-server.log" 2>&1 &
 server_pid=$!

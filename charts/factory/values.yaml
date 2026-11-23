@@ -150,8 +150,6 @@ auth:
     # without one on a non-loopback host.
     publicUrl: ''
     cookieSecure: ''
-    # Not a secret: GitHub's OAuth App client id is public by design. REQUIRED.
-    oauthClientId: ''
 
 # The board-hosted MCP server (docs/configuration.md). Off, `/api/mcp` answers 404. On, it needs an https
 # auth.publicUrl (validate.yaml refuses a render otherwise): the endpoint carries bearer tokens.
@@ -180,6 +178,10 @@ github:
     appId: ''
     # The PEM (or its base64) lands in the chart's Secret, never in the pod spec or a command line.
     appPrivateKey: ''
+    # Sign-in goes through the App's own user authorization. Not a secret: the App's client id is public by design.
+    # REQUIRED. The client secret is `secret.githubAppClientSecret`. In the App's settings, set the callback URL to
+    # <auth.publicUrl>/api/auth/github/callback and keep "Expire user authorization tokens" on.
+    appClientId: ''
 
 # Jira Cloud and Linear OAuth (docs/connections.md). Both halves empty, the provider is unconfigured and starting a
 # connection says so.
@@ -291,8 +293,8 @@ secret:
     # server names any a managed Secret misses. The driver's credential is not here: see driver.credential.
     create: true
     existingSecret: ''
-    # REQUIRED.
-    oauthClientSecret: ''
+    # REQUIRED: the GitHub App's client secret (GITHUB_APP_CLIENT_SECRET); set together with `github.appClientId`.
+    githubAppClientSecret: ''
     # REQUIRED, at least 32 characters.
     sessionSecret: ''
     # The App's installation webhook HMAC secret (GITHUB_WEBHOOK_SECRET). Empty, the webhook route

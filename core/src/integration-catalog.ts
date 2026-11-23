@@ -64,7 +64,8 @@ export const INTEGRATION_CATALOG: readonly IntegrationProvider[] = [
         label: 'GitHub',
         category: 'CI / DevOps',
         availability: 'organization',
-        description: "The organization's GitHub App installation.",
+        description:
+            "The organization's GitHub App installation, and your GitHub account connected through it at sign-in.",
     },
     {
         id: 'gitlab',

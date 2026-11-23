@@ -11,6 +11,17 @@ export interface GitHubIdentity {
 }
 
 /**
+ * What the App's user authorization issues for one consent: the `ghu_` access token and the `ghr_` refresh token the
+ * board keeps as the member's GitHub grant, with their lifetimes in seconds.
+ */
+export interface GitHubUserTokens {
+    accessToken: string;
+    refreshToken: string;
+    expiresIn: number;
+    refreshExpiresIn: number;
+}
+
+/**
  * One GitHub App installation the signing-in account can see.
  *
  * `id` is the installation id as a decimal string, because it becomes the organization id —
@@ -36,14 +47,14 @@ export interface InstallationAccount {
  */
 export interface GitHubIdentityClient {
     authorizeUrl(state: string): string;
-    exchange(code: string): Promise<string>;
+    exchange(code: string): Promise<GitHubUserTokens>;
     identity(accessToken: string): Promise<GitHubIdentity>;
     /**
      * The GitHub App installations this account can see, asked with the signing-in person's own
      * token. This IS the membership decision under multi-org sign-in: one installation is
      * one organization, so what this returns is exactly the orgs the caller may sign into.
-     * Requires `read:org`, which the authorize URL requests unconditionally in github mode — an
-     * unscoped token reports no installations and would send everybody to the install page.
+     * An App user token needs no scope for this: what it reports is the installations of the App
+     * the person can reach.
      */
     installations(accessToken: string): Promise<InstallationAccount[]>;
 }
@@ -57,6 +68,15 @@ const PAGE_SIZE = 100;
 
 export class GitHubAuthError extends Error {}
 
+/** GitHub issued no refresh token: the App's "Expire user authorization tokens" is off, so there is no grant to keep. */
+export class TokenExpirationOffError extends GitHubAuthError {
+    constructor() {
+        super(
+            'GitHub issued no refresh token: the GitHub App must have "Expire user authorization tokens" on, or sign-in has no grant to keep'
+        );
+    }
+}
+
 export function createGitHubIdentityClient(
     auth: Extract<AuthConfig, { mode: 'github' }>,
     fetchFn: typeof fetch = fetch
@@ -69,11 +89,8 @@ export function createGitHubIdentityClient(
             url.searchParams.set('client_id', auth.clientId);
             url.searchParams.set('redirect_uri', redirectUri);
             url.searchParams.set('state', state);
-            // `read:org`, always in github mode. Listing installations IS the membership
-            // decision now, and an unscoped token reports none — every sign-in would be bounced
-            // to the install page with nothing to say why. The scope is org-level only: sign-in
-            // still reads no repository data, which is what the OAuth/App split is for.
-            url.searchParams.set('scope', 'read:org');
+            // No scope: this is the GitHub App's own user authorization, so the token carries the App's
+            // permissions intersected with the member's, and `/user/installations` needs none.
             return url.toString();
         },
 
@@ -93,6 +110,9 @@ export function createGitHubIdentityClient(
             }
             const body = (await response.json()) as {
                 access_token?: string;
+                refresh_token?: string;
+                expires_in?: number;
+                refresh_token_expires_in?: number;
                 error_description?: string;
                 error?: string;
             };
@@ -101,7 +121,17 @@ export function createGitHubIdentityClient(
                 // check above does not cover it.
                 throw new GitHubAuthError(body.error_description ?? body.error ?? 'no access token returned');
             }
-            return body.access_token;
+            // Present exactly when the App expires user tokens; without them there is nothing to refresh.
+            if (!body.refresh_token) throw new TokenExpirationOffError();
+            if (!Number.isFinite(body.expires_in) || !Number.isFinite(body.refresh_token_expires_in)) {
+                throw new GitHubAuthError('token response carried no lifetimes');
+            }
+            return {
+                accessToken: body.access_token,
+                refreshToken: body.refresh_token,
+                expiresIn: body.expires_in!,
+                refreshExpiresIn: body.refresh_token_expires_in!,
+            };
         },
 
         async identity(accessToken) {
@@ -132,8 +162,8 @@ export function createGitHubIdentityClient(
         },
 
         async installations(accessToken) {
-            // Derived from userUrl rather than configured separately, so the one environment seam
-            // that already redirects /user redirects this too and the stub IdP needs no second knob.
+            // Derived from userUrl rather than configured separately, so GITHUB_API_URL redirects this
+            // together with /user and the stub IdP needs no second knob.
             //
             // Paginated, and PAST THE CAP A LOUD FAILURE, never a prefix: the callback feeds this
             // list to the selection step — it is what the stored choice is pruned against,

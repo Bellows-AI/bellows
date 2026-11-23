@@ -3,7 +3,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { PENDING_COOKIE, hashToken, pendingCookieOptions, unsign } from '../auth/session.js';
 import type { AuthStore, Caller, PendingSignIn } from '../auth/store.js';
 import type { InstallationRepo } from '../github/app-client.js';
+import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import type { OrgRegistry } from '../orgs.js';
+import { afterOnboarding } from './auth-member-grant.js';
 import {
     HTTP_BAD_REQUEST,
     HTTP_OK,
@@ -280,11 +282,13 @@ export interface OnboardingDeps {
     cookieSecure: boolean;
     sessionDeps: SessionDeps;
     listInstallationRepos: ListInstallationRepos;
+    /** Present, the completion goes round the authorize trip again so the member's GitHub grant is kept. */
+    memberGrants?: MemberForgeGrants | undefined;
 }
 
 /** Registers the three onboarding routes on the app the caller already holds `AUTH_MODE=github` for. */
 export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingDeps): void {
-    const { store, orgs, secret, cookieSecure, sessionDeps, listInstallationRepos } = deps;
+    const { store, orgs, secret, cookieSecure, sessionDeps, listInstallationRepos, memberGrants } = deps;
 
     /*
      * The selection screen's read.
@@ -436,6 +440,9 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
         if (!caller) return reply;
 
         reply.clearCookie(PENDING_COOKIE, pendingCookieOptions(cookieSecure));
-        return reply.code(HTTP_OK).send({ organization: caller.org, returnTo: pending.returnTo });
+        return reply.code(HTTP_OK).send({
+            organization: caller.org,
+            returnTo: afterOnboarding(memberGrants, pending.returnTo, caller.org.id),
+        });
     });
 }

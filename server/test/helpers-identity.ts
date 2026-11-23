@@ -1,4 +1,15 @@
-import type { GitHubIdentity, GitHubIdentityClient, InstallationAccount } from '../src/auth/github.js';
+import type {
+    GitHubIdentity,
+    GitHubIdentityClient,
+    GitHubUserTokens,
+    InstallationAccount,
+} from '../src/auth/github.js';
+import type {
+    MemberForgeGrants,
+    MemberGrantStanding,
+    StoreMemberGrantInput,
+    StoreMemberGrantResult,
+} from '../src/integrations/member-forge-grant.js';
 import { SESSION_COOKIE, hashToken, mintToken, sign } from '../src/auth/session.js';
 import type { AuthStore, Caller, InstallationRef } from '../src/auth/store.js';
 import { TEST_SESSION_SECRET } from './helpers-config.js';
@@ -16,6 +27,8 @@ export interface IdentityStub extends GitHubIdentityClient {
     /** What the next exchange resolves to. Set per test. */
     next: GitHubIdentity;
     exchanges: string[];
+    /** The lifetimes every exchange answers with; the token strings follow the code. */
+    tokens: GitHubUserTokens;
     /** The standing `installations()` answer, until a queued one-shot overrides it. */
     installationsAnswer: InstallationAccount[];
     /** One-shot answers, consumed first — for flows whose answer CHANGES between sign-ins. */
@@ -36,13 +49,14 @@ export function stubIdentityClient(identity?: Partial<GitHubIdentity>): Identity
             ...identity,
         },
         exchanges: [],
+        tokens: { accessToken: '', refreshToken: '', expiresIn: 28_800, refreshExpiresIn: 15_811_200 },
         installationsAnswer: [],
         installationsQueue: [],
         installationsCalls: [],
         authorizeUrl: (state) => `https://github.test/login/oauth/authorize?state=${state}`,
         async exchange(code) {
             stub.exchanges.push(code);
-            return `access-for-${code}`;
+            return { ...stub.tokens, accessToken: `access-for-${code}`, refreshToken: `refresh-for-${code}` };
         },
         async identity() {
             return stub.next;
@@ -62,3 +76,37 @@ export const oneInstallation = (id: string, account = 'acme'): InstallationAccou
 /** Installation refs as the store's signIn takes them. */
 export const refsOf = (installations: readonly InstallationAccount[]): InstallationRef[] =>
     installations.map((i) => ({ id: i.id, name: i.account ?? i.id }));
+
+/** A scripted `MemberForgeGrants`: records every call, and answers what the test set. */
+export interface MemberGrantsFake extends MemberForgeGrants {
+    stored: StoreMemberGrantInput[];
+    revoked: { forge: string; externalAccountId: string }[];
+    /** What `store` answers next; a thrown error is a store that could not be reached. */
+    storeAnswer: StoreMemberGrantResult | Error;
+    standingAnswer: MemberGrantStanding;
+}
+
+export function memberGrantsFake(): MemberGrantsFake {
+    const fake: MemberGrantsFake = {
+        stored: [],
+        revoked: [],
+        storeAnswer: { ok: true },
+        standingAnswer: 'missing',
+        async store(input) {
+            fake.stored.push(input);
+            if (fake.storeAnswer instanceof Error) throw fake.storeAnswer;
+            return fake.storeAnswer;
+        },
+        async standing() {
+            return fake.standingAnswer;
+        },
+        async accessToken() {
+            return { ok: false, outcome: { outcome: 'integration_required', reason: 'missing', provider: 'github' } };
+        },
+        async revokeAuthorization(forge, externalAccountId) {
+            fake.revoked.push({ forge, externalAccountId });
+            return 1;
+        },
+    };
+    return fake;
+}
