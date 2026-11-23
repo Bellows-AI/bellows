@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { NavigateFunction } from 'react-router-dom';
 import { useThread } from '../api/useJobs.js';
-import type { Job } from '../api/useJobs.js';
+import type { ConnectPrompt, Job } from '../api/useJobs.js';
 import type { WorkspacePayload } from '../api/useWorkspace.js';
 import { useThreadActivity } from '../api/useJobActivity.js';
 import type { SubmittedFiles } from '../api/taskWrites.js';
@@ -35,6 +35,7 @@ function useTaskConversationActions(
     const [sending, setSending] = useState(false);
     const [actionError, setActionError] = useState<string | null>(null);
     const [followUpError, setFollowUpError] = useState<string | null>(null);
+    const [followUpConnect, setFollowUpConnect] = useState<ConnectPrompt | null>(null);
     const [stoppingId, setStoppingId] = useState<string | null>(null);
     const [doneId, setDoneId] = useState<string | null>(null);
     // See the module-level note on the removal hook's generation ref — the same discipline,
@@ -44,6 +45,7 @@ function useTaskConversationActions(
         generation.current += 1;
         setActionError(null);
         setFollowUpError(null);
+        setFollowUpConnect(null);
         setSending(false);
         setStoppingId(null);
         setDoneId(null);
@@ -56,6 +58,7 @@ function useTaskConversationActions(
         if (latest === null) return 'No task to follow up on';
         const atStart = generation.current;
         setFollowUpError(null);
+        setFollowUpConnect(null);
         setSending(true);
         try {
             // The adjustment continues the NEWEST run — it is the one that is finished and
@@ -66,6 +69,7 @@ function useTaskConversationActions(
             if (result.error !== null) {
                 // Said inside the composer, beside the draft it refused — a 403 FORBIDDEN too.
                 setFollowUpError(result.error);
+                setFollowUpConnect(result.connect);
                 return result.error;
             }
             // Same task, one message longer: the thread poll stopped when every run in it was
@@ -123,7 +127,7 @@ function useTaskConversationActions(
         }
     };
 
-    return { sending, actionError, followUpError, stoppingId, doneId, followUp, doneTask, stopTask };
+    return { sending, actionError, followUpError, followUpConnect, stoppingId, doneId, followUp, doneTask, stopTask };
 }
 
 /**
@@ -288,7 +292,7 @@ export function TaskDetailPage() {
     // poll's own changes.
     const activity = useThreadActivity(detail.jobs);
 
-    const { sending, actionError, followUpError, stoppingId, doneId, followUp, doneTask, stopTask } =
+    const { sending, actionError, followUpError, followUpConnect, stoppingId, doneId, followUp, doneTask, stopTask } =
         useTaskConversationActions(id, tasks, detail, latest);
     // Who is looking: the task owner or an org admin may follow it up (the board checks the same).
     const viewer = { loading: sessionLoading, id: session?.user.id ?? null, admin: session?.role === ADMIN_ROLE };
@@ -339,6 +343,7 @@ export function TaskDetailPage() {
                 onRetry={detail.refresh}
                 actionError={actionError}
                 followUpError={followUpError}
+                followUpConnect={followUpConnect}
                 sending={sending}
                 onFollowUp={followUp}
                 draftStore={draftStore}

@@ -169,10 +169,11 @@ export interface ThreadJob {
 export interface ThreadRequirement {
     provider: string;
     label: string;
-    reason: 'missing' | 'ambiguous' | 'reconnect';
+    reason: 'missing' | 'ambiguous' | 'reconnect' | 'starter-removed';
     source: 'create' | 'runtime';
     connectionId: string | null;
     target: string | null;
+    connectPath: string | null;
     createdAt: string;
 }
 
@@ -333,6 +334,7 @@ export const requirement = (fields: Partial<ThreadRequirement> = {}): ThreadRequ
     source: 'runtime',
     connectionId: null,
     target: null,
+    connectPath: null,
     createdAt: '2026-09-01T12:05:00.000Z',
     ...fields,
 });

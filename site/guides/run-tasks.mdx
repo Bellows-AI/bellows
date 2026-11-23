@@ -9,6 +9,12 @@ Click **New task**. Describe the change, then pick the repository and [executor]
 
 Everything here also works from the [CLI](/cli/commands) and the [MCP server](/mcp/tools).
 
+### Your GitHub connection
+
+On a board where you sign in with GitHub, starting a task, a follow-up, a retry, a reopen or a batch needs your own live GitHub connection: the sign-in keeps it, and it is what Bellows checks before any work starts on a repository. If it is missing or needs reconnecting, the form says so and offers **Connect GitHub**. That link is the sign-in itself, so it takes a moment and brings you back to the form with your draft intact. A batch is checked as a whole before anything is queued: a refused start leaves the draft a draft.
+
+A task already queued keeps the connection of the member who started it, whoever sends the follow-up. If that connection breaks before the task starts, the task page shows **Reconnect GitHub** to the member who started it and the task waits. It is never marked failed, and it starts by itself once the connection is live. If the member who started it was removed, the page says an owner or admin can stop or remove the task. A task that is already running is not interrupted. See the [FAQ](/reference/faq).
+
 ## The inbox
 
 **Tasks** has three tabs. **Needs attention** holds everything waiting on you: answers, reviews and failures. **Running** is work in progress. **Past** is finished work. Filter by repository or person, or search task requests.

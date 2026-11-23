@@ -307,6 +307,26 @@ describe('bellows job preflight', () => {
         expect(result.error.message).toBe('not ready to launch: acme/nope is not tracked by this board');
     });
 
+    it('renders a blocked forge check with its connect link and refuses, exit 1', async () => {
+        const link = 'http://board/api/auth/github?returnTo=%2Ftasks%2Fnew&org=o1';
+        const FORGE_BLOCKED = {
+            ready: false,
+            checks: [
+                {
+                    subject: 'forge',
+                    name: 'github',
+                    status: 'blocked',
+                    code: 'FORGE_GRANT_REQUIRED',
+                    detail: `Your GitHub connection is missing. Connect it to start work on this repository: ${link}`,
+                },
+            ],
+        };
+        const h = harness(board({ '/api/jobs/preflight': () => json(FORGE_BLOCKED) }));
+        expect(await run(ARGS, h.io)).toBe(1);
+        expect(h.out.join('')).toContain(`blocked     forge github  Your GitHub connection is missing.`);
+        expect(h.out.join('')).toContain(link);
+    });
+
     it('prints one line per check for a person, and says the board rechecks', async () => {
         const h = harness(board({ '/api/jobs/preflight': () => json(BLOCKED) }));
         expect(await run(ARGS, h.io)).toBe(1);
@@ -348,5 +368,29 @@ describe('bellows job preflight', () => {
     it('never prints the token', async () => {
         const { printed } = await preflight(() => json(READY));
         expect(printed()).not.toContain(SECRET);
+    });
+});
+
+describe('bellows job create refused by the forge start gate', () => {
+    it('prints the code and the connect link the board answered with, exit 1', async () => {
+        const link = 'http://board/api/auth/github?returnTo=%2Ftasks%2Fnew&org=o1';
+        const h = harness({
+            '/api/jobs': () =>
+                json(
+                    {
+                        error: `Your GitHub connection is missing. Connect it to start work on this repository: ${link}`,
+                        code: 'FORGE_GRANT_REQUIRED',
+                        forge: 'github',
+                        standing: 'missing',
+                        connectUrl: link,
+                    },
+                    409
+                ),
+        });
+        expect(await run(['job', 'create', '--repo', 'acme/api', 'work', '--json'], h.io)).toBe(1);
+        const result = envelope(h.out);
+        expect(result.outcome).toBe('refused');
+        expect(result.error.code).toBe('FORGE_GRANT_REQUIRED');
+        expect(result.error.message).toContain(link);
     });
 });

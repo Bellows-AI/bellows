@@ -1,6 +1,7 @@
-import type { ExecutorScope } from '@factory-ai/core';
-import { request } from './request.js';
-import type { QueueResult } from './useJobs.js';
+import { ERROR_CODES, type ExecutorScope } from '@factory-ai/core';
+import type { RefusalBody } from './refusal.js';
+import { request, type RequestResult } from './request.js';
+import type { ConnectPrompt, QueueResult } from './useJobs.js';
 
 /** The task mutations' wire calls, each one `request`: the hook re-arms the poll after a success. */
 
@@ -44,6 +45,31 @@ export interface SubmittedFiles {
 
 const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
 
+/** What a person calls each forge in a gate refusal; a forge the page does not know is named as the board names it. */
+const FORGE_LABELS: Record<string, string> = { github: 'GitHub' };
+
+/**
+ * The forge start gate's refusal (docs/connections.md), as the page words it: the board's own sentence carries the
+ * link for the CLI and MCP, so the page says the state and offers the link as a control of its own.
+ */
+function forgeGateRefusal(body: RefusalBody | undefined): { error: string; connect: ConnectPrompt } | null {
+    if (body?.code !== ERROR_CODES.FORGE_GRANT_REQUIRED || typeof body.connectUrl !== 'string') return null;
+    const forge = typeof body.forge === 'string' ? body.forge : '';
+    const label = FORGE_LABELS[forge] ?? forge;
+    const state = body.standing === 'broken' ? 'needs reconnecting' : 'is missing';
+    return {
+        error: `Your ${label} connection ${state}. Connect it to start work on this repository.`,
+        connect: { url: body.connectUrl, label },
+    };
+}
+
+/** A queueing call's answer: the created id, or the sentence (and, for the forge gate, the link) that refused it. */
+function queued(result: RequestResult<{ id: string }>): QueueResult {
+    if (result.ok) return { id: result.value.id, error: null, connect: null };
+    const gate = forgeGateRefusal(result.body);
+    return gate ? { id: null, ...gate } : { id: null, error: result.error, connect: null };
+}
+
 /** Starts a task. A 401 is handed to the gate rather than reported as this call's own error. */
 export async function queueTask(input: QueueTaskInput): Promise<QueueResult> {
     const { idempotencyKey, ...body } = input;
@@ -53,7 +79,7 @@ export async function queueTask(input: QueueTaskInput): Promise<QueueResult> {
         ...(idempotencyKey === undefined ? {} : { headers: { [IDEMPOTENCY_KEY_HEADER]: idempotencyKey } }),
         verb: 'Could not queue the task',
     });
-    return result.ok ? { id: result.value.id, error: null } : { id: null, error: result.error };
+    return queued(result);
 }
 
 /**
@@ -76,7 +102,7 @@ export async function followUpOnTask(
         ...(files === undefined ? {} : { headers: { [IDEMPOTENCY_KEY_HEADER]: files.idempotencyKey } }),
         verb: 'Could not queue the follow-up',
     });
-    return result.ok ? { id: result.value.id, error: null } : { id: null, error: result.error };
+    return queued(result);
 }
 
 const HTTP_STATUS_CONFLICT = 409;

@@ -59,8 +59,8 @@ export function idleTasks(): UseTasks {
         loadMore: () => {},
         refresh: () => {},
         actions: {
-            queue: async () => ({ id: null, error: null }),
-            followUp: async () => ({ id: null, error: null }),
+            queue: async () => ({ id: null, error: null, connect: null }),
+            followUp: async () => ({ id: null, error: null, connect: null }),
             markDone: async () => null,
             stop: async () => null,
             remove: async () => null,

@@ -1,5 +1,6 @@
+import { ConnectLink } from '../components/ConnectLink.js';
 import { type MutableRefObject, type ReactNode, useEffect, useRef } from 'react';
-import { isTerminal, type Job, type ServiceStatus } from '../api/useJobs.js';
+import { type ConnectPrompt, isTerminal, type Job, type ServiceStatus } from '../api/useJobs.js';
 import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
 import type { SubmittedFiles } from '../api/taskWrites.js';
 import { type ComposerDraftStore, threadScope } from '../composer-draft.js';
@@ -71,6 +72,7 @@ function FollowUpComposer({
     rootId,
     draftStore,
     error,
+    connect,
     sending,
     onFollowUp,
     adder,
@@ -85,6 +87,8 @@ function FollowUpComposer({
     agent: string | null;
     draftStore: ComposerDraftStore;
     error: string | null;
+    /** The link that clears a follow-up the forge gate refused; null for any other refusal. */
+    connect: ConnectPrompt | null;
     sending: boolean;
     onFollowUp: OnFollowUp;
     /** Where this composer publishes its `add`, so a drop anywhere on the conversation reaches it. */
@@ -136,7 +140,11 @@ function FollowUpComposer({
     };
     return (
         <div className="composer">
-            {error !== null ? <StateNote state="error">{error}</StateNote> : null}
+            {error !== null ? (
+                <StateNote state="error">
+                    {error} <ConnectLink connect={connect} />
+                </StateNote>
+            ) : null}
             <ChatInput
                 id={FOLLOW_UP_INPUT_ID}
                 label="Ask for a follow-up"
@@ -216,6 +224,7 @@ function FollowUp({
     draftStore,
     viewer,
     error,
+    connect,
     sending,
     onFollowUp,
     adder,
@@ -226,6 +235,7 @@ function FollowUp({
     draftStore: ComposerDraftStore;
     viewer: FollowUpViewer;
     error: string | null;
+    connect: ConnectPrompt | null;
     sending: boolean;
     onFollowUp: OnFollowUp;
     adder: MutableRefObject<((files: File[]) => void) | null>;
@@ -244,6 +254,7 @@ function FollowUp({
                     agent={agent}
                     draftStore={draftStore}
                     error={error}
+                    connect={connect}
                     sending={sending}
                     onFollowUp={onFollowUp}
                     adder={adder}
@@ -326,6 +337,7 @@ export function TaskDetail({
     onRetry,
     actionError,
     followUpError,
+    followUpConnect = null,
     sending,
     onFollowUp,
     draftStore,
@@ -350,6 +362,8 @@ export function TaskDetail({
     actionError: string | null;
     /** Why the last follow-up did not queue. Said inside the composer, beside the draft. */
     followUpError: string | null;
+    /** The link that clears a follow-up the forge gate refused; null for any other refusal. */
+    followUpConnect?: ConnectPrompt | null;
     sending: boolean;
     onFollowUp: OnFollowUp;
     /** The shell's held drafts: this thread's follow-up draft lives there. */
@@ -453,6 +467,7 @@ export function TaskDetail({
                     draftStore={draftStore}
                     viewer={viewer}
                     error={followUpError}
+                    connect={followUpConnect}
                     sending={sending}
                     onFollowUp={onFollowUp}
                     adder={followUpAdd}

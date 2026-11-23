@@ -12,6 +12,7 @@ const requirement = (over: Partial<JobIntegrationRequirement> = {}): JobIntegrat
     source: 'runtime',
     connectionId: null,
     target: null,
+    connectPath: null,
     createdAt: '2026-09-01T12:05:00.000Z',
     ...over,
 });

@@ -303,6 +303,8 @@ export interface JobIntegrationRequirement {
     connectionId: string | null;
     /** What the asking helper needs of the provider (for Jira the site); null when it named none. */
     target: string | null;
+    /** The sign-in that clears a `forge` wait; null for every other provider. */
+    connectPath: string | null;
     createdAt: string;
 }
 
@@ -314,10 +316,20 @@ export function isTerminal(status: JobStatus): boolean {
     return status === 'succeeded' || status === 'failed' || status === 'dead' || status === 'stopped';
 }
 
-/** What a queueing call answers: the created task's id to navigate to, or why nothing was created. */
+/** The link that clears a refused start: the forge's sign-in, and what to call the forge. */
+export interface ConnectPrompt {
+    url: string;
+    label: string;
+}
+
+/**
+ * What a queueing call answers: the created task's id to navigate to, or why nothing was created. A start the forge
+ * gate refused also carries the link that fixes it.
+ */
 export interface QueueResult {
     id: string | null;
     error: string | null;
+    connect: ConnectPrompt | null;
 }
 
 /**

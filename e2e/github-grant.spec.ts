@@ -1,7 +1,7 @@
-import { createHmac } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { E2E_WEBHOOK_SECRET, IDP_PORT } from '../playwright.config.js';
+import { IDP_PORT } from '../playwright.config.js';
+import { revokeGitHubAuthorization } from './forge-grant.js';
 import { throughSignIn } from './signin.js';
 
 /**
@@ -28,20 +28,7 @@ test('the sign-in leaves a live grant, a revocation breaks it, and reconnecting 
     await page.screenshot({ path: 'artifacts/ui/github-grant-live.png', fullPage: true });
 
     // GitHub tells the board the member revoked the App's authorization: a signed delivery, the only credential it has.
-    const me = (await (await page.request.get('/api/auth/me')).json()) as {
-        user: { githubUserId: number; login: string };
-    };
-    const body = JSON.stringify({ action: 'revoked', sender: { id: me.user.githubUserId, login: me.user.login } });
-    const signature = `sha256=${createHmac('sha256', E2E_WEBHOOK_SECRET).update(body).digest('hex')}`;
-    const delivered = await page.request.post('/api/github/webhook', {
-        data: body,
-        headers: {
-            'content-type': 'application/json',
-            'x-github-event': 'github_app_authorization',
-            'x-hub-signature-256': signature,
-        },
-    });
-    expect(delivered.status()).toBe(200);
+    await revokeGitHubAuthorization(page);
 
     await page.reload();
     await expect(card(page).getByText('Needs reconnect')).toBeVisible();

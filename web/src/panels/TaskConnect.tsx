@@ -1,3 +1,4 @@
+import { FORGE_REQUIREMENT_PROVIDER } from '@factory-ai/core';
 import { useEffect, useId, useRef, useState } from 'react';
 import {
     bindTaskConnection,
@@ -8,6 +9,7 @@ import {
 } from '../api/connections.js';
 import type { Job, JobIntegrationRequirement } from '../api/useJobs.js';
 import type { FollowUpViewer } from '../task-outcome.js';
+import { TaskForgeWait } from './TaskForgeWait.js';
 
 /** The caller's connections for one provider, as the block's picker reads them. */
 export type Candidates =
@@ -305,7 +307,7 @@ export function TaskConnect({ job, viewer, onChanged }: { job: Job; viewer: Foll
     const requirements = job.integrationRequirements;
     const canAct = !viewer.loading && viewer.id !== null && job.executionUser?.id === viewer.id;
     const [read, setRead] = useState<Candidates>({ state: 'loading' });
-    const wanted = canAct && requirements.length > 0;
+    const wanted = canAct && requirements.some((requirement) => requirement.provider !== FORGE_REQUIREMENT_PROVIDER);
 
     useEffect(() => {
         if (!wanted) return;
@@ -328,24 +330,28 @@ export function TaskConnect({ job, viewer, onChanged }: { job: Job; viewer: Foll
     const owner = job.executionUser?.name ?? job.executionUser?.login ?? null;
     return (
         <>
-            {requirements.map((requirement) => (
-                <TaskConnectBlock
-                    key={requirement.provider}
-                    job={job}
-                    requirement={requirement}
-                    owner={owner}
-                    canAct={canAct}
-                    candidates={
-                        read.state === 'ready'
-                            ? {
-                                  state: 'ready',
-                                  connections: candidatesFor(requirement, read.connections, bound),
-                              }
-                            : read
-                    }
-                    onChanged={onChanged}
-                />
-            ))}
+            {requirements.map((requirement) =>
+                requirement.provider === FORGE_REQUIREMENT_PROVIDER ? (
+                    <TaskForgeWait key={requirement.provider} requirement={requirement} owner={owner} canAct={canAct} />
+                ) : (
+                    <TaskConnectBlock
+                        key={requirement.provider}
+                        job={job}
+                        requirement={requirement}
+                        owner={owner}
+                        canAct={canAct}
+                        candidates={
+                            read.state === 'ready'
+                                ? {
+                                      state: 'ready',
+                                      connections: candidatesFor(requirement, read.connections, bound),
+                                  }
+                                : read
+                        }
+                        onChanged={onChanged}
+                    />
+                )
+            )}
         </>
     );
 }
