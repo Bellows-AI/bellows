@@ -9,6 +9,7 @@
 
 import { BATCH_BRANCH_LIMIT, isBranchName } from './branch-name.js';
 import { EXECUTOR_SCOPES, type ExecutorScope, type ExecutorType, USER_SCOPE } from './executors.js';
+import { GITHUB_REPO_PATH_PATTERN } from './repo-ref.js';
 
 export const BATCH_PLAN_VERSION = 1;
 
@@ -42,8 +43,6 @@ export const DEFAULT_BATCH_REPAIRS = 2;
 export const MIN_BATCH_TIME_LIMIT_MINUTES = 1;
 export const MAX_BATCH_TIME_LIMIT_MINUTES = 1440;
 export const DEFAULT_BATCH_TIME_LIMIT_MINUTES = 720;
-
-export const BATCH_REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
 export type BatchCompletion =
     | { kind: typeof BATCH_COMPLETION_PR }
@@ -271,7 +270,7 @@ function parseTarget(raw: unknown, path: string, issues: Issues): BatchTarget | 
     if (
         typeof fields.repo !== 'string' ||
         fields.repo.length > BATCH_REPO_LIMIT ||
-        !BATCH_REPO_PATTERN.test(fields.repo)
+        !GITHUB_REPO_PATH_PATTERN.test(fields.repo)
     ) {
         issues.add(`${path}.repo`, 'must be owner/name');
     }

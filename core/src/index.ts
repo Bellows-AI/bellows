@@ -128,7 +128,6 @@ export {
     REVIEW_REQUIRED,
     REVIEW_SATISFIED,
     REVIEW_UNKNOWN,
-    sameRepo,
 } from './batch-observation.js';
 export {
     judgeFreshFacts,
@@ -408,3 +407,4 @@ export * from './integrations/outcomes.js';
 export * from './integrations/redact.js';
 export * from './attachments.js';
 export * from './integration-catalog.js';
+export * from './repo-ref.js';
