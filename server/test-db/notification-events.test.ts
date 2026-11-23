@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { notificationEventOf } from '@factory-ai/core';
+import { notificationEventOf, githubRepo } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
@@ -8,7 +8,7 @@ import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.j
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
-import { craftJob, mustCreate, testOrg } from './fixtures.js';
+import { craftJob, mustCreate, testOrg, repoRefOf } from './fixtures.js';
 
 /**
  * every committed job.status change to a settled verdict records one durable
@@ -32,7 +32,7 @@ beforeAll(() => {
 });
 
 async function queue(command = 'do the thing', repo: string | null = null): Promise<string> {
-    const job = await store.create(command, null, { repo, executor: null });
+    const job = await store.create(command, null, { repo: repoRefOf(repo), executor: null });
     if (typeof job === 'string') throw new Error(job);
     return job.id;
 }
@@ -145,7 +145,7 @@ describe.skipIf(!enabled)('notification events — database', () => {
                 }),
             },
         });
-        const created = await gated.create('ship it', null, { repo: 'acme/web', executor: null });
+        const created = await gated.create('ship it', null, { repo: githubRepo('acme/web'), executor: null });
         if (typeof created === 'string') throw new Error(created);
         const c = await gated.claim(WORKER, LEASE_SECONDS);
         expect(c?.id).toBe(created.id);
@@ -288,7 +288,7 @@ describe.skipIf(!enabled)('notification events — database', () => {
         const REPO = 'acme/web';
         const prs = createPrLifecycleStore({ sql, orgId: ORG });
         const publishing = createJobStore({ sql, orgId: ORG, prs });
-        const created = await publishing.create('ship it', null, { repo: REPO, executor: null });
+        const created = await publishing.create('ship it', null, { repo: githubRepo(REPO), executor: null });
         if (typeof created === 'string') throw new Error(created);
         const c = await publishing.claim(WORKER, LEASE_SECONDS);
         expect(c?.id).toBe(created.id);
@@ -517,7 +517,7 @@ describe.skipIf(!enabled)('notification events — database', () => {
         const root = (
             await mustCreate(
                 waiting.create('start the thread', null, {
-                    repo: REPO,
+                    repo: githubRepo(REPO),
                     executor: null,
                     workflow: { id: randomUUID(), name: 'park', node: 'verify', snapshot: definition, params: {} },
                 })
@@ -583,5 +583,45 @@ describe.skipIf(!enabled)('notification events — database', () => {
         await sql`update job set status = 'succeeded', finished_at = now() where org_id = ${OTHER_ORG} and id = ${id}`;
         expect(await events(id, ORG)).toHaveLength(0);
         expect(await events(id, OTHER_ORG)).toMatchObject([{ org_id: OTHER_ORG, kind: 'task.ready' }]);
+    });
+});
+
+/** An event copies its job's forge and host as well as its path (migration 169); the thread is turned GitLab by SQL. */
+describe.skipIf(!enabled)('notification events carry the job forge and host — database', () => {
+    const GITLAB = { forge: 'gitlab', host: 'gl.example', repo: 'g/sub/p' };
+    const tripleOf = async (id: string, kind: string) =>
+        sql`select forge, host, repo from notification_event where org_id = ${ORG} and job_id = ${id} and kind = ${kind}`;
+    const toGitlab = (id: string) =>
+        sql`update job set forge = ${GITLAB.forge}, host = ${GITLAB.host}, repo = ${GITLAB.repo}
+            where org_id = ${ORG} and id = ${id}`;
+
+    it('task.ready on settle', async () => {
+        const id = await queue('ship it', 'o/n');
+        await toGitlab(id);
+        const c = await claim();
+        await store.complete(id, c.leaseToken, succeeded);
+
+        expect(await tripleOf(id, 'task.ready')).toEqual([GITLAB]);
+    });
+
+    it('task.blocked on a failed verdict', async () => {
+        const id = await queue('ship it', 'o/n');
+        await toGitlab(id);
+        const c = await claim();
+        await store.complete(id, c.leaseToken, { status: 'failed', exitCode: 1, output: 'no', failureKind: 'timeout' });
+
+        expect(await tripleOf(id, 'task.blocked')).toEqual([GITLAB]);
+    });
+
+    it('task.question on a pending question', async () => {
+        const id = await queue('ask it', 'o/n');
+        await toGitlab(id);
+        const c = await claim();
+        await sql`
+            insert into job_question (org_id, job_id, question_id, attempt, claim_seq, lease_token, questions, state)
+            values (${ORG}, ${id}, 'q1', 1, ${c.claimSeq}, ${c.leaseToken}, ${sql.json([{ question: 'which db?' }])}, 'pending')
+        `;
+
+        expect(await tripleOf(id, 'task.question')).toEqual([GITLAB]);
     });
 });

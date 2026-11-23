@@ -1,4 +1,6 @@
+import { githubRepo, type RepoRef } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
+import { refOfRow, repoIs } from './repo-ref-row.js';
 
 /**
  * The shared exec handle every method accepts: the pool, or a transaction the CALLER opened (the
@@ -17,7 +19,10 @@ export interface StructuredPublication {
     baseBranch: string;
 }
 
-/** The same identity bound to the thread it belongs to — the `job_pr` row (036). */
+/**
+ * The same identity bound to the thread it belongs to — the `job_pr` row (036). The path is the driver's; the forge and
+ * host are the root job's, read in the statement that writes the row.
+ */
 export interface PublicationInput extends StructuredPublication {
     root: string;
 }
@@ -50,14 +55,14 @@ export interface PrLifecycleStore {
      * executions that actually published. Callers run it inside the verdict transaction.
      */
     recordPublication(input: PublicationInput, exec?: PrExec): Promise<void>;
-    publicationOf(root: string, exec?: PrExec): Promise<PublicationState | null>;
+    publicationOf(root: string, exec?: PrExec): Promise<PublicationIdentity | null>;
     /**
      * Enters (or re-enters) a named wait for the thread. A wait for the same reason that already
      * exists stays active (idempotent); one that is terminal — finished or cancelled — starts a
      * fresh cycle that clears the counter and the delivery cursor.
      */
     enterWait(
-        input: { root: string; reason: string; repo: string; prNumber: number },
+        input: { root: string; reason: string; repo: RepoRef; prNumber: number },
         exec?: PrExec
     ): Promise<WaitState>;
     /** Ends the wait as completed. Idempotent: an already-terminal wait is not rewritten. */
@@ -77,11 +82,11 @@ export interface PrLifecycleStore {
         cancelledBy?: string | null
     ): Promise<number>;
     /** Cancels every open wait addressed to a repository's PR — the PR-close/merge sweep. Returns the count. */
-    cancelForRepoPr(repo: string, prNumber: number, terminalReason?: string, exec?: PrExec): Promise<number>;
+    cancelForRepoPr(repo: RepoRef, prNumber: number, terminalReason?: string, exec?: PrExec): Promise<number>;
     /**
      * Folds one GitHub delivery. The delivery GUID is the dedupe key: a redelivery inserts
      * nothing and folds nothing. A new delivery folds into EVERY open wait addressed to the same
-     * (repo, prNumber) — the org's threads waiting on that PR — and answers `folded`; one with no
+     * GitHub (repo, prNumber) — the org's threads waiting on that PR — and answers `folded`; one with no
      * matching open wait is still recorded, for redelivery silence, and answers `unmatched`.
      */
     recordDelivery(
@@ -98,7 +103,7 @@ export interface PrLifecycleStore {
      * harmless and bounded; a lost one is not. Returns the waits woken.
      */
     foldObservedActivity(
-        activity: { repo: string; prNumber: number; activityAt: Date; fingerprint: string },
+        activity: { repo: RepoRef; prNumber: number; activityAt: Date; fingerprint: string },
         exec?: PrExec
     ): Promise<number>;
     /**
@@ -113,6 +118,11 @@ export interface PrLifecycleStore {
     ): Promise<{ pending: number; lastDeliveryId: string | null }>;
     /** The thread's wait: the open one, or the most recently terminal one when none is open. */
     waitOf(root: string, exec?: PrExec): Promise<WaitState | null>;
+}
+
+/** A recorded publication with the repository as a ref: what the store's own callers match and park waits by. */
+export interface PublicationIdentity extends Omit<PublicationState, 'repo'> {
+    repo: RepoRef;
 }
 
 /** The `job_pr` row in its read shape, with times resolved by the caller that needs them. */
@@ -179,9 +189,17 @@ export function createPrLifecycleStore({
     return {
         async recordPublication(input, exec) {
             await gate();
-            await conn(exec)`insert into job_pr (org_id, root_job_id, repo, pr_number, pr_url, head_branch, base_branch)
-                       values (${orgId}, ${input.root}, ${input.repo}, ${input.prNumber}, ${input.prUrl}, ${input.headBranch}, ${input.baseBranch})
+            // The forge and host are the root's, read here: the publication is the thread's, and the driver's report
+            // carries only a path.
+            await conn(
+                exec
+            )`insert into job_pr (org_id, root_job_id, forge, host, repo, pr_number, pr_url, head_branch, base_branch)
+                       select ${orgId}, ${input.root}, j.forge, j.host, ${input.repo}, ${input.prNumber}, ${input.prUrl}, ${input.headBranch}, ${input.baseBranch}
+                       from job j
+                       where j.org_id = ${orgId} and j.id = ${input.root}
                        on conflict (org_id, root_job_id) do update set
+                           forge = excluded.forge,
+                           host = excluded.host,
                            repo = excluded.repo,
                            pr_number = excluded.pr_number,
                            pr_url = excluded.pr_url,
@@ -193,16 +211,24 @@ export function createPrLifecycleStore({
         async publicationOf(root, exec) {
             await gate();
             const rows = await conn(exec)<
-                { repo: string; pr_number: number; pr_url: string; head_branch: string; base_branch: string }[]
+                {
+                    forge: string;
+                    host: string;
+                    repo: string;
+                    pr_number: number;
+                    pr_url: string;
+                    head_branch: string;
+                    base_branch: string;
+                }[]
             >`
-                select repo, pr_number, pr_url, head_branch, base_branch
+                select forge, host, repo, pr_number, pr_url, head_branch, base_branch
                 from job_pr
                 where org_id = ${orgId} and root_job_id = ${root}
             `;
             const row = rows[0];
             if (!row) return null;
             return {
-                repo: row.repo,
+                repo: refOfRow(row),
                 prNumber: row.pr_number,
                 prUrl: row.pr_url,
                 headBranch: row.head_branch,
@@ -213,12 +239,14 @@ export function createPrLifecycleStore({
         async enterWait({ root, reason, repo, prNumber }, exec) {
             await gate();
             await conn(exec)`
-                insert into workflow_wait (org_id, root_job_id, reason, repo, pr_number)
-                values (${orgId}, ${root}, ${reason}, ${repo}, ${prNumber})
+                insert into workflow_wait (org_id, root_job_id, reason, forge, host, repo, pr_number)
+                values (${orgId}, ${root}, ${reason}, ${repo.forge}, ${repo.host}, ${repo.path}, ${prNumber})
                 on conflict (org_id, root_job_id, reason) do update set
                     -- A TERMINAL wait re-entered starts a NEW cycle: the reason waits again from a
                     -- clean counter and cursor, whatever the previous cycle folded. An ACTIVE wait
                     -- re-entered is a no-op — its folded deliveries are not thrown away.
+                    forge = excluded.forge,
+                    host = excluded.host,
                     repo = excluded.repo,
                     pr_number = excluded.pr_number,
                     active_at = now(),
@@ -287,7 +315,7 @@ export function createPrLifecycleStore({
                 update workflow_wait set
                     cancelled_at = coalesce(cancelled_at, now()),
                     terminal_reason = coalesce(terminal_reason, ${terminalReason ?? null})
-                where org_id = ${orgId} and repo = ${repo} and pr_number = ${prNumber}
+                where org_id = ${orgId} and ${repoIs(sql, 'workflow_wait', repo)} and pr_number = ${prNumber}
                   and completed_at is null and cancelled_at is null
                 returning root_job_id
             `;
@@ -316,7 +344,7 @@ export function createPrLifecycleStore({
                         last_event_at = now(),
                         observed_since = now()
                     where org_id = ${orgId}
-                      and repo = ${repo}
+                      and ${repoIs(tx, 'workflow_wait', githubRepo(repo))}
                       and pr_number = ${prNumber}
                       and completed_at is null
                       and cancelled_at is null
@@ -336,7 +364,7 @@ export function createPrLifecycleStore({
                            (observed_fingerprint is not null
                             or date_trunc('second', observed_since) <= ${activityAt}) as fires
                     from workflow_wait
-                    where org_id = ${orgId} and repo = ${repo} and pr_number = ${prNumber}
+                    where org_id = ${orgId} and ${repoIs(sql, 'workflow_wait', repo)} and pr_number = ${prNumber}
                       and completed_at is null and cancelled_at is null
                       and observed_fingerprint is distinct from ${fingerprint}
                     for update

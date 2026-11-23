@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { BatchPlan, PrFacts } from '@factory-ai/core';
@@ -115,7 +116,8 @@ beforeAll(() => {
         sql,
         orgId: ORG,
         reader: client,
-        recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
+        recordMerge: (repo, number, deliveryId, mergedAt) =>
+            jobs.closeMergedPr(githubRepo(repo), number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
         now,
     });
@@ -124,7 +126,8 @@ beforeAll(() => {
         orgId: ORG,
         client,
         mergeToken: async () => ({ ok: true, token: 'ghs_installation' }),
-        recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
+        recordMerge: (repo, number, deliveryId, mergedAt) =>
+            jobs.closeMergedPr(githubRepo(repo), number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
         now,
     });

@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
@@ -123,7 +124,7 @@ describe.skipIf(!enabled)('environment secrets resolved inside a claim', () => {
             githubApp: true,
         });
         const author = await account(sql, randomGithubId(), 'review-env');
-        await mustCreate(jobs.create('ship it', author, { repo: 'acme/web', executor: null }));
+        await mustCreate(jobs.create('ship it', author, { repo: githubRepo('acme/web'), executor: null }));
         const caller = (await jobs.claim('driver-1', LEASE_SECONDS)) as Claim;
         const { ref } = await seedEncryptedRow(sql, secrets, { ...org, name: 'LOCKED' }, 'v');
         await sql`update secret_version set envelope = set_byte(envelope, length(envelope) - 1,

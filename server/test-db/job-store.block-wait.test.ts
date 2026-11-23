@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { USER_SCOPE } from '@factory-ai/core';
+import { USER_SCOPE, githubRepo } from '@factory-ai/core';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
@@ -76,7 +76,7 @@ async function queueWaitingThread(
     // repo: null fixture, which calls recordPublication directly and never goes through complete().
     const job = await mustCreate(
         store.create('start the thread', createdBy, {
-            repo: REPO,
+            repo: githubRepo(REPO),
             executor: null,
             ...agent,
             workflow: { id: randomUUID(), name, node: waitingWorkflow.entry, snapshot: waitingWorkflow, params: {} },
@@ -329,7 +329,7 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
 
     it('a PR close before any delivery leaves the wait cancelled — never wakes', async () => {
         const root = await publishAndTransition('cancel-before-delivery', 7);
-        await prs.cancelForRepoPr(REPO, 7, 'pr closed');
+        await prs.cancelForRepoPr(githubRepo(REPO), 7, 'pr closed');
         await prs.recordDelivery({
             deliveryId: 'd-after-close',
             event: 'pull_request_review',
@@ -359,7 +359,7 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
         const [round] = await roundRows(root);
         expect(round!.job_id).not.toBeNull();
 
-        await prs.cancelForRepoPr(REPO, 8, 'pr closed');
+        await prs.cancelForRepoPr(githubRepo(REPO), 8, 'pr closed');
 
         expect(await store.claim(WORKER, 60)).toBeNull();
         const [job] = await sql<

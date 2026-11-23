@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { resolveBatchPlan, taskUsageOf, type BatchPlan, type TokenType } from '@factory-ai/core';
+import { resolveBatchPlan, taskUsageOf, type BatchPlan, type TokenType, githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import { readReport } from '../src/db/batches/batch-store-report.js';
@@ -817,7 +817,7 @@ async function publish(root: string, base = 'main', repo = REPO): Promise<number
     return nextPr;
 }
 
-const merge = (repo: string, number: number) => jobs.closeMergedPr(repo, number, randomUUID());
+const merge = (repo: string, number: number) => jobs.closeMergedPr(githubRepo(repo), number, randomUUID());
 
 /** A two-stage batch whose first task has run and succeeded. */
 async function succeededFirst() {
@@ -1677,7 +1677,7 @@ describe.skipIf(!enabled)('the claim carries the batch target branch', () => {
         const followUp = (await claimJobs.createFollowUp(retry.id, 'adjust', ALICE)) as { id: string };
         expect(await claimJobs.claim('w1', 300)).toMatchObject({ id: followUp.id, baseBranch: 'batch-sandbox' });
 
-        const loose = (await claimJobs.create('echo hi', ALICE, { repo: BATCH_REPO, executor: null })) as {
+        const loose = (await claimJobs.create('echo hi', ALICE, { repo: githubRepo(BATCH_REPO), executor: null })) as {
             id: string;
         };
         const looseClaim = await claimJobs.claim('w1', 300);

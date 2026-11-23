@@ -4,7 +4,15 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { account, expireLease, mustCreate, randomGithubId, testOrg, withoutTransitionGuard } from './fixtures.js';
+import {
+    account,
+    expireLease,
+    mustCreate,
+    randomGithubId,
+    testOrg,
+    withoutTransitionGuard,
+    repoRefOf,
+} from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -37,7 +45,7 @@ beforeAll(async () => {
  * Attribution cases pass a real account explicitly.
  */
 const queue = async (command: string, createdBy: string | null = null, target = { repo: null, executor: null }) => {
-    const ref = await store.create(command, createdBy, target);
+    const ref = await store.create(command, createdBy, { ...target, repo: repoRefOf(target.repo) });
     if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
     return ref;
 };
@@ -51,7 +59,7 @@ const finishSessionless = async (
     createdBy: string | null = null,
     target: { repo: string | null; executor: string | null } = { repo: null, executor: null }
 ): Promise<string> => {
-    const { id } = await mustCreate(store.create(command, createdBy, target));
+    const { id } = await mustCreate(store.create(command, createdBy, { ...target, repo: repoRefOf(target.repo) }));
     const claim = await store.claim('w1', LEASE_SECONDS);
     await store.complete(id, claim!.leaseToken, { status: 'failed', exitCode: null, output: 'died before reporting' });
     return id;
@@ -66,7 +74,7 @@ const finishWithSession = async (
     target: { repo: string | null; executor: string | null } = { repo: null, executor: null },
     createdBy: string | null = null
 ): Promise<string> => {
-    const { id } = await mustCreate(store.create(command, createdBy, target));
+    const { id } = await mustCreate(store.create(command, createdBy, { ...target, repo: repoRefOf(target.repo) }));
     const claim = await store.claim('w1', LEASE_SECONDS);
     await store.session(id, claim!.leaseToken, SESSION);
     await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });

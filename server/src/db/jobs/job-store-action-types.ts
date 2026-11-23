@@ -3,6 +3,7 @@
  * edit, done, stop, suspend, interrupt, remove, the wait pair and reopen.
  */
 
+import type { RepoRef } from '@factory-ai/core';
 import type { BindConnectionResult, DismissRequirementResult } from './job-store-connections.js';
 import type { IdempotencyInput } from './job-store-idempotency.js';
 import type {
@@ -40,7 +41,7 @@ export interface JobActionStore {
         command: string,
         createdBy: string | null,
         target: {
-            repo: string | null;
+            repo: RepoRef | null;
             executor: string | null;
             /**
              * The scope the executor label names (issue 391): which profile list claim-time

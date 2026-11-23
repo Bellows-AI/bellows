@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -80,7 +81,7 @@ const must = <T extends { id: string }>(ref: T | string): T => {
 /** A thread of `owner`'s that ran to a verdict while their grant was live: the root, finished with a session. */
 async function finishedRoot(owner: typeof ALICE, target: JobStore = store): Promise<string> {
     await link(owner);
-    const root = must(await target.create('first run', owner.id, { repo: REPO, executor: null }));
+    const root = must(await target.create('first run', owner.id, { repo: githubRepo(REPO), executor: null }));
     const claim = await claimNext(target);
     expect(claim?.id).toBe(root.id);
     await target.session(claim!.id, claim!.leaseToken, randomUUID());
@@ -169,7 +170,7 @@ describe.skipIf(!enabled)('the claim holds a continuation whose starter has no l
 
     it('never holds a running row: the takeover of an expired lease is claimed with no requirement', async () => {
         await link(ALICE);
-        const root = must(await store.create('long run', ALICE.id, { repo: REPO, executor: null }));
+        const root = must(await store.create('long run', ALICE.id, { repo: githubRepo(REPO), executor: null }));
         const first = await claimNext();
         expect(first?.id).toBe(root.id);
         await revoke(ALICE);
@@ -198,7 +199,7 @@ describe.skipIf(!enabled)('the claim holds a continuation whose starter has no l
 
     it('is off without a standing reader (AUTH_MODE=none): a leftover forge requirement does not hold the claim', async () => {
         const off = createJobStore({ sql, orgId: ORG });
-        const root = must(await off.create('local', ALICE.id, { repo: REPO, executor: null }));
+        const root = must(await off.create('local', ALICE.id, { repo: githubRepo(REPO), executor: null }));
         await sql`
             insert into job_integration_requirement (org_id, root_job_id, provider, reason, target)
             values (${ORG}, ${root.id}, 'forge', 'reconnect', 'github')

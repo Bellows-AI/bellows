@@ -8,7 +8,7 @@ import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
 import { faultySecrets, testSecretStore } from './env-secrets-harness.js';
-import { lapseDeferral, mustCreate, testOrg, testUser } from './fixtures.js';
+import { lapseDeferral, mustCreate, testOrg, testUser, repoRefOf } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -61,7 +61,7 @@ beforeAll(() => {
 });
 
 const task = (jobs: ReturnType<typeof stores>['jobs'], repo: string | null = null) =>
-    mustCreate(jobs.create('echo hi', ALICE, { repo, executor: 'main', executorScope: 'user' }));
+    mustCreate(jobs.create('echo hi', ALICE, { repo: repoRefOf(repo), executor: 'main', executorScope: 'user' }));
 
 describe.skipIf(!enabled)('cloud mode: a redirect with no member key never reaches a claim', () => {
     it('(a) in the profile, for both executor types: refused, the profile kept', async () => {

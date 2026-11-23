@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -66,7 +67,7 @@ const claimerStore = (readFor: ReturnType<typeof parkedReader>['readFor']): JobS
     createJobStore({ sql: claimPool, orgId: ORG, plan: { readFor } });
 
 const queued = async (): Promise<string> => {
-    const created = await plain.create('do the work', ALICE.id, { repo: REPO, executor: null });
+    const created = await plain.create('do the work', ALICE.id, { repo: githubRepo(REPO), executor: null });
     if (typeof created === 'string') throw new Error(created);
     return created.id;
 };
@@ -203,7 +204,7 @@ describe.skipIf(!enabled)('claim vs thread writers', () => {
         const root = await terminalRoot(true);
         const member = await followUpOf(root);
         const { result } = await raceWithClaim(member, undefined, () =>
-            writer.closeMergedPr(REPO, PULL, `guid-${randomUUID()}`)
+            writer.closeMergedPr(githubRepo(REPO), PULL, `guid-${randomUUID()}`)
         );
         expect(result).toEqual({ outcome: 'applied', closedRoots: 1 });
         expect(await rowOf(member)).toMatchObject({ status: 'stopped', done_at: expect.any(Date) });

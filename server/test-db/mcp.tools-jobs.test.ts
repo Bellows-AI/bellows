@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -134,7 +135,7 @@ const call = async (url: URL, who: 'alice' | 'bob' | 'carol', name: string, args
 /** A running job under a live lease, in a repository of its own so a test can find it among the org's tasks. */
 async function running(store: JobStore = jobs): Promise<{ id: string; claim: Claim; repo: string }> {
     const repo = `acme/r${randomUUID().slice(0, 8)}`;
-    const ref = await store.create('read me', null, { repo, executor: null });
+    const ref = await store.create('read me', null, { repo: githubRepo(repo), executor: null });
     if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
     const claim = (await store.claim(`w-${ref.id}`, LEASE_SECONDS)) as Claim;
     expect(claim.id).toBe(ref.id);
@@ -180,7 +181,7 @@ describe.skipIf(!enabled)('the task, job, log and question tools — database', 
         expect(live.data).toMatchObject({ result: 'timeout', taskId: id, runId: id, status: 'running' });
 
         const ref = await jobs.create('never claimed', null, {
-            repo: `acme/r${randomUUID().slice(0, 8)}`,
+            repo: githubRepo(`acme/r${randomUUID().slice(0, 8)}`),
             executor: null,
         });
         if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
@@ -236,7 +237,7 @@ describe.skipIf(!enabled)('the task, job, log and question tools — database', 
         `;
         const repo = `acme/r${randomUUID().slice(0, 8)}`;
         const ref = await jobs.create('use my jira', owner, {
-            repo,
+            repo: githubRepo(repo),
             executor: null,
             connectionIds: [connection.id],
             attachmentIds: [attachmentId],

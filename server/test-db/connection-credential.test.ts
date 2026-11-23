@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -72,7 +73,7 @@ async function rig(options: RigOptions = {}) {
     await sql`insert into org_membership (org_id, github_login, user_id) values (${org}, ${user.login}, ${user.id})
         on conflict do nothing`;
     const jobs = createJobStore({ sql, orgId: org });
-    const created = await jobs.create('work the ticket', user.id, { repo: REPO, executor: null });
+    const created = await jobs.create('work the ticket', user.id, { repo: githubRepo(REPO), executor: null });
     if (typeof created === 'string') throw new Error(`create refused: ${created}`);
     const cloudId = `cloud-${randomUUID()}`;
     const attached = await attachJira(createConnectionGrants({ sql, orgId: org }), user.id, {

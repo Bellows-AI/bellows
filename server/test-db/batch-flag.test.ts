@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
@@ -67,7 +68,7 @@ describe.skipIf(!enabled)('batches off: the claim', () => {
     it('skips a queued batch job, keeps the row, and still claims a single task', async () => {
         const root = await dispatched();
         const loose = (await off.create('echo hi', ALICE, {
-            repo: BATCH_REPO,
+            repo: githubRepo(BATCH_REPO),
             executor: null,
         })) as { id: string };
 
@@ -107,7 +108,7 @@ describe.skipIf(!enabled)('batches off: retry, follow-up and force-close on a ba
 
     it('retries and follows up a job outside a batch the same with the flag off', async () => {
         const loose = (await off.create('echo hi', ALICE, {
-            repo: BATCH_REPO,
+            repo: githubRepo(BATCH_REPO),
             executor: null,
         })) as { id: string };
         await finish(loose.id, 'failed');

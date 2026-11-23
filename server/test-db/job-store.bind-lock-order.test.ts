@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -66,7 +67,7 @@ afterAll(async () => {
 const connect = async (): Promise<string> => (await oauthConnection(sql, ORG, ALICE.id)).id;
 
 const queued = async (): Promise<string> => {
-    const created = await plain.create('do the work', ALICE.id, { repo: REPO, executor: null });
+    const created = await plain.create('do the work', ALICE.id, { repo: githubRepo(REPO), executor: null });
     if (typeof created === 'string') throw new Error(created);
     return created.id;
 };
@@ -110,7 +111,7 @@ const waitingWorkflow: WorkflowDefinition = {
 /** A workflow thread that published to the suite's PR and parked on a delivery wait (the block-wait fixture). */
 const waitingThread = async (): Promise<string> => {
     const created = await plain.create('start the thread', ALICE.id, {
-        repo: REPO,
+        repo: githubRepo(REPO),
         executor: null,
         workflow: {
             id: randomUUID(),
@@ -191,7 +192,9 @@ describe.skipIf(!enabled)('bind vs thread writers — database', () => {
 
     it('B4: a merge close and a bind on one root do not deadlock', async () => {
         const root = await terminalRoot(true);
-        const closed = await raceWithBind(root, () => writer.closeMergedPr(REPO, PULL, `guid-${randomUUID()}`));
+        const closed = await raceWithBind(root, () =>
+            writer.closeMergedPr(githubRepo(REPO), PULL, `guid-${randomUUID()}`)
+        );
         expect(closed).toEqual({ outcome: 'applied', closedRoots: 1 });
         expect((await rootRow(root)).done_at).not.toBeNull();
     });
@@ -238,7 +241,7 @@ describe.skipIf(!enabled)('bind vs thread writers — database', () => {
         if (typeof made === 'string') throw new Error(made);
         const member = await plain.claim(WORKER, LEASE_SECONDS);
         if (member?.id !== made.id) throw new Error('the follow-up was not claimed');
-        expect(await plain.closeMergedPr(REPO, PULL, `guid-${randomUUID()}`)).toEqual({
+        expect(await plain.closeMergedPr(githubRepo(REPO), PULL, `guid-${randomUUID()}`)).toEqual({
             outcome: 'applied',
             closedRoots: 1,
         });
@@ -250,7 +253,8 @@ describe.skipIf(!enabled)('bind vs thread writers — database', () => {
 
         const prLock = await holder(
             sql,
-            (tx) => tx`select pg_advisory_xact_lock(hashtextextended(${prLockKey(ORG, REPO, PULL)}::text, 0))`
+            (tx) =>
+                tx`select pg_advisory_xact_lock(hashtextextended(${prLockKey(ORG, githubRepo(REPO), PULL)}::text, 0))`
         );
         const verdict = writer.complete(member.id, member.leaseToken, {
             ...succeeded,
@@ -263,7 +267,7 @@ describe.skipIf(!enabled)('bind vs thread writers — database', () => {
             },
         });
         await waitForLockWait(sql, WRITER, Date.now() + DEADLINE_MS);
-        const redelivered = hooks.closeMergedPr(REPO, PULL, `guid-${randomUUID()}`);
+        const redelivered = hooks.closeMergedPr(githubRepo(REPO), PULL, `guid-${randomUUID()}`);
         await waitForLockWait(sql, HOOK, Date.now() + DEADLINE_MS);
         prLock.release();
         await prLock.done;
@@ -284,7 +288,7 @@ describe.skipIf(!enabled)('bind vs thread writers — database', () => {
             prNumber: PULL,
         });
         await sweepRuntimeWakes({ sql, orgId: ORG, prs });
-        await prs.cancelForRepoPr(REPO, PULL, 'pr closed');
+        await prs.cancelForRepoPr(githubRepo(REPO), PULL, 'pr closed');
         await sql`insert into job_merge_close (org_id, root_job_id) values (${ORG}, ${root})`;
 
         const fresh = await connect();
@@ -393,7 +397,7 @@ describe.skipIf(!enabled)('bind vs thread writers — database', () => {
             sql,
             (tx) => tx`select 1 from workflow_wait where org_id = ${ORG} and root_job_id = ${root} for update`
         );
-        const merged = hooks.closeMergedPr(REPO, PULL, `guid-${randomUUID()}`);
+        const merged = hooks.closeMergedPr(githubRepo(REPO), PULL, `guid-${randomUUID()}`);
         await waitForLockWait(sql, HOOK, Date.now() + DEADLINE_MS);
         const woken = wakeOneRound({ sql: writerPool, orgId: ORG, prs: writerPrs }, root, 'review', true);
         await waitForLockWait(sql, WRITER, Date.now() + DEADLINE_MS);

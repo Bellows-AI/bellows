@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql, TransactionSql } from 'postgres';
@@ -13,6 +14,7 @@ import {
     randomGithubId,
     spendInterruptionBudget,
     testOrg,
+    repoRefOf,
 } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -99,7 +101,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         command: string,
         target: { repo: string | null; executor: string | null } = { repo: null, executor: null }
     ): Promise<string> => {
-        const { id } = await mustCreate(store.create(command, null, target));
+        const { id } = await mustCreate(store.create(command, null, { ...target, repo: repoRefOf(target.repo) }));
         const claim = await store.claim('w1', LEASE_SECONDS);
         await store.session(id, claim!.leaseToken, SESSION);
         await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
@@ -278,7 +280,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
             }
         }
 
-        await prLifecycle.enterWait({ root: parent, reason: 'review', repo: 'acme/widgets', prNumber: 7 });
+        await prLifecycle.enterWait({ root: parent, reason: 'review', repo: githubRepo('acme/widgets'), prNumber: 7 });
         for (const member of [parent, first.id]) {
             const chain = await store.thread(member);
             for (const job of chain!) {

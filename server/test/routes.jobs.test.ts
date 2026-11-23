@@ -304,7 +304,7 @@ function stubStore(
             stub.created.push({
                 command,
                 createdBy: createdBy ?? null,
-                repo: target?.repo ?? null,
+                repo: target?.repo?.path ?? null,
                 executor: target?.executor ?? null,
                 executorScope: target?.executorScope ?? null,
                 ...(target?.agentModel !== undefined ? { agentModel: target.agentModel } : {}),

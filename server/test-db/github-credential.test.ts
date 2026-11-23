@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import type { Sql } from 'postgres';
@@ -64,7 +65,7 @@ const join = (org: string) =>
 /** A running task of AUTHOR's in `org`, under a live lease. */
 async function running(store: JobStore = jobs, org: string = ORG): Promise<{ id: string; claim: Claim }> {
     await join(org);
-    const ref = await store.create('push the fix', AUTHOR.id, { repo: REPO, executor: null });
+    const ref = await store.create('push the fix', AUTHOR.id, { repo: githubRepo(REPO), executor: null });
     if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
     const claim = (await store.claim('w1', LEASE_SECONDS)) as Claim;
     expect(claim.id).toBe(ref.id);

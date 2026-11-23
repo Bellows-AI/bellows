@@ -1,7 +1,7 @@
 import { createServer } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
-import { NO_MODEL_MESSAGE } from '@factory-ai/core';
+import { githubRepo, NO_MODEL_MESSAGE } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
 import type { McpCaller, OAuthStore } from '../src/auth/oauth-store.js';
@@ -298,7 +298,7 @@ describe('the task write tools', () => {
         expect(command).toBe(text);
         expect(createdBy).toBe(userOf('writer'));
         expect(options).toMatchObject({
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             executor: 'fast',
             executorScope: 'org',
             baseBranch: 'release',

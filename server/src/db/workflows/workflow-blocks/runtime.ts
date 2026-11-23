@@ -13,11 +13,12 @@
  * extra namespacing required.
  */
 import type { Sql, TransactionSql } from 'postgres';
-import { USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
+import { USER_SCOPE, type ExecutorScope, type RepoRef } from '@factory-ai/core';
 import { lockThreadRootInTx } from '../../connection-bindings.js';
 import type { JobStorePrs } from '../../jobs/job-store-types.js';
 import { insertAdminActionEvent } from '../../jobs/job-store-admin-event.js';
 import { insertWorkflowSuccessor } from '../../jobs/job-store-rows.js';
+import { refOfNullableRow } from '../../repo-ref-row.js';
 import { runtimeIsValid } from './runtime-params.js';
 import type { WorkflowNode } from '../workflow-schema.js';
 
@@ -27,7 +28,7 @@ export interface PendingSuccessor {
     rootJobId: string;
     /** The row whose completion produced this transition — the continuation's eventual parent. */
     parentJobId: string;
-    repo: string | null;
+    repo: RepoRef | null;
     executor: string | null;
     executorScope: ExecutorScope;
     /** The agent default frozen on the thread: parked with the round, restored on the woken job. Absent is none. */
@@ -83,9 +84,10 @@ export async function enterRuntimeBoundary(
         // count, untouched by enterWait on an already-active wait) both carry over unchanged.
         await tx`
             update workflow_round set
-                repo = ${publication.repo}, pr_number = ${publication.prNumber},
+                forge = ${publication.repo.forge}, host = ${publication.repo.host},
+                repo = ${publication.repo.path}, pr_number = ${publication.prNumber},
                 command = ${successor.command}, session_id = ${successor.sessionId},
-                job_repo = ${successor.repo}, executor = ${successor.executor},
+                job_repo = ${successor.repo?.path ?? null}, executor = ${successor.executor},
                 executor_scope = ${successor.executorScope},
                 agent_type = ${successor.agentType ?? null}, agent_model = ${successor.agentModel ?? null},
                 parent_job_id = ${successor.parentJobId}, parked_at = now()
@@ -102,12 +104,12 @@ export async function enterRuntimeBoundary(
     const round = (previous?.max ?? 0) + 1;
     await tx`
         insert into workflow_round (
-            org_id, root_job_id, workflow_node, round, repo, pr_number,
+            org_id, root_job_id, workflow_node, round, forge, host, repo, pr_number,
             command, session_id, job_repo, executor, executor_scope, agent_type, agent_model, parent_job_id
         ) values (
             ${successor.orgId}, ${successor.rootJobId}, ${successor.workflowNode}, ${round},
-            ${publication.repo}, ${publication.prNumber},
-            ${successor.command}, ${successor.sessionId}, ${successor.repo}, ${successor.executor},
+            ${publication.repo.forge}, ${publication.repo.host}, ${publication.repo.path}, ${publication.prNumber},
+            ${successor.command}, ${successor.sessionId}, ${successor.repo?.path ?? null}, ${successor.executor},
             ${successor.executorScope}, ${successor.agentType ?? null}, ${successor.agentModel ?? null},
             ${successor.parentJobId}
         )
@@ -121,6 +123,8 @@ interface RoundRow {
     workflow_node: string;
     command: string;
     session_id: string | null;
+    forge: string;
+    host: string;
     job_repo: string | null;
     executor: string | null;
     executor_scope: string | null;
@@ -179,7 +183,7 @@ export async function wakeOneRound(
         if (active?.any) return null;
 
         const [round] = await tx<RoundRow[]>`
-            select workflow_node, command, session_id, job_repo, executor, executor_scope, agent_type, agent_model,
+            select workflow_node, command, session_id, forge, host, job_repo, executor, executor_scope, agent_type, agent_model,
                    parent_job_id
             from workflow_round
             where org_id = ${orgId} and root_job_id = ${rootJobId}
@@ -228,7 +232,7 @@ async function insertWakeContinuation(
         command: round.command,
         // An admin's poke is the admin's turn; the claim still runs it as the thread's owner.
         createdBy: ctx.actor ? ctx.actor.userId : root.created_by,
-        repo: round.job_repo,
+        repo: refOfNullableRow({ forge: round.forge, host: round.host, repo: round.job_repo }),
         executor: round.executor,
         executorScope: (round.executor_scope ?? USER_SCOPE) as ExecutorScope,
         // The round's frozen copy, never the agent default as it reads at wake.

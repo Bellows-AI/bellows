@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -109,7 +110,7 @@ describe.skipIf(!enabled)('waitForSettle — the long-poll settle read (issue #3
         const followUp = await mustFollowUp(root, 'again');
         expect(await store.waitForSettle(root, 50)).toMatchObject({ result: 'timeout' });
 
-        await prs.enterWait({ root, reason: 'review', repo: REPO, prNumber: 1 });
+        await prs.enterWait({ root, reason: 'review', repo: githubRepo(REPO), prNumber: 1 });
         expect(await store.waitForSettle(root, 5_000)).toMatchObject({
             result: 'parked',
             rootJobId: root,
@@ -121,7 +122,7 @@ describe.skipIf(!enabled)('waitForSettle — the long-poll settle read (issue #3
     it('a closed PR wait leaves the moving thread unsettled', async () => {
         const root = await finishWithSession('drive me');
         await mustFollowUp(root, 'again');
-        await prs.enterWait({ root, reason: 'review', repo: REPO, prNumber: 1 });
+        await prs.enterWait({ root, reason: 'review', repo: githubRepo(REPO), prNumber: 1 });
         // A wait goes terminal the way every real caller lands it — with the reason it ended
         // ('pr closed', 'task stopped'); a stamped completion without one is the ambiguous
         // state no production path writes.

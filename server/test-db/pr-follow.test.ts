@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -10,6 +11,7 @@ import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { GitHubReadError } from '../src/github/pr-read.js';
+import { claimDue, withFollowClaim } from '../src/db/pr-follow-store.js';
 import { createPrFollower, type PrFollower } from '../src/pr-follower.js';
 import { useTestDb } from './harness.js';
 import { mustCreate, testOrg, testUser } from './fixtures.js';
@@ -137,7 +139,7 @@ async function parkedThread(name: string): Promise<{ root: string; number: numbe
     const number = nextPr;
     const { id: root } = await mustCreate(
         jobs.create('start the thread', null, {
-            repo: REPO,
+            repo: githubRepo(REPO),
             executor: null,
             workflow: { id: randomUUID(), name, node: waitingWorkflow.entry, snapshot: waitingWorkflow, params: {} },
         })
@@ -163,7 +165,7 @@ async function parkedThread(name: string): Promise<{ root: string; number: numbe
 async function plainThread(): Promise<{ root: string; number: number }> {
     nextPr += 1;
     const number = nextPr;
-    const { id: root } = await mustCreate(jobs.create('plain work', null, { repo: REPO, executor: null }));
+    const { id: root } = await mustCreate(jobs.create('plain work', null, { repo: githubRepo(REPO), executor: null }));
     const claim = (await jobs.claim(WORKER, LEASE_SECONDS)) as Claim;
     await jobs.complete(claim.id, claim.leaseToken, {
         status: 'succeeded',
@@ -293,7 +295,7 @@ describe.skipIf(!enabled)('PR follower — idempotent beside the webhook', () =>
 
     it('does not read a PR whose merge the webhook already recorded', async () => {
         const { root, number } = await plainThread();
-        await jobs.closeMergedPr(REPO, number, 'guid-merge');
+        await jobs.closeMergedPr(githubRepo(REPO), number, 'guid-merge');
         github.replies.set(number, mergedPr(number));
         const closedAt = await doneAtOf(root);
 
@@ -409,7 +411,9 @@ describe.skipIf(!enabled)('PR follower — what it reads', () => {
     it("never reads another organization's PR", async () => {
         const otherPrs = createPrLifecycleStore({ sql, orgId: OTHER });
         const otherJobs = createJobStore({ sql, orgId: OTHER, prs: otherPrs });
-        const { id: root } = await mustCreate(otherJobs.create('other org work', null, { repo: REPO, executor: null }));
+        const { id: root } = await mustCreate(
+            otherJobs.create('other org work', null, { repo: githubRepo(REPO), executor: null })
+        );
         const claim = (await otherJobs.claim('worker-other', LEASE_SECONDS)) as Claim;
         await otherJobs.complete(claim.id, claim.leaseToken, {
             status: 'succeeded',
@@ -497,7 +501,7 @@ describe.skipIf(!enabled)('PR follower — activity is consumed per wait', () =>
         await follower.observeDue();
 
         // The wait commits after the follower already read this activity.
-        await prs.enterWait({ root, reason: 'review', repo: REPO, prNumber: number });
+        await prs.enterWait({ root, reason: 'review', repo: githubRepo(REPO), prNumber: number });
         await makeDue();
         await follower.observeDue();
 
@@ -506,7 +510,7 @@ describe.skipIf(!enabled)('PR follower — activity is consumed per wait', () =>
 
     it('folds activity GitHub stamped in the same second the wait began', async () => {
         const { root, number } = await plainThread();
-        await prs.enterWait({ root, reason: 'review', repo: REPO, prNumber: number });
+        await prs.enterWait({ root, reason: 'review', repo: githubRepo(REPO), prNumber: number });
         const [row] = await sql<{ active_at: Date }[]>`
             select active_at from workflow_wait where org_id = ${ORG} and root_job_id = ${root}`;
         const activeAt = row!.active_at;
@@ -526,7 +530,7 @@ describe.skipIf(!enabled)('PR follower — the cursor identifies what was observ
         ['the wait is finished and entered again', true],
     ])('wakes the wait for a second activity in the same provider second when %s', async (_label, reenter) => {
         const { root, number } = await plainThread();
-        await prs.enterWait({ root, reason: 'review', repo: REPO, prNumber: number });
+        await prs.enterWait({ root, reason: 'review', repo: githubRepo(REPO), prNumber: number });
         const stamp = new Date(Math.floor(Date.now() / 1000) * 1000 + MINUTE).toISOString();
         github.replies.set(number, batchFacts(number, { repo: REPO, updatedAt: stamp, checks: checks('passing') }));
         await follower.observeDue();
@@ -536,7 +540,7 @@ describe.skipIf(!enabled)('PR follower — the cursor identifies what was observ
         await prs.claimReview(root, 'review');
         if (reenter) {
             await prs.finishWait(root, 'review', 'collected');
-            await prs.enterWait({ root, reason: 'review', repo: REPO, prNumber: number });
+            await prs.enterWait({ root, reason: 'review', repo: githubRepo(REPO), prNumber: number });
         }
         expect((await prs.waitOf(root))?.pending).toBe(0);
 
@@ -550,7 +554,7 @@ describe.skipIf(!enabled)('PR follower — the cursor identifies what was observ
 
     it('wakes a re-entered wait for activity after a webhook woke the previous continuation', async () => {
         const { root, number } = await plainThread();
-        await prs.enterWait({ root, reason: 'review', repo: REPO, prNumber: number });
+        await prs.enterWait({ root, reason: 'review', repo: githubRepo(REPO), prNumber: number });
         // Webhook A wakes a continuation, which exits the block.
         await prs.recordDelivery({
             deliveryId: 'guid-a',
@@ -564,7 +568,7 @@ describe.skipIf(!enabled)('PR follower — the cursor identifies what was observ
         // Activity B changes the PR after that; its webhook is lost; the workflow re-enters the wait later.
         const stamp = new Date().toISOString();
         await new Promise((resolve) => setTimeout(resolve, 1100));
-        await prs.enterWait({ root, reason: 'review', repo: REPO, prNumber: number });
+        await prs.enterWait({ root, reason: 'review', repo: githubRepo(REPO), prNumber: number });
         github.replies.set(number, batchFacts(number, { repo: REPO, updatedAt: stamp, headSha: 'h2' }));
 
         await follower.observeDue();
@@ -578,7 +582,7 @@ describe.skipIf(!enabled)('PR follower — the cursor identifies what was observ
 
     it('wakes nothing when an unchanged PR is read again and again', async () => {
         const { root, number } = await plainThread();
-        await prs.enterWait({ root, reason: 'review', repo: REPO, prNumber: number });
+        await prs.enterWait({ root, reason: 'review', repo: githubRepo(REPO), prNumber: number });
         github.replies.set(number, openPr(number));
         for (let pass = 0; pass < 5; pass += 1) {
             await follower.observeDue();
@@ -586,5 +590,74 @@ describe.skipIf(!enabled)('PR follower — the cursor identifies what was observ
         }
         expect(github.reads).toHaveLength(5);
         expect((await prs.waitOf(root))?.pending).toBe(1);
+    });
+});
+
+/** One path on GitHub and on a GitLab host is two repositories: the follow rows and their claims keep them apart. */
+describe.skipIf(!enabled)('PR follower — a GitLab repository on the same path', () => {
+    const GITLAB_HOST = 'gl.example';
+
+    /** `plainThread`, on a GitLab host. */
+    async function gitlabPlainThread(): Promise<{ root: string; number: number }> {
+        nextPr += 1;
+        const number = nextPr;
+        const { id: root } = await mustCreate(
+            jobs.create('plain work', null, { repo: githubRepo(REPO), executor: null })
+        );
+        await sql`update job set forge = 'gitlab', host = ${GITLAB_HOST} where org_id = ${ORG} and id = ${root}`;
+        const claim = (await jobs.claim(WORKER, LEASE_SECONDS)) as Claim;
+        await jobs.complete(claim.id, claim.leaseToken, {
+            status: 'succeeded',
+            exitCode: 0,
+            output: 'published',
+            publication: {
+                repo: REPO,
+                prNumber: number,
+                prUrl: `https://${GITLAB_HOST}/${REPO}/-/merge_requests/${number}`,
+                headBranch: `factory/${root}`,
+                baseBranch: 'main',
+            },
+        });
+        return { root, number };
+    }
+
+    it('follows the PR a GitLab thread published under that forge and host', async () => {
+        const { number } = await gitlabPlainThread();
+
+        const claims = await claimDue({ sql, orgId: ORG }, 10, 0);
+
+        expect(claims).toEqual([expect.objectContaining({ repo: { forge: 'gitlab', host: GITLAB_HOST, path: REPO } })]);
+        expect(await sql`select forge, host, repo, pr_number from pr_follow where org_id = ${ORG}`).toEqual([
+            { forge: 'gitlab', host: GITLAB_HOST, repo: REPO, pr_number: number },
+        ]);
+    });
+
+    it('never updates a GitLab follow row through a GitHub claim on the same path', async () => {
+        nextPr += 1;
+        const token = randomUUID();
+        await sql`
+            insert into pr_follow (org_id, forge, host, repo, pr_number, next_poll_at, claim_token, claimed_until)
+            values (${ORG}, 'gitlab', ${GITLAB_HOST}, ${REPO}, ${nextPr}, now(), ${token}::uuid, now() + interval '1 hour')
+        `;
+
+        const applied = await withFollowClaim(
+            { sql, orgId: ORG },
+            { repo: githubRepo(REPO), prNumber: nextPr, token },
+            async () => ({ kind: 'seen', closed: false })
+        );
+
+        expect(applied).toBe(false);
+    });
+
+    it('answers a GitLab claim given GitHub facts for the same path as a failed read, applying nothing', async () => {
+        const { root, number } = await gitlabPlainThread();
+        github.replies.set(number, mergedPr(number));
+
+        await follower.observeDue();
+
+        expect(github.reads).toEqual([number]);
+        expect(await mergeRows(number)).toEqual([]);
+        expect(await doneAtOf(root)).toBeNull();
+        expect(await followRow(number)).toMatchObject({ failures: 1, error_code: 'binding' });
     });
 });

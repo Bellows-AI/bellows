@@ -61,12 +61,12 @@ export function memoryPrLifecycleStore(): MemoryPrLifecycleStore {
             throw new Error('memory pr lifecycle: publicationOf is not exercised by route tests');
         },
         async enterWait(input) {
-            if (openWaits(input.repo, input.prNumber).length === 0) {
-                waits.push({ repo: input.repo, prNumber: input.prNumber, pending: 0, cancelled: false });
+            if (openWaits(input.repo.path, input.prNumber).length === 0) {
+                waits.push({ repo: input.repo.path, prNumber: input.prNumber, pending: 0, cancelled: false });
             }
             return {
                 reason: input.reason,
-                repo: input.repo,
+                repo: input.repo.path,
                 prNumber: input.prNumber,
                 pending: 0,
                 lastDeliveryId: null,
@@ -94,9 +94,9 @@ export function memoryPrLifecycleStore(): MemoryPrLifecycleStore {
             throw new Error('memory pr lifecycle: cancelWaitsForRoot is not exercised by route tests');
         },
         async cancelForRepoPr(repo, prNumber, terminalReason = 'pr closed') {
-            const hit = openWaits(repo, prNumber);
+            const hit = openWaits(repo.path, prNumber);
             for (const wait of hit) wait.cancelled = true;
-            cancellations.push({ repo, prNumber, terminalReason });
+            cancellations.push({ repo: repo.path, prNumber, terminalReason });
             return hit.length;
         },
         async recordDelivery(delivery) {

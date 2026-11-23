@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -105,7 +106,7 @@ const writerOver = (fetchFn: typeof fetch = fetch) => createPrWriter({ apiUrl: f
 
 /** A running task of AUTHOR's under a live lease. */
 async function running(board: JobStore = jobs): Promise<{ id: string; claim: Claim }> {
-    const ref = await board.create('push the fix', AUTHOR.id, { repo: REPO, executor: null });
+    const ref = await board.create('push the fix', AUTHOR.id, { repo: githubRepo(REPO), executor: null });
     if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
     const claim = (await board.claim('w1', LEASE_SECONDS)) as Claim;
     expect(claim.id).toBe(ref.id);

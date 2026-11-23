@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { notificationEventOf } from '@factory-ai/core';
+import { notificationEventOf, githubRepo } from '@factory-ai/core';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { IdempotencyInput } from '../src/db/jobs/job-store-idempotency.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
@@ -95,7 +95,7 @@ const finishedTask = async (): Promise<string> => {
 const publishedThread = async (prNumber: number): Promise<string> => {
     const { id: root } = await mustCreate(
         store.create('start the thread', AUTHOR, {
-            repo: REPO,
+            repo: githubRepo(REPO),
             executor: null,
             workflow: {
                 id: randomUUID(),

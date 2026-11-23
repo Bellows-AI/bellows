@@ -5,6 +5,7 @@
 
 import { waitAdvisoryXactLock } from '../pool.js';
 import type { TransactionSql } from 'postgres';
+import { refColumns } from '../repo-ref-row.js';
 import { doneFragment, terminalFragment } from './job-store-sql-fragments.js';
 import { workspacePathFor } from './job-store-rows.js';
 
@@ -26,13 +27,13 @@ export async function queueReclaimIfThreadDone(tx: TransactionSql, orgId: string
     `;
     if (!thread || thread.total === 0 || thread.total !== thread.terminal) return;
 
-    const { repo, workspacePath } = await reclaimTarget(tx, orgId, rootJobId);
+    const { forge, host, repo, workspacePath } = await reclaimTarget(tx, orgId, rootJobId);
     // Idempotent against a row already queued (an earlier done, or a concurrent one): one tree,
     // one reclaim. The claim-ack cycle removes the row; until then a duplicate insert would only
     // re-offer an already-removed tree, so the guard is tidiness, not correctness.
     await tx`
-        insert into task_reclaim (org_id, root_job_id, repo, workspace_path)
-        select ${orgId}, ${rootJobId}, ${repo}, ${workspacePath}
+        insert into task_reclaim (org_id, root_job_id, forge, host, repo, workspace_path)
+        select ${orgId}, ${rootJobId}, ${forge}, ${host}, ${repo}, ${workspacePath}
         where not exists (
             select 1 from task_reclaim
             where org_id = ${orgId} and root_job_id = ${rootJobId}
@@ -45,12 +46,15 @@ async function reclaimTarget(
     tx: TransactionSql,
     orgId: string,
     rootJobId: string
-): Promise<{ repo: string | null; workspacePath: string | null }> {
-    const [root] = await tx<{ repo: string | null; created_by: string | null }[]>`
-        select repo, created_by from job
+): Promise<{ forge: string; host: string; repo: string | null; workspacePath: string | null }> {
+    const [root] = await tx<{ forge: string; host: string; repo: string | null; created_by: string | null }[]>`
+        select forge, host, repo, created_by from job
         where org_id = ${orgId} and id = ${rootJobId}
     `;
+    const none = refColumns(null);
     return {
+        forge: root?.forge ?? none.forge,
+        host: root?.host ?? none.host,
         repo: root?.repo ?? null,
         workspacePath: workspacePathFor(orgId, root?.created_by ?? null),
     };
@@ -110,10 +114,10 @@ export async function issueVerdictReclaim(
     }
     const live = await tx`select 1 from task_reclaim where org_id = ${orgId} and root_job_id = ${rootJobId}`;
     if (live.length > 0) return null;
-    const { repo, workspacePath } = await reclaimTarget(tx, orgId, rootJobId);
+    const { forge, host, repo, workspacePath } = await reclaimTarget(tx, orgId, rootJobId);
     const [inserted] = await tx<{ id: string }[]>`
-        insert into task_reclaim (org_id, root_job_id, repo, workspace_path, claimed_by, claim_token, lease_expires_at)
-        values (${orgId}, ${rootJobId}, ${repo}, ${workspacePath}, ${worker}, ${leaseToken}, ${lease})
+        insert into task_reclaim (org_id, root_job_id, forge, host, repo, workspace_path, claimed_by, claim_token, lease_expires_at)
+        values (${orgId}, ${rootJobId}, ${forge}, ${host}, ${repo}, ${workspacePath}, ${worker}, ${leaseToken}, ${lease})
         returning id
     `;
     return inserted!.id;

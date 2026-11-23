@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { nextObservationDelayMs, OBSERVE_INTERVAL_MS, type ReadErrorKind } from '@factory-ai/core';
+import { nextObservationDelayMs, OBSERVE_INTERVAL_MS, type ReadErrorKind, type RepoRef } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { OBSERVATION_LEASE_MS } from './batches/batch-store-observation.js';
+import { refOfRow, refsMatch, repoIs, type RepoRow } from './repo-ref-row.js';
 
 /**
  * The PR follower's cadence rows (082; docs/workflows.md): which PRs are due for a read. Nothing
@@ -27,7 +28,7 @@ export interface PrFollowDeps {
 }
 
 export interface PrFollowClaim {
-    repo: string;
+    repo: RepoRef;
     prNumber: number;
     token: string;
 }
@@ -44,21 +45,20 @@ const nowOf = (deps: PrFollowDeps): Date => (deps.now ? deps.now() : new Date())
  * nothing left to close, and a removed thread's orphaned publication row is not counted.
  */
 const candidates = (tx: TransactionSql, orgId: string) => tx`
-    select w.repo, w.pr_number from workflow_wait w
+    select w.forge, w.host, w.repo, w.pr_number from workflow_wait w
     where w.org_id = ${orgId} and w.completed_at is null and w.cancelled_at is null
     union
-    select p.repo, p.pr_number from job_pr p
+    select p.forge, p.host, p.repo, p.pr_number from job_pr p
     where p.org_id = ${orgId}
       and exists (select 1 from job j where j.org_id = p.org_id and j.id = p.root_job_id)
       and not exists (select 1 from pr_merge m
-                      where m.org_id = p.org_id and m.repo = p.repo and m.pr_number = p.pr_number)
+                      where m.org_id = p.org_id and ${refsMatch(tx, 'm', 'p')} and m.pr_number = p.pr_number)
       and not exists (select 1 from batch_task t where t.org_id = p.org_id and t.root_job_id = p.root_job_id)
       and not exists (select 1 from job d
                       where d.org_id = p.org_id and d.root_job_id = p.root_job_id and d.done_at is not null)
 `;
 
-interface DueRow {
-    repo: string;
+interface DueRow extends RepoRow {
     pr_number: number;
 }
 
@@ -73,21 +73,21 @@ export async function claimDue(deps: PrFollowDeps, limit: number, spreadMs: numb
     return sql.begin(async (tx) => {
         await tx`
             delete from pr_follow f
-            where f.org_id = ${orgId} and (f.repo, f.pr_number) not in (${candidates(tx, orgId)})
+            where f.org_id = ${orgId} and (f.forge, f.host, f.repo, f.pr_number) not in (${candidates(tx, orgId)})
         `;
         await tx`
-            insert into pr_follow (org_id, repo, pr_number, next_poll_at)
-            select ${orgId}, c.repo, c.pr_number,
+            insert into pr_follow (org_id, forge, host, repo, pr_number, next_poll_at)
+            select ${orgId}, c.forge, c.host, c.repo, c.pr_number,
                    ${now}::timestamptz + random() * ${spreadMs}::double precision * interval '1 millisecond'
             from (${candidates(tx, orgId)}) c
             on conflict do nothing
         `;
         const due = await tx<DueRow[]>`
-            select f.repo, f.pr_number from pr_follow f
+            select f.forge, f.host, f.repo, f.pr_number from pr_follow f
             where f.org_id = ${orgId}
               and f.next_poll_at <= ${now}
               and (f.claimed_until is null or f.claimed_until <= ${now})
-            order by f.next_poll_at, f.repo, f.pr_number
+            order by f.next_poll_at, f.forge, f.host, f.repo, f.pr_number
             limit ${limit}
             for update skip locked
         `;
@@ -97,9 +97,9 @@ export async function claimDue(deps: PrFollowDeps, limit: number, spreadMs: numb
             const token = randomUUID();
             await tx`
                 update pr_follow set claim_token = ${token}::uuid, claimed_until = ${claimedUntil}
-                where org_id = ${orgId} and repo = ${row.repo} and pr_number = ${row.pr_number}
+                where org_id = ${orgId} and ${repoIs(tx, 'pr_follow', refOfRow(row))} and pr_number = ${row.pr_number}
             `;
-            claims.push({ repo: row.repo, prNumber: row.pr_number, token });
+            claims.push({ repo: refOfRow(row), prNumber: row.pr_number, token });
         }
         return claims;
     });
@@ -122,7 +122,7 @@ export async function withFollowClaim(
     return sql.begin(async (tx) => {
         const [row] = await tx<{ failures: number }[]>`
             select failures from pr_follow
-            where org_id = ${orgId} and repo = ${claim.repo} and pr_number = ${claim.prNumber}
+            where org_id = ${orgId} and ${repoIs(tx, 'pr_follow', claim.repo)} and pr_number = ${claim.prNumber}
               and claim_token = ${claim.token}::uuid
             for update
         `;
@@ -135,7 +135,7 @@ export async function withFollowClaim(
                     failures = 0, error_code = null, observed_at = ${now},
                     next_poll_at = ${new Date(now.getTime() + interval)},
                     claim_token = null, claimed_until = null, updated_at = ${now}
-                where org_id = ${orgId} and repo = ${claim.repo} and pr_number = ${claim.prNumber}
+                where org_id = ${orgId} and ${repoIs(tx, 'pr_follow', claim.repo)} and pr_number = ${claim.prNumber}
             `;
             return true;
         }
@@ -146,7 +146,7 @@ export async function withFollowClaim(
                 failures = ${failures}, error_code = ${result.error},
                 next_poll_at = ${new Date(now.getTime() + delay)},
                 claim_token = null, claimed_until = null, updated_at = ${now}
-            where org_id = ${orgId} and repo = ${claim.repo} and pr_number = ${claim.prNumber}
+            where org_id = ${orgId} and ${repoIs(tx, 'pr_follow', claim.repo)} and pr_number = ${claim.prNumber}
         `;
         return true;
     });

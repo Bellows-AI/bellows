@@ -6,7 +6,7 @@ import { fingerprintOf } from '../src/db/jobs/job-store-receipts.js';
 import type { Claim, CreateJobStoreDeps, JobStore, ReviewerSpec } from '../src/db/jobs/job-store-types.js';
 import { boardMetrics, countOf, type MetricsHarness } from '../test/helpers-metrics.js';
 import { captureLogs } from '../test/helpers-log.js';
-import { account, expireLease, randomGithubId, testOrg } from './fixtures.js';
+import { account, expireLease, randomGithubId, testOrg, repoRefOf } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -54,7 +54,7 @@ const counted = (plan: Partial<Plan> = {}): { store: JobStore; harness: MetricsH
 
 async function queued(store: JobStore, repo: string | null = null): Promise<string> {
     const job = await store.create('do the thing', await account(sql, randomGithubId(), 'outcome-cat'), {
-        repo,
+        repo: repoRefOf(repo),
         executor: null,
     });
     if (typeof job === 'string') throw new Error(job);

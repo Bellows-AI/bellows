@@ -7,7 +7,7 @@ import type { Claim, JobStore, ReviewerSpec } from '../src/db/jobs/job-store-typ
 import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { expireLease, mustCreate, testOrg, testUser } from './fixtures.js';
+import { expireLease, mustCreate, testOrg, testUser, repoRefOf } from './fixtures.js';
 import { testSecretDeps } from './env-secrets-harness.js';
 
 /**
@@ -276,7 +276,7 @@ describe.skipIf(!enabled)('a task frozen with an agent default', () => {
         if (won?.kind !== 'agent') throw new Error('the agent default did not win');
         return mustCreate(
             store.create('drive me', ALICE, {
-                repo,
+                repo: repoRefOf(repo),
                 executor: null,
                 agentType: won.agentType,
                 agentModel: won.model,

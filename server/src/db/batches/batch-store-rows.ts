@@ -1,4 +1,4 @@
-import type { BatchPlan, ResolvedBatchPlan } from '@factory-ai/core';
+import type { BatchPlan, RepoRef, ResolvedBatchPlan } from '@factory-ai/core';
 import {
     awaitsBoardMerge,
     BATCH_COMPLETION_ACCEPTED,
@@ -33,7 +33,7 @@ export interface RootTask {
 }
 
 /** Where a task's root launches: its target's repo, and its frozen executor in that executor's scope, or its frozen agent. */
-export const rootTargetOf = (task: RootTask, repo: string) => ({
+export const rootTargetOf = (task: RootTask, repo: RepoRef) => ({
     repo,
     executor: task.executor,
     ...(task.executor_scope === null ? {} : { executorScope: task.executor_scope }),

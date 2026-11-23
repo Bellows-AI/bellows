@@ -3,6 +3,7 @@ import {
     type DeploymentMode,
     NO_MODEL_MESSAGE,
     STORED_CREDENTIAL_PREFIX,
+    githubRepo,
 } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -92,7 +93,9 @@ describe.skipIf(!enabled)('cloud mode: a stored OAuth token never reaches a clai
         const { executors, env, jobs } = stores(ORG, 'cloud');
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
         await env.replaceRepo('env-admin', 'acme', 'web', [{ name: TOKEN, value: VALUE, isSecret: false }]);
-        await mustCreate(jobs.create('echo hi', ALICE, { repo: 'acme/web', executor: 'main', executorScope: 'user' }));
+        await mustCreate(
+            jobs.create('echo hi', ALICE, { repo: githubRepo('acme/web'), executor: 'main', executorScope: 'user' })
+        );
 
         expectRefused(await jobs.claim('w1', LEASE_SECONDS));
         expect(await env.listRepo('acme', 'web')).toEqual([expect.objectContaining({ name: TOKEN })]);
@@ -103,7 +106,9 @@ describe.skipIf(!enabled)('cloud mode: a stored OAuth token never reaches a clai
         // A model key in the profile, so the author's claim and the reviewer's run on it and only the token refuses.
         const config = { env: { ANTHROPIC_API_KEY: 'sk-ant-profile' } };
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config }]);
-        await mustCreate(jobs.create('ship it', ALICE, { repo: 'acme/api', executor: 'main', executorScope: 'user' }));
+        await mustCreate(
+            jobs.create('ship it', ALICE, { repo: githubRepo('acme/api'), executor: 'main', executorScope: 'user' })
+        );
         const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
         expect(caller.executorRefusal).toBeNull();
         // Stored after the author's claim, as a token saved before cloud mode would sit there.
@@ -143,7 +148,9 @@ describe.skipIf(!enabled)('a reviewer granted only an OpenRouter key', () => {
             { name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true },
             { name: 'ANTHROPIC_API_KEY', value: 'sk-ant-author-only', isSecret: true },
         ]);
-        await mustCreate(jobs.create('ship it', ALICE, { repo: 'acme/api', executor: 'main', executorScope: 'user' }));
+        await mustCreate(
+            jobs.create('ship it', ALICE, { repo: githubRepo('acme/api'), executor: 'main', executorScope: 'user' })
+        );
         const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
         expect(caller.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
 
@@ -176,7 +183,9 @@ describe.skipIf(!enabled)('a reviewer granted only an OpenRouter key', () => {
             { name: 'ANTHROPIC_AUTH_TOKEN', value: 'member-bearer', isSecret: true },
             { name: 'ANTHROPIC_API_KEY', value: 'sk-ant-author-only', isSecret: true },
         ]);
-        await mustCreate(jobs.create('ship it', ALICE, { repo: 'acme/api', executor: 'main', executorScope: 'user' }));
+        await mustCreate(
+            jobs.create('ship it', ALICE, { repo: githubRepo('acme/api'), executor: 'main', executorScope: 'user' })
+        );
         const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
         expect(caller.env?.ANTHROPIC_API_KEY).toBe('sk-ant-author-only');
 
@@ -197,7 +206,9 @@ describe.skipIf(!enabled)('cloud mode: a claim with no model credential is refus
         const { executors, env, jobs } = stores(ORG, 'cloud');
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
         await env.replaceWorkspace(ALICE, [{ name: 'ANTHROPIC_API_KEY', value: 'sk-ant-member', isSecret: true }]);
-        await mustCreate(jobs.create('echo hi', ALICE, { repo: 'acme/web', executor: 'main', executorScope: 'user' }));
+        await mustCreate(
+            jobs.create('echo hi', ALICE, { repo: githubRepo('acme/web'), executor: 'main', executorScope: 'user' })
+        );
         await env.replaceWorkspace(ALICE, [{ name: 'DEPLOY_REGION', value: 'eu', isSecret: false }]);
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);
@@ -213,11 +224,15 @@ describe.skipIf(!enabled)('cloud mode: a claim with no model credential is refus
             { name: 'keyed', type: 'opencode', config: { provider: { openai: { options: { apiKey: 'sk-oai' } } } } },
             { name: 'plain', type: 'claude-code', config: {} },
         ]);
-        await mustCreate(jobs.create('one', ALICE, { repo: 'acme/web', executor: 'keyed', executorScope: 'user' }));
+        await mustCreate(
+            jobs.create('one', ALICE, { repo: githubRepo('acme/web'), executor: 'keyed', executorScope: 'user' })
+        );
         expect((await jobs.claim('w1', LEASE_SECONDS))?.executorRefusal).toBeNull();
 
         await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: 'sk-or', isSecret: true }]);
-        await mustCreate(jobs.create('two', ALICE, { repo: 'acme/web', executor: 'plain', executorScope: 'user' }));
+        await mustCreate(
+            jobs.create('two', ALICE, { repo: githubRepo('acme/web'), executor: 'plain', executorScope: 'user' })
+        );
         expect((await jobs.claim('w2', LEASE_SECONDS))?.executorRefusal).toBeNull();
     });
 
@@ -233,7 +248,9 @@ describe.skipIf(!enabled)('cloud mode: a claim with no model credential is refus
         for (const executor of ['cleared', 'password', 'missing']) {
             // OpenCode reads no Anthropic key off a profile: the member's key only travels for Claude Code here.
             if (executor !== 'cleared') await env.replaceWorkspace(ALICE, []);
-            await mustCreate(jobs.create(executor, ALICE, { repo: 'acme/web', executor, executorScope: 'user' }));
+            await mustCreate(
+                jobs.create(executor, ALICE, { repo: githubRepo('acme/web'), executor, executorScope: 'user' })
+            );
             const claim = await jobs.claim(`w-${executor}`, LEASE_SECONDS);
             expect(claim?.executorRefusal, executor).toBe(NO_MODEL_MESSAGE);
         }
@@ -244,7 +261,9 @@ describe.skipIf(!enabled)('cloud mode: a claim with no model credential is refus
         await env.replaceWorkspace(ALICE, [{ name: 'GATEWAY_KEY', value: 'gw', isSecret: true }]);
         const config = { provider: { custom: { options: { apiKey: '{env:GATEWAY_KEY}' } } } };
         await executors.replace(ALICE, [{ name: 'gw', type: 'opencode', config }]);
-        await mustCreate(jobs.create('gw', ALICE, { repo: 'acme/web', executor: 'gw', executorScope: 'user' }));
+        await mustCreate(
+            jobs.create('gw', ALICE, { repo: githubRepo('acme/web'), executor: 'gw', executorScope: 'user' })
+        );
         expect((await jobs.claim('w1', LEASE_SECONDS))?.executorRefusal).toBeNull();
     });
 
@@ -255,7 +274,9 @@ describe.skipIf(!enabled)('cloud mode: a claim with no model credential is refus
             { name: 'ANTHROPIC_API_KEY', value: 'sk-ant-author-only', isSecret: true },
             { name: 'DEPLOY_REGION', value: 'eu', isSecret: false },
         ]);
-        await mustCreate(jobs.create('ship it', ALICE, { repo: 'acme/api', executor: 'main', executorScope: 'user' }));
+        await mustCreate(
+            jobs.create('ship it', ALICE, { repo: githubRepo('acme/api'), executor: 'main', executorScope: 'user' })
+        );
         const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
         expect(caller.executorRefusal).toBeNull();
 
@@ -274,7 +295,9 @@ describe.skipIf(!enabled)('cloud mode: a claim with no model credential is refus
         for (const jobs of [stores(ORG, 'self-hosted').jobs, stores(ORG, 'cloud', REVIEWER, true).jobs]) {
             const { executors } = stores(ORG, 'self-hosted');
             await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
-            await mustCreate(jobs.create('echo', ALICE, { repo: 'acme/web', executor: 'main', executorScope: 'user' }));
+            await mustCreate(
+                jobs.create('echo', ALICE, { repo: githubRepo('acme/web'), executor: 'main', executorScope: 'user' })
+            );
             expect((await jobs.claim('w1', LEASE_SECONDS))?.executorRefusal).toBeNull();
         }
     });

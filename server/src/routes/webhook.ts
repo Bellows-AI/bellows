@@ -7,7 +7,7 @@ import { describeError } from '../log.js';
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import { GITHUB_FORGE } from '../integrations/providers/github-user.js';
 import type { OrgRegistry } from '../orgs.js';
-import { ERROR_CODES, JSON_CONTENT_TYPE } from '@factory-ai/core';
+import { ERROR_CODES, JSON_CONTENT_TYPE, githubRepo } from '@factory-ai/core';
 
 /**
  * A payload big enough for any member or PR event and far above what a real delivery can reach.
@@ -289,7 +289,7 @@ async function handlePrMerged(
         return;
     }
 
-    await merges.closeMergedPr(activity.repo, activity.number, activity.deliveryId);
+    await merges.closeMergedPr(githubRepo(activity.repo), activity.number, activity.deliveryId);
     reply.code(HTTP_OK).send({ ok: true });
 }
 
@@ -329,7 +329,7 @@ async function handlePrEvent(orgs: OrgRegistry, input: PrEventInput, reply: Fast
             prNumber: activity.number,
         });
     } else {
-        await runtime.prs.cancelForRepoPr(activity.repo, activity.number, 'pr closed');
+        await runtime.prs.cancelForRepoPr(githubRepo(activity.repo), activity.number, 'pr closed');
     }
     reply.code(HTTP_OK).send({ ok: true });
 }

@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -61,7 +62,7 @@ const rowOf = async (id: string) => {
 
 /** Creates and claims one objective job, returning the lease. */
 async function claimed(store: JobStore) {
-    const created = await store.create('ship it', await account(), { repo: 'acme/web', executor: null });
+    const created = await store.create('ship it', await account(), { repo: githubRepo('acme/web'), executor: null });
     if (typeof created === 'string') throw new Error(`create refused: ${created}`);
     const claim = await store.claim('driver-1', LEASE_SECONDS);
     expect(claim?.id).toBe(created.id);
