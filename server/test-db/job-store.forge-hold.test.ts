@@ -256,7 +256,7 @@ describe.skipIf(!enabled)('the claim holds a continuation whose starter has no l
  * window; only the route's successful write closes the wait.
  */
 describe.skipIf(!enabled)('a forge-access wait', () => {
-    const FORGE_ACCESS = 'forge-access';
+    const NO_WRITE_REASON = 'forge-access';
     const RETRY_SECONDS = 600;
     const SLACK_SECONDS = 10;
 
@@ -276,7 +276,7 @@ describe.skipIf(!enabled)('a forge-access wait', () => {
         expect(claim.id).toBe(next);
         if (open) {
             expect(
-                await store.openPrForgeWait(next, claim.leaseToken, { forge: 'github', reason: FORGE_ACCESS })
+                await store.openPrForgeWait(next, claim.leaseToken, { forge: 'github', reason: NO_WRITE_REASON })
             ).toEqual({
                 result: 'ok',
             });
@@ -302,7 +302,7 @@ describe.skipIf(!enabled)('a forge-access wait', () => {
         await sql`update job set claim_deferred_until = now() - interval '1 second' where org_id = ${ORG} and id = ${next}`;
 
         expect((await claimNext())?.id).toBe(next);
-        expect(await openForgeRows(root)).toEqual([{ target: 'github', reason: FORGE_ACCESS, source: 'create' }]);
+        expect(await openForgeRows(root)).toEqual([{ target: 'github', reason: NO_WRITE_REASON, source: 'create' }]);
     });
 
     it('a broken grant at the retry still holds the row, and a re-link then lets it through with the wait open', async () => {
@@ -314,7 +314,7 @@ describe.skipIf(!enabled)('a forge-access wait', () => {
 
         await link(ALICE);
         expect((await claimNext())?.id).toBe(next);
-        expect(await openForgeRows(root)).toEqual([{ target: 'github', reason: FORGE_ACCESS, source: 'create' }]);
+        expect(await openForgeRows(root)).toEqual([{ target: 'github', reason: NO_WRITE_REASON, source: 'create' }]);
     });
 
     it('a re-link leaves it open, while it still closes a reconnect wait', async () => {
@@ -322,7 +322,7 @@ describe.skipIf(!enabled)('a forge-access wait', () => {
 
         await link(ALICE);
 
-        expect(await openForgeRows(root)).toEqual([{ target: 'github', reason: FORGE_ACCESS, source: 'create' }]);
+        expect(await openForgeRows(root)).toEqual([{ target: 'github', reason: NO_WRITE_REASON, source: 'create' }]);
         await sql`update job_integration_requirement set reason = 'reconnect' where org_id = ${ORG} and root_job_id = ${root}`;
         await link(ALICE);
         expect(await openForgeRows(root)).toEqual([]);

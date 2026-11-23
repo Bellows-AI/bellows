@@ -160,6 +160,11 @@ describe('test:changed plan', () => {
             expect(steps.at(-1)?.label).toContain('charts/factory/templates/unknown-thing.yaml');
         });
 
+        it('does not widen the unit run for a DB suite or an e2e spec: the db and ui gates own them', () => {
+            const steps = run(['server/test-db/new-suite.test.ts', 'server/test-db/new-rig.ts', 'e2e/new.spec.ts']);
+            expect(steps.some((step) => step.label.startsWith('widened'))).toBe(false);
+        });
+
         it('runs everything for a file every package builds from, though a test names it', () => {
             const steps = run(['Makefile'], { namedBy: () => ['driver/test/executor-images.test.ts'] });
             expect(steps.at(-1)?.label).toContain('shared by every package');

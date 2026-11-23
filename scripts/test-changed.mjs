@@ -16,6 +16,7 @@ const PROJECTS = ['core', 'server', 'web', 'driver', 'cli', 'dom', 'spawn'];
 const CORE_CONSUMERS = ['server', 'web', 'dom'];
 const UNIT_TEST = /^(core|server|web|driver|cli)\/test\/.*\.test\.tsx?$/;
 const TEST_TREE = /^(core|server|web|driver|cli)\/test\//;
+const NOT_UNIT = /^(server\/test-db|e2e)\//;
 // Names too common for a source to be said to load them, and files every package builds from or
 // runs under: a change to one is not narrowed, it runs everything.
 const SHARED_NAME = /^(package(-lock)?\.json|tsconfig[\w.]*\.json|Makefile|VERSION|README\.md|Dockerfile[\w.]*|index\.[a-z]+)$/;
@@ -88,6 +89,9 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
             // A test file or helper added, moved or changed moves the project lists and the test scans.
             named.add('core/test/vitest-projects.test.ts');
             if (GRAPH_FILE.test(file)) classify(namedBy([baseName(file)])); // launched by path
+        } else if (NOT_UNIT.test(file)) {
+            // No unit project runs these: the db and ui gates do. A unit test that reads one by path is still reached.
+            classify(namedBy([baseName(file)]));
         } else if (SRC_MODULE.test(file)) {
             if (addedSet.has(file)) widen(pkg, `${file} was added or removed: directory scans see it`);
             else for (const scanner of SOURCE_SCANNERS[pkg] ?? []) named.add(scanner);
