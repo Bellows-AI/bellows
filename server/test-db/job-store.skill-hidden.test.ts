@@ -12,7 +12,7 @@ import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
 import type { Claim, JobStore, ReviewerSpec } from '../src/db/jobs/job-store-types.js';
 import { createSkillStore, type SkillStore } from '../src/db/skill-store.js';
 import { bundleFromSkillMd } from '../src/skills/skill-bundle.js';
-import { expireLease, oauthConnection, testOrg, testUser } from './fixtures.js';
+import { expireLease, oauthConnection, testOrg, testUser, repoRefOf } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -66,7 +66,7 @@ const orgSkill = async (c: Case, name: string, requires?: string) => {
 };
 
 const createJob = async (c: Case, skills: string[] = [], repo: string | null = null) => {
-    const ref = await c.jobs.create('work', ALICE.id, { repo, executor: null, skills });
+    const ref = await c.jobs.create('work', ALICE.id, { repo: repoRefOf(repo), executor: null, skills });
     if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
     return ref.id;
 };

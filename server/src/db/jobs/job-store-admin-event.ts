@@ -17,13 +17,15 @@ export async function insertAdminActionEvent(
     const { orgId, jobId, action, actorId } = input;
     if (!actorId) return;
     const rows = await tx<{ org_id: string; id: string; author_user_id: string | null }[]>`
-        insert into notification_event (org_id, id, kind, job_id, root_job_id, repo, workflow, command, reason, pr_url,
+        insert into notification_event (org_id, id, kind, job_id, root_job_id, forge, host, repo, workflow, command, reason, pr_url,
                                         action, actor_user_id, actor_login, author_user_id, author_login, occurred_at)
         select j.org_id,
                md5(${input.subject ?? jobId}::text || '/task.admin_action')::uuid,
                'task.admin_action',
                j.id,
                j.root_job_id,
+               j.forge,
+               j.host,
                j.repo,
                j.workflow_name,
                j.command,

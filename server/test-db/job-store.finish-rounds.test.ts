@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_GATE_FIX_ROUNDS } from '@factory-ai/core';
+import { DEFAULT_GATE_FIX_ROUNDS, githubRepo } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
@@ -151,7 +151,7 @@ describe.skipIf(!enabled)('the finish round cap on the claim', () => {
     it('carries the root’s value on a parked successor once a delivery wakes it', async () => {
         await profile('waits', 6);
         const root = await create({
-            repo: REPO,
+            repo: githubRepo(REPO),
             executor: 'waits',
             executorScope: 'org',
             workflow: workflowOf(waiting),

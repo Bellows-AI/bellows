@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
@@ -88,7 +89,7 @@ const poisonReader =
     };
 
 const queue = async (repo = HEALTHY): Promise<string> =>
-    (await mustCreate(plain.create('do the thing', author, { repo, executor: null }))).id;
+    (await mustCreate(plain.create('do the thing', author, { repo: githubRepo(repo), executor: null }))).id;
 
 const claimed = async (store: JobStore = plain): Promise<Claim> => {
     const c = await store.claim(WORKER, LEASE_SECONDS);

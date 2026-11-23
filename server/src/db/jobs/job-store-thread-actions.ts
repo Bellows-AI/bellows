@@ -18,6 +18,7 @@ import { cancelWaitsWithEvent, insertAdminActionEvent } from './job-store-admin-
 import { addFollowUpBindings, bindOnCreate } from './job-store-connections.js';
 import { bindAttachmentsInTx, revokeThreadAttachmentsInTx } from './job-store-attachments.js';
 import { backsBatchTask, batchThreadState, exists, workspacePathFor, hasRunningMember } from './job-store-rows.js';
+import { refColumns } from '../repo-ref-row.js';
 import { queueReclaimIfThreadDone } from './job-store-reclaim-queue.js';
 import { recordCreateDecisionInTx, recordFollowUpDecisionInTx } from './job-store-skill-pin.js';
 import { threadRefusalOf } from './job-store-thread-refusal.js';
@@ -114,13 +115,14 @@ export async function insertJobInTx(
     // validated launch values beside it (030). The mode (051) is decided here, once: no
     // named workflow is objective, and the thread inherits it.
     const mode = target.workflow ? WORKFLOW_MODE : OBJECTIVE_MODE;
+    const repoColumns = refColumns(target.repo);
     const rows = await tx<{ id: string }[]>`
             insert into job (
-                org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
+                org_id, command, created_by, forge, host, repo, executor, executor_scope, id, root_job_id,
                 workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params, mode,
                 execution_user_id, skills, base_branch, skill_pin, skill_hidden, agent_type, agent_model, gate_fix_rounds
             )
-            select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, ${target.executorScope ?? USER_SCOPE}, x, x,
+            select ${orgId}, ${command}, ${createdBy}, ${repoColumns.forge}, ${repoColumns.host}, ${repoColumns.repo}, ${target.executor}, ${target.executorScope ?? USER_SCOPE}, x, x,
                    ${target.workflow?.id ?? null},
                    ${target.workflow?.name ?? null},
                    ${target.workflow?.node ?? null},
@@ -267,7 +269,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
     const { rootJobId } = admitted;
     const rows = await tx<{ id: string }[]>`
             with parent as (
-                select id, repo, executor, executor_scope, agent_type, agent_model, session_id, root_job_id, workflow_name, mode
+                select id, forge, host, repo, executor, executor_scope, agent_type, agent_model, session_id, root_job_id, workflow_name, mode
                 from job
                 where org_id = ${orgId} and id = ${parentId}
                   and ${terminalFragment(tx)}
@@ -301,8 +303,8 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                     end as session_id
                 from parent, root
             )
-            insert into job (org_id, command, created_by, repo, executor, executor_scope, agent_type, agent_model, parent_job_id, session_id, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
-            select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.executor_scope,
+            insert into job (org_id, command, created_by, forge, host, repo, executor, executor_scope, agent_type, agent_model, parent_job_id, session_id, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
+            select ${orgId}, ${command}, ${createdBy}, parent.forge, parent.host, parent.repo, parent.executor, parent.executor_scope,
                    parent.agent_type, coalesce(${input.model ?? null}::text, parent.agent_model), parent.id,
                    coalesce(primary_session.session_id, parent.session_id),
                    parent.root_job_id, parent.workflow_name, parent.mode, '[]'::jsonb, '[]'::jsonb
@@ -403,7 +405,7 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
                 for update
             ),
             head as (
-                select command, repo, executor, executor_scope, agent_type, agent_model, root_job_id, workflow_name, mode,
+                select command, forge, host, repo, executor, executor_scope, agent_type, agent_model, root_job_id, workflow_name, mode,
                        skill_pin, skill_hidden
                 from job
                 where org_id = ${orgId} and root_job_id = (select root_job_id from named)
@@ -411,8 +413,8 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
                 limit 1
             )
             -- The pin is the head's, as the command is: a retry re-runs the head with the versions it was locked to.
-            insert into job (org_id, command, created_by, repo, executor, executor_scope, agent_type, agent_model, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
-            select ${orgId}, head.command, ${createdBy}, head.repo, head.executor, head.executor_scope,
+            insert into job (org_id, command, created_by, forge, host, repo, executor, executor_scope, agent_type, agent_model, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
+            select ${orgId}, head.command, ${createdBy}, head.forge, head.host, head.repo, head.executor, head.executor_scope,
                    head.agent_type, head.agent_model, head.root_job_id, head.workflow_name, head.mode, head.skill_pin, head.skill_hidden
             from named, head
             where ${threadIdleFragment(tx, orgId, 'head.root_job_id')}
@@ -542,8 +544,10 @@ export async function removeLockedThreadInTx(
     // The thread's ROOT row carries the labels the reclaim is addressed by — the repo
     // the worktree was checked out from and the author whose checkout root it lives
     // under.
-    const [root] = await tx<{ id: string; repo: string | null; created_by: string | null }[]>`
-        select id, repo, created_by from job
+    const [root] = await tx<
+        { id: string; forge: string; host: string; repo: string | null; created_by: string | null }[]
+    >`
+        select id, forge, host, repo, created_by from job
         where org_id = ${orgId} and id = ${rootJobId}
     `;
     if (!root) return 'missing';
@@ -603,8 +607,8 @@ export async function removeLockedThreadInTx(
     // One per tree: the thread's own, and each review's (its worktree is keyed by its own id).
     for (const tree of [rootJobId, ...reviews.map((review) => review.id)]) {
         await tx`
-            insert into task_reclaim (org_id, root_job_id, repo, workspace_path, removed_by)
-            values (${orgId}, ${tree}, ${root.repo}, ${workspacePath}, ${removedBy})
+            insert into task_reclaim (org_id, root_job_id, forge, host, repo, workspace_path, removed_by)
+            values (${orgId}, ${tree}, ${root.forge}, ${root.host}, ${root.repo}, ${workspacePath}, ${removedBy})
         `;
     }
 

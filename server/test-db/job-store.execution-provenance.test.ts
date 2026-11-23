@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -7,7 +8,7 @@ import type { Claim, JobStore, ReviewerSpec } from '../src/db/jobs/job-store-typ
 import { createWorkflowStore } from '../src/db/workflows/workflow-store.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { expireLease, mustCreate, spendInterruptionBudget, testOrg } from './fixtures.js';
+import { expireLease, mustCreate, spendInterruptionBudget, testOrg, repoRefOf } from './fixtures.js';
 
 /**
  * Issue #845: every claim leaves a durable `job_execution` row, written in the claim's own
@@ -63,7 +64,7 @@ const sessions = (jobId: string) =>
         where org_id = ${ORG} and job_id = ${jobId} order by claim_seq, session_id`;
 
 const queue = async (command = 'do the thing', target = { repo: 'acme/web', executor: null as string | null }) =>
-    (await mustCreate(store.create(command, null, target))).id;
+    (await mustCreate(store.create(command, null, { ...target, repo: githubRepo(target.repo) }))).id;
 
 const claim = async (): Promise<Claim> => {
     const c = await store.claim(WORKER, LEASE_SECONDS);
@@ -216,8 +217,9 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
 
     it('resolves a named review to its requesting job and root, and a lost reviewer resumes its session', async () => {
         const reviewStore = reviewingStore();
-        const callerId = (await mustCreate(reviewStore.create('ship it', null, { repo: 'acme/web', executor: null })))
-            .id;
+        const callerId = (
+            await mustCreate(reviewStore.create('ship it', null, { repo: githubRepo('acme/web'), executor: null }))
+        ).id;
         const caller = (await reviewStore.claim(WORKER, LEASE_SECONDS))!;
         const request = { key: 'sec-1', profile: 'security', revision: 'abc', ref: reviewRefOf(callerId, 'sec-1') };
 
@@ -255,7 +257,9 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
 
     it('resolves the requesting root of a review asked by a follow-up caller', async () => {
         const reviewStore = reviewingStore();
-        const rootId = (await mustCreate(reviewStore.create('ship it', null, { repo: 'acme/web', executor: null }))).id;
+        const rootId = (
+            await mustCreate(reviewStore.create('ship it', null, { repo: githubRepo('acme/web'), executor: null }))
+        ).id;
         const first = (await reviewStore.claim(WORKER, LEASE_SECONDS))!;
         await reviewStore.session(rootId, first.leaseToken, randomUUID());
         await reviewStore.complete(rootId, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
@@ -287,8 +291,9 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
 
         const settledThreadWithReview = async () => {
             const reviewStore = reviewingStore();
-            const rootId = (await mustCreate(reviewStore.create('ship it', null, { repo: 'acme/web', executor: null })))
-                .id;
+            const rootId = (
+                await mustCreate(reviewStore.create('ship it', null, { repo: githubRepo('acme/web'), executor: null }))
+            ).id;
             const caller = (await reviewStore.claim(WORKER, LEASE_SECONDS))!;
             const request = { key: 'sec-1', profile: 'security', revision: 'abc', ref: reviewRefOf(rootId, 'sec-1') };
             const asked = await reviewStore.requestReview(rootId, caller.leaseToken, request);

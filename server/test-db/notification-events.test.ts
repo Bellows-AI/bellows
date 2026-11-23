@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { notificationEventOf } from '@factory-ai/core';
+import { notificationEventOf, githubRepo } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
@@ -8,7 +8,7 @@ import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.j
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
-import { craftJob, mustCreate, testOrg } from './fixtures.js';
+import { craftJob, mustCreate, testOrg, repoRefOf } from './fixtures.js';
 
 /**
  * every committed job.status change to a settled verdict records one durable
@@ -32,7 +32,7 @@ beforeAll(() => {
 });
 
 async function queue(command = 'do the thing', repo: string | null = null): Promise<string> {
-    const job = await store.create(command, null, { repo, executor: null });
+    const job = await store.create(command, null, { repo: repoRefOf(repo), executor: null });
     if (typeof job === 'string') throw new Error(job);
     return job.id;
 }
@@ -145,7 +145,7 @@ describe.skipIf(!enabled)('notification events — database', () => {
                 }),
             },
         });
-        const created = await gated.create('ship it', null, { repo: 'acme/web', executor: null });
+        const created = await gated.create('ship it', null, { repo: githubRepo('acme/web'), executor: null });
         if (typeof created === 'string') throw new Error(created);
         const c = await gated.claim(WORKER, LEASE_SECONDS);
         expect(c?.id).toBe(created.id);
@@ -288,7 +288,7 @@ describe.skipIf(!enabled)('notification events — database', () => {
         const REPO = 'acme/web';
         const prs = createPrLifecycleStore({ sql, orgId: ORG });
         const publishing = createJobStore({ sql, orgId: ORG, prs });
-        const created = await publishing.create('ship it', null, { repo: REPO, executor: null });
+        const created = await publishing.create('ship it', null, { repo: githubRepo(REPO), executor: null });
         if (typeof created === 'string') throw new Error(created);
         const c = await publishing.claim(WORKER, LEASE_SECONDS);
         expect(c?.id).toBe(created.id);
@@ -517,7 +517,7 @@ describe.skipIf(!enabled)('notification events — database', () => {
         const root = (
             await mustCreate(
                 waiting.create('start the thread', null, {
-                    repo: REPO,
+                    repo: githubRepo(REPO),
                     executor: null,
                     workflow: { id: randomUUID(), name: 'park', node: 'verify', snapshot: definition, params: {} },
                 })

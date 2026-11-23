@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -76,7 +77,7 @@ beforeAll(async () => {
 
 /** A workflow-less thread taken to a terminal verdict, published to the suite's PR. */
 const finishPublished = async (command: string, status: 'succeeded' | 'failed' = 'succeeded'): Promise<string> => {
-    const { id } = await mustCreate(store.create(command, null, { repo: REPO, executor: null }));
+    const { id } = await mustCreate(store.create(command, null, { repo: githubRepo(REPO), executor: null }));
     const claim = await store.claim(WORKER, LEASE_SECONDS);
     if (claim === null) throw new Error('claim refused');
     await store.session(id, claim.leaseToken, SESSION);
@@ -134,7 +135,7 @@ const startWorkflowThread = async (
 ): Promise<string> => {
     const { id } = await mustCreate(
         store.create('walk the graph', null, {
-            repo: REPO,
+            repo: githubRepo(REPO),
             executor: null,
             workflow: { id: randomUUID(), name, node: snapshot.entry, snapshot, params: {} },
         })

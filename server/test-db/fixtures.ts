@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { githubRepo, type RepoRef } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { expect } from 'vitest';
 import { createConnectionGrants } from '../src/db/connection-grants.js';
@@ -9,6 +10,9 @@ import type { TestUser } from './harness.js';
  * Helpers the db suites used to copy file by file. Each is the verbatim body those copies shared;
  * a suite with a genuinely different shape keeps its own.
  */
+
+/** The GitHub ref of an owner/name repo label, or null for a repo-less job: what `store.create` takes. */
+export const repoRefOf = (repo: string | null): RepoRef | null => (repo === null ? null : githubRepo(repo));
 
 /** A create that must succeed: kept as the one place a suite names it, so a refusal returning later is one edit. */
 export const mustCreate = (p: Promise<{ id: string }>): Promise<{ id: string }> => p;

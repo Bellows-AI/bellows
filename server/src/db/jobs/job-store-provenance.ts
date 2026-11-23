@@ -27,10 +27,10 @@ export async function recordExecution(tx: TransactionSql, orgId: string, jobId: 
         with created as (
             insert into job_execution (
                 org_id, job_id, claim_seq, root_job_id, requesting_job_id, requesting_root_job_id,
-                author_id, repo, executor, executor_scope, resumed
+                author_id, forge, host, repo, executor, executor_scope, resumed
             )
             select j.org_id, j.id, j.claim_seq, j.root_job_id, j.review_of, r.root_job_id,
-                   j.created_by, j.repo, j.executor, j.executor_scope, j.session_id is not null
+                   j.created_by, j.forge, j.host, j.repo, j.executor, j.executor_scope, j.session_id is not null
             from job j
             left join job r on r.org_id = j.org_id and r.id = j.review_of
             where j.org_id = ${orgId} and j.id = ${jobId}

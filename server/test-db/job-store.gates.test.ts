@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
@@ -70,7 +71,7 @@ describe.runIf(enabled)('the execution plan on the job store', () => {
             { config: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] }, services, error: null },
             asked
         );
-        await planned.create('fix the bug', userId, { repo: 'acme/web', executor: null });
+        await planned.create('fix the bug', userId, { repo: githubRepo('acme/web'), executor: null });
 
         const claim = await planned.claim('driver-1', LEASE_SECONDS);
 
@@ -88,7 +89,7 @@ describe.runIf(enabled)('the execution plan on the job store', () => {
         const REFUSAL =
             '.bellows.yaml: the execution plan cannot be scheduled: services "a" and "b" both declare port 5432';
         const broken = plannedStore({ config: null, error: REFUSAL });
-        await broken.create('fix the bug', userId, { repo: 'acme/web', executor: null });
+        await broken.create('fix the bug', userId, { repo: githubRepo('acme/web'), executor: null });
 
         const claim = await broken.claim('driver-1', LEASE_SECONDS);
 
@@ -100,7 +101,7 @@ describe.runIf(enabled)('the execution plan on the job store', () => {
     it('carries no plan for a repository that declares none', async () => {
         const userId = await account(sql, randomGithubId(), 'plain-cat');
         const plain = plannedStore({ config: null, error: null });
-        await plain.create('echo hi', userId, { repo: 'acme/web', executor: null });
+        await plain.create('echo hi', userId, { repo: githubRepo('acme/web'), executor: null });
 
         const claim = await plain.claim('driver-1', LEASE_SECONDS);
 
@@ -113,7 +114,7 @@ describe.runIf(enabled)('the execution plan on the job store', () => {
 
     it('carries no plan fields for a store built without a plan reader', async () => {
         const userId = await account(sql, randomGithubId(), 'bare-cat');
-        await store.create('echo hi', userId, { repo: 'acme/web', executor: null });
+        await store.create('echo hi', userId, { repo: githubRepo('acme/web'), executor: null });
 
         const claim = await store.claim('driver-1', LEASE_SECONDS);
 
@@ -132,7 +133,10 @@ describe.runIf(enabled)('the execution plan on the job store', () => {
             if (failing) throw new Error('GitHub is unreachable');
             return { config: null, error: null };
         });
-        const created = (await reader.create('fix the bug', userId, { repo: 'acme/web', executor: null })) as {
+        const created = (await reader.create('fix the bug', userId, {
+            repo: githubRepo('acme/web'),
+            executor: null,
+        })) as {
             id: string;
         };
 
@@ -169,7 +173,7 @@ describe.runIf(enabled)('the execution plan on the job store', () => {
         };
         const created = await new_workflow(definition, `plan-gates-${gates}`);
         await reader.create('collect', userId, {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             executor: null,
             workflow: { id: created, name: `plan-gates-${gates}`, node: 'collect', snapshot: definition, params: {} },
         });
@@ -181,7 +185,7 @@ describe.runIf(enabled)('the execution plan on the job store', () => {
 
     it('replaces the gate state on every report, and answers the last one on read', async () => {
         const userId = await account(sql, randomGithubId(), 'gate-owl');
-        await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
+        await store.create('fix the bug', userId, { repo: githubRepo('acme/web'), executor: null });
         const claim = await store.claim('driver-1', LEASE_SECONDS);
         const running: GateReport[] = [{ name: 'test', status: 'running', exitCode: null, output: null }];
         const finished: GateReport[] = [{ name: 'test', status: 'failed', exitCode: 3, output: 'boom' }];
@@ -196,7 +200,7 @@ describe.runIf(enabled)('the execution plan on the job store', () => {
 
     it('omits gates from the list projection, like output', async () => {
         const userId = await account(sql, randomGithubId(), 'gate-emu');
-        await store.create('fix the bug', userId, { repo: 'acme/web', executor: null });
+        await store.create('fix the bug', userId, { repo: githubRepo('acme/web'), executor: null });
         const claim = await store.claim('driver-1', LEASE_SECONDS);
         await store.gates(claim!.id, claim!.leaseToken, [
             { name: 'test', status: 'passed', exitCode: 0, output: 'all green' },

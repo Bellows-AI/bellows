@@ -10,6 +10,7 @@ import {
     type ExecutorScope,
     type ExecutorType,
     type JobMode,
+    type RepoRef,
     type TaskTitleOrigin,
     type UserRef,
 } from '@factory-ai/core';
@@ -23,6 +24,7 @@ import type {
     TaskSummary,
     JobStoreContext,
 } from './job-store-types.js';
+import { refColumns } from '../repo-ref-row.js';
 import { stagedUnderLease } from './job-store-staged.js';
 
 /** The row's interruptions (071); the per-run lists do not select them, and serve none. */
@@ -325,7 +327,7 @@ export interface WorkflowSuccessorInput {
     orgId: string;
     command: string;
     createdBy: string | null;
-    repo: string | null;
+    repo: RepoRef | null;
     executor: string | null;
     executorScope: ExecutorScope;
     /** The agent default frozen on the thread, copied from the completed run; absent is none. */
@@ -340,9 +342,10 @@ export interface WorkflowSuccessorInput {
 }
 
 export async function insertWorkflowSuccessor(tx: TransactionSql, input: WorkflowSuccessorInput): Promise<string> {
+    const repoColumns = refColumns(input.repo);
     const rows = await tx<{ id: string }[]>`
-        insert into job (org_id, command, created_by, repo, executor, executor_scope, agent_type, agent_model, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node, mode, skill_pin, skill_hidden)
-        select ${input.orgId}, ${input.command}, ${input.createdBy}, ${input.repo},
+        insert into job (org_id, command, created_by, forge, host, repo, executor, executor_scope, agent_type, agent_model, parent_job_id, session_id, root_job_id, workflow_id, workflow_name, workflow_node, mode, skill_pin, skill_hidden)
+        select ${input.orgId}, ${input.command}, ${input.createdBy}, ${repoColumns.forge}, ${repoColumns.host}, ${repoColumns.repo},
                ${input.executor}, ${input.executorScope}, ${input.agentType ?? null}, ${input.agentModel ?? null},
                ${input.parentJobId}, ${input.sessionId}, ${input.rootJobId},
                ${input.workflowId}, ${input.workflowName}, ${input.workflowNode}, ${WORKFLOW_MODE},

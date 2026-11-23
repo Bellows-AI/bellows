@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -141,7 +142,7 @@ const jobCount = async (): Promise<number> =>
 /** A thread of `owner`'s the route under test can act on. */
 async function thread(owner: Person, state: 'succeeded' | 'failed' | 'done'): Promise<string> {
     const store = createJobStore({ sql, orgId: org });
-    const created = await store.create('seed work', owner.userId, { repo: REPO, executor: null });
+    const created = await store.create('seed work', owner.userId, { repo: githubRepo(REPO), executor: null });
     if (typeof created === 'string') throw new Error(`seed refused: ${created}`);
     await startRow(sql, created.id);
     await sql`

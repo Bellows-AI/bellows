@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
@@ -20,7 +21,7 @@ import { faultySecrets } from './env-secrets-harness.js';
 import { createPostgresHarness } from './secrets-postgres-harness.js';
 import { ORG_OWNER } from '../src/notifications/subscription-store.js';
 import { useTestDb } from './harness.js';
-import { startRow, testOrg, testUser } from './fixtures.js';
+import { startRow, testOrg, testUser, repoRefOf } from './fixtures.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import { batchPlan, headOf, rootOf, startBatch } from './batch-fixtures.js';
 import { captureLogs } from '../test/helpers-log.js';
@@ -152,7 +153,7 @@ async function emit({
     workflow = null,
     user = null,
 }: Emit = {}): Promise<string> {
-    const created = await store.create(command, user, { repo, executor: null });
+    const created = await store.create(command, user, { repo: repoRefOf(repo), executor: null });
     if (typeof created === 'string') throw new Error(created);
     if (workflow !== null) {
         await sql`update job set workflow_name = ${workflow} where org_id = ${org} and id = ${created.id}`;
@@ -289,7 +290,7 @@ describe.skipIf(!enabled)('notification outbox — fan-out at emission', () => {
                 }),
             },
         });
-        const created = await gated.create('ship it', null, { repo: 'acme/web', executor: null });
+        const created = await gated.create('ship it', null, { repo: githubRepo('acme/web'), executor: null });
         if (typeof created === 'string') throw new Error(created);
         const claim = await gated.claim(WORKER, 300);
         await gated.complete(created.id, claim!.leaseToken, {

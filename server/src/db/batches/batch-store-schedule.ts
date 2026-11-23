@@ -37,6 +37,7 @@ import {
 import { recoverObserved, withdrawRepair } from './batch-store-observed.js';
 import { decide, failedAttentionReason, recoveriesUsed, repairInTx, type Tx } from './batch-store-repair.js';
 import { insertJobInTx, retryInTx } from '../jobs/job-store-thread-actions.js';
+import { refOfRow } from '../repo-ref-row.js';
 import {
     openBatches,
     settleThreads,
@@ -301,7 +302,7 @@ interface Snapshot {
     /** Automerge stages whose merged result has not passed its combined verification (064). */
     unverified: string[];
     tasks: StateTask[];
-    targets: Map<string, { repo: string; branch: string }>;
+    targets: Map<string, { forge: string; host: string; repo: string; branch: string }>;
     attempts: Map<string, number>;
 }
 
@@ -332,8 +333,8 @@ async function loadSnapshot({ tx, orgId, id }: Tx): Promise<Snapshot> {
             where t.org_id = ${orgId} and t.batch_id = ${id}
             order by s.position, t.position
         `,
-        tx<{ key: string; repo: string; branch: string }[]>`
-            select key, repo, branch from batch_target where org_id = ${orgId} and batch_id = ${id}
+        tx<{ key: string; forge: string; host: string; repo: string; branch: string }[]>`
+            select key, forge, host, repo, branch from batch_target where org_id = ${orgId} and batch_id = ${id}
         `,
         tx<{ task_key: string; attempt: number }[]>`
             select task_key, max(attempt)::int as attempt from batch_attempt
@@ -394,7 +395,7 @@ async function launch(
               : await insertJobInTx(tx, deps, {
                     command: batchTaskCommand(task),
                     createdBy: startedBy,
-                    target: rootTargetOf(task, target.repo),
+                    target: rootTargetOf(task, refOfRow(target)),
                 });
     if (typeof created === 'string') {
         // Nothing was created, so the decision must not stand. A refused retry is the task's

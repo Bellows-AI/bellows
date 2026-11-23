@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import { testOrg, testUser } from './fixtures.js';
@@ -12,7 +13,7 @@ const db = useTestDb({ orgs: [ORG], users: [ALICE] });
 describe.skipIf(!enabled)('job view execution user', () => {
     it('get() and thread() name the root execution user on every member', async () => {
         const store = createJobStore({ sql: db.sql, orgId: ORG });
-        const created = await store.create('do the work', ALICE.id, { repo: 'acme/app', executor: null });
+        const created = await store.create('do the work', ALICE.id, { repo: githubRepo('acme/app'), executor: null });
         if (typeof created === 'string') throw new Error(created);
         const expected = expect.objectContaining({ id: ALICE.id, login: ALICE.login });
         expect((await store.get(created.id))?.executionUser).toEqual(expected);
@@ -23,7 +24,7 @@ describe.skipIf(!enabled)('job view execution user', () => {
 
     it('list reads answer null', async () => {
         const store = createJobStore({ sql: db.sql, orgId: ORG });
-        await store.create('queued one', ALICE.id, { repo: 'acme/app', executor: null });
+        await store.create('queued one', ALICE.id, { repo: githubRepo('acme/app'), executor: null });
         const jobs = await store.list({ status: 'queued', limit: 5 });
         expect(jobs.length).toBeGreaterThan(0);
         for (const job of jobs) expect(job.executionUser).toBeNull();

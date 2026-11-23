@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -66,7 +67,7 @@ afterAll(async () => {
 const connect = async (): Promise<string> => (await oauthConnection(sql, ORG, ALICE.id)).id;
 
 const queued = async (): Promise<string> => {
-    const created = await plain.create('do the work', ALICE.id, { repo: REPO, executor: null });
+    const created = await plain.create('do the work', ALICE.id, { repo: githubRepo(REPO), executor: null });
     if (typeof created === 'string') throw new Error(created);
     return created.id;
 };
@@ -110,7 +111,7 @@ const waitingWorkflow: WorkflowDefinition = {
 /** A workflow thread that published to the suite's PR and parked on a delivery wait (the block-wait fixture). */
 const waitingThread = async (): Promise<string> => {
     const created = await plain.create('start the thread', ALICE.id, {
-        repo: REPO,
+        repo: githubRepo(REPO),
         executor: null,
         workflow: {
             id: randomUUID(),

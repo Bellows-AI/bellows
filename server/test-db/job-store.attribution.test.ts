@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
@@ -77,7 +78,9 @@ describe.runIf(enabled)('attribution', () => {
         // The per-member checkout table (user_repo) is gone: a task is queued against any repo
         // label, with nothing to lock or read first.
         const userId = await account(sql, randomGithubId(), 'lockless');
-        const root = await mustCreate(store.create('echo hi', userId, { repo: 'acme/web', executor: null }));
+        const root = await mustCreate(
+            store.create('echo hi', userId, { repo: githubRepo('acme/web'), executor: null })
+        );
         await startRow(sql, root.id);
         await sql`update job set status = 'succeeded', finished_at = now() where id = ${root.id}`;
 
@@ -100,7 +103,9 @@ describe.runIf(enabled)('attribution', () => {
         ]);
         const envAware = createJobStore({ sql, orgId: ORG, env: envStore });
 
-        await mustCreate(envAware.create('echo hi', userId, { repo: 'Bellows-AI/bellows.ai', executor: null }));
+        await mustCreate(
+            envAware.create('echo hi', userId, { repo: githubRepo('Bellows-AI/bellows.ai'), executor: null })
+        );
         const claim = await envAware.claim('driver-1', LEASE_SECONDS);
         // Repo beats workspace beats org on the collision, and the secrets travel as values —
         // injection is what they are for.

@@ -13,6 +13,7 @@ import {
     randomGithubId,
     spendInterruptionBudget,
     testOrg,
+    repoRefOf,
 } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -99,7 +100,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
         command: string,
         target: { repo: string | null; executor: string | null } = { repo: null, executor: null }
     ): Promise<string> => {
-        const { id } = await mustCreate(store.create(command, null, target));
+        const { id } = await mustCreate(store.create(command, null, { ...target, repo: repoRefOf(target.repo) }));
         const claim = await store.claim('w1', LEASE_SECONDS);
         await store.session(id, claim!.leaseToken, SESSION);
         await store.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });

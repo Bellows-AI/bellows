@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
@@ -86,7 +87,11 @@ describe.skipIf(!enabled)('an unconverted profile on a one-connection pool', () 
         await seedPlaintext();
         const first = boot();
         await mustCreate(
-            first.jobs.create('ship it', ALICE, { repo: 'acme/api', executor: 'main', executorScope: 'user' })
+            first.jobs.create('ship it', ALICE, {
+                repo: githubRepo('acme/api'),
+                executor: 'main',
+                executorScope: 'user',
+            })
         );
         const caller = (await withinDeadline(first.jobs.claim('w1', LEASE_SECONDS))) as Claim;
         // Saved again in the old form, then a restart: the review is the new process's first claim.

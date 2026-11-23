@@ -1,4 +1,4 @@
-import { ERROR_CODES, EXECUTOR_TYPES } from '@factory-ai/core';
+import { ERROR_CODES, EXECUTOR_TYPES, githubRepo } from '@factory-ai/core';
 import { interruptionOf } from './job-interruption-body.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
@@ -311,7 +311,7 @@ export async function handleCreateJob(
         (e) => request.log.error({ err: e }, 'job create failed'),
         () =>
             store.create(command, createdBy, {
-                repo,
+                repo: repo === null ? null : githubRepo(repo),
                 executor,
                 executorScope,
                 // The agent default that won, frozen on the task: the claim runs it, never a later default. A chosen

@@ -5,7 +5,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { requirementsOf } from '../src/db/connection-bindings.js';
-import { expireLease, oauthConnection, testOrg, testUser } from './fixtures.js';
+import { expireLease, oauthConnection, testOrg, testUser, repoRefOf } from './fixtures.js';
 
 /**
  * Issue 545: a task selects skills at creation; the selection lives on the root row, every claim of
@@ -50,7 +50,7 @@ async function queue(
     repo: string | null = null
 ): Promise<string> {
     const created = await store.create('do the work', connectionId ? USER.id : null, {
-        repo,
+        repo: repoRefOf(repo),
         executor: null,
         ...(skills ? { skills } : {}),
         ...(connectionId ? { connectionIds: [connectionId] } : {}),

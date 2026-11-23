@@ -44,11 +44,11 @@ export async function writePrOperation(
         const row = await lockRunningAttempt(tx, orgId, id, leaseToken);
         if ('result' in row) return row;
         await tx`
-            insert into job_pr_operation (org_id, job_id, operation_id, claim_seq, operation, repo, pr_number, pr_url, branch)
-            values (
-                ${orgId}, ${id}, ${op.operationId}, ${row.claim_seq}, ${op.operation}, ${op.repo},
-                ${op.prNumber}, ${op.prUrl}, ${op.branch}
-            )
+            insert into job_pr_operation (org_id, job_id, operation_id, claim_seq, operation, forge, host, repo, pr_number, pr_url, branch)
+            select ${orgId}, ${id}, ${op.operationId}, ${row.claim_seq}, ${op.operation}, j.forge, j.host, ${op.repo},
+                   ${op.prNumber}, ${op.prUrl}, ${op.branch}
+            from job j
+            where j.org_id = ${orgId} and j.id = ${id}
             on conflict (org_id, job_id, operation_id) do nothing
         `;
         return { result: 'ok' };

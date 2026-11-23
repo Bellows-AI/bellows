@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -68,7 +69,7 @@ const unwrap = <T extends { id: string }>(ref: T | string): T => {
 const finishedRoot = async (files: { id: string }[]) => {
     const root = unwrap(
         await store.create('do the work', ALICE.id, {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             executor: null,
             attachmentIds: files.map((f) => f.id),
         })
@@ -106,7 +107,7 @@ describe.runIf(enabled)('the claim attachment manifest', () => {
         const [a, b] = [await file('a.txt'), await file('b.txt')];
         const root = unwrap(
             await store.create('do the work', ALICE.id, {
-                repo: 'acme/web',
+                repo: githubRepo('acme/web'),
                 executor: null,
                 attachmentIds: [b.id, a.id],
             })
@@ -120,7 +121,7 @@ describe.runIf(enabled)('the claim attachment manifest', () => {
     });
 
     it('hands a task without files an empty manifest', async () => {
-        unwrap(await store.create('plain', ALICE.id, { repo: 'acme/web', executor: null }));
+        unwrap(await store.create('plain', ALICE.id, { repo: githubRepo('acme/web'), executor: null }));
         const claim = await claimNext();
         expect(claim.attachments).toEqual([]);
         await finish(claim);
@@ -244,7 +245,7 @@ describe.runIf(enabled)('the review claim attachment manifest', () => {
         const [rootFile, later] = [await file(), await file()];
         const created = unwrap(
             await store.create('do the work', ALICE.id, {
-                repo: 'acme/web',
+                repo: githubRepo('acme/web'),
                 executor: null,
                 attachmentIds: [rootFile.id],
             })
@@ -264,7 +265,11 @@ describe.runIf(enabled)('the review claim attachment manifest', () => {
     it('fails the read, rather than answering empty, when the reviewed row is missing', async () => {
         const f = await file();
         const created = unwrap(
-            await store.create('do the work', ALICE.id, { repo: 'acme/web', executor: null, attachmentIds: [f.id] })
+            await store.create('do the work', ALICE.id, {
+                repo: githubRepo('acme/web'),
+                executor: null,
+                attachmentIds: [f.id],
+            })
         );
         const caller = await claimNext();
         const review = await reviewOf(created.id, caller, 'k3');

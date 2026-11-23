@@ -15,7 +15,7 @@ import { createSkillCollector, findReferencedVersions } from '../src/skills/skil
 import { bundleFromSkillMd } from '../src/skills/skill-bundle.js';
 import { createWorkflowStore } from '../src/db/workflows/workflow-store.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
-import { testOrg, testUser } from './fixtures.js';
+import { testOrg, testUser, repoRefOf } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -74,7 +74,7 @@ const pinned = (skill: SkillRecord) => ({
 });
 
 const createJob = async (c: Case, userId: string, skills: string[], repo: string | null = null) => {
-    const ref = await c.jobs.create('work', userId, { repo, executor: null, skills });
+    const ref = await c.jobs.create('work', userId, { repo: repoRefOf(repo), executor: null, skills });
     if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
     return ref.id;
 };

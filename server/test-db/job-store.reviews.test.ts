@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -100,7 +101,7 @@ const reviewRows = (callerId: string) =>
 
 /** Creates and claims one objective job, returning the lease. */
 async function claimed(store: JobStore): Promise<Claim> {
-    const created = await store.create('ship it', await account(), { repo: 'acme/web', executor: null });
+    const created = await store.create('ship it', await account(), { repo: githubRepo('acme/web'), executor: null });
     if (typeof created === 'string') throw new Error(`create refused: ${created}`);
     const claim = await store.claim('driver-1', LEASE_SECONDS);
     expect(claim?.id).toBe(created.id);
@@ -143,7 +144,7 @@ describe.runIf(enabled)('named reviewer invocation on the job store', () => {
         const store = storeWith({ reviewers: [SECURITY] });
         const author = await account();
         const admin = await account();
-        const created = await store.create('ship it', author, { repo: 'acme/web', executor: null });
+        const created = await store.create('ship it', author, { repo: githubRepo('acme/web'), executor: null });
         if (typeof created === 'string') throw new Error(`create refused: ${created}`);
         const first = await store.claim('driver-1', LEASE_SECONDS);
         await store.session(created.id, first!.leaseToken, 'session-1');

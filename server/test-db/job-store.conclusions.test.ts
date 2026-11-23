@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -19,6 +20,7 @@ import {
     randomGithubId,
     spendInterruptionBudget,
     testOrg,
+    repoRefOf,
 } from './fixtures.js';
 import { captureLogs } from '../test/helpers-log.js';
 
@@ -61,7 +63,7 @@ const walk: WorkflowDefinition = {
 };
 
 async function queue(on: JobStore = store, repo: string | null = null): Promise<string> {
-    const job = await on.create('do the thing', null, { repo, executor: null });
+    const job = await on.create('do the thing', null, { repo: repoRefOf(repo), executor: null });
     if (typeof job === 'string') throw new Error(job);
     return job.id;
 }
@@ -247,7 +249,7 @@ describe.skipIf(!enabled)('staged conclusions — database', () => {
             plan: { readFor: async () => plan({ reviewers: [security] }) },
         });
         const author = await account(sql, randomGithubId(), 'review-cat');
-        const created = await reviewing.create('ship it', author, { repo: 'acme/web', executor: null });
+        const created = await reviewing.create('ship it', author, { repo: githubRepo('acme/web'), executor: null });
         if (typeof created === 'string') throw new Error(created);
         const caller = await claim(reviewing);
         const asked = await reviewing.requestReview(caller.id, caller.leaseToken, {

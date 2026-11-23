@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -247,7 +248,7 @@ describe.skipIf(!enabled)('admin follow-up and retry', () => {
 const publishedThread = async (prNumber: number): Promise<string> => {
     const { id: root } = await mustCreate(
         store.create('start the thread', AUTHOR, {
-            repo: REPO,
+            repo: githubRepo(REPO),
             executor: null,
             workflow: {
                 id: randomUUID(),

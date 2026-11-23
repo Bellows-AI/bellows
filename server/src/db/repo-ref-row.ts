@@ -1,4 +1,4 @@
-import { REPO_FORGES, REPO_PATH_PATTERN, type RepoForge, type RepoRef } from '@factory-ai/core';
+import { GITHUB_HOST, REPO_FORGES, REPO_PATH_PATTERN, type RepoForge, type RepoRef } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 
 /** A repo-bearing row's identity columns: the forge, the host and the full path. */
@@ -21,6 +21,10 @@ export function refOfRow({ forge, host, repo }: RepoRow): RepoRef {
     return { forge, host, path: repo };
 }
 
+/** {@link refOfRow} for a row whose repo may be absent (a repo-less job): null then, never a default ref. */
+export const refOfNullableRow = (row: { forge: string; host: string; repo: string | null }): RepoRef | null =>
+    row.repo === null ? null : refOfRow({ ...row, repo: row.repo });
+
 type Queryable = Sql | TransactionSql;
 
 /** `alias.forge = … and alias.host = … and alias.repo = …`: an exact path match, as `repo = $1` was. */
@@ -30,3 +34,7 @@ export const repoIs = (sql: Queryable, alias: string, ref: RepoRef) =>
 /** A join condition: the two aliases' rows name one repository. */
 export const refsMatch = (sql: Queryable, a: string, b: string) =>
     sql`${sql(`${a}.forge`)} = ${sql(`${b}.forge`)} and ${sql(`${a}.host`)} = ${sql(`${b}.host`)} and ${sql(`${a}.repo`)} = ${sql(`${b}.repo`)}`;
+
+/** The `forge`, `host` and `repo` values a new row binds for its target; a repo-less row keeps the column defaults. */
+export const refColumns = (ref: RepoRef | null): { forge: RepoForge; host: string; repo: string | null } =>
+    ref ? { forge: ref.forge, host: ref.host, repo: ref.path } : { forge: 'github', host: GITHUB_HOST, repo: null };

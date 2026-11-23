@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -730,7 +731,9 @@ describe.skipIf(!enabled)('job store', () => {
     // list projection carries the vitals too, the one field `gates` stays spared from and
     // `output` stays spared from still.
     it('carries the runtime vitals on list rows, for the task tree summaries', async () => {
-        const { id } = await mustCreate(store.create('echo hi', null, { repo: 'owner/repo', executor: null }));
+        const { id } = await mustCreate(
+            store.create('echo hi', null, { repo: githubRepo('owner/repo'), executor: null })
+        );
         const claim = await store.claim('w1', LEASE_SECONDS);
         const vitals = {
             cpuPercent: 93,
@@ -872,7 +875,9 @@ describe.skipIf(!enabled)('job store', () => {
     });
 
     it('stores the repo and executor a job was queued with', async () => {
-        const labelled = await mustCreate(store.create('drive me', null, { repo: 'acme/web', executor: 'main' }));
+        const labelled = await mustCreate(
+            store.create('drive me', null, { repo: githubRepo('acme/web'), executor: 'main' })
+        );
         const unlabelled = await queue('echo hi');
 
         expect(await store.get(labelled.id)).toMatchObject({ repo: 'acme/web', executor: 'main' });
@@ -882,9 +887,9 @@ describe.skipIf(!enabled)('job store', () => {
     });
 
     it('lists only the requested repository, newest first', async () => {
-        await mustCreate(store.create('older web task', null, { repo: 'acme/web', executor: null }));
-        await mustCreate(store.create('other repo', null, { repo: 'acme/api', executor: null }));
-        await mustCreate(store.create('newer web task', null, { repo: 'acme/web', executor: null }));
+        await mustCreate(store.create('older web task', null, { repo: githubRepo('acme/web'), executor: null }));
+        await mustCreate(store.create('other repo', null, { repo: githubRepo('acme/api'), executor: null }));
+        await mustCreate(store.create('newer web task', null, { repo: githubRepo('acme/web'), executor: null }));
         await queue('no repo at all');
 
         const listed = await store.list({ repo: 'acme/web', limit: 50 });
@@ -894,8 +899,10 @@ describe.skipIf(!enabled)('job store', () => {
     });
 
     it('keeps another organization out of a repository filter', async () => {
-        const { id } = await mustCreate(store.create('echo hi', null, { repo: 'acme/web', executor: null }));
-        await mustCreate(otherOrgStore.create('echo hi', null, { repo: 'acme/web', executor: null }));
+        const { id } = await mustCreate(
+            store.create('echo hi', null, { repo: githubRepo('acme/web'), executor: null })
+        );
+        await mustCreate(otherOrgStore.create('echo hi', null, { repo: githubRepo('acme/web'), executor: null }));
 
         const listed = await store.list({ repo: 'acme/web', limit: 50 });
         expect(listed.map((job) => job.id)).toEqual([id]);

@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -65,7 +66,7 @@ afterAll(async () => {
 const connect = async (): Promise<string> => (await oauthConnection(sql, ORG, ALICE.id)).id;
 
 const create = async (target: { skills?: string[]; connectionIds?: string[] } = {}): Promise<string> => {
-    const created = await plain.create('do the work', ALICE.id, { repo: REPO, executor: null, ...target });
+    const created = await plain.create('do the work', ALICE.id, { repo: githubRepo(REPO), executor: null, ...target });
     if (typeof created === 'string') throw new Error(created);
     return created.id;
 };

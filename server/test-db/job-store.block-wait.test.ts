@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { USER_SCOPE } from '@factory-ai/core';
+import { USER_SCOPE, githubRepo } from '@factory-ai/core';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
@@ -76,7 +76,7 @@ async function queueWaitingThread(
     // repo: null fixture, which calls recordPublication directly and never goes through complete().
     const job = await mustCreate(
         store.create('start the thread', createdBy, {
-            repo: REPO,
+            repo: githubRepo(REPO),
             executor: null,
             ...agent,
             workflow: { id: randomUUID(), name, node: waitingWorkflow.entry, snapshot: waitingWorkflow, params: {} },

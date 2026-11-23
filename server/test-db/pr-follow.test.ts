@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -137,7 +138,7 @@ async function parkedThread(name: string): Promise<{ root: string; number: numbe
     const number = nextPr;
     const { id: root } = await mustCreate(
         jobs.create('start the thread', null, {
-            repo: REPO,
+            repo: githubRepo(REPO),
             executor: null,
             workflow: { id: randomUUID(), name, node: waitingWorkflow.entry, snapshot: waitingWorkflow, params: {} },
         })
@@ -163,7 +164,7 @@ async function parkedThread(name: string): Promise<{ root: string; number: numbe
 async function plainThread(): Promise<{ root: string; number: number }> {
     nextPr += 1;
     const number = nextPr;
-    const { id: root } = await mustCreate(jobs.create('plain work', null, { repo: REPO, executor: null }));
+    const { id: root } = await mustCreate(jobs.create('plain work', null, { repo: githubRepo(REPO), executor: null }));
     const claim = (await jobs.claim(WORKER, LEASE_SECONDS)) as Claim;
     await jobs.complete(claim.id, claim.leaseToken, {
         status: 'succeeded',
@@ -409,7 +410,9 @@ describe.skipIf(!enabled)('PR follower — what it reads', () => {
     it("never reads another organization's PR", async () => {
         const otherPrs = createPrLifecycleStore({ sql, orgId: OTHER });
         const otherJobs = createJobStore({ sql, orgId: OTHER, prs: otherPrs });
-        const { id: root } = await mustCreate(otherJobs.create('other org work', null, { repo: REPO, executor: null }));
+        const { id: root } = await mustCreate(
+            otherJobs.create('other org work', null, { repo: githubRepo(REPO), executor: null })
+        );
         const claim = (await otherJobs.claim('worker-other', LEASE_SECONDS)) as Claim;
         await otherJobs.complete(claim.id, claim.leaseToken, {
             status: 'succeeded',

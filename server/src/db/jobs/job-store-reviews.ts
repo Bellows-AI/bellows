@@ -68,6 +68,8 @@ interface CallerRow {
     root_job_id: string;
     /** The thread root's `execution_user_id`: the review is authored by the owner, not by an admin acting for them. */
     owner_id: string | null;
+    forge: string;
+    host: string;
     repo: string | null;
     executor: string | null;
     executor_scope: string | null;
@@ -129,8 +131,8 @@ async function lockedCaller(
     leaseToken: string
 ): Promise<CallerRow | undefined> {
     const [caller] = await tx<CallerRow[]>`
-        select id, claim_seq, claimed_by, lease_expires_at, root_job_id, repo, executor, executor_scope, agent_type,
-               agent_model, mode,
+        select id, claim_seq, claimed_by, lease_expires_at, root_job_id, forge, host, repo, executor, executor_scope,
+               agent_type, agent_model, mode,
                (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as owner_id,
                reviewers
         from job
@@ -224,12 +226,12 @@ async function insertReview(
     const { hidden } = await decideSkillVisibilityInTx(tx, { orgId, githubApp, selected: [], stored: null });
     await tx`
         insert into job (
-            org_id, command, created_by, repo, executor, executor_scope, id, root_job_id, mode,
+            org_id, command, created_by, forge, host, repo, executor, executor_scope, id, root_job_id, mode,
             review_of, review_key, review_profile, review_spec, review_revision, review_ref,
             status, claimed_by, lease_token, lease_expires_at, attempts, claim_seq, started_at,
             review_caller_seq, skill_pin, skill_hidden, execution_user_id, agent_type, agent_model
         )
-        select ${orgId}, ${command}, ${caller.owner_id}, ${caller.repo}, ${caller.executor},
+        select ${orgId}, ${command}, ${caller.owner_id}, ${caller.forge}, ${caller.host}, ${caller.repo}, ${caller.executor},
                ${caller.executor_scope ?? USER_SCOPE}, x, x, ${OBJECTIVE_MODE},
                ${caller.id}, ${request.key}, ${spec.name}, ${tx.json(spec as never)}, ${request.revision}, ${request.ref},
                'running', ${caller.claimed_by}, gen_random_uuid(), ${caller.lease_expires_at}, 1, 1, now(),
