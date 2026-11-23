@@ -12,6 +12,7 @@ import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-life
 import { GitHubReadError } from '../src/github/pr-read.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
+import { VARIANT_CASES } from './repo-variants.js';
 import {
     BATCH_REPO,
     batchPlan,
@@ -120,44 +121,89 @@ const readyIdOf = async (jobId: string) =>
 
 const prUrl = (number: number) => `https://github.com/${BATCH_REPO}/pull/${number}`;
 
-describe.skipIf(!enabled)('task.ready for a batch task on a GitLab repository', () => {
-    /** A settled one-task batch whose thread and publication are turned GitLab by SQL before its PR is read. */
-    async function gitlabSettled() {
-        const { root, number } = await settled(planOf());
-        await sql`update job set forge = 'gitlab', host = 'gl.example' where org_id = ${ORG} and root_job_id = ${root}`;
-        await sql`update job_pr set forge = 'gitlab', host = 'gl.example' where org_id = ${ORG} and root_job_id = ${root}`;
-        return { root, number };
-    }
-    /** Re-fires the observation trigger on a row that now names GitLab (the batch stores write the pair in 532a2-ii). */
-    const observeOnGitlab = (number: number) => sql`
-        update batch_pr_observation set forge = 'gitlab', host = 'gl.example', outcome = 'review_required', stale = false
+describe.skipIf(!enabled).each(VARIANT_CASES)(
+    'task.ready for a batch task on another repository (%s)',
+    (_name, variant) => {
+        /** A settled one-task batch whose first read has been observed; its event is not under test. */
+        async function observedBatch() {
+            const { root, number } = await settled(planOf());
+            await observe(number, { requiredApprovals: 1, approvals: 0 });
+            await sql`delete from notification_event where org_id = ${ORG} and root_job_id = ${root}`;
+            return { root, number };
+        }
+        const thread = (root: string) => sql`
+        update job set forge = ${variant.forge}, host = ${variant.host} where org_id = ${ORG} and root_job_id = ${root}
+    `;
+        const publication = (root: string) => sql`
+        update job_pr set forge = ${variant.forge}, host = ${variant.host} where org_id = ${ORG} and root_job_id = ${root}
+    `;
+        /** Re-fires the observation trigger, the row naming the variant or GitHub (the batch stores write the pair in 532a2-ii). */
+        const fire = (number: number, onVariant: boolean) => sql`
+        update batch_pr_observation
+        set forge = ${onVariant ? variant.forge : 'github'}, host = ${onVariant ? variant.host : 'github.com'},
+            outcome = 'review_required', stale = false
         where org_id = ${ORG} and pr_number = ${number}
     `;
-    const gitlabReadyOf = (root: string) =>
-        sql`select forge, host from notification_event where org_id = ${ORG} and root_job_id = ${root} and kind = 'task.ready'`;
+        const merged = (forge: string, host: string, number: number) => sql`
+        insert into pr_merge (org_id, forge, host, repo, pr_number, delivery_id, merged_at)
+        values (${ORG}, ${forge}, ${host}, ${BATCH_REPO}, ${number}, 'merge-1', now())
+    `;
+        const readyOn = (root: string) =>
+            sql`select forge, host from notification_event where org_id = ${ORG} and root_job_id = ${root} and kind = 'task.ready'`;
 
-    it('carries the thread forge and host on the event', async () => {
-        const { root, number } = await gitlabSettled();
-        await observe(number, { requiredApprovals: 1, approvals: 0 });
-        await observeOnGitlab(number);
+        it('carries the thread forge and host on the event', async () => {
+            const { root, number } = await observedBatch();
+            await thread(root);
+            await publication(root);
+            await fire(number, true);
 
-        expect(await gitlabReadyOf(root)).toEqual([{ forge: 'gitlab', host: 'gl.example' }]);
-    });
+            expect(await readyOn(root)).toEqual([{ forge: variant.forge, host: variant.host }]);
+        });
 
-    it('is not suppressed by a GitHub merge of the same path and number', async () => {
-        const { root, number } = await gitlabSettled();
-        await observe(number, { requiredApprovals: 1, approvals: 0 });
-        // What the first read emitted is not under test; the merge lands before the GitLab observation does.
-        await sql`delete from notification_event where org_id = ${ORG} and root_job_id = ${root}`;
-        await sql`
-            insert into pr_merge (org_id, forge, host, repo, pr_number, delivery_id, merged_at)
-            values (${ORG}, 'github', 'github.com', ${BATCH_REPO}, ${number}, 'gh-merge', now())
-        `;
-        await observeOnGitlab(number);
+        it('is not suppressed by a GitHub merge of the same path and number', async () => {
+            const { root, number } = await observedBatch();
+            await thread(root);
+            await publication(root);
+            await merged('github', 'github.com', number);
+            await fire(number, true);
 
-        expect(await gitlabReadyOf(root)).toEqual([{ forge: 'gitlab', host: 'gl.example' }]);
-    });
-});
+            expect(await readyOn(root)).toEqual([{ forge: variant.forge, host: variant.host }]);
+        });
+
+        it('is suppressed by a merge of its own repository', async () => {
+            const { root, number } = await observedBatch();
+            await thread(root);
+            await publication(root);
+            await merged(variant.forge, variant.host, number);
+            await fire(number, true);
+
+            expect(await readyOn(root)).toEqual([]);
+        });
+
+        it('is not suppressed by a merge on the other repository when the observation is GitHub', async () => {
+            const { root, number } = await observedBatch();
+            await merged(variant.forge, variant.host, number);
+            await fire(number, false);
+
+            expect(await readyOn(root)).toEqual([{ forge: 'github', host: 'github.com' }]);
+        });
+
+        it('emits nothing when the publication is on the other repository than the observation', async () => {
+            const { root, number } = await observedBatch();
+            await publication(root);
+            await fire(number, false);
+
+            expect(await readyOn(root)).toEqual([]);
+        });
+
+        it('emits nothing when the observation is on the other repository than the publication', async () => {
+            const { root, number } = await observedBatch();
+            await fire(number, true);
+
+            expect(await readyOn(root)).toEqual([]);
+        });
+    }
+);
 
 describe.skipIf(!enabled)('task.ready for a batch task with a published PR', () => {
     it('a batch PR task emits no task.ready when its run settles', async () => {

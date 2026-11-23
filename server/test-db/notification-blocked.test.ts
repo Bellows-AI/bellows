@@ -8,6 +8,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { useTestDb } from './harness.js';
+import { VARIANT_CASES } from './repo-variants.js';
 import { startRow, testOrg, testUser } from './fixtures.js';
 import { batchPlan, headOf as sharedHeadOf, prTask, rootOf, startBatch } from './batch-fixtures.js';
 
@@ -97,6 +98,19 @@ async function askQuestion(root: string) {
 }
 
 describe.skipIf(!enabled)('task.blocked for a batch task', () => {
+    it.each(VARIANT_CASES)('carries the thread forge and host on the event (%s)', async (_name, variant) => {
+        const { id, root } = await launched(planWith({ repairs: 1 }));
+        await sql`update job set forge = ${variant.forge}, host = ${variant.host} where org_id = ${ORG} and root_job_id = ${root}`;
+        await failWith(root, 'gate', 'failed', 'verification');
+        await store.reconcile(id);
+        await failWith(root, 'gate', 'failed', 'verification');
+        await store.reconcile(id);
+
+        expect(
+            await sql`select forge, host from notification_event where org_id = ${ORG} and root_job_id = ${root} and kind = 'task.blocked'`
+        ).toEqual([{ forge: variant.forge, host: variant.host }]);
+    });
+
     it('an infrastructure failure the batch retries emits nothing', async () => {
         const { id, root } = await launched(planWith());
         await failWith(root, 'timeout');
@@ -125,19 +139,6 @@ describe.skipIf(!enabled)('task.blocked for a batch task', () => {
             id: await idOf(head.id),
             reason: 'budget:gate:verification',
         });
-    });
-
-    it('carries the thread forge and host on the event', async () => {
-        const { id, root } = await launched(planWith({ repairs: 1 }));
-        await sql`update job set forge = 'gitlab', host = 'gl.example' where org_id = ${ORG} and root_job_id = ${root}`;
-        await failWith(root, 'gate', 'failed', 'verification');
-        await store.reconcile(id);
-        await failWith(root, 'gate', 'failed', 'verification');
-        await store.reconcile(id);
-
-        expect(
-            await sql`select forge, host from notification_event where org_id = ${ORG} and root_job_id = ${root} and kind = 'task.blocked'`
-        ).toEqual([{ forge: 'gitlab', host: 'gl.example' }]);
     });
 
     it('a run that reports itself blocked emits one task.blocked', async () => {
