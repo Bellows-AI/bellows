@@ -11,6 +11,7 @@ import {
     PR_CLOSED,
     PR_OPEN,
     RECOVERY_REPAIR,
+    formatRepoRef,
     githubRepo,
     sameRepo,
     TASK_RETRY,
@@ -18,8 +19,10 @@ import {
     type CheckEvidence,
     type PrFacts,
     type ReadErrorKind,
+    type RepoRef,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
+import { refOfRow, refsMatch } from '../repo-ref-row.js';
 import { BATCH_ROW_STARTED } from './batch-store-types.js';
 
 /**
@@ -36,9 +39,9 @@ export interface ObservationClaim {
     batchId: string;
     taskKey: string;
     /** The repository the task's thread published to (`job_pr`). */
-    repo: string;
+    repo: RepoRef;
     /** The repository the plan targets for the task; a PR elsewhere is a binding error. */
-    targetRepo: string;
+    targetRepo: RepoRef;
     prNumber: number;
     attempt: number;
     token: string;
@@ -105,7 +108,7 @@ const eligible = (tx: TransactionSql, orgId: string, now: Date) => {
     t.org_id = ${orgId} and b.status = ${BATCH_ROW_STARTED} and t.root_job_id is not null
     and not exists (
         select 1 from pr_merge m
-        where m.org_id = p.org_id and m.repo = p.repo and m.pr_number = p.pr_number
+        where m.org_id = p.org_id and ${refsMatch(tx, 'm', 'p')} and m.pr_number = p.pr_number
     )
     and (
         (b.cancelled_at is null and b.expired_at is null and b.completed_at is null
@@ -120,7 +123,11 @@ const eligible = (tx: TransactionSql, orgId: string, now: Date) => {
 interface ClaimRow {
     batch_id: string;
     task_key: string;
+    forge: string;
+    host: string;
     repo: string;
+    target_forge: string;
+    target_host: string;
     target_repo: string;
     pr_number: number;
     attempt: number;
@@ -142,14 +149,15 @@ export async function claimDue(deps: ObservationDeps, limit: number): Promise<Ob
                 select 1 from batch_task t
                 join job_pr p on p.org_id = t.org_id and p.root_job_id = t.root_job_id
                 where t.org_id = o.org_id and t.batch_id = o.batch_id and t.key = o.task_key
-                  and p.repo = o.repo and p.pr_number = o.pr_number
+                  and ${refsMatch(tx, 'p', 'o')} and p.pr_number = o.pr_number
                   and o.attempt = (select max(attempt) from batch_attempt
                                    where org_id = t.org_id and batch_id = t.batch_id and task_key = t.key)
             )
         `;
         await tx`
-            insert into batch_pr_observation (org_id, batch_id, task_key, repo, pr_number, attempt, next_refresh_at)
-            select t.org_id, t.batch_id, t.key, p.repo, p.pr_number, a.attempt, ${now}
+            insert into batch_pr_observation (org_id, batch_id, task_key, forge, host, repo, pr_number, attempt,
+                                              next_refresh_at)
+            select t.org_id, t.batch_id, t.key, p.forge, p.host, p.repo, p.pr_number, a.attempt, ${now}
             from batch_task t
             join batch b on b.org_id = t.org_id and b.id = t.batch_id
             join job_pr p on p.org_id = t.org_id and p.root_job_id = t.root_job_id
@@ -161,7 +169,8 @@ export async function claimDue(deps: ObservationDeps, limit: number): Promise<Ob
             on conflict do nothing
         `;
         const due = await tx<ClaimRow[]>`
-            select o.batch_id, o.task_key, o.repo, tg.repo as target_repo, o.pr_number, o.attempt,
+            select o.batch_id, o.task_key, o.forge, o.host, o.repo, tg.forge as target_forge, tg.host as target_host,
+                   tg.repo as target_repo, o.pr_number, o.attempt,
                    o.hint_seq::text as hint_seq
             from batch_pr_observation o
             join batch_task t on t.org_id = o.org_id and t.batch_id = o.batch_id and t.key = o.task_key
@@ -189,8 +198,8 @@ export async function claimDue(deps: ObservationDeps, limit: number): Promise<Ob
             claims.push({
                 batchId: row.batch_id,
                 taskKey: row.task_key,
-                repo: row.repo,
-                targetRepo: row.target_repo,
+                repo: refOfRow(row),
+                targetRepo: refOfRow({ forge: row.target_forge, host: row.target_host, repo: row.target_repo }),
                 prNumber: row.pr_number,
                 attempt: row.attempt,
                 token,
@@ -207,6 +216,8 @@ interface LockedObservation {
     failures: number;
     hint_seq: string;
     latest_attempt: number | null;
+    bound_forge: string | null;
+    bound_host: string | null;
     bound_repo: string | null;
     bound_number: number | null;
 }
@@ -227,7 +238,8 @@ export async function commitObservation(
             select o.revision::text as revision, o.fingerprint, o.failures, o.hint_seq::text as hint_seq,
                    (select max(attempt)::int from batch_attempt
                     where org_id = o.org_id and batch_id = o.batch_id and task_key = o.task_key) as latest_attempt,
-                   p.repo as bound_repo, p.pr_number as bound_number
+                   p.forge as bound_forge, p.host as bound_host, p.repo as bound_repo,
+                   p.pr_number as bound_number
             from batch_pr_observation o
             left join batch_task t on t.org_id = o.org_id and t.batch_id = o.batch_id and t.key = o.task_key
             left join job_pr p on p.org_id = t.org_id and p.root_job_id = t.root_job_id
@@ -238,7 +250,9 @@ export async function commitObservation(
         const standing =
             row !== undefined &&
             row.latest_attempt === claim.attempt &&
-            row.bound_repo === claim.repo &&
+            row.bound_forge === claim.repo.forge &&
+            row.bound_host === claim.repo.host &&
+            row.bound_repo === claim.repo.path &&
             row.bound_number === claim.prNumber;
         if (!standing) return { status: 'superseded' };
 
@@ -246,14 +260,11 @@ export async function commitObservation(
         const stale = Number(row.hint_seq) !== claim.hintSeq;
         const at = { orgId, batchId: claim.batchId, taskKey: claim.taskKey };
         if (result.kind === 'error') return writeError(tx, { at, row, result, now, stale });
-        if (
-            !sameRepo(githubRepo(result.facts.repo), githubRepo(claim.repo)) ||
-            result.facts.number !== claim.prNumber
-        ) {
+        if (!sameRepo(githubRepo(result.facts.repo), claim.repo) || result.facts.number !== claim.prNumber) {
             const mismatch: ObservationResult = {
                 kind: 'error',
                 error: 'binding',
-                detail: `${claim.repo}#${claim.prNumber} resolved to ${result.facts.repo}#${result.facts.number}`,
+                detail: `${formatRepoRef(claim.repo)}#${claim.prNumber} resolved to ${result.facts.repo}#${result.facts.number}`,
                 retryAfterMs: null,
             };
             return writeError(tx, { at, row, result: mismatch, now, stale });
@@ -352,6 +363,8 @@ export async function requestRefresh(deps: ObservationDeps, hint: RefreshHint): 
     const sha = hint.headSha ?? null;
     if (numbers.length === 0 && sha === null) return 0;
     const now = nowOf(deps);
+    // A webhook is GitHub's: it names a GitHub path, and only a GitHub observation can be about it.
+    const github = githubRepo(hint.repo);
     const rows = await sql`
         update batch_pr_observation
         set stale = true, hint_seq = hint_seq + 1, updated_at = ${now},
@@ -360,7 +373,8 @@ export async function requestRefresh(deps: ObservationDeps, hint: RefreshHint): 
                     then least(next_refresh_at, ${now})
                 else next_refresh_at
             end
-        where org_id = ${orgId} and lower(repo) = lower(${hint.repo})
+        where org_id = ${orgId} and forge = ${github.forge} and host = ${github.host}
+          and lower(repo) = lower(${github.path})
           and (pr_number = any(${numbers}::int[]) or (${sha}::text is not null and head_sha = ${sha}))
         returning task_key
     `;

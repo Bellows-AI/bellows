@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { githubRepo, type BatchPlan, type PrFacts } from '@factory-ai/core';
+import type { BatchPlan, PrFacts } from '@factory-ai/core';
 import { createBatchMerger, type BatchMerger, type MergeClient } from '../src/batch-merger.js';
 import { createBatchPrObserver } from '../src/batch-pr-observer.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
@@ -92,7 +92,7 @@ const mergerOf = (memberGrants: MemberForgeGrants | undefined): BatchMerger => {
         orgId: ORG,
         client,
         recordMerge: (repo, number, deliveryId, mergedAt) =>
-            jobs.closeMergedPr(githubRepo(repo), number, deliveryId, mergedAt),
+            jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
         mergeToken: (who, signal) =>
             tokenUnreadable
@@ -119,7 +119,7 @@ async function readyBatch(starter = STARTER.id) {
         orgId: ORG,
         reader: client,
         recordMerge: (repo, number, deliveryId, mergedAt) =>
-            jobs.closeMergedPr(githubRepo(repo), number, deliveryId, mergedAt),
+            jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (batchId) => store.reconcile(batchId),
     });
     await observer.observeDue();

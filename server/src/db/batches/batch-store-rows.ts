@@ -5,9 +5,11 @@ import {
     BATCH_COMPLETION_PR,
     type ExecutorScope,
     type ExecutorType,
+    githubRepo,
     TASK_NO_PR,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
+import { refColumns } from '../repo-ref-row.js';
 import {
     BATCH_LIST_LIMIT,
     DECISION_ADVANCE,
@@ -318,10 +320,11 @@ export async function insertChildren(tx: TransactionSql, { orgId, id }: BatchAdd
         batch_id: id,
         key: target.key,
         position,
-        repo: target.repo,
+        // The plan wire is owner/name (GitHub); the stored target carries the whole triple.
+        ...refColumns(githubRepo(target.repo)),
         branch: target.branch ?? null,
     }));
-    await tx`insert into batch_target ${tx(targets, 'org_id', 'batch_id', 'key', 'position', 'repo', 'branch')}`;
+    await tx`insert into batch_target ${tx(targets, 'org_id', 'batch_id', 'key', 'position', 'forge', 'host', 'repo', 'branch')}`;
     const stages = plan.stages.map((stage, position) => ({
         org_id: orgId,
         batch_id: id,

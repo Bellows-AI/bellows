@@ -17,6 +17,7 @@ import {
     sameRepo,
     VERIFY_UNKNOWN,
     type PrFacts,
+    type RepoRef,
     type StageVerification,
 } from '@factory-ai/core';
 import type { Sql } from 'postgres';
@@ -75,7 +76,7 @@ export interface BatchMergerDeps {
     /** Absent offline: nothing is merged or verified. */
     client?: MergeClient | undefined;
     /** Records a merge in the ledger: the job store's `closeMergedPr`. */
-    recordMerge: (repo: string, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
+    recordMerge: (repo: RepoRef, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
     /** Lets the gate judge the merge just recorded and the scheduler advance a verified stage. */
     reconcile: (batchId: string) => Promise<unknown>;
     /** The token a merge is sent with: the batch starter's (docs/batches.md). Reads stay on `client`'s installation. */
@@ -145,7 +146,7 @@ function outcomeOfMergeError(e: unknown): MergeOutcome {
 /** A fresh read of the PR, or the outcome that records why none was possible: nothing was requested. */
 async function readFresh(run: Run, intent: MergeIntent): Promise<{ facts: PrFacts } | { unread: MergeOutcome }> {
     try {
-        return { facts: await run.client.readPullRequest(intent.repo, intent.prNumber) };
+        return { facts: await run.client.readPullRequest(intent.repo.path, intent.prNumber) };
     } catch (e) {
         const retryAfterMs = (e as { retryAfterMs?: number | null }).retryAfterMs ?? null;
         const detail = `the PR could not be read: ${errorMessage(e)}`;
@@ -163,7 +164,7 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
     const fetched = await readFresh(run, intent);
     if ('unread' in fetched) return settled(run, intent, fetched.unread);
     const read = fetched.facts;
-    if (!sameRepo(githubRepo(read.repo), githubRepo(intent.repo)) || read.number !== intent.prNumber) {
+    if (!sameRepo(githubRepo(read.repo), intent.repo) || read.number !== intent.prNumber) {
         return settled(run, intent, { state: MERGE_CHANGED, detail: 'GitHub answered for another pull request' });
     }
     const fresh = judgeFreshFacts(intent, read);
@@ -181,7 +182,7 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
     let result: MergeResult;
     try {
         result = await run.client.mergePullRequest(
-            intent.repo,
+            intent.repo.path,
             intent.prNumber,
             { sha: fresh.headSha, method: MERGE_METHOD },
             token
@@ -199,7 +200,7 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
 async function admitMerge(run: Run, deps: BatchMergerDeps, candidate: MergeCandidate): Promise<boolean> {
     if (run.tokens.has(candidate.batchId)) return true;
     const token = await deps.mergeToken(
-        { orgId: deps.orgId, repo: candidate.repo, startedBy: candidate.startedBy },
+        { orgId: deps.orgId, repo: candidate.repo.path, startedBy: candidate.startedBy },
         AbortSignal.timeout(MERGE_TOKEN_DEADLINE_MS)
     );
     if (!token.ok) {
@@ -212,7 +213,7 @@ async function admitMerge(run: Run, deps: BatchMergerDeps, candidate: MergeCandi
 
 /** A request whose answer is unknown is read back from the PR, never sent again. */
 async function reconcileOne(run: Run, intent: MergeIntent): Promise<void> {
-    const facts = await run.client.readPullRequest(intent.repo, intent.prNumber);
+    const facts = await run.client.readPullRequest(intent.repo.path, intent.prNumber);
     if (reconcileUncertainMerge(facts) === MERGE_MERGED) return merged(run, intent, mergedFactsOf(facts));
     return settled(run, intent, {
         state: MERGE_LAPSED,
@@ -221,9 +222,9 @@ async function reconcileOne(run: Run, intent: MergeIntent): Promise<void> {
     });
 }
 
-async function mergeCommitOf(run: Run, repo: string, prNumber: number): Promise<string | null> {
-    const facts = await run.client.readPullRequest(repo, prNumber);
-    return facts.merged && sameRepo(githubRepo(facts.repo), githubRepo(repo)) ? facts.mergeCommitSha : null;
+async function mergeCommitOf(run: Run, repo: RepoRef, prNumber: number): Promise<string | null> {
+    const facts = await run.client.readPullRequest(repo.path, prNumber);
+    return facts.merged && sameRepo(githubRepo(facts.repo), repo) ? facts.mergeCommitSha : null;
 }
 
 /** What the stage's merges and the target say, or an `unknown` that waits: an unreadable target is never a pass. */
@@ -236,7 +237,7 @@ async function judgeStage(run: Run, job: VerificationJob): Promise<StageVerifica
             }))
         );
         const shas = merges.flatMap((merge) => (merge.sha === null ? [] : [merge.sha]));
-        const target = await run.client.readBranchState(job.repo, job.branch, shas);
+        const target = await run.client.readBranchState(job.repo.path, job.branch, shas);
         return judgeStageVerification({ merges, target: { branch: job.branch, ...target } });
     } catch (e) {
         return { state: VERIFY_UNKNOWN, detail: `the target could not be read: ${errorMessage(e)}`, headSha: null };

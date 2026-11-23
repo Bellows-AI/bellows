@@ -13,6 +13,7 @@ import {
     type RepairEvidence,
 } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
+import { refsMatch } from '../repo-ref-row.js';
 import { followUpInTx } from '../jobs/job-store-thread-actions.js';
 import type { GateReport } from '../jobs/job-store-types.js';
 
@@ -59,9 +60,9 @@ export const actionableObservation = (tx: TransactionSql) => tx`
     and exists (select 1 from batch_task bt
                 join job_pr bp on bp.org_id = bt.org_id and bp.root_job_id = bt.root_job_id
                 where bt.org_id = o.org_id and bt.batch_id = o.batch_id and bt.key = o.task_key
-                  and bp.repo = o.repo and bp.pr_number = o.pr_number)
+                  and ${refsMatch(tx, 'bp', 'o')} and bp.pr_number = o.pr_number)
     and not exists (select 1 from pr_merge pm
-                    where pm.org_id = o.org_id and pm.repo = o.repo and pm.pr_number = o.pr_number)
+                    where pm.org_id = o.org_id and ${refsMatch(tx, 'pm', 'o')} and pm.pr_number = o.pr_number)
 `;
 
 /** The observed failure a repair of a succeeded run answers; null when it no longer stands. */
