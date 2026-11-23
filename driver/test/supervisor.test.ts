@@ -1499,11 +1499,14 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
     it('answers another step while a gate runs: a gate never holds the step queue', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);
-        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', holdMs: 1_500 }));
+        // The gate answers when the test says so, never after a delay a loaded host can outrun.
+        let released = false;
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', heldUntil: () => released }));
         driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
         driver.order(step('draft-1', 'publish', ['node', '-e', 'console.log("drafted")']));
         await until('the publish answer', () => driver.answers.has('draft-1'));
         expect(driver.answers.has('gate-1')).toBe(false);
+        released = true;
         await until('the gate answer', () => driver.answers.has('gate-1'));
         expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 0, stdout: 'passed' });
         supervised.agentExits(0);
@@ -1615,10 +1618,17 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
     it('joins a delivery of a gate still running instead of running it twice', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);
-        const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', holdMs: 500 }));
+        let released = false;
+        const loop = fakeGateLoop(supervised.box.gate, () => ({
+            exitCode: 0,
+            output: 'passed',
+            heldUntil: () => released,
+        }));
         driver.order(gateStep('gate-1', 'npm test'));
         await until('the gate to be taken', () => loop.seen.length === 1);
         driver.order(gateStep('gate-1', 'npm test'));
+        await until('the second delivery to be taken', () => driver.queue.length === 0);
+        released = true;
         await until('the answer', () => driver.answers.has('gate-1'));
         expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 0, stdout: 'passed' });
         expect(loop.seen).toHaveLength(1);
@@ -2273,14 +2283,18 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
             const driver = await startDriver();
             const supervised = run(driver, GATED);
             let holds = 0;
+            let released = false;
             const loop = fakeGateLoop(supervised.box.gate, () => ({
                 exitCode: 3,
                 output: 'failing',
-                holdMs: holds++ === 0 ? 300 : 3_000,
+                // The first run answers when the call has queued behind it; the second is held until the end.
+                heldUntil: holds++ === 0 ? () => released : () => false,
             }));
             driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
             await until('the gate to be taken', () => loop.seen.length === 1);
             driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000, invocation: 'i-2' }));
+            await until('the second call to be taken', () => driver.queue.length === 0);
+            released = true;
             await until('the second call to run the gate', () => loop.seen.length === 2);
             expect(supervised.ledger('gate-1').invocations['i-2']).toMatchObject({ state: 'running' });
             supervised.agentExits(0);
@@ -2291,10 +2305,17 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
         it('runs the second invocation of a gate whose first call failed', async () => {
             const driver = await startDriver();
             const supervised = run(driver, GATED);
-            const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 3, output: 'failing', holdMs: 300 }));
+            let released = false;
+            const loop = fakeGateLoop(supervised.box.gate, () => ({
+                exitCode: 3,
+                output: 'failing',
+                heldUntil: () => released,
+            }));
             driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
             await until('the gate to be taken', () => loop.seen.length === 1);
             driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000, invocation: 'i-2' }));
+            await until('the second call to be taken', () => driver.queue.length === 0);
+            released = true;
             await until('both answers', () => driver.answerBodies.length === 3);
             expect(loop.seen).toHaveLength(2);
             supervised.agentExits(0);

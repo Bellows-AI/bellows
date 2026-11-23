@@ -96,7 +96,7 @@ kill -KILL -1
  */
 const REPORTING = String.raw`
 samples_ok() { grep -qE '^t=[0-9.]+ cpu=[0-9,]+ load=[0-9.]+ mem=[0-9]+/[0-9]+' "$box/done/$1/report/resources"; }
-post a 'echo "{\"files\":[]}" > "$FACTORY_GATE_RUN/report/tests.json"; sleep 3.5; echo A'
+post a 'echo "{\"files\":[]}" > "$FACTORY_GATE_RUN/report/tests.json"; n=0; while [ $(wc -l < "$FACTORY_GATE_RUN/report/resources") -lt 3 ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n + 1)); done; echo A'
 waitfor "[ -e $box/done/a/exit ]"
 echo "a exit=$(cat $box/done/a/exit)"
 echo "a report=$([ -s $box/done/a/report/tests.json ] && echo kept || echo lost)"
