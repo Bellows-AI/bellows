@@ -223,7 +223,10 @@ async function resolveOnce(deps: Settings, call: Call, mayRefresh: boolean): Pro
     const { payload } = stored;
     if (isExpired(deps, payload)) {
         if (!mayRefresh) return unavailable('refresh-in-progress');
-        const refreshed = await deps.lineage.refreshGrant(before.grant.id, { signal });
+        const refreshed = await deps.lineage.refreshGrant(before.grant.id, {
+            signal,
+            observedVersion: before.grant.version,
+        });
         // Whatever the refresh did, the binding and the stored credential are read again from the top.
         return refreshed.ok ? resolveOnce(deps, call, false) : refreshed;
     }

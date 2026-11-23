@@ -1,9 +1,8 @@
 import { createHmac } from 'node:crypto';
-import type { Sql } from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { createAuthStore } from '../src/auth/store.js';
-import { createIntegrationRuntime } from '../src/integrations/integration-recovery.js';
+import { createIntegrationRuntime, type IntegrationRuntime } from '../src/integrations/integration-recovery.js';
 import { createMemberForgeGrants, type MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import { createGitHubUserHooks, GITHUB_FORGE } from '../src/integrations/providers/github-user.js';
 import { type FakeAtlassian, startFakeAtlassian } from '../test/fake-atlassian.js';
@@ -20,7 +19,8 @@ import {
 import { begin, callback } from '../test/auth.oauth-fixtures.js';
 import { randomGithubId, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
-import { lineageHarness } from './integration-store-faults.js';
+import type { LineageTiming } from '../src/integrations/grant-lineage.js';
+import { faultyStore, lineageHarness, type RepoWrappers } from './integration-store-faults.js';
 
 /**
  * The member's GitHub grant: the sign-in exchange stores it, a sign-in replaces it, a refresh is one call across
@@ -50,8 +50,16 @@ afterEach(async () => {
     if (enabled) await fake.close();
 });
 
-/** One board replica: its own runtime and secret store over the shared database, the real GitHub user hooks. */
-function replica(sql: Sql = db.sql): MemberForgeGrants {
+interface Replica {
+    grants: MemberForgeGrants;
+    runtime: IntegrationRuntime;
+}
+
+/**
+ * One board replica: its own runtime and secret store over the shared database, the real GitHub user hooks.
+ * `repo` wraps the store's repo seam, so a fault lands inside the real store.
+ */
+function replicaOf(options: { repo?: RepoWrappers; timing?: Partial<LineageTiming> } = {}): Replica {
     const hooks = createGitHubUserHooks({
         clientId: 'client-1',
         clientSecret: 'client-secret-1',
@@ -59,18 +67,26 @@ function replica(sql: Sql = db.sql): MemberForgeGrants {
         tokenUrl: `${fake.origin}/login/oauth/access_token`,
         userUrl: `${fake.origin}/user`,
     });
-    const secrets = keyring.openWith(keyring.realRepo);
+    const secrets = options.repo ? faultyStore(keyring, options.repo).store : keyring.openWith(keyring.realRepo);
     const runtime = createIntegrationRuntime({
-        sql,
-        crossOrgSql: sql,
+        sql: db.sql,
+        crossOrgSql: db.sql,
         secrets,
         providers: (provider) => (provider === GITHUB_FORGE ? hooks : undefined),
         clients: () => undefined,
         callbackOrigin: null,
-        timing: { retryDelayMs: 0 },
+        timing: { retryDelayMs: 0, ...options.timing },
     });
-    return createMemberForgeGrants({ sql, crossOrgSql: sql, secrets, lineageOf: runtime.lineageOf });
+    const grants = createMemberForgeGrants({
+        sql: db.sql,
+        crossOrgSql: db.sql,
+        secrets,
+        lineageOf: runtime.lineageOf,
+    });
+    return { grants, runtime };
 }
+
+const replica = (): MemberForgeGrants => replicaOf().grants;
 
 const accountOf = (user: { githubUserId: number }): string => String(user.githubUserId);
 
@@ -381,5 +397,59 @@ describe.skipIf(!enabled)('the github_app_authorization revoke webhook', () => {
         await deliver(grants, JSON.stringify({ action: 'created', sender: { id: ALICE.githubUserId } }));
 
         expect(await grants.standing(ORG, ALICE.id, GITHUB_FORGE)).toBe('live');
+    });
+});
+
+describe.skipIf(!enabled)('a refresh another replica already did', () => {
+    it('is not exchanged again: the late claim returns the fresh credential and both callers hold the same token', async () => {
+        const [a, b] = [replicaOf(), replicaOf()];
+        await store(a.grants, ALICE, 'old');
+        const [before] = await grantRows(ALICE);
+        const refreshCalls = scriptRefresh((n) => newPair(n));
+
+        // B refreshes and releases; A, which read the expired credential before that, then claims.
+        expect(await b.grants.accessToken(ORG, ALICE.id, GITHUB_FORGE)).toMatchObject({ ok: true });
+        expect(refreshCalls()).toBe(1);
+        const late = await a.runtime
+            .lineageOf(ORG)
+            .refreshGrant(before!.id, { observedVersion: before!.secret_version! });
+
+        expect(late).toEqual({ ok: true });
+        expect(refreshCalls()).toBe(1);
+        const tokens = await Promise.all([
+            a.grants.accessToken(ORG, ALICE.id, GITHUB_FORGE),
+            b.grants.accessToken(ORG, ALICE.id, GITHUB_FORGE),
+        ]);
+        expect(tokens.map((t) => (t.ok ? t.accessToken : null))).toEqual(['ghu_refreshed_1', 'ghu_refreshed_1']);
+        expect((await grantRows(ALICE))[0]!.lineage_claim).toBeNull();
+    });
+});
+
+describe.skipIf(!enabled)('a replacement sign-in lost to infrastructure', () => {
+    it('keeps the previous grant active and usable when it died before the secret was written', async () => {
+        const healthy = replicaOf();
+        await store(healthy.grants, ALICE, 'previous', { expiresIn: 28_800 });
+        // The replacement claims the lineage and records its operation; the process is gone before the store is called.
+        const [held] = await grantRows(ALICE);
+        const claimed = await healthy.runtime.lineageOf(ORG).claimLineage(held!.id, 'reconsent', { rotates: true });
+        expect(claimed.ok).toBe(true);
+        const operationId = await keyring.open().issueOperationId();
+        await db.sql`
+            update integration_grant
+            set lineage_operation_id = ${operationId}, lineage_secret_ref = secret_ref,
+                lineage_claim_expires_at = now() - interval '1 second'
+            where id = ${held!.id}
+        `;
+
+        const recovered = await healthy.runtime.lineageOf(ORG).recoverLineage(held!.id);
+
+        expect(recovered).toBe('released');
+        const [after] = await grantRows(ALICE);
+        expect(after).toMatchObject({ status: 'active', lineage_claim: null });
+        expect(await healthy.grants.standing(ORG, ALICE.id, GITHUB_FORGE)).toBe('live');
+        expect(await healthy.grants.accessToken(ORG, ALICE.id, GITHUB_FORGE)).toMatchObject({
+            ok: true,
+            accessToken: 'ghu_previous',
+        });
     });
 });

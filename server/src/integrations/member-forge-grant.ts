@@ -190,7 +190,9 @@ async function tokenOnce(
     if (!payload) return unavailable('secret-unavailable');
     if (payload.accessExpiresAt !== null && payload.accessExpiresAt - deps.skewMs <= deps.now()) {
         if (!mayRefresh) return unavailable('refresh-in-progress');
-        const refreshed = await deps.lineageOf(orgId).refreshGrant(grant.id, { signal });
+        const refreshed = await deps
+            .lineageOf(orgId)
+            .refreshGrant(grant.id, { signal, observedVersion: grant.secret_version });
         // Whatever the refresh did, the grant and its stored credential are read again from the top.
         return refreshed.ok ? tokenOnce(deps, who, signal, false) : refreshed;
     }
