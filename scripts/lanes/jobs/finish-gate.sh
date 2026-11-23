@@ -3,7 +3,8 @@ begin_phase finish-gate
 # --- A red gate is repaired inside one run: board + driver + both real executor images ---------
 #
 # The board and the driver are the real ones, the runner images are the real claude-executor and
-# opencode-executor (with only the lane's `gh` stand-in for the publish, fg_image), and the model is
+# opencode-executor (the publish's PR is the board's: this lane's board holds no GitHub, so it answers the
+# publish's PR ask with 409 GITHUB_UNAVAILABLE and the verdict carries the push with no PR), and the model is
 # the scripted endpoint in `--finish-gate` mode. The checkout
 # declares one gate that passes only once `.lane-finish` exists, with a 15-minute timeout (above the
 # ad-hoc gate's 10-minute cap, which the finish pass must not apply). The agent's first turn changes
@@ -60,24 +61,10 @@ case "$fg_hook_timeout" in
     ;;
 esac
 
-fg_image() { # fg_image <claude|opencode> -> builds $IMAGE_FINISH-<cli>: the real executor image, its `gh` the lane's stand-in
-    # The agent's change is published, and the publish runs `gh pr create` in the executor image; the lane has no
-    # GitHub, so the stand-in the stub runners carry (scripts/lane-gh.sh) answers it. Nothing else differs.
-    local dir="$work/finish-image-$1"
-    mkdir -p "$dir" && cp "$work/lane-gh.sh" "$dir/" &&
-        printf 'FROM %s\nUSER root\nCOPY lane-gh.sh /usr/local/bin/gh\nRUN chmod 0755 /usr/local/bin/gh\nUSER %s\n' \
-            "$1-executor" "$(docker image inspect -f '{{.Config.User}}' "$1-executor")" >"$dir/Dockerfile" &&
-        docker build -q -t "$IMAGE_FINISH-$1" "$dir" >/dev/null
-}
-
 finish_gate_lane() { # finish_gate_lane <claude|opencode>
-    local cli="$1" image="$IMAGE_FINISH-$1" fake_pid fake_port id body_json passed_exec seen
+    local cli="$1" image="$1-executor" fake_pid fake_port id body_json passed_exec seen
     if ! docker image inspect "$cli-executor" >/dev/null 2>&1; then
         bad "$cli: a red gate is repaired inside one run" "the $cli-executor image is missing — run make runners"
-        return
-    fi
-    if ! fg_image "$cli"; then
-        bad "$cli: a red gate is repaired inside one run" "could not build $image"
         return
     fi
     stop_driver

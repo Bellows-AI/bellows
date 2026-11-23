@@ -111,6 +111,7 @@ export function githubAuth(overrides: Partial<Extract<AuthConfig, { mode: 'githu
         authorizeUrl: 'https://github.test/login/oauth/authorize',
         tokenUrl: 'https://github.test/login/oauth/access_token',
         userUrl: 'https://api.github.test/user',
+        apiUrl: 'https://api.github.test',
         ...overrides,
     };
 }

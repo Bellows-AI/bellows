@@ -114,6 +114,8 @@ export type AuthConfig =
           readonly authorizeUrl: string;
           readonly tokenUrl: string;
           readonly userUrl: string;
+          /** GITHUB_API_URL: the REST base the board writes a member's pull requests through. */
+          readonly apiUrl: string;
       };
 
 export interface AppConfig {
@@ -536,6 +538,7 @@ function loadAuth(env: NodeJS.ProcessEnv, host: string, port: number): AuthConfi
         authorizeUrl: `${githubWebUrl(env)}/login/oauth/authorize`,
         tokenUrl: `${githubWebUrl(env)}/login/oauth/access_token`,
         userUrl: `${githubApiUrl(env)}/user`,
+        apiUrl: githubApiUrl(env),
     });
 }
 

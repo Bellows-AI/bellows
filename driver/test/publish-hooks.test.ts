@@ -13,6 +13,7 @@ import {
     publishCheckout,
     STALE_REVISION_REASON,
 } from '../src/publish/publish.js';
+import { fakePullRequests } from './fixtures/fake-pull-requests.js';
 import { git, hasGit, ROOT, SCRIPT_IDENTITY, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
@@ -40,7 +41,7 @@ afterAll(() => rmSync(shimDir, { recursive: true, force: true }));
 
 describe.skipIf(!hasGit())('a publish over repository hooks', () => {
     const fx = setupWorktreeFixture();
-    const PR_URL = 'https://example.test/pull/1';
+    const pullRequests = fakePullRequests();
     const job = {
         id: ROOT,
         command: 'do the work',
@@ -57,12 +58,8 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
             ])
         );
 
-    /** Runs a step the way a runner's transport does, against the fixture; `gh` is a stand-in. */
+    /** Runs a step the way a runner's transport does, against the fixture. The PR is the board's, never a step. */
     const runStep = async (step: PublishStep): Promise<{ stdout: string }> => {
-        if (step.entrypoint === 'gh') {
-            if (step.args[1] === 'view') throw new Error('no pull requests found');
-            return { stdout: step.args[1] === 'create' ? `${PR_URL}\n` : '' };
-        }
         const stdout = execFileSync(step.entrypoint, step.args, {
             cwd: step.inRepo ? fx.checkout() : fx.dir(),
             // No global or system config: a member's own core.hooksPath must not hide the hooks under test.
@@ -101,7 +98,11 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
     };
 
     const publish = (revision?: string): Promise<PublishResult> =>
-        publishCheckout(job, revision === undefined ? undefined : { revision }, runStep);
+        publishCheckout(
+            job,
+            { ...(revision === undefined ? {} : { revision }), pullRequests: pullRequests.port },
+            runStep
+        );
 
     /** The branches the bare remote holds beside its default. */
     const pushed = (): string[] =>

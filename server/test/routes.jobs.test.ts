@@ -527,6 +527,14 @@ function stubStore(
             boom();
             return { result: 'ok' };
         },
+        async prWriteContext() {
+            boom();
+            return { result: 'missing' };
+        },
+        async openPrForgeWait() {
+            boom();
+            return { result: 'ok' };
+        },
         async ingestTranscriptTools() {
             boom();
             return { result: 'ok', written: 0 };

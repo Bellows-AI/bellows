@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -28,7 +28,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).not.toContain('127.0.0.1::9418');
         expect(SCRIPT).toContain('docker port "$ORIGIN_NAME" 9418/tcp');
         expect(origin).toBeLessThan(SCRIPT.indexOf('\nstart_open_board\n'));
-        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(6);
+        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(7);
         expect(SCRIPT).not.toContain('ORG_WORKSPACE_ROOT');
         expect(SCRIPT).not.toContain('.origins');
     });
@@ -157,7 +157,7 @@ describe('the test-jobs harness', () => {
             expect(line).toContain(`"$IMAGE_BASE" >${file}`);
         }
         expect(SCRIPT).toContain(
-            'docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_ACC" "$IMAGE_FINISH-claude" "$IMAGE_FINISH-opencode" "$IMAGE_BASE"'
+            'docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_ACC" "$IMAGE_BASE"'
         );
     });
 
@@ -377,7 +377,7 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('dk_log "$k4" "$ADOPTED" && bad \'k4: the finished runner was not waited out\'');
         expect(phase).toContain('dk_log "$k5" "$ADOPTED" && bad \'k5: the finished runner was not waited out\'');
         expect(phase).toContain('lane-pushes.log');
-        expect(phase).toContain('lane-gh-prs');
+        expect(phase).toContain('lane-push-hold');
         expect(phase).toContain('factory.claim-seq=2');
         expect(phase).toContain('label=factory.role=agent');
         // Barriers live on the job's own task volume, which the lane reads by name and never creates.
@@ -392,6 +392,35 @@ describe('the test-jobs harness', () => {
         // The shared recovery helpers sit at file scope, where node-disruption and this phase both see them.
         expect(SCRIPT.indexOf('\ndisruption_driver() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
         expect(SCRIPT.indexOf('\nawait_released() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
+    });
+
+    // The publish is the board's write, so no lane stands a `gh` in the runner: the stand-in is gone and the
+    // publish is held at the origin's pre-receive hook instead.
+    it('holds the publish at the origin, with no gh stand-in left', () => {
+        expect(existsSync(join(ROOT, 'scripts/lane-gh.sh'))).toBe(false);
+        const hold = readFileSync(join(ROOT, 'scripts/lanes/jobs/driver-kill.sh'), 'utf8');
+        expect(hold).toContain('hooks/pre-receive');
+        expect(hold).toContain('lane-push-hold.go');
+        expect(hold).not.toContain('lane-gh');
+    });
+
+    // The board opens the task's PR as the member (docs/connections.md): this phase is where that runs on real containers.
+    it('the publish-member phase signs a member in through the fake GitHub and counts PRs and token kinds there', () => {
+        const phase = readFileSync(join(ROOT, 'scripts/lanes/jobs/publish-member.sh'), 'utf8');
+        expect(phase).toContain('AUTH_MODE=github');
+        expect(phase).toContain('GITHUB_WEB_URL="$LANE_FAKE_FORGE_URL" GITHUB_API_URL="$LANE_FAKE_FORGE_URL"');
+        expect(phase).toContain('node scripts/publish-member-client.mjs "$PM_BASE"');
+        // The fake records the token kind of every call and which kind created each PR.
+        expect(phase).toContain('/_control/pulls');
+        expect(phase).toContain('/_control/calls');
+        expect(phase).toContain("'1 user'");
+        expect(phase).toContain('"$PM_STATE/hold"');
+        expect(phase).toContain('"$PM_STATE/hold.go"');
+        // A broken grant waits on a forge requirement and signing in again finishes the task.
+        expect(phase).toContain("set status = 'reconnect_required'");
+        expect(phase).toContain("provider = 'forge'");
+        // The member's runner holds no user token: the lane never hands one to the driver or a job.
+        expect(phase).not.toContain('ghu_');
     });
 
     it('the orphan runner is removed one id at a time, not as one newline-joined argument', () => {

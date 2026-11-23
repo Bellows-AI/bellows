@@ -6,6 +6,7 @@ import type { JobConclusionStore } from '../src/db/jobs/job-store-conclusions.js
 import type { JobMergeStore } from '../src/db/jobs/job-store-merge.js';
 import type { GateRunStore } from '../src/db/jobs/job-store-gate-runs.js';
 import type { PrOperationStore } from '../src/db/jobs/job-store-pr-operations.js';
+import type { PrWriteStore } from '../src/db/jobs/job-store-pr-write.js';
 import type { TranscriptToolStore } from '../src/db/jobs/job-store-transcript-tools.js';
 import type { PhaseCheckpointStore } from '../src/db/jobs/job-store-phase-checkpoints.js';
 import type { JobQuestionStore } from '../src/db/jobs/job-store-questions.js';
@@ -37,6 +38,7 @@ type Slices =
     | PhaseCheckpointStore
     | GateRunStore
     | PrOperationStore
+    | PrWriteStore
     | TranscriptToolStore;
 
 type KeysOfEach<T> = T extends unknown ? keyof T : never;

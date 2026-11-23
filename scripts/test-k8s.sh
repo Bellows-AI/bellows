@@ -2324,7 +2324,7 @@ begin_phase images
 # points: the task supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real
 # entrypoints honor.
 cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
-    docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
+    docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/stub-runner.Dockerfile "$work/"
 cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/board-call.cjs docker/executor-common/connection-ask.cjs docker/executor-common/skill-view.cjs docker/skills/factory-jira/jira.cjs docker/skills/factory-linear/linear.cjs docker/skills/factory-task-title/task-title.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
 printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs board-call.cjs connection-ask.cjs skill-view.cjs jira.cjs linear.cjs task-title.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"

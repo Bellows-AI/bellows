@@ -3,6 +3,7 @@ import type { BoardJob } from '../../src/board/board.js';
 import { loadDriverConfig } from '../../src/config.js';
 import { containerName, dockerArgs } from '../../src/docker/docker.js';
 import { TASK_MOUNT, taskMountArgs } from '../../src/task-volume.js';
+import { fakePullRequests } from '../fixtures/fake-pull-requests.js';
 import { createDockerRunner } from '../../src/docker/docker-runner.js';
 import { supervisorName } from '../../src/docker/docker-mailbox.js';
 import type { StepSink } from '../../src/step-control.js';
@@ -35,7 +36,7 @@ import {
     dockerRunner,
 } from '../fixtures/docker-suite.js';
 
-const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/42';
+const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/1';
 
 describe('publishing the produced work', () => {
     const ISSUE_JOB: BoardJob = {
@@ -657,7 +658,6 @@ describe('publishing the produced work', () => {
     const publishRunner = (
         state: Record<string, unknown>,
         opts: {
-            prExists?: boolean;
             fail?: ((argv: string[]) => boolean) | undefined;
             /** The step's stderr, as the supervisor answers it beside a non-zero exit. */
             failStderr?: string;
@@ -685,11 +685,6 @@ describe('publishing the produced work', () => {
                 if (argv.some((a) => a.includes('shortstat'))) return ok(JSON.stringify(opts.summary ?? SUMMARY));
                 return ok(JSON.stringify(state));
             }
-            if (argv.includes('pr') && argv.includes('view')) {
-                if (opts.prExists) return ok(`${PR_URL}\n`);
-                return { exitCode: 1, stdout: '', stderr: 'no pull requests', timedOut: false };
-            }
-            if (argv.includes('pr') && argv.includes('create')) return ok(`${PR_URL}\n`);
             return ok();
         });
         const exec =
@@ -699,7 +694,11 @@ describe('publishing the produced work', () => {
                 return { stdout: args[0] === 'wait' ? '0\n' : '' };
             }) as unknown as (args: string[]) => Promise<{ stdout: string }>);
         const runner = dockerRunner(exec, { spawn: spawnChild(''), steps: steps.sink });
-        return { steps, docker, runner };
+        // The PR is the board's: every publish here asks this fake, and no supervised step runs `gh`.
+        const pr = fakePullRequests();
+        const publishGit = runner.publishGit.bind(runner);
+        runner.publishGit = (job, token, options) => publishGit(job, token, { pullRequests: pr.port, ...options });
+        return { steps, docker, runner, pr };
     };
 
     const DIRTY_ON_MAIN = {
@@ -729,8 +728,6 @@ describe('publishing the produced work', () => {
             if (a.includes('reset')) return 'reset';
             if (a.includes('commit')) return 'commit';
             if (a.includes('push')) return 'push';
-            if (a.includes('view')) return 'pr-view';
-            if (a.includes('create')) return 'pr-create';
             return 'other';
         });
 
@@ -814,7 +811,7 @@ describe('publishing the produced work', () => {
     it('branches, commits, pushes and opens the PR — in that order', async () => {
         // The checkout sits on main with no fix branch yet: the plain switch refuses (no such
         // branch), and `-c` creates it — both calls are part of the expected shape.
-        const { steps, docker, runner } = publishRunner(DIRTY_ON_MAIN, {
+        const { steps, docker, runner, pr } = publishRunner(DIRTY_ON_MAIN, {
             fail: (a) => a.includes('switch') && !a.includes('-c'),
         });
         const result = await runner.publishGit(ISSUE_JOB, 'ghs_minted');
@@ -827,7 +824,7 @@ describe('publishing the produced work', () => {
             reason: null,
             repository: 'Bellows-AI/bellows',
             baseBranch: 'main',
-            prNumber: 42,
+            prNumber: 1,
             cause: null,
         });
         const calls = argvsOf(steps);
@@ -844,9 +841,7 @@ describe('publishing the produced work', () => {
             'ledger',
             'push',
             'ledger',
-            'pr-view',
             'summary',
-            'pr-create',
             'ledger',
         ]);
         // The decisions are publishCheckout's (publish-checkout.test.ts); this is their supervised
@@ -864,9 +859,9 @@ describe('publishing the produced work', () => {
             BASE: 'origin/main',
             BACKSTOP_TITLE: '/fix https://github.com/Bellows-AI/bellows/issues/10 (#10)',
         });
-        // The summarizer's stdout reaches the PR through this transport.
-        const create = calls.find((a) => a.includes('pr') && a.includes('create'));
-        expect(create?.[create.indexOf('--title') + 1]).toBe('Fix the sync re-claim fence (#10)');
+        // The summarizer's stdout reaches the PR through the board's ask, and no step names `gh`.
+        expect(pr.state.asks[0]?.create?.title).toBe('Fix the sync re-claim fence (#10)');
+        expect(calls.some((argv) => argv.includes('gh'))).toBe(false);
     });
 
     // The acceptance of #771: a sync or a publish step is a request to the task supervisor, never a

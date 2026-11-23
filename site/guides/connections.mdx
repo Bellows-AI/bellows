@@ -20,6 +20,7 @@ GitHub is the base of Bellows. You sign in with GitHub, and your organizations a
 
 - **Sign in.** Click **Sign in with GitHub**. If you have no installation, you are asked to install the App first, then sign in again.
 - **Your GitHub connection.** Signing in also connects your GitHub account to Bellows. **Settings → Integrations** shows **GitHub**, **Connected as** your login. If GitHub revokes it, the card says **Needs reconnect**; click **Reconnect GitHub**, which signs you in again. Signing in regularly keeps it current.
+- **Pull requests are yours.** Bellows opens, edits and retargets a task's pull request as the member who started it, using this connection, so GitHub shows that member as the author. If the connection is broken at that moment, the task waits until the member reconnects, then continues.
 - **Choose repositories.** On **Choose organizations and repositories**, pick what Bellows tracks. This changes what Bellows tracks, not your GitHub permissions.
 - **What runs use it for.** For each run, Bellows issues a short-lived token limited to that one repository. The agent uses it to read and push code, open the pull request and work with issues. There is no personal token to manage.
 

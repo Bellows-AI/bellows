@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { fakePullRequests } from './fixtures/fake-pull-requests.js';
 import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s/k8s-podspec.js';
@@ -297,7 +298,7 @@ describe('the task group of one attempt', () => {
         await k8s.probeTree(job);
         await k8s.snapshotTree(job, 'review-1');
         await k8s.runHelper(job, { phase: 'pre', helperId: 'noop', input: {}, githubWriting: false } as never);
-        await k8s.publishGit(job, 'ghs_publish_fresh');
+        await k8s.publishGit(job, 'ghs_publish_fresh', { pullRequests: fakePullRequests().port });
         await k8s.finish(job);
 
         // One Job: the attempt's group — and every step went to its supervisor.
@@ -335,7 +336,7 @@ describe('the task group of one attempt', () => {
         const s = steps((step) => (step.kind === 'sync' ? ok('{"ok":true,"reason":null}') : ok('{"cloned":false}')));
         const k8s = runner(api.request, s.sink);
         await k8s.syncCheckout(job, undefined, SESSION, 'ghs_sync_minted');
-        await k8s.publishGit(job, 'ghs_publish_minted');
+        await k8s.publishGit(job, 'ghs_publish_minted', { pullRequests: fakePullRequests().port });
 
         const sync = s.submitted.find((step) => step.kind === 'sync')!;
         expect(sync.env.GITHUB_TOKEN).toBe('ghs_sync_minted');
@@ -770,7 +771,7 @@ describe('the task group of one attempt', () => {
         const s = steps(() => ok('{"cloned":false}'));
         const k8s = runner(api.request, s.sink);
 
-        await k8s.publishGit(job);
+        await k8s.publishGit(job, undefined, { pullRequests: fakePullRequests().port });
 
         expect(api.created.jobs).toEqual([{ name: runnerJobName(job), containers: ['supervisor'] }]);
     });

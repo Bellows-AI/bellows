@@ -5,7 +5,7 @@
 
 import { evidenceDecision, gatesEvidenceOf } from '../evidence-policy.js';
 import type { HelperFailureReport } from '../helpers.js';
-import { interruptDecision, setupDecision, supervisorLossFlag } from './loop-fence.js';
+import { interruptDecision, requirementDecision, setupDecision, supervisorLossFlag } from './loop-fence.js';
 import { stepLost } from '../step-control.js';
 import { runPostHelperPhase } from './loop-helpers.js';
 import { end, endIfDown } from './loop-conclusion.js';
@@ -86,6 +86,13 @@ async function publishPhase(
     // A lease lost while the push ran stands down here WITHOUT reporting what it pushed: the
     // next holder re-runs the publish (`publishBranch` is the one call that is not abortable).
     if (await endIfDown(ctx, 'its publish')) return STOOD_DOWN;
+    // The board holds the thread for the starter's forge connection: the branch is pushed, the PR is not, and the attempt
+    // is handed back outside the interruption budget, never failed. The next claim's publish finds the push and asks again.
+    if (published.waiting) {
+        state.requirement = { provider: published.waiting.forge };
+        await end(ctx, requirementDecision(state));
+        return STOOD_DOWN;
+    }
     // The agent already shipped its work as a draft: a clean tree leaves nothing to push, and
     // the verdict still carries the publication the agent made.
     if (published?.ok && !published.published && state.draftPublication) published = state.draftPublication;

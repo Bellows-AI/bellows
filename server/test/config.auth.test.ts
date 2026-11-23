@@ -92,17 +92,19 @@ describe('the retired OAuth App configuration', () => {
         const urls = (env: Record<string, string> = {}) => {
             const { auth } = github(env);
             if (auth.mode !== 'github') throw new Error('github mode expected');
-            return [auth.authorizeUrl, auth.tokenUrl, auth.userUrl];
+            return [auth.authorizeUrl, auth.tokenUrl, auth.userUrl, auth.apiUrl];
         };
         expect(urls()).toEqual([
             'https://github.com/login/oauth/authorize',
             'https://github.com/login/oauth/access_token',
             'https://api.github.com/user',
+            'https://api.github.com',
         ]);
         expect(urls({ GITHUB_WEB_URL: 'http://127.0.0.1:9/', GITHUB_API_URL: 'http://127.0.0.1:9/api/' })).toEqual([
             'http://127.0.0.1:9/login/oauth/authorize',
             'http://127.0.0.1:9/login/oauth/access_token',
             'http://127.0.0.1:9/api/user',
+            'http://127.0.0.1:9/api',
         ]);
     });
 });

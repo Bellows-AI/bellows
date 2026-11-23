@@ -543,6 +543,13 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         expect(phase).toContain('MCP_ENABLED=false');
     });
 
+    it('holds the takeover publish at the origin pre-receive hook, since the PR is the board’s write', () => {
+        const hold = readFileSync(join(REPO_ROOT, 'scripts/lanes/k8s/takeover.sh'), 'utf8');
+        expect(hold).toContain('hooks/pre-receive');
+        expect(hold).toContain('lane-push-hold.go');
+        expect(hold).not.toContain('lane-gh');
+    });
+
     it('kills the driver pod at setup, agent, gates and publish, counting from outside the pods', () => {
         expect(script).toContain('.lane-kill');
         for (const step of ['t1', 't2', 't4', 't5']) {
@@ -552,7 +559,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         expect(takeover).toContain('tk_kill');
         expect(script).toContain('expired="$(expire_claim_one "$1")"');
         expect(takeover).toContain('factory-stub-commit');
-        expect(takeover).toContain('lane-gh-hold');
+        expect(takeover).toContain('lane-push-hold');
         // Barriers sit on the job's own task volume, reached through its pods, never the dashboard's claim.
         expect(script).toContain('TK_D="/task/.lane-kill-"');
         expect(takeover).toContain('tk_use "$t5"');

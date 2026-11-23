@@ -48,14 +48,16 @@ import { operatorRoutes } from './routes/operator.js';
 import { operatorDriverCredentialRoutes } from './routes/operator-driver-credentials.js';
 import { orgExportRoutes } from './routes/org-export.js';
 import { authRoutes } from './routes/auth.js';
-import { createForgeGate } from './forge/forge-gate.js';
+import { createForgeGate, type ForgeGate } from './forge/forge-gate.js';
+import { createPrTokenSource } from './forge/pr-token.js';
+import { createPrWriter, type PrWriter } from './github/pr-write.js';
 import { forgeGrantRoutes } from './routes/forge-grants.js';
 import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestRoutes } from './routes/ingest.js';
 import { registerTitleRoute } from './routes/jobs/job-handlers-title.js';
 import { preflightRoutes } from './routes/jobs/job-preflight.js';
-import { jobRoutes } from './routes/jobs/jobs.js';
+import { type JobRouteDeps, jobRoutes } from './routes/jobs/jobs.js';
 import { repoRoutes } from './routes/repos.js';
 import { skillRoutes } from './routes/skills.js';
 import { skillStoreRoutes } from './routes/skills-store.js';
@@ -175,6 +177,8 @@ export interface AppDeps {
     identity?: GitHubIdentityClient | undefined;
     /** The member forge grants: a sign-in keeps the GitHub grant here, and the revoke webhook breaks it. Absent, none. */
     memberGrants?: MemberForgeGrants | undefined;
+    /** The GitHub REST writer behind the PR route; absent, it is built from the configured API URL, and with none the route answers GITHUB_UNAVAILABLE. */
+    prWriter?: PrWriter | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
     appSlug?: (() => Promise<string>) | undefined;
     /**
@@ -293,6 +297,17 @@ async function registerAccountRoutes(
     await registerMcp(app, { config, auth, oauth, version, metrics });
 }
 
+/** The response headers every answer carries: the CSP and the anti-framing, anti-sniffing, no-referrer set. */
+function registerSecurityHeaders(app: FastifyInstance, config: AppConfig): void {
+    const header = csp(config.webRoot === null);
+    app.addHook('onSend', async (_request, reply) => {
+        reply.header('Content-Security-Policy', header);
+        reply.header('X-Frame-Options', 'DENY');
+        reply.header('X-Content-Type-Options', 'nosniff');
+        reply.header('Referrer-Policy', 'no-referrer');
+    });
+}
+
 /** Each org's own installation mints its runners' tokens; an org without one has none to give. */
 const orgMint =
     (orgs: OrgRegistry): GithubMint =>
@@ -300,6 +315,30 @@ const orgMint =
         const tokens = (await orgs.for(orgId))?.githubToken;
         return tokens ? tokens.fresh(repo) : null;
     };
+
+/**
+ * The job routes' deps. The board's PR write is the token source (the starter's grant, or the org's installation
+ * without member grants) and the REST writer over the API the board is configured for: the App's, or the sign-in's
+ * under the offline `github` auth.
+ */
+const jobRouteDepsOf = (
+    deps: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'prWriter' | 'githubMint' | 'metrics'> & {
+        forgeGate: ForgeGate | undefined;
+    }
+): JobRouteDeps => {
+    const { config, orgs, forgeGate, memberGrants, prWriter, githubMint, metrics } = deps;
+    const apiUrl =
+        config.github.mode === 'app' ? config.github.apiUrl : config.auth.mode === 'github' ? config.auth.apiUrl : null;
+    return {
+        orgs,
+        forgeGate,
+        pullRequests: {
+            tokens: createPrTokenSource({ memberGrants, mint: githubMint ?? orgMint(orgs) }),
+            writer: prWriter ?? (apiUrl === null ? undefined : createPrWriter({ apiUrl })),
+        },
+        ...(metrics ? { claimPoll: metrics.claimPoll } : {}),
+    };
+};
 
 /** Each org's own installation revokes its runners' tokens; null when the org holds none. */
 const orgRevoke =
@@ -421,6 +460,7 @@ export async function buildApp({
     uploadCapabilities,
     identity,
     memberGrants,
+    prWriter,
     appSlug,
     installationListing,
     commercePlanWriter,
@@ -446,13 +486,7 @@ export async function buildApp({
     app.decorateRequest('closing', { getter: () => closing.signal });
     app.addHook('preClose', async () => closing.abort());
 
-    const header = csp(config.webRoot === null);
-    app.addHook('onSend', async (_request, reply) => {
-        reply.header('Content-Security-Policy', header);
-        reply.header('X-Frame-Options', 'DENY');
-        reply.header('X-Content-Type-Options', 'nosniff');
-        reply.header('Referrer-Policy', 'no-referrer');
-    });
+    registerSecurityHeaders(app, config);
 
     registerRouteSpanHook(app);
 
@@ -503,7 +537,9 @@ export async function buildApp({
     if (store) await app.register(ingestRoutes(store, orgs));
     // The board and the workflow definitions it resolves against: per-org runtimes, the routes
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
-    await app.register(jobRoutes({ orgs, forgeGate, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
+    await app.register(
+        jobRoutes(jobRouteDepsOf({ config, orgs, forgeGate, memberGrants, prWriter, githubMint, metrics }))
+    );
     registerTitleRoute(app, orgs);
     await app.register(preflightRoutes({ orgs, forgeGate }));
     await app.register(

@@ -5,9 +5,10 @@ begin_phase driver-kill
 # A driver that vanishes at any step of a run costs the task an interruption, never the task: the
 # next claim finishes it once. Each case kills a real driver at one step — before the agent starts
 # (setup), while it runs (agent), during its gates, during the publish — starts the next one, and
-# counts from outside what ran: barrier counters under the member tree, the origin's push log and
-# the stub gh's PR list. The finalizing step is node-disruption's case a. A driver lost after the
-# publish has nothing left to repeat, so no case stands there.
+# counts from outside what ran: barrier counters under the member tree and the origin's push log. The
+# publish is held at the origin's pre-receive hook, since the PR is the board's write and this lane's board
+# holds no GitHub (the publish-member phase kills a driver at the PR itself, case p2). The finalizing step is
+# node-disruption's case a. A driver lost after the publish has nothing left to repeat, so no case stands there.
 
 echo
 echo '# driver kill'
@@ -39,8 +40,9 @@ dk_settled() { # dk_settled <name> <job id> -> the checks every case shares once
         bad "$1: nothing of the job is left" "$left"
 }
 
-# The origin's plan is restored at the end, and its push log is started here: the hook counts the ref
-# updates the git daemon receives. The gh stand-in's own state is per task, in /task/.lane-gh.
+# The origin's plan is restored at the end, and its push log and hold are started here: the post-receive hook counts the ref
+# updates the git daemon receives, and the pre-receive hook parks a push while lane-push-hold exists (it touches
+# lane-push-hold.ready and waits for lane-push-hold.go).
 dk_plan_saved="$work/driver-kill.plan"
 lane_origin lane_run '
     if git -C "$1" cat-file -e main:.bellows.yaml 2>/dev/null; then git -C "$1" show main:.bellows.yaml; fi' \
@@ -49,7 +51,8 @@ lane_origin lane_run '
     exit 1
 }
 lane_origin lane_run 'printf "%s\n" "#!/bin/sh" "while read old new ref; do echo \"\$ref\" >>lane-pushes.log; done" >"$1/hooks/post-receive" &&
-    chmod 0755 "$1/hooks/post-receive"' "$DK_ORIGIN" ||
+    printf "%s\n" "#!/bin/sh" "if [ -e lane-push-hold ]; then : >lane-push-hold.ready; t=\$((\$(date +%s)+600)); while [ ! -e lane-push-hold.go ] && [ \"\$(date +%s)\" -lt \"\$t\" ]; do sleep 0.2; done; fi" >"$1/hooks/pre-receive" &&
+    chmod 0755 "$1/hooks/post-receive" "$1/hooks/pre-receive"' "$DK_ORIGIN" ||
     {
         echo 'test-jobs: could not prepare the driver-kill barriers'
         exit 1
@@ -187,29 +190,27 @@ dk_log "$k4" "$TOOK_OVER" && ok 'k4: the next driver takes over the group whose 
 dk_log "$k4" "$ADOPTED" && bad 'k4: the finished runner was not waited out' 'the driver logged an adoption' || ok 'k4: the finished runner was not waited out'
 stop_driver
 
-# K5. The publish: the agent commits, the gh stub holds `pr create`, the driver dies there. The next
-#     claim resumes from the gates' checkpoint and publishes without a second push or a second PR.
+# K5. The publish: the agent commits, the origin holds the publish's push at its pre-receive hook, the driver dies
+#     there. The next claim resumes from the gates' checkpoint and publishes without a second push. This lane's board
+#     holds no GitHub, so the PR ask is answered 409 GITHUB_UNAVAILABLE: the push landed and there is no PR.
 n="$RUN_ID-k5"
 write_bellows "$(dk_plan count "$MK echo x >>$D/$n.gate.count")"
 k5_pushes="$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")"
-k5_prs=0 # the stand-in's PR list is the task's own, born with its volume
+lane_origin lane_touch "$DK_ORIGIN/lane-push-hold" || bad 'k5: the push hold is set' 'the touch failed'
 disruption_driver
-k5="$(create_job "$MK mkdir -p $LANE_GH_DIR && : >$LANE_GH_DIR/lane-gh-hold && cd \"\$WORKDIR\" && echo x >lane-change && git add lane-change && git -c user.name=lane -c user.email=lane@localhost commit -q -m lane-commit && echo x >>$D/$n.agent.count && echo \"ran in \$HOSTNAME\"")"
+k5="$(create_job "$MK cd \"\$WORKDIR\" && echo x >lane-change && git add lane-change && git -c user.name=lane -c user.email=lane@localhost commit -q -m lane-commit && echo x >>$D/$n.agent.count && echo \"ran in \$HOSTNAME\"")"
 lane_use "$k5"
-lane_await_file 180 "$LANE_GH_DIR/lane-gh-hold.ready" && ok 'k5: the publish is at the PR' ||
-    bad 'k5: the publish is at the PR' "job: $(field "$(body "$(api GET "/api/jobs/$k5")")" status), pushes '$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")'"
+lane_origin lane_await_file 180 "$DK_ORIGIN/lane-push-hold.ready" && ok 'k5: the publish is at the push' ||
+    bad 'k5: the publish is at the push' "job: $(field "$(body "$(api GET "/api/jobs/$k5")")" status), pushes '$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")'"
 driver_kill
-lane_touch "$LANE_GH_DIR/lane-gh-hold.go" || bad 'k5: the hold is released' 'the touch failed'
+lane_origin lane_touch "$DK_ORIGIN/lane-push-hold.go" || bad 'k5: the hold is released' 'the touch failed'
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
 dk_settled k5 "$k5"
 k5_pushes_now="$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")"
-k5_prs_now="$(lane_count "$LANE_GH_DIR/lane-gh-prs")"
 case "$k5_pushes$k5_pushes_now" in *'?'*) k5_pushed='?' ;; *) k5_pushed=$((k5_pushes_now - k5_pushes)) ;; esac
-case "$k5_prs$k5_prs_now" in *'?'*) k5_opened='?' ;; *) k5_opened=$((k5_prs_now - k5_prs)) ;; esac
 # The origin's post-receive hook logs ref updates: a no-op push of the same commit fires none, so this
-# counts updates; the PR count below is the check against a duplicate publication.
+# counts updates.
 [ "$k5_pushed" = 1 ] && ok 'k5: the branch ref is updated once' || bad 'k5: the branch ref is updated once' "ref updates added: $k5_pushed"
-[ "$k5_opened" = 1 ] && ok 'k5: one PR is opened' || bad 'k5: one PR is opened' "PRs added: $k5_opened"
 dk_count 'k5: the gates ran once' "$LANE_DIR/$n.gate.count" 1
 dk_count 'k5: the agent ran once' "$LANE_DIR/$n.agent.count" 1
 dk_log "$k5" "$TOOK_OVER" && ok 'k5: the next driver takes over the group whose agent exited' ||
@@ -217,7 +218,8 @@ dk_log "$k5" "$TOOK_OVER" && ok 'k5: the next driver takes over the group whose 
 dk_log "$k5" "$ADOPTED" && bad 'k5: the finished runner was not waited out' 'the driver logged an adoption' || ok 'k5: the finished runner was not waited out'
 dk_log "$k5" "resumed gates from claim 1's checkpoint" && ok 'k5: the gates are resumed from their checkpoint' ||
     bad 'k5: the gates are resumed from their checkpoint' "$(grep -F "job $k5:" "$work/driver.log" | tail -5)"
-expect_contains 'k5: the verdict carries the stub PR' "$(field "$(body "$(api GET "/api/jobs/$k5")")" output)" 'factory-smoke/demo/pull/'
+expect_not_contains 'k5: the verdict carries no PR: the board holds no GitHub' "$(field "$(body "$(api GET "/api/jobs/$k5")")" output)" 'pull/'
+lane_origin lane_run 'rm -f "$1/lane-push-hold" "$1/lane-push-hold.ready" "$1/lane-push-hold.go"' "$DK_ORIGIN"
 stop_driver
 
 # Whatever a case left, by label, one id per rm; the origin's plan goes back to what it was.

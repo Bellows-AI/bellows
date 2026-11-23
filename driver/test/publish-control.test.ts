@@ -222,7 +222,10 @@ describe('the publish relay: what an attempt may publish', () => {
         const { relay, state, calls } = relayFor();
         await expect(relay.publish()).resolves.toEqual(LANDED);
         expect(calls.published).toEqual([
-            { token: 'ghs_fresh', options: { draft: true, recordPrOperation: expect.any(Function) } },
+            {
+                token: 'ghs_fresh',
+                options: { draft: true, recordPrOperation: expect.any(Function), pullRequests: expect.any(Function) },
+            },
         ]);
         expect(state.draftPublication).toEqual(LANDED);
     });
@@ -243,7 +246,11 @@ describe('the publish relay: what an attempt may publish', () => {
         expect(calls.asks).toBe(2);
         expect(calls.published.map((c) => c.token)).toEqual(['ghs_a', 'ghs_b']);
         for (const c of calls.published) {
-            expect(c.options).toEqual({ draft: true, recordPrOperation: expect.any(Function) });
+            expect(c.options).toEqual({
+                draft: true,
+                recordPrOperation: expect.any(Function),
+                pullRequests: expect.any(Function),
+            });
         }
         expect(state.draftPublication).toEqual(LANDED);
     });
@@ -337,7 +344,12 @@ describe('the publish relay: what an attempt may publish', () => {
             expect(calls.published).toEqual([
                 {
                     token: 'ghs_fresh',
-                    options: { draft: true, revision: 'r1', recordPrOperation: expect.any(Function) },
+                    options: {
+                        draft: true,
+                        revision: 'r1',
+                        recordPrOperation: expect.any(Function),
+                        pullRequests: expect.any(Function),
+                    },
                 },
             ]);
         });

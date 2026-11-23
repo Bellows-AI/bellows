@@ -201,4 +201,10 @@ describe('site/self-host/monitoring.mdx', () => {
         expect(kubernetes).not.toMatch(/prometheus\.io\//);
         expect(kubernetes).not.toMatch(/\/metrics/);
     });
+    it('says a task\u2019s pull request is opened as the member who started it', () => {
+        expect(read('guides/task-lifecycle.mdx')).toContain(
+            "opens and edits the task's pull request as the member who started the task"
+        );
+        expect(read('guides/connections.mdx')).toContain('as the member who started it');
+    });
 });
