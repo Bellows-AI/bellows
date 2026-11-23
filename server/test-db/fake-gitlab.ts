@@ -109,6 +109,7 @@ export const startFakeGitlab = async ({ now = () => CLOCK_START_MS }: { now?: ()
         refresh,
         /** The lane's own door (`/_control/*`): no credential. */
         control: (path: string, body: object = {}) => send('POST', `/_control/${path}`, { body }),
+        read: (path: string) => send('GET', `/_control/${path}`),
         stop: async () => {
             await forge.close();
             rmSync(stateDir, { recursive: true, force: true });

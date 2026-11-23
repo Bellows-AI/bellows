@@ -47,6 +47,7 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
     const tokens = new Map();
     const callLog = [];
     const table = [];
+    const streams = [];
     let counter = 0;
 
     const forge = {
@@ -54,6 +55,18 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
         clock,
         tokens,
         nextId: () => ++counter,
+        tokenId: tokenIdOf,
+        /** Add a line to the call log that no plain HTTP answer made (a push the forge saw through). */
+        record: (entry) => {
+            callLog.push(entry);
+            appendFileSync(join(stateDir, 'calls.jsonl'), `${JSON.stringify(entry)}\n`);
+        },
+        /**
+         * Register `handler({ request, response, url, token, tokenKind, credential, match })` for the paths `pattern` matches,
+         * whatever the method. It runs before the body is read, so it takes the raw request stream; the credential
+         * check is its own (`token` is the holder, or null).
+         */
+        stream: (pattern, handler) => streams.push({ pattern, handler }),
         json: (response, status, body) => {
             response.writeHead(status, { 'content-type': 'application/json' });
             response.end(JSON.stringify(body));
@@ -126,17 +139,19 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
         let status = 404;
         response.on('finish', () => {
             status = response.statusCode;
-            const entry = {
+            forge.record({
                 method: request.method,
                 path: url.pathname,
                 tokenKind,
                 tokenId: holder ? tokenIdOf(credential) : null,
                 holder: holder ? holder.login : null,
                 status,
-            };
-            callLog.push(entry);
-            appendFileSync(join(stateDir, 'calls.jsonl'), `${JSON.stringify(entry)}\n`);
+            });
         });
+        for (const { pattern, handler } of streams) {
+            const match = pattern.exec(url.pathname);
+            if (match) return handler({ request, response, url, token: holder, tokenKind, credential, match });
+        }
         const body = await readBody(request);
         for (const { method, regex, keys, handler, auth, holdable, deny } of table) {
             const match = method === request.method ? regex.exec(url.pathname) : null;

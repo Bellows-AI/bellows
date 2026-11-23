@@ -3,9 +3,12 @@
 // statuses, project hooks. Plugged into server.mjs, which owns the token table, the clock and the call log.
 // Routes live under GitLab's own prefixes (`/oauth`, `/api/v4`), so GitHub's never collide with them.
 // The `/_control/gitlab/*` routes are the lane's door: seed projects, set member levels, set pipeline and merge
-// status, fire a hook event. Repositories are gitlab-repo.mjs's.
+// status, fire a hook event. Repositories are gitlab-repo.mjs's: bare git repos that git smart-HTTP serves too,
+// behind HTTP Basic `oauth2:<token>`.
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createRepos } from './gitlab-repo.mjs';
+import { join } from 'node:path';
+import { createRepos, GIT_ISOLATION } from './gitlab-repo.mjs';
 
 /** An OAuth access token's lifetime on GitLab (Doorkeeper's `access_token_expires_in`). */
 export const GITLAB_TOKEN_TTL_S = 2 * 3600;
@@ -14,6 +17,10 @@ const USER_ID_BASE = 8000;
 const UNAUTHORIZED = { message: '401 Unauthorized' };
 const API = '/api/v4';
 const HOOK_TIMEOUT_MS = 5000;
+/** One deadline for a whole git request, clone and push included. */
+const GIT_DEADLINE_MS = 120_000;
+const GIT_PATH = /^\/(.+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
+const GIT_REALM = 'Basic realm="GitLab"';
 
 /** GitLab's access levels. A member with no entry is a Maintainer, so a test that sets nothing can do everything. */
 const GUEST = 10;
@@ -43,7 +50,8 @@ const emailOf = (login) => `${login}@users.example.test`;
 const authorOf = (login) => ({ name: login, email: emailOf(login) });
 
 export const registerGitlab = (forge) => {
-    const repos = createRepos();
+    const repos = createRepos(join(forge.stateDir, 'repos'));
+    const pushes = [];
     /** authorization code -> the login it was issued to */
     const codes = new Map();
     /** access and refresh token -> the pair they belong to; both die together */
@@ -761,6 +769,136 @@ export const registerGitlab = (forge) => {
         ctx.response.writeHead(204).end();
     });
 
+    // --- git smart-HTTP ---
+
+    const refuse = (response, status, message, headers = {}) => {
+        response.writeHead(status, { 'content-type': 'text/plain', ...headers });
+        response.end(message);
+    };
+    /** Who pushed what: each ref that moved, with the commits it gained and who wrote and committed each. */
+    const recordPush = async (project, ctx, before) => {
+        const after = await repos.refs(project.id);
+        const known = Object.values(before);
+        const refs = [];
+        for (const ref of new Set([...Object.keys(before), ...Object.keys(after)])) {
+            if (before[ref] === after[ref]) continue;
+            const commits = after[ref] ? await repos.newCommits(project.id, after[ref], known) : [];
+            refs.push({ ref, before: before[ref] ?? null, after: after[ref] ?? null, commits });
+        }
+        if (refs.length === 0) return;
+        const entry = {
+            event: 'push',
+            method: ctx.request.method,
+            path: ctx.url.pathname,
+            project: project.path,
+            tokenKind: ctx.tokenKind,
+            tokenId: forge.tokenId(ctx.credential),
+            holder: ctx.token.login,
+            refs,
+            status: 200,
+        };
+        pushes.push(entry);
+        forge.record(entry);
+    };
+
+    // The request goes to `git http-backend` as it arrives, body unread, and the answer comes back as git writes it.
+    // The child dies with the client, on the deadline and on its own error; the response always settles.
+    // Pushes to one project are expected one at a time: the refs are read before and after to say what moved.
+    forge.stream(GIT_PATH, async (ctx) => {
+        const { request, response, url, match } = ctx;
+        const [, rawPath, service] = match;
+        const project = projectOf(rawPath.split('/').map(decodeURIComponent).join('/'));
+        const push = service === 'git-receive-pack' || url.searchParams.get('service') === 'git-receive-pack';
+        if (!ctx.token) return refuse(response, 401, 'HTTP Basic: Access denied', { 'www-authenticate': GIT_REALM });
+        const held = project ? levelOf(project, ctx.token.login) : 0;
+        if (held < GUEST) return refuse(response, 404, 'Not Found');
+        if (push && held < DEVELOPER) return refuse(response, 403, 'You are not allowed to push code to this project.');
+
+        const recording = request.method === 'POST' && service === 'git-receive-pack';
+        const before = recording ? await repos.refs(project.id) : {};
+        const headers = request.headers;
+        const child = spawn('git', ['http-backend'], {
+            env: {
+                PATH: process.env.PATH,
+                ...GIT_ISOLATION,
+                GIT_PROJECT_ROOT: repos.root,
+                GIT_HTTP_EXPORT_ALL: '1',
+                PATH_INFO: `/${project.id}.git/${service}`,
+                REQUEST_METHOD: request.method,
+                QUERY_STRING: url.search.slice(1),
+                REMOTE_USER: ctx.token.login,
+                REMOTE_ADDR: '127.0.0.1',
+                ...(headers['content-type'] ? { CONTENT_TYPE: headers['content-type'] } : {}),
+                ...(headers['content-length'] ? { CONTENT_LENGTH: headers['content-length'] } : {}),
+                ...(headers['content-encoding'] ? { HTTP_CONTENT_ENCODING: headers['content-encoding'] } : {}),
+                ...(headers['git-protocol'] ? { HTTP_GIT_PROTOCOL: headers['git-protocol'] } : {}),
+            },
+            stdio: ['pipe', 'pipe', 'ignore'],
+        });
+        let started = false;
+        let settled = false;
+        let head = Buffer.alloc(0);
+        const finish = () => {
+            settled = true;
+            clearTimeout(deadline);
+            child.kill('SIGKILL');
+        };
+        const abort = (status, message) => {
+            if (settled) return;
+            const answered = started || response.headersSent;
+            finish();
+            if (answered) response.destroy();
+            else refuse(response, status, message);
+        };
+        const deadline = setTimeout(() => abort(504, 'git http-backend timed out'), GIT_DEADLINE_MS);
+        request.on('aborted', () => abort(499, 'client closed the request'));
+        request.on('error', () => abort(499, 'client closed the request'));
+        response.on('close', () => abort(499, 'client closed the request'));
+        child.on('error', () => abort(500, 'git http-backend could not start'));
+        child.stdin.on('error', () => {});
+        request.pipe(child.stdin);
+
+        child.stdout.on('data', (chunk) => {
+            if (settled) return;
+            let body = chunk;
+            if (!started) {
+                head = Buffer.concat([head, chunk]);
+                const end = head.indexOf('\r\n\r\n');
+                if (end < 0) return;
+                started = true;
+                const cgi = Object.fromEntries(
+                    head
+                        .subarray(0, end)
+                        .toString()
+                        .split('\r\n')
+                        .map((line) => [line.slice(0, line.indexOf(':')).toLowerCase(), line.slice(line.indexOf(':') + 1).trim()])
+                );
+                const { status = '200', ...rest } = cgi;
+                response.writeHead(Number.parseInt(status, 10), rest);
+                body = head.subarray(end + 4);
+            }
+            if (body.length > 0 && !response.write(body)) {
+                child.stdout.pause();
+                response.once('drain', () => child.stdout.resume());
+            }
+        });
+        child.on('close', async (code) => {
+            if (settled) return;
+            if (code !== 0 || !started) return abort(500, 'git http-backend failed');
+            try {
+                if (recording) await recordPush(project, ctx, before);
+            } catch {
+                // the push happened; a lane that needs the record sees it is missing
+            }
+            if (settled) return;
+            clearTimeout(deadline);
+            settled = true;
+            response.end();
+        });
+    });
+
+    forge.route('GET', '/_control/gitlab/pushes', ({ response }) => forge.json(response, 200, pushes), { auth: false });
+
     // --- the lane's door ---
 
     const controlProject = (ctx) => {
@@ -785,7 +923,7 @@ export const registerGitlab = (forge) => {
             statuses: [],
         };
         projects.set(id, project);
-        await repos.create(id, { defaultBranch: project.defaultBranch, files: body.files ?? {}, author: SEED_AUTHOR, date: now() });
+        await repos.create(id, { defaultBranch: project.defaultBranch, files: body.files ?? {}, seedDir: body.seedDir, author: SEED_AUTHOR, date: now() });
         forge.json(response, 200, { id, path_with_namespace: project.path, http_url_to_repo: `${origin(request)}/${project.path}.git` });
     });
     control('commit', async (ctx) => {

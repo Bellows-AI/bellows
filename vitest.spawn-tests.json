@@ -86,6 +86,7 @@
         "driver/test/tree-fingerprint.test.ts",
         "driver/test/turn-context-hook.test.ts",
         "server/test/bench-summary.test.ts",
+        "server/test/fake-gitlab-git.test.ts",
         "server/test/gate-diag.test.ts",
         "server/test/gate-test-changed.test.ts",
         "server/test/gate-ui.test.ts",
