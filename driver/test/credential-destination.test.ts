@@ -51,6 +51,8 @@ function runToEnd(
  * the claim does not name must receive no Authorization header, whichever git operation reached it.
  */
 const TOKEN = 'ghs_foreign_probe_token';
+/** Each case starts real node and git processes; a loaded gate container needs more than the 30s default. */
+const SPAWN_TIMEOUT_MS = 120_000;
 const SESSION_OF = { id: SESSION, resume: false };
 const FETCH_REFUSAL = /claim host/;
 
@@ -112,6 +114,7 @@ const EXECUTORS: Executor[] = [
 
 describe.skipIf(!hasGit() || !hasOpenssl())(
     'the credential goes only to the claim host, through both executors',
+    { timeout: SPAWN_TIMEOUT_MS },
     () => {
         let dir: string;
         let server: Server;
