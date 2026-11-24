@@ -1,9 +1,8 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpsServer, type Server } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
@@ -17,25 +16,30 @@ import { fakeRequest, job as k8sJob, runner as k8sRunner, SESSION } from './fixt
 import { githubRef } from './fixtures/repo-ref.js';
 import { hasOpenssl } from './fixtures/scripts-support.js';
 
-const execFileAsync = promisify(execFile);
-
 /** Runs a command to its end without blocking this loop, which also serves the foreign host the command may reach. */
-async function runToEnd(
+function runToEnd(
     file: string,
     args: string[],
-    options: { cwd?: string; env: NodeJS.ProcessEnv; encoding?: BufferEncoding }
+    options: { cwd?: string; env: NodeJS.ProcessEnv; input?: string }
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
-    try {
-        const { stdout, stderr } = await execFileAsync(file, args, { ...options, encoding: 'utf8', timeout: 60_000 });
-        return { status: 0, stdout, stderr };
-    } catch (e) {
-        const failed = e as { code?: number | string; stdout?: string; stderr?: string };
-        return {
-            status: typeof failed.code === 'number' ? failed.code : null,
-            stdout: failed.stdout ?? '',
-            stderr: failed.stderr ?? '',
-        };
-    }
+    return new Promise((resolve) => {
+        const child = spawn(file, args, { cwd: options.cwd, env: options.env, stdio: ['pipe', 'pipe', 'pipe'] });
+        let stdout = '';
+        let stderr = '';
+        const timer = setTimeout(() => child.kill('SIGKILL'), 60_000);
+        child.stdout.on('data', (chunk) => {
+            stdout += chunk;
+        });
+        child.stderr.on('data', (chunk) => {
+            stderr += chunk;
+        });
+        child.on('close', (status) => {
+            clearTimeout(timer);
+            resolve({ status, stdout, stderr });
+        });
+        child.stdin.on('error', () => undefined);
+        child.stdin.end(options.input ?? '');
+    });
 }
 
 /**
@@ -178,8 +182,8 @@ describe.skipIf(!hasGit() || !hasOpenssl())(
                 repo: githubRef('Bellows-AI/bellows'),
                 env: {},
             };
-            const start = () => {
-                const steps = localSteps(dir, { env: {} });
+            const start = (env: Record<string, string> = {}) => {
+                const steps = localSteps(dir, { env });
                 return { ...steps, runner: runnerOf(steps.sink) };
             };
 
@@ -199,6 +203,73 @@ describe.skipIf(!hasGit() || !hasOpenssl())(
                     // The shipped helper rode the step, so the refusal is the checkout's, not an absent credential.
                     expect(submitted.find((step) => step.kind === 'sync')?.env).toHaveProperty('CRED_HELPER');
                     expect(received).toEqual([]);
+                }
+            );
+
+            // The destination spellings git hands the helper unchanged: the guard (`new URL`) and the helper must agree.
+            const SPELLINGS: [string, boolean][] = [
+                ['github.com', true],
+                ['GitHub.com', true],
+                ['github.com:443', true],
+                ['GITHUB.COM:443', true],
+                ['github.com:8443', false],
+            ];
+
+            it.each(SPELLINGS)(
+                'credential helper: the executor-shipped helper answers host %s: %s',
+                async (host, answered) => {
+                    const { runner, submitted } = start();
+                    retainedCheckout();
+                    await runner.syncCheckout(claim, undefined, SESSION_OF, TOKEN);
+                    const helper = submitted.find((step) => step.kind === 'sync')?.env.CRED_HELPER;
+                    expect(helper).toBeDefined();
+
+                    const filled = await runToEnd('git', ['-c', `credential.helper=${helper}`, 'credential', 'fill'], {
+                        env: {
+                            ...process.env,
+                            GIT_CONFIG_GLOBAL: '/dev/null',
+                            GIT_TERMINAL_PROMPT: '0',
+                            GITHUB_TOKEN: TOKEN,
+                        },
+                        input: `protocol=https\nhost=${host}\n\n`,
+                    });
+
+                    expect(filled.stdout.includes(`password=${TOKEN}`)).toBe(answered);
+                }
+            );
+
+            /** A `git` first on PATH that refuses to touch the network: it records the fetch it was asked for. */
+            const shimmed = () => {
+                const shim = join(dir, 'shim');
+                mkdirSync(shim, { recursive: true });
+                const log = join(dir, 'shim.log');
+                const real = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+                writeFileSync(
+                    join(shim, 'git'),
+                    `#!/bin/sh\nfor a in "$@"; do case $a in fetch|clone|ls-remote) echo "$*" >> '${log}'; echo 'fatal: shimmed' >&2; exit 128;; esac; done\nexec '${real}' "$@"\n`,
+                    { mode: 0o755 }
+                );
+                return { env: { PATH: `${shim}:${process.env.PATH ?? ''}` }, log };
+            };
+
+            it.each(SPELLINGS)(
+                'fetch: a retained origin spelled %s is the claim host: %s, so the credentialed fetch runs or is refused',
+                async (host, isClaimHost) => {
+                    const tree = retainedCheckout();
+                    gitIn(tree, 'remote', 'set-url', 'origin', `https://${host}/Bellows-AI/bellows.git`);
+                    const shim = shimmed();
+                    const { runner } = start(shim.env);
+
+                    const result = await runner.syncCheckout(claim, undefined, SESSION_OF, TOKEN);
+
+                    if (isClaimHost) {
+                        expect(result.reason ?? '').not.toMatch(FETCH_REFUSAL);
+                        // The guard let it through: the fetch ran under the credential helper (against the shim).
+                        expect(readFileSync(shim.log, 'utf8')).toContain('credential.helper=');
+                    } else {
+                        expect(result.ok).toBe(false);
+                        expect(result.reason).toMatch(FETCH_REFUSAL);
+                    }
                 }
             );
 
@@ -240,7 +311,6 @@ describe.skipIf(!hasGit() || !hasOpenssl())(
                             GIT_SSL_NO_VERIFY: '1',
                             GITHUB_TOKEN: TOKEN,
                         },
-                        encoding: 'utf8',
                     }
                 );
                 expect(read.status).not.toBe(0);

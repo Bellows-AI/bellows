@@ -52,7 +52,7 @@ const REBASED_MARKER = 'MERGE-REBASED';
 // publish.ts's CREDENTIAL_HELPER is: git appends the credential operation to this value verbatim.
 // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion inside the git helper snippet, not a JS template
 const CREDENTIAL_HELPER =
-    '! f(){ h=; while IFS= read -r l && [ -n "$l" ]; do case $l in host=*) h=${l#host=};; esac; done; [ "$h" = github.com ] || return 0; printf "username=x-access-token\\n"; printf "password=%s\\n" "$GITHUB_TOKEN"; }; f';
+    '! f(){ h=; while IFS= read -r l && [ -n "$l" ]; do case $l in host=*) h=${l#host=};; esac; done; h=$(printf %s "$h" | tr "[:upper:]" "[:lower:]"); h=${h%:443}; [ "$h" = github.com ] || return 0; printf "username=x-access-token\\n"; printf "password=%s\\n" "$GITHUB_TOKEN"; }; f';
 
 /** @param {object} line */
 const emit = (line) => {

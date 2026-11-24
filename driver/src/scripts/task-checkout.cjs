@@ -469,6 +469,7 @@ const assertCredentialedOrigin = (present) => {
     const origin = present ? git('remote', 'get-url', 'origin') : remote;
     if (present) {
         // A retained checkout may have been pointed at another host; the credential goes only to the claim's own.
+        // `URL.host` lowercases and drops an https URL's default :443; credential-helper.sh normalizes the host the same way.
         const hostOf = (/** @type {string} */ url) => new URL(url).host.toLowerCase();
         for (const url of [origin, git('remote', 'get-url', '--push', 'origin')]) {
             if (url.startsWith('https://') && hostOf(url) !== hostOf(remote)) {
