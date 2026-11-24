@@ -5,6 +5,7 @@
  * says, and a read that is not fully readable reuses nothing.
  */
 
+import type { GateResult } from '../gate-result.js';
 import type { BoardJob } from './board.js';
 import { leasedWriter, type Post } from './board-lease-write.js';
 
@@ -40,6 +41,17 @@ export interface GateRunRow {
     mutatedSince: boolean | null;
     startedAt: string | null;
     finishedAt: string | null;
+}
+
+/** One stored gate verdict of the claim's `lastGateReports`: what `factory-gate <name> --last` answers (copied from the board's). */
+export interface LastGateReport {
+    name: string;
+    status: 'passed' | 'failed';
+    exitCode: number | null;
+    output: string | null;
+    result?: GateResult;
+    /** The recorded run this report is (a reused pass: the run it was served from): the key of its full log stream. */
+    executionId?: string;
 }
 
 /** A write: the row and the run it belongs to. */

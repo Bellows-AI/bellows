@@ -6,7 +6,7 @@ import { tailBytes, type DeadService } from '../runner.js';
 import { stepLost } from '../step-control.js';
 import type { GateRun } from '../gate-manager.js';
 import { declaredTimeoutMs, type GateLedger } from '../gates.js';
-import { type GateTiming, outputBudgets, settledGate, type OutputBudgets } from './gate-settled.js';
+import { type GateTiming, outputBudgets, segmentsOf, settledGate, type OutputBudgets } from './gate-settled.js';
 import type { GateResult } from '../gate-result.js';
 import { gateIdentity, orgKeyOf } from '../gate-identity.js';
 import { recordGateRun, type GateEnd } from '../gate-record.js';
@@ -453,10 +453,7 @@ export async function runDeclaredGates(
         reporting = reporting.then(send);
         return reporting;
     };
-    const budgets = outputBudgets(
-        gateSession.declared.length,
-        Math.max(1, ...segmentsOf(gateSession.declared).map((segment) => segment.length))
-    );
+    const budgets = outputBudgets(gateSession.declared);
     // A setup that failed in this claim's environment is retried by running the gates, never skipped
     // by serving them from an earlier pass: the reuse waits for a setup that succeeded.
     const content = job.setupFailure ? null : await contentOf(runCtx, treeAfter);
@@ -651,20 +648,6 @@ async function judgeSegment(
         await w.report();
     }
     return { toRun, pool, reusedAny };
-}
-
-/**
- * The declared gates in the order they run, as segments: a run of consecutive `parallel` gates is one
- * segment, and every other gate is a segment of its own. Each entry keeps its place in the declared list.
- */
-function segmentsOf(declared: readonly DeclaredGate[]): [DeclaredGate, number][][] {
-    const segments: [DeclaredGate, number][][] = [];
-    for (const [index, gate] of declared.entries()) {
-        const open = segments.at(-1);
-        if (gate.parallel && declared[index - 1]?.parallel && open) open.push([gate, index]);
-        else segments.push([[gate, index]]);
-    }
-    return segments;
 }
 
 /**
