@@ -161,6 +161,7 @@ interface StepAnswer {
     timedOut: boolean;
     replayed?: boolean;
     tokenAskUnanswered?: true;
+    failureLines?: string;
 }
 
 interface Driver {
@@ -1482,6 +1483,39 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
         expect(answer).toMatchObject({ exitCode: 0, timedOut: false });
         expect(answer?.stdout.endsWith('the tail')).toBe(true);
         expect(Buffer.byteLength(JSON.stringify(answer?.stdout))).toBeLessThanOrEqual(STEP_OUTPUT_LIMIT_BYTES);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    // A failure list followed by more than the step output cap of stacks: the tail the answer keeps no longer holds
+    // the names, so the supervisor reads them off the whole file and carries them beside it.
+    it('carries the failure lines of a gate whose output outgrows the step cap past the cut', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const files = ['web/test/a.test.ts', 'core/test/b.test.ts', 'server/test/c.test.ts'];
+        const list = files.map((file) => ` FAIL  ${file} > suite > case\n × case 12ms\n`).join('');
+        const noise = 'Error: Timeout calling "onTaskUpdate"\n    at frame (node:internal/x:1:1)\n'.repeat(20_000);
+        const summary = ' Test Files  3 failed | 677 passed (717)\n      Tests  4 failed | 9000 passed\n';
+        expect(Buffer.byteLength(noise)).toBeGreaterThan(STEP_OUTPUT_LIMIT_BYTES);
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 1, output: `${list}${noise}${summary}` }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        const answer = driver.answers.get('gate-1');
+        expect(answer?.stdout).not.toContain(files[0]);
+        for (const file of files) expect(answer?.failureLines).toContain(file);
+        expect(answer?.failureLines).toContain('Test Files  3 failed | 677 passed (717)');
+        expect(Buffer.byteLength(answer?.failureLines ?? '')).toBeLessThan(64 * 1024);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('carries no failure lines for a gate whose whole output the answer holds', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 1, output: ' FAIL  a.test.ts\n' }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')?.failureLines).toBeUndefined();
         supervised.agentExits(0);
         await supervised.done;
     });

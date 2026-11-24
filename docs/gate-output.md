@@ -4,7 +4,7 @@ What a gate run keeps of its output: the whole log as a stream of the run, and a
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| The run's answer: output tail-kept at `ARTIFACT_LIMIT` (`fullOutput`, `fullTruncated`), the answer's `output` its failure excerpt at the 16 KiB report limit | `driver/src/gate-manager.ts` (`gateRunOf`), `driver/src/runner.ts` | `driver/test/gate-output.test.ts` |
+| The run's answer: output tail-kept at `ARTIFACT_LIMIT` (`fullOutput`, `fullTruncated`), the answer's `output` its failure excerpt at the 16 KiB report limit | `driver/src/gate-manager.ts` (`gateRunOf`), `driver/src/scripts/supervisor.cjs` (`readFailureLines`), `driver/src/runner.ts` | `driver/test/gate-output.test.ts`, `driver/test/supervisor.test.ts` |
 | The excerpt: `FAIL` / `×` lines, then the `Test Files` / `Tests` summary, then the tail; a log with none is its plain tail | `driver/src/gate-excerpt.ts` | `driver/test/gate-excerpt.test.ts` |
 | The stored per-gate `output`: a passed gate keeps a short tail, the failed ones share the rest of the report budget | `driver/src/loop/loop-gates.ts` (`outputBudgets`, `settledGate`) | `driver/test/loop/gate-logs.test.ts`, `driver/test/loop/setup-and-gates.test.ts` |
 | The log stream `gate-<name>-<execution id>`: uploaded when a recorded run ends, declared pass and ad-hoc call alike, on both executors, bounded to a short retry | `driver/src/gate-record.ts` (`finish`), `driver/src/artifact-upload.ts` (`gateStreamName`, `uploadGateLog`), `driver/src/loop/loop-gates.ts` (`gateLedger`) | `driver/test/loop/gate-logs.test.ts` |
@@ -14,7 +14,7 @@ What a gate run keeps of its output: the whole log as a stream of the run, and a
 
 ## Invariants
 
-- The excerpt is taken from the uncut output, before the log's `ARTIFACT_LIMIT` cap; the stored log is a tail and may no longer hold the failing names.
+- The excerpt is taken from the uncut output, before any cap: the supervisor reads the failure and summary lines off the whole output file in chunks when it outgrew `STEP_OUTPUT_LIMIT` and carries them as `failureLines` beside its tail, which `gateRunOf` merges in. Both executors read a gate's output only through that supervisor step; the stored log is a tail and may no longer hold the failing names.
 - A stream no manifest closed answers a retryable 503 (never 404, never a prefix as whole); one finalized short of `complete` answers its bytes with `truncated` and the manifest's `cause`.
 - The log never rides the gates report: the report keeps its 16 KiB raw budget (the 128 KiB body bound), and the log goes by chunked artifact upload under the claim.
 - A log that could not be stored costs the full read, never a verdict; `--last --full` answers 404 for a log the board lacks and a retryable 503 for one it could not read, never the excerpt in its place.

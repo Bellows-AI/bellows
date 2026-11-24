@@ -46,10 +46,11 @@ function fitting(lines: string[], budget: number): string[] {
  * `text` within `limit` bytes: unchanged when it fits, else its failure lines then its tail. Output
  * with no failure line in it is its plain tail.
  */
-export function failureExcerpt(text: string, limit: number): string {
-    if (byteLength(text) <= limit) return text;
-    const summary = matching(text, SUMMARY_LINE);
-    const failures = matching(text, FAILURE_LINE);
+export function failureExcerpt(text: string, limit: number, carried = ''): string {
+    if (carried === '' && byteLength(text) <= limit) return text;
+    // `carried` holds what a cut before this module's text already took away (the supervisor's whole-file read).
+    const summary = matching(`${carried}\n${text}`, SUMMARY_LINE);
+    const failures = matching(`${carried}\n${text}`, FAILURE_LINE);
     if (failures.length === 0 && summary.length === 0) return tailBytes(text, limit);
     const frame = byteLength(FAILURES_HEADER) + byteLength(TAIL_HEADER);
     const failureBudget = Math.floor((limit - frame) * FAILURE_SHARE);

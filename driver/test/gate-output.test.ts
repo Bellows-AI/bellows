@@ -52,6 +52,20 @@ describe("the gate manager keeps a run's whole output", () => {
         expect(bytes(run.output)).toBeLessThanOrEqual(REPORT_BYTE_LIMIT);
     });
 
+    it('builds the excerpt from the lines the supervisor read off a file its own cut already shortened', async () => {
+        const files = ['web/test/a.test.ts', 'core/test/b.test.ts'];
+        const failureLines = [
+            ...files.map((file) => ` FAIL  ${file} > case`),
+            ' Test Files  2 failed | 9 passed (11)',
+        ].join('\n');
+        // What the answer's tail holds once more than the step cap of stacks followed the list.
+        const run = await runWith({ exitCode: 1, stdout: stacks.repeat(20), failureLines });
+
+        for (const file of files) expect(run.output).toContain(file);
+        expect(run.output).toContain('Test Files  2 failed');
+        expect(bytes(run.output)).toBeLessThanOrEqual(REPORT_BYTE_LIMIT);
+    });
+
     it('tail-keeps the whole log at the artifact limit and says the head is gone', async () => {
         const run = await runWith({ exitCode: 1, stdout: `${failures}${'x'.repeat(ARTIFACT_LIMIT * 2)}tail` });
 
