@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { HELPER_REGISTRY, parseHelperOutput } from '../src/helpers.js';
 import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review/review-helpers.js';
 import { cleanupTempDirs, fixture, runSource, writeFixture } from './fixtures/review-script-support.js';
-import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * End-to-end coverage of the github-review-reconcile block's two composed helper bodies (issue
@@ -17,7 +16,7 @@ import { githubRef } from './fixtures/repo-ref.js';
 
 afterEach(cleanupTempDirs);
 
-const PUBLICATION = { repo: githubRef('octo/factory'), prNumber: 7 };
+const PUBLICATION = { repo: 'octo/factory', prNumber: 7 };
 
 /** Writes a registry descriptor's composed body to a temp file `runSource` can execute. */
 function writeComposedBody(id: string): string {
