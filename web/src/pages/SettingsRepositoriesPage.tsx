@@ -1,4 +1,4 @@
-import { ADMIN_ROLE } from '@factory-ai/core';
+import { ADMIN_ROLE, formatRepoRef, parseRepoRef, type RepoRef } from '@factory-ai/core';
 import { useEffect, useRef, useState } from 'react';
 import { trackedRepos, type UseRepos } from '../api/useRepos.js';
 import type { EnvVarView, UseEnv } from '../api/useEnv.js';
@@ -33,15 +33,13 @@ function listNoticeOf(repos: UseRepos): RepositoryListNoticesProps['listNotice']
  */
 function ConfiguredRepoEnv({
     configured,
-    owner,
-    name,
+    repo,
     scope,
     env,
     readOnly,
 }: {
     configured: string;
-    owner: string;
-    name: string;
+    repo: RepoRef;
     scope: { vars: EnvVarView[] } | undefined;
     env: UseEnv;
     /** A repository scope reaches every member's runs, so only an admin writes it (`PUT /api/env/repo`). */
@@ -55,7 +53,7 @@ function ConfiguredRepoEnv({
             title={configured}
             monoTitle
             vars={scope?.vars ?? []}
-            onSave={(vars) => env.saveRepo({ owner, name }, vars)}
+            onSave={(vars) => env.saveRepo(repo, vars)}
             draftId={`repo:${configured}`}
             draftLabel={configured}
             readOnly={readOnly}
@@ -104,8 +102,11 @@ export function SettingsRepositoriesPage() {
     const { configured, headingRef, configure } = useConfiguredRepoDetail();
     const reported = repos.data?.repos ?? [];
     const shown = matchesSearch(orderByRecency(reported), search);
-    const [owner, name] = configured?.split('/') ?? [];
-    const scope = env.data?.repos.find((s) => s.owner === owner && s.name === name);
+    // A repo's id is its ref text, so the open repository needs no listing row to be named.
+    const configuredRef = configured ? parseRepoRef(configured) : null;
+    const scope = configuredRef
+        ? env.data?.repos.find((s) => formatRepoRef(s.repo) === formatRepoRef(configuredRef))
+        : undefined;
 
     return (
         <>
@@ -138,12 +139,14 @@ export function SettingsRepositoriesPage() {
                 onConfigure={configure}
                 loaded={trackedRepos(repos).repos !== null}
             />
-            <RepositoryConfigDetail repo={configured && owner && name ? { owner, name } : null} headingRef={headingRef}>
-                {configured && owner && name ? (
+            <RepositoryConfigDetail
+                repo={configured && configuredRef ? { path: configuredRef.path } : null}
+                headingRef={headingRef}
+            >
+                {configured && configuredRef ? (
                     <ConfiguredRepoEnv
                         configured={configured}
-                        owner={owner}
-                        name={name}
+                        repo={configuredRef}
                         scope={scope}
                         env={env}
                         readOnly={session?.role !== ADMIN_ROLE}

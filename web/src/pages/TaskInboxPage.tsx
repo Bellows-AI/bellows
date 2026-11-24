@@ -101,11 +101,8 @@ const filtersUrl = (filters: InboxFilters): string => {
 
 /** The tracked repositories, plus the currently filtered one if it has since
  * disappeared from the configuration — a linkable URL must keep rendering its own filter. */
-function repoOptionsFor(
-    workspaceRepos: readonly { owner: string; name: string }[],
-    filterRepo: string | null
-): string[] {
-    const options = workspaceRepos.map((repo) => `${repo.owner}/${repo.name}`);
+function repoOptionsFor(workspaceRepos: readonly { id: string }[], filterRepo: string | null): string[] {
+    const options = workspaceRepos.map((repo) => repo.id);
     if (filterRepo !== null && !options.includes(filterRepo)) options.push(filterRepo);
     return options;
 }

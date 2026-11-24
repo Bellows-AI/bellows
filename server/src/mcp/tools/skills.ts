@@ -1,3 +1,4 @@
+import { parseRepoRef } from '@factory-ai/core';
 import { z } from 'zod';
 import { judge, success } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
@@ -43,20 +44,20 @@ type RequirementState = ConnectionStanding | 'unmanaged';
 export const listSkills = defineTool({
     name: 'list_skills',
     description:
-        'List the skills a task can select. `source` says where each comes from (`builtin`, `org`, `workspace`, `repo`); a name held by two sources lists the lower one with `shadowedBy`. Pass `repo` (owner/name, optionally `branch`) to include that repository\'s own skills, read from the skill directories of the selected `executor`\'s CLI (`.claude/skills`, plus the opencode directories for an opencode executor); a failed read is `repoError`, never "no repo skills". `kind` is "manual" for a skill that needs nothing else, or "provider" for one that needs a connection: each of its `connections` says whether you currently have one (`connected`), have one whose grant lapsed (`needs_reconnect`), or have none (`missing`). A skill name alone authorizes nothing: the board checks your connection at create and at claim.',
+        'List the skills a task can select. `source` says where each comes from (`builtin`, `org`, `workspace`, `repo`); a name held by two sources lists the lower one with `shadowedBy`. Pass `repo` (owner/name on GitHub, forge:host/path otherwise; optionally `branch`) to include that repository\'s own skills, read from the skill directories of the selected `executor`\'s CLI (`.claude/skills`, plus the opencode directories for an opencode executor); a failed read is `repoError`, never "no repo skills". `kind` is "manual" for a skill that needs nothing else, or "provider" for one that needs a connection: each of its `connections` says whether you currently have one (`connected`), have one whose grant lapsed (`needs_reconnect`), or have none (`missing`). A skill name alone authorizes nothing: the board checks your connection at create and at claim.',
     scope: 'factory:read',
     routes: [
         ['GET', '/api/skills'],
-        ['GET', '/api/repos/:owner/:name/skills'],
+        ['GET', '/api/repos/:id/skills'],
         ['GET', '/api/connections'],
     ],
     annotations: READ_ONLY,
     input: z.object({
         repo: z
             .string()
-            .regex(/^[^/\s]+\/[^/\s]+$/)
+            .refine((repo) => parseRepoRef(repo) !== null, 'repo must be owner/name, or forge:host/path')
             .optional()
-            .describe("owner/name: include this repository's own skills"),
+            .describe('repository (owner/name on GitHub, forge:host/path otherwise): include its own skills'),
         branch: z
             .string()
             .optional()
@@ -100,7 +101,7 @@ export const listSkills = defineTool({
             query.set('executorScope', args.executorScope ?? 'user');
         }
         const suffix = query.size > 0 ? `?${query.toString()}` : '';
-        const url = args.repo ? `/api/repos/${args.repo}/skills${suffix}` : '/api/skills';
+        const url = args.repo ? `/api/repos/${encodeURIComponent(args.repo)}/skills${suffix}` : '/api/skills';
         const skills = judge(await ctx.fetch({ method: 'GET', url }), SkillsSchema);
         if (!skills.ok) return skills.tagged;
         // A built-in the org switched off is not selectable: it is not listed here.

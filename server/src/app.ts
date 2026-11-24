@@ -1,3 +1,4 @@
+import { REPO_ID_PARAM_LIMIT } from './routes/helpers.js';
 import type { IntegrationProvider } from '@factory-ai/core';
 import Fastify from 'fastify';
 import type { FastifyBaseLogger, FastifyInstance, FastifyServerOptions } from 'fastify';
@@ -474,7 +475,11 @@ export async function buildApp({
     loggerInstance,
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
-    const app = Fastify({ ...loggingOf(loggerInstance, logger), trustProxy: trustProxyOf(config.trustedProxies) });
+    const app = Fastify({
+        ...loggingOf(loggerInstance, logger),
+        trustProxy: trustProxyOf(config.trustedProxies),
+        routerOptions: { maxParamLength: REPO_ID_PARAM_LIMIT },
+    });
     app.setErrorHandler(errorHandler);
     const publicUrl = config.auth.mode === 'github' ? config.auth.publicUrl : '';
     const forgeGate = createForgeGate({ memberGrants, publicUrl });

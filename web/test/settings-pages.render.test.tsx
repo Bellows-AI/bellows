@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
+import type { EnvPayload } from '../src/api/useEnv.js';
 import { describe, expect, it, vi } from 'vitest';
 import type { UseEnv } from '../src/api/useEnv.js';
 import type { UseRepos } from '../src/api/useRepos.js';
@@ -454,8 +455,10 @@ describe('Settings workflows page', () => {
 
 describe('Settings repositories page', () => {
     const tracked = (name: string, over: object = {}) => ({
-        owner: 'acme',
-        name,
+        id: `acme/${name}`,
+        forge: 'github',
+        host: 'github.com',
+        path: `acme/${name}`,
         private: false,
         defaultBranch: 'main',
         pushedAt: '2026-09-01T00:00:00.000Z',
@@ -565,10 +568,10 @@ describe('settings scope context (issue 182 invariants)', () => {
     // Each page's editor is titled by its scope ("Organization variables", "Workspace variables").
     // The guard dialog copy never appears in a clean render — it exists
     // only when the coordinator has something pending, which a static render cannot be.
-    const envData = {
+    const envData: EnvPayload = {
         org: [{ name: 'CORE_SECRET', value: null, isSecret: true, updatedAt: '2026-09-01T00:00:00.000Z' }],
         workspace: [],
-        repos: [{ owner: 'octo', name: 'hooks', vars: [] }],
+        repos: [{ repo: { forge: 'github', host: 'github.com', path: 'octo/hooks' }, vars: [] }],
     };
 
     it('renders the org editor under its scope title, counting the stored rows on the tabs', () => {

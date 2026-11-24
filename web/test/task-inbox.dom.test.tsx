@@ -45,7 +45,17 @@ const tasksAnswer: TaskListResponse = {
 };
 
 const reposAnswer = {
-    repos: [{ owner: 'acme', name: 'web', private: false, defaultBranch: 'main', pushedAt: null }],
+    repos: [
+        {
+            id: 'acme/web',
+            forge: 'github',
+            host: 'github.com',
+            path: 'acme/web',
+            private: false,
+            defaultBranch: 'main',
+            pushedAt: null,
+        },
+    ],
     installation: null,
     meta: { fetchedAt: null, error: null },
 };

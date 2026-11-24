@@ -51,7 +51,10 @@ const org = (config: Record<string, unknown>, type = 'claude-code') => ({ name: 
 const vars = (...entries: [string, string][]) => ({
     vars: entries.map(([name, value]) => ({ name, value, isSecret: true })),
 });
-const repoVars = (...entries: [string, string][]) => ({ repo: { owner: 'acme', name: 'web' }, ...vars(...entries) });
+const repoVars = (...entries: [string, string][]) => ({
+    repo: { forge: 'github', host: 'github.com', path: 'acme/web' },
+    ...vars(...entries),
+});
 
 function expectRefused(response: { statusCode: number; body: string; json: () => { code: string } }, key: string) {
     expect(response.statusCode).toBe(HTTP_BAD_REQUEST);

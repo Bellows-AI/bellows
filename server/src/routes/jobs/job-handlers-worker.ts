@@ -83,12 +83,12 @@ async function refusedAsUntracked(
         return true;
     }
     if (!repos) return false;
-    const [owner, name] = repo.split('/') as [string, string];
+    const ref = githubRepo(repo); // until BEL-532b part 2
     const check = async () =>
         guard(
             reply,
             (e) => request.log.error({ err: e }, 'repo list read failed'),
-            () => checkReposVisible(repos, [{ owner, name }], { subject: 'the repository' })
+            () => checkReposVisible(repos, [ref], { subject: 'the repository' })
         );
     let checked = await check();
     if (!checked.ok) return true;

@@ -34,7 +34,7 @@ describe('the composer while only the repositories have answered', () => {
         render(
             <MemoryRouter>
                 <TaskComposer
-                    repos={[{ owner: 'acme', name: 'web' }]}
+                    repos={[{ id: 'acme/web', path: 'acme/web' }]}
                     reposError={null}
                     onRetryRepos={() => {}}
                     workspaceLoaded={false}

@@ -1,3 +1,4 @@
+import { formatRepoRef, type RepoRef } from '@factory-ai/core';
 import type { ReactElement } from 'react';
 
 /**
@@ -20,7 +21,7 @@ export type ConfigurationScopeId = 'organization' | 'workspace' | 'repository';
 
 export type ConfigurationScopeProps =
     | { scope: 'organization' | 'workspace' }
-    | { scope: 'repository'; repository: { owner: string; name: string } };
+    | { scope: 'repository'; repository: RepoRef };
 
 /** The one precedence summary every scope shows; the per-scope long form sits in a disclosure. */
 const PRECEDENCE_SUMMARY =
@@ -49,7 +50,7 @@ const COPY: Record<ConfigurationScopeId, { impact: string; editability: string; 
  * stated once (the long form behind a disclosure). */
 export function ConfigurationScope(props: ConfigurationScopeProps): ReactElement {
     const copy = COPY[props.scope];
-    const fullName = props.scope === 'repository' ? `${props.repository.owner}/${props.repository.name}` : null;
+    const fullName = props.scope === 'repository' ? formatRepoRef(props.repository) : null;
     return (
         <div className="scope-context">
             <p>{fullName ? copy.impact.replace('{repo}', fullName) : copy.impact}</p>

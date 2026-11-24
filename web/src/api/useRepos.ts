@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import { request } from './request.js';
 
-export interface InstallationRepo {
-    owner: string;
-    name: string;
+/** A repo's identity on the wire: `id` is its ref text (`owner/name` on github.com, `forge:host/path` otherwise). */
+export interface RepoIdentity {
+    id: string;
+    forge: string;
+    host: string;
+    path: string;
+}
+
+export interface InstallationRepo extends RepoIdentity {
     private: boolean;
     defaultBranch: string | null;
     pushedAt: string | null;
@@ -29,14 +35,14 @@ export interface UseRepos {
 
 /** What a page lists as tracked: a confirmed list, or unknown with the reason (null while loading). */
 export function trackedRepos(read: Pick<UseRepos, 'data' | 'error'>): {
-    repos: { owner: string; name: string }[] | null;
+    repos: RepoIdentity[] | null;
     error: string | null;
 } {
     if (read.data === null) return { repos: null, error: read.error };
     if (read.data.repos.length === 0 && read.data.meta.error !== null) {
         return { repos: null, error: read.data.meta.error };
     }
-    return { repos: read.data.repos.map(({ owner, name }) => ({ owner, name })), error: null };
+    return { repos: read.data.repos.map(({ id, forge, host, path }) => ({ id, forge, host, path })), error: null };
 }
 
 /**

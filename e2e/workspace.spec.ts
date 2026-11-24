@@ -161,7 +161,10 @@ test('Configure on another repository with a dirty variables draft asks before s
         const response = await route.fetch();
         const body = (await response.json()) as { repos?: Array<Record<string, unknown>> };
         const first = body.repos?.[0];
-        if (first) body.repos = [first, { ...first, name: `${String(first.name)}-second` }];
+        if (first) {
+            const second = `${String(first.path)}-second`;
+            body.repos = [first, { ...first, id: second, path: second }];
+        }
         await route.fulfill({ response, json: body });
     });
     await page.goto('/settings/repos');

@@ -567,7 +567,7 @@ describe('/api/skills catalog', () => {
 
         const response = await booted.instance.inject({
             method: 'GET',
-            url: '/api/repos/acme/web/skills',
+            url: '/api/repos/acme%2Fweb/skills',
             headers: booted.member,
         });
         const body = response.json();
@@ -672,7 +672,7 @@ describe('built-in skill switch', () => {
         });
         await switchTo(booted, 'factory-jira', booted.admin);
         const menu = (
-            await booted.instance.inject({ method: 'GET', url: '/api/repos/acme/web/skills', headers: booted.member })
+            await booted.instance.inject({ method: 'GET', url: '/api/repos/acme%2Fweb/skills', headers: booted.member })
         ).json();
         expect(menu.skills.some((s: { name: string }) => s.name === 'factory-jira')).toBe(false);
         expect(menu.skills.some((s: { name: string }) => s.name === 'factory-fix')).toBe(true);

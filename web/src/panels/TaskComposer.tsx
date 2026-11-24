@@ -135,10 +135,10 @@ function ComposerContextRow({
                     valueLabel={repo === '' ? repoLabel : shortRepo(repo)}
                     fullLabel={repoLabel}
                     value={repo}
-                    options={repos.map(({ owner, name }) => ({
-                        value: `${owner}/${name}`,
-                        prefix: `${owner}/`,
-                        label: name,
+                    options={repos.map(({ id, path }) => ({
+                        value: id,
+                        prefix: path.slice(0, path.lastIndexOf('/') + 1),
+                        label: path.slice(path.lastIndexOf('/') + 1),
                     }))}
                     help={REPO_HELP}
                     onChange={(next) => update({ repo: next, repoTouched: true })}

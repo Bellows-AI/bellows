@@ -24,11 +24,10 @@ export interface WorkflowParamChoice {
 }
 
 /**
- * `owner/name` of the first selected repository, or `''` for none — the select's value shape.
+ * The id (ref text) of the first selected repository, or `''` for none — the select's value shape.
  */
-export function firstRepo(repos: readonly { owner: string; name: string }[] | null): string {
-    const first = repos?.[0];
-    return first ? `${first.owner}/${first.name}` : '';
+export function firstRepo(repos: readonly { id: string }[] | null): string {
+    return repos?.[0]?.id ?? '';
 }
 
 /**
@@ -174,8 +173,8 @@ export function paramFieldVerdict(
 
 /** A tracked repository as the composer lists it. */
 export interface RepoOption {
-    owner: string;
-    name: string;
+    id: string;
+    path: string;
 }
 
 /**
@@ -186,7 +185,7 @@ export type RepoReadiness = 'ready' | 'none' | 'unselected';
 
 export function repoReadiness(repo: string, repos: readonly RepoOption[]): RepoReadiness {
     if (repos.length === 0) return 'none';
-    return repos.some(({ owner, name }) => `${owner}/${name}` === repo) ? 'ready' : 'unselected';
+    return repos.some(({ id }) => id === repo) ? 'ready' : 'unselected';
 }
 
 /** The one reason Start is dark, in precedence order: in flight, executor, prompt, length, repository, workflow list, workflow params. */
@@ -341,7 +340,7 @@ export function clampedWorkflow(workflow: string, workflows: readonly { name: st
 
 /** The workspace lists a composer draft is measured against. */
 interface DraftLists {
-    repos: readonly { owner: string; name: string }[] | null;
+    repos: readonly { id: string }[] | null;
     /** The combined options, both scopes, as `composerExecutorOptions` builds them. */
     executors: readonly ExecutorChoice[];
     /**
@@ -411,7 +410,7 @@ export function executorUnavailableNotice(name: string, next: ExecutorChoice | n
 export function restoredDraftNotices(
     restored: ComposerDraftInput,
     lists: DraftLists & {
-        repos: readonly { owner: string; name: string }[];
+        repos: readonly { id: string }[];
         workflows: readonly { name: string }[] | null;
     }
 ): string[] | null {
@@ -422,8 +421,7 @@ export function restoredDraftNotices(
         restored.executor !== '' &&
         !selectionExists(lists.executors, { name: restored.executor, scope: restored.executorScope });
     if (choseExecutor) notices.push(executorUnavailableNotice(restored.executor, lists.defaultExecutor));
-    const repoKept =
-        restored.repo === '' || lists.repos.some(({ owner, name }) => `${owner}/${name}` === restored.repo);
+    const repoKept = restored.repo === '' || lists.repos.some(({ id }) => id === restored.repo);
     if (!repoKept) {
         const next = firstRepo(lists.repos);
         notices.push(

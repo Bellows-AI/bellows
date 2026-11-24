@@ -1,7 +1,7 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { ERROR_CODES, formatRepoRef, parseRepoRef, type RepoRef } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
-import type { Repo } from '../config.js';
 import type { OrgRuntime } from '../orgs.js';
+import { refOfListed } from '../forge/forges.js';
 import { sendFailure } from './error-handler.js';
 
 const HTTP_UNAVAILABLE = 503;
@@ -74,6 +74,39 @@ export function repoReason(value: string): string | null {
     return null;
 }
 
+/** The segment rules over a ref's whole path (GitLab nests groups), with `repoReason`'s messages. */
+export function repoRefReason(ref: RepoRef): string | null {
+    for (const part of ref.path.split('/')) {
+        if (part.length > REPO_SEGMENT_LIMIT) return `repo segment exceeds ${REPO_SEGMENT_LIMIT} characters`;
+        const reason = badSegment('repo segment', part);
+        if (reason) return reason;
+    }
+    return null;
+}
+
+/**
+ * The read side's rule. The old `/:owner/:name` read routes did no shape check: a repo was readable when the tracked
+ * list held it, so `acme/-tools` and `acme/.github` were. Only what cannot be a path segment is refused here (`.`,
+ * `..`); `parseRepoRef` already holds the alphabet, and the visibility check bounds everything else.
+ */
+export function repoReadReason(ref: RepoRef): string | null {
+    return ref.path.split('/').some((part) => part === '.' || part === '..') ? 'repo segment is "." or ".."' : null;
+}
+
+/** The longest `:id` a repo route's router takes: the longest valid GitHub ref is 201 characters, 203 encoded, and a nested GitLab path needs room. */
+export const REPO_ID_PARAM_LIMIT = 1024;
+
+/**
+ * The ref a `/api/repos/:id/…` route names: the id is `formatRepoRef(ref)`, URL-decoded by the router. Reads accept
+ * what they always did (`repoReadReason`), so a tracked `acme/.github` or `acme/-tools` stays readable.
+ */
+export function repoOfId(id: string): { ok: true; ref: RepoRef } | { ok: false; message: string } {
+    const ref = parseRepoRef(id);
+    if (!ref) return { ok: false, message: 'repo must be owner/name on GitHub, or forge:host/path' };
+    const reason = repoReadReason(ref);
+    return reason ? { ok: false, message: reason } : { ok: true, ref };
+}
+
 /**
  * Every named repo must be one this org tracks (the installation's list, narrowed by the
  * allowlist). A miss while the list read has an error is NOT "unknown": the list could not be
@@ -83,12 +116,13 @@ export function repoReason(value: string): string | null {
  */
 export async function checkReposVisible(
     repos: OrgRuntime['repos'],
-    selection: readonly Repo[],
+    selection: readonly RepoRef[],
     { subject }: { subject: string }
 ): Promise<{ ok: true } | { ok: false; status?: number; code: string; message: string }> {
     // This read's own error, not lastError(): a concurrent read may have cleared it already.
     const read = await repos.detail();
-    const available = new Set(read.repos.map((r) => `${r.owner}/${r.name}`));
+    // Exact on (forge, host, path): never `sameRepo`, whose GitHub case fold would widen what a route accepts.
+    const available = new Set(read.repos.map((r) => formatRepoRef(refOfListed(r))));
     // The list is empty (or lacks the repo) in two very different situations — nothing is tracked,
     // or the source could not be asked — and only the first makes "no repository matches" true.
     const unconfirmed = (error: string): { ok: false; status: number; code: string; message: string } => ({
@@ -98,12 +132,12 @@ export async function checkReposVisible(
         message: `Cannot check ${subject} against the tracked repositories: ${error}`,
     });
     for (const repo of selection) {
-        if (available.has(`${repo.owner}/${repo.name}`)) continue;
+        if (available.has(formatRepoRef(repo))) continue;
         if (read.error) return unconfirmed(read.error);
         return {
             ok: false,
             code: ERROR_CODES.UNKNOWN_REPO,
-            message: `"${repo.owner}/${repo.name}" is not a repository this board tracks`,
+            message: `"${formatRepoRef(repo)}" is not a repository this board tracks`,
         };
     }
     return { ok: true };

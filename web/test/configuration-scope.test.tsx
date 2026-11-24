@@ -28,7 +28,10 @@ describe('ConfigurationScope', () => {
 
     it('names the repository and states its org-wide reach, any member edits', () => {
         const html = renderToStaticMarkup(
-            <ConfigurationScope scope="repository" repository={{ owner: 'acme', name: 'web' }} />
+            <ConfigurationScope
+                scope="repository"
+                repository={{ forge: 'github', host: 'github.com', path: 'acme/web' }}
+            />
         );
         expect(html).toContain('acme/web');
         expect(html).toContain('Applies to every task using acme/web in the organization.');
@@ -40,7 +43,11 @@ describe('ConfigurationScope', () => {
         for (const props of [
             <ConfigurationScope key="org" scope="organization" />,
             <ConfigurationScope key="ws" scope="workspace" />,
-            <ConfigurationScope key="repo" scope="repository" repository={{ owner: 'acme', name: 'web' }} />,
+            <ConfigurationScope
+                key="repo"
+                scope="repository"
+                repository={{ forge: 'github', host: 'github.com', path: 'acme/web' }}
+            />,
         ]) {
             expect(renderToStaticMarkup(props)).toContain(
                 'Environment values resolve organization &lt; workspace &lt; repository'
@@ -52,7 +59,11 @@ describe('ConfigurationScope', () => {
         for (const props of [
             <ConfigurationScope key="org" scope="organization" />,
             <ConfigurationScope key="ws" scope="workspace" />,
-            <ConfigurationScope key="repo" scope="repository" repository={{ owner: 'acme', name: 'web' }} />,
+            <ConfigurationScope
+                key="repo"
+                scope="repository"
+                repository={{ forge: 'github', host: 'github.com', path: 'acme/web' }}
+            />,
         ]) {
             const html = renderToStaticMarkup(props);
             expect(html.match(/rightmost scope wins/g)).toHaveLength(1);

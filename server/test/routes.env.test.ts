@@ -68,8 +68,7 @@ describe('GET /api/env', () => {
             workspace: [{ name: 'MINE', value: 'visible', isSecret: false, updatedAt: expect.any(String) }],
             repos: [
                 {
-                    owner: 'acme',
-                    name: 'web',
+                    repo: { forge: 'github', host: 'github.com', path: 'acme/web' },
                     vars: [{ name: 'REPO_SECRET', value: null, isSecret: true, updatedAt: expect.any(String) }],
                 },
             ],
@@ -137,7 +136,7 @@ describe('PUT /api/env/workspace', () => {
 describe('PUT /api/env/org and /api/env/repo', () => {
     it.each([
         ['org', '/api/env/org', {}],
-        ['repository', '/api/env/repo', { repo: { owner: 'acme', name: 'web' } }],
+        ['repository', '/api/env/repo', { repo: { forge: 'github', host: 'github.com', path: 'acme/web' } }],
     ] as const)(
         'refuses a member for the %s scope and accepts an admin: it reaches every member’s runs',
         async (_s, url, extra) => {
@@ -152,13 +151,60 @@ describe('PUT /api/env/org and /api/env/repo', () => {
         }
     );
 
+    it('saves the repo scope by {forge, host, path} and lists it back as a ref', async () => {
+        const { app, adminCookie, envVars } = await boot();
+        const payload = {
+            repo: { forge: 'github', host: 'github.com', path: 'acme/web' },
+            vars: [{ name: 'CORE', value: '1', isSecret: false }],
+        };
+        const put = await app.inject({
+            method: 'PUT',
+            url: '/api/env/repo',
+            headers: { cookie: adminCookie },
+            payload,
+        });
+        expect(put.statusCode).toBe(HTTP_OK);
+        expect((await envVars.listRepos()).map((r) => r.repo)).toEqual([payload.repo]);
+    });
+
+    it.each([
+        ['the old { owner, name } shape', { owner: 'acme', name: 'web' }, 'BAD_BODY'],
+        ['the text form', 'acme/web', 'BAD_BODY'],
+        [
+            'a segment git would read as an option',
+            { forge: 'github', host: 'github.com', path: 'acme/-x' },
+            'BAD_REPO_NAME',
+        ],
+        [
+            'a nested path, which has no scope yet',
+            { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' },
+            'BAD_SCOPE',
+        ],
+        [
+            'a gitlab repo this org does not list',
+            { forge: 'gitlab', host: 'gl.example', path: 'acme/web' },
+            'UNKNOWN_REPO',
+        ],
+    ] as const)('refuses %s', async (_label, repo, code) => {
+        const { app, adminCookie, envVars } = await boot();
+        const response = await app.inject({
+            method: 'PUT',
+            url: '/api/env/repo',
+            headers: { cookie: adminCookie },
+            payload: { repo, vars: [] },
+        });
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe(code);
+        expect(await envVars.listRepos()).toEqual([]);
+    });
+
     it('refuses a repository outside the installation', async () => {
         const { app, adminCookie } = await boot();
         const response = await app.inject({
             method: 'PUT',
             url: '/api/env/repo',
             headers: { cookie: adminCookie },
-            payload: { repo: { owner: 'acme', name: 'not-installed' }, vars: [] },
+            payload: { repo: { forge: 'github', host: 'github.com', path: 'acme/not-installed' }, vars: [] },
         });
         expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('UNKNOWN_REPO');
@@ -191,7 +237,7 @@ describe('PUT /api/env/org and /api/env/repo', () => {
             method: 'PUT',
             url: '/api/env/repo',
             headers: { cookie: await signedIn(auth, admin) },
-            payload: { repo: { owner: 'acme', name: 'web' }, vars: [] },
+            payload: { repo: { forge: 'github', host: 'github.com', path: 'acme/web' }, vars: [] },
         });
         expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
         expect(response.json().code).toBe('UNAVAILABLE');
@@ -330,7 +376,7 @@ describe('env var validation', () => {
     it.each([
         ['org', '/api/env/org', {}],
         ['workspace', '/api/env/workspace', {}],
-        ['repo', '/api/env/repo', { repo: { owner: 'acme', name: 'web' } }],
+        ['repo', '/api/env/repo', { repo: { forge: 'github', host: 'github.com', path: 'acme/web' } }],
     ] as const)(
         'refuses GITHUB_TOKEN and GH_TOKEN in the %s scope: GitHub is the App’s alone',
         async (_scope, url, extra) => {
@@ -351,7 +397,7 @@ describe('env var validation', () => {
     it.each([
         ['org', '/api/env/org', {}],
         ['workspace', '/api/env/workspace', {}],
-        ['repo', '/api/env/repo', { repo: { owner: 'acme', name: 'web' } }],
+        ['repo', '/api/env/repo', { repo: { forge: 'github', host: 'github.com', path: 'acme/web' } }],
     ] as const)(
         'accepts ATLASSIAN_API_TOKEN in the %s scope: Jira is a managed connection, the name is not reserved',
         async (_scope, url, extra) => {

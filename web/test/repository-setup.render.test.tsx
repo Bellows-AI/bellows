@@ -17,9 +17,15 @@ import { expectNoPlaceholder } from './fixtures.js';
  * each with Configure for its environment — and carries no selection, checkout or sync state.
  */
 
-const repo = (overrides: Partial<InstallationRepo> = {}): InstallationRepo => ({
-    owner: 'acme',
-    name: 'web',
+/** `name` is shorthand for the id and path `acme/<name>`. */
+const repo = ({
+    name = 'web',
+    ...overrides
+}: Partial<InstallationRepo> & { name?: string } = {}): InstallationRepo => ({
+    id: `acme/${name}`,
+    forge: 'github',
+    host: 'github.com',
+    path: `acme/${name}`,
     private: false,
     defaultBranch: 'main',
     pushedAt: '2026-08-20T09:00:00.000Z',
@@ -179,14 +185,14 @@ describe('RepositoryConfigDetail', () => {
     });
 
     it('heads with the chosen repository and leaves the scope truth to the editor below (rendered once there)', () => {
-        const html = render(<RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} />);
+        const html = render(<RepositoryConfigDetail repo={{ path: 'acme/web' }} />);
         expect(html).toContain('Selected repository: acme/web');
         expect(html).not.toContain('scope-context');
         expect(html).not.toContain('rightmost scope wins');
     });
 
     it('carries no checkout facts — nothing is checked out on the board', () => {
-        const html = render(<RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} />);
+        const html = render(<RepositoryConfigDetail repo={{ path: 'acme/web' }} />);
         for (const gone of ['<h3>Checkout</h3>', 'Checkout status', 'Package cache', 'Last commit', NOT_AVAILABLE]) {
             expect(html, gone).not.toContain(gone);
         }
@@ -194,7 +200,7 @@ describe('RepositoryConfigDetail', () => {
 
     it('renders the environment editor it is handed', () => {
         const html = render(
-            <RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }}>
+            <RepositoryConfigDetail repo={{ path: 'acme/web' }}>
                 <p>EDITOR</p>
             </RepositoryConfigDetail>
         );
@@ -202,7 +208,7 @@ describe('RepositoryConfigDetail', () => {
     });
 
     it("carries no switch blocker of its own — the guarded switch is the area dialog's (issue 182)", () => {
-        const html = render(<RepositoryConfigDetail repo={{ owner: 'acme', name: 'web' }} />);
+        const html = render(<RepositoryConfigDetail repo={{ path: 'acme/web' }} />);
         expect(html).not.toContain('unsaved');
         expect(html).not.toContain('Discard');
     });

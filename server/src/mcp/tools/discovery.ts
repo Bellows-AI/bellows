@@ -6,8 +6,7 @@ import { pageOf, PAGING_INPUT } from './paging.js';
 const ReposSchema = z.object({
     repos: z.array(
         z.object({
-            owner: z.string(),
-            name: z.string(),
+            id: z.string(),
             private: z.boolean(),
             defaultBranch: z.string().nullable(),
             pushedAt: z.string().nullable(),
@@ -43,7 +42,7 @@ export const listRepos = defineTool({
         const judged = judge(await ctx.fetch({ method: 'GET', url: '/api/repos' }), ReposSchema);
         if (!judged.ok) return judged.tagged;
         const rows = judged.data.repos.map((r) => ({
-            repo: `${r.owner}/${r.name}`,
+            repo: r.id,
             private: r.private,
             defaultBranch: r.defaultBranch,
             pushedAt: r.pushedAt,
