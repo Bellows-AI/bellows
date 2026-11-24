@@ -280,7 +280,7 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         ]);
         expect(gates.slice(0, 3)).toEqual([
             { name: 'build:core', command: 'npm run build -w core' },
-            { name: 'test', command: 'sh scripts/gate-test-changed.sh', timeoutMinutes: 30 },
+            { name: 'test', command: 'TEST_FORKS=3 sh scripts/gate-test-changed.sh', timeoutMinutes: 30 },
             { name: 'lint', command: 'npm run lint' },
         ]);
     });
@@ -335,7 +335,7 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         const gates = parseBellows(text)?.gates ?? [];
         expect(gates.find((g) => g.name === 'test:executors')).toEqual({
             name: 'test:executors',
-            command: 'npm run test:executors',
+            command: 'TEST_FORKS=3 npm run test:executors',
             timeoutMinutes: 15,
         });
         expect(gates.filter((g) => /test:jobs|make runners|docker/.test(`${g.name} ${g.command}`))).toEqual([]);
