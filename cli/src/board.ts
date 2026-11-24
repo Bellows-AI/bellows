@@ -1,6 +1,5 @@
 import type { GateActivity, PrActivity } from './activity-types.js';
-import { batchRoutes } from './batch.js';
-import type { BatchRoutes } from './batch.js';
+import { batchRoutes, type BatchRoutes } from './batch.js';
 import { operatorRoutes } from './operator-routes.js';
 import type { OperatorRoutes } from './operator-routes.js';
 import { attachRoutes, type FollowUpExtras } from './attach.js';
