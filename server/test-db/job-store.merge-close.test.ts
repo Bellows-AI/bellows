@@ -662,15 +662,33 @@ describe.skipIf(!enabled).each(VARIANT_CASES)(
         });
 
         it('records the merge under the ref and answers duplicate to a redelivery', async () => {
-            await finishPublished('the github thread');
+            await finishPublishedOn(variant, 'the other thread');
 
-            await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-first');
-            expect(await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-again')).toEqual({
+            await store.closeMergedPr(refOf(variant, REPO), PULL, 'guid-first');
+            expect(await store.closeMergedPr(refOf(variant, REPO), PULL, 'guid-again')).toEqual({
                 outcome: 'duplicate',
                 closedRoots: 0,
             });
             expect(await sql`select forge, host, repo, pr_number from pr_merge where org_id = ${ORG}`).toEqual([
-                { forge: 'github', host: 'github.com', repo: REPO, pr_number: PULL },
+                { forge: variant.forge, host: variant.host, repo: REPO, pr_number: PULL },
+            ]);
+        });
+
+        // Until the contract migration drops the narrow (org_id, repo, pr_number) key, another repository's merge at
+        // the same path and number trips it: a 23505, never a `duplicate`, which would read as "already merged".
+        it('does not answer duplicate to another repository merging the same path and number', async () => {
+            const github = await finishPublished('the github thread');
+            const other = await finishPublishedOn(variant, 'the other thread');
+            await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-gh');
+
+            await expect(store.closeMergedPr(refOf(variant, REPO), PULL, 'guid-other')).rejects.toMatchObject({
+                code: '23505',
+            });
+
+            expect((await jobRowOf(github)).done_at).not.toBeNull();
+            expect((await jobRowOf(other)).done_at).toBeNull();
+            expect(await sql`select forge, host from pr_merge where org_id = ${ORG}`).toEqual([
+                { forge: 'github', host: 'github.com' },
             ]);
         });
 
