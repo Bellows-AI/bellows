@@ -227,16 +227,23 @@ describe.skipIf(!hasGit() || !hasOpenssl())(
                     const helper = submitted.find((step) => step.kind === 'sync')?.env.CRED_HELPER;
                     expect(helper).toBeDefined();
 
-                    const filled = await runToEnd('git', ['-c', `credential.helper=${helper}`, 'credential', 'fill'], {
-                        env: {
-                            ...process.env,
-                            GIT_CONFIG_GLOBAL: '/dev/null',
-                            GIT_CONFIG_NOSYSTEM: '1',
-                            GIT_TERMINAL_PROMPT: '0',
-                            GITHUB_TOKEN: TOKEN,
-                        },
-                        input: `protocol=https\nhost=${host}\n\n`,
-                    });
+                    // Hermetic: no inherited git configuration (an environment may carry a host-scoped helper for
+                    // github.com through GIT_CONFIG_*, which would answer first), and the helper list starts empty.
+                    const filled = await runToEnd(
+                        'git',
+                        ['-c', 'credential.helper=', '-c', `credential.helper=${helper}`, 'credential', 'fill'],
+                        {
+                            env: {
+                                PATH: process.env.PATH ?? '',
+                                HOME: dir,
+                                GIT_CONFIG_GLOBAL: '/dev/null',
+                                GIT_CONFIG_NOSYSTEM: '1',
+                                GIT_TERMINAL_PROMPT: '0',
+                                GITHUB_TOKEN: TOKEN,
+                            },
+                            input: `protocol=https\nhost=${host}\n\n`,
+                        }
+                    );
 
                     expect(filled.stdout.includes(`password=${TOKEN}`)).toBe(answered);
                 }
