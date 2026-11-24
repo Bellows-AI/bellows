@@ -113,10 +113,13 @@ const leaseSecs = (deps: OrgRetentionDeps) => (deps.passMs ?? RETENTION_PASS_MS)
 /**
  * The thread `root` is settled before `cutoff`: every member and every review of one is terminal and finished before
  * it, and no workflow wait of the root is pending. Suspended-interrupted runs are queued again, never terminal.
+ * An archived thread is never settled: archiving keeps the thread, its runs and its objects.
  */
 function settledBefore(sql: Sql | TransactionSql, orgId: string, root: Fragment, cutoff: Fragment): Fragment {
     return sql`(
         not exists (
+            select 1 from job m where m.org_id = ${orgId} and m.root_job_id = ${root} and m.archived_at is not null)
+        and not exists (
             select 1 from job m where m.org_id = ${orgId} and m.root_job_id = ${root}
               and (not ${terminalFragment(sql, 'm.status')} or coalesce(m.finished_at, m.created_at) >= ${cutoff}))
         and not exists (

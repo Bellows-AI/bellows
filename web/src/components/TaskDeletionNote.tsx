@@ -5,7 +5,9 @@ import { commitDate } from '../format.js';
 
 /** The newest finish of a thread every run of which has ended, or null while one is still going. */
 export function threadSettledAt(jobs: readonly Job[] | null): string | null {
-    if (!jobs || jobs.length === 0 || !jobs.every((job) => isTerminal(job.status))) return null;
+    // An archived thread is kept: retention skips it, so there is no deletion day to name.
+    if (!jobs || jobs[0]?.archivedAt != null || jobs.length === 0 || !jobs.every((job) => isTerminal(job.status)))
+        return null;
     const finishes = jobs.map((job) => job.finishedAt).filter((at): at is string => at !== null);
     return finishes.length === 0 ? null : finishes.reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b));
 }

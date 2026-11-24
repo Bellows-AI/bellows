@@ -237,10 +237,10 @@ export interface JobReopened {
     reopened: boolean;
 }
 
-/** The 200 body of a remove. The whole thread is gone; there is nothing left to render. */
-export interface JobRemoved {
+/** The 200 body of an archive or an unarchive: `archived` is where the task now stands. */
+export interface JobArchived {
     id: string;
-    removed: boolean;
+    archived: boolean;
 }
 
 /**
@@ -277,7 +277,7 @@ export interface JobWait {
 }
 
 /** The board's task states and sorts, copied from `GET /api/tasks` — the CLI imports nothing from the server. */
-export const TASK_STATES = ['attention', 'running', 'review', 'past'] as const;
+export const TASK_STATES = ['attention', 'running', 'review', 'past', 'archived'] as const;
 export const TASK_SORTS = ['newest', 'oldest'] as const;
 
 /**
@@ -369,7 +369,8 @@ export interface BoardClient extends BatchRoutes, OperatorRoutes {
     reopenJob(id: string): Promise<JobReopened>;
     /** `force` also closes a live batch's thread, cancelling its batch task. */
     markDone(id: string, force?: boolean): Promise<JobDone | BatchThreadClosed>;
-    removeJob(id: string): Promise<JobRemoved>;
+    archiveJob(id: string): Promise<JobArchived>;
+    unarchiveJob(id: string): Promise<JobArchived>;
     /**
      * A member's answer to one pending question of run `id` (`questionId` is the agent's tool-use
      * id), keyed by question text. Never replayed: a repeat is the board's 409 `QUESTION_ANSWERED`.
@@ -583,6 +584,9 @@ export function createBoardClient({
         return replayed ? { ...payload, replayed } : payload;
     };
 
+    const archiving = async (id: string, verb: 'archive' | 'unarchive') =>
+        (await request(at(`${jobPath(id)}/${verb}`), { method: 'POST', headers: authHeaders() })) as JobArchived;
+
     return {
         async createJob({ idempotencyKey, ...fields }) {
             // An absent optional field is `undefined`, which JSON leaves out: the board is the validator,
@@ -694,12 +698,8 @@ export function createBoardClient({
             return (await request(at(`${jobPath(id)}/done`), init)) as JobDone | BatchThreadClosed;
         },
 
-        async removeJob(id) {
-            return (await request(at(`${jobPath(id)}/remove`), {
-                method: 'POST',
-                headers: authHeaders(),
-            })) as JobRemoved;
-        },
+        archiveJob: (id) => archiving(id, 'archive'),
+        unarchiveJob: (id) => archiving(id, 'unarchive'),
 
         async answerQuestion(id, questionId, answers) {
             return (await request(at(`${jobPath(id)}/questions/${encodeURIComponent(questionId)}/answer`), {

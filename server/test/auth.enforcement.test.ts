@@ -239,11 +239,12 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // Reopen is done's inverse and a person's verdict the same way: a worker
     // token un-closing tasks it never held would move audit rows for no run it owns.
     ['/api/jobs/:id/reopen', 'user'],
-    // Stop and remove are person's actions too. The driver is told to stop through the
+    // Stop and archive are person's actions too. The driver is told to stop through the
     // heartbeat it already holds, never through a stop route of its own; and a worker token
-    // removing the audit rows of jobs it never held would be the thread-read hole again.
+    // archiving threads it never held would hide task history from its owner.
     ['/api/jobs/:id/stop', 'user'],
-    ['/api/jobs/:id/remove', 'user'],
+    ['/api/jobs/:id/archive', 'user'],
+    ['/api/jobs/:id/unarchive', 'user'],
     // Both control a thread parked on a durable PR wait — person's actions on
     // the wait a worker holds no lease on, so they fall through to 'user' like the above.
     ['/api/jobs/:id/wait/cancel', 'user'],

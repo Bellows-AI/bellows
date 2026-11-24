@@ -77,7 +77,7 @@ A task on the board like any other, with its pull request, gates and run history
 - Use the web app when you need to attach screenshots or read long logs.
 - Be specific. Name the endpoint, the file and the limits, as in [Writing good tasks](/guides/writing-good-tasks).
 - Run `preflight_task` when you pick an executor or skills, to catch a wrong choice before it queues. `list_executors` and `list_skills` show the valid values.
-- `stop_task`, `force_close_task` and `remove_task` do nothing without `confirm: true`. Claude Code asks you first.
+- `stop_task`, `force_close_task` and `archive_task` do nothing without `confirm: true`. Claude Code asks you first.
 - For a lost reply on `create_task`, the same `idempotencyKey` returns the same task, not a second one.
 
 See [MCP tools](/mcp/tools) for every tool.

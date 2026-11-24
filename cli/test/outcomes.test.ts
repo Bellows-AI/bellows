@@ -51,11 +51,11 @@ const REFUSALS: {
         message: 'nope',
     },
     {
-        label: 'job remove of a running task',
-        argv: ['job', 'remove', 'job-1', '--yes'],
+        label: 'job unarchive of a task that is not archived',
+        argv: ['job', 'unarchive', 'job-1'],
         status: 409,
-        code: 'TASK_RUNNING',
-        message: 'The task is still running — stop it first',
+        code: 'TASK_NOT_ARCHIVED',
+        message: 'The task is not archived',
     },
     {
         label: 'job edit of a run no longer queued',

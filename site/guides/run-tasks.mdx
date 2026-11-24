@@ -11,7 +11,7 @@ Everything here also works from the [CLI](/cli/commands) and the [MCP server](/m
 
 ## The inbox
 
-**Tasks** has three tabs. **Needs attention** holds everything waiting on you: answers, reviews and failures. **Running** is work in progress. **Past** is finished work. Filter by repository or person, or search task requests.
+**Tasks** has four tabs. **Needs attention** holds everything waiting on you: answers, reviews and failures. **Running** is work in progress. **Past** is finished work. **Archived** holds tasks you put away. Filter by repository or person, or search task requests.
 
 <Frame>
   <img src="/images/guides/06-inbox.png" alt="Tasks inbox" />
@@ -26,6 +26,7 @@ Everything here also works from the [CLI](/cli/commands) and the [MCP server](/m
 | **Answer**                | The agent asked a question                                                                         |
 | **Stop run**              | The run is going the wrong way                                                                     |
 | **Mark done**             | Close the task in Bellows; it doesn't merge or close the PR                                        |
+| **Archive task**          | Take a task off the list without losing it. It moves to **Archived**, where its thread, logs and PR links stay readable. A running task is stopped first. **Unarchive task** (on the archived task's page) brings it back. An archived task takes no follow-up until then |
 
 **Retry** (same prompt, new job), **Edit** (replace the command of a queued run) and **Reopen** (undo done) are not buttons in the app. Use `bellows job retry`, `bellows job edit` and `bellows job reopen`, or the MCP tools `retry_task`, `edit_task` and `reopen_task`.
 

@@ -8,7 +8,7 @@ import type {
     JobActivity,
     JobDone,
     JobEdited,
-    JobRemoved,
+    JobArchived,
     JobReopened,
     JobStopped,
     QuestionRecord,
@@ -72,9 +72,9 @@ export function renderEdited(edited: JobEdited): string {
     return `${edited.status} ${edited.id}`;
 }
 
-/** The answer to a remove. The thread is gone, so the id is all there is left to name. */
-export function renderRemoved(removed: JobRemoved): string {
-    return `removed ${removed.id}`;
+/** The answer to an archive or an unarchive: the task's id and where it now stands. */
+export function renderArchived(archived: JobArchived): string {
+    return `${archived.archived ? 'archived' : 'unarchived'} ${archived.id}`;
 }
 
 function commandPreview(command: string): string {
