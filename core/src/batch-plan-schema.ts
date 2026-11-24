@@ -66,8 +66,15 @@ const repo: Record<string, unknown> = {
         host: { type: 'string', pattern: HOST_PATTERN.source, maxLength: BATCH_HOST_LIMIT, description: 'github.com' },
         path: { type: 'string', pattern: REPO_PATH_PATTERN.source, maxLength: BATCH_REPO_LIMIT },
     },
-    if: { properties: { forge: { const: 'github' } } },
-    then: { properties: { path: { type: 'string', pattern: GITHUB_REPO_PATH_PATTERN.source } } },
+    oneOf: [
+        {
+            properties: {
+                forge: { const: 'github' },
+                path: { type: 'string', pattern: GITHUB_REPO_PATH_PATTERN.source },
+            },
+        },
+        { properties: { forge: { const: 'gitlab' } } },
+    ],
     description: 'owner/name on GitHub (forge github, host github.com); the full group path on another forge.',
 };
 

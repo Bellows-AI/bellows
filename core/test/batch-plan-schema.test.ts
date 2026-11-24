@@ -263,7 +263,15 @@ describe('BATCH_PLAN_JSON_SCHEMA', () => {
     });
 
     it('states a target repo as a {forge, host, path} object with no other key', () => {
-        const props = (BATCH_PLAN_JSON_SCHEMA as any).properties.targets.items.properties.repo;
+        const props = (
+            BATCH_PLAN_JSON_SCHEMA as {
+                properties: { targets: { items: { properties: { repo: Record<string, unknown> } } } };
+            }
+        ).properties.targets.items.properties.repo as {
+            type: string;
+            additionalProperties: boolean;
+            properties: object;
+        };
         expect(props.type).toBe('object');
         expect(props.additionalProperties).toBe(false);
         expect(Object.keys(props.properties)).toEqual(['forge', 'host', 'path']);
