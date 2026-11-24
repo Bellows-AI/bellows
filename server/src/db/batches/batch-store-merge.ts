@@ -21,9 +21,11 @@ import {
     TASK_SUCCEEDED,
     VERIFY_PASSED,
     type MergeState,
+    type RepoRef,
     type StageVerification,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
+import { refOfRow, refsMatch, repoIs } from '../repo-ref-row.js';
 import { ACCEPTANCE_PR_MERGED, BATCH_ROW_STARTED, DECISION_ADVANCE } from './batch-store-types.js';
 
 /**
@@ -65,7 +67,7 @@ export interface MergeIntent {
     batchId: string;
     taskKey: string;
     attempt: number;
-    repo: string;
+    repo: RepoRef;
     prNumber: number;
     targetBranch: string;
     headSha: string;
@@ -88,6 +90,8 @@ interface CandidateRow {
     head_sha: string | null;
     target_sha: string | null;
     revision: number;
+    pr_forge: string;
+    pr_host: string;
     pr_repo: string;
     pr_number: number;
     started_by: string | null;
@@ -115,7 +119,7 @@ function candidateRows(
     return db<CandidateRow[]>`
         select t.batch_id, t.key as task_key, a.attempt, s.policy, t.completion_kind, t.execution, t.gate,
                tg.branch as target_branch, o.attempt as o_attempt, o.outcome, o.stale, o.error_code, o.base_branch,
-               o.head_sha, o.target_sha, o.revision::int as revision, o.repo as pr_repo, o.pr_number,
+               o.head_sha, o.target_sha, o.revision::int as revision, o.forge as pr_forge, o.host as pr_host, o.repo as pr_repo, o.pr_number,
                b.started_by
         from batch_task t
         join batch b on b.org_id = t.org_id and b.id = t.batch_id
@@ -140,7 +144,8 @@ function candidateRows(
               where d.org_id = t.org_id and d.batch_id = t.batch_id and d.key = ${`${DECISION_ADVANCE}:`}::text || t.stage_key
           )
           and not exists (
-              select 1 from pr_merge m where m.org_id = o.org_id and m.repo = o.repo and m.pr_number = o.pr_number
+              select 1 from pr_merge m
+              where m.org_id = o.org_id and ${refsMatch(db, 'm', 'o')} and m.pr_number = o.pr_number
           )
           and not exists (
               select 1 from batch_merge m
@@ -152,6 +157,8 @@ function candidateRows(
                where m.org_id = t.org_id and m.batch_id = t.batch_id and m.task_key = t.key and m.attempt = a.attempt
                  and m.state in ${db(RETRYABLE)}) < ${MERGE_MAX_LAPSES}
           and not exists (
+              -- Narrow on purpose: one path on two forges or hosts shares the slot until the contract drops
+              -- batch_merge_slot_idx (stricter than the wide index, so it never claims what that refuses).
               select 1 from batch_merge m
               where m.org_id = t.org_id and lower(m.repo) = lower(o.repo) and m.target_branch = tg.branch
                 and m.state in ${db(MERGE_SLOT_STATES)}
@@ -183,7 +190,7 @@ const candidateOf = (row: CandidateRow) =>
 /** What `admit` is asked about a listed candidate: the repository to merge in and the batch's starter, whose token merges. */
 export interface MergeCandidate {
     batchId: string;
-    repo: string;
+    repo: RepoRef;
     startedBy: string | null;
 }
 
@@ -219,6 +226,8 @@ export async function claimMerges(
     return intents;
 }
 
+const prRowOf = (row: CandidateRow) => ({ forge: row.pr_forge, host: row.pr_host, repo: row.pr_repo });
+
 async function claimIfAdmitted(
     deps: MergeDeps,
     now: Date,
@@ -226,7 +235,7 @@ async function claimIfAdmitted(
     admit: (candidate: MergeCandidate) => Promise<boolean>
 ): Promise<MergeIntent | null> {
     if (!candidateOf(row).merge) return null;
-    if (!(await admit({ batchId: row.batch_id, repo: row.pr_repo, startedBy: row.started_by }))) return null;
+    if (!(await admit({ batchId: row.batch_id, repo: refOfRow(prRowOf(row)), startedBy: row.started_by }))) return null;
     return claimOne(deps, now, row);
 }
 
@@ -250,10 +259,10 @@ async function claimOne(deps: MergeDeps, now: Date, row: CandidateRow): Promise<
         });
         if (!fresh || !candidateOf(fresh).merge) return null;
         const [inserted] = await tx<{ id: string }[]>`
-            insert into batch_merge (org_id, batch_id, task_key, attempt, observation_revision, repo, pr_number,
-                                     target_branch, head_sha, target_sha, method, state, lease_until)
+            insert into batch_merge (org_id, batch_id, task_key, attempt, observation_revision, forge, host, repo,
+                                     pr_number, target_branch, head_sha, target_sha, method, state, lease_until)
             values (${orgId}, ${fresh.batch_id}, ${fresh.task_key}, ${fresh.attempt}, ${fresh.revision},
-                    ${fresh.pr_repo}, ${fresh.pr_number}, ${fresh.target_branch}, ${fresh.head_sha!},
+                    ${fresh.pr_forge}, ${fresh.pr_host}, ${fresh.pr_repo}, ${fresh.pr_number}, ${fresh.target_branch}, ${fresh.head_sha!},
                     ${fresh.target_sha}, ${MERGE_METHOD}, ${MERGE_DISPATCHING},
                     ${new Date(now.getTime() + MERGE_LEASE_MS)})
             on conflict do nothing
@@ -270,7 +279,7 @@ async function claimOne(deps: MergeDeps, now: Date, row: CandidateRow): Promise<
             batchId: fresh.batch_id,
             taskKey: fresh.task_key,
             attempt: fresh.attempt,
-            repo: fresh.pr_repo,
+            repo: refOfRow(prRowOf(fresh)),
             prNumber: fresh.pr_number,
             targetBranch: fresh.target_branch,
             headSha: fresh.head_sha!,
@@ -387,13 +396,15 @@ export async function unresolvedMerges(deps: MergeDeps, limit: number): Promise<
             batch_id: string;
             task_key: string;
             attempt: number;
+            forge: string;
+            host: string;
             repo: string;
             pr_number: number;
             target_branch: string;
             head_sha: string;
         }[]
     >`
-        select id::text as id, batch_id, task_key, attempt, repo, pr_number, target_branch, head_sha
+        select id::text as id, batch_id, task_key, attempt, forge, host, repo, pr_number, target_branch, head_sha
         from batch_merge
         where org_id = ${deps.orgId}
           and (state = ${MERGE_UNCERTAIN} or (state = ${MERGE_DISPATCHING} and lease_until <= ${nowOf(deps)}))
@@ -404,7 +415,7 @@ export async function unresolvedMerges(deps: MergeDeps, limit: number): Promise<
         batchId: row.batch_id,
         taskKey: row.task_key,
         attempt: row.attempt,
-        repo: row.repo,
+        repo: refOfRow(row),
         prNumber: row.pr_number,
         targetBranch: row.target_branch,
         headSha: row.head_sha,
@@ -415,9 +426,9 @@ export async function unresolvedMerges(deps: MergeDeps, limit: number): Promise<
 export interface VerificationJob {
     batchId: string;
     stageKey: string;
-    repo: string;
+    repo: RepoRef;
     branch: string;
-    merges: { task: string; repo: string; prNumber: number; mergeCommitSha: string | null }[];
+    merges: { task: string; repo: RepoRef; prNumber: number; mergeCommitSha: string | null }[];
 }
 
 /**
@@ -428,8 +439,11 @@ export interface VerificationJob {
 export async function dueVerifications(deps: MergeDeps, limit: number): Promise<VerificationJob[]> {
     const { sql, orgId } = deps;
     const now = nowOf(deps);
-    const stages = await sql<{ batch_id: string; stage_key: string; repo: string; branch: string }[]>`
-        select distinct b.id as batch_id, s.key as stage_key, s.position, tg.repo, tg.branch, b.started_at
+    const stages = await sql<
+        { batch_id: string; stage_key: string; forge: string; host: string; repo: string; branch: string }[]
+    >`
+        select distinct b.id as batch_id, s.key as stage_key, s.position, tg.forge, tg.host, tg.repo, tg.branch,
+               b.started_at
         from batch b
         join batch_stage s on s.org_id = b.org_id and s.batch_id = b.id
         join batch_task t on t.org_id = s.org_id and t.batch_id = s.batch_id and t.stage_key = s.key
@@ -453,8 +467,18 @@ export async function dueVerifications(deps: MergeDeps, limit: number): Promise<
     `;
     const jobs: VerificationJob[] = [];
     for (const stage of stages) {
-        const merges = await sql<{ task: string; repo: string; pr_number: number; merge_commit_sha: string | null }[]>`
-            select t.key as task, a.repo, a.pr_number,
+        const target = refOfRow(stage);
+        const merges = await sql<
+            {
+                task: string;
+                forge: string;
+                host: string;
+                repo: string;
+                pr_number: number;
+                merge_commit_sha: string | null;
+            }[]
+        >`
+            select t.key as task, a.forge, a.host, a.repo, a.pr_number,
                    (select m.merge_commit_sha from batch_merge m
                     where m.org_id = t.org_id and m.batch_id = t.batch_id and m.task_key = t.key
                       and m.attempt = a.attempt and m.state = ${MERGE_MERGED}
@@ -462,23 +486,23 @@ export async function dueVerifications(deps: MergeDeps, limit: number): Promise<
             from batch_task t
             join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id and tg.key = t.target_key
             join lateral (
-                select attempt, repo, pr_number from batch_acceptance
+                select attempt, forge, host, repo, pr_number from batch_acceptance
                 where org_id = t.org_id and batch_id = t.batch_id and task_key = t.key and kind = ${ACCEPTANCE_PR_MERGED}
                 order by attempt desc limit 1
             ) a on true
             where t.org_id = ${orgId} and t.batch_id = ${stage.batch_id} and t.stage_key = ${stage.stage_key}
               and t.execution = ${TASK_SUCCEEDED} and t.gate = ${GATE_PASSED}
-              and tg.repo = ${stage.repo} and tg.branch = ${stage.branch}
+              and ${repoIs(sql, 'tg', target)} and tg.branch = ${stage.branch}
             order by t.position
         `;
         jobs.push({
             batchId: stage.batch_id,
             stageKey: stage.stage_key,
-            repo: stage.repo,
+            repo: target,
             branch: stage.branch,
             merges: merges.map((row) => ({
                 task: row.task,
-                repo: row.repo,
+                repo: refOfRow(row),
                 prNumber: row.pr_number,
                 mergeCommitSha: row.merge_commit_sha,
             })),

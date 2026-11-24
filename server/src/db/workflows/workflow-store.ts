@@ -1,5 +1,6 @@
-import { ERROR_CODES } from '@factory-ai/core';
-import type { Sql, TransactionSql } from 'postgres';
+import { ERROR_CODES, type RepoRef } from '@factory-ai/core';
+import type { Fragment, Sql, TransactionSql } from 'postgres';
+import { refColumns, refOfRow, scopeColumnsOf } from '../repo-ref-row.js';
 import { type WorkflowDefinition, type WorkflowParam, WORKFLOW_NAME, SCOPE_SEGMENT } from './workflow-schema.js';
 import { validateDefinition } from './workflow-schema-validate.js';
 import { compileDefinition } from './workflow-blocks/index.js';
@@ -10,10 +11,7 @@ import type { CompileRefusal } from './workflow-blocks/types.js';
  * or a repository label. Org-level creation is an admin's move; a member may create user-level and
  * repo-level definitions (the route decides, from the live caller — the store only shapes rows).
  */
-export type WorkflowScope =
-    | { kind: 'org' }
-    | { kind: 'user'; userId: string }
-    | { kind: 'repo'; owner: string; name: string };
+export type WorkflowScope = { kind: 'org' } | { kind: 'user'; userId: string } | { kind: 'repo'; repo: RepoRef };
 
 /** What the list route serves: enough for the composer's dropdown, never the 16 KiB body. */
 export interface WorkflowSummary {
@@ -40,8 +38,8 @@ export interface WorkflowRecord extends WorkflowSummary {
 /** The caller a list or resolution is scoped to. Null members degrade on their own, like resolveFor. */
 export interface WorkflowTarget {
     userId: string | null;
-    /** `owner/name`, the same label a job row carries. Null reads no repo level. */
-    repo: string | null;
+    /** The job's repository. Null reads no repo level, and so does a path that is not owner/name (no scope holds it). */
+    repo: RepoRef | null;
 }
 
 /** Why a create was refused. Every code is named — a bad definition is diagnosable from the answer. */
@@ -64,6 +62,8 @@ interface WorkflowRow {
     id: string;
     name: string;
     user_id: string | null;
+    forge: string;
+    host: string;
     repo_owner: string | null;
     repo_name: string | null;
     definition: WorkflowDefinition;
@@ -77,7 +77,7 @@ const scopeOfRow = (row: WorkflowRow): WorkflowScope =>
     row.user_id !== null
         ? { kind: 'user', userId: row.user_id }
         : row.repo_owner !== null && row.repo_name !== null
-          ? { kind: 'repo', owner: row.repo_owner, name: row.repo_name }
+          ? { kind: 'repo', repo: refOfRow({ ...row, repo: `${row.repo_owner}/${row.repo_name}` }) }
           : { kind: 'org' };
 
 const toSummary = (row: WorkflowRow): WorkflowSummary => ({
@@ -112,9 +112,16 @@ function checkCreateInput(name: string, scope: WorkflowScope): WorkflowRefusal |
         return { code: ERROR_CODES.BAD_SCOPE, message: 'user scope must name an account id' };
     }
     if (scope.kind === 'repo') {
+        const parts = scope.repo.path.split('/');
+        if (parts.length !== 2) {
+            return {
+                code: ERROR_CODES.BAD_SCOPE,
+                message: 'repo scope must be owner/name: a nested path has no scope yet',
+            };
+        }
         for (const [label, part] of [
-            ['owner', scope.owner],
-            ['name', scope.name],
+            ['owner', parts[0]!],
+            ['name', parts[1]!],
         ] as const) {
             if (!SCOPE_SEGMENT.test(part)) {
                 return { code: ERROR_CODES.BAD_SCOPE, message: `repo scope ${label} must be a checkout-safe segment` };
@@ -146,6 +153,8 @@ interface NewWorkflowRow {
     org_id: string;
     name: string;
     user_id: string | null;
+    forge: string;
+    host: string;
     repo_owner: string | null;
     repo_name: string | null;
     // Typed `never`, not `WorkflowDefinition`: postgres.js's jsonb helper wants an index
@@ -173,7 +182,7 @@ function nameTakenOr(e: unknown, name: string): WorkflowRefusal {
 async function insertWorkflowRow(sql: Sql, row: NewWorkflowRow): Promise<CreateResult> {
     try {
         const rows = await sql`
-            insert into workflow ${sql([row], 'org_id', 'name', 'user_id', 'repo_owner', 'repo_name', 'definition', 'created_by')}
+            insert into workflow ${sql([row], 'org_id', 'name', 'user_id', 'forge', 'host', 'repo_owner', 'repo_name', 'definition', 'created_by')}
             returning id
         `;
         return { id: (rows as unknown as { id: string }[])[0]!.id };
@@ -230,13 +239,13 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
      * repo-scoped ones for the requested repository context. A null userId or repo degrades its
      * own level away — the resolveFor precedent — so an unattributed caller reads org rows only.
      */
-    const visibleWhere = (exec: Sql | TransactionSql, target: WorkflowTarget) => {
-        const [owner, name] = target.repo ? target.repo.split('/') : [null, null];
+    const visibleWhere = (exec: Sql | TransactionSql, target: WorkflowTarget): Fragment => {
+        const { forge, host, owner, name } = scopeColumnsOf(target.repo);
         return exec`
             and (
                 (user_id is null and repo_owner is null)
                 or user_id = ${target.userId}
-                or (repo_owner = ${owner} and repo_name = ${name})
+                or (forge = ${forge} and host = ${host} and repo_owner = ${owner} and repo_name = ${name})
             )`;
     };
 
@@ -260,12 +269,16 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
             const compiled = validateAndCompile(definition);
             if (!compiled.ok) return { refused: true, ...compiled.refusal };
 
+            const { forge, host } = refColumns(scope.kind === 'repo' ? scope.repo : null);
+            const { owner, name: repoName } = scopeColumnsOf(scope.kind === 'repo' ? scope.repo : null);
             return insertWorkflowRow(sql, {
                 org_id: orgId,
                 name: name.trim(),
                 user_id: scope.kind === 'user' ? scope.userId : null,
-                repo_owner: scope.kind === 'repo' ? scope.owner : null,
-                repo_name: scope.kind === 'repo' ? scope.name : null,
+                forge,
+                host,
+                repo_owner: owner,
+                repo_name: repoName,
                 definition: compiled.definition as never,
                 created_by: createdBy,
             });

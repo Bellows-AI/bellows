@@ -6,7 +6,8 @@ import type { Caller } from '../auth/store.js';
 import { blockCatalog } from '../db/workflows/workflow-blocks/index.js';
 import { bad, body, repoReason } from './helpers.js';
 import { resolveCallerRoute } from './route-guards.js';
-import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
+import { ADMIN_ROLE, ERROR_CODES, githubRepo, type RepoRef } from '@factory-ai/core';
+import { repoRefOf } from '../forge/forges.js';
 
 export interface WorkflowRouteDeps {
     /**
@@ -104,11 +105,11 @@ async function handleListWorkflows(orgs: OrgRegistry, request: FastifyRequest, r
     const parsed = validateRepoQuery(body(request.query as unknown).repo);
     if (!parsed.ok) return bad(reply, ERROR_CODES.BAD_REPO, parsed.message);
 
-    const workflows = await store.listVisible({ userId: caller.user.id, repo: parsed.value });
+    const workflows = await store.listVisible({ userId: caller.user.id, repo: repoRefOf(parsed.value) });
     return reply.code(HTTP_OK).send({ workflows });
 }
 
-type ResolvedScope = { kind: 'org' } | { kind: 'user'; userId: string } | { kind: 'repo'; owner: string; name: string };
+type ResolvedScope = { kind: 'org' } | { kind: 'user'; userId: string } | { kind: 'repo'; repo: RepoRef };
 
 /**
  * The exactly-one-scope a create body names, resolved to what `store.create` expects. Org-level is
@@ -141,8 +142,7 @@ function resolveScope(
     }
     const reason = repoReason(fields.repo);
     if (reason) return { ok: false, code: ERROR_CODES.BAD_SCOPE, message: reason };
-    const [owner, name] = fields.repo.split('/') as [string, string];
-    return { ok: true, value: { kind: 'repo', owner, name } };
+    return { ok: true, value: { kind: 'repo', repo: githubRepo(fields.repo) } };
 }
 
 async function handleCreateWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {

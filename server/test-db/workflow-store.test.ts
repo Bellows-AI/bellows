@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { githubRepo } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createWorkflowStore } from '../src/db/workflows/workflow-store.js';
@@ -153,7 +154,7 @@ describe.skipIf(!enabled)('the workflow store', () => {
         expect(userScope).toHaveProperty('id');
         const repoScope = await store.create({
             name: 'walk',
-            scope: { kind: 'repo', ...REPO },
+            scope: { kind: 'repo', repo: githubRepo(`${REPO.owner}/${REPO.name}`) },
             definition,
             createdBy: ALICE,
         });
@@ -163,15 +164,20 @@ describe.skipIf(!enabled)('the workflow store', () => {
     it('lists only what the caller can see: org, own user level, and the requested repo', async () => {
         await store.create({ name: 'org-wf', scope: { kind: 'org' }, definition, createdBy: ALICE });
         await store.create({ name: 'user-wf', scope: { kind: 'user', userId: ALICE }, definition, createdBy: ALICE });
-        await store.create({ name: 'repo-wf', scope: { kind: 'repo', ...REPO }, definition, createdBy: ALICE });
+        await store.create({
+            name: 'repo-wf',
+            scope: { kind: 'repo', repo: githubRepo(`${REPO.owner}/${REPO.name}`) },
+            definition,
+            createdBy: ALICE,
+        });
         await store.create({
             name: 'other-repo-wf',
-            scope: { kind: 'repo', owner: 'Other', name: 'repo' },
+            scope: { kind: 'repo', repo: githubRepo('Other/repo') },
             definition,
             createdBy: ALICE,
         });
 
-        const alice = await store.listVisible({ userId: ALICE, repo: `${REPO.owner}/${REPO.name}` });
+        const alice = await store.listVisible({ userId: ALICE, repo: githubRepo(`${REPO.owner}/${REPO.name}`) });
         expect(alice.map((row) => row.name).sort()).toEqual(['org-wf', 'repo-wf', 'user-wf']);
 
         const someoneElse = await store.listVisible({ userId: SOMEONE_ELSE, repo: null });

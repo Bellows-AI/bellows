@@ -13,10 +13,12 @@ import {
     MERGE_REFUSED,
     MERGE_UNCERTAIN,
     reconcileUncertainMerge,
+    formatRepoRef,
     githubRepo,
     sameRepo,
     VERIFY_UNKNOWN,
     type PrFacts,
+    type RepoRef,
     type StageVerification,
 } from '@factory-ai/core';
 import type { Sql } from 'postgres';
@@ -37,6 +39,7 @@ import {
 import { GitHubMergeError, type MergeResult } from './github/pr-merge.js';
 import type { BranchState } from './github/pr-read.js';
 import type { MergeTokenSource } from './forge/pr-token.js';
+import { isGithubRepo } from './forge/forges.js';
 import { logger } from './log.js';
 
 /**
@@ -75,7 +78,7 @@ export interface BatchMergerDeps {
     /** Absent offline: nothing is merged or verified. */
     client?: MergeClient | undefined;
     /** Records a merge in the ledger: the job store's `closeMergedPr`. */
-    recordMerge: (repo: string, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
+    recordMerge: (repo: RepoRef, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
     /** Lets the gate judge the merge just recorded and the scheduler advance a verified stage. */
     reconcile: (batchId: string) => Promise<unknown>;
     /** The token a merge is sent with: the batch starter's (docs/batches.md). Reads stay on `client`'s installation. */
@@ -142,11 +145,34 @@ function outcomeOfMergeError(e: unknown): MergeOutcome {
     }
 }
 
+/**
+ * A GitHub answer that does not belong to the identity it was asked for: another forge or host (the reader answers for
+ * github.com only), another repository or another pull request. Inconclusive: nothing is applied or advanced on it.
+ */
+class UnboundRead extends Error {}
+
+const githubOnly = (repo: RepoRef): void => {
+    if (!isGithubRepo(repo)) {
+        throw new UnboundRead(`${formatRepoRef(repo)} is not a repository the GitHub reader answers for`);
+    }
+};
+
+/** The one place a pull request is read: the answer is returned only when it is for this repository and number. */
+async function readBound(run: Run, repo: RepoRef, prNumber: number): Promise<PrFacts> {
+    githubOnly(repo);
+    const facts = await run.client.readPullRequest(repo.path, prNumber);
+    if (!sameRepo(githubRepo(facts.repo), repo) || facts.number !== prNumber) {
+        throw new UnboundRead('GitHub answered for another pull request');
+    }
+    return facts;
+}
+
 /** A fresh read of the PR, or the outcome that records why none was possible: nothing was requested. */
 async function readFresh(run: Run, intent: MergeIntent): Promise<{ facts: PrFacts } | { unread: MergeOutcome }> {
     try {
-        return { facts: await run.client.readPullRequest(intent.repo, intent.prNumber) };
+        return { facts: await readBound(run, intent.repo, intent.prNumber) };
     } catch (e) {
+        if (e instanceof UnboundRead) return { unread: { state: MERGE_CHANGED, detail: e.message } };
         const retryAfterMs = (e as { retryAfterMs?: number | null }).retryAfterMs ?? null;
         const detail = `the PR could not be read: ${errorMessage(e)}`;
         return { unread: { state: MERGE_LAPSED, detail, retryAfterMs } };
@@ -163,9 +189,6 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
     const fetched = await readFresh(run, intent);
     if ('unread' in fetched) return settled(run, intent, fetched.unread);
     const read = fetched.facts;
-    if (!sameRepo(githubRepo(read.repo), githubRepo(intent.repo)) || read.number !== intent.prNumber) {
-        return settled(run, intent, { state: MERGE_CHANGED, detail: 'GitHub answered for another pull request' });
-    }
     const fresh = judgeFreshFacts(intent, read);
     if (!fresh.proceed) {
         if (fresh.kind === 'merged') return merged(run, intent, mergedFactsOf(read));
@@ -181,7 +204,7 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
     let result: MergeResult;
     try {
         result = await run.client.mergePullRequest(
-            intent.repo,
+            intent.repo.path,
             intent.prNumber,
             { sha: fresh.headSha, method: MERGE_METHOD },
             token
@@ -199,7 +222,7 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
 async function admitMerge(run: Run, deps: BatchMergerDeps, candidate: MergeCandidate): Promise<boolean> {
     if (run.tokens.has(candidate.batchId)) return true;
     const token = await deps.mergeToken(
-        { orgId: deps.orgId, repo: candidate.repo, startedBy: candidate.startedBy },
+        { orgId: deps.orgId, repo: candidate.repo.path, startedBy: candidate.startedBy },
         AbortSignal.timeout(MERGE_TOKEN_DEADLINE_MS)
     );
     if (!token.ok) {
@@ -212,7 +235,18 @@ async function admitMerge(run: Run, deps: BatchMergerDeps, candidate: MergeCandi
 
 /** A request whose answer is unknown is read back from the PR, never sent again. */
 async function reconcileOne(run: Run, intent: MergeIntent): Promise<void> {
-    const facts = await run.client.readPullRequest(intent.repo, intent.prNumber);
+    let facts: PrFacts;
+    try {
+        facts = await readBound(run, intent.repo, intent.prNumber);
+    } catch (e) {
+        // An answer for another identity says nothing about this request: it stays unresolved, recorded as nothing.
+        if (e instanceof UnboundRead)
+            return void logger('batches').warn(
+                { intentId: intent.id, detail: e.message },
+                'a merge request cannot be reconciled'
+            );
+        throw e;
+    }
     if (reconcileUncertainMerge(facts) === MERGE_MERGED) return merged(run, intent, mergedFactsOf(facts));
     return settled(run, intent, {
         state: MERGE_LAPSED,
@@ -221,14 +255,17 @@ async function reconcileOne(run: Run, intent: MergeIntent): Promise<void> {
     });
 }
 
-async function mergeCommitOf(run: Run, repo: string, prNumber: number): Promise<string | null> {
-    const facts = await run.client.readPullRequest(repo, prNumber);
-    return facts.merged && sameRepo(githubRepo(facts.repo), githubRepo(repo)) ? facts.mergeCommitSha : null;
+async function mergeCommitOf(run: Run, repo: RepoRef, prNumber: number): Promise<string | null> {
+    const facts = await readBound(run, repo, prNumber);
+    return facts.merged ? facts.mergeCommitSha : null;
 }
 
 /** What the stage's merges and the target say, or an `unknown` that waits: an unreadable target is never a pass. */
 async function judgeStage(run: Run, job: VerificationJob): Promise<StageVerification> {
     try {
+        // Stored merge commits are judged against the target's branch, so every identity must be one the reader answers for.
+        githubOnly(job.repo);
+        for (const merge of job.merges) githubOnly(merge.repo);
         const merges = await Promise.all(
             job.merges.map(async (merge) => ({
                 task: merge.task,
@@ -236,7 +273,7 @@ async function judgeStage(run: Run, job: VerificationJob): Promise<StageVerifica
             }))
         );
         const shas = merges.flatMap((merge) => (merge.sha === null ? [] : [merge.sha]));
-        const target = await run.client.readBranchState(job.repo, job.branch, shas);
+        const target = await run.client.readBranchState(job.repo.path, job.branch, shas);
         return judgeStageVerification({ merges, target: { branch: job.branch, ...target } });
     } catch (e) {
         return { state: VERIFY_UNKNOWN, detail: `the target could not be read: ${errorMessage(e)}`, headSha: null };

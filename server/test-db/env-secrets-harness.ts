@@ -54,14 +54,19 @@ export async function seedEncryptedRow(
     });
     if (!created.ok) throw new Error(`create refused: ${created.error.code}/${created.error.reason}`);
     const { scope } = slot;
+    const [owner = null, name = null] = scope.kind === 'repo' ? scope.repo.path.split('/') : [];
+    // forge and host exist from 167: a row in a scope that carries none leaves them to their defaults, so a test of an
+    // older schema (the 113 migration) can still seed one.
+    const where = scope.kind === 'repo' ? sql`, forge, host` : sql``;
+    const repoValues = scope.kind === 'repo' ? sql`, ${scope.repo.forge}, ${scope.repo.host}` : sql``;
     await sql`
-        insert into env_var (org_id, user_id, repo_owner, repo_name, name, value, is_secret, secret_ref, secret_version)
+        insert into env_var (org_id, user_id, repo_owner, repo_name, name, value, is_secret, secret_ref, secret_version ${where})
         values (
             ${slot.orgId},
             ${scope.kind === 'workspace' ? scope.userId : null},
-            ${scope.kind === 'repo' ? scope.owner : null},
-            ${scope.kind === 'repo' ? scope.name : null},
-            ${slot.name}, null, true, ${ref}, ${created.version}
+            ${owner},
+            ${name},
+            ${slot.name}, null, true, ${ref}, ${created.version} ${repoValues}
         )
     `;
     return { ref, version: created.version };

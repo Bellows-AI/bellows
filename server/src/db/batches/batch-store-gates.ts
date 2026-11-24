@@ -17,6 +17,7 @@ import {
     TASK_SUCCEEDED,
 } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
+import { refsMatch } from '../repo-ref-row.js';
 import { OBSERVED_ATTENTION } from './batch-store-observed.js';
 import { ACCEPTANCE_PR_MERGED, DECISION_ADVANCE } from './batch-store-types.js';
 
@@ -24,7 +25,7 @@ import { ACCEPTANCE_PR_MERGED, DECISION_ADVANCE } from './batch-store-types.js';
  * The human PR gate (docs/batches.md): judged from durable evidence on every reconcile pass, under
  * the batch's row lock, so a merge that arrives before the run's verdict, a duplicate delivery and
  * a restart all reach the same answer. A task's recorded PR (`job_pr`) and its observed merge
- * (`pr_merge`) are joined on repo AND number; the number alone identifies nothing.
+ * (`pr_merge`) are joined on forge, host, path AND number; the number alone identifies nothing.
  */
 
 interface GateRow {
@@ -33,6 +34,8 @@ interface GateRow {
     completion_condition: string | null;
     target_branch: string;
     pr: string;
+    forge: string | null;
+    host: string | null;
     repo: string | null;
     pr_number: number | null;
     pr_url: string | null;
@@ -86,7 +89,7 @@ function observedNoteOf(outcome: string | null, error: string | null): string | 
 export async function judgeGates(tx: TransactionSql, orgId: string, id: string): Promise<boolean> {
     const rows = await tx<GateRow[]>`
         select t.key, t.completion_kind, t.completion_condition, tg.branch as target_branch, t.pr, t.wait_reason, t.attention,
-               p.repo, p.pr_number, p.pr_url, p.base_branch, m.merged_at,
+               p.forge, p.host, p.repo, p.pr_number, p.pr_url, p.base_branch, m.merged_at,
                a.attempt, a.created_at as attempt_started_at, s.policy, mg.state as merge_state,
                mg.detail as merge_detail, o.outcome, o.error_code
         from batch_task t
@@ -104,7 +107,7 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
         ) mg on true
         left join batch_pr_observation o on o.org_id = t.org_id and o.batch_id = t.batch_id and o.task_key = t.key
         left join job_pr p on p.org_id = t.org_id and p.root_job_id = t.root_job_id
-        left join pr_merge m on m.org_id = p.org_id and m.repo = p.repo and m.pr_number = p.pr_number
+        left join pr_merge m on m.org_id = p.org_id and ${refsMatch(tx, 'm', 'p')} and m.pr_number = p.pr_number
         where t.org_id = ${orgId} and t.batch_id = ${id} and t.execution = ${TASK_SUCCEEDED}
           and t.gate = ${GATE_OPEN}
           and not exists (
@@ -128,8 +131,10 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
         });
         if (judgement.pass) {
             await tx`
-                insert into batch_acceptance (org_id, batch_id, task_key, attempt, kind, repo, pr_number, pr_url)
-                values (${orgId}, ${id}, ${row.key}, ${row.attempt}, ${ACCEPTANCE_PR_MERGED}, ${row.repo},
+                insert into batch_acceptance (org_id, batch_id, task_key, attempt, kind, forge, host, repo, pr_number,
+                                              pr_url)
+                values (${orgId}, ${id}, ${row.key}, ${row.attempt}, ${ACCEPTANCE_PR_MERGED}, ${row.forge}, ${row.host},
+                        ${row.repo},
                         ${row.pr_number}, ${row.pr_url})
                 on conflict do nothing
             `;

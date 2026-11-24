@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyBlock, NO_MODEL_MESSAGE, noExecutorMessage } from '@factory-ai/core';
+import { emptyBlock, NO_MODEL_MESSAGE, noExecutorMessage, githubRepo } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
@@ -590,7 +590,7 @@ describe('launch checks: validate and start', () => {
         } as unknown as UserExecutorStore;
         const env = memoryEnvVarStore();
         // A key for another repository, and one Claude Code cannot run on: neither reaches this task.
-        await env.replaceRepo('admin', API.owner, API.name, [
+        await env.replaceRepo('admin', githubRepo(`${API.owner}/${API.name}`), [
             { name: 'ANTHROPIC_API_KEY', value: 'k', isSecret: true },
         ]);
         await env.replaceOrg('admin', [{ name: 'OPENAI_API_KEY', value: 'k', isSecret: true }]);

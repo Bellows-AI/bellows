@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -27,10 +28,10 @@ const ALICE = ALICE_USER.id;
 const SCOPES: { label: string; scope: EnvSecretScope }[] = [
     { label: 'org', scope: { kind: 'org' } },
     { label: 'workspace', scope: { kind: 'workspace', userId: ALICE } },
-    { label: 'repo', scope: { kind: 'repo', owner: 'Bellows-AI', name: 'bellows.ai' } },
+    { label: 'repo', scope: { kind: 'repo', repo: githubRepo('Bellows-AI/bellows.ai') } },
 ];
 const ORG_SCOPE: EnvSecretScope = { kind: 'org' };
-const REPO_SCOPE: EnvSecretScope = { kind: 'repo', owner: 'Bellows-AI', name: 'other.ai' };
+const REPO_SCOPE: EnvSecretScope = { kind: 'repo', repo: githubRepo('Bellows-AI/other.ai') };
 
 const db = useTestDb({ orgs: [ORG], users: [ALICE_USER] });
 
@@ -48,7 +49,7 @@ beforeAll(() => {
 const put = (store: EnvVarStore, scope: EnvSecretScope, vars: readonly EnvVarEntry[]) => {
     if (scope.kind === 'org') return store.replaceOrg('env-admin', vars);
     if (scope.kind === 'workspace') return store.replaceWorkspace(scope.userId, vars);
-    return store.replaceRepo('env-admin', scope.owner, scope.name, vars);
+    return store.replaceRepo('env-admin', scope.repo, vars);
 };
 
 interface StoredRow {

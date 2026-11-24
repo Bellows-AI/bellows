@@ -1,4 +1,5 @@
 import {
+    formatRepoRef,
     githubRepo,
     nextObservationDelayMs,
     READ_BINDING,
@@ -6,7 +7,7 @@ import {
     READ_TRANSPORT,
     sameRepo,
 } from '@factory-ai/core';
-import type { PrFacts } from '@factory-ai/core';
+import type { PrFacts, RepoRef } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import {
     claimDue,
@@ -18,6 +19,7 @@ import {
     type ObservationResult,
     type RefreshHint,
 } from './db/batches/batch-store-observation.js';
+import { isGithubRepo } from './forge/forges.js';
 import { startIntervalLoop } from './interval-loop.js';
 import { GitHubReadError } from './github/pr-read.js';
 import { logger } from './log.js';
@@ -47,7 +49,7 @@ export interface BatchPrObserverDeps {
     /** Absent offline: nothing is observed. */
     reader?: PrReader | undefined;
     /** Records a merge GitHub reports as done: the job store's `closeMergedPr`, with the merge's own time. */
-    recordMerge: (repo: string, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
+    recordMerge: (repo: RepoRef, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
     /** Lets the human gate judge a merge just recorded. */
     reconcile: (batchId: string) => Promise<unknown>;
     now?: (() => Date) | undefined;
@@ -128,15 +130,24 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
 
     const read = async (claim: ObservationClaim): Promise<ObservationResult> => {
         // The recorded PR must be in the plan's own repository; a number alone identifies nothing.
-        if (!sameRepo(githubRepo(claim.repo), githubRepo(claim.targetRepo))) {
+        if (!sameRepo(claim.repo, claim.targetRepo)) {
             return {
                 kind: 'error',
                 error: READ_BINDING,
-                detail: `the PR is in ${claim.repo}, the task targets ${claim.targetRepo}`,
+                detail: `the PR is in ${formatRepoRef(claim.repo)}, the task targets ${formatRepoRef(claim.targetRepo)}`,
                 retryAfterMs: null,
             };
         }
-        return readFacts(reader!, claim.repo, claim.prNumber);
+        // The reader answers for github.com only: any other identity is a binding error, with no request made.
+        if (!isGithubRepo(claim.repo)) {
+            return {
+                kind: 'error',
+                error: READ_BINDING,
+                detail: `${formatRepoRef(claim.repo)} is not a repository the GitHub reader answers for`,
+                retryAfterMs: null,
+            };
+        }
+        return readFacts(reader!, claim.repo.path, claim.prNumber);
     };
 
     const observeOne = async (claim: ObservationClaim): Promise<boolean> => {
@@ -148,7 +159,7 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
         if (
             result.kind === 'facts' &&
             result.facts.merged &&
-            sameRepo(githubRepo(result.facts.repo), githubRepo(claim.repo)) &&
+            sameRepo(githubRepo(result.facts.repo), claim.repo) &&
             result.facts.number === claim.prNumber
         ) {
             await recordMergeOf(claim, result.facts);

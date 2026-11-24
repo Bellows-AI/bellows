@@ -11,6 +11,7 @@ import {
     type UsageBlock,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
+import { refsMatch } from '../repo-ref-row.js';
 import type { TelemetrySource } from '../../telemetry/client.js';
 import { readUsageFacts } from '../../telemetry/usage-facts.js';
 import { type BatchPrObservation, readObservations } from './batch-store-observation.js';
@@ -183,7 +184,7 @@ async function assembleReport(
         sql<{ task_key: string; pr_url: string; merged_at: Date | null; recorded_at: Date }[]>`
             select a.task_key, a.pr_url, m.merged_at, a.recorded_at
             from batch_acceptance a
-            left join pr_merge m on m.org_id = a.org_id and m.repo = a.repo and m.pr_number = a.pr_number
+            left join pr_merge m on m.org_id = a.org_id and ${refsMatch(sql, 'm', 'a')} and m.pr_number = a.pr_number
             where a.org_id = ${orgId} and a.batch_id = ${id} and a.kind = ${ACCEPTANCE_PR_MERGED}
             order by a.recorded_at, a.task_key
         `,

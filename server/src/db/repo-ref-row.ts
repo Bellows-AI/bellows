@@ -38,3 +38,16 @@ export const refsMatch = (sql: Queryable, a: string, b: string) =>
 /** The `forge`, `host` and `repo` values a new row binds for its target; a repo-less row keeps the column defaults. */
 export const refColumns = (ref: RepoRef | null): { forge: RepoForge; host: string; repo: string | null } =>
     ref ? { forge: ref.forge, host: ref.host, repo: ref.path } : { forge: 'github', host: GITHUB_HOST, repo: null };
+
+/**
+ * The columns a repo-scoped row (env_var, workflow) matches by: the forge and host beside the owner and name its path
+ * splits into. A path that is not owner/name (a GitLab nested group) has no columns to hold it, because the owner may
+ * not contain a `/` (011, 017): all null, which matches nothing. No repo is all null too.
+ */
+export const scopeColumnsOf = (repo: RepoRef | null) => {
+    const [owner, name, ...nested] = repo?.path.split('/') ?? [];
+    if (!repo || owner === undefined || name === undefined || nested.length > 0) {
+        return { forge: null, host: null, owner: null, name: null };
+    }
+    return { forge: repo.forge, host: repo.host, owner, name };
+};

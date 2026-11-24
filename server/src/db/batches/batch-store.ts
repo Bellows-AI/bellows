@@ -19,9 +19,9 @@ import {
     reconcileBatch,
     reconcileOpenBatches,
     retryBatchTask,
-    type RevisionOf,
     type StopThread,
 } from './batch-store-schedule.js';
+import type { RevisionOf } from './batch-store-revisions.js';
 import { BATCH_DRAFT, BATCH_ROW_STARTED, type BatchStore } from './batch-store-types.js';
 import { refuseInactiveOrg } from '../org-status.js';
 import { refuseOverTokens } from '../plan-allowances.js';

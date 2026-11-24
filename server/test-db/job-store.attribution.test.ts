@@ -97,7 +97,7 @@ describe.runIf(enabled)('attribution', () => {
         const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql), secretLog: () => {} });
         await envStore.replaceOrg('env-admin', [{ name: 'CORE', value: 'org-value', isSecret: true }]);
         await envStore.replaceWorkspace(userId, [{ name: 'CORE', value: 'workspace-value', isSecret: false }]);
-        await envStore.replaceRepo('env-admin', 'Bellows-AI', 'bellows.ai', [
+        await envStore.replaceRepo('env-admin', githubRepo('Bellows-AI/bellows.ai'), [
             { name: 'CORE', value: 'repo-value', isSecret: false },
             { name: 'REPO_ONLY', value: 'repo-only-value', isSecret: true },
         ]);

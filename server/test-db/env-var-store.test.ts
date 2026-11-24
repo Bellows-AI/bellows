@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -85,13 +86,13 @@ describe.skipIf(!enabled)('the env var store', () => {
             { name: 'ONLY_ORG', value: 'o', isSecret: false },
         ]);
         await store.replaceWorkspace(ALICE, [{ name: 'LEVEL', value: 'workspace', isSecret: false }]);
-        await store.replaceRepo('env-admin', REPO.owner, REPO.name, [
+        await store.replaceRepo('env-admin', githubRepo(`${REPO.owner}/${REPO.name}`), [
             { name: 'LEVEL', value: 'repo', isSecret: false },
             { name: 'ONLY_REPO', value: 'r', isSecret: false },
         ]);
 
         // All three contribute, repo winning the collision.
-        expect(await store.resolveFor({ userId: ALICE, repo: `${REPO.owner}/${REPO.name}` })).toEqual({
+        expect(await store.resolveFor({ userId: ALICE, repo: githubRepo(`${REPO.owner}/${REPO.name}`) })).toEqual({
             ONLY_ORG: 'o',
             ONLY_REPO: 'r',
             LEVEL: 'repo',
@@ -116,14 +117,16 @@ describe.skipIf(!enabled)('the env var store', () => {
             { name: 'ONLY_ORG', value: 'o', isSecret: false },
         ]);
         await store.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: 'mine', isSecret: true }]);
-        await store.replaceRepo('env-admin', 'acme', 'other', [{ name: 'OPENAI_API_KEY', value: 'x', isSecret: true }]);
+        await store.replaceRepo('env-admin', githubRepo('acme/other'), [
+            { name: 'OPENAI_API_KEY', value: 'x', isSecret: true },
+        ]);
         const unreadable = createEnvVarStore({
             sql,
             orgId: ORG,
             secrets: faultySecrets(secrets, { readActive: () => Promise.reject(new Error('no secret is read')) }),
             secretLog: () => {},
         });
-        const target = { userId: ALICE, repo: `${REPO.owner}/${REPO.name}` };
+        const target = { userId: ALICE, repo: githubRepo(`${REPO.owner}/${REPO.name}`) };
 
         expect((await unreadable.namesFor(target)).sort()).toEqual([
             'ANTHROPIC_API_KEY',
@@ -137,16 +140,19 @@ describe.skipIf(!enabled)('the env var store', () => {
     });
 
     it('groups the repo scopes for the page', async () => {
-        await store.replaceRepo('env-admin', REPO.owner, REPO.name, [{ name: 'R', value: '1', isSecret: false }]);
+        await store.replaceRepo('env-admin', githubRepo(`${REPO.owner}/${REPO.name}`), [
+            { name: 'R', value: '1', isSecret: false },
+        ]);
         // Created with its real value, then echoed without it — the write-only contract.
-        await store.replaceRepo('env-admin', 'Other', 'repo', [{ name: 'S', value: 'hidden', isSecret: true }]);
+        await store.replaceRepo('env-admin', githubRepo('Other/repo'), [
+            { name: 'S', value: 'hidden', isSecret: true },
+        ]);
 
         const repos = await store.listRepos();
         expect(repos).toEqual([
-            { owner: 'Bellows-AI', name: 'bellows.ai', vars: [expect.objectContaining({ name: 'R', value: '1' })] },
+            { repo: githubRepo('Bellows-AI/bellows.ai'), vars: [expect.objectContaining({ name: 'R', value: '1' })] },
             {
-                owner: 'Other',
-                name: 'repo',
+                repo: githubRepo('Other/repo'),
                 vars: [expect.objectContaining({ name: 'S', value: null, isSecret: true })],
             },
         ]);
@@ -188,7 +194,7 @@ describe.skipIf(!enabled)('the GitHub reservation migration (072)', () => {
             { name: 'KEEP_ORG', value: '1', isSecret: false },
         ]);
         await store.replaceWorkspace(ALICE, [{ name: 'GH_TOKEN', value: 'ghp_mine', isSecret: true }]);
-        await store.replaceRepo('env-admin', REPO.owner, REPO.name, [
+        await store.replaceRepo('env-admin', githubRepo(`${REPO.owner}/${REPO.name}`), [
             { name: 'GITHUB_TOKEN', value: 'ghp_repo', isSecret: true },
         ]);
 
@@ -210,7 +216,7 @@ describe('stackEnv', () => {
     });
 });
 
-const REPO_SCOPE = { kind: 'repo', owner: REPO.owner, name: REPO.name } as const;
+const REPO_SCOPE = { kind: 'repo', repo: githubRepo(`${REPO.owner}/${REPO.name}`) } as const;
 const ORG_SCOPE = { kind: 'org' } as const;
 const WORKSPACE_SCOPE = { kind: 'workspace', userId: ALICE } as const;
 
@@ -230,7 +236,7 @@ describe.skipIf(!enabled)('encrypted environment secrets (the one stored format)
         await seedEncryptedRow(sql, secrets, { orgId: ORG, scope: WORKSPACE_SCOPE, name: 'LEVEL' }, 'ws-secret');
         await seedEncryptedRow(sql, secrets, { orgId: ORG, scope: REPO_SCOPE, name: 'REPO_ONLY' }, 'ünï-✓');
 
-        expect(await store.resolveFor({ userId: ALICE, repo: `${REPO.owner}/${REPO.name}` })).toEqual({
+        expect(await store.resolveFor({ userId: ALICE, repo: githubRepo(`${REPO.owner}/${REPO.name}`) })).toEqual({
             LEVEL: 'ws-secret',
             ONLY_ORG: 'o',
             REPO_ONLY: 'ünï-✓',

@@ -38,6 +38,7 @@ import { recoverObserved, withdrawRepair } from './batch-store-observed.js';
 import { decide, failedAttentionReason, recoveriesUsed, repairInTx, type Tx } from './batch-store-repair.js';
 import { insertJobInTx, retryInTx } from '../jobs/job-store-thread-actions.js';
 import { refOfRow } from '../repo-ref-row.js';
+import { type RevisionOf, resolveRevisions, revisionKey } from './batch-store-revisions.js';
 import {
     openBatches,
     settleThreads,
@@ -72,8 +73,6 @@ import { logger } from '../../log.js';
 export type StopThread = (jobId: string, stoppedBy: string | null) => Promise<unknown>;
 /** The job store's Done: marks a settled thread head done and queues its worktree reclaim. */
 export type CloseThread = (jobId: string, closedBy: string | null) => Promise<unknown>;
-/** The head commit of a repository's branch, or null when it cannot be resolved. */
-export type RevisionOf = (repo: string, branch: string) => Promise<string | null>;
 
 export interface ScheduleDeps {
     sql: Sql;
@@ -415,9 +414,9 @@ async function launch(
         return 'changed';
     }
     await tx`
-        insert into batch_attempt (org_id, batch_id, task_key, attempt, kind, job_id, repo, source_branch,
+        insert into batch_attempt (org_id, batch_id, task_key, attempt, kind, job_id, forge, host, repo, source_branch,
                                    source_revision)
-        values (${orgId}, ${id}, ${task.key}, ${attempt}, ${kind}, ${created.id},
+        values (${orgId}, ${id}, ${task.key}, ${attempt}, ${kind}, ${created.id}, ${target.forge}, ${target.host},
                 ${target.repo}, ${target.branch}, ${revisions.get(revisionKey(target)) ?? null})
     `;
     // A new attempt invalidates what was observed of the last: its failures are history, and the
@@ -552,30 +551,6 @@ function decideFor(batch: LockedBatch, snapshot: Snapshot, now: Date): ScheduleD
         expired: batch.expired_at !== null,
         now: now.getTime(),
     });
-}
-
-const revisionKey = (target: { repo: string; branch: string }) => `${target.repo}@${target.branch}`;
-
-/** The revisions of every target, resolved once per reconcile and only when a task is waiting to launch. */
-async function resolveRevisions(deps: ScheduleDeps, id: string): Promise<Map<string, string | null>> {
-    const revisions = new Map<string, string | null>();
-    if (!deps.revisionOf) return revisions;
-    const { sql, orgId } = deps;
-    const [waiting] = await sql`
-        select 1 from batch_task
-        where org_id = ${orgId} and batch_id = ${id} and execution in (${TASK_PENDING}, ${TASK_RETRY}) limit 1
-    `;
-    if (!waiting) return revisions;
-    const targets = await sql<{ repo: string; branch: string }[]>`
-        select repo, branch from batch_target where org_id = ${orgId} and batch_id = ${id} and branch is not null
-    `;
-    await Promise.all(
-        targets.map(async (target) => {
-            // An unresolvable revision is recorded as unknown; it never blocks the launch.
-            revisions.set(revisionKey(target), await deps.revisionOf!(target.repo, target.branch).catch(() => null));
-        })
-    );
-    return revisions;
 }
 
 export async function reconcileBatch(deps: ScheduleDeps, id: string): Promise<BatchProgress | null> {

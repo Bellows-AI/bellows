@@ -75,8 +75,7 @@ const observerFor = (orgId: string, jobStore: JobStore, batchStore: BatchStore) 
         sql,
         orgId,
         reader,
-        recordMerge: (repo, number, deliveryId, mergedAt) =>
-            jobStore.closeMergedPr(githubRepo(repo), number, deliveryId, mergedAt),
+        recordMerge: (repo, number, deliveryId, mergedAt) => jobStore.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (id) => batchStore.reconcile(id),
         now,
     });

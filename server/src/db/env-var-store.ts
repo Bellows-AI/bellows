@@ -1,6 +1,7 @@
-import { CLAUDE_CODE, stackClaudeCodeEnv } from '@factory-ai/core';
+import { CLAUDE_CODE, formatRepoRef, stackClaudeCodeEnv, type RepoRef } from '@factory-ai/core';
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { recordAudit, userActor } from './audit-log.js';
+import { refColumns, refOfRow, scopeColumnsOf } from './repo-ref-row.js';
 import type { SecretDiagnostic, SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
 import {
     createEnvSecrets,
@@ -50,13 +51,13 @@ export interface ResolveOptions {
 export interface EnvVarStore {
     listOrg(): Promise<EnvVarRow[]>;
     listWorkspace(userId: string): Promise<EnvVarRow[]>;
-    listRepo(owner: string, name: string): Promise<EnvVarRow[]>;
+    listRepo(repo: RepoRef): Promise<EnvVarRow[]>;
     /** Every repo scope's rows, grouped, for the page's per-repository editors. */
-    listRepos(): Promise<{ owner: string; name: string; vars: EnvVarRow[] }[]>;
+    listRepos(): Promise<{ repo: RepoRef; vars: EnvVarRow[] }[]>;
     /** Each replace is audited as `actorId`'s (a workspace's actor is its owner) in the write's transaction. */
     replaceOrg(actorId: string, vars: readonly EnvVarEntry[]): Promise<void>;
     replaceWorkspace(userId: string, vars: readonly EnvVarEntry[]): Promise<void>;
-    replaceRepo(actorId: string, owner: string, name: string, vars: readonly EnvVarEntry[]): Promise<void>;
+    replaceRepo(actorId: string, repo: RepoRef, vars: readonly EnvVarEntry[]): Promise<void>;
     /**
      * Writes or deletes only the names `write` carries, leaving the rest of the scope as stored, under the same
      * scope lock as the replaces. `validate` judges the list the scope would hold (a reason throws
@@ -66,7 +67,7 @@ export interface EnvVarStore {
     /**
      * The merged environment one claim carries: org < workspace < repo, the more specific scope
      * winning a name collision. `userId` null contributes no workspace level (an unattributed
-     * job); `repo` null contributes no repo level. Returns real values — secrets included —
+     * job); `repo` null contributes no repo level, and a repo whose path is not owner/name (a GitLab nested group) none yet. Returns real values — secrets included —
      * because injection is what they are for; every other read path goes through the list
      * methods, which never echo one.
      *
@@ -75,7 +76,7 @@ export interface EnvVarStore {
      * `options.agentType` Claude Code takes its model names from one scope (`stackClaudeCodeEnv`).
      */
     resolveFor(
-        target: { userId: string | null; repo: string | null },
+        target: { userId: string | null; repo: RepoRef | null },
         exec?: Sql | TransactionSql,
         options?: ResolveOptions
     ): Promise<Record<string, string>>;
@@ -83,7 +84,7 @@ export interface EnvVarStore {
      * The names `resolveFor` would carry, stacked by the same rules, read without a single value or secret: what
      * create, a batch launch and preflight judge a task's model credential on (`hasModelKey`).
      */
-    namesFor(target: { userId: string | null; repo: string | null }, options?: ResolveOptions): Promise<string[]>;
+    namesFor(target: { userId: string | null; repo: RepoRef | null }, options?: ResolveOptions): Promise<string[]>;
 }
 
 interface Row {
@@ -100,6 +101,8 @@ interface ResolveRow {
     secret_ref: string | null;
     secret_version: string | null;
     user_id: string | null;
+    forge: string;
+    host: string;
     repo_owner: string | null;
     repo_name: string | null;
     scope: 'org' | 'workspace' | 'repo';
@@ -107,7 +110,9 @@ interface ResolveRow {
 
 const scopeOfRow = (row: ResolveRow): Scope => {
     if (row.scope === 'workspace') return { kind: 'workspace', userId: row.user_id as string };
-    if (row.scope === 'repo') return { kind: 'repo', owner: row.repo_owner as string, name: row.repo_name as string };
+    if (row.scope === 'repo') {
+        return { kind: 'repo', repo: refOfRow({ ...row, repo: `${row.repo_owner}/${row.repo_name}` }) };
+    }
     return { kind: 'org' };
 };
 
@@ -167,16 +172,15 @@ export function stackEnv(
 async function scopeNames(
     sql: Sql,
     orgId: string,
-    { userId, repo }: { userId: string | null; repo: string | null }
+    { userId, repo }: { userId: string | null; repo: RepoRef | null }
 ): Promise<string[][]> {
-    const [owner, name] = repo ? repo.split('/') : [null, null];
     const rows = await sql<{ name: string; user_id: string | null; repo_owner: string | null }[]>`
         select name, user_id, repo_owner from env_var
         where org_id = ${orgId}
           and (
               (user_id is null and repo_owner is null)
               or user_id = ${userId}
-              or (repo_owner = ${owner} and repo_name = ${name})
+              or ${repoMatch(sql, repo)}
           )
     `;
     const org = rows.filter((row) => row.user_id === null && row.repo_owner === null);
@@ -192,6 +196,14 @@ async function scopeNames(
  */
 type Scope = EnvSecretScope;
 
+/** The repo level of a resolve: the rows of exactly this repository, never true for a null or nested one. */
+const repoMatch = (exec: Sql | TransactionSql, repo: RepoRef | null): Fragment => {
+    const { forge, host, owner, name } = scopeColumnsOf(repo);
+    return exec`(forge = ${forge} and host = ${host} and repo_owner = ${owner} and repo_name = ${name})`;
+};
+
+const NESTED_REPO_SCOPE = 'a repository path of more than owner/name has no environment scope yet';
+
 /**
  * The scope's predicate, built off whichever executor (pool or transaction) will run it — a
  * fragment is bound to nothing, but building it from the transaction's own tag keeps every
@@ -204,7 +216,7 @@ const scopeWhere = (exec: Sql | TransactionSql, scope: Scope): Fragment => {
         case 'workspace':
             return exec`and user_id = ${scope.userId}`;
         case 'repo':
-            return exec`and repo_owner = ${scope.owner} and repo_name = ${scope.name}`;
+            return exec`and ${repoMatch(exec, scope.repo)}`;
     }
 };
 
@@ -245,7 +257,7 @@ const retiredOf = (orgId: string, scope: Scope, deleted: readonly DeletedRow[]):
 const insertRows = async (tx: TransactionSql, rows: ReturnType<typeof rowsToInsert>) => {
     if (!rows.length) return;
     await tx`
-        insert into env_var ${tx(rows, 'org_id', 'user_id', 'repo_owner', 'repo_name', 'name', 'value', 'is_secret', 'secret_ref', 'secret_version')}
+        insert into env_var ${tx(rows, 'org_id', 'user_id', 'forge', 'host', 'repo_owner', 'repo_name', 'name', 'value', 'is_secret', 'secret_ref', 'secret_version')}
     `;
 };
 
@@ -264,11 +276,15 @@ const rowsToInsert = (
         .filter((v) => v.value !== null)
         .map((v) => {
             const stored = v.isSecret ? created.get(v.name) : undefined;
+            const { forge, host } = refColumns(scope.kind === 'repo' ? scope.repo : null);
+            const { owner, name } = scopeColumnsOf(scope.kind === 'repo' ? scope.repo : null);
             return {
                 org_id: orgId,
                 user_id: scope.kind === 'workspace' ? scope.userId : null,
-                repo_owner: scope.kind === 'repo' ? scope.owner : null,
-                repo_name: scope.kind === 'repo' ? scope.name : null,
+                forge,
+                host,
+                repo_owner: owner,
+                repo_name: name,
                 name: v.name,
                 value: v.isSecret ? null : (v.value as string),
                 is_secret: v.isSecret,
@@ -339,6 +355,23 @@ const namesBody =
         await options.alsoInTx?.(tx);
     };
 
+/** The repo-scoped rows (ordered) grouped by repository, as the page's editors list them. */
+const groupByRepo = (
+    rows: readonly (Row & { forge: string; host: string; repo_owner: string; repo_name: string })[]
+) => {
+    const grouped: { repo: RepoRef; vars: EnvVarRow[] }[] = [];
+    for (const row of rows) {
+        const repo = refOfRow({ ...row, repo: `${row.repo_owner}/${row.repo_name}` });
+        let group = grouped.find((g) => formatRepoRef(g.repo) === formatRepoRef(repo));
+        if (!group) {
+            group = { repo, vars: [] };
+            grouped.push(group);
+        }
+        group.vars.push(toRow(row));
+    }
+    return grouped;
+};
+
 /**
  * The organization is bound at construction: it is a constant for the life of the process, and a
  * per-call parameter is one more thing a write path can forget.
@@ -400,6 +433,8 @@ export function createEnvVarStore({
      */
     const writeWithSecrets = async (scope: Scope, vars: readonly EnvVarEntry[], body: TxBody): Promise<void> => {
         await gate();
+        if (scope.kind === 'repo' && scopeColumnsOf(scope.repo).owner === null)
+            throw new EnvScopeRefusal(NESTED_REPO_SCOPE);
         const referencedInScope = () =>
             sql<{ secret_ref: string | null }[]>`
                 select secret_ref from env_var where org_id = ${orgId} ${scopeWhere(sql, scope)}
@@ -483,31 +518,22 @@ export function createEnvVarStore({
             return listScoped({ kind: 'workspace', userId });
         },
 
-        async listRepo(owner, name) {
+        async listRepo(repo) {
             await gate();
-            return listScoped({ kind: 'repo', owner, name });
+            return listScoped({ kind: 'repo', repo });
         },
 
         async listRepos() {
             await gate();
-            const rows = await sql<(Row & { repo_owner: string; repo_name: string })[]>`
-                select repo_owner, repo_name, name,
+            const rows = await sql<(Row & { forge: string; host: string; repo_owner: string; repo_name: string })[]>`
+                select forge, host, repo_owner, repo_name, name,
                        case when is_secret then null else value end as value,
                        is_secret, updated_at
                 from env_var
                 where org_id = ${orgId} and repo_owner is not null
-                order by repo_owner asc, repo_name asc, name asc
+                order by repo_owner asc, repo_name asc, forge asc, host asc, name asc
             `;
-            const grouped: { owner: string; name: string; vars: EnvVarRow[] }[] = [];
-            for (const row of rows) {
-                let group = grouped.find((g) => g.owner === row.repo_owner && g.name === row.repo_name);
-                if (!group) {
-                    group = { owner: row.repo_owner, name: row.repo_name, vars: [] };
-                    grouped.push(group);
-                }
-                group.vars.push(toRow(row));
-            }
-            return grouped;
+            return groupByRepo(rows);
         },
 
         async replaceOrg(actorId, vars) {
@@ -518,21 +544,20 @@ export function createEnvVarStore({
             await replaceScoped({ kind: 'workspace', userId }, vars, userId);
         },
 
-        async replaceRepo(actorId, owner, name, vars) {
-            await replaceScoped({ kind: 'repo', owner, name }, vars, actorId);
+        async replaceRepo(actorId, repo, vars) {
+            await replaceScoped({ kind: 'repo', repo }, vars, actorId);
         },
 
         writeScoped,
 
         async resolveFor({ userId, repo }, exec = sql, options = {}) {
             await gate();
-            const [owner, name] = repo ? repo.split('/') : [null, null];
             // One round trip for all three levels. The predicates degrade on their own: a null
             // userId makes `user_id = null` never true, so an unattributed job reads no workspace
             // level — the same for a null repo. The scope check guarantees a row matched by the
             // workspace arm is a workspace row, so the case below can label it.
             const rows = await (exec as Sql)<ResolveRow[]>`
-                select name, value, is_secret, secret_ref, secret_version, user_id, repo_owner, repo_name,
+                select name, value, is_secret, secret_ref, secret_version, user_id, forge, host, repo_owner, repo_name,
                        case
                            when user_id is not null then 'workspace'
                            when repo_owner is not null then 'repo'
@@ -543,7 +568,7 @@ export function createEnvVarStore({
                   and (
                       (user_id is null and repo_owner is null)
                       or user_id = ${userId}
-                      or (repo_owner = ${owner} and repo_name = ${name})
+                      or ${repoMatch(exec as Sql, repo)}
                   )
             `;
             const values = await valuesOf(rows);

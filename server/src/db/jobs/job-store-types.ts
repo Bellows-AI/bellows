@@ -1142,7 +1142,7 @@ export interface CreateJobStoreDeps {
      */
     env?: {
         resolveFor(
-            target: { userId: string | null; repo: string | null },
+            target: { userId: string | null; repo: RepoRef | null },
             exec: Sql | TransactionSql,
             /** The run's agent: Claude Code takes its model names from one scope (`stackClaudeCodeEnv`). */
             options?: { agentType?: string | null }
