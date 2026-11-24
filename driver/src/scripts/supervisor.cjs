@@ -105,7 +105,7 @@ const { pipeline, Transform } = require('node:stream');
 /** @typedef {SpawnSpec & { id: string, invocation: string, kind: StepKind }} Step */
 /** @typedef {Step & { kind: LaneKind }} GateStep */
 /** @typedef {{ sections: Record<string, unknown>, resources: string }} GateReportFiles */
-/** @typedef {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean, replayed?: boolean, tokenAskUnanswered?: boolean, report?: GateReportFiles }} StepResult */
+/** @typedef {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean, replayed?: boolean, tokenAskUnanswered?: boolean, failureLines?: string, outputCut?: true, report?: GateReportFiles }} StepResult */
 /** @typedef {{ result: StepResult, interrupted: boolean, tokens?: string[] }} Outcome */
 /** @typedef {{ state: string, result?: StepResult }} Call */
 /** @typedef {{ id: string, kind: string, effect: StepResult | null, invocations: Record<string, Call> }} Entry */
@@ -1062,6 +1062,84 @@ function readTail(file) {
     }
 }
 
+/** A line that names a failure, or sums a run up: `driver/src/gate-excerpt.ts` spells the same patterns. */
+const FAILURE_LINE = /^\s*(?:FAIL\b|[×✗✖]|❯ .*\bfailed\b)/;
+const SUMMARY_LINE = /^\s*(?:Test Files|Tests)\s+\d/;
+/** The most of one line kept, the failure lines kept in all, and the summary lines kept (the last ones). */
+const FAILURE_LINE_BYTES = 300;
+/** The bytes of a line's head read for it: four per character cut to `FAILURE_LINE_BYTES`, as UTF-8 takes at most. */
+const UTF8_MAX_BYTES_PER_CHAR = 4;
+const FAILURE_LINE_HEAD_BYTES = FAILURE_LINE_BYTES * UTF8_MAX_BYTES_PER_CHAR;
+const FAILURE_LINES_BYTES = 24_576;
+const SUMMARY_LINES_KEPT = 8;
+/** Read this much of the output file at a time, and no more of it in all than this: a bound on a runaway log. */
+const SCAN_CHUNK_BYTES = 262_144;
+const SCAN_FILE_LIMIT = 268_435_456;
+const NEWLINE = 0x0a;
+
+/**
+ * The failure and summary lines of a gate's WHOLE output file, for the lines its capped tail can no longer hold: read
+ * in chunks, a line at a time, never the file at once. Empty when the answer holds the whole file — it fits the step
+ * output cap in bytes AND once JSON-escaped (`escapedCut`: `fitTail` would cut it) — or holds no such line.
+ * @param {string} file
+ * @param {boolean} escapedCut
+ * @returns {string}
+ */
+function readFailureLines(file, escapedCut) {
+    let fd;
+    try {
+        fd = fs.openSync(file, 'r');
+        const size = fs.fstatSync(fd).size;
+        if (size <= STEP_OUTPUT_LIMIT && !escapedCut) return '';
+        /** @type {Set<string>} */
+        const failures = new Set();
+        /** @type {string[]} */
+        const summaries = [];
+        let kept = 0;
+        /** @param {Buffer} bytes */
+        const take = (bytes) => {
+            const line = bytes
+                .subarray(0, FAILURE_LINE_HEAD_BYTES)
+                .toString('utf8')
+                .trimEnd()
+                .slice(0, FAILURE_LINE_BYTES);
+            if (SUMMARY_LINE.test(line)) {
+                summaries.push(line);
+                if (summaries.length > SUMMARY_LINES_KEPT) summaries.shift();
+            } else if (
+                FAILURE_LINE.test(line) &&
+                !failures.has(line) &&
+                kept + line.length + 1 <= FAILURE_LINES_BYTES
+            ) {
+                failures.add(line);
+                kept += line.length + 1;
+            }
+        };
+        const buffer = Buffer.alloc(SCAN_CHUNK_BYTES);
+        let pending = Buffer.alloc(0);
+        for (let at = 0; at < Math.min(size, SCAN_FILE_LIMIT); ) {
+            const read = fs.readSync(fd, buffer, 0, SCAN_CHUNK_BYTES, at);
+            if (read === 0) break;
+            at += read;
+            let start = 0;
+            for (let end = buffer.indexOf(NEWLINE); end !== -1 && end < read; end = buffer.indexOf(NEWLINE, start)) {
+                take(Buffer.concat([pending, buffer.subarray(start, end)]));
+                pending = Buffer.alloc(0);
+                start = end + 1;
+            }
+            // Only the head of an unfinished line matters to the patterns: a longer one is cut, not accumulated.
+            const rest = Buffer.concat([pending, buffer.subarray(start, read)]);
+            pending = rest.subarray(0, FAILURE_LINE_HEAD_BYTES);
+        }
+        take(pending);
+        return [...failures, ...summaries].join('\n');
+    } catch {
+        return '';
+    } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+    }
+}
+
 /**
  * A value cut down until its JSON fits `REPORT_SECTION_LIMIT`: every array to its first half and every string to its
  * first half, round after round, so the head of each list and the other fields survive. Marked `truncated`.
@@ -1128,11 +1206,23 @@ function readGateReport(dir) {
 }
 
 /**
+ * A file's size in bytes; 0 for one that cannot be read.
+ * @param {string} file
+ */
+function fileSize(file) {
+    try {
+        return fs.statSync(file).size;
+    } catch {
+        return 0;
+    }
+}
+
+/**
  * The answer of a finished request (`done/<id>`), read and removed; null while it is not done.
  * @param {Run} run
  * @param {LaneKind} lane
  * @param {string} name
- * @returns {{ exitCode: number | null, output: string, report: GateReportFiles | null } | null}
+ * @returns {{ exitCode: number | null, output: string, failureLines: string, outputCut: boolean, report: GateReportFiles | null } | null}
  */
 function takeGateAnswer(run, lane, name) {
     const done = path.join(run.file[lane].done, name);
@@ -1143,9 +1233,17 @@ function takeGateAnswer(run, lane, name) {
     } catch {
         // No exit: the loop restarted while it held the request, and its answer is gone.
     }
+    const outputFile = path.join(done, GATE_FILES.output);
+    const output = readTail(outputFile);
+    // The two cuts the answer's output takes: the file's head past the cap (`readTail`), and the head of what is
+    // left once its JSON form outgrows the cap (`fitTail`).
+    const rawCut = fileSize(outputFile) > STEP_OUTPUT_LIMIT;
+    const escapedCut = Buffer.byteLength(JSON.stringify(output)) > STEP_OUTPUT_LIMIT;
     const answer = {
         exitCode: Number.isFinite(code) ? code : null,
-        output: readTail(path.join(done, GATE_FILES.output)),
+        output,
+        failureLines: readFailureLines(outputFile, escapedCut),
+        outputCut: rawCut || escapedCut,
         report: readGateReport(done),
     };
     fs.rmSync(done, { recursive: true, force: true });
@@ -1320,6 +1418,24 @@ function answeredGateResult(flight, step, answer) {
 const withGateReport = (outcome, report) => (report ? { ...outcome, result: { ...outcome.result, report } } : outcome);
 
 /**
+ * The outcome with the failure lines of the gate's whole output beside its result, when its tail cut them off.
+ * @param {Outcome} outcome
+ * @param {string} failureLines
+ * @returns {Outcome}
+ */
+const withFailureLines = (outcome, failureLines) =>
+    failureLines ? { ...outcome, result: { ...outcome.result, failureLines } } : outcome;
+
+/**
+ * The outcome marked when the answer's output is not the gate's whole: `readTail` or `fitTail` removed bytes.
+ * @param {Outcome} outcome
+ * @param {boolean} cut
+ * @returns {Outcome}
+ */
+const withOutputCut = (outcome, cut) =>
+    cut ? { ...outcome, result: { ...outcome.result, outputCut: true } } : outcome;
+
+/**
  * A gate loop gone silent: no exit — never a verdict — whether it never took the request or went quiet on it.
  * @param {Run} run
  * @param {GateStep} step
@@ -1342,7 +1458,15 @@ function lostGateResult(run, step) {
  */
 function gateTick(run, step, flight) {
     const answer = takeGateAnswer(run, step.kind, step.id);
-    if (answer) return withGateReport(answeredGateResult(flight, step, answer), answer.report);
+    if (answer) {
+        return withGateReport(
+            withOutputCut(
+                withFailureLines(answeredGateResult(flight, step, answer), answer.failureLines),
+                answer.outputCut
+            ),
+            answer.report
+        );
+    }
     if (!flight.why) {
         flight.why = gateStopReason(run, step, flight.startedAt);
         flight.stoppedAt = run.now();

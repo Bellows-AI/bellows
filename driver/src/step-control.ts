@@ -468,7 +468,21 @@ const parseResult = (raw: string): { invocation: string; result: StepResult } | 
     // Only `true` is the supervisor's flag; anything else is dropped, never read as one.
     const unanswered = parsed.tokenAskUnanswered === true ? { tokenAskUnanswered: true as const } : {};
     const report = reportFilesOf(parsed.report);
-    return { invocation, result: { exitCode, stdout, stderr, timedOut, ...unanswered, ...(report ? { report } : {}) } };
+    const failures = typeof parsed.failureLines === 'string' ? { failureLines: parsed.failureLines } : {};
+    const cut = parsed.outputCut === true ? { outputCut: true as const } : {};
+    return {
+        invocation,
+        result: {
+            exitCode,
+            stdout,
+            stderr,
+            timedOut,
+            ...unanswered,
+            ...failures,
+            ...cut,
+            ...(report ? { report } : {}),
+        },
+    };
 };
 
 /** `POST /step/:id`: the supervisor's answer to one call of a step. */

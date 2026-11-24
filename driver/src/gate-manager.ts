@@ -7,7 +7,8 @@ import { type GateResources, type GateResult, gateResultOf } from './gate-result
 import { type GateExecution, type GateMeasure, measuredRun } from './gate-record.js';
 import { annotateActiveSpan, withChildSpan } from './lifecycle-span.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
-import { reportTail } from './runner.js';
+import { failureExcerpt } from './gate-excerpt.js';
+import { ARTIFACT_LIMIT, REPORT_BYTE_LIMIT, tailKept } from './runner.js';
 import { StepTokenUnanswered } from './step-control.js';
 import type { GateStepRequest } from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
@@ -36,7 +37,14 @@ const TIMEOUT_EXIT_CODE = 124;
 /** What one gate run came back with. `exitCode` is the gate command's own status. */
 export interface GateRun {
     exitCode: number | null;
+    /** What the answer carries: the whole output when it fits, else the failure lines and the tail (`failureExcerpt`). */
     output: string;
+    /**
+     * The run's whole output, tail-kept at `ARTIFACT_LIMIT` — what the gate-log artifact stream stores. Absent when
+     * `output` is all of it; `fullTruncated` when the head was cut.
+     */
+    fullOutput?: string;
+    fullTruncated?: true;
     /** True when the environment's `setup` command failed: the gate itself never ran. */
     setupFailed?: true;
     /** What the run measured around the gate command; present only for a run given an `execution`. */
@@ -183,18 +191,31 @@ export function envBodyRecord(body: string): Record<string, string> {
  */
 function gateRunOf(result: StepResult, deadlineMs: number): GateRun {
     if (result.tokenAskUnanswered) throw new StepTokenUnanswered();
-    const output = reportTail(`${result.stdout}${result.stderr}`.trim());
+    const raw = `${result.stdout}${result.stderr}`.trim();
+    // The excerpt comes from the uncut output: the stored log keeps a tail, and a failure list that stacks
+    // pushed past it must still be named in the answer and in the report. Past the supervisor's own cut
+    // (`STEP_OUTPUT_LIMIT_BYTES`) the lines it read off the whole file stand in for the head.
+    const output = failureExcerpt(raw, REPORT_BYTE_LIMIT, result.failureLines);
+    const full = tailKept(raw, ARTIFACT_LIMIT);
+    // A log cut here, or by the supervisor before the driver saw it, is a tail: the stream must say so.
+    const cut = full.truncated || result.outputCut === true;
+    // Beside the answer only when the answer is less than the log: output that fits is its own whole.
+    const whole =
+        full.content === output && !cut
+            ? {}
+            : { fullOutput: full.content, ...(cut ? { fullTruncated: true as const } : {}) };
     const recorded = gateResultOf(result.report, result.timedOut);
     const structured = recorded ? { result: recorded } : {};
     if (result.timedOut) {
         return {
             exitCode: TIMEOUT_EXIT_CODE,
             output: output || `[driver] gate killed after ${deadlineMs}ms`,
+            ...whole,
             ...structured,
         };
     }
     if (result.exitCode === null) throw gateHarness(result.stderr.trim() || 'the gate container answered no exit');
-    return { exitCode: result.exitCode, output, ...structured };
+    return { exitCode: result.exitCode, output, ...whole, ...structured };
 }
 
 interface SupervisedEntry {

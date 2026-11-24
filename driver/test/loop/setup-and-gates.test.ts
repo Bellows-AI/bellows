@@ -549,7 +549,8 @@ describe('verification gates', () => {
 
         await drive({ ...board, runner, gates: stack.gates });
 
-        expect(board.board.artifactChunks).toEqual([
+        // The gates' own log streams (`gate-logs.test.ts`) are no part of the run's log and transcript.
+        expect(board.board.artifactChunks.filter((c) => !c.stream.startsWith('gate-'))).toEqual([
             {
                 id: gatedJob(1).id,
                 claimSeq: gatedJob(1).claimSeq,
@@ -558,7 +559,7 @@ describe('verification gates', () => {
                 text: 'line one\nline two\n',
             },
         ]);
-        expect(board.board.artifactManifests).toEqual([
+        expect(board.board.artifactManifests.filter((m) => !m.stream.startsWith('gate-'))).toEqual([
             { id: gatedJob(1).id, claimSeq: gatedJob(1).claimSeq, stream: 'log', state: 'complete' },
         ]);
         expect(board.board.completed[0]!.status).toBe('succeeded');
@@ -573,8 +574,12 @@ describe('verification gates', () => {
 
         await drive({ ...board, runner, gates: stack.gates });
 
-        expect(board.board.artifactChunks.map((c) => c.stream)).toEqual(['log', 'transcript']);
-        expect(board.board.artifactManifests.map((m) => m.state)).toEqual(['complete', 'complete']);
+        const run = (stream: string) => !stream.startsWith('gate-');
+        expect(board.board.artifactChunks.map((c) => c.stream).filter(run)).toEqual(['log', 'transcript']);
+        expect(board.board.artifactManifests.filter((m) => run(m.stream)).map((m) => m.state)).toEqual([
+            'complete',
+            'complete',
+        ]);
         expect(board.board.completed[0]!.status).toBe('succeeded');
     });
 

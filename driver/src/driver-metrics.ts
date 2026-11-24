@@ -78,6 +78,7 @@ const JOB_ACTIONS = [
     'checkpoint/chunk',
     'transcripts',
     'transcripts/chunk',
+    'gate-log',
     'artifact/chunk',
     'artifact/manifest',
     'credentials/github',

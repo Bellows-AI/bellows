@@ -3,6 +3,7 @@
 /*
  * `factory-gate <name> [--filter <value>]`: run one declared gate on the gate server.
  * `factory-gate <name> --last`: read the thread's last stored report of the gate without running it.
+ * `factory-gate <name> --last --full`: the same, with the run's whole stored output in place of the report's excerpt.
  * `factory-gate --list`: print the run's tool manifest (`{"tools": [...]}`, ids `gate:<name>` and `exec`).
  *
  * The agent's skills call this instead of a hand-built request, so the managed allowlist can
@@ -26,18 +27,21 @@
  */
 const { EXIT_USAGE, controlCall, fail: failAs } = require('./control-call.cjs');
 
-const USAGE = 'usage: factory-gate <name> [--filter <value> | --last] | factory-gate --list';
+const USAGE = 'usage: factory-gate <name> [--filter <value> | --last [--full]] | factory-gate --list';
 const NAME = 'factory-gate';
 
 const fail = (code, message) => failAs(NAME, code, message);
 
-/** The call for argv: the gate's tool id, with `input.filter` for `--filter <value>` or `input.last` for `--last`. */
+/** The call for argv: the gate's tool id, with `input.filter` for `--filter <value>`, `input.last` for `--last` (`input.full` for `--last --full`). */
 function bodyOf(args) {
     const [gate, ...rest] = args;
     if (!gate || gate.startsWith('-')) fail(EXIT_USAGE, USAGE);
     const tool = `gate:${gate}`;
     if (rest.length === 0) return { tool };
     if (rest.length === 1 && rest[0] === '--last') return { tool, input: { last: true } };
+    if (rest.length === 2 && rest[0] === '--last' && rest[1] === '--full') {
+        return { tool, input: { last: true, full: true } };
+    }
     if (rest.length !== 2 || rest[0] !== '--filter') fail(EXIT_USAGE, USAGE);
     return { tool, input: { filter: rest[1] } };
 }

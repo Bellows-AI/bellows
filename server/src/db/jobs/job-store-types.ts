@@ -116,6 +116,8 @@ export interface LastGateReport {
     output: string | null;
     /** What the gate recorded beside its tail, when it did. */
     result?: GateResult;
+    /** The recorded run this report is — for a reused pass, the run it was served from: the key of its log stream. */
+    executionId?: string;
 }
 
 /**

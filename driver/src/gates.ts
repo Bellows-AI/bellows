@@ -70,6 +70,8 @@ export interface GateClaim {
     dockerdRestarts?: (signal: AbortSignal) => Promise<Read<DaemonState>>;
     /** The claim's gate-run record; absent, an ad-hoc run is not recorded. */
     ledger?: GateLedger;
+    /** Reads a recorded run's whole output from the board, for `--last --full`; absent, there is none to read. */
+    readGateLog?: GateLogRead | undefined;
 }
 
 export interface GateServer {
@@ -183,22 +185,68 @@ const adHocRefusal = (gate: DeclaredGate, filter: string | undefined): string | 
     return null;
 };
 
-/** `factory-gate <name> --last`: the thread's latest stored verdict of the gate, as the claim carried it. */
-const lastReportAnswer = (job: BoardJob, name: string): { status: number; body: unknown } => {
-    const stored = job.lastGateReports?.find((report) => report.name === name);
+/** The stored whole output of one gate run: null when the board holds none; throws when it could not be read. */
+export type GateLogRead = (
+    executionId: string,
+    signal: AbortSignal
+) => Promise<{ text: string; truncated: boolean; cause: string | null } | null>;
+
+/**
+ * `factory-gate <name> --last`: the thread's latest stored verdict of the gate, as the claim carried it. With `full`
+ * its output is the run's whole log stream (`--last --full`), read from the board; a log the board no longer holds
+ * answers 404, one it could not read a retryable 503 — never the excerpt in its place.
+ */
+const lastReportAnswer = async (
+    claim: GateClaim,
+    name: string,
+    full: boolean,
+    signal: AbortSignal
+): Promise<{ status: number; body: unknown }> => {
+    const stored = claim.job.lastGateReports?.find((report) => report.name === name);
     if (!stored) {
         return { status: HTTP_NOT_FOUND, body: { error: `no stored report for gate "${name}" in this thread` } };
     }
-    const { status, exitCode, output, result } = stored;
-    return {
+    const { status, exitCode, output, result, executionId } = stored;
+    const answer = (text: string | null, extra: object = {}) => ({
         status: HTTP_OK,
-        body: { verdict: status, exitCode, output, ...(result ? { result } : {}), artifacts: [], last: true },
-    };
+        body: {
+            verdict: status,
+            exitCode,
+            output: text,
+            ...(result ? { result } : {}),
+            artifacts: [],
+            last: true,
+            ...extra,
+        },
+    });
+    if (!full) return answer(output);
+    if (!executionId || !claim.readGateLog) {
+        return {
+            status: HTTP_NOT_FOUND,
+            body: { error: `no full output is stored for gate "${name}" in this thread` },
+        };
+    }
+    try {
+        const log = await claim.readGateLog(executionId, signal);
+        if (!log) {
+            return { status: HTTP_NOT_FOUND, body: { error: `the full output of gate "${name}" is no longer stored` } };
+        }
+        return answer(log.text, { full: true, ...(log.truncated ? { truncated: true, cause: log.cause } : {}) });
+    } catch (e) {
+        if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
+        return {
+            status: HTTP_SERVICE_UNAVAILABLE,
+            body: {
+                error: `the full output could not be read from the board: ${(e as Error).message}`,
+                retryable: true,
+            },
+        };
+    }
 };
 
 /** A gate run's answer in the tool result shape: a verdict beside the exit and output, the record's id when there is one. */
 const gateAnswer = (outcome: GateRun, executionId: string | undefined) => {
-    const { measure: _measure, setupFailed, ...ran } = outcome;
+    const { measure: _measure, fullOutput: _fullOutput, fullTruncated: _fullTruncated, setupFailed, ...ran } = outcome;
     return {
         verdict: ran.exitCode === 0 && !setupFailed ? 'passed' : 'failed',
         ...ran,
@@ -326,10 +374,11 @@ const readGateRequest = async (request: IncomingMessage, stillLive: () => boolea
 };
 
 /** The declared gate an ad-hoc request names, or the refusal it answers. */
-const declaredGateOf = (
+const declaredGateOf = async (
     claim: GateClaim,
-    request: Extract<GateRequest, { gate: string }>
-): { gate: DeclaredGate } | { status: number; body: unknown } => {
+    request: Extract<GateRequest, { gate: string }>,
+    signal: AbortSignal
+): Promise<{ gate: DeclaredGate } | { status: number; body: unknown }> => {
     const refused = (status: number, error: string) => ({ status, body: { error } });
     // A setup-only or image-only environment holds a registered door yet declares nothing to run.
     if (claim.gates.length === 0) return refused(HTTP_NOT_FOUND, 'no gates');
@@ -338,7 +387,7 @@ const declaredGateOf = (
     const gate = claim.gates.find((candidate) => candidate.name === request.gate);
     if (!gate) return refused(HTTP_NOT_FOUND, `no declared gate "${request.gate}"`);
     // `--last` reads a stored report and runs nothing, whatever the gate's timeout.
-    if (request.last) return lastReportAnswer(claim.job, gate.name);
+    if (request.last) return lastReportAnswer(claim, gate.name, request.full === true, signal);
     const refusal = adHocRefusal(gate, request.filter);
     if (refusal) return refused(HTTP_UNPROCESSABLE, refusal);
     return { gate };
@@ -451,7 +500,7 @@ export function createGateServer({
             return answerExec({ manager, admission, auth, claim, reply }, parsedRequest.exec, cancelled);
         }
 
-        const declared = declaredGateOf(claim, parsedRequest);
+        const declared = await declaredGateOf(claim, parsedRequest, cancelled);
         if (!('gate' in declared)) return respond(reply, declared.status, declared.body);
         const { gate } = declared;
 

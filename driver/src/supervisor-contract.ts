@@ -279,6 +279,13 @@ export interface StepResult {
     failureKind?: string;
     /** A gate that asked for its GitHub token and was never answered: it has no verdict, whatever its exit (`gateRunOf` reads it as a lost step). */
     tokenAskUnanswered?: true;
+    /**
+     * The failure and summary lines (`FAIL`, `×`, `Test Files`, `Tests`) the supervisor read off a gate's WHOLE output
+     * file, bounded, when that file outgrew `STEP_OUTPUT_LIMIT_BYTES` and the tail cut them off; absent otherwise.
+     */
+    failureLines?: string;
+    /** Set when the supervisor cut the gate's output before answering (its tail past the cap, raw or JSON-escaped): the answer is not the whole log. */
+    outputCut?: true;
     /** What the gate left in its report directory beside its verdict (`scripts/gate-loop.sh`); absent when it left nothing. */
     report?: GateReportFiles;
 }

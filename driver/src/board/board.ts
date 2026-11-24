@@ -1,5 +1,6 @@
 import { type ConnectionOutcome, connectionCalls, type RequirementVerdict } from './board-connection.js';
 import type { GateResult } from '../gate-result.js';
+import type { LastGateReport } from './board-gate-runs.js';
 import { heldBeat } from './board-heartbeat.js';
 import type { Interruption } from './board-interruption.js';
 import { artifactCalls } from '../artifact-calls.js';
@@ -241,13 +242,7 @@ export interface BoardJob extends ClaimSkills {
      * The thread's latest passed or failed report per gate name, read by the board at claim (copied from the board's
      * `LastGateReport`): what `factory-gate <name> --last` answers. Absent on a board that predates it.
      */
-    lastGateReports?: readonly {
-        name: string;
-        status: 'passed' | 'failed';
-        exitCode: number | null;
-        output: string | null;
-        result?: GateResult;
-    }[];
+    lastGateReports?: readonly LastGateReport[];
     /**
      * The services the same file declares, already validated as one plan (`planRefusal` carries a
      * refusal). Both executors start exactly this list; the driver reads no file. Absent: none.
