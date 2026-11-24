@@ -1,3 +1,4 @@
+import { githubRepo, type RepoRef } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
 import type { EnvVarRow, EnvVarStore } from '../src/db/env-var-store.js';
 import { EnvScopeRefusal, stackEnv, stackNames } from '../src/db/env-var-store.js';
@@ -66,7 +67,8 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
                 .map(view);
         },
 
-        async listRepo(owner, name) {
+        async listRepo(repo) {
+            const [owner, name] = repo.path.split('/');
             return rows
                 .filter((r) => r.owner === owner && r.repoName === name)
                 .sort((a, b) => a.name.localeCompare(b.name))
@@ -74,11 +76,12 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
         },
 
         async listRepos() {
-            const grouped: { owner: string; name: string; vars: EnvVarRow[] }[] = [];
+            const grouped: { repo: RepoRef; vars: EnvVarRow[] }[] = [];
             for (const row of rows.filter((r) => r.owner !== null).sort(compareRepoOrder)) {
-                let group = grouped.find((g) => g.owner === row.owner && g.name === row.repoName);
+                const repo = githubRepo(`${row.owner}/${row.repoName}`);
+                let group = grouped.find((g) => g.repo.path === repo.path);
                 if (!group) {
-                    group = { owner: row.owner!, name: row.repoName!, vars: [] };
+                    group = { repo, vars: [] };
                     grouped.push(group);
                 }
                 group.vars.push(view(row));
@@ -94,13 +97,19 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
             replaceRows({ userId }, vars);
         },
 
-        async replaceRepo(_actorId, owner, name, vars) {
+        async replaceRepo(_actorId, repo, vars) {
+            const [owner, name] = repo.path.split('/') as [string, string];
             replaceRows({ owner, name }, vars);
         },
 
         async writeScoped(scope, write, _actorId, options = {}) {
             if (store.broken) throw storeOutage('database is unreachable');
-            const key = scope.kind === 'org' ? 'org' : scope.kind === 'workspace' ? { userId: scope.userId } : scope;
+            const key =
+                scope.kind === 'org'
+                    ? 'org'
+                    : scope.kind === 'workspace'
+                      ? { userId: scope.userId }
+                      : { owner: scope.repo.path.split('/')[0]!, name: scope.repo.path.split('/')[1]! };
             const upsert = write.upsert.filter((v) => v.value !== null);
             const inScope = rows.filter((r) => matches(key, r));
             const lockedRemovals = options.removeOf?.(inScope.map((r) => r.name)) ?? [];
@@ -133,7 +142,7 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
         async resolveFor({ userId, repo }, _exec) {
             const pick = (list: Row[]): Record<string, string> =>
                 Object.fromEntries(list.map((r) => [r.name, r.value]));
-            const [owner, name] = repo ? repo.split('/') : [null, null];
+            const [owner, name] = repo ? repo.path.split('/') : [null, null];
             return stackEnv(
                 pick(rows.filter((r) => r.userId === null && r.owner === null)),
                 pick(userId ? rows.filter((r) => r.userId === userId) : []),
@@ -143,7 +152,7 @@ export function memoryEnvVarStore(): MemoryEnvVarStore {
 
         async namesFor({ userId, repo }, options = {}) {
             if (store.broken) throw storeOutage('database is unreachable');
-            const [owner, name] = repo ? repo.split('/') : [null, null];
+            const [owner, name] = repo ? repo.path.split('/') : [null, null];
             const namesOf = (list: Row[]) => list.map((r) => r.name);
             return stackNames(
                 [

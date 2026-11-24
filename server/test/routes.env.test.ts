@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { EnvSecretError } from '../src/db/env-secrets.js';
@@ -56,7 +57,9 @@ describe('GET /api/env', () => {
         const { app, admin, adminCookie, envVars } = await boot();
         await envVars.replaceOrg('env-admin', [{ name: 'CORE_SECRET', value: 's3cr3t', isSecret: true }]);
         await envVars.replaceWorkspace(admin.user.id, [{ name: 'MINE', value: 'visible', isSecret: false }]);
-        await envVars.replaceRepo('env-admin', 'acme', 'web', [{ name: 'REPO_SECRET', value: 'r', isSecret: true }]);
+        await envVars.replaceRepo('env-admin', githubRepo('acme/web'), [
+            { name: 'REPO_SECRET', value: 'r', isSecret: true },
+        ]);
 
         const response = await app.inject({ method: 'GET', url: '/api/env', headers: { cookie: adminCookie } });
         expect(response.statusCode).toBe(HTTP_OK);

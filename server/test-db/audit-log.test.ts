@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { get } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -279,7 +280,7 @@ describe.skipIf(!enabled)('audited actions write one row each', () => {
     it('an env write at the repository scope, naming no secret value', async () => {
         const secret = `sekrit-${randomUUID()}`;
         const env = createEnvVarStore({ sql, orgId: org, secrets: testSecretStore(sql), secretLog: () => {} });
-        await env.replaceRepo(admin.userId, 'acme', 'web', [{ name: 'TOKEN', value: secret, isSecret: true }]);
+        await env.replaceRepo(admin.userId, githubRepo('acme/web'), [{ name: 'TOKEN', value: secret, isSecret: true }]);
         const row = await onlyRow('env.write', [secret]);
         expect(row).toMatchObject({ actor_kind: 'user', actor_id: admin.userId, target: 'repo/acme/web' });
     });

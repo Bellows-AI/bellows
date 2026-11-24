@@ -18,6 +18,8 @@ export interface ClaimCandidateRow extends FrozenAgentColumns {
     /** The thread root's `execution_user_id`: who the row runs as, whoever queued it. */
     run_as: string | null;
     session_id: string | null;
+    forge: string;
+    host: string;
     repo: string | null;
     parent_job_id: string | null;
     executor: string | null;

@@ -27,6 +27,7 @@ import {
     RUNNER_MANAGED_KEYS,
 } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
+import { refOfNullableRow } from '../repo-ref-row.js';
 import type { CreateJobStoreDeps } from './job-store-types.js';
 
 /** The env name Claude Code reads its model from, over its settings' `model`; OpenCode reads none. */
@@ -119,7 +120,9 @@ export async function resolveClaimExecutor(
     const { executorType, executorRefusal, source, runnerClass } = await claimExecutorOf(tx, executorConfig, row);
     // Read once the agent is known: a Claude Code run takes its model names from one scope (`stackClaudeCodeEnv`).
     const resolvedEnv = withoutGithubToken(
-        env ? await env.resolveFor({ userId: row.run_as, repo: row.repo }, tx, { agentType: executorType }) : undefined
+        env
+            ? await env.resolveFor({ userId: row.run_as, repo: refOfNullableRow(row) }, tx, { agentType: executorType })
+            : undefined
     );
     let claimEnv = grant !== undefined ? grantedEnv(resolvedEnv, grant) : resolvedEnv;
     if (source !== null) claimEnv = mergeExecutorConfigEnv(claimEnv, source);
@@ -252,6 +255,8 @@ export interface FrozenAgentColumns {
 /** The job row columns the claim's executor resolution reads. */
 export interface ClaimExecutorRow extends FrozenAgentColumns {
     run_as: string | null;
+    forge: string;
+    host: string;
     repo: string | null;
     executor: string | null;
     executor_scope: string | null;

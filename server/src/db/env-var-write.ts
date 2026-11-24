@@ -1,3 +1,4 @@
+import { formatRepoRef } from '@factory-ai/core';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { EnvSecretScope } from './env-secrets.js';
 import { waitAdvisoryXactLock } from './pool.js';
@@ -44,7 +45,7 @@ export class EnvScopeRefusal extends Error {
 export const scopeKeyOf = (scope: EnvSecretScope): string => {
     if (scope.kind === 'org') return 'org';
     if (scope.kind === 'workspace') return `workspace/${scope.userId}`;
-    return `repo/${scope.owner}/${scope.name}`;
+    return `repo/${formatRepoRef(scope.repo)}`;
 };
 
 /**

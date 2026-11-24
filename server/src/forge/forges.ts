@@ -1,3 +1,4 @@
+import { githubRepo, type RepoRef } from '@factory-ai/core';
 import { GITHUB_FORGE } from '../integrations/providers/github-user.js';
 
 /**
@@ -27,3 +28,6 @@ export const forgeConnectPath = (forge: string, who: { orgId: string; returnTo: 
 
 /** The forge a repo lives on; null for a task with no repo, which needs no grant. Every repo is GitHub's for now. */
 export const forgeOfRepo = (repo: string | null): string | null => (repo === null ? null : GITHUB_FORGE);
+
+/** The ref of a wire `owner/name`, the edge into the stores: GitHub's until a route carries a forge; null for none. */
+export const repoRefOf = (repo: string | null): RepoRef | null => (repo === null ? null : githubRepo(repo));

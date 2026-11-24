@@ -1,4 +1,4 @@
-import { githubRepo } from '@factory-ai/core';
+import { githubRepo, type RepoRef } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -25,7 +25,7 @@ let store: JobStore;
 let otherOrgStore: JobStore;
 let prs: ReturnType<typeof createPrLifecycleStore>;
 /** The targets the env resolver was asked for, newest last. */
-const envTargets: { userId: string | null; repo: string | null }[] = [];
+const envTargets: { userId: string | null; repo: RepoRef | null }[] = [];
 
 const ORG = testOrg();
 const OTHER_ORG = testOrg();

@@ -11,6 +11,7 @@ import {
 } from '@factory-ai/core';
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from 'fastify';
 import type { AgentDefault, ResolvedDefault, UserExecutorStore } from '../../db/user-executor-store.js';
+import { repoRefOf } from '../../forge/forges.js';
 import type { OrgRuntime } from '../../orgs.js';
 import type { ExecutorTypeRead } from '../../skill-catalog.js';
 import { bad, guard } from '../helpers.js';
@@ -179,7 +180,7 @@ export async function modelStanding(
     if (!rt.modelRequired) return 'not-required';
     if (subject.type.state !== 'known' || !rt.envVars) return 'unverified';
     const agentType = subject.type.type ?? CLAUDE_CODE;
-    const names = await rt.envVars.namesFor({ userId: subject.userId, repo: subject.repo }, { agentType });
+    const names = await rt.envVars.namesFor({ userId: subject.userId, repo: repoRefOf(subject.repo) }, { agentType });
     return hasModelKey(names, subject.config, agentType) ? 'ok' : 'missing';
 }
 

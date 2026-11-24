@@ -1,4 +1,4 @@
-import { NO_MODEL_MESSAGE, OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
+import { NO_MODEL_MESSAGE, OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE, githubRepo } from '@factory-ai/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -4783,7 +4783,7 @@ describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', 
             (b: Awaited<ReturnType<typeof bootCloud>>) =>
                 b.envVars.replaceWorkspace(b.userId, [{ name: 'ANTHROPIC_API_KEY', value: 'k', isSecret: true }]),
             (b: Awaited<ReturnType<typeof bootCloud>>) =>
-                b.envVars.replaceRepo('admin', TRACKED.owner, TRACKED.name, [
+                b.envVars.replaceRepo('admin', githubRepo(`${TRACKED.owner}/${TRACKED.name}`), [
                     { name: 'ANTHROPIC_API_KEY', value: 'k', isSecret: true },
                 ]),
         ]) {

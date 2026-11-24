@@ -1,3 +1,4 @@
+import { formatRepoRef, type RepoRef } from '@factory-ai/core';
 import { createSecretRef } from '../secrets/secret-input.js';
 import type {
     OperationId,
@@ -19,14 +20,13 @@ import type {
  */
 
 /** Which of the three scopes a row belongs to. */
-export type EnvSecretScope =
-    | { kind: 'org' }
-    | { kind: 'workspace'; userId: string }
-    | { kind: 'repo'; owner: string; name: string };
+export type EnvSecretScope = { kind: 'org' } | { kind: 'workspace'; userId: string } | { kind: 'repo'; repo: RepoRef };
 
 /**
  * The identity is rebuilt from the row's slot on every call and never stored, so a reference copied to
- * another organization, scope or name fails as `identity-mismatch` instead of reading someone's secret.
+ * another organization, scope or name fails as `identity-mismatch` instead of reading someone's secret. A repository is
+ * its text form, so a github.com identity stays `owner/name` (stored secrets read across rollout and rollback) and a
+ * copy to another forge or host fails.
  */
 export function envSecretIdentity(orgId: string, scope: EnvSecretScope, name: string): SecretIdentity {
     const owner: SecretIdentity['owner'] =
@@ -36,7 +36,7 @@ export function envSecretIdentity(orgId: string, scope: EnvSecretScope, name: st
             ? { type: 'organization', id: orgId }
             : scope.kind === 'workspace'
               ? { type: 'workspace', id: scope.userId }
-              : { type: 'repository', id: `${scope.owner}/${scope.name}` };
+              : { type: 'repository', id: formatRepoRef(scope.repo) };
     return { owner, scope: scopeId, purpose: 'environment-secret', owningRecord: { type: 'env-var', id: name } };
 }
 

@@ -54,13 +54,16 @@ export async function seedEncryptedRow(
     });
     if (!created.ok) throw new Error(`create refused: ${created.error.code}/${created.error.reason}`);
     const { scope } = slot;
+    const [owner = null, name = null] = scope.kind === 'repo' ? scope.repo.path.split('/') : [];
     await sql`
-        insert into env_var (org_id, user_id, repo_owner, repo_name, name, value, is_secret, secret_ref, secret_version)
+        insert into env_var (org_id, user_id, forge, host, repo_owner, repo_name, name, value, is_secret, secret_ref, secret_version)
         values (
             ${slot.orgId},
             ${scope.kind === 'workspace' ? scope.userId : null},
-            ${scope.kind === 'repo' ? scope.owner : null},
-            ${scope.kind === 'repo' ? scope.name : null},
+            ${scope.kind === 'repo' ? scope.repo.forge : 'github'},
+            ${scope.kind === 'repo' ? scope.repo.host : 'github.com'},
+            ${owner},
+            ${name},
             ${slot.name}, null, true, ${ref}, ${created.version}
         )
     `;

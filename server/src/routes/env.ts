@@ -8,6 +8,7 @@ import {
     credentialRedirectMessage,
     ERROR_CODES,
     forbiddenCredentialIn,
+    githubRepo,
     isCredentialRedirectMessage,
     isReservedEnvName,
     MAX_ENV_VARS_PER_SCOPE,
@@ -352,7 +353,11 @@ export const envRoutes =
             return reply.code(HTTP_OK).send({
                 org: loaded.value[0],
                 workspace: loaded.value[1],
-                repos: loaded.value[2],
+                // The wire names a repository by owner and name (a repo scope holds exactly two segments).
+                repos: loaded.value[2].map(({ repo, vars }) => {
+                    const [owner, name] = repo.path.split('/');
+                    return { owner, name, vars };
+                }),
             });
         });
 
@@ -409,8 +414,9 @@ export const envRoutes =
                 reply,
                 (e) => request.log.error({ err: e }),
                 async () => {
-                    await store.replaceRepo(caller.user.id, repo.owner, repo.name, vars);
-                    return store.listRepo(repo.owner, repo.name);
+                    const ref = githubRepo(`${repo.owner}/${repo.name}`);
+                    await store.replaceRepo(caller.user.id, ref, vars);
+                    return store.listRepo(ref);
                 }
             );
             if (!saved.ok) return reply;

@@ -1,4 +1,4 @@
-import { credentialRedirectMessage, type DeploymentMode, STORED_CREDENTIAL_PREFIX } from '@factory-ai/core';
+import { credentialRedirectMessage, type DeploymentMode, STORED_CREDENTIAL_PREFIX, githubRepo } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
@@ -81,10 +81,10 @@ describe.skipIf(!enabled)('cloud mode: a redirect with no member key never reach
     it('(b) in a repo-scope env row: refused, the row kept', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
-        await env.replaceRepo('env-admin', 'acme', 'web', [{ name: BASE_URL, value: URL, isSecret: false }]);
+        await env.replaceRepo('env-admin', githubRepo('acme/web'), [{ name: BASE_URL, value: URL, isSecret: false }]);
         await task(jobs, 'acme/web');
         expectRefused(await jobs.claim('w1', LEASE_SECONDS), BASE_URL);
-        expect(await env.listRepo('acme', 'web')).toEqual([expect.objectContaining({ name: BASE_URL })]);
+        expect(await env.listRepo(githubRepo('acme/web'))).toEqual([expect.objectContaining({ name: BASE_URL })]);
     });
 
     it('(c) in a user env row: refused', async () => {
@@ -122,7 +122,7 @@ describe.skipIf(!enabled)('cloud mode: a member key anywhere in the merged env l
         await executors.replace(ALICE, [
             { name: 'main', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: KEY } } },
         ]);
-        await env.replaceRepo('env-admin', 'acme', 'web', [{ name: BASE_URL, value: URL, isSecret: false }]);
+        await env.replaceRepo('env-admin', githubRepo('acme/web'), [{ name: BASE_URL, value: URL, isSecret: false }]);
         await task(jobs, 'acme/web');
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);
@@ -314,7 +314,9 @@ describe.skipIf(!enabled)('Claude Code takes its model credentials from one scop
         const { executors, env, jobs } = stores(ORG, 'self-hosted');
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
         await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: TEAM_KEY, isSecret: true }]);
-        await env.replaceRepo('env-admin', 'acme', 'web', [{ name: 'OPENAI_API_KEY', value: 'repo', isSecret: true }]);
+        await env.replaceRepo('env-admin', githubRepo('acme/web'), [
+            { name: 'OPENAI_API_KEY', value: 'repo', isSecret: true },
+        ]);
         await task(jobs, 'acme/web');
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);
@@ -336,7 +338,7 @@ describe.skipIf(!enabled)('Claude Code takes its model credentials from one scop
         const { executors, env, jobs } = stores(ORG, 'self-hosted');
         await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
         await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true }]);
-        await env.replaceRepo('env-admin', 'acme', 'web', [
+        await env.replaceRepo('env-admin', githubRepo('acme/web'), [
             { name: 'ANTHROPIC_API_KEY', value: 'repo', isSecret: true },
         ]);
         await task(jobs, 'acme/web');

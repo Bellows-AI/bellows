@@ -7,6 +7,7 @@
  */
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { repoRefOf } from '../../forge/forges.js';
 import type { workflowsFor } from './job-context.js';
 import { type ResolvedWorkflow, buildWorkflowSelection } from './job-field-validation.js';
 import { bad, guard } from '../helpers.js';
@@ -41,7 +42,7 @@ async function resolveNamedWorkflow(
     const found = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'workflow resolution failed'),
-        () => workflowsStore.findByName(fields.workflow as string, { userId: createdBy, repo })
+        () => workflowsStore.findByName(fields.workflow as string, { userId: createdBy, repo: repoRefOf(repo) })
     );
     if (!found.ok) return { handled: true };
     if (found.value === null) {
