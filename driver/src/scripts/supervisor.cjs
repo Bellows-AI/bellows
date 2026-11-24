@@ -1079,17 +1079,18 @@ const NEWLINE = 0x0a;
 
 /**
  * The failure and summary lines of a gate's WHOLE output file, for the lines its capped tail can no longer hold: read
- * in chunks, a line at a time, never the file at once. Empty when the file fits the step output cap (the tail is all
- * of it) or holds no such line.
+ * in chunks, a line at a time, never the file at once. Empty when the answer holds the whole file — it fits the step
+ * output cap in bytes AND once JSON-escaped (`escapedCut`: `fitTail` would cut it) — or holds no such line.
  * @param {string} file
+ * @param {boolean} escapedCut
  * @returns {string}
  */
-function readFailureLines(file) {
+function readFailureLines(file, escapedCut) {
     let fd;
     try {
         fd = fs.openSync(file, 'r');
         const size = fs.fstatSync(fd).size;
-        if (size <= STEP_OUTPUT_LIMIT) return '';
+        if (size <= STEP_OUTPUT_LIMIT && !escapedCut) return '';
         /** @type {Set<string>} */
         const failures = new Set();
         /** @type {string[]} */
@@ -1220,10 +1221,12 @@ function takeGateAnswer(run, lane, name) {
     } catch {
         // No exit: the loop restarted while it held the request, and its answer is gone.
     }
+    const outputFile = path.join(done, GATE_FILES.output);
+    const output = readTail(outputFile);
     const answer = {
         exitCode: Number.isFinite(code) ? code : null,
-        output: readTail(path.join(done, GATE_FILES.output)),
-        failureLines: readFailureLines(path.join(done, GATE_FILES.output)),
+        output,
+        failureLines: readFailureLines(outputFile, Buffer.byteLength(JSON.stringify(output)) > STEP_OUTPUT_LIMIT),
         report: readGateReport(done),
     };
     fs.rmSync(done, { recursive: true, force: true });

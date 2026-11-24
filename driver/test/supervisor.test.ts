@@ -1509,6 +1509,29 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
         await supervised.done;
     });
 
+    // The answer is cut by its JSON size, which quotes and backslashes inflate: a log under the cap in bytes can
+    // still lose its head to it.
+    it('carries the failure lines of a gate whose output fits the cap in bytes but not escaped', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const files = ['web/test/a.test.ts', 'core/test/b.test.ts'];
+        const list = files.map((file) => ` FAIL  ${file} > suite > case\n`).join('');
+        // 20 bytes a line, 40 escaped: quotes, a backslash and the newline all double in JSON.
+        const noise = `${'"'.repeat(18)}\\\n`.repeat(50_000);
+        const output = `${list}${noise} Test Files  2 failed | 9 passed (11)\n`;
+        expect(Buffer.byteLength(output)).toBeLessThan(STEP_OUTPUT_LIMIT_BYTES);
+        expect(Buffer.byteLength(JSON.stringify(output))).toBeGreaterThan(STEP_OUTPUT_LIMIT_BYTES);
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 1, output }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        const answer = driver.answers.get('gate-1');
+        expect(answer?.stdout).not.toContain(files[0]);
+        for (const file of files) expect(answer?.failureLines).toContain(file);
+        expect(answer?.failureLines).toContain('Test Files  2 failed');
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
     it('carries no failure lines for a gate whose whole output the answer holds', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);
