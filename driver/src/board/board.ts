@@ -1,4 +1,5 @@
 import { type ConnectionOutcome, connectionCalls, type RequirementVerdict } from './board-connection.js';
+import type { GateResult } from '../gate-result.js';
 import { heldBeat } from './board-heartbeat.js';
 import type { Interruption } from './board-interruption.js';
 import { artifactCalls } from '../artifact-calls.js';
@@ -245,6 +246,7 @@ export interface BoardJob extends ClaimSkills {
         status: 'passed' | 'failed';
         exitCode: number | null;
         output: string | null;
+        result?: GateResult;
     }[];
     /**
      * The services the same file declares, already validated as one plan (`planRefusal` carries a
@@ -622,6 +624,7 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
             exitCode: number | null;
             output: string | null;
             startedAt?: string;
+            result?: GateResult;
         }[]
     ): Promise<LeaseState>;
     /**

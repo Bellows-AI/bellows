@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import { gateReporters } from './vitest.gate-reporters.ts';
 import { testDbWorkers } from './server/test-db/workers.js';
 
 /**
@@ -14,6 +15,7 @@ import { testDbWorkers } from './server/test-db/workers.js';
  */
 export default defineConfig({
     test: {
+        ...gateReporters(),
         include: ['server/test-db/**/*.test.ts'],
         pool: 'forks',
         poolOptions: { forks: { minForks: 1, maxForks: testDbWorkers() } },

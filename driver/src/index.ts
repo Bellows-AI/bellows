@@ -109,7 +109,7 @@ const runner =
 // supervised step each — the runner makes the group, the loop does not. The endpoint is NOT opened
 // here — the server listens lazily on the first launched attempt (it also carries the run-control
 // channel).
-const manager = createSupervisedGateManager({ config, runner });
+const manager = createSupervisedGateManager({ config, runner, observe: metrics.gate });
 const gates: GateStack = {
     manager,
     server: createGateServer({ host: config.gateListenHost, manager, steps }),

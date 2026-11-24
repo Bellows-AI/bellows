@@ -1,4 +1,11 @@
-import type { AttachmentMeta, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
+import type {
+    AttachmentMeta,
+    ExecutorScope,
+    ExecutorType,
+    GateResult,
+    JobMode,
+    TaskTitleOrigin,
+} from '@factory-ai/core';
 import { usePoll } from './usePoll.js';
 
 /**
@@ -45,6 +52,8 @@ export interface GateCheck {
     output: string | null;
     /** When a `running` gate started (ISO), so the strip can count its seconds. */
     startedAt?: string;
+    /** What the gate recorded beside its output: failed tests, selection, slowest files, the guest's resources. */
+    result?: GateResult;
 }
 
 /**

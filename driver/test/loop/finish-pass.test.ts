@@ -109,6 +109,26 @@ describe.each(EXECUTORS)('the finish pass on the %s executor', (_executor, env) 
     const verdicts = (answers: FinishAnswer[]) => answers.map((answer) => answer.verdict);
     const lastReports = (r: Awaited<ReturnType<typeof run>>) => r.board.gatesReported.at(-1)!.results;
 
+    it('hands the agent the failed tests of the red gate, and reports the structured result to the board', async () => {
+        const result = {
+            failures: [{ file: 'a.test.ts', test: 'adds two numbers', message: 'expected 3 to be 4' }],
+            selection: { mode: 'all', reason: 'a shared file changed' },
+        };
+        const r = await run({
+            outcomes: { test: [1, 0] },
+            stack: { results: { test: result } },
+            agent: async ({ ask }) => {
+                await ask();
+            },
+        });
+
+        const failed = r.answers[0] as Extract<FinishAnswer, { verdict: 'fail' }>;
+        expect(failed.message).toContain('Failed tests (1):');
+        expect(failed.message).toContain('a.test.ts > adds two numbers: expected 3 to be 4');
+        expect(failed.message).toContain('Selection: all, a shared file changed');
+        expect(lastReports(r).find((gate) => gate.name === 'test')?.result).toEqual(result);
+    });
+
     it('red, red, green ends in one run', async () => {
         const r = await run({
             outcomes: { test: [1, 1, 0] },

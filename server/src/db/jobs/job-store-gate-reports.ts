@@ -34,6 +34,7 @@ export async function readThreadGateReports(
                 status: gate.status,
                 exitCode: gate.exitCode,
                 output: gate.output === null ? null : gateOutputTail(gate),
+                ...(gate.result ? { result: gate.result } : {}),
             });
         }
     }

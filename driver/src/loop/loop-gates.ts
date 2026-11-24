@@ -6,6 +6,7 @@ import { tailBytes, type DeadService } from '../runner.js';
 import { stepLost } from '../step-control.js';
 import type { GateRun } from '../gate-manager.js';
 import { declaredTimeoutMs, type GateLedger } from '../gates.js';
+import { compactResult, type GateResult } from '../gate-result.js';
 import { gateIdentity, orgKeyOf } from '../gate-identity.js';
 import { recordGateRun, type GateEnd } from '../gate-record.js';
 import { SETUP_FAILED_PREFIX } from '../gate-cause.js';
@@ -53,6 +54,8 @@ export interface GateFailure {
     name: string;
     exitCode: number;
     output: string;
+    /** What the failed gate recorded beside its output (`gate-result.ts`), when it recorded anything. */
+    result?: GateResult;
 }
 
 /** What one gate looks like on the board, at one moment. */
@@ -65,6 +68,8 @@ export type GateReport = {
     startedAt?: string;
     /** The recorded execution this entry is; absent for a gate no record covers. */
     executionId?: string;
+    /** What the gate recorded beside its output: failed tests, selection, slowest files, resources; compacted for the board. */
+    result?: GateResult;
     /** Set when the gate was not launched: it is served from an earlier verified pass. */
     reused?: { executionId: string; finishedAt: string | null; reason: string };
 };
@@ -371,6 +376,7 @@ function settledGate(gate: DeclaredGate, outcome: GateRun, perGate: number): { e
             status: outcome.exitCode !== 0 ? 'failed' : 'passed',
             exitCode: outcome.exitCode,
             output: tailBytes(text, perGate),
+            ...(outcome.result ? { result: compactResult(outcome.result) } : {}),
         },
         text,
     };
@@ -561,7 +567,8 @@ async function executeGate(
     results[index] = { ...entry, executionId: raced!.value!.executionId };
     await report();
     if (entry.status === 'failed') {
-        return { name: gate.name, exitCode: outcome.exitCode ?? REFUSED_TO_RUN_EXIT_CODE, output: text };
+        const failed = { name: gate.name, exitCode: outcome.exitCode ?? REFUSED_TO_RUN_EXIT_CODE, output: text };
+        return outcome.result ? { ...failed, result: outcome.result } : failed;
     }
     return GATE_PASSED;
 }

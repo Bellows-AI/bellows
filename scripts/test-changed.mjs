@@ -9,8 +9,11 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { writeSection } from './gate-report.mjs';
 
 const DEFAULT_BASE = 'origin/main';
+/** The label prefix of the plan step that runs every project. */
+const WIDENED_TO_ALL = 'widened to everything';
 const PROJECTS = ['core', 'server', 'web', 'driver', 'cli', 'dom', 'spawn'];
 // Packages whose in-process suites import `@factory-ai/core` from `core/dist`.
 const CORE_CONSUMERS = ['server', 'web', 'dom'];
@@ -121,7 +124,7 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
     const build = { label: 'build core (server and web import core/dist)', run: ['npm', 'run', 'build', '-w', 'core'] };
     if (wide.has('all')) {
         steps.push(build, {
-            label: `widened to everything: ${wide.get('all').join('; ')}`,
+            label: `${WIDENED_TO_ALL}: ${wide.get('all').join('; ')}`,
             vitest: ['run', ...projectArgs(PROJECTS)],
         });
         return steps;
@@ -162,6 +165,20 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
         });
     }
     return steps;
+}
+
+/**
+ * How the gate chose its tests, for the gate's report (`selection` section, scripts/gate-report.mjs): `all` when the
+ * plan widened to everything, with the reason it printed, else `changed`, naming any package it widened.
+ */
+export function selectionOf(steps, changedCount, base) {
+    const everything = steps.find((step) => step.label.startsWith(WIDENED_TO_ALL));
+    if (everything) return { mode: 'all', reason: everything.label.slice(WIDENED_TO_ALL.length).replace(/^: /, '') };
+    const widened = steps.filter((step) => /^(widened|core changed)/.test(step.label)).map((step) => step.label);
+    return {
+        mode: 'changed',
+        reason: [`${changedCount} changed file(s) since ${base}`, ...widened].join('; '),
+    };
 }
 
 /**
@@ -326,6 +343,7 @@ function main(argv) {
         return 0;
     }
     console.error(`[test:changed] ${changed.length} changed file(s) since ${base}`);
+    writeSection('selection', selectionOf(steps, changed.length, base));
     if (steps.length === 0) console.error('[test:changed] no test:db suite reached; nothing to run');
     for (const step of steps) {
         const argvOf = step.run ?? ['npx', 'vitest', ...step.vitest, ...passthrough];

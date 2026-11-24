@@ -114,6 +114,17 @@ The gates that run when the agent finishes run after it has exited, so their out
 
 Reports are cut to about 4 KiB, the same as `{{gate.output}}` in a workflow.
 
+## What a gate records beside its output
+
+The output tail is cut, and a gate stopped at its timeout never prints its summary. So every gate run also records a structured result, which the agent, a follow-up and the task page read instead of the tail alone:
+
+- **Failed tests.** Each failure's file, test name and first message. A gate stopped at its timeout lists the test files still running.
+- **Selection.** For this repository's own test gate: whether it ran the tests the change reaches or widened to everything, and why.
+- **Slowest files.** The ten slowest test files and their durations.
+- **Resources.** The share of the guest's CPU time spent in user, system, iowait and steal, the gate container's CPU throttling, the peak load and the least free memory over the run.
+
+The agent receives the result as `result` in the answer of `factory-gate <name>` and `--last`, and its finish pass names the failed tests. The Verification panel shows it above the output. The test and selection parts come from a gate command that writes them, as this repository's vitest gates do through `scripts/gate-reporter.mjs`, which its vitest configs add inside a gate; the resources are recorded for every gate.
+
 ## Filters
 
 With `filter: true` the agent can run part of a suite. Your command must read `$GATE_FILTER`, or the filter does nothing.
@@ -179,7 +190,7 @@ The `dev-runner` image carries node 24, the docker CLI with the compose and buil
 
 ## Where results show
 
-Open the task and find the **Verification** panel. Each gate has a pill and, once it has run, its exit code and output. The panel shows the newest run only. A failed gate starts open, and its output has a **Copy** button.
+Open the task and find the **Verification** panel. Each gate has a pill and, once it has run, its exit code, what it recorded (failed tests, selection, slowest files, resources) and its output. The panel shows the newest run only. A failed gate starts open, and its output has a **Copy** button.
 
 | Pill      | Meaning                                              |
 | --------- | ---------------------------------------------------- |

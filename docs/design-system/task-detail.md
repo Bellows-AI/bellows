@@ -32,7 +32,7 @@ Classes defined here: `task-layout`, `task-main`, `task-thread`, `task-conversat
 `task-copy`, `task-remove-title`, `task-remove-actions`, `task-rename-label`, `task-rename-field`, `msg-user`,
 `msg-meta`, `chat-exchange`, `chat-exit`, `chat-activity`, `chat-gate-list`,
 `chat-output`, `chat-resume`, `chat-done`, `chat-stop`, `chat-remove`, `run-summary`,
-`run-output`, `run-checking`, `run-spinner`, `run-well`, `gate-output-wrap`, `question`,
+`run-output`, `run-checking`, `run-spinner`, `run-well`, `gate-output-wrap`, `gate-result`, `question`,
 `question-set`,
 `question-chip`, `question-option`, `question-hint`, `question-other`, `question-error`,
 `question-status`, `question-answers`, `connect-actions`, `task-stats`, `task-stats-trigger`, `task-stats-scope`,

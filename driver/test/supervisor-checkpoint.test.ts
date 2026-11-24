@@ -314,7 +314,9 @@ describe('the supervisor’s finalize stage: the checkpoint', () => {
 
     it('gives up at an absolute wall-clock deadline when the driver keeps failing, and still finalizes', async () => {
         const driver = await startDriver();
-        const deadlineMs = 400;
+        // Long enough that the checkpoint script's own step timeout (the same value) never fires under host load:
+        // only the controlled signal below ends the upload.
+        const deadlineMs = 60_000;
         // The deadline is a real timer (`AbortSignal.timeout`) plus the injected clock: both are held
         // open until the driver has refused two calls, then expire together — never by host load.
         const deadline = new AbortController();

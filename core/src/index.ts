@@ -407,3 +407,10 @@ export * from './integrations/outcomes.js';
 export * from './integrations/redact.js';
 export * from './attachments.js';
 export * from './integration-catalog.js';
+export type {
+    GateFailedTest,
+    GateResources,
+    GateResult,
+    GateSelection,
+} from './gate-result.js';
+export { describeGateResult, parseGateResult } from './gate-result.js';

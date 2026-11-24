@@ -25,6 +25,21 @@ describe('gate report text', () => {
         expect(renderFailedGates(null, 'fix it')).toBe('');
     });
 
+    it('names the failed tests and the selection of a failed gate ahead of its output tail', () => {
+        const failed: GateReport = {
+            ...gate('test', 'failed', 'tail'),
+            result: {
+                failures: [{ file: 'a.test.ts', test: 'adds', message: 'expected 3 to be 4\n  at line 9' }],
+                selection: { mode: 'all', reason: 'a shared file changed' },
+            },
+        };
+        const text = renderFailedGates([failed], 'fix it');
+        expect(text).toContain('Failed tests (1):\n- a.test.ts > adds: expected 3 to be 4\n');
+        expect(text).toContain('Selection: all, a shared file changed');
+        expect(text.indexOf('Failed tests')).toBeLessThan(text.indexOf('Output tail:'));
+        expect(text).not.toContain('at line 9');
+    });
+
     it('stops adding gates once the command cap would be crossed', () => {
         const big = 'z'.repeat(INTERP_TAIL_LIMIT);
         const gates = [gate('a', 'failed', big), gate('b', 'failed', big)];

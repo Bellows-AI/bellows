@@ -5,7 +5,7 @@
  * behavior is in the sibling `job-store-*.ts` files, which job-store.ts's header maps.
  */
 
-import type { AttachmentMeta } from '@factory-ai/core';
+import type { AttachmentMeta, GateResult } from '@factory-ai/core';
 import type { ClaimAttachment } from './job-store-attachments.js';
 import type { GateRunStore } from './job-store-gate-runs.js';
 import type { PrOperationStore } from './job-store-pr-operations.js';
@@ -95,6 +95,8 @@ export interface GateReport {
     output: string | null;
     /** The recorded execution this entry is; absent for a gate no record covers. */
     executionId?: string;
+    /** What the gate recorded beside its tail: failed tests, selection, slowest files, resources. */
+    result?: GateResult;
     /** Set when the gate was not launched but served from an earlier verified pass. */
     reused?: { executionId: string; finishedAt: string | null; reason: string };
 }
@@ -108,6 +110,8 @@ export interface LastGateReport {
     status: 'passed' | 'failed';
     exitCode: number | null;
     output: string | null;
+    /** What the gate recorded beside its tail, when it did. */
+    result?: GateResult;
 }
 
 /**

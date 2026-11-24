@@ -7,6 +7,7 @@
  */
 import { type Meter, metrics, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api';
 
+import type { GateResources } from './gate-result.js';
 import type { ExecDocker } from './docker/docker-runner-support.js';
 import type { K8sMethod, K8sRequest } from './k8s/k8s-transport.js';
 import type { ReaperObserver } from './reaper.js';
@@ -17,6 +18,9 @@ import { secondsSince } from './timing.js';
 export const METER_NAME = 'bellows-driver';
 
 export type Client = 'runner' | 'reaper';
+
+/** How a gate run ended, as its duration is labelled: its verdict, or killed at its deadline. */
+export type GateOutcome = 'passed' | 'failed' | 'timeout';
 
 /** A job claim poll: a job, a 204, a claim that failed validation, or a call that threw. */
 export type ClaimPollOutcome = 'claimed' | 'idle' | 'malformed' | 'error';
@@ -33,10 +37,17 @@ export interface DriverMetrics {
     /** Reports the claim slots at each collection; `read` is in-memory and cannot fail. */
     observeSlots(read: () => { busy: number; open: number }): void;
     step(kind: StepKind, outcome: StepOutcome, seconds: number): void;
+    /**
+     * One gate run: its duration by `outcome`, and when the gate loop sampled the guest, the CPU split, the
+     * cgroup's throttling, peak load and lowest free memory. The gate name is the one label that is repository
+     * config, not a closed vocabulary: a few per repository, and no id.
+     */
+    gate(gate: string, outcome: GateOutcome, seconds: number, resources?: GateResources): void;
     reaper: ReaperObserver;
 }
 
 const OTHER = 'other';
+const MS_PER_SECOND = 1000;
 const HTTP_CLASS_DIVISOR = 100;
 /** Histogram bounds written as one readable string: `buckets('0.1 0.5 1')`. */
 const buckets = (spec: string): number[] => spec.split(' ').map(Number);
@@ -203,6 +214,24 @@ function instruments(meter: Meter) {
             'Supervised steps from submission to answer; sync is the per-thread checkout cost.',
             STEP_BUCKETS
         ),
+        gate: seconds('bellows.driver.gate.duration', 'One gate run, by gate and outcome.', STEP_BUCKETS),
+        gateCpu: meter.createHistogram('bellows.driver.gate.cpu.share', {
+            description: 'The guest’s CPU time over one gate run by mode, in percent of the window.',
+            advice: { explicitBucketBoundaries: buckets('1 5 10 20 30 40 50 60 70 80 90 100') },
+        }),
+        gateThrottled: seconds(
+            'bellows.driver.gate.throttled.duration',
+            'Time the gate cgroup was CPU-throttled over one gate run.',
+            STEP_BUCKETS
+        ),
+        gateLoad: meter.createHistogram('bellows.driver.gate.load.max', {
+            description: 'The highest 1-minute load average sampled during one gate run.',
+            advice: { explicitBucketBoundaries: buckets('0.5 1 2 4 8 16 32') },
+        }),
+        gateMemory: meter.createHistogram('bellows.driver.gate.memory.available.min', {
+            description: 'The least free memory sampled during one gate run, in MiB.',
+            advice: { explicitBucketBoundaries: buckets('64 128 256 512 1024 2048 4096 8192 16384') },
+        }),
         sweep: seconds(
             'bellows.driver.reaper.sweep.duration',
             'One orphan reaper sweep; aborted means a lookup or listing was not proven.',
@@ -309,6 +338,14 @@ export function createDriverMetrics(deps: {
         malformedClaim: (fields) => m.malformedClaim.add(1, { field: fields[0] ?? OTHER }),
         claimPoll: (outcome) => m.claimPolls.add(1, { outcome }),
         step: (kind, outcome, elapsed) => m.step.record(elapsed, { kind, outcome }),
+        gate: (gate, outcome, elapsed, resources) => {
+            m.gate.record(elapsed, { gate, outcome });
+            if (!resources) return;
+            for (const [mode, share] of Object.entries(resources.cpu ?? {})) m.gateCpu.record(share, { gate, mode });
+            m.gateThrottled.record(resources.throttledMs / MS_PER_SECOND, { gate });
+            m.gateLoad.record(resources.load.max, { gate });
+            m.gateMemory.record(resources.memAvailableMb.min, { gate });
+        },
         reaper: {
             sweep: (outcome, elapsed) => m.sweep.record(elapsed, { outcome }),
             scanned: (what, count) => m.scanned.add(count, { what }),
