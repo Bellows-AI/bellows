@@ -704,6 +704,63 @@ describe('fake GitLab: group projects', () => {
         expect((await list('nope')).status).toBe(404);
     });
 
+    it('lists a group by the namespace id a project response returned, and ids survive new projects', async () => {
+        await seedTree();
+        const { access_token: token } = await gl.signIn('dev');
+        const project = await gl.send('GET', `/api/v4/projects/${encodeURIComponent('acme/sub/c')}`, { token });
+        const subId = project.body.namespace.id;
+        expect(subId).toEqual(expect.any(Number));
+        const direct = await gl.send('GET', `/api/v4/groups/${subId}/projects`, { token });
+        expect(paths(direct)).toEqual(['acme/sub/c']);
+        await gl.control('gitlab/projects', { path: 'aaa/zzz/new' });
+        await gl.control('gitlab/projects', { path: 'acme/sub/more' });
+        const again = await gl.send('GET', `/api/v4/projects/${encodeURIComponent('acme/sub/c')}`, { token });
+        expect(again.body.namespace.id).toBe(subId);
+        expect(paths(await gl.send('GET', `/api/v4/groups/${subId}/projects`, { token }))).toEqual([
+            'acme/sub/c',
+            'acme/sub/more',
+        ]);
+        const acme = (await gl.send('GET', `/api/v4/projects/${encodeURIComponent('acme/a')}`, { token })).body
+            .namespace.id;
+        expect(acme).not.toBe(subId);
+        expect(paths(await gl.send('GET', `/api/v4/groups/${acme}/projects`, { token }))).toEqual(['acme/a', 'acme/b']);
+        expect((await gl.send('GET', '/api/v4/groups/999999/projects', { token })).status).toBe(404);
+    });
+
+    it('hides a group the caller holds no project under', async () => {
+        await seedTree();
+        await gl.control('gitlab/members', { project: 'other/e', login: 'dev', projectAccess: 0 });
+        expect((await list('other')).status).toBe(404);
+    });
+
+    it('sends a Link header with first, prev, next and last, and every page is reachable by next alone', async () => {
+        await seedTree();
+        const { access_token: token } = await gl.signIn('dev');
+        const rels = (link: string) =>
+            Object.fromEntries([...link.matchAll(/<([^>]+)>; rel="(\w+)"/g)].map((m) => [m[2], m[1]]));
+        const get = async (url: string) => {
+            const res = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+            return { headers: res.headers, body: (await res.json()) as { path_with_namespace: string }[] };
+        };
+        let url = `${gl.base}/api/v4/groups/acme/projects?include_subgroups=true&per_page=1`;
+        const seen: string[] = [];
+        let first = true;
+        for (let guard = 0; guard < 10 && url; guard++) {
+            const res = await get(url);
+            seen.push(...res.body.map((p) => p.path_with_namespace));
+            const links = rels(res.headers.get('link') as string);
+            expect(Object.keys(links)).toContain('first');
+            expect(Object.keys(links)).toContain('last');
+            expect(new URL(links.first).searchParams.get('include_subgroups')).toBe('true');
+            expect(new URL(links.first).searchParams.get('per_page')).toBe('1');
+            expect('prev' in links).toBe(!first);
+            first = false;
+            url = links.next ?? '';
+        }
+        expect(seen).toEqual(['acme/a', 'acme/b', 'acme/sub/c']);
+        expect(url).toBe('');
+    });
+
     it('paginates with X-Page, X-Next-Page and X-Total headers until the last page', async () => {
         await seedTree();
         const first = await list('acme', '?include_subgroups=true&per_page=2&page=1');
@@ -746,6 +803,32 @@ describe('fake GitLab: OAuth clients', () => {
         const rotated = await refresh('app-1', 'secret-1');
         expect(rotated.status).toBe(200);
         expect((await refresh('app-1', 'secret-1', rotated.body.refresh_token)).status).toBe(200);
+    });
+
+    it('refuses an unknown client with no credentials, and a known client with a wrong or missing secret', async () => {
+        await gl.control('gitlab/oauth-clients', { clientId: 'app-1', clientSecret: 'secret-1' });
+        const code = async () => {
+            const authorize = await gl.send(
+                'GET',
+                '/oauth/authorize?redirect_uri=http://board.test/cb&client_id=app-1&login=dev'
+            );
+            return new URL(authorize.location as string).searchParams.get('code') as string;
+        };
+        const exchange = async (extra: object) =>
+            gl.send('POST', '/oauth/token', {
+                body: { grant_type: 'authorization_code', code: await code(), ...extra },
+            });
+        expect((await exchange({})).status).toBe(401);
+        expect((await exchange({ client_id: 'ghost' })).status).toBe(401);
+        expect((await exchange({ client_id: 'ghost', client_secret: 'secret-1' })).status).toBe(401);
+        expect((await exchange({ client_id: 'app-1' })).status).toBe(401);
+        expect((await exchange({ client_id: 'app-1', client_secret: 'wrong' })).status).toBe(401);
+        expect((await exchange({ client_id: 'app-1', client_secret: 'secret-1' })).status).toBe(200);
+        const unknownAuthorize = await gl.send(
+            'GET',
+            '/oauth/authorize?redirect_uri=http://board.test/cb&client_id=ghost'
+        );
+        expect(unknownAuthorize.status).toBe(401);
     });
 
     it('stays open to any client while none is registered', async () => {

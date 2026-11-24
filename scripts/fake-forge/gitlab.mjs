@@ -66,6 +66,8 @@ export const registerGitlab = (forge) => {
     const pipelines = [];
     /** client id -> secret; empty means any client is accepted */
     const clients = new Map();
+    /** group full path -> its stable id, minted with the first project under it */
+    const groups = new Map();
     const faults = [];
     let version = DEFAULT_VERSION;
     const now = () => new Date(forge.clock()).toISOString();
@@ -111,6 +113,7 @@ export const registerGitlab = (forge) => {
         '/oauth/authorize',
         ({ response, query }) => {
             if (!query.redirect_uri) return forge.json(response, 400, { error: 'invalid_request' });
+            if (clients.size > 0 && !clients.has(query.client_id)) return forge.json(response, 401, CLIENT_ERROR);
             const code = `code${forge.nextId()}`;
             codes.set(code, { login: query.login ?? DEFAULT_MEMBER, clientId: query.client_id ?? null });
             const target = new URL(query.redirect_uri);
@@ -126,7 +129,7 @@ export const registerGitlab = (forge) => {
         'POST',
         '/oauth/token',
         ({ response, body }) => {
-            if (clients.size > 0 && clients.get(body.client_id) !== body.client_secret) {
+            if (clients.size > 0 && !(clients.has(body.client_id) && clients.get(body.client_id) === body.client_secret)) {
                 return forge.json(response, 401, CLIENT_ERROR);
             }
             if (body.grant_type === 'refresh_token') {
@@ -216,7 +219,7 @@ export const registerGitlab = (forge) => {
             path_with_namespace: project.path,
             default_branch: project.defaultBranch,
             visibility: 'private',
-            namespace: { id: project.id, name: namespace.split('/').pop(), path: namespace, full_path: namespace, kind: 'group' },
+            namespace: { id: groups.get(namespace)?.id ?? null, name: namespace.split('/').pop(), path: namespace, full_path: namespace, kind: 'group' },
             web_url: `${origin(request)}/${project.path}`,
             http_url_to_repo: `${origin(request)}/${project.path}.git`,
             squash_option: project.squashOption,
@@ -235,38 +238,55 @@ export const registerGitlab = (forge) => {
 
     // --- groups ---
 
-    const groupPaths = () => new Set([...projects.values()].flatMap((project) => ancestors(project.path)));
     const ancestors = (path) => {
         const parts = path.split('/').slice(0, -1);
         return parts.map((_, i) => parts.slice(0, i + 1).join('/'));
     };
-    /** A group's path by id (ids follow the sorted path order) or by full path; undefined when no project lives under it. */
-    const groupOf = (key) => {
-        const all = [...groupPaths()].sort();
+    const namespaceOf = (project) => project.path.split('/').slice(0, -1).join('/');
+    const ensureGroups = (path) => {
+        for (const group of ancestors(path)) if (!groups.has(group)) groups.set(group, { id: forge.nextId() });
+    };
+    /** The group's full path by its id or its path; a group the caller holds no project under is as good as absent. */
+    const groupOf = (key, login) => {
         const text = String(key);
-        return /^\d+$/.test(text) ? all[Number(text) - 1] : all.find((path) => path === text);
+        const found = /^\d+$/.test(text)
+            ? [...groups].find(([, group]) => group.id === Number(text))?.[0]
+            : groups.has(text) ? text : undefined;
+        const seen = (project) => levelOf(project, login) >= GUEST && ancestors(`${project.path}`).includes(found);
+        return found && [...projects.values()].some(seen) ? found : undefined;
+    };
+    const pageUrl = (ctx, number, per) => {
+        const url = new URL(ctx.url);
+        url.searchParams.set('page', String(number));
+        url.searchParams.set('per_page', String(per));
+        return `${origin(ctx.request)}${url.pathname}${url.search}`;
     };
     const page = (ctx, items) => {
         const per = Math.min(Math.max(Number(ctx.query.per_page) || DEFAULT_PER_PAGE, 1), MAX_PER_PAGE);
         const current = Math.max(Number(ctx.query.page) || 1, 1);
-        const next = current * per < items.length ? String(current + 1) : '';
+        const last = Math.max(Math.ceil(items.length / per), 1);
+        const next = current < last ? String(current + 1) : '';
+        const prev = current > 1 ? String(current - 1) : '';
+        const links = [['first', 1], ...(prev ? [['prev', current - 1]] : []), ...(next ? [['next', current + 1]] : []), ['last', last]];
         ctx.response.writeHead(200, {
             'content-type': 'application/json',
             'x-page': String(current),
             'x-per-page': String(per),
             'x-next-page': next,
+            'x-prev-page': prev,
             'x-total': String(items.length),
-            'x-total-pages': String(Math.ceil(items.length / per)),
+            'x-total-pages': String(last),
+            link: links.map(([rel, number]) => `<${pageUrl(ctx, number, per)}>; rel="${rel}"`).join(', '),
         });
         ctx.response.end(JSON.stringify(items.slice((current - 1) * per, current * per)));
     };
     route('GET', '/groups/:id/projects', (ctx) => {
-        const group = groupOf(ctx.params.id);
+        const group = groupOf(ctx.params.id, ctx.token.login);
         if (!group) return notFound(ctx.response, 'Group Not Found');
         const { include_subgroups: subgroups, min_access_level: min = 0 } = ctx.query;
         const visible = [...projects.values()]
             .filter((project) => {
-                const namespace = project.path.split('/').slice(0, -1).join('/');
+                const namespace = namespaceOf(project);
                 return namespace === group || (flag(subgroups) && namespace.startsWith(`${group}/`));
             })
             .filter((project) => levelOf(project, ctx.token.login) >= Math.max(GUEST, Number(min)))
@@ -1008,6 +1028,7 @@ export const registerGitlab = (forge) => {
             statuses: [],
         };
         projects.set(id, project);
+        ensureGroups(project.path);
         await repos.create(id, { defaultBranch: project.defaultBranch, files: body.files ?? {}, seedDir: body.seedDir, author: SEED_AUTHOR, date: now() });
         forge.json(response, 200, { id, path_with_namespace: project.path, http_url_to_repo: `${origin(request)}/${project.path}.git` });
     });
