@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { configDefaults, defineConfig } from 'vitest/config';
+import { gateReporters } from './vitest.gate-reporters.ts';
 
 /** The most forks a run uses; why six is at `poolOptions.forks` below. */
 const MAX_FORKS = 6;
@@ -31,6 +32,7 @@ const SPAWN_TESTS: string[] = (
 
 export default defineConfig({
     test: {
+        ...gateReporters(),
         projects: [
             ...PACKAGES.map((name) => ({
                 extends: true,

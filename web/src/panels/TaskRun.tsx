@@ -358,13 +358,14 @@ function GateResultView({ result }: { result: GateResult | undefined }) {
         <div className="gate-result">
             {failures?.length ? (
                 <>
-                    <p>{plural(failures.length, 'failed test')}</p>
+                    <p>{plural(failures.length + (result.moreFailures ?? 0), 'failed test')}</p>
                     <ul>
                         {failures.map((f) => (
                             <li key={`${f.file}:${f.test}`}>
                                 <code>{f.file}</code> &gt; {f.test}: {f.message.split('\n')[0]}
                             </li>
                         ))}
+                        {result.moreFailures ? <li>+{result.moreFailures} more</li> : null}
                     </ul>
                 </>
             ) : null}

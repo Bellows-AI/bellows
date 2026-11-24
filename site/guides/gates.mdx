@@ -123,7 +123,7 @@ The output tail is cut, and a gate stopped at its timeout never prints its summa
 - **Slowest files.** The ten slowest test files and their durations.
 - **Resources.** The share of the guest's CPU time spent in user, system, iowait and steal, the gate container's CPU throttling, the peak load and the least free memory over the run.
 
-The agent receives the result as `result` in the answer of `factory-gate <name>` and `--last`, and its finish pass names the failed tests. The Verification panel shows it above the output. The test and selection parts come from a gate command that writes them, as this repository's does through `scripts/gate-reporter.mjs`; the resources are recorded for every gate.
+The agent receives the result as `result` in the answer of `factory-gate <name>` and `--last`, and its finish pass names the failed tests. The Verification panel shows it above the output. The test and selection parts come from a gate command that writes them, as this repository's vitest gates do through `scripts/gate-reporter.mjs`, which its vitest configs add inside a gate; the resources are recorded for every gate.
 
 ## Filters
 

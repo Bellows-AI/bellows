@@ -242,8 +242,14 @@ const GATE_FILES = {
 };
 /** What a gate request keeps beside its answer (`GATE_REPORT_FILES` of supervisor-contract.ts; scripts/gate-loop.sh spells the same). */
 const GATE_REPORT_FILES = { dir: 'report', resources: 'resources' };
-/** The most one report section file may hold: a larger one is dropped, never cut into invalid JSON. */
+/** The most one report section answers: a larger one is cut down to it (`fittedSection`), never dropped. */
 const REPORT_SECTION_LIMIT = 65_536;
+/** The largest section file read to be cut down to the limit; a bigger one is not a report, it is garbage. */
+const REPORT_SECTION_READ_LIMIT = 4_194_304;
+/** The rounds of halving a section gets to fit: far more than a section the read limit admits needs. */
+const REPORT_FIT_ROUNDS = 32;
+/** The smallest a string is cut to while a section is brought under its limit. */
+const REPORT_STRING_FLOOR = 64;
 /** The most the loop's resource samples answer: their tail, which holds the end sample. */
 const REPORT_RESOURCES_LIMIT = 32_768;
 /** A gate request's GitHub token mailbox (`GATE_ASK_FILES` of supervisor-contract.ts; scripts/gate-github.sh spells the same). */
@@ -1057,6 +1063,37 @@ function readTail(file) {
 }
 
 /**
+ * A value cut down until its JSON fits `REPORT_SECTION_LIMIT`: every array to its first half and every string to its
+ * first half, round after round, so the head of each list and the other fields survive. Marked `truncated`.
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function halved(value) {
+    if (typeof value === 'string') return value.slice(0, Math.max(REPORT_STRING_FLOOR, Math.ceil(value.length / 2)));
+    if (Array.isArray(value)) return value.slice(0, Math.ceil(value.length / 2)).map(halved);
+    if (value && typeof value === 'object') {
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, halved(item)]));
+    }
+    return value;
+}
+
+/**
+ * A section as parsed, fitted to the limit: unchanged when it fits, else cut down and marked `truncated`; null
+ * for one that is not an object. Never dropped for its size.
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function fittedSection(value) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+    /** @type {Record<string, unknown>} */
+    let fitted = /** @type {Record<string, unknown>} */ (value);
+    for (let round = 0; JSON.stringify(fitted).length > REPORT_SECTION_LIMIT && round < REPORT_FIT_ROUNDS; round += 1) {
+        fitted = { .../** @type {Record<string, unknown>} */ (halved(fitted)), truncated: true };
+    }
+    return JSON.stringify(fitted).length > REPORT_SECTION_LIMIT ? null : fitted;
+}
+
+/**
  * What a finished request left in its report directory: every `<section>.json` that parses, and the loop's
  * resource samples. A file that is too large, not JSON or not named so is left out; a gate that wrote nothing
  * answers null. The report is evidence beside the verdict, never part of it.
@@ -1079,8 +1116,9 @@ function readGateReport(dir) {
         try {
             if (name === GATE_REPORT_FILES.resources) {
                 resources = readTail(file).slice(-REPORT_RESOURCES_LIMIT);
-            } else if (/^[a-z][a-z0-9-]*\.json$/.test(name) && fs.statSync(file).size <= REPORT_SECTION_LIMIT) {
-                sections[name.slice(0, -'.json'.length)] = JSON.parse(fs.readFileSync(file, 'utf8'));
+            } else if (/^[a-z][a-z0-9-]*\.json$/.test(name) && fs.statSync(file).size <= REPORT_SECTION_READ_LIMIT) {
+                const fitted = fittedSection(JSON.parse(fs.readFileSync(file, 'utf8')));
+                if (fitted) sections[name.slice(0, -'.json'.length)] = fitted;
             }
         } catch {
             // Unreadable, or a gate killed mid-write: that section is simply absent.

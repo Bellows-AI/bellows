@@ -8,7 +8,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { posix } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { writeSection } from './gate-report.mjs';
 
 const DEFAULT_BASE = 'origin/main';
@@ -181,12 +181,6 @@ export function selectionOf(steps, changedCount, base) {
     };
 }
 
-/** The reporter a gate's vitest runs add, so the failures and durations reach the gate's report (scripts/gate-reporter.mjs). */
-export function gateReporterArgs(env, passthrough) {
-    if (!env.FACTORY_GATE_RUN || passthrough.some((arg) => arg.startsWith('--reporter'))) return [];
-    return ['--reporter=default', `--reporter=${fileURLToPath(new URL('./gate-reporter.mjs', import.meta.url))}`];
-}
-
 /**
  * The DB suites a set of changed files reaches: `{ full: [why] }` for the whole suite, or
  * `{ tests }`, possibly empty. Unlike `plan`, a path nothing names selects nothing: CI's full
@@ -307,13 +301,6 @@ function dbSteps(planned, passthrough) {
     ];
 }
 
-/** A `test:db` run takes the reporter after its `--`, as vitest arguments; any other command is left as it was. */
-function withReporter(argv, reporter) {
-    if (reporter.length === 0 || (argv[0] === 'npm' && argv[2] !== 'test:db')) return argv;
-    if (argv[0] !== 'npm') return [...argv, ...reporter];
-    return argv.includes('--') ? [...argv, ...reporter] : [...argv, '--', ...reporter];
-}
-
 function main(argv) {
     const dash = argv.indexOf('--');
     const passthrough = dash === -1 ? [] : argv.slice(dash + 1);
@@ -359,8 +346,7 @@ function main(argv) {
     writeSection('selection', selectionOf(steps, changed.length, base));
     if (steps.length === 0) console.error('[test:changed] no test:db suite reached; nothing to run');
     for (const step of steps) {
-        const reporter = gateReporterArgs(process.env, passthrough);
-        const argvOf = withReporter(step.run ?? ['npx', 'vitest', ...step.vitest, ...passthrough], reporter);
+        const argvOf = step.run ?? ['npx', 'vitest', ...step.vitest, ...passthrough];
         console.error(`[test:changed] ${step.label}: ${argvOf.join(' ')}`);
         const [cmd, ...rest] = argvOf;
         const result = spawnSync(cmd, rest, { stdio: 'inherit' });

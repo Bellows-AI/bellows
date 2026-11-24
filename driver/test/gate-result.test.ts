@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gateResultOf, resourcesOf } from '../src/gate-result.js';
+import { compactResult, describeResult, gateResultOf, resourcesOf } from '../src/gate-result.js';
 
 const line = (s: { t: number; cpu: string; load: number; avail: number; throttled: string }): string =>
     `t=${s.t} cpu=${s.cpu} load=${s.load} mem=${s.avail}/4096000 throttled=${s.throttled}\n`;
@@ -28,6 +28,16 @@ describe('gateResultOf', () => {
         expect(result?.slowest?.[0]).toEqual({ file: 'f11.test.ts', ms: 1200 });
         expect(result?.slowest?.[9]).toEqual({ file: 'f2.test.ts', ms: 300 });
         expect(result?.inFlight).toBeUndefined();
+    });
+
+    it('counts the failures beyond the ones listed, and carries the count to the compact and the text form', () => {
+        const failures = Array.from({ length: 3 }, (_, i) => ({ file: 'a', test: `t${i}`, message: 'm' }));
+        const result = gateResultOf({ sections: { tests: { failures, failureCount: 90 } }, resources: '' }, false);
+        expect(result?.moreFailures).toBe(87);
+        expect(describeResult(result)).toContain('Failed tests (90):');
+        expect(describeResult(result)).toContain('+87 more');
+        const many = { failures: Array.from({ length: 30 }, (_, i) => ({ file: 'a', test: `t${i}`, message: 'm' })) };
+        expect(compactResult({ ...many, moreFailures: 5 }).moreFailures).toBe(25);
     });
 
     it('names the files still in flight only for a gate killed at its deadline', () => {

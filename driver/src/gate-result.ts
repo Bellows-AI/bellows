@@ -35,6 +35,8 @@ export interface GateResources {
 
 export interface GateResult {
     failures?: FailedTest[];
+    /** Failures beyond the ones listed: the gate's reporter and the driver both cap the list. */
+    moreFailures?: number;
     /** Test files started and not finished when the gate was killed at its deadline. */
     inFlight?: string[];
     selection?: GateSelection;
@@ -192,12 +194,16 @@ export function gateResultOf(report: GateReportFiles | undefined, timedOut: bool
     if (!report) return undefined;
     const tests = isRecord(report.sections.tests) ? report.sections.tests : {};
     const failures = failuresOf(tests.failures);
+    const total =
+        typeof tests.failureCount === 'number' && Number.isFinite(tests.failureCount) ? tests.failureCount : 0;
+    const moreFailures = Math.max(0, Math.floor(total) - failures.length);
     const inFlight = timedOut ? inFlightOf(tests.inFlight) : [];
     const slowest = slowestOf(tests.files);
     const selection = selectionOf(report.sections.selection);
     const resources = resourcesOf(report.resources);
     const result: GateResult = {
         ...(failures.length > 0 ? { failures } : {}),
+        ...(failures.length > 0 && moreFailures > 0 ? { moreFailures } : {}),
         ...(inFlight.length > 0 ? { inFlight } : {}),
         ...(selection ? { selection } : {}),
         ...(slowest.length > 0 ? { slowest } : {}),
@@ -214,8 +220,10 @@ const REPORT_MESSAGE_CHARS = 240;
 
 /** The result in the size the board's gate report stores; the agent's own answer keeps the larger bounds. */
 export function compactResult(result: GateResult): GateResult {
+    const more = (result.moreFailures ?? 0) + Math.max(0, (result.failures?.length ?? 0) - REPORT_FAILURES);
     return {
         ...result,
+        ...(more > 0 ? { moreFailures: more } : {}),
         ...(result.failures
             ? {
                   failures: result.failures.slice(0, REPORT_FAILURES).map((f) => ({
@@ -236,8 +244,9 @@ export function describeResult(result: GateResult | undefined): string {
     if (!result) return '';
     const lines: string[] = [];
     if (result.failures?.length) {
-        lines.push(`Failed tests (${result.failures.length}):`);
+        lines.push(`Failed tests (${result.failures.length + (result.moreFailures ?? 0)}):`);
         for (const f of result.failures) lines.push(`- ${f.file} > ${f.test}: ${f.message.split('\n')[0]}`);
+        if (result.moreFailures) lines.push(`+${result.moreFailures} more`);
     }
     if (result.inFlight?.length) {
         lines.push(`Test files still running when the gate hit its deadline: ${result.inFlight.join(', ')}`);

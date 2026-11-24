@@ -31,6 +31,8 @@ export interface GateResources {
 
 export interface GateResult {
     failures?: GateFailedTest[];
+    /** Failures beyond the ones listed. */
+    moreFailures?: number;
     /** Test files started and not finished when the gate hit its deadline. */
     inFlight?: string[];
     selection?: GateSelection;
@@ -103,6 +105,7 @@ function selectionOf(sel: unknown): GateSelection | undefined {
 export function parseGateResult(raw: unknown): GateResult | null {
     if (!isObj(raw)) return null;
     const failures = failuresOf(raw.failures);
+    const moreFailures = isNum(raw.moreFailures) ? Math.floor(raw.moreFailures) : 0;
     const inFlight = items(raw.inFlight, MAX_IN_FLIGHT)
         .filter(isText)
         .map((f) => f.slice(0, MAX_NAME_CHARS));
@@ -111,6 +114,7 @@ export function parseGateResult(raw: unknown): GateResult | null {
     const resources = resourcesOf(raw.resources);
     const result: GateResult = {
         ...(failures.length > 0 ? { failures } : {}),
+        ...(failures.length > 0 && moreFailures > 0 ? { moreFailures } : {}),
         ...(inFlight.length > 0 ? { inFlight } : {}),
         ...(selection ? { selection } : {}),
         ...(slowest.length > 0 ? { slowest } : {}),
@@ -124,8 +128,9 @@ export function describeGateResult(result: GateResult | undefined): string {
     if (!result) return '';
     const lines: string[] = [];
     if (result.failures?.length) {
-        lines.push(`Failed tests (${result.failures.length}):`);
+        lines.push(`Failed tests (${result.failures.length + (result.moreFailures ?? 0)}):`);
         for (const f of result.failures) lines.push(`- ${f.file} > ${f.test}: ${f.message.split('\n')[0]}`);
+        if (result.moreFailures) lines.push(`+${result.moreFailures} more`);
     }
     if (result.inFlight?.length) {
         lines.push(`Test files still running when the gate hit its deadline: ${result.inFlight.join(', ')}`);

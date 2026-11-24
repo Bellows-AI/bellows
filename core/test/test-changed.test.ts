@@ -25,11 +25,8 @@ interface DbPlanInput {
 }
 type DbPlan = { full: string[] } | { tests: string[] };
 type Exec = (cmd: string, args: string[], options: { encoding: 'utf8' }) => string;
-const { plan, planDb, gitGrep, reverseImports, selectionOf, gateReporterArgs } = (await import(
-    /* @vite-ignore */ SCRIPT
-)) as {
+const { plan, planDb, gitGrep, reverseImports, selectionOf } = (await import(/* @vite-ignore */ SCRIPT)) as {
     selectionOf: (steps: Step[], changedCount: number, base: string) => { mode: string; reason: string };
-    gateReporterArgs: (env: Record<string, string>, passthrough: string[]) => string[];
     plan: (input: PlanInput) => Step[];
     planDb: (input: DbPlanInput) => DbPlan;
     gitGrep: (pathspecs: string[], names: string[], exec?: Exec) => string[];
@@ -342,13 +339,5 @@ describe('what the gate records of its selection', () => {
         const core = selectionOf(run(['core/src/a.ts']), 2, 'abc123');
         expect(core.mode).toBe('changed');
         expect(core.reason).toContain('core changed');
-    });
-
-    it('adds the gate reporter to a gate’s vitest runs only, and never over a reporter the caller named', () => {
-        expect(gateReporterArgs({}, [])).toEqual([]);
-        const args = gateReporterArgs({ FACTORY_GATE_RUN: '/factory/gate/running/x' }, []);
-        expect(args[0]).toBe('--reporter=default');
-        expect(args[1]).toMatch(/--reporter=.*scripts\/gate-reporter\.mjs$/);
-        expect(gateReporterArgs({ FACTORY_GATE_RUN: '/x' }, ['--reporter=dot'])).toEqual([]);
     });
 });

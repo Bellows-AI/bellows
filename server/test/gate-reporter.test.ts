@@ -87,6 +87,31 @@ describe('the gate vitest reporter', () => {
         });
     });
 
+    it('bounds what it writes: an 85 KiB assertion message still yields the failure, truncated, and the files in flight', () => {
+        const run = gateRun();
+        const reporter = make(run);
+        reporter.onTestModuleStart(module('core/test/slow.test.ts'));
+        for (let i = 0; i < 80; i += 1) {
+            reporter.onTestCaseResult({
+                module: module(`core/test/f${i}.test.ts`),
+                fullName: `case ${i}`,
+                result: () => ({ state: 'failed', errors: [{ message: 'x'.repeat(i === 0 ? 85 * 1024 : 5000) }] }),
+            });
+        }
+        for (let i = 0; i < 300; i += 1) reporter.onTestModuleEnd(module(`core/test/d${i}.test.ts`, i));
+        reporter.onTestRunEnd();
+        const file = readFileSync(join(run, 'report', 'tests.json'), 'utf8');
+        expect(file.length).toBeLessThan(65_536);
+        const section = JSON.parse(file);
+        expect(section.failures[0].file).toBe('core/test/f0.test.ts');
+        expect(section.failures[0].message.length).toBeGreaterThan(0);
+        expect(section.failures[0].message.length).toBeLessThan(5000);
+        expect(section.failureCount).toBe(80);
+        expect(section.inFlight).toEqual(['core/test/slow.test.ts']);
+        expect(section.files.length).toBeLessThanOrEqual(50);
+        expect(section.files[0].ms).toBe(299);
+    });
+
     it('accumulates over the several vitest runs of one gate', () => {
         const run = gateRun();
         const first = make(run);
@@ -97,7 +122,11 @@ describe('the gate vitest reporter', () => {
         second.onTestModuleStart(module('b.test.ts'));
         second.onTestModuleEnd(module('b.test.ts', 20));
         second.onTestRunEnd();
-        expect(tests(run).files.map((f: { file: string }) => f.file)).toEqual(['a.test.ts', 'b.test.ts']);
+        expect(
+            tests(run)
+                .files.map((f: { file: string }) => f.file)
+                .sort()
+        ).toEqual(['a.test.ts', 'b.test.ts']);
     });
 
     it('spaces the writes of an unfinished run', () => {

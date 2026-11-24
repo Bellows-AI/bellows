@@ -1322,6 +1322,31 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
         await supervised.done;
     });
 
+    it('keeps a section over the size cap, cut down, instead of dropping it whole', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const big = {
+            failures: Array.from({ length: 200 }, (_, i) => ({ file: `f${i}`, test: 't', message: 'm'.repeat(3000) })),
+            inFlight: ['slow.test.ts'],
+        };
+        fakeGateLoop(supervised.box.gate, () => ({
+            exitCode: 1,
+            output: '',
+            report: { 'tests.json': JSON.stringify(big) },
+        }));
+        driver.order(gateStep('gate-1', 'npm test'));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        const tests = (
+            driver.answers.get('gate-1') as { report?: { sections: { tests?: typeof big & { truncated?: true } } } }
+        ).report?.sections.tests;
+        expect(tests?.truncated).toBe(true);
+        expect(tests?.inFlight).toEqual(['slow.test.ts']);
+        expect(tests?.failures.length).toBeGreaterThan(0);
+        expect(JSON.stringify(tests).length).toBeLessThanOrEqual(65_536);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
     it('answers a gate killed at its deadline with the report it had written', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);
