@@ -37,7 +37,7 @@ describe('the driver config: basics', () => {
         expect(config.passEnv).toEqual(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
     });
 
-    it('clones from each repository\'s own host by default, and under a base nested by host when one is set', () => {
+    it("clones from each repository's own host by default, and under a base nested by host when one is set", () => {
         expect(loadDriverConfig({}).cloneBase).toBeNull();
         expect(loadDriverConfig({ REPO_CLONE_BASE: 'file:///o/' }).cloneBase).toBe('file:///o');
         expect(loadDriverConfig({ REPO_CLONE_BASE: '  ' }).cloneBase).toBeNull();

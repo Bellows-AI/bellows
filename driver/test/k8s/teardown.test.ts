@@ -863,7 +863,13 @@ describe('Secrets owned by their Job, and only agent runs adopted (#821)', () =>
  * no later claim adopts an older outcome onto a tree a fresh run has since moved.
  */
 describe('a finished run is kept only for the claim that adopted it (#821)', () => {
-    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows'), leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
+    const repoJob: BoardJob = {
+        ...job,
+        repo: githubRef('Bellows-AI/bellows'),
+        leaseToken: NEW_TOKEN,
+        attempts: 2,
+        claimSeq: 2,
+    };
     const OLD = job.leaseToken;
     const oldName = runnerJobName({ ...job, leaseToken: OLD });
     const oldAt = jobPath(namespace, oldName);

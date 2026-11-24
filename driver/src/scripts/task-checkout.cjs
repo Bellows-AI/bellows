@@ -467,6 +467,20 @@ const defaultBranch = () => {
 const assertCredentialedOrigin = (present) => {
     if (!process.env.CRED_HELPER) return;
     const origin = present ? git('remote', 'get-url', 'origin') : remote;
+    if (present) {
+        // A retained checkout may have been pointed at another host; the credential goes only to the claim's own.
+        const hostOf = (/** @type {string} */ url) => new URL(url).host.toLowerCase();
+        for (const url of [origin, git('remote', 'get-url', '--push', 'origin')]) {
+            if (url.startsWith('https://') && hostOf(url) !== hostOf(remote)) {
+                refuse(
+                    'the credentialed fetch refuses origin ' +
+                        url +
+                        ': the credential goes only to the claim host ' +
+                        hostOf(remote)
+                );
+            }
+        }
+    }
     if (!origin.startsWith('https://')) {
         refuse(
             'the credentialed clone and fetch refuse origin ' +

@@ -15,7 +15,6 @@ import type { AdoptedRun, DeadService, LiveRun } from '../src/runner.js';
 import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from './fixtures/loop-stubs.js';
 import { gateRunRow } from './fixtures/gate-runs.js';
 import type { GateRunRecord } from '../src/board/board-gate-runs.js';
-import { githubRef } from './fixtures/repo-ref.js';
 
 const TREE = 'h:after';
 const deadMongo: DeadService = {

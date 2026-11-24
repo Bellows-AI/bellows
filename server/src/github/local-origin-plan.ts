@@ -184,7 +184,9 @@ export function createOriginPlanReader(
         async read(ref, baseBranch) {
             // Decided before any spawn or temp directory: a ref that would escape the origins base is a refusal value.
             if (!resolvesUnderBase(ref)) {
-                return unplanned(`${BELLOWS_FILE} of ${formatRepoRef(ref)}: not a repository this board can resolve an origin for`);
+                return unplanned(
+                    `${BELLOWS_FILE} of ${formatRepoRef(ref)}: not a repository this board can resolve an origin for`
+                );
             }
             const url = `${base}/${ref.host}/${ref.path}.git`;
             const ctx: GitCtx = { signal: AbortSignal.timeout(timeoutMs), bin: gitBin };
@@ -214,7 +216,8 @@ export function createOriginPlanReader(
                     ]);
                 }
                 return await readPlanWith(
-                    (path) => (branchRef === null ? Promise.resolve(null) : readAtBranchTip(ctx, gitDir, branchRef, path)),
+                    (path) =>
+                        branchRef === null ? Promise.resolve(null) : readAtBranchTip(ctx, gitDir, branchRef, path),
                     planSubject(ref, baseBranch)
                 );
             } finally {

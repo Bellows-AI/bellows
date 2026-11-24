@@ -1,1 +1,1 @@
-! f(){ printf "username=x-access-token\n"; printf "password=%s\n" "$GITHUB_TOKEN"; }; f
+! f(){ h=; while IFS= read -r l && [ -n "$l" ]; do case $l in host=*) h=${l#host=};; esac; done; [ "$h" = github.com ] || return 0; printf "username=x-access-token\n"; printf "password=%s\n" "$GITHUB_TOKEN"; }; f

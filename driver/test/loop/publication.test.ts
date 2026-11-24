@@ -14,7 +14,6 @@ import {
     stubGateStack,
     stubRunner,
 } from '../fixtures/loop-stubs.js';
-import { githubRef } from '../fixtures/repo-ref.js';
 
 describe('the agent’s draft publication (issue #547)', () => {
     const LANDED: PublishResult = {

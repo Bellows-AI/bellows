@@ -641,7 +641,11 @@ describe('the gate container (issue #773)', () => {
     it('leaves the npm notice to a claim that names it, and points a declared cache into the repo cache', () => {
         const named = gateCreateArgs(config, { ...gated, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } }, 'node:24');
         expect(literals(named)).toEqual(['HOME=/tmp']);
-        const cacheJob = { ...gated, repo: githubRef('acme/widgets'), gates: { ...gated.gates!, cache: ['NPM_CONFIG_CACHE'] } };
+        const cacheJob = {
+            ...gated,
+            repo: githubRef('acme/widgets'),
+            gates: { ...gated.gates!, cache: ['NPM_CONFIG_CACHE'] },
+        };
         expect(literals(gateCreateArgs(config, cacheJob, 'node:24'))).toContain(
             `NPM_CONFIG_CACHE=${TASK_MOUNT}/.cache/acme/widgets/NPM_CONFIG_CACHE`
         );

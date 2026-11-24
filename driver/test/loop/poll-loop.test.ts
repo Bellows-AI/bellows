@@ -598,9 +598,15 @@ describe('the poll loop', () => {
 
     it.each([
         ['a GitLab repository', { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' } as const, 'gl.example'],
-        ['a GitHub repository on another host', { forge: 'github', host: 'ghe.example', path: 'o/n' } as const, 'ghe.example'],
+        [
+            'a GitHub repository on another host',
+            { forge: 'github', host: 'ghe.example', path: 'o/n' } as const,
+            'ghe.example',
+        ],
     ])('refuses %s on a host it holds no credential for, before anything starts', async (_name, repo, host) => {
-        const board = stubBoard([{ ...job(1), repo, services: [{ name: 'db', image: 'postgres:16', environment: [] }] }]);
+        const board = stubBoard([
+            { ...job(1), repo, services: [{ name: 'db', image: 'postgres:16', environment: [] }] },
+        ]);
         const stack = stubGateStack();
         let ran = 0;
         const runner = stubRunner(async () => {

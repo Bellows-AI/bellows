@@ -18,7 +18,7 @@ const MALFORMED = [
 ];
 
 describe('the driver copy of the repo ref', () => {
-    it.each(WELL_FORMED)('isRepoRef agrees with core\'s parse of %s', (text) => {
+    it.each(WELL_FORMED)("isRepoRef agrees with core's parse of %s", (text) => {
         const ref = parseRepoRef(text)!;
         expect(isRepoRef(ref)).toBe(true);
         expect(driverFormat(ref)).toBe(formatRepoRef(ref));

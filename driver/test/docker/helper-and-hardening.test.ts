@@ -329,15 +329,18 @@ describe('every container the driver runs is hardened (#382)', () => {
         ],
         [
             'the publish path',
-            (r: ReturnType<typeof createDockerRunner>) => r.publishGit({ ...job, repo: githubRef('Bellows-AI/bellows') }),
+            (r: ReturnType<typeof createDockerRunner>) =>
+                r.publishGit({ ...job, repo: githubRef('Bellows-AI/bellows') }),
         ],
         [
             'the tree probe',
-            (r: ReturnType<typeof createDockerRunner>) => r.probeTree({ ...job, repo: githubRef('Bellows-AI/bellows') }),
+            (r: ReturnType<typeof createDockerRunner>) =>
+                r.probeTree({ ...job, repo: githubRef('Bellows-AI/bellows') }),
         ],
         [
             'the startup sync',
-            (r: ReturnType<typeof createDockerRunner>) => r.syncCheckout({ ...job, repo: githubRef('Bellows-AI/bellows') }),
+            (r: ReturnType<typeof createDockerRunner>) =>
+                r.syncCheckout({ ...job, repo: githubRef('Bellows-AI/bellows') }),
         ],
     ])('hardens every container %s creates or runs', async (_name, drive) => {
         const { created, runs } = await containersFrom(

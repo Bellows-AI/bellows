@@ -50,8 +50,8 @@ const tempDir = (prefix: string) => {
 };
 
 /** A bare origin for `path` on `host` under `dir`, with one commit per entry of `commits` on `branch`. */
-function seedOrigin(dir: string, host: string, path: string, commits: (string | null)[], branch = 'main') {
-    const bare = join(dir, host, `${path}.git`);
+function seedOrigin(dir: string, at: { host: string; path: string }, commits: (string | null)[], branch = 'main') {
+    const bare = join(dir, at.host, `${at.path}.git`);
     mkdirSync(bare, { recursive: true });
     git(['init', '-q', '--bare', '-b', branch, bare]);
     const tree = tempDir('seed-');
@@ -69,7 +69,7 @@ function seedOrigin(dir: string, host: string, path: string, commits: (string | 
 
 /** A github.com origin for the owner/name `repo` under a fresh base dir. */
 const mirror = (repo: string, commits: (string | null)[], branch = 'main') =>
-    seedOrigin(tempDir('origins-'), 'github.com', repo, commits, branch);
+    seedOrigin(tempDir('origins-'), { host: 'github.com', path: repo }, commits, branch);
 
 const gh = (path: string) => githubRepo(path);
 const gl = (path: string): RepoRef => ({ forge: 'gitlab', host: 'gl.example', path });
@@ -388,8 +388,8 @@ describe('the origin plan reader', () => {
 
     it("reads the plan from the ref's host", async () => {
         const dir = tempDir('origins-');
-        const { tip: tipA } = seedOrigin(dir, 'github.com', 'o/n', [SERVICE]);
-        const { base, tip: tipB } = seedOrigin(dir, 'gl.example', 'o/n', [MALFORMED]);
+        const { tip: tipA } = seedOrigin(dir, { host: 'github.com', path: 'o/n' }, [SERVICE]);
+        const { base, tip: tipB } = seedOrigin(dir, { host: 'gl.example', path: 'o/n' }, [MALFORMED]);
         const { reader } = readerOver(base);
 
         expect(await reader.read(gh('o/n'), 'main')).toMatchObject({ revision: tipA, error: null });
@@ -399,7 +399,7 @@ describe('the origin plan reader', () => {
     });
 
     it('reads a nested path', async () => {
-        const { base, tip } = seedOrigin(tempDir('origins-'), 'gl.example', 'g/sub/p', [SERVICE]);
+        const { base, tip } = seedOrigin(tempDir('origins-'), { host: 'gl.example', path: 'g/sub/p' }, [SERVICE]);
 
         expect(await readerOver(base).reader.read(gl('g/sub/p'), 'main')).toMatchObject({ revision: tip, error: null });
     });

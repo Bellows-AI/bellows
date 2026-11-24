@@ -54,6 +54,8 @@ describe('parseClaim', () => {
         ['repo', 'o/n'],
         ['repo', { forge: 'svn', host: 'h', path: 'o/n' }],
         ['repo', { forge: 'github', host: 'a/b', path: 'o/n' }],
+        ['repo', { forge: 'gitlab', host: '..', path: 'o/n' }],
+        ['repo', { forge: 'gitlab', host: '.', path: 'o/n' }],
         ['repo', { forge: 'github', host: 'github.com', path: 'g/sub/p' }],
         ['env', { A: 1 }],
         ['env', 'A=1'],

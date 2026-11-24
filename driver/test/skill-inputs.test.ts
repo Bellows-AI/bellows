@@ -190,7 +190,9 @@ describe('deliverSkills', () => {
         async (executorType, dirs, installed) => {
             mkdirSync(join(root, 'widgets', '.opencode', 'skills', 'org-style'), { recursive: true });
             writeFileSync(join(root, 'widgets', '.opencode', 'skills', 'org-style', 'SKILL.md'), 'repo copy\n');
-            expect(await deliver({ skillPin: [hold('org-style', V1)], repo: githubRef('acme/widgets'), executorType })).toEqual({
+            expect(
+                await deliver({ skillPin: [hold('org-style', V1)], repo: githubRef('acme/widgets'), executorType })
+            ).toEqual({
                 ok: true,
                 reason: null,
             });
