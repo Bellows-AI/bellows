@@ -213,7 +213,7 @@ const listed = async (url: URL) => {
 
 /** Every write tool with arguments that would succeed on a permitted caller. */
 const WRITE_CALLS: readonly (readonly [string, Record<string, unknown>])[] = [
-    ['create_task', { command: 'do it', repo: githubRepo('acme/web') }],
+    ['create_task', { command: 'do it', repo: 'acme/web' }],
     ['follow_up_task', { jobId: JOB, command: 'more' }],
     ['retry_task', { jobId: JOB }],
     ['edit_task', { jobId: JOB, command: 'edited' }],
@@ -275,6 +275,15 @@ describe('the task write tools', () => {
         }
     );
 
+    it('refuses a malformed repo naming the expected form, before any store call', async () => {
+        const board: Board = { calls: [] };
+        const { url } = await boot(board);
+        const refused = await call(url, 'writer', 'create_task', { command: 'do it', repo: 'not a repo' });
+        expect(refused.isError).toBe(true);
+        expect(JSON.stringify(refused)).toContain('owner/name on GitHub, forge:host/path otherwise');
+        expect(board.calls).toEqual([]);
+    });
+
     it('creates a task as the caller, carrying every field and the idempotency key to the board', async () => {
         const board: Board = { calls: [] };
         const { url, userOf } = await boot(board);
@@ -313,7 +322,7 @@ describe('the task write tools', () => {
     it('surfaces NO_MODEL with its fix in cloud when the task has no model credential, before any store call', async () => {
         const board: Board = { calls: [] };
         const { url } = await boot(board, memoryEnvVarStore());
-        const refused = await call(url, 'writer', 'create_task', { command: 'do it', repo: githubRepo('acme/web') });
+        const refused = await call(url, 'writer', 'create_task', { command: 'do it', repo: 'acme/web' });
         expect(refused.isError).toBe(true);
         expect(refused.data).toMatchObject({ outcome: 'refused', code: 'NO_MODEL', status: 409 });
         expect(JSON.stringify(refused.content)).toContain(NO_MODEL_MESSAGE);
@@ -324,7 +333,7 @@ describe('the task write tools', () => {
         const board: Board = { calls: [] };
         const { url } = await boot(board);
         for (const command of ['', '   \n\t ', 'x'.repeat(COMMAND_LIMIT + 1)]) {
-            const refused = await call(url, 'writer', 'create_task', { command, repo: githubRepo('acme/web') });
+            const refused = await call(url, 'writer', 'create_task', { command, repo: 'acme/web' });
             expect(refused.isError, command.slice(0, 8)).toBe(true);
             expect(refused.data).toMatchObject({ outcome: 'refused', code: 'BAD_COMMAND', status: 400 });
         }

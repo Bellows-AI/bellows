@@ -2754,7 +2754,7 @@ done
 }
 
 SMOKE_REPO='factory-smoke/demo'
-JOB_BODY='{"command":"hello from the cluster","executor":"claude","repo":"factory-smoke/demo"}'
+JOB_BODY='{"command":"hello from the cluster","executor":"claude","repo":{"forge":"github","host":"github.com","path":"factory-smoke/demo"}}'
 # The wall is up: no credential, no job.
 anon="$(http_status POST "$BASE/api/jobs" "$JOB_BODY")"
 [ "$anon" = '401' ] && ok 'an unauthenticated POST /api/jobs is refused 401' ||
@@ -2908,10 +2908,10 @@ SQL
     bad 'an org executor profile is seeded' "$org_seeded"
     give_up
 }
-ORG_BODY="{\"command\":\"hello from the org scope\",\"executor\":\"team\",\"executorScope\":\"org\",\"repo\":\"$SMOKE_REPO\"}"
+ORG_BODY="{\"command\":\"hello from the org scope\",\"executor\":\"team\",\"executorScope\":\"org\",\"repo\":{\"forge\":\"github\",\"host\":\"github.com\",\"path\":\"$SMOKE_REPO\"}}"
 smoke_release="/task/.lane-smoke"
 SMOKE_COMMAND="hello from the cluster factory-stub-wait-$smoke_release"
-JOB_BODY="{\"command\":\"$SMOKE_COMMAND\",\"executor\":\"claude\",\"repo\":\"$SMOKE_REPO\"}"
+JOB_BODY="{\"command\":\"$SMOKE_COMMAND\",\"executor\":\"claude\",\"repo\":{\"forge\":\"github\",\"host\":\"github.com\",\"path\":\"$SMOKE_REPO\"}}"
 
 # The wait above covers the cold case (database image still pulling); this poll covers the
 # residual one — migrations retry on a backoff, so the first POST after the database is up can
@@ -3071,7 +3071,7 @@ echo
 echo '# github credential'
 
 gh_id="$(node -e "$JS_HEADERS"'
-fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: "factory-stub-github", executor: "claude", repo: process.argv[2] }) })
+fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: "factory-stub-github", executor: "claude", repo: { forge: "github", host: "github.com", path: process.argv[2] } }) })
     .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
     .catch(() => {});
 ' "$BASE/api/jobs" "$SMOKE_REPO")"
@@ -3102,7 +3102,7 @@ echo
 echo '# task title'
 
 title_id="$(node -e "$JS_HEADERS"'
-fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: "factory-stub-title", executor: "claude", repo: process.argv[2] }) })
+fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: "factory-stub-title", executor: "claude", repo: { forge: "github", host: "github.com", path: process.argv[2] } }) })
     .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
     .catch(() => {});
 ' "$BASE/api/jobs" "$SMOKE_REPO")"
@@ -3135,7 +3135,7 @@ echo
 echo '# runtime connection requirement'
 
 conn_id="$(node -e "$JS_HEADERS"'
-fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: "factory-stub-connect lane", executor: "claude", repo: process.argv[2] }) })
+fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: "factory-stub-connect lane", executor: "claude", repo: { forge: "github", host: "github.com", path: process.argv[2] } }) })
     .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
     .catch(() => {});
 ' "$BASE/api/jobs" "$SMOKE_REPO")"
@@ -3260,7 +3260,7 @@ start_port_forward() { # start_port_forward [target] -> the dashboard Service (o
 queue_job() { # queue_job <command> -> the new job's id, empty when the board refused it or answered without a string id
     local id
     id="$(ACC_AUTH="${FACTORY_TOKEN:+Bearer $FACTORY_TOKEN}" node "$REPO/scripts/acceptance-job.mjs" POST "$BASE/api/jobs" id \
-        "$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1], executor: "claude", repo: process.argv[2] }))' "$1" "$SMOKE_REPO")")"
+        "$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1], executor: "claude", repo: { forge: "github", host: "github.com", path: process.argv[2] } }))' "$1" "$SMOKE_REPO")")"
     case "$id" in unread:* | refused:*) ;; *) printf '%s' "$id" ;; esac
 }
 

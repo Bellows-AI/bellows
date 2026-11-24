@@ -43,7 +43,7 @@ expect_status 'creates the stub workflow' 201 POST /api/workflows "$(cat "$work/
 expect_status 'the stub workflow is listed' 200 GET /api/workflows
 expect_status 'refuses a pasted foreign pipeline' 400 POST /api/workflows \
     '{"name":"foreign","scope":"org","definition":{"nodes":[],"edges":[],"trigger":"on-push"}}'
-expect_status 'refuses an unknown workflow name' 404 POST /api/jobs "{\"command\":\"x\",\"workflow\":\"ghost\",\"repo\":\"$SMOKE_REPO\"}"
+expect_status 'refuses an unknown workflow name' 404 POST /api/jobs "{\"command\":\"x\",\"workflow\":\"ghost\",\"repo\":{\"forge\":\"github\",\"host\":\"github.com\",\"path\":\"$SMOKE_REPO\"}}"
 
 # Thread reads, in node, because the assertions below walk arrays — no jq in the harness.
 thread_nodes() { # thread_nodes <root-id> -> the node labels, oldest first, space-separated
@@ -60,7 +60,7 @@ thread_command() { # thread_command <root-id> <index> -> that row's command
 }
 
 start_driver "$IMAGE_OK"
-walked="$(api POST /api/jobs "{\"command\":\"walk me end to end\",\"executor\":\"claude\",\"workflow\":\"stub-walk\",\"repo\":\"$SMOKE_REPO\"}")"
+walked="$(api POST /api/jobs "{\"command\":\"walk me end to end\",\"executor\":\"claude\",\"workflow\":\"stub-walk\",\"repo\":{\"forge\":\"github\",\"host\":\"github.com\",\"path\":\"$SMOKE_REPO\"}}")"
 wf_id="$(field "$(body "$walked")" id)"
 printf '%s\n' "$wf_id" >>"$work/created-jobs"
 
@@ -125,7 +125,7 @@ walk_flag() { # walk_flag <name> <got> <want>
 
 # Task two: the publish flag. Every node's claim says false until the graph's publish node — six
 # claims to walk the whole graph: fetch, implement, review, fix, the second review, then publish.
-wf2="$(api POST /api/jobs "{\"command\":\"flag walk\",\"executor\":\"claude\",\"workflow\":\"stub-walk\",\"repo\":\"$SMOKE_REPO\"}")"
+wf2="$(api POST /api/jobs "{\"command\":\"flag walk\",\"executor\":\"claude\",\"workflow\":\"stub-walk\",\"repo\":{\"forge\":\"github\",\"host\":\"github.com\",\"path\":\"$SMOKE_REPO\"}}")"
 wf2_id="$(field "$(body "$wf2")" id)"
 printf '%s\n' "$wf2_id" >>"$work/created-jobs"
 walk_out="$(claim_walk 'fetch the issue')"
@@ -143,7 +143,7 @@ walk_flag 'the publish node claim may publish'  "$(printf '%s' "$walk_out" | cut
 
 # Task three: the loop bound. The second review names the fix marker AGAIN, but review→fix is
 # bounded at one and the fix row already exists — the board rests the thread instead.
-wf3="$(api POST /api/jobs "{\"command\":\"bound walk\",\"executor\":\"claude\",\"workflow\":\"stub-walk\",\"repo\":\"$SMOKE_REPO\"}")"
+wf3="$(api POST /api/jobs "{\"command\":\"bound walk\",\"executor\":\"claude\",\"workflow\":\"stub-walk\",\"repo\":{\"forge\":\"github\",\"host\":\"github.com\",\"path\":\"$SMOKE_REPO\"}}")"
 wf3_id="$(field "$(body "$wf3")" id)"
 printf '%s\n' "$wf3_id" >>"$work/created-jobs"
 claim_walk 'fetch the issue' >/dev/null

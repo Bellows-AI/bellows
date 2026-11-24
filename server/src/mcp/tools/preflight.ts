@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { inconclusive, judge, success } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
+import { repoBody, repoText, REPO_FORM } from './repo-arg.js';
 import { MAX_CONNECTIONS, MAX_NAME_CHARS, MAX_SELECTED } from './paging.js';
 
 const Check = z.object({
@@ -37,7 +38,7 @@ export const preflightTask = defineTool({
     routes: [['POST', '/api/jobs/preflight']],
     annotations: READ_ONLY,
     input: z.object({
-        repo: z.string().max(MAX_NAME_CHARS).optional().describe('owner/name of the repository.'),
+        repo: repoText.optional().describe(`The repository: ${REPO_FORM}.`),
         baseBranch: z
             .string()
             .max(MAX_NAME_CHARS)
@@ -74,7 +75,11 @@ export const preflightTask = defineTool({
     }),
     async run(args, ctx) {
         const judged = judge(
-            await ctx.fetch({ method: 'POST', url: '/api/jobs/preflight', body: args }),
+            await ctx.fetch({
+                method: 'POST',
+                url: '/api/jobs/preflight',
+                body: { ...args, repo: repoBody(args.repo) },
+            }),
             PreflightSchema
         );
         if (!judged.ok) return judged.tagged;

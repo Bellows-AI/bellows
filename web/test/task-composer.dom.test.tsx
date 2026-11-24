@@ -211,7 +211,11 @@ describe('the composer launch triggers', () => {
         await user.click(start);
         await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${LAUNCHED_ID}`));
         expect(launches()).toHaveLength(1);
-        expect((launches()[0]!.body as { repo: string }).repo).toBe('acme/api');
+        expect((launches()[0]!.body as { repo: unknown }).repo).toEqual({
+            forge: 'github',
+            host: 'github.com',
+            path: 'acme/api',
+        });
     });
 
     it('a failed repositories read is not "no repositories tracked", and Retry re-reads only /api/repos', async () => {

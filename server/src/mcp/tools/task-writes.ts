@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { judge, refusal, type Tagged } from '../result.js';
 import { defineTool, DESTRUCTIVE, WRITES } from '../tool.js';
 import { MAX_CONNECTIONS, MAX_NAME_CHARS, MAX_SELECTED } from './paging.js';
+import { repoBody, repoText, REPO_FORM } from './repo-arg.js';
 import { BoardRunSchema } from './run-state.js';
 import { JobIdInput, jobPath } from './runs.js';
 
@@ -53,11 +54,7 @@ export const createTask = defineTool({
     annotations: WRITES,
     input: z.object({
         command: command('What the agent should do.'),
-        repo: z
-            .string()
-            .min(1)
-            .max(MAX_NAME_CHARS)
-            .describe('owner/name of the repository (list_repos); the board requires it.'),
+        repo: repoText.describe(`The repository (list_repos): ${REPO_FORM}. The board requires it.`),
         baseBranch: z.string().max(MAX_NAME_CHARS).optional().describe("Default: the repository's default branch."),
         executor: z
             .string()
@@ -89,7 +86,7 @@ export const createTask = defineTool({
             {
                 method: 'POST',
                 url: '/api/jobs',
-                body: bodyOf({ ...fields, attachments }),
+                body: bodyOf({ ...fields, repo: repoBody(fields.repo), attachments }),
                 ...(key === undefined ? {} : { idempotencyKey: key }),
             },
             QueuedSchema,

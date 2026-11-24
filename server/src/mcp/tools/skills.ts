@@ -1,4 +1,4 @@
-import { parseRepoRef } from '@factory-ai/core';
+import { REPO_FORM, repoText } from './repo-arg.js';
 import { z } from 'zod';
 import { judge, success } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
@@ -53,11 +53,7 @@ export const listSkills = defineTool({
     ],
     annotations: READ_ONLY,
     input: z.object({
-        repo: z
-            .string()
-            .refine((repo) => parseRepoRef(repo) !== null, 'repo must be owner/name, or forge:host/path')
-            .optional()
-            .describe('repository (owner/name on GitHub, forge:host/path otherwise): include its own skills'),
+        repo: repoText.optional().describe(`repository (${REPO_FORM}): include its own skills`),
         branch: z
             .string()
             .optional()

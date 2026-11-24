@@ -88,7 +88,32 @@ describe('bellows job create', () => {
         expect(out.join('')).toContain('queued');
         expect(out.join('')).toContain('job-1');
         expect(calls[0]!.url).toBe('http://board/api/jobs');
-        expect(calls[0]!.body).toEqual({ command: 'npm test --watch', repo: 'owner/name' });
+        expect(calls[0]!.body).toEqual({
+            command: 'npm test --watch',
+            repo: { forge: 'github', host: 'github.com', path: 'owner/name' },
+        });
+    });
+
+    it('posts a forge-prefixed --repo as its {forge, host, path} ref', async () => {
+        const { calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
+
+        const code = await run(['job', 'create', '--repo', 'gitlab:GL.example/g/sub/p', '--', 'npm', 'test'], io);
+
+        expect(code).toBe(0);
+        expect(calls[0]!.body).toEqual({
+            command: 'npm test',
+            repo: { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' },
+        });
+    });
+
+    it('refuses a malformed --repo locally with a usage error, sending nothing', async () => {
+        const { err, calls, io } = harness(ENV, () => json({ id: 'job-1', status: 'queued' }, 201));
+
+        const code = await run(['job', 'create', '--repo', 'bad', '--', 'npm', 'test'], io);
+
+        expect(code).toBe(2);
+        expect(err.join('')).toContain('owner/name on GitHub, forge:host/path otherwise');
+        expect(calls).toEqual([]);
     });
 
     it('rides the executor scope the flag names into the body (issue 391)', async () => {

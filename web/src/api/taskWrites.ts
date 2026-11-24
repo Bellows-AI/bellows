@@ -1,4 +1,4 @@
-import { ERROR_CODES, type ExecutorScope } from '@factory-ai/core';
+import { ERROR_CODES, type ExecutorScope, type RepoRef } from '@factory-ai/core';
 import type { RefusalBody } from './refusal.js';
 import { request, type RequestResult } from './request.js';
 import type { ConnectPrompt, QueueResult } from './useJobs.js';
@@ -18,7 +18,8 @@ export type RenameOutcome =
  * A null `workflow` is objective mode: the prompt runs as written. */
 export interface QueueTaskInput {
     command: string;
-    repo: string | null;
+    /** The selected repository's ref; null is none selected. */
+    repo: RepoRef | null;
     /** Absent when the task runs on the member's agent default: the board stamps it. */
     executor?: string;
     /** The scope `executor` names: the author's own profiles or the organization's. */

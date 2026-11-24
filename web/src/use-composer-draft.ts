@@ -1,3 +1,4 @@
+import { parseRepoRef } from '@factory-ai/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { QueueTaskInput } from './api/taskWrites.js';
 import type { Attachments } from './api/useAttachments.js';
@@ -247,7 +248,8 @@ export function queuedTask(
             : null;
     return {
         command: state.draft,
-        repo: state.repo === '' ? null : state.repo,
+        // The select's value is the id text; the board takes the ref.
+        repo: parseRepoRef(state.repo),
         // No executor chosen runs the member's agent default, which the board stamps itself.
         ...(state.executor === '' ? {} : { executor: state.executor, executorScope: state.executorScope }),
         workflow: state.workflow === '' ? null : state.workflow,

@@ -1,5 +1,8 @@
+/** How a repository is spelled on the command line: `parseRepoRef`'s text form. */
+export const REPO_FORM = 'owner/name on GitHub, forge:host/path otherwise';
+
 /** The CLI's whole help text: `bellows help` prints it, and every usage error ends with it. */
-export const USAGE = `usage: bellows job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
+export const USAGE = `usage: bellows job create (<command...> | --file <path> | --stdin) [--repo <repo>] [--executor name] [--executor-scope user|org]
                           [--base-branch <branch>] [--title <text>] [--model <name>] [--skill name]... [--connection <id>]... [--attach <path>]... [--idempotency-key <key>] [--json]
        bellows job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        bellows task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
@@ -23,7 +26,7 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
        bellows executor list [--json]      executor profiles by scope (--executor-scope)
        bellows skill list [--json]         skills a task may select (--skill)
        bellows connection list [--json]    managed connections you may select (--connection)
-       bellows job preflight [--repo owner/name] [--executor name] [--executor-scope user|org]
+       bellows job preflight [--repo <repo>] [--executor name] [--executor-scope user|org]
                              [--skill name]... [--connection <id>]... [--json]
        bellows batch import (--file <path> | --stdin) [--idempotency-key <key>] [--json]
        bellows batch update <id> --version <n> (--file <path> | --stdin) [--json]
@@ -111,6 +114,8 @@ A question's --answer values go one per prompt, in the order \`job questions\` l
 option's label, or free text (a multi-select joins its picks with ", "). The board is the
 arbiter: an answer that lost to an earlier one, arrived after the question expired, or whose run
 is no longer waiting is refused (exit 1) and never retried.
+
+--repo names the repository: ${REPO_FORM}.
 
 --file reads the command from a file and --stdin from standard input, exactly as written
 (newlines and Unicode kept); give one source, never two. An empty or over-long command is

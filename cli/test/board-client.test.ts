@@ -44,7 +44,7 @@ describe('the board client', () => {
         const { calls, fetch } = recorder(() => json({ id: 'job-1', status: 'queued' }, 201));
         const created = await client(fetch).createJob({
             command: 'fix the bug',
-            repo: 'owner/name',
+            repo: { forge: 'github', host: 'github.com', path: 'owner/name' },
             executor: 'my-claude',
         });
 
@@ -53,7 +53,11 @@ describe('the board client', () => {
         expect(calls[0]!.method).toBe('POST');
         expect(calls[0]!.headers.authorization).toBe('Bearer fat_abc');
         expect(calls[0]!.headers['content-type']).toBe('application/json');
-        expect(calls[0]!.body).toEqual({ command: 'fix the bug', repo: 'owner/name', executor: 'my-claude' });
+        expect(calls[0]!.body).toEqual({
+            command: 'fix the bug',
+            repo: { forge: 'github', host: 'github.com', path: 'owner/name' },
+            executor: 'my-claude',
+        });
     });
 
     it('omits optional create fields from the body when not given', async () => {

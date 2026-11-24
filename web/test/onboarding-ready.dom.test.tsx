@@ -197,7 +197,10 @@ describe('the Ready step', () => {
 
         await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${TASK_ID}`));
         const launch = calls.find((c) => c.method === 'POST' && c.url === '/api/jobs')!;
-        expect(launch.body).toMatchObject({ command: 'fix the login crash', repo: 'acme/web' });
+        expect(launch.body).toMatchObject({
+            command: 'fix the login crash',
+            repo: { forge: 'github', host: 'github.com', path: 'acme/web' },
+        });
         expect(launch.body).not.toHaveProperty('executor');
         expect(launch.headers['idempotency-key']).toMatch(/^[\w.:-]{8,128}$/);
         const completeAt = calls.findIndex((c) => c.method === 'POST' && c.url === '/api/onboarding/setup/complete');

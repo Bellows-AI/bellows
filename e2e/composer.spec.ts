@@ -276,7 +276,7 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         expect(launches.bodies[0]).toMatchObject({
             command: 'fix the login crash',
             executor: 'fresh-executor',
-            repo: `${E2E_REPO.owner}/${E2E_REPO.name}`,
+            repo: { forge: 'github', host: 'github.com', path: `${E2E_REPO.owner}/${E2E_REPO.name}` },
         });
         expect(launches.bodies[0]).toMatchObject({ workflow: null });
         expect(problems.join('\n')).toBe('');

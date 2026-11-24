@@ -6,7 +6,7 @@ echo '# board'
 expect_status 'refuses a duplicate org name'         409 POST /api/org/executors \
     "{\"name\":\"$ORG_EXECUTOR\",\"type\":\"claude-code\",\"config\":{}}"
 expect_status 'a scope outside the pair is refused' 400 POST /api/jobs \
-    "{\"command\":\"x\",\"executor\":\"$ORG_EXECUTOR\",\"executorScope\":\"repo\",\"repo\":\"$SMOKE_REPO\"}"
+    "{\"command\":\"x\",\"executor\":\"$ORG_EXECUTOR\",\"executorScope\":\"repo\",\"repo\":{\"forge\":\"github\",\"host\":\"github.com\",\"path\":\"$SMOKE_REPO\"}}"
 
 expect_status 'health answers'            200 GET /api/health
 expect_status 'refuses an empty command'  400 POST /api/jobs '{"command":""}'
