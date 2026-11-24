@@ -308,7 +308,7 @@ export interface BoardTaskPage {
 export interface BoardClient extends BatchRoutes, OperatorRoutes {
     createJob(input: {
         command: string;
-        repo?: string | undefined;
+        repo?: PreflightSelection['repo'];
         executor?: string | undefined;
         /** The scope `executor` names (issue 391); absent lets the board default to personal. */
         executorScope?: 'user' | 'org' | undefined;

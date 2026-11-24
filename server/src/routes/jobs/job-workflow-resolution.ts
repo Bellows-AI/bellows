@@ -5,9 +5,8 @@
  * of `job-handlers-worker.ts` to keep `handleCreateJob` within the repo's complexity/parameter
  * budget (AGENTS.md).
  */
-import { ERROR_CODES } from '@factory-ai/core';
+import { ERROR_CODES, type RepoRef } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { repoRefOf } from '../../forge/forges.js';
 import type { workflowsFor } from './job-context.js';
 import { type ResolvedWorkflow, buildWorkflowSelection } from './job-field-validation.js';
 import { bad, guard } from '../helpers.js';
@@ -29,7 +28,7 @@ async function resolveNamedWorkflow(
     opts: {
         workflowsStore: NamedWorkflowStore;
         fields: Record<string, unknown>;
-        repo: string | null;
+        repo: RepoRef | null;
         createdBy: string | null;
         command: string;
     }
@@ -42,7 +41,7 @@ async function resolveNamedWorkflow(
     const found = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'workflow resolution failed'),
-        () => workflowsStore.findByName(fields.workflow as string, { userId: createdBy, repo: repoRefOf(repo) })
+        () => workflowsStore.findByName(fields.workflow as string, { userId: createdBy, repo })
     );
     if (!found.ok) return { handled: true };
     if (found.value === null) {
@@ -67,7 +66,7 @@ export async function resolveLaunchWorkflow(
     opts: {
         workflowsStore: NamedWorkflowStore | null;
         fields: Record<string, unknown>;
-        repo: string | null;
+        repo: RepoRef | null;
         createdBy: string | null;
         command: string;
     }

@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -28,7 +29,7 @@ const CONFLICT = 409;
 const CREATED = 201;
 const ACCEPTED = 202;
 const REPO = 'operator-owner/web';
-const TASK = { repo: REPO, command: 'work' };
+const TASK = { repo: githubRepo(REPO), command: 'work' };
 
 interface Person {
     userId: string;

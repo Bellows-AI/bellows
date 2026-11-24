@@ -23,7 +23,7 @@ Use these to find valid values before you create a task.
 | `list_skills` | Lists selectable [skills](/guides/skills) with their source (`builtin`, `org`, `workspace`, `repo`) | `repo` (`owner/name` on GitHub, `forge:host/path` otherwise), `branch`, `executor`, `executorScope` (`user` or `org`) |
 | `list_connections` | Lists your own [connections](/guides/connections) with a state: `connected`, `needs_reconnect` or `disconnected`. Never returns secrets | none |
 | `list_available_integrations` | Browses the providers Bellows offers. Connects nothing | `q`, `category`, `limit`, `cursor` |
-| `preflight_task` | Checks, without creating anything, whether a task would be accepted. Checks cover the repository, executor, model, skills, connections and your GitHub connection. A task with no usable model is blocked with `NO_MODEL`; one whose GitHub connection is missing or needs reconnecting, with `FORGE_GRANT_REQUIRED`. Verdict: `ready`, `blocked`, `integration_required` or `unverified` | `repo`, `baseBranch`, `executor`, `executorScope`, `skills`, `connections` |
+| `preflight_task` | Checks, without creating anything, whether a task would be accepted. Checks cover the repository, executor, model, skills, connections and your GitHub connection. A task with no usable model is blocked with `NO_MODEL`; one whose GitHub connection is missing or needs reconnecting, with `FORGE_GRANT_REQUIRED`. Verdict: `ready`, `blocked`, `integration_required` or `unverified` | `repo` (`owner/name` on GitHub, `forge:host/path` otherwise), `baseBranch`, `executor`, `executorScope`, `skills`, `connections` |
 
 ## Reading
 
@@ -53,7 +53,7 @@ All of these act as you. Tools that create runs accept an `idempotencyKey` (8-12
 
 | Tool | What it does | Key inputs |
 | --- | --- | --- |
-| `create_task` | Queues a new task and returns its id | `command`, `repo` (required); `baseBranch`, `executor`, `executorScope`, `model`, `skills`, `connections`, `attachmentIds`, `idempotencyKey` |
+| `create_task` | Queues a new task and returns its id | `command`, `repo` (required; `owner/name` on GitHub, `forge:host/path` otherwise); `baseBranch`, `executor`, `executorScope`, `model`, `skills`, `connections`, `attachmentIds`, `idempotencyKey` |
 | `follow_up_task` | Queues a follow-up run on a finished task, in the same session and checkout | `jobId`, `command`, `model`, `attachmentIds`, `idempotencyKey` |
 | `retry_task` | Queues a retry of a failed run | `jobId`, `idempotencyKey` |
 | `edit_task` | Replaces the command of a task still queued that you queued. Refused once claimed | `jobId`, `command` |

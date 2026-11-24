@@ -189,8 +189,9 @@ async function forgeGrantsLive(
     reply: FastifyReply,
     launch: { plan: ResolvedBatchPlan; returnTo: string }
 ) {
-    const repoOfForge = new Map<string, string>();
-    for (const { repo } of launch.plan.targets) {
+    const repoOfForge = new Map<string, RepoRef>();
+    for (const { repo: path } of launch.plan.targets) {
+        const repo = githubRepo(path); // until BEL-532b part 4
         const forge = forgeOfRepo(repo);
         if (forge !== null && !repoOfForge.has(forge)) repoOfForge.set(forge, repo);
     }
@@ -217,7 +218,8 @@ export async function retryRefusedAsNoGrant(ctx: Context, request: FastifyReques
     const repo = plan?.targets.find((candidate) => candidate.key === (target ?? plan.defaultTarget))?.repo;
     // A batch or task the board does not hold is the store's own 404.
     if (repo === undefined) return false;
-    return refusedAsNoForgeGrant(request, reply, ctx.forgeGate, { repo, returnTo: `/batches/${id}` });
+    // until BEL-532b part 4: a target's repo is still a path
+    return refusedAsNoForgeGrant(request, reply, ctx.forgeGate, { repo: githubRepo(repo), returnTo: `/batches/${id}` });
 }
 
 /**
@@ -243,7 +245,9 @@ async function modelKeysPresent(ctx: Context, request: FastifyRequest, reply: Fa
                       scope: task.executorScope,
                   });
         if (profile === 'refused') return false;
-        if (await refusedAsNoModel(request, reply, ctx.runtime, { userId: ctx.createdBy, repo, ...profile })) {
+        // until BEL-532b part 4: a target's repo is still a path
+        const ref = repo === null ? null : githubRepo(repo);
+        if (await refusedAsNoModel(request, reply, ctx.runtime, { userId: ctx.createdBy, repo: ref, ...profile })) {
             return false;
         }
     }

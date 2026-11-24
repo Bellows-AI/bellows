@@ -355,7 +355,7 @@ describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
         const body = queuedTask(held, [], {});
         expect(body).toEqual({
             command: 'fix the bug',
-            repo: 'acme/web',
+            repo: { forge: 'github', host: 'github.com', path: 'acme/web' },
             executor: 'main',
             executorScope: 'user',
             workflow: null,
@@ -363,6 +363,15 @@ describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
             baseBranch: null,
         });
         expect('defaultWorkflow' in body).toBe(false);
+    });
+
+    it('sends the ref parsed from the selected id: a gitlab id carries its host, no repo none', () => {
+        expect(queuedTask({ ...held, repo: 'gitlab:gl.example/g/sub/p' }, [], {}).repo).toEqual({
+            forge: 'gitlab',
+            host: 'gl.example',
+            path: 'g/sub/p',
+        });
+        expect(queuedTask({ ...held, repo: '' }, [], {}).repo).toBeNull();
     });
 
     it('ignores a legacy `title` on a restored draft without throwing', () => {
@@ -379,7 +388,7 @@ describe('queuedTask — the POST /api/jobs body, pure (#543)', () => {
         );
         expect(body).toEqual({
             command: 'fix the bug',
-            repo: 'acme/web',
+            repo: { forge: 'github', host: 'github.com', path: 'acme/web' },
             executor: 'team-runner',
             executorScope: 'org',
             workflow: 'fix-issue',

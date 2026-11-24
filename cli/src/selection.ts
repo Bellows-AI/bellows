@@ -1,6 +1,7 @@
 import type { PreflightSelection } from './diagnostics.js';
 import { UsageError } from './input.js';
-import { USAGE } from './usage.js';
+import { parseRepoRef, type RepoRef } from './repo-ref.js';
+import { REPO_FORM, USAGE } from './usage.js';
 
 /**
  * The scope an executor selection names (issue 391). Absent sends nothing — the board defaults to
@@ -13,6 +14,16 @@ function parseExecutorScope(raw: string | undefined): 'user' | 'org' | undefined
         throw new UsageError(`--executor-scope must be "user" or "org", got "${raw}"\n\n${USAGE}`);
     }
     return raw;
+}
+
+/** The repository `--repo` names, parsed here so a malformed one never reaches the board. */
+export function parseRepoFlag(raw: string | undefined): RepoRef | undefined {
+    if (raw === undefined) return undefined;
+    const ref = parseRepoRef(raw);
+    if (ref === null) {
+        throw new UsageError(`--repo must be ${REPO_FORM}, got "${raw}"\n\n${USAGE}`);
+    }
+    return ref;
 }
 
 /** The selection flags a create and its preflight share: what to run against, never what to run. */
@@ -34,7 +45,7 @@ export function selectionOf(values: {
     connection?: string[] | undefined;
 }): PreflightSelection {
     return {
-        repo: values.repo,
+        repo: parseRepoFlag(values.repo),
         executor: values.executor,
         executorScope: parseExecutorScope(values['executor-scope']),
         baseBranch: values['base-branch'],

@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import type { AttachmentMeta } from '@factory-ai/core';
 import { MAX_FILES_PER_REQUEST } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
@@ -62,7 +63,7 @@ const create = (b: Booted, extra: Record<string, unknown>, key?: string) =>
         method: 'POST',
         url: '/api/jobs',
         headers: { cookie: b.cookie, ...(key ? { 'idempotency-key': key } : {}) },
-        payload: { repo: 'acme/web', command: 'look at the shot', ...extra },
+        payload: { repo: githubRepo('acme/web'), command: 'look at the shot', ...extra },
     });
 
 const followUp = (b: Booted, extra: Record<string, unknown>) =>

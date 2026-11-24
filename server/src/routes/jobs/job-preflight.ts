@@ -6,7 +6,9 @@ import {
     requiredProviders,
     noExecutorMessage,
     selectedBy,
+    formatRepoRef,
     type ExecutorScope,
+    type RepoRef,
 } from '@factory-ai/core';
 import type { FastifyBaseLogger, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
@@ -20,6 +22,7 @@ import {
     type EffectiveCatalog,
     type ExecutorTypeRead,
 } from '../../skill-catalog.js';
+import { refOfListed } from '../../forge/forges.js';
 import { executorTypeOf, modelStanding } from './executor-usable.js';
 import { type ForgeGatedDeps, forgeCheck } from './forge-usable.js';
 import { skillCatalog } from '../../skills.js';
@@ -71,7 +74,7 @@ async function attempt<T>(log: FastifyBaseLogger, what: string, read: () => Prom
 }
 
 interface Selection {
-    repo: string | null;
+    repo: RepoRef | null;
     baseBranch: string | null;
     executor: string | null;
     scope: ExecutorScope;
@@ -112,8 +115,8 @@ function selectionOf(reply: FastifyReply, raw: unknown): Selection | null {
 
 type Runtime = NonNullable<Awaited<ReturnType<OrgRegistry['for']>>>;
 
-async function repoCheck(log: FastifyBaseLogger, repo: string | null, rt: Runtime): Promise<Check> {
-    if (repo === null) {
+async function repoCheck(log: FastifyBaseLogger, ref: RepoRef | null, rt: Runtime): Promise<Check> {
+    if (ref === null) {
         return {
             subject: 'repo',
             name: null,
@@ -121,6 +124,7 @@ async function repoCheck(log: FastifyBaseLogger, repo: string | null, rt: Runtim
             detail: 'pass repo: a task runs against a tracked repository',
         };
     }
+    const repo = formatRepoRef(ref);
     const unread = { subject: 'repo', name: repo, status: 'unverified' } as const;
     const read = await attempt(log, 'tracked repositories', () => rt.repos.detail());
     if (!read.ok) return { ...unread, detail: 'the tracked repositories could not be read' };
@@ -128,7 +132,7 @@ async function repoCheck(log: FastifyBaseLogger, repo: string | null, rt: Runtim
     if (read.value.error !== null) {
         return { ...unread, detail: `the tracked list may be stale: ${read.value.error}` };
     }
-    if (read.value.repos.some((candidate) => `${candidate.owner}/${candidate.name}` === repo)) {
+    if (read.value.repos.some((candidate) => formatRepoRef(refOfListed(candidate)) === repo)) {
         return { subject: 'repo', name: repo, status: 'ok', detail: 'tracked by this board' };
     }
     return { subject: 'repo', name: repo, status: 'blocked', detail: `${repo} is not tracked by this board` };
@@ -441,7 +445,7 @@ async function handlePreflight({ orgs, forgeGate }: ForgeGatedDeps, request: Fas
     const catalog = await effectiveCatalog({
         builtin: skillCatalog(),
         read: rt.repoSkills,
-        repo: selection.repo,
+        repo: selection.repo?.path ?? null,
         branch: selection.baseBranch,
         executorType: executor.type,
         signal: abortOnClose(reply),

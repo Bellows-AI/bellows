@@ -1,6 +1,7 @@
 import type { BoardClient } from './board.js';
 import type { CliConfig } from './config.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from './http.js';
+import type { RepoRef } from './repo-ref.js';
 import type { Transport } from './transport.js';
 
 /**
@@ -50,7 +51,7 @@ export function configSummary(config: CliConfig): ConfigSummary {
 }
 
 export interface PreflightSelection {
-    repo?: string | undefined;
+    repo?: RepoRef | undefined;
     executor?: string | undefined;
     executorScope?: 'user' | 'org' | undefined;
     /** The branch the task checks out and publishes against; absent is the repo's default branch. */

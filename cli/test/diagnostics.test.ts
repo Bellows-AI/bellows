@@ -284,7 +284,7 @@ describe('bellows job preflight', () => {
         expect(result.data).toEqual(READY);
         expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['POST /api/jobs/preflight']);
         expect(calls[0]!.body).toEqual({
-            repo: 'acme/api',
+            repo: { forge: 'github', host: 'github.com', path: 'acme/api' },
             executor: 'mine',
             executorScope: 'org',
             baseBranch: 'dev',
@@ -293,10 +293,19 @@ describe('bellows job preflight', () => {
         });
     });
 
+    it('refuses a malformed --repo locally, exit 2, sending nothing', async () => {
+        const { code, calls } = await preflight(() => json(READY), ['--repo', 'bad']);
+        expect(code).toBe(2);
+        expect(calls).toEqual([]);
+    });
+
     it('sends nothing the flags did not name, and makes no other request', async () => {
         const { calls } = await preflight(() => json(READY));
         expect(calls).toHaveLength(1);
-        expect(calls[0]!.body).toEqual({ repo: 'acme/api', executor: 'mine' });
+        expect(calls[0]!.body).toEqual({
+            repo: { forge: 'github', host: 'github.com', path: 'acme/api' },
+            executor: 'mine',
+        });
     });
 
     it('is refused, exit 1, naming the first blocked check, when the board says not ready', async () => {

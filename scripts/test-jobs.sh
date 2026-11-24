@@ -554,7 +554,7 @@ create_job() { # create_job <command> [executor] [scope] -> id, recorded in $wor
     local id payload
     # One node call builds the whole body. Two `$(node -e '…')` spliced into an escaped JSON string
     # inside nested "$( … )" is a quoting shape macOS's bash 3.2 mis-parses into an invalid body.
-    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1], executor: process.argv[2], repo: process.argv[4], ...(process.argv[3] ? { executorScope: process.argv[3] } : {}) }))' "$1" "${2:-claude}" "${3:-}" "$SMOKE_REPO")"
+    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1], executor: process.argv[2], repo: { forge: "github", host: "github.com", path: process.argv[4] }, ...(process.argv[3] ? { executorScope: process.argv[3] } : {}) }))' "$1" "${2:-claude}" "${3:-}" "$SMOKE_REPO")"
     id="$(field "$(body "$(api POST /api/jobs "$payload")")" id)"
     # A file, not a variable: every caller captures this function's output by command substitution,
     # which runs it in a subshell — an assignment here would be thrown away.

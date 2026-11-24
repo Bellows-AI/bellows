@@ -275,6 +275,15 @@ describe('the task write tools', () => {
         }
     );
 
+    it('refuses a malformed repo naming the expected form, before any store call', async () => {
+        const board: Board = { calls: [] };
+        const { url } = await boot(board);
+        const refused = await call(url, 'writer', 'create_task', { command: 'do it', repo: 'not a repo' });
+        expect(refused.isError).toBe(true);
+        expect(JSON.stringify(refused)).toContain('owner/name on GitHub, forge:host/path otherwise');
+        expect(board.calls).toEqual([]);
+    });
+
     it('creates a task as the caller, carrying every field and the idempotency key to the board', async () => {
         const board: Board = { calls: [] };
         const { url, userOf } = await boot(board);

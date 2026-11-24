@@ -1,4 +1,4 @@
-import { ATTACHMENT_NAME_HEADER, OCTET_STREAM_CONTENT_TYPE } from '@factory-ai/core';
+import { ATTACHMENT_NAME_HEADER, OCTET_STREAM_CONTENT_TYPE, githubRepo } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { AttachmentStore } from '../src/attachments/attachment-store.js';
@@ -38,7 +38,7 @@ describe('POST /api/jobs past the plan', () => {
             method: 'POST',
             url: '/api/jobs',
             headers: { cookie: await signedIn(auth, member) },
-            payload: { repo: 'acme/web', command: 'one more' },
+            payload: { repo: githubRepo('acme/web'), command: 'one more' },
         });
         expect(res.statusCode).toBe(HTTP_TOO_MANY_REQUESTS);
         expect(res.json()).toMatchObject({ code: 'PLAN_LIMIT', limit: 'queued', max: 10 });
@@ -64,7 +64,7 @@ describe('POST /api/jobs past the plan', () => {
             method: 'POST',
             url: '/api/jobs',
             headers: { cookie: await signedIn(auth, member) },
-            payload: { repo: 'acme/web', command: 'one more' },
+            payload: { repo: githubRepo('acme/web'), command: 'one more' },
         });
         expect(res.statusCode).toBe(HTTP_TOO_MANY_REQUESTS);
         expect(res.json()).toMatchObject({ code: 'PLAN_LIMIT', limit: 'tokens', max: 5_000_000 });

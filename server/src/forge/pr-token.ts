@@ -1,5 +1,6 @@
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import type { GithubMint } from '../routes/github-credential.js';
+import { githubRepo } from '@factory-ai/core';
 import { forgeOfRepo } from './forges.js';
 
 /**
@@ -62,7 +63,7 @@ export function createMergeTokenSource(deps: {
     return async ({ orgId, repo, startedBy }, signal) => {
         try {
             if (!memberGrants) return { ok: true, token: await installation() };
-            const forge = forgeOfRepo(repo);
+            const forge = forgeOfRepo(githubRepo(repo)); // until the claim's ref reaches the token source
             if (startedBy === null) return { ok: false, detail: MERGE_STARTER_GONE };
             if (forge === null) return { ok: false, detail: MERGE_TOKEN_UNREAD };
             const member = await memberTokenOf(memberGrants, { orgId, userId: startedBy, forge }, signal);
@@ -97,7 +98,7 @@ export function createPrTokenSource(deps: {
         { orgId, repo, executionUserId }: Parameters<PrTokenSource>[0],
         signal: AbortSignal
     ): Promise<PrToken> => {
-        const forge = forgeOfRepo(repo);
+        const forge = forgeOfRepo(githubRepo(repo)); // until the claim's ref reaches the token source
         // A thread whose starter is gone has no grant to spend: that wait is the claim's (`starter-removed`).
         if (forge === null || executionUserId === null) return UNAVAILABLE;
         return memberTokenOf(grants, { orgId, userId: executionUserId, forge }, signal);

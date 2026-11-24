@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { buildApp } from '../src/app.js';
@@ -151,7 +152,10 @@ describe.skipIf(!enabled)('the built-in CLI client and the API audience', () => 
         const { access_token: token } = await cliLogin(board);
 
         expect((await rest(board, 'GET /api/tasks', token)).statusCode).toBe(200);
-        const created = await rest(board, 'POST /api/jobs', token, { command: 'echo hi', repo: 'acme/web' });
+        const created = await rest(board, 'POST /api/jobs', token, {
+            command: 'echo hi',
+            repo: githubRepo('acme/web'),
+        });
         expect(created.statusCode).toBe(201);
         // Class `none` is not refused: the API audience is not scope-checked.
         expect((await rest(board, 'GET /api/tokens', token)).statusCode).toBe(200);

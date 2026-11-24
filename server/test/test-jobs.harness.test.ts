@@ -112,13 +112,13 @@ describe('the test-jobs harness', () => {
     });
 
     it('every task the harness means to queue names the fixture repository', () => {
-        expect(SCRIPT).toContain('repo: process.argv[4]');
+        expect(SCRIPT).toContain('path: process.argv[4]');
         // The fourth argv slot of create_job's one node call is the fixture repository.
-        expect(SCRIPT).toMatch(/process\.argv\[4\],.*" "\$SMOKE_REPO"\)"$/m);
+        expect(SCRIPT).toMatch(/process\.argv\[4\] \},.*" "\$SMOKE_REPO"\)"$/m);
         for (const command of ['x\\",\\"workflow\\":\\"ghost', 'walk me end to end', 'flag walk', 'bound walk']) {
             const at = SCRIPT.indexOf(command);
             expect(at).toBeGreaterThan(-1);
-            expect(SCRIPT.slice(at, SCRIPT.indexOf('\n', at))).toContain('\\"repo\\":\\"$SMOKE_REPO\\"');
+            expect(SCRIPT.slice(at, SCRIPT.indexOf('\n', at))).toContain('\\"path\\":\\"$SMOKE_REPO\\"');
         }
         // A single-quoted body cannot carry $SMOKE_REPO: only the bodies meant to be refused before
         // the repository is read (an empty command, the unauthenticated and worker-token creates).

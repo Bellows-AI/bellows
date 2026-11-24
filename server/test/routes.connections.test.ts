@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
@@ -261,7 +262,7 @@ describe('selecting connections for a task', () => {
             url: '/api/jobs',
             headers: { cookie },
             payload: {
-                repo: 'Bellows-AI/bellows.ai',
+                repo: githubRepo('Bellows-AI/bellows.ai'),
                 command: 'look at ABC-1',
                 ...(connections === undefined ? {} : { connections }),
             },

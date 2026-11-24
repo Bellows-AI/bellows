@@ -101,7 +101,7 @@ ps_point() { # ps_point <claude|opencode> <member token> <port> -> that member's
 
 ps_job() { # ps_job <claude|opencode> <member token> [repo] -> the member's new task id
     local payload id
-    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: "list your skills", executor: process.argv[1], repo: process.argv[2] }))' "$1" "${3:-$SMOKE_REPO}")"
+    payload="$(node -e 'process.stdout.write(JSON.stringify({ command: "list your skills", executor: process.argv[1], repo: { forge: "github", host: "github.com", path: process.argv[2] } }))' "$1" "${3:-$SMOKE_REPO}")"
     id="$(field "$(body "$(AUTH_HEADER="Bearer $2" api POST /api/jobs "$payload")")" id)"
     printf '%s\n' "$id" >>"$work/created-jobs"
     printf '%s' "$id"

@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -137,7 +138,7 @@ const call = (method: 'GET' | 'POST', url: string, bearer: string, payload?: unk
     });
 
 async function queue(member: Person, orgId: string): Promise<string> {
-    const created = await call('POST', '/api/jobs', member.token, { repo: repoOf(orgId), command: 'work' });
+    const created = await call('POST', '/api/jobs', member.token, { repo: githubRepo(repoOf(orgId)), command: 'work' });
     expect(created.statusCode, created.body).toBe(CREATED);
     return created.json<{ id: string }>().id;
 }
