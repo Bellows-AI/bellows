@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import type { TaskTitleOrigin } from '@factory-ai/core';
+import { parseRepoRef, type RepoRef, type TaskTitleOrigin } from '@factory-ai/core';
 import { type AnswerOutcome, postAnswer } from './answer-question.js';
 import { refetchOnVisible } from './usePoll.js';
 import { fetchDepthPages, landRebuild, loadMoreTasksPage, TaskAuthExpired, fetchTaskPage } from './taskPages.js';
@@ -37,7 +37,7 @@ export interface TaskSummary {
     status: JobStatus;
     cancelRequestedAt: string | null;
     doneAt: string | null;
-    repo: string | null;
+    repo: RepoRef | null;
     executor: string | null;
     author: AuthorRef | null;
     /** The head's live activity line, while the head run is the one moving. */
@@ -89,8 +89,6 @@ export const DEFAULT_FILTERS: InboxFilters = {
 const TASK_STATES: readonly TaskState[] = ['attention', 'running', 'review', 'past'];
 /** A login shape, the same rule the route enforces — copied, never imported from the server. */
 const AUTHOR_SHAPE = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,98}[a-zA-Z0-9])?$/;
-/** Two non-empty path-segment halves: anything else is not an owner/name repo and is not sent. */
-const REPO_SHAPE = /^[^/\\]+\/[^/\\]+$/;
 /** The search field's character cap — the same one `inboxFiltersFromSearch` clamps to, exported
  * so the inbox's input cannot drift from what the poll would actually send. */
 export const QUERY_MAX = 200;
@@ -112,7 +110,7 @@ export function inboxFiltersFromSearch(search: string): InboxFilters {
     return {
         state: state !== null && TASK_STATES.includes(state as TaskState) ? (state as TaskState) : 'attention',
         q,
-        repo: repo !== null && REPO_SHAPE.test(repo) ? repo : null,
+        repo: repo !== null && parseRepoRef(repo) !== null ? repo : null,
         author: trimmedAuthor !== null && AUTHOR_SHAPE.test(trimmedAuthor) ? trimmedAuthor : null,
         sort: sort === 'oldest' || sort === 'newest' ? sort : 'newest',
     };

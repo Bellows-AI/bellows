@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -41,7 +42,7 @@ const summary = (over: Partial<TaskSummary> = {}): TaskSummary => {
         status: over.status ?? 'succeeded',
         cancelRequestedAt: over.cancelRequestedAt ?? null,
         doneAt: over.doneAt ?? null,
-        repo: over.repo ?? 'acme/widgets',
+        repo: over.repo ?? githubRepo('acme/widgets'),
         executor: over.executor ?? null,
         author: over.author ?? null,
         activity: over.activity ?? null,

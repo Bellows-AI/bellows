@@ -1,3 +1,4 @@
+import { formatRepoRef, githubRepo } from '@factory-ai/core';
 import { createServer } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
@@ -6,7 +7,7 @@ import type { McpCaller, OAuthStore } from '../src/auth/oauth-store.js';
 import { hashToken } from '../src/auth/session.js';
 import type { ArtifactStore } from '../src/artifacts/artifact-store.js';
 import type { TaskListFilters } from '../src/db/jobs/job-store-types.js';
-import { decodeCursor, encodeCursor } from '../src/db/task-summary.js';
+import { cursorFiltersOf, decodeCursor, encodeCursor } from '../src/db/task-summary.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { fakeArtifacts, manifest, stream } from './helpers-artifacts.js';
@@ -56,7 +57,7 @@ const run = (id: string, over: Record<string, unknown> = {}) => ({
     rootJobId: JOB_A,
     command: `task ${id.slice(0, 4)}`,
     status: 'succeeded',
-    repo: 'acme/web',
+    repo: githubRepo('acme/web'),
     executor: null,
     executorScope: null,
     baseBranch: null,
@@ -88,7 +89,7 @@ const taskRow = (id: string, over: Record<string, unknown> = {}) => ({
     status: 'succeeded',
     cancelRequestedAt: null,
     doneAt: null,
-    repo: 'acme/web',
+    repo: githubRepo('acme/web'),
     executor: null,
     executorScope: 'user',
     author: { login: 'alice' },
@@ -137,7 +138,7 @@ const storeOf = (board: Board) =>
             if (board.tasksFail) throw new Error('db down');
             board.filters?.push(filters);
             const all = board.tasks ?? [];
-            const after = filters.cursor ? decodeCursor(filters.cursor, filters)?.rootId : undefined;
+            const after = filters.cursor ? decodeCursor(filters.cursor, cursorFiltersOf(filters))?.rootId : undefined;
             const from = after === undefined ? 0 : all.findIndex((t) => t.id === after) + 1;
             const items = all.slice(from, from + Math.min(filters.limit, PAGE));
             const last = items.at(-1);
@@ -152,7 +153,7 @@ const storeOf = (board: Board) =>
                                   sort: filters.sort,
                                   state: filters.state,
                                   q: filters.q,
-                                  repo: filters.repo,
+                                  repo: filters.repo && formatRepoRef(filters.repo),
                                   author: filters.author,
                                   activityAt: last.activityAt,
                                   rootId: last.id,
@@ -289,6 +290,13 @@ describe('list_tasks', () => {
         expect(data.tasks.map((t: { state: string }) => t.state)).toEqual(['running', 'needs_attention']);
         expect(data.tasks[0]).toMatchObject({ id: JOB_A, headRunId: JOB_A, repo: 'acme/web', author: 'alice' });
         expect(data.counts).toEqual({ running: 1, review: 2, past: 3 });
+        const gitlab = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' };
+        const other = await boot({ a: { tasks: [taskRow(JOB_A, { repo: gitlab }), taskRow(JOB_B, { repo: null })] } });
+        const listed = await call(other, 'alice', 'list_tasks', { limit: 50 });
+        expect(listed.data.tasks.map((t: { repo: string | null }) => t.repo)).toEqual([
+            'gitlab:gl.example/g/sub/p',
+            null,
+        ]);
         const bob = await call(url, 'bob', 'list_tasks');
         expect(bob.data.tasks.map((t: { id: string }) => t.id)).toEqual([JOB_B]);
     });
@@ -321,7 +329,7 @@ describe('list_tasks', () => {
             state: 'review',
             q: 'login',
             author: 'alice',
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             sort: 'oldest',
             limit: 7,
         });
@@ -348,7 +356,7 @@ describe('list_jobs', () => {
         const listQueries: { status?: string; repo?: string; limit: number }[] = [];
         const url = await boot({ a: { jobs, listQueries }, b: { jobs: [run(JOB_B)] } });
         const { data } = await call(url, 'alice', 'list_jobs', { status: 'terminal', repo: 'acme/web', limit: 2 });
-        expect(listQueries[0]).toEqual({ status: 'terminal', repo: 'acme/web', limit: 2 });
+        expect(listQueries[0]).toEqual({ status: 'terminal', repo: githubRepo('acme/web'), limit: 2 });
         expect(data.jobs.map((j: { state: string }) => j.state)).toEqual(['pending', 'running']);
         expect(data.jobs[0]).not.toHaveProperty('output');
         const bob = await call(url, 'bob', 'list_jobs');
@@ -784,6 +792,15 @@ describe('get_task', () => {
             questions: [question('q1')],
         }),
     ];
+
+    it('names a non-GitHub repository by its text form', async () => {
+        const gitlab = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' };
+        const url = await boot({ a: { thread: [run(JOB_A, { repo: gitlab })] } });
+        const { data } = await call(url, 'alice', 'get_task', { taskId: JOB_A });
+        expect(data).toMatchObject({ repo: 'gitlab:gl.example/g/sub/p' });
+        const runs = await call(url, 'alice', 'investigate_job', { jobId: JOB_A });
+        expect(runs.data.job).toMatchObject({ repo: 'gitlab:gl.example/g/sub/p' });
+    });
 
     it('describes the task from any of its runs: head run, runs, pull request, attention, attachment metadata only', async () => {
         const url = await boot({ a: { thread }, b: { thread: [run(JOB_B, { rootJobId: JOB_B })] } });

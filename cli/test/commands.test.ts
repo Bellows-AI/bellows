@@ -22,7 +22,7 @@ const job = (overrides: Record<string, unknown> = {}) => ({
     failureCause: null,
     gates: [{ name: 'lint', status: 'passed', exitCode: 0, output: null }],
     runtime: null,
-    repo: 'owner/name',
+    repo: { forge: 'github', host: 'github.com', path: 'owner/name' },
     executor: 'my-claude',
     followUpTo: null,
     rootJobId: 'job-1',
@@ -215,6 +215,26 @@ describe('bellows job list', () => {
         expect(printed).toContain('running');
         expect(printed).toContain('fix the login bug');
         expect(printed).toContain('job-2');
+    });
+
+    it('prints the repository in its text form, and filters by the ref text --repo names', async () => {
+        const gitlab = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' };
+        const { out, calls, io } = harness(ENV, () => json({ jobs: [job(), job({ id: 'job-2', repo: gitlab })] }));
+
+        const code = await run(['job', 'list', '--repo', 'gitlab:GL.example/g/sub/p'], io);
+
+        expect(code).toBe(0);
+        expect(new URL(calls[0]!.url).searchParams.get('repo')).toBe('gitlab:gl.example/g/sub/p');
+        expect(out.join('')).toContain('owner/name');
+        expect(out.join('')).toContain('gitlab:gl.example/g/sub/p');
+        expect(out.join('')).not.toContain('[object Object]');
+    });
+
+    it('refuses a malformed --repo filter locally, sending nothing', async () => {
+        const { calls, io } = harness(ENV, () => json({ jobs: [] }));
+
+        expect(await run(['job', 'list', '--repo', 'bad'], io)).toBe(2);
+        expect(calls).toEqual([]);
     });
 
     it('prints the envelope around the jobs with --json', async () => {

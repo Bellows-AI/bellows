@@ -1,6 +1,6 @@
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import type { GithubMint } from '../routes/github-credential.js';
-import { githubRepo } from '@factory-ai/core';
+import type { RepoRef } from '@factory-ai/core';
 import { forgeOfRepo } from './forges.js';
 
 /**
@@ -16,7 +16,7 @@ export type PrToken =
     | { ok: false; answer: 'no-forge' };
 
 export type PrTokenSource = (
-    who: { orgId: string; repo: string; executionUserId: string | null },
+    who: { orgId: string; repo: RepoRef; executionUserId: string | null },
     signal: AbortSignal
 ) => Promise<PrToken>;
 
@@ -42,7 +42,7 @@ export async function memberTokenOf(
 export type MergeToken = { ok: true; token: string } | { ok: false; detail: string };
 
 export type MergeTokenSource = (
-    who: { orgId: string; repo: string; startedBy: string | null },
+    who: { orgId: string; repo: RepoRef; startedBy: string | null },
     signal: AbortSignal
 ) => Promise<MergeToken>;
 
@@ -63,7 +63,7 @@ export function createMergeTokenSource(deps: {
     return async ({ orgId, repo, startedBy }, signal) => {
         try {
             if (!memberGrants) return { ok: true, token: await installation() };
-            const forge = forgeOfRepo(githubRepo(repo)); // until the claim's ref reaches the token source
+            const forge = forgeOfRepo(repo);
             if (startedBy === null) return { ok: false, detail: MERGE_STARTER_GONE };
             if (forge === null) return { ok: false, detail: MERGE_TOKEN_UNREAD };
             const member = await memberTokenOf(memberGrants, { orgId, userId: startedBy, forge }, signal);
@@ -86,7 +86,7 @@ export function createPrTokenSource(deps: {
     const { memberGrants, mint } = deps;
 
     const installationToken: PrTokenSource = async ({ orgId, repo }) => {
-        const minted = await mint(orgId, repo).catch(() => undefined);
+        const minted = await mint(orgId, repo.path).catch(() => undefined);
         if (minted === undefined) return UNAVAILABLE;
         return minted === null
             ? { ok: false, answer: 'no-forge' }
@@ -98,7 +98,7 @@ export function createPrTokenSource(deps: {
         { orgId, repo, executionUserId }: Parameters<PrTokenSource>[0],
         signal: AbortSignal
     ): Promise<PrToken> => {
-        const forge = forgeOfRepo(githubRepo(repo)); // until the claim's ref reaches the token source
+        const forge = forgeOfRepo(repo);
         // A thread whose starter is gone has no grant to spend: that wait is the claim's (`starter-removed`).
         if (forge === null || executionUserId === null) return UNAVAILABLE;
         return memberTokenOf(grants, { orgId, userId: executionUserId, forge }, signal);

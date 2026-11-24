@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -64,7 +65,7 @@ describe('the task page header', () => {
 
     it('names the task #id · Opened …, leaving the author and repo to the task activity tile', () => {
         const author = { id: 'a', login: 'octocat', name: 'Octo Cat', avatarUrl: null };
-        const html = renderHeader({ jobs: [job({ author, repo: 'acme/web' })] });
+        const html = renderHeader({ jobs: [job({ author, repo: githubRepo('acme/web') })] });
         expect(html).toContain('page-header-description');
         expect(html).toContain('title="11111111-1111-4111-8111-111111111111">#11111111<');
         expect(html).toContain('<time dateTime="2026-09-01T12:00:00.000Z"');

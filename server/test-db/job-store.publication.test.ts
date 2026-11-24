@@ -64,7 +64,7 @@ describe.skipIf(!enabled)('publication and wait on the job reads (#324)', () => 
         });
 
         const expected = {
-            repo: 'acme/widgets',
+            repo: githubRepo('acme/widgets'),
             prNumber: 7,
             prUrl: 'https://github.com/acme/widgets/pull/7',
             headBranch: `factory/${root}`,

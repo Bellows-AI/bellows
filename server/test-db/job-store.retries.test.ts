@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -111,7 +112,7 @@ describe.skipIf(!enabled)('retries', () => {
             followUpTo: null,
             sessionId: null,
             rootJobId: id,
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             executor: 'main',
         });
         // A thread member, not a stray task: the whole-thread read includes it.

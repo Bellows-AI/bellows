@@ -42,7 +42,7 @@ import {
     executorReason,
     leaseSeconds,
 } from './job-limits.js';
-import { repoReason, repoRefReason } from '../helpers.js';
+import { repoFilterOf, repoReason, repoRefReason } from '../helpers.js';
 import { MS_PER_SECOND } from '../auth-shared.js';
 import { MAX_AGENT_MODEL_LENGTH } from '../agent-default.js';
 
@@ -550,7 +550,7 @@ export function validateListQuery(query: {
     limit?: string;
     repo?: string;
 }):
-    | { ok: true; value: { status: JobStatus | 'terminal' | undefined; repo: string | undefined; limit: number } }
+    | { ok: true; value: { status: JobStatus | 'terminal' | undefined; repo: RepoRef | undefined; limit: number } }
     | { ok: false; code: string; message: string } {
     // 'terminal' is the one pseudo-status: every settled verdict at once, so a completed-jobs
     // view can bound its request instead of filtering a newest-N window client-side and losing
@@ -566,14 +566,14 @@ export function validateListQuery(query: {
     if (!Number.isInteger(limit) || limit < 1 || limit > LIST_LIMIT_MAX) {
         return { ok: false, code: ERROR_CODES.BAD_LIMIT, message: `limit must be an integer 1..${LIST_LIMIT_MAX}` };
     }
-    const repo = query.repo;
     // Fastify's query parser hands repeated keys over as an array, so the shape is checked before
     // use — a malformed filter is a 400, never a TypeError.
-    if (repo !== undefined && (typeof repo !== 'string' || repoReason(repo) !== null)) {
-        const reason = typeof repo === 'string' ? repoReason(repo) : 'repo must be a string';
-        return { ok: false, code: ERROR_CODES.BAD_REPO, message: reason ?? 'repo must be owner/name' };
-    }
-    return { ok: true, value: { status: query.status as JobStatus | 'terminal' | undefined, repo, limit } };
+    const repo = query.repo === undefined ? undefined : repoFilterOf(query.repo);
+    if (repo && !repo.ok) return { ok: false, code: ERROR_CODES.BAD_REPO, message: repo.message };
+    return {
+        ok: true,
+        value: { status: query.status as JobStatus | 'terminal' | undefined, repo: repo?.ref, limit },
+    };
 }
 
 /**

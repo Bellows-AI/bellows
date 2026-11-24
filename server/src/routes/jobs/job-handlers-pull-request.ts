@@ -1,4 +1,4 @@
-import { ERROR_CODES, githubRepo } from '@factory-ai/core';
+import { ERROR_CODES, formatRepoRef, type RepoRef } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { FORGE_ACCESS_REASON, type ForgeRequirementReason } from '../../db/forge-requirement.js';
 import { forgeOfRepo } from '../../forge/forges.js';
@@ -121,7 +121,7 @@ type Outcome =
 /** The view, create, retarget and edit the ask names, under one token. A failure is the writer's classified error. */
 async function carryOut(
     writer: PrWriter,
-    repo: string,
+    repo: RepoRef,
     ask: Ask,
     auth: { token: string; signal: AbortSignal }
 ): Promise<Outcome> {
@@ -130,18 +130,18 @@ async function carryOut(
     if (ask.create) {
         // A create names its own base; the top-level `base` only retargets a PR that already exists.
         const { base, ...fields } = ask.create;
-        const opened = await writer.openPullRequest(repo, { branch: ask.branch, base, create: fields }, auth);
+        const opened = await writer.openPullRequest(repo.path, { branch: ask.branch, base, create: fields }, auth);
         ({ pr, operation } = opened);
     } else {
-        pr = await writer.findPullRequest(repo, ask.branch, auth);
+        pr = await writer.findPullRequest(repo.path, ask.branch, auth);
     }
     if (!pr) return { answer: 'none' };
     let wrote = operation === 'created';
     if (operation === 'reused') {
         const moved = ask.base !== null && pr.base !== ask.base ? { base: ask.base } : {};
         const change = { ...moved, ...(ask.edit ?? {}) };
-        if (ask.edit) pr = await writer.edit(repo, pr.number, change, auth);
-        else if (ask.base !== null && 'base' in moved) pr = await writer.retarget(repo, pr.number, ask.base, auth);
+        if (ask.edit) pr = await writer.edit(repo.path, pr.number, change, auth);
+        else if (ask.base !== null && 'base' in moved) pr = await writer.retarget(repo.path, pr.number, ask.base, auth);
         wrote = ask.edit !== null || 'base' in moved;
     }
     return { answer: 'pr', pr, operation, wrote };
@@ -163,7 +163,7 @@ async function contextOf(
     }
     const { orgId, rootJobId, repo, rootRepo, executionUserId } = context;
     // The write is narrowed to the attempt's own repository, which must be the thread root's.
-    if (repo === null || repo !== rootRepo) {
+    if (repo === null || rootRepo === null || formatRepoRef(repo) !== formatRepoRef(rootRepo)) {
         void bad(reply, ERROR_CODES.CONNECTION_NOT_AUTHORIZED, REFUSED_REPO, HTTP_FORBIDDEN);
         return null;
     }
@@ -217,7 +217,7 @@ async function write(
     try {
         outcome = await carryOut(writer, who.repo, ask, { token: token.token, signal });
     } catch (e) {
-        const forge = forgeOfRepo(githubRepo(who.repo)); // the publication's repo is a path;
+        const forge = forgeOfRepo(who.repo);
         if (forge !== null && lacksWriteAccess(e, token.as)) return { answer: 'no-access', forge };
         throw e;
     }

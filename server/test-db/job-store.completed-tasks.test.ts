@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
@@ -314,10 +315,10 @@ describe.skipIf(!enabled)('the terminal list, grouped as one row per task: bound
         await craft({ status: 'succeeded', finishedMinutesAgo: 15, repo: 'acme/other' });
         await craft({ status: 'succeeded', finishedMinutesAgo: 1, repo: 'acme/widgets' });
 
-        const listed = await store.list({ status: 'terminal', repo: 'acme/widgets', limit: 10 });
+        const listed = await store.list({ status: 'terminal', repo: githubRepo('acme/widgets'), limit: 10 });
         expect(listed).toHaveLength(2);
-        expect(listed.every((task) => task.repo === 'acme/widgets')).toBe(true);
-        expect(await store.list({ status: 'terminal', repo: 'acme/other', limit: 10 })).toHaveLength(1);
+        expect(listed.every((task) => task.repo?.path === 'acme/widgets')).toBe(true);
+        expect(await store.list({ status: 'terminal', repo: githubRepo('acme/other'), limit: 10 })).toHaveLength(1);
     });
 
     it("keeps another organization's tasks out", async () => {

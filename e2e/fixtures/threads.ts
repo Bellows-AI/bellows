@@ -24,6 +24,7 @@ import {
     type UsageRow,
 } from '@factory-ai/core';
 import type { Page } from '@playwright/test';
+import { githubRepo, type RepoRef } from '@factory-ai/core';
 
 export type ThreadStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
 
@@ -54,7 +55,7 @@ export interface ThreadRuntime {
 }
 
 export interface ThreadPublication {
-    repo: string;
+    repo: RepoRef;
     prNumber: number;
     prUrl: string;
     headBranch: string;
@@ -102,7 +103,7 @@ export interface ThreadJob {
     failureCause: string | null;
     gates: ThreadGate[] | null;
     runtime: ThreadRuntime | null;
-    repo: string | null;
+    repo: RepoRef | null;
     executor: string | null;
     /** Which list the executor label was chosen from (issue 391); `user` on every fixture here. */
     executorScope: 'user' | 'org';
@@ -196,7 +197,8 @@ const OTHER_AUTHOR: ThreadUser = {
 };
 
 const WORKER = 'e2e-worker';
-const REPO = 'acme/widgets';
+const REPO_PATH = 'acme/widgets';
+const REPO = githubRepo(REPO_PATH);
 const REVIEW_WORKFLOW = 'github-review';
 
 /** A thread parked on its review wait: open (no terminal reason), active since the publish. */
@@ -209,7 +211,7 @@ const OPEN_REVIEW_WAIT: Wait = {
 const NO_WAIT: Wait = { waitReason: null, waitingSince: null, waitTerminalReason: null };
 
 const publishLine = (branch: string, pr: number) =>
-    `[driver] published ${branch} — https://github.com/${REPO}/pull/${pr}`;
+    `[driver] published ${branch} — https://github.com/${REPO_PATH}/pull/${pr}`;
 
 /** A finished-run runtime: vitals cleared, the session's measured totals kept. */
 const finishedRuntime = (sampledAt: string): ThreadRuntime => ({
@@ -987,7 +989,8 @@ export function taskSummaryOf(jobs: readonly ThreadJob[]) {
     };
 }
 
-const LONG_REPO = `acme/${'very-long-repository-name-'.repeat(4)}`;
+const LONG_REPO_PATH = `acme/${'very-long-repository-name-'.repeat(4)}`;
+const LONG_REPO = githubRepo(LONG_REPO_PATH);
 const LONG_BRANCH = `fix/${'an-unbroken-branch-name-'.repeat(6)}`;
 
 /** Someone whose login and name never break — the byline must wrap or clip in its own row. */
@@ -1020,7 +1023,7 @@ export const longContentThread = thread([
         summary: 'Unbroken'.repeat(30),
         output: [
             '0123456789'.repeat(200),
-            `[driver] published ${LONG_BRANCH} — https://github.com/${LONG_REPO}/pull/42`,
+            `[driver] published ${LONG_BRANCH} — https://github.com/${LONG_REPO_PATH}/pull/42`,
             gateFailedLine(longGate),
         ].join('\n'),
         gates: [{ name: 'build', status: 'passed', exitCode: 0, output: 'built' }, longGate],

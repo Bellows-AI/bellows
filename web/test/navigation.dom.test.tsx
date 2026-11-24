@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -78,7 +79,7 @@ function summary(n: number): TaskSummary {
         status: 'succeeded',
         cancelRequestedAt: null,
         doneAt: null,
-        repo: 'acme/widgets',
+        repo: githubRepo('acme/widgets'),
         executor: null,
         author: null,
         activity: null,

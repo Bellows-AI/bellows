@@ -3,6 +3,7 @@ import type { Sql } from 'postgres';
 import { authoredBy, interruptedThread, nullAuthorThread, type ThreadJob } from '../../e2e/fixtures/threads.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
+import { refColumns } from '../src/db/repo-ref-row.js';
 import { useTestDb } from './harness.js';
 import { testOrg } from './fixtures.js';
 
@@ -29,13 +30,14 @@ beforeAll(() => {
 /** Every job column the thread read serves back, except the actor ids: only an actor-free fixture seeds verbatim. */
 async function seedThread(jobs: readonly ThreadJob[]): Promise<void> {
     for (const job of jobs) {
+        const ref = refColumns(job.repo);
         await sql`
             insert into job (org_id, id, root_job_id, parent_job_id, command, status, attempts, max_attempts,
-                             claimed_by, session_id, repo, executor, workflow_name, workflow_node, mode, exit_code,
+                             claimed_by, session_id, forge, host, repo, executor, workflow_name, workflow_node, mode, exit_code,
                              output, summary, gates, runtime, wall_clock_ms, agent_turns, interruptions,
                              done_at, cancel_requested_at, created_at, started_at, finished_at)
             values (${ORG}, ${job.id}, ${job.rootJobId}, ${job.followUpTo}, ${job.command}, ${job.status},
-                    ${job.attempts}, ${job.maxAttempts}, ${job.claimedBy}, ${job.sessionId}, ${job.repo},
+                    ${job.attempts}, ${job.maxAttempts}, ${job.claimedBy}, ${job.sessionId}, ${ref.forge}, ${ref.host}, ${ref.repo},
                     ${job.executor}, ${job.workflowName}, ${job.workflowNode}, ${job.mode}, ${job.exitCode},
                     ${job.output}, ${job.summary}, ${job.gates ? sql.json(job.gates as never) : null},
                     ${job.runtime ? sql.json(job.runtime as never) : null}, ${job.wallClockMs},

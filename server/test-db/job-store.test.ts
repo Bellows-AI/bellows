@@ -745,7 +745,9 @@ describe.skipIf(!enabled)('job store', () => {
         await store.progress(id, claim!.leaseToken, 'working', vitals);
         expect(await store.list({ limit: 50 })).toMatchObject([{ id, runtime: vitals }]);
         // The repo-filtered read serves the same projection — the summaries read either list.
-        expect(await store.list({ limit: 50, repo: 'owner/repo' })).toMatchObject([{ id, runtime: vitals }]);
+        expect(await store.list({ limit: 50, repo: githubRepo('owner/repo') })).toMatchObject([
+            { id, runtime: vitals },
+        ]);
     });
 
     // A run whose runner never samples the container (kubernetes, a failed readout) still gets
@@ -880,7 +882,7 @@ describe.skipIf(!enabled)('job store', () => {
         );
         const unlabelled = await queue('echo hi');
 
-        expect(await store.get(labelled.id)).toMatchObject({ repo: 'acme/web', executor: 'main' });
+        expect(await store.get(labelled.id)).toMatchObject({ repo: githubRepo('acme/web'), executor: 'main' });
         // Jobs queued before the chat, and tasks sent without either label, read as null — the
         // state every pre-migration row is in.
         expect(await store.get(unlabelled.id)).toMatchObject({ repo: null, executor: null });
@@ -892,7 +894,7 @@ describe.skipIf(!enabled)('job store', () => {
         await mustCreate(store.create('newer web task', null, { repo: githubRepo('acme/web'), executor: null }));
         await queue('no repo at all');
 
-        const listed = await store.list({ repo: 'acme/web', limit: 50 });
+        const listed = await store.list({ repo: githubRepo('acme/web'), limit: 50 });
 
         // Newest first, and the repo-less job stays in the unfiltered view only.
         expect(listed.map((job) => job.command)).toEqual(['newer web task', 'older web task']);
@@ -904,7 +906,7 @@ describe.skipIf(!enabled)('job store', () => {
         );
         await mustCreate(otherOrgStore.create('echo hi', null, { repo: githubRepo('acme/web'), executor: null }));
 
-        const listed = await store.list({ repo: 'acme/web', limit: 50 });
+        const listed = await store.list({ repo: githubRepo('acme/web'), limit: 50 });
         expect(listed.map((job) => job.id)).toEqual([id]);
     });
 

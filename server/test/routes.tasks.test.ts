@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { JobStore, TaskListFilters, TaskListResponse, TaskSummary } from '../src/db/jobs/job-store-types.js';
@@ -124,7 +125,27 @@ describe('GET /api/tasks: filters and cursors', () => {
 
         expect(response.statusCode).toBe(HTTP_OK);
         expect(store.asked).toEqual([
-            { state: 'running', q: 'fix', repo: 'acme/web', author: 'cat', sort: 'oldest', limit: 7 },
+            { state: 'running', q: 'fix', repo: githubRepo('acme/web'), author: 'cat', sort: 'oldest', limit: 7 },
+        ]);
+    });
+
+    it('names a repository on another forge or host by its ref text, never as the GitHub path', async () => {
+        const store = taskStub();
+        const instance = await openHarness(store);
+
+        const response = await instance.inject({
+            method: 'GET',
+            url: '/api/tasks?repo=gitlab:gl.example/acme/web',
+        });
+
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(store.asked).toEqual([
+            {
+                state: 'attention',
+                sort: 'newest',
+                limit: 30,
+                repo: { forge: 'gitlab', host: 'gl.example', path: 'acme/web' },
+            },
         ]);
     });
 
@@ -138,6 +159,7 @@ describe('GET /api/tasks: filters and cursors', () => {
         ['an over-long query', `/api/tasks?q=${'x'.repeat(OVER_QUERY_LIMIT)}`, 'BAD_QUERY'],
         ['a repeated query key', '/api/tasks?q=one&q=two', 'BAD_QUERY'],
         ['a malformed repository', '/api/tasks?repo=nope', 'BAD_REPO'],
+        ['a repository with a bad segment', '/api/tasks?repo=gitlab:gl.example/g/-x/p', 'BAD_REPO'],
         ['an over-long author', `/api/tasks?author=${'x'.repeat(OVER_AUTHOR_LIMIT)}`, 'BAD_AUTHOR'],
         ['an author with a space', '/api/tasks?author=octo%20cat', 'BAD_AUTHOR'],
         ['an unknown sort', '/api/tasks?sort=funny', 'BAD_SORT'],

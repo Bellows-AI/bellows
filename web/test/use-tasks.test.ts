@@ -54,6 +54,13 @@ describe('inboxFiltersFromSearch', () => {
         });
     });
 
+    it('reads a repository filter on another forge by its ref text', () => {
+        const repo = 'gitlab:gl.example/g/sub/p';
+        const filters = inboxFiltersFromSearch(`?repo=${encodeURIComponent(repo)}`);
+        expect(filters.repo).toBe(repo);
+        expect(inboxQueryString(filters)).toBe(`repo=${encodeURIComponent(repo)}`);
+    });
+
     it('clamps an unknown state, sort or repo shape to the default', () => {
         expect(inboxFiltersFromSearch('?state=weird').state).toBe('attention');
         expect(inboxFiltersFromSearch('?sort=soon').sort).toBe('newest');

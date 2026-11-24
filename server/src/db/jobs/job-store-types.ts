@@ -28,7 +28,7 @@ import type { DeploymentMode, UserRef, ExecutorScope, ExecutorType, JobMode, Tas
 import type { AdmissionBudgets, ClaimObserver, JobAdmissionStore } from './job-store-admission.js';
 import type { PlanLimits } from '../plan-limits.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
-import type { PublicationIdentity, PublicationState, WaitState } from '../pr-lifecycle-store.js';
+import type { PublicationIdentity, WaitState } from '../pr-lifecycle-store.js';
 import type { BellowsConfig } from '../../workspace/bellows.js';
 import type { ServiceSpec } from '../../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from '../evidence-policy.js';
@@ -275,12 +275,12 @@ export interface Job {
      */
     runtime: RuntimeVitals | null;
     /**
-     * The repository (`owner/name`) the task was queued against, and the member's executor name it
+     * The repository (forge, host and path) the task was queued against, and the member's executor name it
      * was stamped with. Both remain audit labels; executor is additionally resolved against the
      * stamped scope's profile at claim time (issue 391), and the resolved type chooses what the
      * worker runs. See docs/jobs.md.
      */
-    repo: string | null;
+    repo: RepoRef | null;
     executor: string | null;
     /**
      * The scope the executor label names (issue 391): `user` resolves against the author's own
@@ -418,7 +418,7 @@ export interface Job {
      * `get()` and `thread()`; the per-run lists answer null, the same rule the wait fields above
      * follow.
      */
-    publication: PublicationState | null;
+    publication: PublicationIdentity | null;
     /**
      * The questions the agent asked during THIS run (050), oldest first. Served by
      * `get()` and `thread()`; the per-run lists answer an empty array.
@@ -1062,7 +1062,7 @@ export interface TaskSummary {
     /** The head run's done stamp — null until the user declares the task done. */
     doneAt: string | null;
     /** The grouping labels the task was queued with, inherited by every follow-up. */
-    repo: string | null;
+    repo: RepoRef | null;
     executor: string | null;
     /** The scope `executor` names (issue 391), inherited with it; null rows read as 'user'. */
     executorScope: ExecutorScope;
@@ -1102,7 +1102,7 @@ export interface TaskNavigation {
 export interface TaskListFilters {
     state: TaskState;
     q?: string | undefined;
-    repo?: string | undefined;
+    repo?: RepoRef | undefined;
     /** Compared case-insensitively against the root author's login. */
     author?: string | undefined;
     sort: 'newest' | 'oldest';

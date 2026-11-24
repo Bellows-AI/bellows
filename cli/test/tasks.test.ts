@@ -8,7 +8,7 @@ const task = (overrides: Record<string, unknown> = {}) => ({
     command: 'fix the login bug',
     status: 'running',
     doneAt: null,
-    repo: 'acme/api',
+    repo: { forge: 'github', host: 'github.com', path: 'acme/api' },
     executor: 'main',
     author: { login: 'octocat' },
     waitReason: null,
@@ -65,6 +65,26 @@ describe('bellows task list', () => {
             limit: '5',
             cursor: 'abc',
         });
+    });
+
+    it('sends a forge-prefixed --repo as its normalized ref text and prints each task repo in text form', async () => {
+        const gitlab = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' };
+        const { out, urls, io } = harness(answer([task(), task({ id: 'task-2', repo: gitlab })]));
+
+        expect(await run(['task', 'list', '--repo', 'gitlab:GL.example/g/sub/p'], io)).toBe(0);
+
+        expect(queryOf(urls[0]!)).toEqual({ repo: 'gitlab:gl.example/g/sub/p' });
+        const printed = out.join('');
+        expect(printed).toContain('acme/api');
+        expect(printed).toContain('gitlab:gl.example/g/sub/p');
+        expect(printed).not.toContain('[object Object]');
+    });
+
+    it('refuses a malformed --repo locally, sending nothing', async () => {
+        const { urls, io } = harness(answer([]));
+
+        expect(await run(['task', 'list', '--repo', 'bad'], io)).toBe(2);
+        expect(urls).toEqual([]);
     });
 
     it.each(['attention', 'running', 'review', 'past'])('accepts --state %s', async (state) => {

@@ -4,6 +4,8 @@
  * its GitHub calls: the lease is read before them and checked again, with the lock, only when a requirement opens.
  */
 
+import type { RepoRef } from '@factory-ai/core';
+import { refOfNullableRow } from '../repo-ref-row.js';
 import { lockThreadRootInTx } from '../connection-bindings.js';
 import { closeForgeAccessWait, openForgeRequirement, type ForgeRequirementReason } from '../forge-requirement.js';
 import { leaseRefusal, lockRunningAttempt } from './job-store-rows.js';
@@ -13,8 +15,8 @@ import type { JobStoreContext } from './job-store-types.js';
 export interface PrWriteContext {
     orgId: string;
     rootJobId: string;
-    repo: string | null;
-    rootRepo: string | null;
+    repo: RepoRef | null;
+    rootRepo: RepoRef | null;
     executionUserId: string | null;
 }
 
@@ -45,9 +47,19 @@ export async function prWriteContext(
     const refused = await leaseRefusal(sql, orgId, attempt.id, attempt.leaseToken);
     if (refused) return refused;
     const [row] = await sql<
-        { root_job_id: string; repo: string | null; root_repo: string | null; execution_user_id: string | null }[]
+        {
+            root_job_id: string;
+            forge: string;
+            host: string;
+            repo: string | null;
+            root_forge: string;
+            root_host: string;
+            root_repo: string | null;
+            execution_user_id: string | null;
+        }[]
     >`
-        select j.root_job_id, j.repo, root.repo as root_repo, root.execution_user_id
+        select j.root_job_id, j.forge, j.host, j.repo, root.forge as root_forge, root.host as root_host,
+               root.repo as root_repo, root.execution_user_id
         from job j join job root on root.org_id = j.org_id and root.id = j.root_job_id
         where j.org_id = ${orgId} and j.id = ${attempt.id}
     `;
@@ -56,8 +68,8 @@ export async function prWriteContext(
         result: 'ok',
         orgId,
         rootJobId: row.root_job_id,
-        repo: row.repo,
-        rootRepo: row.root_repo,
+        repo: refOfNullableRow(row),
+        rootRepo: refOfNullableRow({ forge: row.root_forge, host: row.root_host, repo: row.root_repo }),
         executionUserId: row.execution_user_id,
     };
 }

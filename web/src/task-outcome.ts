@@ -1,3 +1,4 @@
+import type { RepoRef } from '@factory-ai/core';
 import { isTerminal, type FailureKind, type GateCheck, type Job, type JobInterruption } from './api/useJobs.js';
 
 /**
@@ -208,13 +209,12 @@ export function inClosePhase(job: Job): boolean {
 }
 
 /**
- * The issue reference's URL, constructible only when the repository is one an owner/name slug
- * can build a github.com path from. Null otherwise — a bare repo name or no repository at all
- * leaves the reference a plain fact, not a dead link.
+ * The issue reference's URL, built from the repository's host and path: GitLab keeps its issues under
+ * `/-/issues`. Null when the task names no repository, which leaves the reference a plain fact, not a dead link.
  */
-export function issueUrl(repo: string | null, issue: number | null): string | null {
-    if (repo === null || issue === null || !repo.includes('/')) return null;
-    return `https://github.com/${repo}/issues/${issue}`;
+export function issueUrl(repo: RepoRef | null, issue: number | null): string | null {
+    if (repo === null || issue === null) return null;
+    return `https://${repo.host}/${repo.path}${repo.forge === 'gitlab' ? '/-' : ''}/issues/${issue}`;
 }
 
 /** How the task was closed, by whom — read off the NEWEST run's verdict stamps. */

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { boardRepo } from './repo-arg.js';
 
 /**
  * The one status vocabulary every task and run tool speaks, shared with `core/src/batch-standing.ts`. The board's
@@ -115,7 +116,7 @@ export const BoardRunSchema = z.object({
     rootJobId: z.string(),
     command: z.string(),
     status: BoardStatusSchema,
-    repo: text,
+    repo: boardRepo,
     executor: text,
     baseBranch: text,
     mode: text,
