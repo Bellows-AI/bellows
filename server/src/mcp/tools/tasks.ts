@@ -40,7 +40,9 @@ const BoardTask = z.object({
     activityAt: z.string(),
 });
 const BoardTasks = z.object({
-    navigation: z.object({ counts: z.object({ running: z.number(), review: z.number(), past: z.number(), archived: z.number() }) }),
+    navigation: z.object({
+        counts: z.object({ running: z.number(), review: z.number(), past: z.number(), archived: z.number() }),
+    }),
     page: z.object({ items: z.array(BoardTask), nextCursor: z.string().nullable() }),
 });
 

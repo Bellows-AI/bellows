@@ -139,7 +139,7 @@ describe('TaskDetail — the follow-up composer states', () => {
             composer: false,
             has: ['chat-done'],
         },
-        // Only done or removed closes a task: a run that never reported a session — an opencode
+        // Only done closes a task: a run that never reported a session — an opencode
         // task, an agent-less workflow step — still takes a follow-up, which the board starts fresh.
         {
             label: 'a run with no session to continue still offers the composer',
@@ -201,7 +201,7 @@ describe('TaskDetail — the follow-up composer states', () => {
     });
 
     it("keeps the transcript clean of task actions — those are the controls tile's", () => {
-        // The main column carries no Stop/Done/Remove — the right column's controls tile does;
+        // The main column carries no Stop/Done/Archive — the right column's controls tile does;
         // its own composer's Send follow-up stays, of course.
         const finished = renderDetail({ jobs: [job()] }).split('task-main')[1]!;
         expect(finished).not.toContain('chat-resume');

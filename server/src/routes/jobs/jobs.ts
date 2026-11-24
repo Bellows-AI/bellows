@@ -59,6 +59,16 @@ export interface JobRouteDeps {
     claimPoll?: (outcome: ClaimPollOutcome) => void;
 }
 
+/** Archive and its inverse: a person's action on a thread, registered beside stop/done like them. */
+function archiveRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
+    app.post('/api/jobs/:id/archive', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleArchive(orgs, request, reply)
+    );
+    app.post('/api/jobs/:id/unarchive', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleUnarchive(orgs, request, reply)
+    );
+}
+
 /** The worktree-reclaim queue's routes: the driver's claim, ack and renew, and the reaper's holds lookup. */
 function reclaimRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
     const firstReclaimClaim = boardScan();
@@ -140,12 +150,7 @@ export const jobRoutes =
         app.post('/api/jobs/:id/stop', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleStop(orgs, request, reply)
         );
-        app.post('/api/jobs/:id/archive', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleArchive(orgs, request, reply)
-        );
-        app.post('/api/jobs/:id/unarchive', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleUnarchive(orgs, request, reply)
-        );
+        archiveRoutes(app, orgs);
         // Done's inverse: the mistake undone, while the worktree it would resume in
         // still exists. Person-gated like done, beside which it is registered.
         app.post('/api/jobs/:id/reopen', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>

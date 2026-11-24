@@ -220,6 +220,17 @@ const resolvedModelOf = (row: JobRow): string | null => row.run_model ?? null;
 const hiddenSkillsOf = (row: JobRow) =>
     row.skill_hidden ? { hiddenSkills: row.skill_hidden.map(({ name, reason }) => ({ name, reason })) } : {};
 
+/** The archive stamp and its actor: the per-run lists do not join them, so a read without them answers null. */
+const archiveOf = (row: JobRow): Pick<Job, 'archivedAt' | 'archivedBy'> => ({
+    archivedAt: stampOf(row.archived_at ?? null),
+    archivedBy: userRef(
+        row.archiver_id ?? null,
+        row.archiver_login ?? null,
+        row.archiver_name ?? null,
+        row.archiver_avatar_url ?? null
+    ),
+});
+
 export function toJob(orgId: string, row: JobRow): Job {
     return {
         id: row.id,
@@ -233,13 +244,7 @@ export function toJob(orgId: string, row: JobRow): Job {
         author: userRef(row.creator_id, row.creator_login, row.creator_name, row.creator_avatar_url),
         stoppedBy: userRef(row.stopper_id, row.stopper_login, row.stopper_name, row.stopper_avatar_url),
         doneBy: userRef(row.doner_id, row.doner_login, row.doner_name, row.doner_avatar_url),
-        archivedAt: stampOf(row.archived_at ?? null),
-        archivedBy: userRef(
-            row.archiver_id ?? null,
-            row.archiver_login ?? null,
-            row.archiver_name ?? null,
-            row.archiver_avatar_url ?? null
-        ),
+        ...archiveOf(row),
         baseBranch: baseBranchOf(row),
         ...hiddenSkillsOf(row),
         sessionId: row.session_id,

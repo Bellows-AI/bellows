@@ -69,7 +69,7 @@ describe('tasks area wiring', () => {
         // renderToStaticMarkup, so a page instantiating its own hook could render nothing but
         // its loading state, never this row.
         const navigation: TaskNavigation = {
-            counts: { running: 1, review: 0, past: 0 },
+            counts: { running: 1, review: 0, past: 0, archived: 0 },
             running: [],
             review: [],
         };

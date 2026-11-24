@@ -584,6 +584,9 @@ export function createBoardClient({
         return replayed ? { ...payload, replayed } : payload;
     };
 
+    const archiving = async (id: string, verb: 'archive' | 'unarchive') =>
+        (await request(at(`${jobPath(id)}/${verb}`), { method: 'POST', headers: authHeaders() })) as JobArchived;
+
     return {
         async createJob({ idempotencyKey, ...fields }) {
             // An absent optional field is `undefined`, which JSON leaves out: the board is the validator,
@@ -695,19 +698,8 @@ export function createBoardClient({
             return (await request(at(`${jobPath(id)}/done`), init)) as JobDone | BatchThreadClosed;
         },
 
-        async archiveJob(id) {
-            return (await request(at(`${jobPath(id)}/archive`), {
-                method: 'POST',
-                headers: authHeaders(),
-            })) as JobArchived;
-        },
-
-        async unarchiveJob(id) {
-            return (await request(at(`${jobPath(id)}/unarchive`), {
-                method: 'POST',
-                headers: authHeaders(),
-            })) as JobArchived;
-        },
+        archiveJob: (id) => archiving(id, 'archive'),
+        unarchiveJob: (id) => archiving(id, 'unarchive'),
 
         async answerQuestion(id, questionId, answers) {
             return (await request(at(`${jobPath(id)}/questions/${encodeURIComponent(questionId)}/answer`), {

@@ -447,7 +447,11 @@ describe('the task write tools', () => {
     });
 
     it('surfaces board refusals verbatim: a stop on a finished task, an unarchive of a task that is not archived', async () => {
-        const board: Board = { calls: [], stop: { result: 'conflict', status: 'succeeded' }, unarchive: 'not_archived' };
+        const board: Board = {
+            calls: [],
+            stop: { result: 'conflict', status: 'succeeded' },
+            unarchive: 'not_archived',
+        };
         const { url } = await boot(board);
         const stop = await call(url, 'writer', 'stop_task', { jobId: JOB, confirm: true });
         expect(stop.isError).toBe(true);

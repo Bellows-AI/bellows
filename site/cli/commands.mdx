@@ -96,7 +96,7 @@ bellows job create --repo acme/notes-api -- npm test --watch
 
 | Flag | Meaning |
 | --- | --- |
-| `--state attention\|running\|review\|past` | Filter by state. |
+| `--state attention\|running\|review\|past\|archived` | Filter by state. `archived` lists archived tasks; every other state leaves them out. |
 | `--q <text>` | Search text. |
 | `--author <login>` | Filter by author. |
 | `--repo owner/name` | Filter by repository. |
@@ -135,7 +135,8 @@ bellows job create --repo acme/notes-api -- npm test --watch
 | `bellows job stop <id>` | Stop the run. |
 | `bellows job done <id> [--force]` | Mark the task done. |
 | `bellows job reopen <id>` | Undo done. |
-| `bellows job remove <id> --yes` | Remove the task. `--yes` is required. |
+| `bellows job archive <id>` | Archive the task: it leaves the active list and stays readable. A running task is stopped first. |
+| `bellows job unarchive <id>` | Bring an archived task back to the active list. |
 
 `retry` re-runs the old command. `follow-up` sends new instructions.
 

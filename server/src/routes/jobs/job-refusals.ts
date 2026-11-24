@@ -9,7 +9,13 @@ import { HTTP_CONFLICT, HTTP_FORBIDDEN, batchesDisabled, notFoundJob } from './j
  * for that file's line budget. They render; they validate nothing.
  */
 
-export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'task_archived' | 'forbidden' | 'batches_disabled';
+export type FollowUpRefusal =
+    | 'missing'
+    | 'not_finished'
+    | 'task_done'
+    | 'task_archived'
+    | 'forbidden'
+    | 'batches_disabled';
 export type RetryRefusal = FollowUpRefusal;
 
 /** The refusals follow-up and retry share; only the verb in the forbidden message differs. */

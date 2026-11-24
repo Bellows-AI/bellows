@@ -237,7 +237,9 @@ async function threadArchivedInTx(tx: TransactionSql, orgId: string, rootJobId: 
     return row.archived;
 }
 
-type Admission = { rootJobId: string } | { answer: 'missing' | 'not_finished' | 'task_archived' | CreatedRef | 'forbidden' };
+type Admission =
+    | { rootJobId: string }
+    | { answer: 'missing' | 'not_finished' | 'task_archived' | CreatedRef | 'forbidden' };
 
 /**
  * What a follow-up and a retry settle before their conditional insert: the named row's thread root, the replay of a

@@ -117,7 +117,11 @@ describe('fetchDepthPages', () => {
     // collapse the loaded rows back to page one. The fetch is injected, so the whole chain runs
     // offline: page one, then each next page via its cursor, deduped by id, stopping when the
     // list runs out.
-    const navigation: TaskNavigation = { counts: { running: 1, review: 0, past: 0 }, running: [], review: [] };
+    const navigation: TaskNavigation = {
+        counts: { running: 1, review: 0, past: 0, archived: 0 },
+        running: [],
+        review: [],
+    };
     const page = (items: string[], cursor: string | null) => ({
         navigation,
         page: { items: items.map(summary), nextCursor: cursor },

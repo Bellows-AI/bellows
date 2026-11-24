@@ -67,12 +67,6 @@ async function seededTaskId(page: Page, not?: string): Promise<string> {
     return open!.id;
 }
 
-/** The task's whole chain, the way the dialog counts it. */
-async function threadLength(page: Page, taskId: string): Promise<number> {
-    const response = await page.request.get(`/api/jobs/${taskId}/thread`);
-    return ((await response.json()) as { jobs: unknown[] }).jobs.length;
-}
-
 const header = (page: Page) => page.locator('.task-actions');
 
 test.describe('the task detail actions', () => {
@@ -87,8 +81,8 @@ test.describe('the task detail actions', () => {
     /**
      * The state matrix, driven through the board's own routes: every not-terminal state offers
      * Stop run; the request in flight and the request landed both read Stopping…; a terminal
-     * open task offers Mark done as the one primary; Remove task lives only behind More task
-     * actions and vanishes while any member of the thread is running.
+     * open task offers Mark done as the one primary; Archive task lives only behind More task
+     * actions, running members included (it stops them first).
      */
     test('Stop run spans queued, running and stopping; Mark done waits behind them', async ({ page }) => {
         const problems = watchConsole(page);
@@ -104,15 +98,15 @@ test.describe('the task detail actions', () => {
         await expect(page.locator('.task-controls')).toContainText('Stopped · Needs review', { timeout: 10_000 });
         await expect(header(page).getByRole('button', { name: 'Mark done' })).toBeVisible();
 
-        // Running: claimed the way a driver claims. The overflow keeps only Rename — a running
-        // member hides Remove — and stopping reads as a disabled, busy control.
+        // Running: claimed the way a driver claims. The overflow offers Rename and Archive (which stops
+        // the run first), and stopping reads as a disabled, busy control.
         const runningId = await queueTask(page, 'e2e — stop a running task');
         const leaseToken = await claimQueued(page, runningId);
         await expect(page.locator('.task-controls')).toContainText('Running', { timeout: 10_000 });
         await expect(header(page).getByRole('button', { name: 'Stop run' })).toBeVisible();
         await header(page).getByRole('button', { name: 'More task actions' }).click();
         await expect(page.getByRole('menuitem', { name: 'Rename task' })).toBeVisible();
-        await expect(page.getByRole('menuitem', { name: 'Remove task' })).toHaveCount(0);
+        await expect(page.getByRole('menuitem', { name: 'Archive task' })).toBeVisible();
         await page.keyboard.press('Escape');
         await page.screenshot({ path: `${SHOTS}/task-detail-running.png`, fullPage: true });
 
@@ -142,7 +136,7 @@ test.describe('the task detail actions', () => {
         expect(problems.join('\n')).toBe('');
     });
 
-    test('the remove dialog: keyboard path, initial focus, focus restoration, refusal, and the route out', async ({
+    test('the archive dialog: keyboard path, initial focus, focus restoration, refusal, and the route out', async ({
         page,
     }) => {
         const problems = watchConsole(page);
@@ -154,11 +148,12 @@ test.describe('the task detail actions', () => {
         // the panel that floats inside it.
         const dialog = page.locator('.task-remove');
 
-        // Keyboard open, exactly one destructive item, no Remove anywhere in the action row.
+        // Keyboard open, one archive item, nothing that deletes anywhere, no Archive in the action row.
         await trigger.click();
-        const item = page.getByRole('menuitem', { name: 'Remove task' });
+        const item = page.getByRole('menuitem', { name: 'Archive task' });
         await expect(item).toBeVisible();
-        expect(await header(page).getByRole('button', { name: 'Remove task' }).count()).toBe(0);
+        await expect(page.getByRole('menuitem', { name: 'Remove task' })).toHaveCount(0);
+        expect(await header(page).getByRole('button', { name: 'Archive task' }).count()).toBe(0);
 
         // Escape closes the menu and hands focus back to its trigger.
         await page.keyboard.press('Escape');
@@ -168,18 +163,16 @@ test.describe('the task detail actions', () => {
         await trigger.click();
         await item.click();
 
-        // The dialog names the task and every consequence — with the thread's REAL run count —
-        // and Cancel holds the initial focus, so the destructive answer is never the first
-        // thing a keypress reaches.
-        const runs = await threadLength(page, taskId);
+        // The dialog names the task and says what archiving keeps — nothing is deleted, Unarchive
+        // undoes it — and Cancel holds the initial focus, so the confirming answer is never the
+        // first thing a keypress reaches.
         await expect(dialog).toBeVisible();
-        await expect(page.getByRole('heading', { name: 'Remove \u201Cseed task\u201D?' })).toBeVisible();
-        await expect(dialog.getByText(new RegExp(`This permanently deletes all ${runs} runs`))).toBeVisible();
-        await expect(dialog.getByText(/their transcript from Bellows/)).toBeVisible();
-        await expect(dialog.getByText(/worktree will be queued for deletion/)).toBeVisible();
-        await expect(dialog.getByText(/Published branches and pull requests are not deleted/)).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Archive \u201Cseed task\u201D?' })).toBeVisible();
+        await expect(dialog.getByText(/leaves the task list/)).toBeVisible();
+        await expect(dialog.getByText(/stay readable under Archived/)).toBeVisible();
+        await expect(dialog.getByText(/Unarchive brings it back/)).toBeVisible();
         await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
-        await page.screenshot({ path: `${SHOTS}/task-remove-dialog.png`, fullPage: true });
+        await page.screenshot({ path: `${SHOTS}/task-archive-dialog.png`, fullPage: true });
 
         // The backdrop closes it too, focus landing on the trigger.
         await page.mouse.click(10, 500);
@@ -192,7 +185,7 @@ test.describe('the task detail actions', () => {
         await expect(trigger).toBeFocused();
 
         await trigger.click();
-        await page.getByRole('menuitem', { name: 'Remove task' }).click();
+        await page.getByRole('menuitem', { name: 'Archive task' }).click();
         await expect(dialog).toBeVisible();
         await dialog.getByRole('button', { name: 'Cancel' }).click();
         await expect(dialog).toBeHidden();
@@ -201,22 +194,22 @@ test.describe('the task detail actions', () => {
 
         // The board's refusal stays authoritative: fed a 409, the dialog holds its place, the
         // reason is announced once as an alert, and the page stays usable.
-        await page.route(`**/api/jobs/${taskId}/remove`, (route) =>
+        await page.route(`**/api/jobs/${taskId}/archive`, (route) =>
             route.fulfill({
                 status: 409,
                 contentType: 'application/json',
-                body: JSON.stringify({ error: 'Task is running', code: 'TASK_RUNNING' }),
+                body: JSON.stringify({ error: 'Task is part of a batch', code: 'BATCH_TASK_THREAD' }),
             })
         );
         await trigger.click();
-        await page.getByRole('menuitem', { name: 'Remove task' }).click();
-        await dialog.getByRole('button', { name: 'Remove task' }).click();
-        await expect(dialog.getByRole('alert')).toContainText('Task is running');
+        await page.getByRole('menuitem', { name: 'Archive task' }).click();
+        await dialog.getByRole('button', { name: 'Archive task' }).click();
+        await expect(dialog.getByRole('alert')).toContainText('Task is part of a batch');
         await expect(dialog).toBeVisible();
-        await page.screenshot({ path: `${SHOTS}/task-remove-refused.png`, fullPage: true });
+        await page.screenshot({ path: `${SHOTS}/task-archive-refused.png`, fullPage: true });
         await dialog.getByRole('button', { name: 'Cancel' }).click();
         await expect(dialog).toBeHidden();
-        await page.unroute(`**/api/jobs/${taskId}/remove`);
+        await page.unroute(`**/api/jobs/${taskId}/archive`);
 
         // A route-id change is a different conversation: a refusal earned on one task must not
         // haunt the next one's dialog. The modal holds the page while open, so the jump happens
@@ -226,39 +219,82 @@ test.describe('the task detail actions', () => {
         await page.locator('.inbox-row a').first().click();
         await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
         await trigger.click();
-        await page.getByRole('menuitem', { name: 'Remove task' }).click();
+        await page.getByRole('menuitem', { name: 'Archive task' }).click();
         await expect(dialog).toBeVisible();
         await expect(dialog.getByRole('alert')).toHaveCount(0);
-        await expect(dialog.getByRole('button', { name: 'Remove task' })).toBeEnabled();
+        await expect(dialog.getByRole('button', { name: 'Archive task' })).toBeEnabled();
         await dialog.getByRole('button', { name: 'Cancel' }).click();
 
-        // The real removal: in flight the dialog cannot be dismissed — Escape included — and
+        // The real archive: in flight the dialog cannot be dismissed — Escape included — and
         // the inbox is where the route ends.
         const currentId = /\/tasks\/([0-9a-f-]{36})$/.exec(page.url())![1]!;
-        await page.route(`**/api/jobs/${currentId}/remove`, async (route) => {
+        await page.route(`**/api/jobs/${currentId}/archive`, async (route) => {
             await new Promise((resolve) => setTimeout(resolve, 400));
             await route.continue();
         });
         await trigger.click();
-        await page.getByRole('menuitem', { name: 'Remove task' }).click();
-        await dialog.getByRole('button', { name: 'Remove task' }).click();
-        await expect(dialog.getByRole('button', { name: 'Removing\u2026' })).toBeDisabled();
+        await page.getByRole('menuitem', { name: 'Archive task' }).click();
+        await dialog.getByRole('button', { name: 'Archive task' }).click();
+        await expect(dialog.getByRole('button', { name: 'Archiving\u2026' })).toBeDisabled();
         await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeDisabled();
         await page.keyboard.press('Escape');
         await expect(dialog).toBeVisible();
         await page.mouse.click(10, 500);
         await expect(dialog).toBeVisible();
         await expect(page).toHaveURL(/\/tasks$/, { timeout: 10_000 });
-        await page.screenshot({ path: `${SHOTS}/task-removed-inbox.png`, fullPage: true });
+        await page.screenshot({ path: `${SHOTS}/task-archived-inbox.png`, fullPage: true });
 
         for (const token of FORBIDDEN) expect(problems.join('\n'), token).not.toContain(token);
-        // The 409 the spec feeds the remove request is the test's own doing — the browser logs
+        // The 409 the spec feeds the archive request is the test's own doing — the browser logs
         // the refused status itself, and the app's handling of it is what the assertions above
         // verified. It is the one console line this flow may produce.
         const real = problems.filter(
             (p) => p !== 'console: Failed to load resource: the server responded with a status of 409 (Conflict)'
         );
         expect(real.join('\n')).toBe('');
+    });
+
+    test('an archived task leaves the inbox, shows under Archived, stays readable, and Unarchive brings it back', async ({
+        page,
+    }) => {
+        const problems = watchConsole(page);
+        const taskId = await seededTaskId(page);
+        const row = page.locator(`.inbox-row a[href$="${taskId}"]`);
+        const archive = await page.request.post(`/api/jobs/${taskId}/archive`);
+        expect(archive.status()).toBe(200);
+
+        // Gone from the default view and from Past, whatever the task's other state.
+        await page.goto('/tasks');
+        await expect(page.locator('.inbox-row, .inbox-empty').first()).toBeVisible();
+        await expect(row).toHaveCount(0);
+
+        // Listed under its own tab, which carries its count.
+        await page.getByRole('link', { name: /^Archived, \d+ across the organization$/ }).click();
+        await expect(page).toHaveURL(/state=archived/);
+        await expect(row).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/task-archived-list.png`, fullPage: true });
+
+        // Open and readable: the thread is there, the header says it is archived, and the menu holds
+        // Unarchive in place of Archive.
+        await row.click();
+        await expect(page).toHaveURL(new RegExp(`${taskId}$`));
+        await expect(page.locator('.task-controls')).toContainText('Archived');
+        await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/task-archived-detail.png`, fullPage: true });
+        const trigger = header(page).getByRole('button', { name: 'More task actions' });
+        await trigger.click();
+        await expect(page.getByRole('menuitem', { name: 'Archive task' })).toHaveCount(0);
+        await page.getByRole('menuitem', { name: 'Unarchive task' }).click();
+        await expect(page.locator('.task-controls')).not.toContainText('Archived');
+
+        // Back on the active list.
+        await page.goto('/tasks?state=archived');
+        await expect(page.locator('.inbox-row, .inbox-empty').first()).toBeVisible();
+        await expect(row).toHaveCount(0);
+        await page.goto('/tasks');
+        await expect(row).toBeVisible();
+
+        expect(problems.join('\n')).toBe('');
     });
 });
 
@@ -622,10 +658,10 @@ test.describe('the task detail page', () => {
         await expect(page.locator('.task-activity')).toContainText('Environment setup4m');
         await page.screenshot({ path: `${SHOTS}/task-detail-gate-failed.png`, fullPage: true });
 
-        // Mark done and Remove both wait in the overflow.
+        // Mark done and Archive both wait in the overflow.
         await header(page).getByRole('button', { name: 'More task actions' }).click();
         await expect(page.getByRole('menuitem', { name: 'Mark done' })).toBeVisible();
-        await expect(page.getByRole('menuitem', { name: 'Remove task' })).toBeVisible();
+        await expect(page.getByRole('menuitem', { name: 'Archive task' })).toBeVisible();
         await page.keyboard.press('Escape');
 
         // Ask for another pass lands the caret in the composer and sends nothing by itself; the rail

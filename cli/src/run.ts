@@ -434,17 +434,13 @@ async function runDone(args: readonly string[], io: RunIo): Promise<CommandResul
 }
 
 // Archive stops a running task first, as `job stop` does, and nothing is lost: unarchive brings it back.
-async function runArchive(args: readonly string[], io: RunIo): Promise<CommandResult> {
-    const { id } = onlyId(args, 'archive');
-    const archived = await boardFor(io).archiveJob(id);
-    return ok(archived, renderArchived(archived));
-}
-
-async function runUnarchive(args: readonly string[], io: RunIo): Promise<CommandResult> {
-    const { id } = onlyId(args, 'unarchive');
-    const archived = await boardFor(io).unarchiveJob(id);
-    return ok(archived, renderArchived(archived));
-}
+const runArchiving =
+    (verb: 'archive' | 'unarchive') =>
+    async (args: readonly string[], io: RunIo): Promise<CommandResult> => {
+        const { id } = onlyId(args, verb);
+        const archived = await boardFor(io)[verb === 'archive' ? 'archiveJob' : 'unarchiveJob'](id);
+        return ok(archived, renderArchived(archived));
+    };
 
 async function runRepoList(args: readonly string[], io: RunIo): Promise<CommandResult> {
     noArguments(args, 'repo list');
@@ -495,8 +491,8 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'job stop': runStop,
     'job done': runDone,
     'job reopen': runReopen,
-    'job archive': runArchive,
-    'job unarchive': runUnarchive,
+    'job archive': runArchiving('archive'),
+    'job unarchive': runArchiving('unarchive'),
     'repo list': runRepoList,
     'executor list': runExecutorList,
     'skill list': runSkillList,

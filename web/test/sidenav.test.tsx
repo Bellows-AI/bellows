@@ -70,6 +70,7 @@ const navigation = (
         running: runningTasks.length,
         review: reviewTasks.length,
         past: 0,
+        archived: 0,
     },
     running: runningTasks,
     review: reviewTasks,
@@ -233,7 +234,12 @@ describe('SideNav task preview', () => {
         const REVIEW_COUNT = 9;
         const html = render(
             '/tasks',
-            navigation([summary(running())], [summary(), summary()], { running: 1, review: REVIEW_COUNT, past: 0 })
+            navigation([summary(running())], [summary(), summary()], {
+                running: 1,
+                review: REVIEW_COUNT,
+                past: 0,
+                archived: 0,
+            })
         );
         expect(html.match(/<details/g) ?? []).toHaveLength(1);
         expect(html).toMatch(/<details[^>]*class="sidenav-preview"[^>]*>/);
@@ -250,7 +256,7 @@ describe('SideNav task preview', () => {
 
     it('summarizes a past-only organization as all caught up', () => {
         const PAST_COUNT = 3;
-        const html = render('/tasks', navigation([], [], { running: 0, review: 0, past: PAST_COUNT }));
+        const html = render('/tasks', navigation([], [], { running: 0, review: 0, past: PAST_COUNT, archived: 0 }));
         expect(html).toContain('<summary class="sidenav-section">All caught up</summary>');
     });
 
@@ -271,7 +277,12 @@ describe('SideNav task preview', () => {
         const PAST_COUNT = 100;
         const html = render(
             '/tasks',
-            navigation(runningTasks, reviewTasks, { running: RUNNING_COUNT, review: REVIEW_COUNT, past: PAST_COUNT })
+            navigation(runningTasks, reviewTasks, {
+                running: RUNNING_COUNT,
+                review: REVIEW_COUNT,
+                past: PAST_COUNT,
+                archived: 0,
+            })
         );
         const rows = html.match(/sidenav-task-title/g) ?? [];
         const MAX_PREVIEW_ROWS = 5;
@@ -290,7 +301,10 @@ describe('SideNav task preview', () => {
             summary({ status: 'failed', command: `review task ${i}` })
         );
         const REVIEW_COUNT = 15;
-        const html = render('/tasks', navigation([], reviewTasks, { running: 0, review: REVIEW_COUNT, past: 0 }));
+        const html = render(
+            '/tasks',
+            navigation([], reviewTasks, { running: 0, review: REVIEW_COUNT, past: 0, archived: 0 })
+        );
         expect(html).toContain('+12 more need review');
         expect(html).toContain('href="/tasks?state=review"');
         // And a "View all" way into the inbox beside it.
@@ -316,7 +330,7 @@ describe('SideNav task preview', () => {
         const REVIEW_COUNT_WITHOUT_OPEN = 6;
         const without = render(
             '/tasks',
-            navigation([], reviewTasks, { running: 0, review: REVIEW_COUNT_WITHOUT_OPEN, past: 0 })
+            navigation([], reviewTasks, { running: 0, review: REVIEW_COUNT_WITHOUT_OPEN, past: 0, archived: 0 })
         );
         expect(without).not.toContain('the open task');
         expect(without).toContain('review task 2');
@@ -325,7 +339,7 @@ describe('SideNav task preview', () => {
         const REVIEW_COUNT_WITH_OPEN = 7;
         const full = render(
             `/tasks/${open.id}`,
-            navigation([], [...reviewTasks, open], { running: 0, review: REVIEW_COUNT_WITH_OPEN, past: 0 })
+            navigation([], [...reviewTasks, open], { running: 0, review: REVIEW_COUNT_WITH_OPEN, past: 0, archived: 0 })
         );
         expect(full).toContain('the open task');
         expect(full).not.toContain('review task 2');
@@ -359,7 +373,7 @@ describe('SideNav review-count pill', () => {
         const REVIEW_COUNT = 12;
         const html = render(
             '/tasks',
-            navigation([summary(running())], [], { running: 1, review: REVIEW_COUNT, past: 0 })
+            navigation([summary(running())], [], { running: 1, review: REVIEW_COUNT, past: 0, archived: 0 })
         );
         expect(html.match(/sidenav-count/g) ?? []).toHaveLength(1);
         expect(html).toContain('<span class="sidenav-count" aria-hidden="true">12</span>');
@@ -377,7 +391,7 @@ describe('SideNav review-count pill', () => {
         const RUNNING_COUNT = 2;
         const zero = render(
             '/tasks',
-            navigation([summary(running())], [], { running: RUNNING_COUNT, review: 0, past: 0 })
+            navigation([summary(running())], [], { running: RUNNING_COUNT, review: 0, past: 0, archived: 0 })
         );
         const none = render('/', null);
         for (const html of [zero, none]) {
