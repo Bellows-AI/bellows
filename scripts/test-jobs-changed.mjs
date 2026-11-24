@@ -77,6 +77,7 @@ export const RULES = [
     [/^server\/src\/auth\/(plugin|request-limits|route-class|session|store|worker-auth|driver-credentials|access-token|bridge-binding|membership-guard|membership-store|membership|admin-promotion|member-removal|org-key|setup-store)\.ts$/, FULL, 'authentication every request passes'],
     [/^server\/src\/auth\/github\.ts$/, ['auth', 'capacity', 'mcp', 'pinned-skills'], 'GitHub sign-in, built only by the AUTH_MODE=github boards'],
     [/^server\/src\/auth\/driver-credential-(cli|command)\.ts$/, NONE, 'the driver credential command line, not called by any jobs phase'],
+    [/^driver\/src\/change-request-url\.ts$/, NONE, 'a copied URL parser nothing in the driver calls yet; pinned by server/test/change-request-url-parity.test.ts'],
     // Asked before every sync, publish and gate (driver/src/board/board.ts), and installed in every task.
     [/^driver\/src\/(github-credential-call\.ts|loop\/loop-github\.ts|scripts\/credential-helper\.sh)$/, FULL, 'the GitHub token ask every task makes'],
 
