@@ -223,6 +223,39 @@ describe.skipIf(!enabled).each(VARIANT_CASES)(
             ).toEqual([TRIPLE]);
         });
 
+        it('every read answers the thread ref, not its path', async () => {
+            const root = await finishedGitlabRoot();
+            await sql`insert into job_pr (org_id, root_job_id, forge, host, repo, pr_number, pr_url, head_branch, base_branch)
+                values (${ORG}, ${root}, ${GITLAB.forge}, ${GITLAB.host}, ${GITLAB.path}, 3, 'https://x.example/3', 'factory/x', 'main')`;
+
+            const got = await store.get(root);
+            expect(got?.repo).toEqual(GITLAB);
+            expect(got?.publication?.repo).toEqual(GITLAB);
+            const thread = await store.thread(root);
+            expect(thread?.map((job) => job.repo)).toEqual([GITLAB]);
+            expect(thread?.[0]?.publication?.repo).toEqual(GITLAB);
+            expect((await store.list({ limit: 200 })).find((job) => job.id === root)?.repo).toEqual(GITLAB);
+            expect((await store.list({ status: 'terminal', limit: 200 })).find((job) => job.id === root)?.repo).toEqual(
+                GITLAB
+            );
+            const { page } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 50, repo: GITLAB });
+            expect(page.items.map((task) => [task.id, task.repo])).toEqual([[root, GITLAB]]);
+        });
+
+        it('a repo filter matches the whole ref, so the same path on github.com stays apart', async () => {
+            const root = await finishedGitlabRoot();
+            const twin = await mustCreate(
+                store.create('twin', AUTHOR_USER.id, { repo: githubRepo(GITLAB.path), executor: null } as never)
+            );
+            const ids = (jobs: { id: string }[]) => jobs.map((job) => job.id);
+            expect(ids(await store.list({ limit: 200, repo: GITLAB }))).toContain(root);
+            expect(ids(await store.list({ limit: 200, repo: GITLAB }))).not.toContain(twin.id);
+            expect(ids(await store.list({ limit: 200, repo: githubRepo(GITLAB.path) }))).not.toContain(root);
+            const { page } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 50, repo: GITLAB });
+            expect(page.items.map((task) => task.id)).toContain(root);
+            expect(page.items.map((task) => task.id)).not.toContain(twin.id);
+        });
+
         it('store.create writes the ref it is given', async () => {
             const { id } = await mustCreate(
                 store.create('from a ref', null, { repo: GITLAB, executor: null } as never)

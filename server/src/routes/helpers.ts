@@ -84,6 +84,16 @@ export function repoRefReason(ref: RepoRef): string | null {
     return null;
 }
 
+/** The `repo` of a `?repo=` filter: the ref its text names (`owner/name` on GitHub, else `forge:host/path`), or why not. */
+export function repoFilterOf(value: unknown): { ok: true; ref: RepoRef } | { ok: false; message: string } {
+    const message = 'repo must be owner/name on GitHub, forge:host/path otherwise';
+    if (typeof value !== 'string') return { ok: false, message };
+    const ref = parseRepoRef(value);
+    if (ref === null) return { ok: false, message };
+    const reason = repoRefReason(ref);
+    return reason === null ? { ok: true, ref } : { ok: false, message: reason };
+}
+
 /**
  * The read side's rule. The old `/:owner/:name` read routes did no shape check: a repo was readable when the tracked
  * list held it, so `acme/-tools` and `acme/.github` were. Only what cannot be a path segment is refused here (`.`,

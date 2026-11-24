@@ -110,7 +110,7 @@ interface StoreStub extends JobStore {
         snapshot: unknown;
         params?: unknown;
     }[];
-    listed: { status?: JobStatus | 'terminal' | undefined; repo?: string | undefined; limit: number }[];
+    listed: { status?: JobStatus | 'terminal' | undefined; repo?: RepoRef | undefined; limit: number }[];
     /** Every command a create was handed, in call order. */
     commands: string[];
     completed: {
@@ -3514,7 +3514,7 @@ describe('GET /api/jobs', () => {
         output: 'hello',
         failureKind: null,
         summary: null,
-        repo: 'acme/web',
+        repo: githubRepo('acme/web'),
         executor: 'main',
         followUpTo: null,
         rootJobId: ID,
@@ -3653,7 +3653,17 @@ describe('GET /api/jobs', () => {
         const instance = await harnessWith(store);
         const response = await instance.inject({ method: 'GET', url: '/api/jobs?repo=acme/web' });
         expect(response.statusCode).toBe(200);
-        expect(store.listed).toEqual([{ status: undefined, repo: 'acme/web', limit: 50 }]);
+        expect(store.listed).toEqual([{ status: undefined, repo: githubRepo('acme/web'), limit: 50 }]);
+    });
+
+    it('passes a non-GitHub repository filter as its ref', async () => {
+        const store = stubStore({ job });
+        const instance = await harnessWith(store);
+        const response = await instance.inject({ method: 'GET', url: '/api/jobs?repo=gitlab:gl.example/g/sub/p' });
+        expect(response.statusCode).toBe(200);
+        expect(store.listed).toEqual([
+            { status: undefined, repo: { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' }, limit: 50 },
+        ]);
     });
 
     it.each([
@@ -3932,7 +3942,7 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         output: 'killed after 7200000ms',
         summary: null,
         failureKind: 'timeout',
-        repo: 'acme/web',
+        repo: githubRepo('acme/web'),
         executor: 'main',
         followUpTo: null,
         rootJobId: ID,

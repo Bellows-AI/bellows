@@ -1,4 +1,4 @@
-import { ERROR_CODES, githubRepo, type RepoRef } from '@factory-ai/core';
+import { ERROR_CODES, type RepoRef } from '@factory-ai/core';
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from 'fastify';
 import type { OrgRegistry } from '../../orgs.js';
 import { callerOf, orgOf } from '../../auth/plugin.js';
@@ -77,12 +77,7 @@ export async function refusedOnThread(
     try {
         const job = await thread.store.get(thread.id);
         if (!job) return false;
-        return refusedAsNoForgeGrant(
-            request,
-            reply,
-            gate, // until BEL-532b part 3: `job.repo` is still a path
-            { repo: job.repo === null ? null : githubRepo(job.repo), returnTo: `/tasks/${thread.id}` }
-        );
+        return refusedAsNoForgeGrant(request, reply, gate, { repo: job.repo, returnTo: `/tasks/${thread.id}` });
     } catch (err) {
         forgeReadFailed(reply, request.log, err);
         return true;

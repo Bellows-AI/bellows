@@ -33,7 +33,9 @@ import type { JobLeaseInfo, JobThreadFacts } from '../lease-types.js';
 import type { ActivityRecords } from '../../telemetry/run-activity.js';
 import { abortableSleep } from '../../abortable-sleep.js';
 import { questionsOfJobs } from './job-store-questions.js';
-import { type TaskCursor, decodeCursor, encodeCursor } from '../task-summary.js';
+import { type TaskCursor, cursorFiltersOf, decodeCursor, encodeCursor } from '../task-summary.js';
+import { formatRepoRef, type RepoRef } from '@factory-ai/core';
+import { repoIs } from '../repo-ref-row.js';
 import { terminalFragment, doneFragment } from './job-store-sql-fragments.js';
 
 /** The reads: a job, a thread, the task list, the settle wait, and the scopes artifacts and restore resolve against. */
@@ -130,7 +132,7 @@ export interface JobReadStore {
      */
     list(filter: {
         status?: JobStatus | 'terminal' | undefined;
-        repo?: string | undefined;
+        repo?: RepoRef | undefined;
         limit: number;
     }): Promise<Job[]>;
 
@@ -156,7 +158,7 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
     // and the read answers null.
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
-               session_id, exit_code, output, gates, runtime, repo, executor, executor_scope, agent_type, agent_model, run_model,
+               session_id, exit_code, output, gates, runtime, forge, host, repo, executor, executor_scope, agent_type, agent_model, run_model,
                parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                -- The task's overall wall clock, summed over the thread the WHERE already
                -- scoped: every member carries the total, so the view reads it off any of
@@ -258,7 +260,7 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
     const { sql, orgId, authorJoin, authorColumns, waitLateral, publicationJoin, publicationColumns } = ctx;
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
-               session_id, exit_code, output, gates, runtime, repo, executor, executor_scope, agent_type, agent_model, run_model,
+               session_id, exit_code, output, gates, runtime, forge, host, repo, executor, executor_scope, agent_type, agent_model, run_model,
                parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                summary, wall_clock_ms, agent_turns, setup_ms, interruptions, failure_kind, failure_cause,
                -- The thread's wait (036) and publication, served by the detail reads on
@@ -622,7 +624,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                        finished_thread.finished_at as finished_at
                 from finished_thread
                 join job on job.org_id = ${orgId} and job.id = finished_thread.root_job_id
-                ${repo ? sql`where job.repo = ${repo}` : sql``}
+                ${repo ? sql`where ${repoIs(sql, 'job', repo)}` : sql``}
                 order by finished_thread.finished_at desc, job.created_at desc, job.id
                 limit ${limit}
             )
@@ -633,7 +635,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                    head.exit_code as exit_code, head.summary as summary, head.runtime as runtime,
                    head.failure_kind as failure_kind, head.failure_cause as failure_cause,
                    head.wall_clock_ms as wall_clock_ms,
-                   job.repo as repo, job.executor as executor, job.executor_scope as executor_scope,
+                   job.forge as forge, job.host as host, job.repo as repo, job.executor as executor, job.executor_scope as executor_scope,
                    job.agent_type as agent_type, job.agent_model as agent_model, head.run_model as run_model,
                    job.parent_job_id as parent_job_id, job.root_job_id as root_job_id,
                    job.workflow_node as workflow_node, job.workflow_name as workflow_name,
@@ -674,7 +676,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
     }
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
-               session_id, exit_code, runtime, repo, executor, executor_scope, agent_type, agent_model, run_model,
+               session_id, exit_code, runtime, forge, host, repo, executor, executor_scope, agent_type, agent_model, run_model,
                parent_job_id, root_job_id, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
                -- The close-time summary and the run's own banked clock ride beside the
                -- vitals, both bounded where output is not; the structured failure
@@ -687,7 +689,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
             // The terminal set is the branch above; this query is the per-run lists.
             status ? sql`and status = ${status}` : sql``
         }
-          ${repo ? sql`and repo = ${repo}` : sql``}
+          ${repo ? sql`and ${repoIs(sql, 'job', repo)}` : sql``}
         order by job.created_at desc, job.id
         limit ${limit}
     `;
@@ -733,7 +735,7 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
             -- thread) rather than scanning the org's runs and filtering id = root_job_id —
             -- the EXPLAIN-measured difference between touching every run and touching one
             -- row per thread.
-            select h.root_job_id as id, h.id as head_id, r.command, r.title, r.title_origin, r.title_revision, r.repo, r.executor, r.executor_scope, r.created_at,
+            select h.root_job_id as id, h.id as head_id, r.command, r.title, r.title_origin, r.title_revision, r.forge, r.host, r.repo, r.executor, r.executor_scope, r.created_at,
                    h.status, h.done_at, h.cancel_requested_at, h.summary, h.runtime,
                    -- The sort key is truncated to milliseconds, the precision an ISO
                    -- stamp and a JS Date carry: the cursor's value round-trips EXACTLY,
@@ -833,7 +835,7 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
  */
 export function resolveTaskCursor(filters: TaskListFilters): TaskCursor | null {
     if (filters.cursor === undefined) return null;
-    const cursor = decodeCursor(filters.cursor, filters);
+    const cursor = decodeCursor(filters.cursor, cursorFiltersOf(filters));
     if (cursor === null) throw new Error('invalid task cursor');
     return cursor;
 }
@@ -859,8 +861,8 @@ export function taskQWhere(sql: Sql, q: string | undefined): Fragment {
     return q === undefined ? sql`` : sql`and strpos(lower(command), lower(${q})) > 0`;
 }
 
-export function taskRepoWhere(sql: Sql, repo: string | undefined): Fragment {
-    return repo === undefined ? sql`` : sql`and repo = ${repo}`;
+export function taskRepoWhere(sql: Sql, repo: RepoRef | undefined): Fragment {
+    return repo === undefined ? sql`` : sql`and ${repoIs(sql, 'task', repo)}`;
 }
 
 export function taskAuthorWhere(sql: Sql, author: string | undefined): Fragment {
@@ -878,7 +880,7 @@ export function nextTaskCursor(filters: TaskListFilters, pageRowCount: number, i
         sort: filters.sort,
         state: filters.state,
         q: filters.q,
-        repo: filters.repo,
+        repo: filters.repo && formatRepoRef(filters.repo),
         author: filters.author,
         activityAt: last.activityAt,
         rootId: last.id,

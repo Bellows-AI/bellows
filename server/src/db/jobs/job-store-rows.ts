@@ -24,7 +24,7 @@ import type {
     TaskSummary,
     JobStoreContext,
 } from './job-store-types.js';
-import { refColumns } from '../repo-ref-row.js';
+import { refColumns, refOfNullableRow, refOfRow } from '../repo-ref-row.js';
 import { stagedUnderLease } from './job-store-staged.js';
 
 /** The row's interruptions (071); the per-run lists do not select them, and serve none. */
@@ -70,6 +70,8 @@ export interface JobRow {
      * draws.
      */
     runtime?: RuntimeVitals | null;
+    forge: string;
+    host: string;
     repo: string | null;
     executor: string | null;
     /** Null on rows stamped before 047; reads as 'user' — the pre-391 meaning. */
@@ -108,6 +110,8 @@ export interface JobRow {
     waiting_since?: Date | null;
     wait_terminal_reason?: string | null;
     /** Only the detail reads (get/thread) join `job_pr`; absent from the lists. */
+    publication_forge?: string | null;
+    publication_host?: string | null;
     publication_repo?: string | null;
     publication_pr_number?: number | null;
     publication_pr_url?: string | null;
@@ -132,6 +136,8 @@ export interface TaskRow {
     id: string;
     head_id: string;
     command: string;
+    forge: string;
+    host: string;
     repo: string | null;
     executor: string | null;
     executor_scope: string | null;
@@ -238,7 +244,7 @@ export function toJob(orgId: string, row: JobRow): Job {
         ...failureOf(row),
         gates: row.gates ?? null,
         runtime: row.runtime ?? null,
-        repo: row.repo,
+        repo: refOfNullableRow(row),
         executor: row.executor,
         executorScope: (row.executor_scope ?? USER_SCOPE) as ExecutorScope,
         agentType: row.agent_type as ExecutorType | null,
@@ -271,7 +277,11 @@ export function toJob(orgId: string, row: JobRow): Job {
             row.publication_repo == null
                 ? null
                 : {
-                      repo: row.publication_repo,
+                      repo: refOfRow({
+                          forge: row.publication_forge!,
+                          host: row.publication_host!,
+                          repo: row.publication_repo,
+                      }),
                       prNumber: row.publication_pr_number!,
                       prUrl: row.publication_pr_url!,
                       headBranch: row.publication_head_branch!,
@@ -302,7 +312,7 @@ export function toTask(row: TaskRow): TaskSummary {
         status: row.status,
         cancelRequestedAt: stampOf(row.cancel_requested_at),
         doneAt: stampOf(row.done_at),
-        repo: row.repo,
+        repo: refOfNullableRow(row),
         executor: row.executor,
         executorScope: (row.executor_scope ?? USER_SCOPE) as ExecutorScope,
         author: userRef(row.creator_id, row.creator_login, row.creator_name, row.creator_avatar_url),
@@ -522,7 +532,7 @@ export function waitLateralFragment(sql: Sql, orgId: string): Fragment {
 export function publicationJoinFragment(sql: Sql): Fragment {
     return sql`
         left join lateral (
-            select p.repo as publication_repo, p.pr_number as publication_pr_number,
+            select p.forge as publication_forge, p.host as publication_host, p.repo as publication_repo, p.pr_number as publication_pr_number,
                    p.pr_url as publication_pr_url, p.head_branch as publication_head_branch,
                    p.base_branch as publication_base_branch
             from job_pr p
@@ -556,7 +566,7 @@ export function threadTitleColumnsFragment(sql: Sql): Fragment {
 
 export function publicationColumnsFragment(sql: Sql): Fragment {
     return sql`
-        , pub.publication_repo, pub.publication_pr_number, pub.publication_pr_url
+        , pub.publication_forge, pub.publication_host, pub.publication_repo, pub.publication_pr_number, pub.publication_pr_url
         , pub.publication_head_branch, pub.publication_base_branch
     `;
 }
@@ -565,7 +575,7 @@ export function publicationColumnsFragment(sql: Sql): Fragment {
 // navigation-preview and page subquery, which read the derived set rather than the tables.
 export function taskPreviewColumnsFragment(sql: Sql): Fragment {
     return sql`
-        id, head_id, command, repo, executor, executor_scope, created_at, status, done_at, cancel_requested_at,
+        id, head_id, command, forge, host, repo, executor, executor_scope, created_at, status, done_at, cancel_requested_at,
         summary, runtime, activity_at, creator_id, creator_login, creator_name, creator_avatar_url,
         wait_reason, waiting_since, wait_terminal_reason, needs_answer, title, title_origin, title_revision
     `;

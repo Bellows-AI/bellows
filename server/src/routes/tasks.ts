@@ -1,11 +1,11 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { ERROR_CODES, formatRepoRef, type RepoRef } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
 import type { JobReadStore } from '../db/jobs/job-store-reads.js';
 import type { TaskListFilters, TaskState } from '../db/jobs/job-store-types.js';
 import { decodeCursor, type TaskCursorFilters } from '../db/task-summary.js';
 import type { OrgRegistry } from '../orgs.js';
-import { bad, guard, repoReason } from './helpers.js';
+import { bad, guard, repoFilterOf } from './helpers.js';
 
 export interface TaskRouteDeps {
     /** The per-org runtimes; the board a request reads is the CALLER's org's. */
@@ -66,12 +66,10 @@ function parseQ(query: Record<string, unknown>): string | undefined | QueryError
     return q === '' ? undefined : q;
 }
 
-function parseRepo(query: Record<string, unknown>): string | undefined | QueryError {
+function parseRepo(query: Record<string, unknown>): RepoRef | undefined | QueryError {
     if (query.repo === undefined) return undefined;
-    if (!isText(query.repo)) return { code: ERROR_CODES.BAD_REPO, message: 'repo must be owner/name' };
-    const reason = repoReason(query.repo);
-    if (reason !== null) return { code: ERROR_CODES.BAD_REPO, message: reason };
-    return query.repo;
+    const read = repoFilterOf(query.repo);
+    return read.ok ? read.ref : { code: ERROR_CODES.BAD_REPO, message: read.message };
 }
 
 function parseAuthor(query: Record<string, unknown>): string | undefined | QueryError {
@@ -145,7 +143,7 @@ function parseTaskFilters(
         sort,
         state,
         ...(q !== undefined && { q }),
-        ...(repo !== undefined && { repo }),
+        ...(repo !== undefined && { repo: formatRepoRef(repo) }),
         ...(author !== undefined && { author }),
     };
     const cursor = parseCursor(query, expected);

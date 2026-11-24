@@ -1,5 +1,6 @@
+import { formatRepoRef } from '@factory-ai/core';
 import { UUID } from '../identifiers.js';
-import type { JobStatus, TaskState } from './jobs/job-store-types.js';
+import type { JobStatus, TaskListFilters, TaskState } from './jobs/job-store-types.js';
 
 /**
  * The task read model's pure half: the terminal set and the cursor that pages `GET /api/tasks`.
@@ -30,6 +31,15 @@ const CURSOR_VERSION = 1;
 
 /** The filters a cursor binds — the fields of `TaskListFilters` the store normalizes before use. */
 export type TaskCursorFilters = Pick<TaskCursor, 'sort' | 'state' | 'q' | 'repo' | 'author'>;
+
+/** The filters a cursor binds, from the store's: the repo filter as its ref text, the form the cursor carries. */
+export const cursorFiltersOf = (filters: TaskListFilters): TaskCursorFilters => ({
+    sort: filters.sort,
+    state: filters.state,
+    q: filters.q,
+    repo: filters.repo && formatRepoRef(filters.repo),
+    author: filters.author,
+});
 
 export function encodeCursor(payload: Omit<TaskCursor, 'v'>): string {
     const cursor: TaskCursor = { v: CURSOR_VERSION, ...payload };

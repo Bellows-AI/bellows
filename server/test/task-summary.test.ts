@@ -1,5 +1,6 @@
+import { githubRepo, type RepoRef } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
-import { decodeCursor, encodeCursor } from '../src/db/task-summary.js';
+import { cursorFiltersOf, decodeCursor, encodeCursor } from '../src/db/task-summary.js';
 
 /** ISO stamps count backwards from a fixed base — `at(60)` is an hour before `at(5)`. */
 const at = (minutes: number): string =>
@@ -64,6 +65,16 @@ describe('the task cursor', () => {
         expect(
             decodeCursor(cursor, { sort: 'newest', state: 'review', q: 'fix', repo: 'a/b', author: 'other' })
         ).toBeNull();
+    });
+
+    it('binds a repo filter by its ref text, so the same path on another host stays apart', () => {
+        const filters = (repo: RepoRef) => cursorFiltersOf({ sort: 'newest', state: 'review', limit: 10, repo });
+        const gitlab = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' } as const;
+        expect(filters(gitlab).repo).toBe('gitlab:gl.example/g/sub/p');
+        expect(filters(githubRepo('g/p')).repo).toBe('g/p');
+        const cursor = encodeCursor({ ...filters(gitlab), activityAt: at(3), rootId: ID });
+        expect(decodeCursor(cursor, filters(gitlab))).not.toBeNull();
+        expect(decodeCursor(cursor, filters(githubRepo('g/sub/p')))).toBeNull();
     });
 
     it('answers null on a stale version', () => {

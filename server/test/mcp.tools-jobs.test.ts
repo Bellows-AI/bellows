@@ -1,3 +1,4 @@
+import { formatRepoRef, githubRepo } from '@factory-ai/core';
 import { createServer } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
@@ -6,7 +7,7 @@ import type { McpCaller, OAuthStore } from '../src/auth/oauth-store.js';
 import { hashToken } from '../src/auth/session.js';
 import type { ArtifactStore } from '../src/artifacts/artifact-store.js';
 import type { TaskListFilters } from '../src/db/jobs/job-store-types.js';
-import { decodeCursor, encodeCursor } from '../src/db/task-summary.js';
+import { cursorFiltersOf, decodeCursor, encodeCursor } from '../src/db/task-summary.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { fakeArtifacts, manifest, stream } from './helpers-artifacts.js';
@@ -137,7 +138,7 @@ const storeOf = (board: Board) =>
             if (board.tasksFail) throw new Error('db down');
             board.filters?.push(filters);
             const all = board.tasks ?? [];
-            const after = filters.cursor ? decodeCursor(filters.cursor, filters)?.rootId : undefined;
+            const after = filters.cursor ? decodeCursor(filters.cursor, cursorFiltersOf(filters))?.rootId : undefined;
             const from = after === undefined ? 0 : all.findIndex((t) => t.id === after) + 1;
             const items = all.slice(from, from + Math.min(filters.limit, PAGE));
             const last = items.at(-1);
@@ -152,7 +153,7 @@ const storeOf = (board: Board) =>
                                   sort: filters.sort,
                                   state: filters.state,
                                   q: filters.q,
-                                  repo: filters.repo,
+                                  repo: filters.repo && formatRepoRef(filters.repo),
                                   author: filters.author,
                                   activityAt: last.activityAt,
                                   rootId: last.id,
@@ -321,7 +322,7 @@ describe('list_tasks', () => {
             state: 'review',
             q: 'login',
             author: 'alice',
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             sort: 'oldest',
             limit: 7,
         });
@@ -348,7 +349,7 @@ describe('list_jobs', () => {
         const listQueries: { status?: string; repo?: string; limit: number }[] = [];
         const url = await boot({ a: { jobs, listQueries }, b: { jobs: [run(JOB_B)] } });
         const { data } = await call(url, 'alice', 'list_jobs', { status: 'terminal', repo: 'acme/web', limit: 2 });
-        expect(listQueries[0]).toEqual({ status: 'terminal', repo: 'acme/web', limit: 2 });
+        expect(listQueries[0]).toEqual({ status: 'terminal', repo: githubRepo('acme/web'), limit: 2 });
         expect(data.jobs.map((j: { state: string }) => j.state)).toEqual(['pending', 'running']);
         expect(data.jobs[0]).not.toHaveProperty('output');
         const bob = await call(url, 'bob', 'list_jobs');

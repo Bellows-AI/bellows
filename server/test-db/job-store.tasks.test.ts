@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
@@ -240,7 +241,12 @@ describe.skipIf(!enabled)('listTasks: filters', () => {
         const bySearch = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30, q: 'login' });
         expect(bySearch.page.items.map((task) => task.id)).toEqual([match, other]);
 
-        const byRepo = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30, repo: 'acme/widgets' });
+        const byRepo = await store.listTasks({
+            state: 'attention',
+            sort: 'newest',
+            limit: 30,
+            repo: githubRepo('acme/widgets'),
+        });
         expect(byRepo.page.items.map((task) => task.id)).toEqual([match]);
 
         // The author filter is a login, compared case-insensitively.
@@ -257,7 +263,7 @@ describe.skipIf(!enabled)('listTasks: filters', () => {
             sort: 'newest',
             limit: 30,
             q: 'LOGIN',
-            repo: 'acme/widgets',
+            repo: githubRepo('acme/widgets'),
             author: 'tasks-cat',
         });
         expect(combined.page.items.map((task) => task.id)).toEqual([match]);
@@ -475,7 +481,7 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
             state: 'review',
             sort: 'newest',
             limit: 30,
-            repo: 'acme/two',
+            repo: githubRepo('acme/two'),
         });
         expect(navigation.counts).toEqual({ running: 1, review: 1, past: 1 });
         expect(navigation.running).toHaveLength(1);
