@@ -156,16 +156,12 @@ async function settleCancelledContinuation(
 export const CLAIM_PREPARE_SECONDS = 60;
 
 /** The candidate a claim reserved, as the preparation outside every lock needs it. */
-interface ReservedCandidate {
+interface ReservedCandidate extends Pick<ClaimCandidateRow, 'forge' | 'host' | 'repo' | 'workflow_node'> {
     id: string;
     root_job_id: string;
     claim_seq: string;
     /** The thread root's `execution_user_id`: the identity every row of the thread runs as. */
     run_as: string | null;
-    forge: string;
-    host: string;
-    repo: string | null;
-    workflow_node: string | null;
     base_branch: string | null;
     /** The deferral the reservation overwrote, restored when a budget refuses the candidate. */
     prior_deferral: Date | null;
@@ -733,7 +729,7 @@ export interface ResolvedClaimEvidence {
 export async function resolveClaimGates(
     planReader: CreateJobStoreDeps['plan'],
     ctx: { orgId: string; rootJobId: string },
-    row: { run_as: string | null; forge: string; host: string; repo: string | null; base_branch: string | null }
+    row: Pick<ReservedCandidate, 'run_as' | 'forge' | 'host' | 'repo' | 'base_branch'>
 ): Promise<ResolvedClaimGates> {
     const claimPath = workspacePathFor(ctx.orgId, row.run_as);
     if (!planReader || !row.repo) {
