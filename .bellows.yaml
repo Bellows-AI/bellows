@@ -14,8 +14,11 @@ environment:
          # core into core/dist once, first, so each later gate's build is an up-to-date no-op.
          - name: "build:core"
            command: "npm run build -w core"
+         # test and test:executors run three forks (TEST_FORKS, vitest.forks.ts), not six: six forks
+         # reporting to one vitest process in a microVM starved it, and the workers' RPC timed out
+         # ("Timeout calling onTaskUpdate") with every test passed.
          - name: test
-           command: "sh scripts/gate-test-changed.sh"
+           command: "TEST_FORKS=3 sh scripts/gate-test-changed.sh"
            timeout: 30
          - name: lint
            command: "npm run lint"
@@ -29,7 +32,7 @@ environment:
            timeout: 30
          # The in-process driver, supervisor and job-route suites, whatever the change touched: no daemon.
          - name: "test:executors"
-           command: "npm run test:executors"
+           command: "TEST_FORKS=3 npm run test:executors"
            timeout: 15
          # verify:ui in a real chromium against the declared postgres (scripts/gate-ui.sh): the agent's
          # image has no browser libraries. On demand, filtered to the specs a change touches, and at
