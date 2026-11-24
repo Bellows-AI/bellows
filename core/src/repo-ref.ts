@@ -50,24 +50,30 @@ export const sameRepo = (a: RepoRef, b: RepoRef): boolean => repoKey(a) === repo
 
 const REPO_REF_FIELDS = ['forge', 'host', 'path'];
 
+/** What {@link readRepoRef} answers; `field` names the member a refusal is about, absent when it is the whole value. */
+export type RepoRefRead = { ok: true; ref: RepoRef } | { ok: false; message: string; field?: string };
+
 /**
  * Reads a wire body's `{ forge, host, path }` object: the ref (host lowercased, path kept), or the reason it is
  * refused. Unknown fields are refused, so a stale `{ owner, name }` caller hears about it.
  */
-export function readRepoRef(raw: unknown): { ok: true; ref: RepoRef } | { ok: false; message: string } {
+export function readRepoRef(raw: unknown): RepoRefRead {
     const shape = 'repo must be {forge, host, path}';
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { ok: false, message: shape };
     const fields = raw as Record<string, unknown>;
     const unknown = Object.keys(fields).find((key) => !REPO_REF_FIELDS.includes(key));
-    if (unknown !== undefined) return { ok: false, message: `repo has an unknown field "${unknown}"` };
+    if (unknown !== undefined) return { ok: false, message: `repo has an unknown field "${unknown}"`, field: unknown };
     const { forge, host, path } = fields;
     if (typeof forge !== 'string' || !(REPO_FORGES as readonly string[]).includes(forge)) {
-        return { ok: false, message: `repo forge must be one of ${REPO_FORGES.join(', ')}` };
+        return { ok: false, message: `repo forge must be one of ${REPO_FORGES.join(', ')}`, field: 'forge' };
     }
-    if (typeof host !== 'string' || !HOST_PATTERN.test(host)) return { ok: false, message: 'repo host is malformed' };
+    if (typeof host !== 'string' || !HOST_PATTERN.test(host)) {
+        return { ok: false, message: 'repo host is malformed', field: 'host' };
+    }
     const github = forge === 'github';
     if (typeof path !== 'string' || !(github ? GITHUB_REPO_PATH_PATTERN : REPO_PATH_PATTERN).test(path)) {
-        return { ok: false, message: github ? 'repo path must be owner/name on GitHub' : 'repo path is malformed' };
+        const message = github ? 'repo path must be owner/name on GitHub' : 'repo path is malformed';
+        return { ok: false, message, field: 'path' };
     }
     return { ok: true, ref: { forge: forge as RepoForge, host: host.toLowerCase(), path } };
 }

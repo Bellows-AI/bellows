@@ -15,6 +15,7 @@ import {
     MAX_STAGE_TASKS,
     validateBatchPlan,
 } from '../src/batch-plan.js';
+import { githubRepo } from '../src/repo-ref.js';
 import { BATCH_PLAN_JSON_SCHEMA } from '../src/batch-plan-schema.js';
 
 /**
@@ -38,17 +39,19 @@ const task = (key: string, extra: Record<string, unknown> = {}) => ({
 const plan = (overrides: Record<string, unknown> = {}) => ({
     planVersion: 1,
     title: 'Upgrade',
-    targets: [{ key: 'web', repo: 'acme/web' }],
+    targets: [{ key: 'web', repo: githubRepo('acme/web') }],
     defaultTarget: 'web',
     stages: [{ key: 'one', tasks: [task('a')] }],
     ...overrides,
 });
 
 const withTask = (extra: Record<string, unknown>) => plan({ stages: [{ key: 'one', tasks: [task('a', extra)] }] });
-const withTarget = (extra: Record<string, unknown>) => plan({ targets: [{ key: 'web', repo: 'acme/web', ...extra }] });
+const withTarget = (extra: Record<string, unknown>) =>
+    plan({ targets: [{ key: 'web', repo: githubRepo('acme/web'), ...extra }] });
 const withStage = (extra: Record<string, unknown>) => plan({ stages: [{ key: 'one', tasks: [task('a')], ...extra }] });
 const numbered = (count: number, make: (n: number) => unknown) => Array.from({ length: count }, (_, n) => make(n));
 const key = (n: number) => `k${n}`;
+const gitlab = (path: string) => ({ forge: 'gitlab', host: 'gl.example', path });
 
 const ACCEPTED: [string, unknown][] = [
     ['a minimal plan', plan()],
@@ -63,8 +66,8 @@ const ACCEPTED: [string, unknown][] = [
             repairs: 5,
             timeLimitMinutes: 60,
             targets: [
-                { key: 'web', repo: 'acme/web', branch: 'release/1.2' },
-                { key: 'api', repo: 'acme/api.v2' },
+                { key: 'web', repo: githubRepo('acme/web'), branch: 'release/1.2' },
+                { key: 'api', repo: githubRepo('acme/api.v2') },
             ],
             stages: [
                 {
@@ -84,8 +87,8 @@ const ACCEPTED: [string, unknown][] = [
         'a plan whose tasks span two repositories',
         plan({
             targets: [
-                { key: 'web', repo: 'acme/web' },
-                { key: 'api', repo: 'acme/api' },
+                { key: 'web', repo: githubRepo('acme/web') },
+                { key: 'api', repo: githubRepo('acme/api') },
             ],
             stages: [{ key: 'one', tasks: [task('a'), task('b', { target: 'api' })] }],
         }),
@@ -97,7 +100,7 @@ const ACCEPTED: [string, unknown][] = [
     [
         'the most targets',
         plan({
-            targets: numbered(MAX_BATCH_TARGETS, (n) => ({ key: key(n), repo: 'acme/web' })),
+            targets: numbered(MAX_BATCH_TARGETS, (n) => ({ key: key(n), repo: githubRepo('acme/web') })),
             defaultTarget: key(0),
         }),
     ],
@@ -109,7 +112,9 @@ const ACCEPTED: [string, unknown][] = [
     ['the longest key', plan({ title: 'Upgrade', stages: [{ key: 'a'.repeat(BATCH_KEY_LIMIT), tasks: [task('a')] }] })],
     ['the longest title', plan({ title: 'x'.repeat(BATCH_TITLE_LIMIT) })],
     ['the longest task text', withTask({ objective: 'x'.repeat(BATCH_TEXT_LIMIT) })],
-    ['the longest repo', withTarget({ repo: `${'a'.repeat(100)}/${'b'.repeat(BATCH_REPO_LIMIT - 101)}` })],
+    ['the longest repo', withTarget({ repo: githubRepo(`${'a'.repeat(100)}/${'b'.repeat(BATCH_REPO_LIMIT - 101)}`) })],
+    ['a nested gitlab repo', withTarget({ repo: gitlab('g/sub/p') })],
+    ['a host with a port', withTarget({ repo: { ...gitlab('g/p'), host: 'gl.example:8443' } })],
     ['the longest executor', plan({ executor: 'e'.repeat(BATCH_EXECUTOR_LIMIT), executorScope: 'org' })],
     ['the longest branch', withTarget({ branch: 'b'.repeat(BATCH_BRANCH_LIMIT) })],
     ['a branch with dots, slashes and hyphens', withTarget({ branch: 'feature/a_b-c.d' })],
@@ -142,19 +147,24 @@ const REJECTED: [string, unknown][] = [
     ['targets that are not an array', plan({ targets: { key: 'web' } })],
     [
         'too many targets',
-        plan({ targets: numbered(MAX_BATCH_TARGETS + 1, (n) => ({ key: key(n), repo: 'acme/web' })) }),
+        plan({ targets: numbered(MAX_BATCH_TARGETS + 1, (n) => ({ key: key(n), repo: githubRepo('acme/web') })) }),
     ],
     ['a target that is not an object', plan({ targets: ['acme/web'] })],
-    ['a target with no key', plan({ targets: [{ repo: 'acme/web' }] })],
-    ['an uppercase key', plan({ targets: [{ key: 'Web', repo: 'acme/web' }] })],
-    ['a key starting with a hyphen', plan({ targets: [{ key: '-web', repo: 'acme/web' }] })],
+    ['a target with no key', plan({ targets: [{ repo: githubRepo('acme/web') }] })],
+    ['an uppercase key', plan({ targets: [{ key: 'Web', repo: githubRepo('acme/web') }] })],
+    ['a key starting with a hyphen', plan({ targets: [{ key: '-web', repo: githubRepo('acme/web') }] })],
     ['a too long key', plan({ stages: [{ key: 'a'.repeat(BATCH_KEY_LIMIT + 1), tasks: [task('a')] }] })],
     ['a numeric key', plan({ stages: [{ key: 1, tasks: [task('a')] }] })],
     ['a target with no repo', plan({ targets: [{ key: 'web' }] })],
-    ['a repo with no owner', withTarget({ repo: 'web' })],
-    ['a repo with three parts', withTarget({ repo: 'a/b/c' })],
-    ['a repo with a space', withTarget({ repo: 'acme/my web' })],
-    ['a too long repo', withTarget({ repo: `${'a'.repeat(100)}/${'b'.repeat(BATCH_REPO_LIMIT - 100)}` })],
+    ['a repo given as text', withTarget({ repo: 'acme/web' })],
+    ['a repo with no owner', withTarget({ repo: githubRepo('web') })],
+    ['a github repo with three parts', withTarget({ repo: githubRepo('a/b/c') })],
+    ['a repo with a space', withTarget({ repo: githubRepo('acme/my web') })],
+    ['a too long repo', withTarget({ repo: githubRepo(`${'a'.repeat(100)}/${'b'.repeat(BATCH_REPO_LIMIT - 100)}`) })],
+    ['a repo with an unknown forge', withTarget({ repo: { ...gitlab('g/p'), forge: 'svn' } })],
+    ['a repo with no host', withTarget({ repo: { forge: 'gitlab', path: 'g/p' } })],
+    ['a repo with a malformed host', withTarget({ repo: { ...gitlab('g/p'), host: 'gl example' } })],
+    ['a repo with an unknown field', withTarget({ repo: { ...githubRepo('acme/web'), owner: 'acme' } })],
     ['an empty branch', withTarget({ branch: '' })],
     ['a branch with ..', withTarget({ branch: 'a..b' })],
     ['a branch starting with a hyphen', withTarget({ branch: '-x' })],
@@ -205,8 +215,8 @@ const LIMITS: [string, unknown][] = [
         'a duplicate target key',
         plan({
             targets: [
-                { key: 'web', repo: 'acme/web' },
-                { key: 'web', repo: 'acme/api' },
+                { key: 'web', repo: githubRepo('acme/web') },
+                { key: 'web', repo: githubRepo('acme/api') },
             ],
         }),
     ],
@@ -250,6 +260,13 @@ describe('BATCH_PLAN_JSON_SCHEMA', () => {
         expect(JSON.parse(JSON.stringify(BATCH_PLAN_JSON_SCHEMA))).toEqual(BATCH_PLAN_JSON_SCHEMA);
         expect(Object.keys(BATCH_PLAN_JSON_SCHEMA).length).toBeGreaterThan(0);
         expect(JSON.stringify(BATCH_PLAN_JSON_SCHEMA)).not.toMatch(/\$ref|\$schema|\$id/);
+    });
+
+    it('states a target repo as a {forge, host, path} object with no other key', () => {
+        const props = (BATCH_PLAN_JSON_SCHEMA as any).properties.targets.items.properties.repo;
+        expect(props.type).toBe('object');
+        expect(props.additionalProperties).toBe(false);
+        expect(Object.keys(props.properties)).toEqual(['forge', 'host', 'path']);
     });
 
     it.each(ACCEPTED)('accepts what the parser accepts: %s', (_name, raw) => {
