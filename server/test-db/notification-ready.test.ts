@@ -70,8 +70,7 @@ beforeEach(() => {
         sql,
         orgId: ORG,
         reader,
-        recordMerge: (repo, number, deliveryId, mergedAt) =>
-            jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
+        recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
         now,
     });

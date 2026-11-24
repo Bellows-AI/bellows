@@ -91,8 +91,7 @@ const mergerOf = (memberGrants: MemberForgeGrants | undefined): BatchMerger => {
         sql,
         orgId: ORG,
         client,
-        recordMerge: (repo, number, deliveryId, mergedAt) =>
-            jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
+        recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
         mergeToken: (who, signal) =>
             tokenUnreadable
@@ -118,8 +117,7 @@ async function readyBatch(starter = STARTER.id) {
         sql,
         orgId: ORG,
         reader: client,
-        recordMerge: (repo, number, deliveryId, mergedAt) =>
-            jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
+        recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (batchId) => store.reconcile(batchId),
     });
     await observer.observeDue();
