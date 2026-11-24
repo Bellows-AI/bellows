@@ -148,7 +148,7 @@ describe.skipIf(!enabled)('follow-ups and done', () => {
 
         const followUp = await mustFollowUp(parent, 'again, tighter', null);
 
-        expect(await store.get(followUp.id)).toMatchObject({ repo: 'acme/web', executor: 'main' });
+        expect(await store.get(followUp.id)).toMatchObject({ repo: githubRepo('acme/web'), executor: 'main' });
     });
 
     /*

@@ -882,7 +882,7 @@ describe.skipIf(!enabled)('job store', () => {
         );
         const unlabelled = await queue('echo hi');
 
-        expect(await store.get(labelled.id)).toMatchObject({ repo: 'acme/web', executor: 'main' });
+        expect(await store.get(labelled.id)).toMatchObject({ repo: githubRepo('acme/web'), executor: 'main' });
         // Jobs queued before the chat, and tasks sent without either label, read as null — the
         // state every pre-migration row is in.
         expect(await store.get(unlabelled.id)).toMatchObject({ repo: null, executor: null });

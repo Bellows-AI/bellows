@@ -488,10 +488,10 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
         expect(navigation.review).toHaveLength(1);
         // Preview rows arrive through the json path, where stamps read back as offset strings —
         // the shape stampOf exists to normalize. A regression there would null these stamps.
-        expect(navigation.running[0]).toMatchObject({ repo: 'acme/one' });
+        expect(navigation.running[0]).toMatchObject({ repo: githubRepo('acme/one') });
         expect(Math.abs(minutesAgo(navigation.running[0]!.createdAt) - 60)).toBeLessThan(2);
         expect(Math.abs(minutesAgo(navigation.running[0]!.activityAt) - RUNNING_STARTED_MINUTES_AGO)).toBeLessThan(2);
-        expect(page.items.map((task) => task.repo)).toEqual(['acme/two']);
+        expect(page.items.map((task) => task.repo)).toEqual([githubRepo('acme/two')]);
     });
 
     it('never mixes another organization into counts, previews, page or search', async () => {
