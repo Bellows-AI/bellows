@@ -197,11 +197,13 @@ function gateRunOf(result: StepResult, deadlineMs: number): GateRun {
     // (`STEP_OUTPUT_LIMIT_BYTES`) the lines it read off the whole file stand in for the head.
     const output = failureExcerpt(raw, REPORT_BYTE_LIMIT, result.failureLines);
     const full = tailKept(raw, ARTIFACT_LIMIT);
+    // A log cut here, or by the supervisor before the driver saw it, is a tail: the stream must say so.
+    const cut = full.truncated || result.outputCut === true;
     // Beside the answer only when the answer is less than the log: output that fits is its own whole.
     const whole =
-        full.content === output
+        full.content === output && !cut
             ? {}
-            : { fullOutput: full.content, ...(full.truncated ? { fullTruncated: true as const } : {}) };
+            : { fullOutput: full.content, ...(cut ? { fullTruncated: true as const } : {}) };
     const recorded = gateResultOf(result.report, result.timedOut);
     const structured = recorded ? { result: recorded } : {};
     if (result.timedOut) {

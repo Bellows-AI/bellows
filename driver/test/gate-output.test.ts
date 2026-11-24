@@ -66,6 +66,14 @@ describe("the gate manager keeps a run's whole output", () => {
         expect(bytes(run.output)).toBeLessThanOrEqual(REPORT_BYTE_LIMIT);
     });
 
+    it("reads the supervisor's own cut as a cut log, whatever the size of what is left", async () => {
+        const cut = await runWith({ exitCode: 0, stdout: 'a short tail', outputCut: true });
+        expect(cut.fullOutput).toBe('a short tail');
+        expect(cut.fullTruncated).toBe(true);
+        const whole = await runWith({ exitCode: 0, stdout: 'a short tail' });
+        expect(whole.fullTruncated).toBeUndefined();
+    });
+
     it('tail-keeps the whole log at the artifact limit and says the head is gone', async () => {
         const run = await runWith({ exitCode: 1, stdout: `${failures}${'x'.repeat(ARTIFACT_LIMIT * 2)}tail` });
 

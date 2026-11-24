@@ -68,6 +68,22 @@ describe.each(['docker', 'kubernetes'])('a gate run keeps its whole output (%s e
         expect(stored).not.toContain(FILES[0]);
     });
 
+    it('marks the stream truncated, and the read reports it, when the supervisor cut the log it was handed', async () => {
+        const log = suiteLog(FILES);
+        const board = stubBoard([jobWith(['test'])]);
+        const stack = stubGateStack({ test: 1 }, { fullOutputs: { test: log }, cutOutputs: ['test'] });
+
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates: stack.gates }, { EXECUTOR: executor });
+
+        const executionId = executionIdOf(board.board.gatesReported.at(-1)!.results[0]!);
+        const stream = `gate-test-${executionId}`;
+        expect(board.board.artifactManifests).toContainEqual(expect.objectContaining({ stream, state: 'truncated' }));
+        expect(board.board.artifactCauses[stream]).toBe('head_dropped');
+        await expect(
+            stack.stack.claims[0]!.readGateLog!(executionId, new AbortController().signal)
+        ).resolves.toMatchObject({ truncated: true, cause: 'head_dropped' });
+    });
+
     it('reads a stored run back by its execution id, as `factory-gate --last --full` does', async () => {
         const log = suiteLog(FILES);
         const board = stubBoard([jobWith(['test'])]);

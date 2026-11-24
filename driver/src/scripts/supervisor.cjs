@@ -105,7 +105,7 @@ const { pipeline, Transform } = require('node:stream');
 /** @typedef {SpawnSpec & { id: string, invocation: string, kind: StepKind }} Step */
 /** @typedef {Step & { kind: LaneKind }} GateStep */
 /** @typedef {{ sections: Record<string, unknown>, resources: string }} GateReportFiles */
-/** @typedef {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean, replayed?: boolean, tokenAskUnanswered?: boolean, failureLines?: string, report?: GateReportFiles }} StepResult */
+/** @typedef {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean, replayed?: boolean, tokenAskUnanswered?: boolean, failureLines?: string, outputCut?: true, report?: GateReportFiles }} StepResult */
 /** @typedef {{ result: StepResult, interrupted: boolean, tokens?: string[] }} Outcome */
 /** @typedef {{ state: string, result?: StepResult }} Call */
 /** @typedef {{ id: string, kind: string, effect: StepResult | null, invocations: Record<string, Call> }} Entry */
@@ -1206,11 +1206,23 @@ function readGateReport(dir) {
 }
 
 /**
+ * A file's size in bytes; 0 for one that cannot be read.
+ * @param {string} file
+ */
+function fileSize(file) {
+    try {
+        return fs.statSync(file).size;
+    } catch {
+        return 0;
+    }
+}
+
+/**
  * The answer of a finished request (`done/<id>`), read and removed; null while it is not done.
  * @param {Run} run
  * @param {LaneKind} lane
  * @param {string} name
- * @returns {{ exitCode: number | null, output: string, failureLines: string, report: GateReportFiles | null } | null}
+ * @returns {{ exitCode: number | null, output: string, failureLines: string, outputCut: boolean, report: GateReportFiles | null } | null}
  */
 function takeGateAnswer(run, lane, name) {
     const done = path.join(run.file[lane].done, name);
@@ -1223,10 +1235,15 @@ function takeGateAnswer(run, lane, name) {
     }
     const outputFile = path.join(done, GATE_FILES.output);
     const output = readTail(outputFile);
+    // The two cuts the answer's output takes: the file's head past the cap (`readTail`), and the head of what is
+    // left once its JSON form outgrows the cap (`fitTail`).
+    const rawCut = fileSize(outputFile) > STEP_OUTPUT_LIMIT;
+    const escapedCut = Buffer.byteLength(JSON.stringify(output)) > STEP_OUTPUT_LIMIT;
     const answer = {
         exitCode: Number.isFinite(code) ? code : null,
         output,
-        failureLines: readFailureLines(outputFile, Buffer.byteLength(JSON.stringify(output)) > STEP_OUTPUT_LIMIT),
+        failureLines: readFailureLines(outputFile, escapedCut),
+        outputCut: rawCut || escapedCut,
         report: readGateReport(done),
     };
     fs.rmSync(done, { recursive: true, force: true });
@@ -1410,6 +1427,15 @@ const withFailureLines = (outcome, failureLines) =>
     failureLines ? { ...outcome, result: { ...outcome.result, failureLines } } : outcome;
 
 /**
+ * The outcome marked when the answer's output is not the gate's whole: `readTail` or `fitTail` removed bytes.
+ * @param {Outcome} outcome
+ * @param {boolean} cut
+ * @returns {Outcome}
+ */
+const withOutputCut = (outcome, cut) =>
+    cut ? { ...outcome, result: { ...outcome.result, outputCut: true } } : outcome;
+
+/**
  * A gate loop gone silent: no exit — never a verdict — whether it never took the request or went quiet on it.
  * @param {Run} run
  * @param {GateStep} step
@@ -1434,7 +1460,10 @@ function gateTick(run, step, flight) {
     const answer = takeGateAnswer(run, step.kind, step.id);
     if (answer) {
         return withGateReport(
-            withFailureLines(answeredGateResult(flight, step, answer), answer.failureLines),
+            withOutputCut(
+                withFailureLines(answeredGateResult(flight, step, answer), answer.failureLines),
+                answer.outputCut
+            ),
             answer.report
         );
     }

@@ -469,9 +469,19 @@ const parseResult = (raw: string): { invocation: string; result: StepResult } | 
     const unanswered = parsed.tokenAskUnanswered === true ? { tokenAskUnanswered: true as const } : {};
     const report = reportFilesOf(parsed.report);
     const failures = typeof parsed.failureLines === 'string' ? { failureLines: parsed.failureLines } : {};
+    const cut = parsed.outputCut === true ? { outputCut: true as const } : {};
     return {
         invocation,
-        result: { exitCode, stdout, stderr, timedOut, ...unanswered, ...failures, ...(report ? { report } : {}) },
+        result: {
+            exitCode,
+            stdout,
+            stderr,
+            timedOut,
+            ...unanswered,
+            ...failures,
+            ...cut,
+            ...(report ? { report } : {}),
+        },
     };
 };
 

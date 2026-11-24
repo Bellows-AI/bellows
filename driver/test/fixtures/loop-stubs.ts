@@ -137,6 +137,8 @@ export interface BoardStub extends Board {
     /** Every artifact chunk and manifest the loop sent, with the claim sequence each rode under. */
     artifactChunks: { id: string; claimSeq: number; stream: string; offset: number; text: string }[];
     artifactManifests: { id: string; claimSeq: number; stream: string; state: ArtifactManifest['state'] }[];
+    /** The terminal cause each finalized stream's manifest carried, by stream name. */
+    artifactCauses: Record<string, string | null>;
 }
 
 /** The board's durable gate-run and finish-round records, outliving one claim: what a takeover reads back. */
@@ -250,6 +252,7 @@ export function stubBoard(
         questionsReported: [],
         artifactChunks: [],
         artifactManifests: [],
+        artifactCauses: {},
         async checkpoint() {
             return { state: 'none' };
         },
@@ -276,6 +279,7 @@ export function stubBoard(
         },
         async finalizeArtifact(claimed, ref, manifest) {
             if (artifactsAreDown()) throw new Error('board unreachable');
+            board.artifactCauses[ref.stream] = manifest.terminalCause;
             board.artifactManifests.push({
                 id: claimed.id,
                 claimSeq: claimed.claimSeq,
@@ -409,9 +413,15 @@ export function stubBoard(
             const chunks = board.artifactChunks
                 .filter((chunk) => chunk.stream.startsWith('gate-') && chunk.stream.endsWith(`-${executionId}`))
                 .sort((a, b) => a.offset - b.offset);
-            return chunks.length === 0
-                ? null
-                : { text: chunks.map((chunk) => chunk.text).join(''), truncated: false, cause: null };
+            if (chunks.length === 0) return null;
+            // As the board's read: a stream finalized short of `complete` is a cut log, and says why.
+            const stream = chunks[0]!.stream;
+            const state = board.artifactManifests.find((manifest) => manifest.stream === stream)?.state;
+            return {
+                text: chunks.map((chunk) => chunk.text).join(''),
+                truncated: state !== 'complete',
+                cause: board.artifactCauses[stream] ?? null,
+            };
         },
         async finishPass(_claimed, write) {
             board.finishPassesWritten.push(structuredClone(write));
@@ -763,6 +773,8 @@ export function stubGateStack(
         results?: Record<string, GateResult>;
         /** The whole output each named gate prints when it fails: the run answers its report tail beside it, as the manager does. */
         fullOutputs?: Record<string, string>;
+        /** The gates whose output the supervisor cut before the driver saw it: their run says its log is a tail. */
+        cutOutputs?: string[];
     } = {}
 ) {
     const runs = new Map<string, number>();
@@ -836,6 +848,9 @@ export function stubGateStack(
                                     : `${name} failed badly`
                                 : failureExcerpt(full, REPORT_BYTE_LIMIT),
                         ...(full === undefined ? {} : { fullOutput: tailKept(full, ARTIFACT_LIMIT).content }),
+                        ...(full !== undefined && options.cutOutputs?.includes(name)
+                            ? { fullTruncated: true as const }
+                            : {}),
                         ...(result ? { result } : {}),
                     };
                 };

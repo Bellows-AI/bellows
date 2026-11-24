@@ -15,6 +15,7 @@ What a gate run keeps of its output: the whole log as a stream of the run, and a
 ## Invariants
 
 - The excerpt is taken from the uncut output, before any cap: the supervisor reads the failure and summary lines off the whole output file in chunks when the answer cannot hold the whole file (past `STEP_OUTPUT_LIMIT` in bytes or once JSON-escaped) and carries them as `failureLines` beside its tail, which `gateRunOf` merges in. Both executors read a gate's output only through that supervisor step; the stored log is a tail and may no longer hold the failing names.
+- A cut the supervisor made (its raw tail, or the JSON-escaped one) is reported as `outputCut` in the step result and ORed into `fullTruncated`, so the stream's manifest says head-dropped and `--last --full` answers `truncated`: a tail is never stored as a whole log.
 - A stream no manifest closed answers a retryable 503 (never 404, never a prefix as whole); one finalized short of `complete` answers its bytes with `truncated` and the manifest's `cause`.
 - The log never rides the gates report: the report keeps its 16 KiB raw budget (the 128 KiB body bound), and the log goes by chunked artifact upload under the claim.
 - A log that could not be stored costs the full read, never a verdict; `--last --full` answers 404 for a log the board lacks and a retryable 503 for one it could not read, never the excerpt in its place.

@@ -162,6 +162,7 @@ interface StepAnswer {
     replayed?: boolean;
     tokenAskUnanswered?: true;
     failureLines?: string;
+    outputCut?: true;
 }
 
 interface Driver {
@@ -1528,6 +1529,41 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
         expect(answer?.stdout).not.toContain(files[0]);
         for (const file of files) expect(answer?.failureLines).toContain(file);
         expect(answer?.failureLines).toContain('Test Files  2 failed');
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    // The answer's tail is cut by JSON size too: control bytes cost six in it, so a log well under the cap can lose its
+    // head. The step says so, so no downstream store takes the tail for the whole.
+    it('says its answer is cut when the escaped output outgrows the cap under the raw cap', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const output = `start\n${'\x1b[2K\r'.repeat(150_000)}done`;
+        expect(Buffer.byteLength(output)).toBeLessThan(STEP_OUTPUT_LIMIT_BYTES);
+        expect(Buffer.byteLength(JSON.stringify(output))).toBeGreaterThan(STEP_OUTPUT_LIMIT_BYTES);
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        const answer = driver.answers.get('gate-1');
+        expect(answer?.stdout.startsWith('start')).toBe(false);
+        expect(answer?.outputCut).toBe(true);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('says its answer is cut when the raw output outgrows the cap, and not when it holds the whole', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        fakeGateLoop(supervised.box.gate, (request) => ({
+            exitCode: 0,
+            output: request.id === 'gate-1' ? `${'x'.repeat(STEP_OUTPUT_LIMIT_BYTES)}tail` : 'small',
+        }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the first answer', () => driver.answers.has('gate-1'));
+        driver.order(gateStep('gate-2', 'npm test', { timeoutMs: 60_000 }));
+        await until('the second answer', () => driver.answers.has('gate-2'));
+        expect(driver.answers.get('gate-1')?.outputCut).toBe(true);
+        expect(driver.answers.get('gate-2')?.outputCut).toBeUndefined();
         supervised.agentExits(0);
         await supervised.done;
     });
