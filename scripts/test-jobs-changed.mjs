@@ -133,7 +133,7 @@ export const RULES = [
     [/^scripts\/lane-skills\.mjs$/, ['pinned-skills'], 'the pinned-skills phase publisher'],
     [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish(-retry)?|loop\/loop-pr-operation)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
-    [/^driver\/src\/(loop\/loop-gates|loop\/loop-gate-pass|loop\/loop-finish|loop\/loop-run-control|gate-manager|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs|dockerd-loss|tools|tool-control)\.ts$/, ['driver', 'workflows', 'finish-gate'], 'gates and phases'],
+    [/^driver\/src\/(loop\/loop-gates|loop\/loop-gate-pass|loop\/loop-finish|loop\/loop-run-control|gate-manager|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|loop\/gate-settled|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs|dockerd-loss|tools|tool-control)\.ts$/, ['driver', 'workflows', 'finish-gate'], 'gates and phases'],
     [/^driver\/src\/gate-result\.ts$/, ['driver', 'workflows'], 'gates'],
     [/^driver\/src\/scripts\/gate-(loop|shell|github)\.sh$/, ['driver', 'workflows'], 'gates'],
     [/^driver\/src\/(docker\/docker-task-volume|task-volume)\.ts$/, ['driver', 'capacity', 'pinned-skills', ...RECOVERY], 'task volume'],
