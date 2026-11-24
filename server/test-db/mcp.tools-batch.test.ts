@@ -195,7 +195,7 @@ describe.skipIf(!enabled)('the batch tools — database', () => {
         const checked = await call(url, 'alice', 'validate_batch', { batchId: id });
         expect(checked.isError, JSON.stringify(checked.data)).toBeFalsy();
         expect(checked.data).toMatchObject({ valid: true, version: 1 });
-        expect(checked.data.plan.targets[0]).toMatchObject({ repo: BATCH_REPO, branch: 'main' });
+        expect(checked.data.plan.targets[0]).toMatchObject({ repo: githubRepo(BATCH_REPO), branch: 'main' });
         expect(await batches.get(id)).toMatchObject({ status: 'draft' });
 
         const draft = await call(url, 'alice', 'inspect_batch', { batchId: id });
