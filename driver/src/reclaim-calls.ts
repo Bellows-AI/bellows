@@ -1,4 +1,5 @@
 import type { Board } from './board/board.js';
+import type { RepoRef } from './repo-ref.js';
 import { markIdlePoll } from './lifecycle-span.js';
 
 /**
@@ -14,7 +15,7 @@ export interface Reclaim {
     /** The thread whose tree the removed job left behind. */
     rootJobId: string;
     /** The checkout the thread's worktree belonged to, when the removed job named one. */
-    repo: string | null;
+    repo: RepoRef | null;
     workspacePath: string | null;
     leaseExpiresAt: string;
 }

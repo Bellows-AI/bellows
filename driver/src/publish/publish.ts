@@ -371,12 +371,16 @@ export const GATE_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 export const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
 
 /**
- * The repo segment of the job's `owner/name`, asserted: a segment starting with '.' is refused —
- * '.' and '..' are the traversal itself, and any other dot-name is the task volume's own (`.factory`,
- * the `.<name>.sync` the checkout is built in).
+ * The last segment of the job's repo path, asserted: every segment is checked, '.' and '..' are the traversal
+ * itself and are refused anywhere, and the last may not start with '.' — any other dot-name is the task volume's
+ * own (`.factory`, the `.<name>.sync` the checkout is built in).
  */
 const repoSegmentOf = (job: Pick<BoardJob, 'repo'>): string | null => {
-    const segment = job.repo?.split('/')[1];
+    const segments = job.repo?.path.split('/') ?? [];
+    if (segments.some((segment) => segment === '.' || segment === '..' || !/^[A-Za-z0-9._-]+$/.test(segment))) {
+        return null;
+    }
+    const segment = segments.at(-1);
     return segment && /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(segment) ? segment : null;
 };
 
@@ -399,22 +403,14 @@ export function checkoutDir(job: BoardJob): string | null {
     return segment && UUID.test(job.rootJobId ?? job.id) ? `${TASK_MOUNT}/${segment}` : null;
 }
 
-/** Where the task's checkout is cloned from: `<cloneBase>/<owner>/<name>.git`, or null for a repo label with another shape. */
+/**
+ * Where the task's checkout is cloned from: `https://<host>/<path>.git`, or `<cloneBase>/<host>/<path>.git`
+ * when a base is configured; null for a repo whose path has no place on the volume.
+ */
 export function remoteUrl(config: Pick<DriverConfig, 'cloneBase'>, job: BoardJob): string | null {
-    const [owner, name, ...rest] = job.repo?.split('/') ?? [];
-    const part = /^[A-Za-z0-9._-]+$/;
-    if (
-        !owner ||
-        !name ||
-        rest.length > 0 ||
-        !part.test(owner) ||
-        !part.test(name) ||
-        owner === '.' ||
-        owner === '..'
-    ) {
-        return null;
-    }
-    return repoSegmentOf(job) ? `${config.cloneBase}/${owner}/${name}.git` : null;
+    if (!job.repo || !repoSegmentOf(job)) return null;
+    const { host, path } = job.repo;
+    return config.cloneBase === null ? `https://${host}/${path}.git` : `${config.cloneBase}/${host}/${path}.git`;
 }
 
 /** The directory of the task volume that holds every review root of the thread. */

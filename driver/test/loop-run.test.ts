@@ -13,6 +13,7 @@ import type { RunOutcome } from '../src/runner.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { gatedJob, job, ok, stubBoard, stubGateStack, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 type RunnerOptions = NonNullable<Parameters<typeof stubRunner>[1]>;
 
@@ -209,9 +210,9 @@ describe('the checkout sync answer', () => {
     });
 
     it.each([
-        ['a repo on a starting claim', { ...job(1), repo: 'org/repo' }, 1],
+        ['a repo on a starting claim', { ...job(1), repo: githubRef('org/repo') }, 1],
         ['no repo', job(1), 0],
-        ['a follow-up restoring its tree', { ...job(1), repo: 'org/repo', followUp: true }, 0],
+        ['a follow-up restoring its tree', { ...job(1), repo: githubRef('org/repo'), followUp: true }, 0],
     ])('asks GitHub for the sync token for %s', async (_label, claimed, asks) => {
         // A refused sync ends the attempt there, so the sync's is the only ask the board sees.
         const r = await attempt(claimed, { sync: { ok: false, reason: 'boom' } });

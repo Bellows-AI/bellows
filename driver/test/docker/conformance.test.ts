@@ -31,6 +31,7 @@ import {
     labelDaemon,
     dockerRunner,
 } from '../fixtures/docker-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 const MISMATCH_ROW = 'a run specced for another session than its group' as const;
 
@@ -187,7 +188,7 @@ describe('what a closed run leaves for the next claim, on docker (the retention 
 });
 
 describe('how a refused group start ends, on docker (the startup conformance table, #824 D11)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
     /** The daemon's own words for each refusal, as the CLI prints them on its stderr. */
     const refusals: Record<Exclude<StartupRow, typeof MISMATCH_ROW | typeof SILENT_ROW>, string> = {
         'the platform never brought the group up':
@@ -288,7 +289,7 @@ describe('how a refused group start ends, on docker (the startup conformance tab
 });
 
 describe('docker waits for the supervisor of a started group to make contact (#828)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
     /** A sink whose `contacted` answers `answers` in turn, then the last one for ever. */
     const contactAfter = (supervised: ReturnType<typeof fakeSteps>, answers: boolean[]) => {
         let reads = 0;

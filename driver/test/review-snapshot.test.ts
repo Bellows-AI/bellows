@@ -5,6 +5,7 @@ import { reviewBudgetMs } from '../src/review/review-step.js';
 import type { PublishStep } from '../src/publish/publish.js';
 import { TASK_MOUNT } from '../src/task-volume.js';
 import { gitReviewSnapshotScript, reviewRefOf, snapshotTree } from '../src/review/review-snapshot.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /** The review snapshot step and the claim rules a named reviewer's run follows. */
 
@@ -15,7 +16,7 @@ const ROOT = '55555555-5555-4555-8555-555555555555';
 const job = {
     id: JOB_ID,
     rootJobId: ROOT,
-    repo: 'Bellows-AI/bellows',
+    repo: githubRef('Bellows-AI/bellows'),
     workspacePath: `bellows/${USER}`,
     followUp: false,
     resumeSessionId: null,

@@ -4,6 +4,7 @@ import { loadDriverConfig } from '../src/config.js';
 import type { RunSession } from '../src/runner.js';
 import { reviewerPlan, runnerPlan } from '../src/runner-plan.js';
 import { heartbeatPeriodMs, takeoverBoundMs } from '../src/supervisor-plan.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * What a runner is asked to do, decided once for both platforms (runner-plan.ts). docker renders
@@ -258,7 +259,7 @@ describe('the per-repo package cache', () => {
     const CACHE = `/task/.cache/acme/widgets`;
     const cached = (j: BoardJob, cache: string[] = ['NPM_CONFIG_CACHE', 'PIP_CACHE_DIR']): BoardJob => ({
         ...j,
-        repo: 'acme/widgets',
+        repo: githubRef('acme/widgets'),
         gates: { image: 'node:24', cache, gates: [] },
     });
 
@@ -271,9 +272,17 @@ describe('the per-repo package cache', () => {
         expect(envPairs).toContainEqual(['PIP_CACHE_DIR', `${CACHE}/PIP_CACHE_DIR`]);
     });
 
+    it("points a nested path's package cache under every segment", () => {
+        const nested: BoardJob = { ...cached(job), repo: { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' } };
+        expect(plan(nested, { id: SESSION, resume: false }).envPairs).toContainEqual([
+            'NPM_CONFIG_CACHE',
+            '/task/.cache/g/sub/p/NPM_CONFIG_CACHE',
+        ]);
+    });
+
     it('adds nothing when the repository declares no cache', () => {
         const { envPairs } = plan(
-            { ...job, repo: 'acme/widgets', gates: { image: 'node:24', gates: [] } },
+            { ...job, repo: githubRef('acme/widgets'), gates: { image: 'node:24', gates: [] } },
             {
                 id: SESSION,
                 resume: false,
@@ -299,7 +308,7 @@ describe('the per-repo package cache', () => {
         ['a loader hook', cached(job, ['LD_PRELOAD'])],
         ['a runtime hook', cached(job, ['NODE_OPTIONS'])],
         ['a name that is not env-shaped', cached(job, ['a b'])],
-        ['a repo label that escapes the cache root', { ...cached(job), repo: 'acme/..' }],
+        ['a repo label that escapes the cache root', { ...cached(job), repo: githubRef('acme/..') }],
     ])('refuses %s', (_name, j) => {
         expect(() => plan(j, { id: SESSION, resume: false })).toThrow(/refusing to run job .*cache/);
     });

@@ -14,6 +14,7 @@ import {
     tabRows,
 } from '../../src/docker/docker-runner-support.js';
 import { job, ok, fakeSteps, spawnChild, dockerRunner } from '../fixtures/docker-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 describe('readDocker and its listing parsers (#869)', () => {
     const answering = (stdout: string) => async (): Promise<{ stdout: string }> => ({ stdout });
@@ -122,7 +123,7 @@ describe('readDocker and its listing parsers (#869)', () => {
 describe('the docker runner and the gates', () => {
     const gated: BoardJob = {
         ...job,
-        repo: 'Bellows-AI/bellows',
+        repo: githubRef('Bellows-AI/bellows'),
         gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
     };
     const gate = {
@@ -164,7 +165,7 @@ describe('the docker runner and the gates', () => {
         const daemon = recording();
         const supervised = fakeSteps((step) => (step.kind === 'review' ? ok() : ok('{"ok":true,"reason":null}')));
         const runner = dockerRunner(daemon.exec, { steps: supervised.sink });
-        const caller: BoardJob = { ...job, repo: 'Bellows-AI/bellows', reviewerProfiles: ['security'] };
+        const caller: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows'), reviewerProfiles: ['security'] };
         const review = {
             ...caller,
             id: '66666666-6666-4666-8666-666666666666',
@@ -237,7 +238,7 @@ describe('the docker runner restoring a task volume', () => {
     const ROOT_ID = '77777777-7777-4777-8777-777777777777';
     const restoreJob = (over: Partial<BoardJob> = {}): BoardJob => ({
         ...job,
-        repo: 'acme/widgets',
+        repo: githubRef('acme/widgets'),
         rootJobId: ROOT_ID,
         followUp: true,
         env: { GITHUB_TOKEN: 'claim-token' },

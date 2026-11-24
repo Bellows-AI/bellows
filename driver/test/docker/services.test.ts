@@ -27,6 +27,7 @@ import {
     labelDaemon,
     dockerRunner,
 } from '../fixtures/docker-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 /**
  * A stateful daemon: containers live in a map keyed by id/name with their labels, `ps` honors
@@ -71,7 +72,7 @@ const baseJob = job;
 describe('auxiliary services (RUNNER_SERVICES)', () => {
     const STUB: ServiceSpec = { name: 'stub', image: 'stub-svc:1', environment: [] };
     // A repo, as every claim that carries services has: the loop's sync creates the group first.
-    const job: BoardJob = { ...baseJob, repo: 'Bellows-AI/bellows', services: [STUB] };
+    const job: BoardJob = { ...baseJob, repo: githubRef('Bellows-AI/bellows'), services: [STUB] };
     // The declared fleet is process-wide and the suite runs isolate: false — a failed test must not leak it.
     afterEach(() => forgetDeclaredServices(job));
     /** A restart's stand-down signal that never fires. */

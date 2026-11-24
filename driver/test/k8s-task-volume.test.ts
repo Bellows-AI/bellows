@@ -12,6 +12,7 @@ import {
 import type { K8sDeps, K8sMethod, K8sResponse } from '../src/k8s/k8s-transport.js';
 import { CheckpointUnrestorable } from '../src/task-restore.js';
 import { TASK_ROOT_LABEL, TASK_UNSCHEDULABLE_LABEL, taskVolumeName } from '../src/task-volume.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 const ROOT = '11111111-1111-4111-8111-111111111111';
 const config = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_SERVICES: '0' });
@@ -27,7 +28,7 @@ const job = (over: Partial<BoardJob> = {}) =>
         workspacePath: 'acme/33333333-3333-4333-8333-333333333333',
         ...over,
     }) as BoardJob;
-const continuing = () => job({ repo: 'acme/widgets', followUp: true });
+const continuing = () => job({ repo: githubRef('acme/widgets'), followUp: true });
 const name = (generation: number) => taskVolumeName(job(), generation);
 const claim = (generation: number, terminating = false) => ({
     metadata: {

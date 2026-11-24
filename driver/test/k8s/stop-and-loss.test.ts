@@ -9,6 +9,7 @@ import { pollRunnerJobUntilTerminal, runnerLossOf } from '../../src/k8s/k8s-poll
 import { jobsPath, runnerJobName } from '../../src/k8s/k8s-podspec.js';
 import { jobPath } from '../../src/k8s/k8s-auxspec.js';
 import { job, SESSION, namespace, podName, fakeRequest, runner } from '../fixtures/k8s-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 describe('the paused deadline for an agent question', () => {
     it('removes the deadline while waiting and restores it with the actual elapsed wait', async () => {
@@ -183,7 +184,7 @@ describe('a Stop on kubernetes (issue #427)', () => {
     // runHelper's finally, i.e. only once helperVerdict returns — the Job runs to completion.
     it('a Stop (kill) during a pre-helper deletes its aux Job promptly', async () => {
         const base = fakeRequest();
-        const helperJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+        const helperJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
         let helperName: string | null = null;
         let helperDeleted = false;
         let finished = false;

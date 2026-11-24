@@ -37,6 +37,7 @@ import {
     type StepResult,
 } from '../src/supervisor-contract.js';
 import { type HelperPlan, lookupHelper } from '../src/helpers.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * The supervised steps: what the sync, the probe, the publish, the helpers and the
@@ -75,7 +76,7 @@ const job: BoardJob = {
     userId: USER,
     workspacePath: `bellows/${USER}`,
     rootCommand: 'fix the failing build',
-    repo: 'Bellows-AI/bellows',
+    repo: githubRef('Bellows-AI/bellows'),
     env: { GITHUB_TOKEN: CLAIM_TOKEN, MEMBER_VAR: 'member' },
     supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN },
 } as BoardJob;
@@ -303,7 +304,7 @@ describe('the sync and the helpers over the supervisor', () => {
         expect(sync!.env).toMatchObject({
             GITHUB_TOKEN: MINTED_TOKEN,
             CHECKOUT: WORKTREE,
-            REMOTE: `${config.cloneBase}/Bellows-AI/bellows.git`,
+            REMOTE: 'https://github.com/Bellows-AI/bellows.git',
             BRANCH: worktreeBranch(job),
             CRED_HELPER: CREDENTIAL_HELPER,
         });
@@ -581,7 +582,7 @@ describe('the supervised-step members both executors share', () => {
             return { kind: 'pr', url: 'https://github.com/o/r/pull/9', number: 9, operation: 'reused' } as const;
         };
 
-        const result = await members.publishGit({ ...job, repo: 'o/r' }, undefined, { pullRequests });
+        const result = await members.publishGit({ ...job, repo: githubRef('o/r') }, undefined, { pullRequests });
 
         expect(asked).toEqual([{ branch: 'fix/10', base: null }]);
         expect(result).toMatchObject({

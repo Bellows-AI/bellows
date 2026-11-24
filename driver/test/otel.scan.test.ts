@@ -3,6 +3,7 @@
  * attempt whose job carries a marker in each of them, scanned over every span's name, attributes, events and
  * status message (docs/observability.md).
  */
+import { githubRef } from './fixtures/repo-ref.js';
 import type { ReadableSpan } from '@opentelemetry/sdk-trace';
 import { describe, expect, it } from 'vitest';
 import { captureSpans, runGatedPublish } from './fixtures/lifecycle-spans.js';
@@ -32,7 +33,7 @@ describe.each(['docker', 'kubernetes'] as const)('the spans of an attempt under 
         await runGatedPublish(executor, {
             gateLost,
             job: {
-                repo: REPO,
+                repo: githubRef(REPO),
                 baseBranch: BRANCH,
                 command: PROMPT,
                 rootCommand: PROMPT,

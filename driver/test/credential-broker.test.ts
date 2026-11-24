@@ -13,6 +13,7 @@ import { dockerArgs } from '../src/docker/docker.js';
 import { runnerJobSpec } from '../src/k8s/k8s-podspec.js';
 import { AGENT_CONTAINER } from '../src/supervisor-contract.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * The runner's credential broker client (docs/connections.md), shared by the GitHub front end and
@@ -613,7 +614,7 @@ describe('F1: the credential mount and the attempt pair are the agent containerâ
         continuesInterrupted: false,
         userId: USER,
         workspacePath: `bellows/${USER}`,
-        repo: 'Bellows-AI/bellows',
+        repo: githubRef('Bellows-AI/bellows'),
         env: { MEMBER_VAR: 'member' },
     } as BoardJob;
     const SESSION = { id: '55555555-5555-4555-8555-555555555555', resume: false };

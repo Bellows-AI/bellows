@@ -41,6 +41,7 @@ import {
     entrypointAnswers,
     dockerRunner,
 } from '../fixtures/docker-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 const RECLAIM_TOKEN = 'reclaim-control-token';
 
@@ -59,7 +60,7 @@ function reclaimEndpoint() {
 describe('the block-helper transport (issue #207)', () => {
     const NOOP_SCRIPT = lookupHelper('noop')!.scriptBody;
     const NOOP_VERDICT = JSON.stringify({ schema: 'helper-noop/v1', version: 1, ok: true, output: { echoed: true } });
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows', env: { GITHUB_TOKEN: 'claim-token' } };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows'), env: { GITHUB_TOKEN: 'claim-token' } };
     const plan = (over: Partial<HelperPlan> = {}): HelperPlan => ({
         helperId: 'noop',
         phase: 'pre',
@@ -243,7 +244,7 @@ describe('every container the driver runs is hardened (#382)', () => {
     const hasPair = (argv: string[], flag: string, value: string): boolean =>
         argv.some((arg, i) => arg === flag && argv[i + 1] === value);
 
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
     const config = () => loadDriverConfig({});
     const builders: [string, () => string[]][] = [
         ['the runner', () => dockerArgs(config(), job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })],
@@ -328,15 +329,15 @@ describe('every container the driver runs is hardened (#382)', () => {
         ],
         [
             'the publish path',
-            (r: ReturnType<typeof createDockerRunner>) => r.publishGit({ ...job, repo: 'Bellows-AI/bellows' }),
+            (r: ReturnType<typeof createDockerRunner>) => r.publishGit({ ...job, repo: githubRef('Bellows-AI/bellows') }),
         ],
         [
             'the tree probe',
-            (r: ReturnType<typeof createDockerRunner>) => r.probeTree({ ...job, repo: 'Bellows-AI/bellows' }),
+            (r: ReturnType<typeof createDockerRunner>) => r.probeTree({ ...job, repo: githubRef('Bellows-AI/bellows') }),
         ],
         [
             'the startup sync',
-            (r: ReturnType<typeof createDockerRunner>) => r.syncCheckout({ ...job, repo: 'Bellows-AI/bellows' }),
+            (r: ReturnType<typeof createDockerRunner>) => r.syncCheckout({ ...job, repo: githubRef('Bellows-AI/bellows') }),
         ],
     ])('hardens every container %s creates or runs', async (_name, drive) => {
         const { created, runs } = await containersFrom(
@@ -390,7 +391,7 @@ describe('a group whose supervisor is gone releases its step channel', () => {
         if (args[0] === 'inspect') return Promise.reject(new Error('Error: No such object'));
         return Promise.resolve({ stdout: args[0] === 'wait' ? '0\n' : '' });
     };
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
 
     it('releases the channel when the run sees the supervisor exit with no report taken', async () => {
         const supervised = fakeSteps(() => ok(), new Promise<SupervisorReport>(() => undefined));
@@ -483,7 +484,7 @@ describe('a group whose supervisor is gone releases its step channel', () => {
  */
 describe('a step in flight when the supervisor container ends under a reporting group (#967)', () => {
     const WATCH_MS = 10;
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
     const GATE = { command: 'npm test', cwd: '/task/bellows', env: {}, timeoutMs: 600_000 };
     const settle = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
     const lostWithin = async (gating: Promise<unknown>, ms = 3_000): Promise<'lost' | 'hung' | 'other'> =>
@@ -670,7 +671,7 @@ describe('a step in flight when the supervisor container ends under a reporting 
  * mailboxes — by this attempt's own names, without waiting on a supervisor the kill already ended.
  */
 describe('a kill followed by finish removes the group (#821 D16)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
 
     it('removes the supervisor, the exporter and every mailbox volume, by the killed attempt names', async () => {
         const { exec, calls } = entrypointAnswers('');

@@ -39,6 +39,7 @@ import {
     configmapsPath,
     claimPathFor,
 } from '../fixtures/k8s-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 describe('the runner job spec under opencode', () => {
     const ocConfig = loadDriverConfig({
@@ -136,7 +137,7 @@ describe('the opencode session readout step', () => {
     });
 
     it('scopes the readout to the task worktree when the job names a repo', () => {
-        expect(opencodeReadoutStep({ ...job, repo: 'Bellows-AI/bellows' }, START).env.OPENCODE_DIR).toBe(
+        expect(opencodeReadoutStep({ ...job, repo: githubRef('Bellows-AI/bellows') }, START).env.OPENCODE_DIR).toBe(
             `${TASK_MOUNT}/bellows`
         );
     });

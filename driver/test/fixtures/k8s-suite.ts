@@ -13,6 +13,7 @@ import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { runnerJobName, readerJobSpec, runnerJobSpec } from '../../src/k8s/k8s-podspec.js';
 import { createKubernetesRunner } from '../../src/k8s/k8s-runner.js';
 import { k8sApiserver } from './k8s-apiserver.js';
+import { githubRef } from './repo-ref.js';
 
 export const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -140,7 +141,7 @@ export const containerView = (config: DriverConfig, of: BoardJob, name: string):
 /** The suite's job, with a checkout that declares a gate: its pod holds the gate sidecar. */
 export const gatedOf = (of: BoardJob): BoardJob => ({
     ...of,
-    repo: 'Bellows-AI/bellows',
+    repo: githubRef('Bellows-AI/bellows'),
     gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
 });
 

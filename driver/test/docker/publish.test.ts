@@ -35,6 +35,7 @@ import {
     labelDaemon,
     dockerRunner,
 } from '../fixtures/docker-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/1';
 
@@ -42,7 +43,7 @@ describe('publishing the produced work', () => {
     const ISSUE_JOB: BoardJob = {
         ...job,
         command: '/fix https://github.com/Bellows-AI/bellows/issues/10',
-        repo: 'Bellows-AI/bellows',
+        repo: githubRef('Bellows-AI/bellows'),
         env: { GITHUB_TOKEN: 't0k-3n' },
     };
     const NOW = new Date('2026-09-09T12:00:00Z');
@@ -114,16 +115,29 @@ describe('publishing the produced work', () => {
         expect(publishPlan({ ...job, command: 'fix #44.' }, NOW).issueNumber).toBe(44);
     });
 
-    it('builds the checkout directory and clone URL from the repo label, asserting it', () => {
+    it("builds the clone URL from the claim's host, asserting the path", () => {
         expect(checkoutDir(ISSUE_JOB)).toBe(`${TASK_MOUNT}/bellows`);
-        expect(remoteUrl(loadDriverConfig({}), ISSUE_JOB)).toBe('https://github.com/Bellows-AI/bellows.git');
-        expect(remoteUrl(loadDriverConfig({ REPO_CLONE_BASE: 'file:///origins' }), ISSUE_JOB)).toBe(
-            'file:///origins/Bellows-AI/bellows.git'
-        );
+        const github = ISSUE_JOB;
+        const gitlab: BoardJob = { ...ISSUE_JOB, repo: { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' } };
+        expect(remoteUrl(loadDriverConfig({}), github)).toBe('https://github.com/Bellows-AI/bellows.git');
+        expect(remoteUrl(loadDriverConfig({}), gitlab)).toBe('https://gl.example/g/sub/p.git');
+        const mirrored = loadDriverConfig({ REPO_CLONE_BASE: 'file:///origins' });
+        expect(remoteUrl(mirrored, github)).toBe('file:///origins/github.com/Bellows-AI/bellows.git');
+        expect(remoteUrl(mirrored, gitlab)).toBe('file:///origins/gl.example/g/sub/p.git');
+    });
+
+    it("files a nested path's checkout under its last segment", () => {
+        const nested: BoardJob = { ...ISSUE_JOB, repo: { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' } };
+        expect(checkoutDir(nested)).toBe(`${TASK_MOUNT}/p`);
+        expect(checkoutKey(nested)).toBe(`${nested.id}/p`);
+    });
+
+    it('refuses dot segments anywhere', () => {
         // A dot-segment is the traversal; a dot-prefixed name is the task volume's own (`.factory`, `.<name>.sync`).
-        for (const repo of ['just-a-name', 'o/..', 'o/.', 'o/.factory', 'o/.hidden']) {
-            expect(checkoutDir({ ...ISSUE_JOB, repo }), repo).toBeNull();
-            expect(remoteUrl(loadDriverConfig({}), { ...ISSUE_JOB, repo }), repo).toBeNull();
+        for (const path of ['o/..', 'o/.', 'o/.factory', 'o/.hidden', 'g/../p', './g/p']) {
+            const job: BoardJob = { ...ISSUE_JOB, repo: { forge: 'gitlab', host: 'gl.example', path } };
+            expect(checkoutDir(job), path).toBeNull();
+            expect(remoteUrl(loadDriverConfig({}), job), path).toBeNull();
         }
     });
 
@@ -134,7 +148,7 @@ describe('publishing the produced work', () => {
      * and a session is only coherent in the tree it ran in. The clone itself stays pristine.
      */
     const ROOT = '55555555-5555-4555-8555-555555555555';
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
 
     it('computes the checkout key and branch from the thread root', () => {
         expect(checkoutKey(repoJob)).toBe(`${job.id}/bellows`);
@@ -149,13 +163,12 @@ describe('publishing the produced work', () => {
         // The same posture the checkout directory pins above: every board-supplied half is asserted
         // before it joins a path, and here the value becomes the agent's working directory.
         const broken: BoardJob[] = [
-            { ...repoJob, repo: 'just-a-name' },
-            { ...repoJob, repo: 'o/..' },
-            { ...repoJob, repo: 'o/.' },
+            { ...repoJob, repo: githubRef('o/..') },
+            { ...repoJob, repo: githubRef('o/.') },
             { ...repoJob, rootJobId: 'not-a-uuid' },
             { ...repoJob, rootJobId: '../../etc' },
         ];
-        for (const job of broken) expect(checkoutKey(job), job.repo ?? undefined).toBeNull();
+        for (const job of broken) expect(checkoutKey(job), job.repo?.path).toBeNull();
     });
 
     it('runs a repo job inside its checkout, and a repo-less job at the task volume root', () => {

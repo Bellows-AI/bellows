@@ -8,7 +8,7 @@
 // Environment (set by the driver; paths, a URL, a branch name, and — when the claim carries a token —
 // the credential-helper CODE; never a credential value):
 //   CHECKOUT    — the task's own tree;
-//   REMOTE      — where it is cloned from (`<cloneBase>/<owner>/<name>.git`);
+//   REMOTE      — where it is cloned from (`<cloneBase>/<host>/<path>.git`);
 //   BRANCH      — the branch the tree runs on (`factory/<thread root id>`);
 //   BASE_BRANCH — optional, STARTING claims only: the branch the task bases on (a batch task's
 //                 target branch). The branch is created off, and rebased onto, origin/<base>

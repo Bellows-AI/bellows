@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createBoard } from '../src/board/board.js';
 import { BoardUncodedAnswerError, withBoardRetry } from '../src/board/board-retry.js';
 import { boardJob } from './fixtures/board-job.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * What a mixed-version roll or a load balancer puts on the wire that is NOT the board's own answer: a Fastify
@@ -36,7 +37,7 @@ const streamRef = { executor: 'claude-code', session: 's', stream: 'transcript' 
 const manifest = { state: 'complete', bytes: 0, chunks: [] } as never;
 const gateRun = { runClaimSeq: 1 } as never;
 const checkpoint = { runClaimSeq: 1, phase: 'gates', tree: null, result: {} } as never;
-const prWrite = { operationId: 'o', operation: 'open', repo: 'a/b', prNumber: 1, prUrl: 'u', branch: 'b' } as never;
+const prWrite = { operationId: 'o', operation: 'open', repo: githubRef('a/b'), prNumber: 1, prUrl: 'u', branch: 'b' } as never;
 
 /** Every call that reads a 404 or 409 as the board's verdict: it must reject, never return the verdict. */
 const VERDICT_CALLS: [string, (b: ReturnType<typeof boardAnswering>) => Promise<unknown>][] = [

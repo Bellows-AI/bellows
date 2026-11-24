@@ -22,6 +22,7 @@ import {
     START,
     claimPathFor,
 } from '../fixtures/k8s-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 /** The teardown's writer-pod list (`writerPodsPath`): every pod of one (job, lease) pair. */
 const isWriterPodList = (path: string): boolean =>
@@ -35,7 +36,7 @@ const isWriterPodList = (path: string): boolean =>
  * pass can derive the Secrets from it) and never deletes it.
  */
 describe('acknowledged Secret-first teardown (#821 D16)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
     const SESSION_OF = { id: SESSION, resume: false };
     const secretsBase = `/api/v1/namespaces/${namespace}/secrets`;
     const endpoint = {
@@ -277,7 +278,7 @@ describe('acknowledged Secret-first teardown (#821 D16)', () => {
  * stand-down.
  */
 describe('claims of an unconfirmed group (#821)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
     const SESSION_OF = { id: SESSION, resume: false };
     const secretsBase = `/api/v1/namespaces/${namespace}/secrets`;
     const endpoint = {
@@ -489,7 +490,7 @@ describe('claims of an unconfirmed group (#821)', () => {
  * before its verdict lands. Only a group that did not end within the bound is deleted.
  */
 describe('finishing a group that ended by itself (#821)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
     const SESSION_OF = { id: SESSION, resume: false };
     const secretsBase = `/api/v1/namespaces/${namespace}/secrets`;
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
@@ -682,7 +683,7 @@ describe('a Secret is never without its Job (#821)', () => {
 
 describe('finish retries a teardown left unconfirmed (#821)', () => {
     it('ends a killed group whose Secret delete was refused at the next finish, and only then gives the claim back', async () => {
-        const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+        const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
         let refusals = 1;
         let groupDeleted = false;
         const groupPath = jobPath(namespace, runnerJobName(repoJob));
@@ -819,7 +820,7 @@ describe('Secrets owned by their Job, and only agent runs adopted (#821)', () =>
     it('keeps the adopted run’s Job until the verdict, and finish deletes the supervisor-only group it made', async () => {
         const adopter: BoardJob = {
             ...job,
-            repo: 'Bellows-AI/bellows',
+            repo: githubRef('Bellows-AI/bellows'),
             leaseToken: NEW_TOKEN,
             attempts: 2,
             claimSeq: 2,
@@ -862,7 +863,7 @@ describe('Secrets owned by their Job, and only agent runs adopted (#821)', () =>
  * no later claim adopts an older outcome onto a tree a fresh run has since moved.
  */
 describe('a finished run is kept only for the claim that adopted it (#821)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows', leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows'), leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
     const OLD = job.leaseToken;
     const oldName = runnerJobName({ ...job, leaseToken: OLD });
     const oldAt = jobPath(namespace, oldName);
@@ -1028,7 +1029,7 @@ describe('a finished run is kept only for the claim that adopted it (#821)', () 
  * names; and an adoption read is never undone by its finished lease's cleanup.
  */
 describe('teardown ownership in time and incarnation (#821)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
     const SESSION_OF = { id: SESSION, resume: false };
     const secretsBase = `/api/v1/namespaces/${namespace}/secrets`;
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' });
@@ -1220,7 +1221,7 @@ describe('the sweep deletes the incarnations it listed (#821)', () => {
  */
 describe('the sweep proceeds only on a fresh empty list (#821)', () => {
     it('never syncs while a leftover recreated between its list and its delete is still there', async () => {
-        const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+        const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
         const leftover = {
             metadata: {
                 name: 'factory-reclaim-0123456789abcdef',

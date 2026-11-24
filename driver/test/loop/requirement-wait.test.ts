@@ -15,6 +15,7 @@ import {
     stubRunner,
     type BoardStub,
 } from '../fixtures/loop-stubs.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 /**
  * A runtime connection requirement through the real loop and the real connection route: the agent's
@@ -111,7 +112,7 @@ describe('a runtime connection requirement', () => {
     });
 
     it('raises the control Stop and runs no gate, post-helper, publish or completion', async () => {
-        const gated = { ...job(1), repo: 'Bellows-AI/factory', helperPlans: [postPlan] };
+        const gated = { ...job(1), repo: githubRef('Bellows-AI/factory'), helperPlans: [postPlan] };
         const { board, runner } = await driveRun(
             async ({ control, stack }) => {
                 await ask(control);
@@ -326,7 +327,7 @@ describe('a publish the board holds for a forge connection', () => {
         prNumber: null,
         waiting: { forge: 'github', reason: 'reconnect' },
     };
-    const gated = { ...job(1), repo: 'Bellows-AI/factory' };
+    const gated = { ...job(1), repo: githubRef('Bellows-AI/factory') };
 
     it('the end-of-run publish tries once, hands the attempt back and reports no verdict', async () => {
         const { board, runner } = await driveRun(async () => ok(), { job: gated, runner: { publish: waiting } });

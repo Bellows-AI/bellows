@@ -22,6 +22,7 @@ import { type CelPolicy, refusals } from './fixtures/cel-subset.js';
 import { SUPERVISED } from './fixtures/k8s-suite.js';
 import { DOCKER_CLASS_SIZING } from './fixtures/runner-classes.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
 
@@ -203,7 +204,7 @@ describe('the admission policy requires the pod hardening (#382)', () => {
                 config,
                 {
                     ...promptedJob,
-                    repo: 'Bellows-AI/bellows',
+                    repo: githubRef('Bellows-AI/bellows'),
                     gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
                     services: [{ name: 'cache', image: 'redis', environment: [], user: { uid: 999, gid: 999 } }],
                 },
@@ -345,7 +346,7 @@ describe('the admission policy admits the privileged dockerd sidecar of a docker
                 ...job,
                 masterPrompt: 'Factory execution contract',
                 runnerClass: 'sandbox',
-                repo: 'Bellows-AI/bellows',
+                repo: githubRef('Bellows-AI/bellows'),
                 gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
                 services: [{ name: 'db', image: 'postgres:17', environment: [], user: { uid: 999, gid: 999 } }],
             },
@@ -603,7 +604,7 @@ describe('the admission policy fences the task pod shape (#773)', () => {
         {
             ...job,
             masterPrompt: 'Factory execution contract',
-            repo: 'Bellows-AI/bellows',
+            repo: githubRef('Bellows-AI/bellows'),
             gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
             services: [
                 { name: 'cache', image: 'redis', environment: [], user: { uid: 999, gid: 999 } },
@@ -677,7 +678,7 @@ describe('the admission policy fences the task pod shape (#773)', () => {
             {
                 ...job,
                 masterPrompt: 'Factory execution contract',
-                repo: 'Bellows-AI/bellows',
+                repo: githubRef('Bellows-AI/bellows'),
                 reviewerProfiles: ['security'],
             },
             { id: SESSION, resume: false }
@@ -767,7 +768,7 @@ describe('the pod policy admits every runner Job the driver builds', () => {
     const prompted: BoardJob = { ...job, masterPrompt: 'Factory execution contract' };
     const gated: BoardJob = {
         ...prompted,
-        repo: 'example/project',
+        repo: githubRef('example/project'),
         gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
         services: [{ name: 'cache', image: 'redis', environment: [], user: { uid: 999, gid: 999 } }],
     };

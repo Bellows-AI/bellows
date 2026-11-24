@@ -52,6 +52,7 @@ import type {
     RuntimeSample,
 } from '../../src/runner.js';
 import type { StepResult, SupervisorBinding } from '../../src/supervisor-contract.js';
+import { githubRef } from './repo-ref.js';
 
 export const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -946,7 +947,7 @@ export function stubGateStack(
 
 export const gatedJob = (n: number): BoardJob => ({
     ...job(n),
-    repo: 'Bellows-AI/bellows',
+    repo: githubRef('Bellows-AI/bellows'),
     gates: {
         image: 'node:24',
         gates: [

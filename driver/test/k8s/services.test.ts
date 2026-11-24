@@ -41,6 +41,7 @@ import {
     supervisedRunner,
     NEW_TOKEN,
 } from '../fixtures/k8s-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 /** The suite's job with no services on the claim, for the block below that shadows `job`. */
 const baseJob = job;
@@ -227,7 +228,7 @@ describe('the kubernetes services flow (issue #773)', () => {
     // Issue #769: the services ride on the claim — this block's `job` declares the one `cache` service.
     const CACHE: ServiceSpec = { name: 'cache', image: 'redis', environment: [] };
     const DB: ServiceSpec = { name: 'db', image: 'postgres:17', environment: [] };
-    const job: BoardJob = { ...baseJob, repo: 'Bellows-AI/bellows', services: [CACHE] };
+    const job: BoardJob = { ...baseJob, repo: githubRef('Bellows-AI/bellows'), services: [CACHE] };
     const fleet: BoardJob = { ...job, services: [DB, CACHE] };
     /** A restart's stand-down signal that never fires. */
     const live = new AbortController().signal;

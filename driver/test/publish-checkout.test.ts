@@ -10,6 +10,7 @@ import {
 } from '../src/publish/publish.js';
 import { attachmentsDir, TASK_MOUNT } from '../src/task-volume.js';
 import { type FakePr, fakePullRequests } from './fixtures/fake-pull-requests.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * The publish workflow both executors run (`publishCheckout`), over a fake transport: every
@@ -31,7 +32,7 @@ const ISSUE_JOB = {
     followUp: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
-    repo: 'Bellows-AI/bellows',
+    repo: githubRef('Bellows-AI/bellows'),
     env: { GITHUB_TOKEN: 't0k-3n' } as Record<string, string>,
 } as BoardJob;
 const WT = `${TASK_MOUNT}/bellows`;

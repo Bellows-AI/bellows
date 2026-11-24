@@ -6,6 +6,7 @@
  */
 
 import type { DriverConfig } from './config.js';
+import { formatRepoRef, type RepoRef } from './repo-ref.js';
 import type { BoardJob } from './board/board.js';
 import { OPENCODE } from './executors.js';
 import { opencodeConfigContent } from './master-prompt.js';
@@ -288,11 +289,11 @@ const cacheNameAllowed = (name: string): boolean =>
     !CACHE_REFUSED_NAMES.has(name) &&
     !CACHE_REFUSED_PREFIXES.some((prefix) => name.startsWith(prefix));
 
-/** The `owner/repo` label as two path segments, or null when it cannot name a directory. */
-function cacheRepoSegments(label: string | null | undefined): [string, string] | null {
-    const [owner = '', repo = '', ...rest] = (label ?? '').split('/');
-    const bad = (s: string) => s === '.' || s === '..' || !REPO_SEGMENT.test(s);
-    return rest.length || bad(owner) || bad(repo) ? null : [owner, repo];
+/** The repo path's segments, or null when any cannot name a directory. */
+function cacheRepoSegments(repo: RepoRef | null | undefined): string[] | null {
+    if (!repo) return null;
+    const segments = repo.path.split('/');
+    return segments.some((s) => s === '.' || s === '..' || !REPO_SEGMENT.test(s)) ? null : segments;
 }
 
 /**
@@ -304,7 +305,7 @@ export function repoCacheProblem(job: CacheJob): string | null {
     const names = job.gates?.cache ?? [];
     if (names.length === 0) return null;
     if (!cacheRepoSegments(job.repo)) {
-        return `its repo label cannot hold a package cache directory (${job.repo ?? 'none'})`;
+        return `its repo path cannot hold a package cache directory (${job.repo ? formatRepoRef(job.repo) : 'none'})`;
     }
     const refused = names.find((name) => !cacheNameAllowed(name));
     return refused === undefined
@@ -314,7 +315,7 @@ export function repoCacheProblem(job: CacheJob): string | null {
 
 /**
  * Issue #734: each `environment.cache` name `.bellows.yaml` declares, pointed at
- * `/task/.cache/<owner>/<repo>/<NAME>` — inside the task volume every runner and gate already
+ * `/task/.cache/<every path segment>/<NAME>` — inside the task volume every runner and gate already
  * carries, so it outlives the container and needs no mount of its own. Runner and gate env, both
  * executors, one path. A default only, like `npmQuietEnv`: a claim that names it wins.
  */
@@ -325,7 +326,7 @@ export function repoCacheEnv(job: CacheJob | undefined): [string, string][] {
     const problem = repoCacheProblem(job);
     const segments = cacheRepoSegments(job.repo);
     if (problem || !segments) throw new Error(`refusing to run job ${job.id}: ${problem}`);
-    const dir = `${TASK_MOUNT}/.cache/${segments[0]}/${segments[1]}`;
+    const dir = `${TASK_MOUNT}/.cache/${segments.join('/')}`;
     return names.filter((name) => !Object.hasOwn(job.env ?? {}, name)).map((name) => [name, `${dir}/${name}`]);
 }
 

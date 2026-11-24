@@ -12,6 +12,7 @@ import {
     RESTORE_DEADLINE_MS,
     unrestorableResult,
 } from '../src/task-restore.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 const ROOT = '11111111-1111-4111-8111-111111111111';
 const config = loadDriverConfig({});
@@ -19,7 +20,7 @@ const fresh = (over: Partial<BoardJob> = {}) =>
     ({
         id: '22222222-2222-4222-8222-222222222222',
         rootJobId: ROOT,
-        repo: 'acme/widgets',
+        repo: githubRef('acme/widgets'),
         claimSeq: 1,
         followUp: false,
         resumeSessionId: null,

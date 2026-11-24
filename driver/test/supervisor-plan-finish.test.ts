@@ -12,6 +12,7 @@ import {
     takeoverBoundMs,
 } from '../src/supervisor-plan.js';
 import { boardJob } from './fixtures/board-job.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * The finish pass is held on the supervisor's relay for as long as the declared gates run,
@@ -22,7 +23,7 @@ import { boardJob } from './fixtures/board-job.js';
 const MS_PER_MINUTE = 60_000;
 const config = loadDriverConfig({} as NodeJS.ProcessEnv);
 const gatedWith = (gates: NonNullable<BoardJob['gates']>['gates']): BoardJob =>
-    ({ ...boardJob(), repo: 'acme/widgets', gates: { image: 'node:24', gates } }) as BoardJob;
+    ({ ...boardJob(), repo: githubRef('acme/widgets'), gates: { image: 'node:24', gates } }) as BoardJob;
 const envOf = (job: BoardJob) =>
     Object.fromEntries(supervisorLiterals(config, job, { exporting: false, gated: job.gates !== undefined }));
 
@@ -57,7 +58,7 @@ describe('the finish relay bound', () => {
         const onDemandOnly = gatedWith([{ name: 'e2e', command: 'x', onDemand: true }]);
         expect(finishRelayBoundMs(config, onDemandOnly)).toBeNull();
         expect(envOf(onDemandOnly)).not.toHaveProperty(SUPERVISOR_ENV.finishRelayMs);
-        const ungated = { ...boardJob(), repo: 'acme/widgets' } as BoardJob;
+        const ungated = { ...boardJob(), repo: githubRef('acme/widgets') } as BoardJob;
         expect(finishRelayBoundMs(config, ungated)).toBeNull();
         expect(envOf(ungated)).not.toHaveProperty(SUPERVISOR_ENV.finishRelayMs);
     });

@@ -5,6 +5,7 @@ import { PullRequestUnanswered } from '../src/board/board-pull-request.js';
 import { BoardHttpError } from '../src/board/board-retry.js';
 import { COMPLETE_BODY_LIMIT_BYTES } from '../src/verdict-budget.js';
 import { boardJob } from './fixtures/board-job.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 interface Call {
     url: string;
@@ -989,7 +990,7 @@ describe('the removed-thread reclaim queue', () => {
             id: '55555555-5555-4555-8555-555555555555',
             token: TOKEN,
             rootJobId: 'job-1',
-            repo: 'Bellows-AI/bellows',
+            repo: githubRef('Bellows-AI/bellows'),
             workspacePath: 'bellows/user-7',
             leaseExpiresAt: '2026-08-21T12:05:00.000Z',
         };

@@ -18,6 +18,7 @@ import {
 import { ARTIFACT_LIMIT, OPENCODE_EXPORT_LIMIT } from '../../src/runner.js';
 import { opencodeReadoutScript } from '../../src/container-scripts.js';
 import { job, fakeSteps, SESSION, opencodeJob, START, dockerRunner } from '../fixtures/docker-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 describe('scraping the session opencode used', () => {
     /**
@@ -67,7 +68,7 @@ describe('scraping the session opencode used', () => {
     it('scopes the readout to the task worktree when the job names a repo', () => {
         const line = opencodeSessionReadoutArgs(
             loadDriverConfig({}),
-            { ...opencodeJob, repo: 'Bellows-AI/bellows' },
+            { ...opencodeJob, repo: githubRef('Bellows-AI/bellows') },
             START
         );
         expect(line).toContain(`OPENCODE_DIR=${TASK_MOUNT}/bellows`);
@@ -381,7 +382,7 @@ describe('the cache watch', () => {
 describe('the runner env for a gated job', () => {
     const gated: BoardJob = {
         ...job,
-        repo: 'Bellows-AI/bellows',
+        repo: githubRef('Bellows-AI/bellows'),
         gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
         env: { CLAIM_TOKEN: 'board-secret' },
         gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' },
@@ -399,7 +400,7 @@ describe('the runner env for a gated job', () => {
      */
     const gateOnly: BoardJob = {
         ...job,
-        repo: 'Bellows-AI/bellows',
+        repo: githubRef('Bellows-AI/bellows'),
         gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
         gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' },
     };

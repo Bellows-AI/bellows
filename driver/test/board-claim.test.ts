@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createBoard } from '../src/board/board.js';
 import { parseClaim } from '../src/board/board-claim.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 const WIRE = {
     id: 'job-1',
@@ -20,8 +21,16 @@ const malformedOf = (raw: unknown) => {
 
 describe('parseClaim', () => {
     it('reads a well-formed claim into the job', () => {
-        const parsed = parseClaim({ ...WIRE, env: { A: '1' }, repo: 'o/r', agent: false, baseBranch: null });
+        const parsed = parseClaim({ ...WIRE, env: { A: '1' }, repo: githubRef('o/r'), agent: false, baseBranch: null });
         expect('claim' in parsed && parsed.claim.id).toBe('job-1');
+    });
+
+    it("reads the claim's repo as a ref, and a repo-less claim as no repo", () => {
+        const ref = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' };
+        const parsed = parseClaim({ ...WIRE, repo: ref });
+        expect('claim' in parsed && parsed.claim.repo).toEqual(ref);
+        expect(malformedOf({ ...WIRE, repo: null })).toBeNull();
+        expect(malformedOf(WIRE)).toBeNull();
     });
 
     it('keeps the organization key the board issued, and drops one that is not a string', () => {
@@ -42,6 +51,10 @@ describe('parseClaim', () => {
         ['claimSeq', '1'],
         ['attempts', Number.NaN],
         ['repo', 5],
+        ['repo', 'o/n'],
+        ['repo', { forge: 'svn', host: 'h', path: 'o/n' }],
+        ['repo', { forge: 'github', host: 'a/b', path: 'o/n' }],
+        ['repo', { forge: 'github', host: 'github.com', path: 'g/sub/p' }],
         ['env', { A: 1 }],
         ['env', 'A=1'],
         ['agent', true],

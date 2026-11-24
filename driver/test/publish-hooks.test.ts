@@ -15,6 +15,7 @@ import {
 } from '../src/publish/publish.js';
 import { fakePullRequests } from './fixtures/fake-pull-requests.js';
 import { git, hasGit, ROOT, SCRIPT_IDENTITY, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * The publish over a real repository whose hooks would rewrite content: a publish
@@ -45,7 +46,7 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
     const job = {
         id: ROOT,
         command: 'do the work',
-        repo: 'example/factory',
+        repo: githubRef('example/factory'),
         env: {},
     } as unknown as BoardJob;
 

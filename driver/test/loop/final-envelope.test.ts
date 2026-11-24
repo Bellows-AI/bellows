@@ -6,6 +6,7 @@ import { StepChannelClosed } from '../../src/step-control.js';
 import type { PublishResult } from '../../src/publish/publish.js';
 import type { Loop } from '../../src/loop/loop.js';
 import { drive, gatedJob, job, ok, stubBoard, stubGateStack, stubRunner } from '../fixtures/loop-stubs.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 // Issue #821 (D1): the final envelope is staged under the lease, then completed, and only then is
 // the attempt torn down — the heartbeat renewing the lease meanwhile, the order the reproduction
@@ -47,7 +48,7 @@ describe('final envelope (issue #821 D1)', () => {
     }
 
     it('stages, then completes, then finishes the group — the staged body the very verdict', async () => {
-        const { order, board, runner } = ordered({ ...job(1), repo: 'Bellows-AI/bellows' });
+        const { order, board, runner } = ordered({ ...job(1), repo: githubRef('Bellows-AI/bellows') });
 
         await drive({ ...board, runner });
 

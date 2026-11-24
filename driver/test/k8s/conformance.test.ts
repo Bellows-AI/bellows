@@ -49,6 +49,7 @@ import {
     NEW_TOKEN,
     START,
 } from '../fixtures/k8s-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 const MISMATCH_ROW = 'a run specced for another session than its group' as const;
 
@@ -313,7 +314,7 @@ describe('what a closed run leaves for the next claim, on kubernetes (the retent
  * cause — read the same way docker reads its daemon's words.
  */
 describe('how a refused group start ends, on kubernetes (the startup conformance table, #824 D11)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
     const SESSION_OF = { id: SESSION, resume: false };
     const pulled = (detail: string) =>
         `rpc error: code = Unknown desc = failed to pull and unpack image "registry.example/claude-executor:latest": ${detail}`;
@@ -522,7 +523,7 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
 // again on every claim with the same spec: the loop's one startup decision reads it as config, on the
 // sync and on the run alike, while an unconfirmed answer stays left to the lease.
 describe('a runner create the API server refuses, on kubernetes', () => {
-    const repoJob: BoardJob = { ...job, repo: 'example-org/example-repo' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('example-org/example-repo') };
     const SESSION_OF = { id: SESSION, resume: false };
     const refused422 = {
         status: 422,

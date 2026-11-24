@@ -44,6 +44,7 @@ import {
 } from '../src/supervisor-plan.js';
 import { REBIND_DEADLINE_MS } from '../src/runner.js';
 import { oneClass } from './fixtures/runner-classes.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /*
  * The docker twin of the runner pod: the supervisor, the agent and the exporter as one container
@@ -90,7 +91,7 @@ const mounts = (argv: string[]): string[] => argv.filter((_arg, i) => argv[i - 1
 /** The same attempt, whose checkout declares a gate: its group holds a gate container. */
 const gated: BoardJob = {
     ...job,
-    repo: 'Bellows-AI/bellows',
+    repo: githubRef('Bellows-AI/bellows'),
     gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
 };
 /** The same attempt, whose claim lists a reviewer profile: its group holds a reviewer container. */
@@ -640,7 +641,7 @@ describe('the gate container (issue #773)', () => {
     it('leaves the npm notice to a claim that names it, and points a declared cache into the repo cache', () => {
         const named = gateCreateArgs(config, { ...gated, env: { NPM_CONFIG_UPDATE_NOTIFIER: 'true' } }, 'node:24');
         expect(literals(named)).toEqual(['HOME=/tmp']);
-        const cacheJob = { ...gated, repo: 'acme/widgets', gates: { ...gated.gates!, cache: ['NPM_CONFIG_CACHE'] } };
+        const cacheJob = { ...gated, repo: githubRef('acme/widgets'), gates: { ...gated.gates!, cache: ['NPM_CONFIG_CACHE'] } };
         expect(literals(gateCreateArgs(config, cacheJob, 'node:24'))).toContain(
             `NPM_CONFIG_CACHE=${TASK_MOUNT}/.cache/acme/widgets/NPM_CONFIG_CACHE`
         );

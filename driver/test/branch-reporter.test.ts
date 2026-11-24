@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /*
  * The branch reporter's behavior, against a stub board and real git fixtures. The reporter's
@@ -209,7 +210,7 @@ describe('the branch reporter: wire shape and redirects', () => {
             expect(requests[0]!.body).toMatchObject({
                 agent: 'claude-code',
                 sessionId: SESSION,
-                repo: 'acme/widgets',
+                repo: githubRef('acme/widgets'),
                 branch: 'main',
             });
             // One sample per report: the join intersects spans, so the SHA at report time is
@@ -356,7 +357,7 @@ describe('the branch reporter: timeout overrides', () => {
                 expect(stdout).toBe('');
                 expect(stderr).toBe('');
                 expect(requests).toHaveLength(1);
-                expect(requests[0]!.body).toMatchObject({ repo: 'acme/widgets', branch: 'main' });
+                expect(requests[0]!.body).toMatchObject({ repo: githubRef('acme/widgets'), branch: 'main' });
             } finally {
                 rmSync(dir, { recursive: true, force: true });
             }

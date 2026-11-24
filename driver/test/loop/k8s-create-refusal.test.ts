@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { fakeRequest, fakeSteps, runner } from '../fixtures/k8s-suite.js';
 import { drive, job, stubBoard } from '../fixtures/loop-stubs.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 // The real loop over the real kubernetes runner, only the API server faked: a runner Job the API
 // server refuses with a 422 `Status` (an admission policy's denial) is refused again on every claim
@@ -20,7 +21,7 @@ describe('a runner Job create the API server answers, through the loop', () => {
     };
 
     const driveWith = async (create: K8sResponse) => {
-        const board = stubBoard([{ ...job(1), repo: 'example-org/example-repo' }]);
+        const board = stubBoard([{ ...job(1), repo: githubRef('example-org/example-repo') }]);
         const claim = board.board.claim.bind(board.board);
         let claims = 0;
         board.board.claim = async (...args: Parameters<typeof claim>) => {
