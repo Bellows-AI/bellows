@@ -231,6 +231,7 @@ describe.skipIf(!hasGit() || !hasOpenssl())(
                         env: {
                             ...process.env,
                             GIT_CONFIG_GLOBAL: '/dev/null',
+                            GIT_CONFIG_NOSYSTEM: '1',
                             GIT_TERMINAL_PROMPT: '0',
                             GITHUB_TOKEN: TOKEN,
                         },
@@ -310,6 +311,7 @@ describe.skipIf(!hasGit() || !hasOpenssl())(
                         env: {
                             ...process.env,
                             GIT_CONFIG_GLOBAL: '/dev/null',
+                            GIT_CONFIG_NOSYSTEM: '1',
                             GIT_TERMINAL_PROMPT: '0',
                             GIT_SSL_NO_VERIFY: '1',
                             GITHUB_TOKEN: TOKEN,
