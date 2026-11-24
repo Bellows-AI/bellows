@@ -491,7 +491,9 @@ describe('PUT /api/workflows/:id', () => {
     });
 
     it('lets any member edit a repo-scope workflow', async () => {
-        const workflows = stubWorkflows({ get: { ...record, scope: 'repo', repo: 'acme/web' } });
+        const workflows = stubWorkflows({
+            get: { ...record, scope: 'repo', repo: { forge: 'github', host: 'github.com', path: 'acme/web' } },
+        });
         const { instance, memberCookie } = await boot(workflows);
         const response = await instance.inject({
             method: 'PUT',

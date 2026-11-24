@@ -1,3 +1,4 @@
+import { formatRepoRef, type RepoRef } from '@factory-ai/core';
 import { useCallback, useState } from 'react';
 import { mutate } from './mutate.js';
 import { useResource } from './useResource.js';
@@ -11,8 +12,7 @@ export interface EnvVarView {
 }
 
 export interface EnvRepoScope {
-    owner: string;
-    name: string;
+    repo: RepoRef;
     vars: EnvVarView[];
 }
 
@@ -46,17 +46,16 @@ export interface UseEnv {
     refresh: () => void;
     saveOrg: (vars: EnvVarInput[]) => Promise<EnvSaveResult>;
     saveWorkspace: (vars: EnvVarInput[]) => Promise<EnvSaveResult>;
-    saveRepo: (repo: { owner: string; name: string }, vars: EnvVarInput[]) => Promise<EnvSaveResult>;
+    saveRepo: (repo: RepoRef, vars: EnvVarInput[]) => Promise<EnvSaveResult>;
 }
 
 const selectEnv = (body: EnvPayload) => body;
 
 /** The repo scopes with one scope's rows replaced (or added, for a repository with no stored row yet). */
-function withRepoVars(repos: EnvRepoScope[], repo: { owner: string; name: string }, vars: EnvVarView[]) {
-    const known = repos.some((r) => r.owner === repo.owner && r.name === repo.name);
-    return known
-        ? repos.map((r) => (r.owner === repo.owner && r.name === repo.name ? { ...r, vars } : r))
-        : [...repos, { ...repo, vars }];
+function withRepoVars(repos: EnvRepoScope[], repo: RepoRef, vars: EnvVarView[]) {
+    const key = formatRepoRef(repo);
+    const known = repos.some((r) => formatRepoRef(r.repo) === key);
+    return known ? repos.map((r) => (formatRepoRef(r.repo) === key ? { ...r, vars } : r)) : [...repos, { repo, vars }];
 }
 
 /**
@@ -114,7 +113,7 @@ export function useEnv(): UseEnv {
     );
 
     const saveRepo = useCallback(
-        async (repo: { owner: string; name: string }, vars: EnvVarInput[]) => {
+        async (repo: RepoRef, vars: EnvVarInput[]) => {
             const result = await put('/api/env/repo', { repo, vars });
             if (result.error === null) {
                 setData((prev) => prev && { ...prev, repos: withRepoVars(prev.repos, repo, result.vars) });
