@@ -40,6 +40,7 @@
         "driver/test/lane-pipefail.test.ts",
         "driver/test/lane-stubs.test.ts",
         "driver/test/loop-containment.test.ts",
+        "driver/test/loop/malformed-claim.test.ts",
         "driver/test/merge-conflict-probe-script.test.ts",
         "driver/test/pr-land-status-script.test.ts",
         "driver/test/pr-summary.test.ts",
