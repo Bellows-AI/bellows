@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
+import { githubRepo } from '@factory-ai/core';
 import type { GitHubConfig } from '../src/config.js';
 import { createGitHubAppClient } from '../src/github/app-client.js';
 import type { InstallationTokenProvider } from '../src/github/app-token.js';
@@ -288,7 +289,7 @@ describe('createPlanReader: revision-pinned resolution through the GitHub API', 
             },
             requests
         );
-        const plan = await reader.read('acme/web', 'release');
+        const plan = await reader.read(githubRepo('acme/web'), 'release');
         expect(requests).toEqual([
             '/repos/acme/web/commits/release',
             '/repos/acme/web/contents/.bellows.yaml?ref=abc123',
@@ -307,13 +308,13 @@ describe('createPlanReader: revision-pinned resolution through the GitHub API', 
             },
             requests
         );
-        expect((await reader.read('acme/web', null)).revision).toBe('def456');
+        expect((await reader.read(githubRepo('acme/web'), null)).revision).toBe('def456');
         expect(requests[0]).toBe('/repos/acme/web/commits/HEAD');
     });
 
     it('answers no plan, with the revision, for a commit without a .bellows.yaml', async () => {
         const reader = readerOver({ '/repos/acme/web/commits/HEAD': { body: { sha: 'abc123' } } }, []);
-        expect(await reader.read('acme/web', null)).toEqual({
+        expect(await reader.read(githubRepo('acme/web'), null)).toEqual({
             config: null,
             services: [],
             policy: {},
@@ -332,13 +333,13 @@ describe('createPlanReader: revision-pinned resolution through the GitHub API', 
             },
             []
         );
-        const plan = await reader.read('acme/web', null);
+        const plan = await reader.read(githubRepo('acme/web'), null);
         expect(plan.error).toMatch(/both declare port 5432/);
         expect(plan).toMatchObject({ revision: 'abc123', config: null, services: [] });
     });
 
     it('refuses a branch the installation cannot see, telling the author what to check', async () => {
-        const plan = await readerOver({}, []).read('acme/web', 'gone');
+        const plan = await readerOver({}, []).read(githubRepo('acme/web'), 'gone');
         expect(plan.error).toMatch(/cannot read acme\/web at branch "gone"/);
         expect(plan.revision).toBeNull();
     });
@@ -351,12 +352,12 @@ describe('createPlanReader: revision-pinned resolution through the GitHub API', 
             },
             []
         );
-        expect((await reader.read('acme/web', null)).error).toMatch(/could not be read.*403/s);
+        expect((await reader.read(githubRepo('acme/web'), null)).error).toMatch(/could not be read.*403/s);
     });
 
     it('rejects on a rate limit so the claim is retried, never failing the task', async () => {
         const reader = readerOver({ '/repos/acme/web/commits/HEAD': { status: 429, body: {} } }, []);
-        await expect(reader.read('acme/web', null)).rejects.toMatchObject({ kind: 'rate_limited' });
+        await expect(reader.read(githubRepo('acme/web'), null)).rejects.toMatchObject({ kind: 'rate_limited' });
     });
 
     it('refuses an oversize file as the repository’s problem', async () => {
@@ -367,7 +368,7 @@ describe('createPlanReader: revision-pinned resolution through the GitHub API', 
             },
             []
         );
-        expect((await reader.read('acme/web', null)).error).toMatch(/larger than 65536 bytes/);
+        expect((await reader.read(githubRepo('acme/web'), null)).error).toMatch(/larger than 65536 bytes/);
     });
 });
 
@@ -412,5 +413,23 @@ describe('the server reads no .bellows.yaml from disk', () => {
         expect(Object.keys(await import('../src/workspace/bellows.js'))).not.toContain('readGatesFile');
         const routes = await readFile(new URL('../src/routes/jobs/jobs.ts', import.meta.url), 'utf8');
         expect(routes).not.toContain('gates-reread');
+    });
+});
+
+describe('the App plan reader on another host', () => {
+    it('refuses a non-GitHub ref as a value, without a request', async () => {
+        const requests: string[] = [];
+        const reader = createPlanReader({
+            readFileAtBranchTip: async (...args) => {
+                requests.push(String(args[0]));
+                return null;
+            },
+        });
+
+        const plan = await reader.read({ forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' }, null);
+
+        expect(plan.config).toBeNull();
+        expect(plan.error).toContain('gl.example');
+        expect(requests).toEqual([]);
     });
 });

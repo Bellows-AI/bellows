@@ -1335,7 +1335,7 @@ describe('POST /api/jobs/claim', () => {
     it('passes the repo label and the gate declaration through verbatim', async () => {
         const withGates: Claim = {
             ...claim,
-            repo: 'Bellows-AI/bellows',
+            repo: githubRepo('Bellows-AI/bellows'),
             gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
         };
         const instance = await harnessWith(stubStore({ claim: withGates }));
@@ -1343,7 +1343,7 @@ describe('POST /api/jobs/claim', () => {
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual(withGates);
 
-        const withError: Claim = { ...claim, repo: 'Bellows-AI/bellows', planRefusal: '.bellows.yaml line 2: nope' };
+        const withError: Claim = { ...claim, repo: githubRepo('Bellows-AI/bellows'), planRefusal: '.bellows.yaml line 2: nope' };
         const instance2 = await harnessWith(stubStore({ claim: withError }));
         const response2 = await post(instance2, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
         expect(response2.json()).toEqual(withError);
@@ -2765,7 +2765,7 @@ describe('POST /api/reclaims/claim', () => {
         id: '55555555-5555-4555-8555-555555555555',
         token: TOKEN,
         rootJobId: ID,
-        repo: 'acme/web',
+        repo: githubRepo('acme/web'),
         workspacePath: 'test-org/user-7',
         leaseExpiresAt: '2026-08-21T12:05:00.000Z',
     };
@@ -2809,16 +2809,16 @@ describe('POST /api/reclaims/claim', () => {
     });
 
     it('rotates the starting board across polls', async () => {
-        const fromA: ReclaimClaim = { ...claim, repo: 'acme/a' };
-        const fromB: ReclaimClaim = { ...claim, repo: 'acme/b' };
+        const fromA: ReclaimClaim = { ...claim, repo: githubRepo('acme/a') };
+        const fromB: ReclaimClaim = { ...claim, repo: githubRepo('acme/b') };
         const instance = await harnessOfBoards([
             ['org-a', stubStore({ reclaimClaim: fromA })],
             ['org-b', stubStore({ reclaimClaim: fromB })],
         ]);
         const first = await postAsWorker(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 300 });
         const second = await postAsWorker(instance, '/api/reclaims/claim', { worker: 'w1', leaseSeconds: 300 });
-        expect(first.json().repo).toBe('acme/a');
-        expect(second.json().repo).toBe('acme/b');
+        expect(first.json().repo).toEqual({ forge: 'github', host: 'github.com', path: 'acme/a' });
+        expect(second.json().repo).toEqual({ forge: 'github', host: 'github.com', path: 'acme/b' });
     });
 });
 

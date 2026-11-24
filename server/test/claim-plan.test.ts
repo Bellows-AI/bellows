@@ -69,7 +69,7 @@ describe('resolveClaimPublish: the execution plan', () => {
 
 describe('resolveClaimGates: the plan reader', () => {
     const ctx = { orgId: 'o', rootJobId: 'root' };
-    const row = { run_as: null, repo: 'acme/web', base_branch: 'release' };
+    const row = { run_as: null, forge: 'github', host: 'github.com', repo: 'acme/web', base_branch: 'release' };
 
     it('asks the reader for the repo at the thread base branch and carries the revision', async () => {
         const asked: unknown[][] = [];
@@ -83,7 +83,7 @@ describe('resolveClaimGates: the plan reader', () => {
             ctx,
             row
         );
-        expect(asked).toEqual([['acme/web', 'release']]);
+        expect(asked).toEqual([[{ forge: 'github', host: 'github.com', path: 'acme/web' }, 'release']]);
         expect(resolved).toMatchObject({ planRevision: 'rev-9', planRefusal: null, claimServices: read.claimServices });
     });
 

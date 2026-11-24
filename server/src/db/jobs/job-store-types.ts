@@ -777,11 +777,11 @@ export interface Claim {
      */
     env?: Record<string, string>;
     /**
-     * The job's `owner/name` label, repeated on the claim so the driver can key the gate
+     * The job's repository ref, repeated on the claim so the driver can key the gate
      * environment container and resolve per-repo env without a second lookup. Absent on a board
      * that predates gates, which the driver reads as "no repo".
      */
-    repo?: string | null;
+    repo?: RepoRef;
     /**
      * The gates the repository's `.bellows.yaml` declares at `planRevision` — the environment image
      * they run in and the named commands they run — resolved by the board through the GitHub API.
@@ -1000,7 +1000,7 @@ export interface ReclaimClaim {
     /** This acquisition's own ownership token (075): the ack and the renew are fenced by it. */
     token: string;
     rootJobId: string;
-    repo: string | null;
+    repo: RepoRef | null;
     workspacePath: string | null;
     leaseExpiresAt: string;
 }
@@ -1176,7 +1176,7 @@ export interface CreateJobStoreDeps {
      */
     plan?: {
         readFor(
-            repo: string,
+            repo: RepoRef,
             baseBranch: string | null
         ): Promise<{
             config: BellowsConfig | null;

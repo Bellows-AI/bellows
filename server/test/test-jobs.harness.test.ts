@@ -107,7 +107,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain('member="$(body "$(api GET /api/auth/me)")"');
         expect(seeded).toBeGreaterThan(-1);
         expect(seeded).toBeLessThan(firstTask);
-        expect(SCRIPT).toContain('git init -q --bare -b main "/origins/$1.git"');
+        expect(SCRIPT).toContain('git init -q --bare -b main "/origins/github.com/$1.git"');
         expect(SCRIPT.indexOf('docker run -d --name "$ORIGIN_NAME"')).toBeLessThan(firstTask);
     });
 
@@ -131,7 +131,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain('[ "$workspace_path" = "$member_path" ]');
         expect(SCRIPT).toContain('docker volume create "$ORIGIN_VOLUME"');
         // uid 1000: the user every runner, sync and gate container writes as, so a publish can push.
-        expect(SCRIPT).toContain('chown 1000:1000 /origins /origins/');
+        expect(SCRIPT).toContain('chown 1000:1000 /origins /origins/github.com /origins/github.com/');
         expect(SCRIPT.indexOf('docker volume create "$ORIGIN_VOLUME"')).toBeLessThan(
             SCRIPT.indexOf('start_driver "$IMAGE_OK"')
         );

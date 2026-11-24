@@ -2,14 +2,18 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BELLOWS_FILE, createPlanReader, type PlanRead, type PlanReader } from '../workspace/bellows-plan.js';
-import { READ_BINDING, READ_TRANSPORT } from '@factory-ai/core';
+import { BELLOWS_FILE, planSubject, type PlanRead, type PlanReader, readPlanWith } from '../workspace/bellows-plan.js';
+import { formatRepoRef, HOST_PATTERN, READ_BINDING, READ_TRANSPORT, type RepoRef } from '@factory-ai/core';
 import { MAX_FILE_BYTES, type RepoFileRead } from './file-read.js';
 import { GitHubReadError } from './pr-read.js';
 import { logger } from '../log.js';
 
-/** `owner/name`, each a plain path segment — a label never resolves outside the origins dir. */
-const REPO_LABEL = /^(?!\.{1,2}\/)[A-Za-z0-9_.-]+\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;
+/** A path segment of a ref: never `.` or `..`, so a ref never resolves outside the origins dir. */
+const PATH_SEGMENT = /^(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;
+
+/** Whether `ref` names a directory under the origins base and nothing outside it. */
+const resolvesUnderBase = (ref: RepoRef): boolean =>
+    HOST_PATTERN.test(ref.host) && ref.path.split('/').every((segment) => PATH_SEGMENT.test(segment));
 
 const unplanned = (error: string | null): PlanRead => ({
     config: null,
@@ -162,7 +166,7 @@ export const PLAN_READ_TIMEOUT_MS = 20_000;
 
 /**
  * The offline board's plan source (the code-only `none` arm, which has no App client): a
- * repository's plan fetched from its origin at `<base>/<owner>/<name>.git` (depth 1, into a
+ * repository's plan fetched from its origin at `<base>/<host>/<path>.git` (depth 1, into a
  * throwaway bare repository) and read through the same validation and refusals the App path uses.
  * One deadline covers the whole read. A repository or branch the origin confirms absent is a plan
  * refusal VALUE; an unreachable or unknown origin, a git failure or a timeout is an outage
@@ -177,9 +181,12 @@ export function createOriginPlanReader(
     }: { timeoutMs?: number; tmpRoot?: string; gitBin?: string } = {}
 ): PlanReader {
     return {
-        async read(repo, baseBranch) {
-            if (!REPO_LABEL.test(repo)) return unplanned(`${BELLOWS_FILE} of ${repo}: not an owner/name repository`);
-            const url = `${base}/${repo}.git`;
+        async read(ref, baseBranch) {
+            // Decided before any spawn or temp directory: a ref that would escape the origins base is a refusal value.
+            if (!resolvesUnderBase(ref)) {
+                return unplanned(`${BELLOWS_FILE} of ${formatRepoRef(ref)}: not a repository this board can resolve an origin for`);
+            }
+            const url = `${base}/${ref.host}/${ref.path}.git`;
             const ctx: GitCtx = { signal: AbortSignal.timeout(timeoutMs), bin: gitBin };
             let tmp: string | null = null;
             try {
@@ -188,8 +195,8 @@ export function createOriginPlanReader(
                 });
                 const gitDir = tmp;
                 await git(ctx, ['init', '-q', '--bare', gitDir]);
-                const ref = await resolveRef(ctx, url, baseBranch);
-                if (ref !== null) {
+                const branchRef = await resolveRef(ctx, url, baseBranch);
+                if (branchRef !== null) {
                     // A blobless fetch from a named remote makes it a promisor: only the plan blob is
                     // downloaded later, on demand, by `ls-tree -l` / `cat-file`.
                     await git(ctx, ['--git-dir', gitDir, 'remote', 'add', 'origin', url]);
@@ -203,13 +210,13 @@ export function createOriginPlanReader(
                         '--no-tags',
                         '--filter=blob:none',
                         'origin',
-                        `+${ref}:${ref}`,
+                        `+${branchRef}:${branchRef}`,
                     ]);
                 }
-                return await createPlanReader({
-                    readFileAtBranchTip: (_repo, _branch, path) =>
-                        ref === null ? Promise.resolve(null) : readAtBranchTip(ctx, gitDir, ref, path),
-                }).read(repo, baseBranch);
+                return await readPlanWith(
+                    (path) => (branchRef === null ? Promise.resolve(null) : readAtBranchTip(ctx, gitDir, branchRef, path)),
+                    planSubject(ref, baseBranch)
+                );
             } finally {
                 if (tmp !== null) {
                     await rm(tmp, { recursive: true, force: true }).catch((e: Error) =>

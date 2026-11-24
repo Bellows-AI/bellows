@@ -75,13 +75,37 @@ describe.runIf(enabled)('the execution plan on the job store', () => {
 
         const claim = await planned.claim('driver-1', LEASE_SECONDS);
 
-        expect(claim?.repo).toBe('acme/web');
+        expect(claim?.repo).toEqual({ forge: 'github', host: 'github.com', path: 'acme/web' });
         expect(claim?.gates).toEqual({ image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] });
         expect(claim?.services).toEqual(services);
         expect(claim?.planRevision).toBe(REVISION);
         expect(claim?.planRefusal).toBeNull();
         // The reader is asked for the claimed repo at the thread's base branch — none outside a batch.
-        expect(asked).toEqual([['acme/web', null]]);
+        expect(asked).toEqual([[githubRepo('acme/web'), null]]);
+    });
+
+    it('carries the repository ref of a GitLab job, and asks the plan reader by it', async () => {
+        const userId = await account(sql, randomGithubId(), 'gate-gitlab');
+        const ref = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' } as const;
+        const asked: unknown[][] = [];
+        const planned = plannedStore({ config: null, error: null }, asked);
+        await planned.create('fix the bug', userId, { repo: ref, executor: null });
+
+        const claim = await planned.claim('driver-1', LEASE_SECONDS);
+
+        expect(claim?.repo).toEqual(ref);
+        expect(asked).toEqual([[ref, null]]);
+    });
+
+    it('carries no repo on a repo-less claim', async () => {
+        const userId = await account(sql, randomGithubId(), 'gate-repoless');
+        const planned = plannedStore({ config: null, error: null });
+        await planned.create('echo hi', userId, { repo: null, executor: null });
+
+        const claim = await planned.claim('driver-1', LEASE_SECONDS);
+
+        expect(claim).not.toBeNull();
+        expect(claim && 'repo' in claim).toBe(false);
     });
 
     it('carries a planRefusal value — not a throw — when the plan cannot launch, and withholds the plan', async () => {
