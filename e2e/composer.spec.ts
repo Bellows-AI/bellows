@@ -606,7 +606,7 @@ test.describe('attachments in the composer', () => {
 /** The board's branch listing, answered per `q` and `cursor`; every request is recorded. */
 async function stubBranches(page: Page, failing = false): Promise<{ queries: (string | null)[] }> {
     const seen = { queries: [] as (string | null)[] };
-    await page.route('**/api/repos/*/*/branches*', (route) => {
+    await page.route('**/api/repos/*/branches*', (route) => {
         const url = new URL(route.request().url());
         seen.queries.push(url.searchParams.get('q'));
         if (failing) return route.fulfill({ status: 503, json: { error: 'GitHub is unreachable' } });
@@ -680,7 +680,7 @@ test.describe('the base branch and the skill menu', () => {
 
     test('/ menu inserts a skill token that stays in the prompt', async ({ page }) => {
         await stubLaunch(page);
-        await page.route('**/api/repos/*/*/skills*', (route) =>
+        await page.route('**/api/repos/*/skills*', (route) =>
             route.fulfill({
                 json: {
                     skills: [
@@ -726,7 +726,7 @@ test.describe('the base branch and the skill menu', () => {
             { name: 'other', type: E2E_EXECUTOR.type, createdAt: E2E_EXECUTOR.createdAt, config: {} },
         ]);
         const reads: URL[] = [];
-        await page.route('**/api/repos/*/*/skills*', (route) => {
+        await page.route('**/api/repos/*/skills*', (route) => {
             reads.push(new URL(route.request().url()));
             return route.fulfill({
                 json: {

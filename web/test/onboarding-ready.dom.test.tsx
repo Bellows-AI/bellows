@@ -22,7 +22,15 @@ afterEach(() => {
     window.sessionStorage.clear();
 });
 
-const repo = (name: string) => ({ owner: 'acme', name, private: true, defaultBranch: 'main', pushedAt: null });
+const repo = (name: string) => ({
+    id: `acme/${name}`,
+    forge: 'github',
+    host: 'github.com',
+    path: `acme/${name}`,
+    private: true,
+    defaultBranch: 'main',
+    pushedAt: null,
+});
 
 const personalModel: ModelSetupView = {
     platform: false,

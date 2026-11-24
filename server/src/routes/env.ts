@@ -222,7 +222,9 @@ async function validatePutRepoRequest(
     if (segmentReason) return { ok: false, code: ERROR_CODES.BAD_REPO_NAME, message: segmentReason };
     const vars = parseVars(request.body, deploymentMode);
     if (typeof vars === 'string') return { ok: false, code: varsCode(vars), message: vars };
-    const visible = await checkReposVisible(repos, [repo], { subject: 'the repository' });
+    const visible = await checkReposVisible(repos, [githubRepo(`${repo.owner}/${repo.name}`)], {
+        subject: 'the repository',
+    });
     if (!visible.ok) return visible;
     return { ok: true, repo, vars };
 }

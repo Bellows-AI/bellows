@@ -10,7 +10,7 @@ import { type FetchCall, stubFetch } from './dom.js';
  */
 
 const REPO = 'acme/web';
-const BRANCHES_URL = `/api/repos/${REPO}/branches`;
+const BRANCHES_URL = `/api/repos/${encodeURIComponent(REPO)}/branches`;
 
 const page = (branches: string[], cursor: string | null = null) => ({ branches, cursor, defaultBranch: 'main' });
 

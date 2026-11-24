@@ -5,9 +5,15 @@ import { matchesSearch, orderByRecency, repoKey } from '../src/components/reposi
 
 /** The repositories page's pure layer: the tracked list is searched and ordered, never selected or saved. */
 
-const repo = (overrides: Partial<InstallationRepo> = {}): InstallationRepo => ({
-    owner: 'acme',
-    name: 'web',
+/** `name` is shorthand for the id and path `acme/<name>`. */
+const repo = ({
+    name = 'web',
+    ...overrides
+}: Partial<InstallationRepo> & { name?: string } = {}): InstallationRepo => ({
+    id: `acme/${name}`,
+    forge: 'github',
+    host: 'github.com',
+    path: `acme/${name}`,
     private: false,
     defaultBranch: 'main',
     pushedAt: '2026-08-20T09:00:00.000Z',
@@ -15,13 +21,13 @@ const repo = (overrides: Partial<InstallationRepo> = {}): InstallationRepo => ({
 });
 
 describe('repoKey', () => {
-    it('joins owner and name with a slash', () => {
-        expect(repoKey({ owner: 'acme', name: 'web' })).toBe('acme/web');
+    it('is the repo id, its ref text', () => {
+        expect(repoKey({ id: 'acme/web' })).toBe('acme/web');
     });
 });
 
 describe('matchesSearch', () => {
-    const repos = [repo(), repo({ owner: 'Other', name: 'api' })];
+    const repos = [repo(), repo({ id: 'Other/api', path: 'Other/api' })];
 
     it('matches owner/name case-insensitively', () => {
         expect(matchesSearch(repos, 'acme/web').map(repoKey)).toEqual(['acme/web']);

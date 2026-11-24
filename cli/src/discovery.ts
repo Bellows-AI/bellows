@@ -22,7 +22,7 @@ export interface RepoDiscovery {
 export function repoDiscovery(visible: VisibleRepos): RepoDiscovery {
     return {
         repos: visible.repos.map((repo) => ({
-            repo: `${repo.owner}/${repo.name}`,
+            repo: repo.id,
             private: repo.private,
             defaultBranch: repo.defaultBranch,
         })),

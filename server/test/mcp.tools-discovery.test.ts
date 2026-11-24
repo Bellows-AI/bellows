@@ -393,6 +393,19 @@ describe('list_skills', () => {
         expect(data.skills.every((s: { source: string }) => s.source === 'builtin')).toBe(true);
     });
 
+    it('list_skills sends the repo as an encoded id, and refuses a malformed one', async () => {
+        const seen: string[] = [];
+        const repoSkills = async (repo: string) => {
+            seen.push(repo);
+            return { revision: 'r', skills: [], unreadable: [], complete: true };
+        };
+        const url = await boot({ repoSkills });
+        expect((await call(url, 'alice', 'list_skills', { repo: 'acme/web' })).data.repoError).toBeNull();
+        expect(seen).toEqual(['acme/web']);
+        const bad = await call(url, 'alice', 'list_skills', { repo: 'not a repo' });
+        expect(bad.data).toBeUndefined();
+    });
+
     it('list_skills forwards executor and executorScope to the repo route', async () => {
         const repoSkills = async (_repo: string, _branch: string | null, dirs: readonly string[]) => ({
             revision: 'sha',

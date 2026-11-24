@@ -91,9 +91,9 @@ function RepositoryRow({
     return (
         <tr className={configured === key ? 'repo-row-configured' : undefined}>
             <td data-label="Repository">
-                <span className="repo-name" title={key}>
+                <span className="repo-name" title={repo.path}>
                     <Icon name="repo" />
-                    {key}
+                    {repo.path}
                 </span>{' '}
                 <span className="pill">{repo.private ? 'Private' : 'Public'}</span>
             </td>
@@ -190,7 +190,7 @@ export function RepositorySetupList({
 
 export interface RepositoryConfigDetailProps {
     /** The configured repository, or null — nothing renders before a choice. */
-    repo: { owner: string; name: string } | null;
+    repo: { path: string } | null;
     /** Focus target for the configure handoff; the page moves focus, never the component. */
     headingRef?: RefObject<HTMLHeadingElement | null>;
     children?: ReactNode;
@@ -206,7 +206,7 @@ export function RepositoryConfigDetail({ repo, headingRef, children }: Repositor
     return (
         <section className="panel repo-detail">
             <h2 ref={headingRef} tabIndex={-1}>
-                Selected repository: {repoKey(repo)}
+                Selected repository: {repo.path}
             </h2>
             {children}
         </section>

@@ -64,8 +64,10 @@ export const emptyWorkspace = (): { loading: false; data: WorkspacePayload } => 
 });
 
 export const installationRepo = (owner: string, name: string): InstallationRepo => ({
-    owner,
-    name,
+    id: `${owner}/${name}`,
+    forge: 'github',
+    host: 'github.com',
+    path: `${owner}/${name}`,
     private: true,
     defaultBranch: null,
     pushedAt: AT,

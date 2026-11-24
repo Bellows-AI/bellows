@@ -104,7 +104,13 @@ export function SettingsRepositoriesPage() {
     const { configured, headingRef, configure } = useConfiguredRepoDetail();
     const reported = repos.data?.repos ?? [];
     const shown = matchesSearch(orderByRecency(reported), search);
-    const [owner, name] = configured?.split('/') ?? [];
+    const configuredRepo = reported.find((r) => r.id === configured);
+    // until BEL-532b part 5: the env wire still names a repo {owner, name}, split at the path's last '/'.
+    // A configured id the listing does not hold yet is its own path (GitHub's id is its path).
+    const configuredPath = configuredRepo?.path ?? configured ?? '';
+    const split = configuredPath.lastIndexOf('/');
+    const owner = configuredPath.slice(0, split);
+    const name = configuredPath.slice(split + 1);
     const scope = env.data?.repos.find((s) => s.owner === owner && s.name === name);
 
     return (
@@ -138,7 +144,10 @@ export function SettingsRepositoriesPage() {
                 onConfigure={configure}
                 loaded={trackedRepos(repos).repos !== null}
             />
-            <RepositoryConfigDetail repo={configured && owner && name ? { owner, name } : null} headingRef={headingRef}>
+            <RepositoryConfigDetail
+                repo={configured && owner && name ? { path: configuredPath } : null}
+                headingRef={headingRef}
+            >
                 {configured && owner && name ? (
                     <ConfiguredRepoEnv
                         configured={configured}

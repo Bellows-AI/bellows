@@ -66,7 +66,7 @@ const EXPECTED: string[] = [
     'list_jobs | factory:read | TFTF | 267bfc48d597 | ba0f61e0daa1',
     'list_questions | factory:read | TFTF | 8d0cb9539b48 | b5999d16a780',
     'list_repos | factory:read | TFTF | 95ab2351a7f7 | b128f3f3b1cd',
-    'list_skills | factory:read | TFTF | d3e0132a38ab | 9e46eb968431',
+    'list_skills | factory:read | TFTF | be01584e1b15 | 9e46eb968431',
     'list_tasks | factory:read | TFTF | e5a4de69c262 | 044beba5aea8',
     'mark_task_done | factory:write | FFFF | 8d0cb9539b48 | b6edbc0315b3',
     'preflight_task | factory:read | TFTF | ba132642f57c | b73a8f94198f',

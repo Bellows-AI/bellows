@@ -52,7 +52,15 @@ export async function trackRepos(page: Page, repos: { owner: string; name: strin
     await page.route('**/api/repos', (route) =>
         route.fulfill({
             json: {
-                repos: repos.map((repo) => ({ ...repo, private: false, defaultBranch: 'main', pushedAt: null })),
+                repos: repos.map(({ owner, name }) => ({
+                    id: `${owner}/${name}`,
+                    forge: 'github',
+                    host: 'github.com',
+                    path: `${owner}/${name}`,
+                    private: false,
+                    defaultBranch: 'main',
+                    pushedAt: null,
+                })),
                 installation: null,
                 meta: { fetchedAt: null, error: null },
             },

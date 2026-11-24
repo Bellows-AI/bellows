@@ -39,9 +39,17 @@ describe('GET /api/repos', () => {
 
         expect(response.statusCode).toBe(HTTP_OK);
         const body = response.json();
+        const ref = { forge: 'github', host: 'github.com' };
         expect(body.repos).toEqual([
-            { owner: 'acme', name: 'web', private: true, defaultBranch: 'main', pushedAt: '2026-08-20T00:00:00.000Z' },
-            { owner: 'acme', name: 'api', private: false, defaultBranch: 'dev', pushedAt: null },
+            {
+                id: 'acme/web',
+                ...ref,
+                path: 'acme/web',
+                private: true,
+                defaultBranch: 'main',
+                pushedAt: '2026-08-20T00:00:00.000Z',
+            },
+            { id: 'acme/api', ...ref, path: 'acme/api', private: false, defaultBranch: 'dev', pushedAt: null },
         ]);
         expect(body.installation).toEqual({ id: '4242', account: 'acme', repositorySelection: 'selected' });
         expect(body.meta.error).toBeNull();
@@ -119,7 +127,7 @@ describe('the repo source', () => {
     });
 });
 
-describe('GET /api/repos/:owner/:name/branches', () => {
+describe('GET /api/repos/:id/branches', () => {
     const HTTP_UNAVAILABLE = 503;
     type Lister = NonNullable<NonNullable<Parameters<typeof staticRegistry>[0]>['listBranches']>;
 
@@ -135,7 +143,7 @@ describe('GET /api/repos/:owner/:name/branches', () => {
         return app;
     }
     const get = (app: Awaited<ReturnType<typeof bootBranches>>, query = '', repo = 'acme/web') =>
-        app.inject({ method: 'GET', url: `/api/repos/${repo}/branches${query}` });
+        app.inject({ method: 'GET', url: `/api/repos/${encodeURIComponent(repo)}/branches${query}` });
 
     it('lists branches with the default branch and cursor', async () => {
         const calls: unknown[] = [];
@@ -230,5 +238,99 @@ describe('GET /api/repos/:owner/:name/branches', () => {
         const response = await get(app, '?q=zzz');
         expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json()).toEqual({ branches: [], cursor: null, defaultBranch: 'main' });
+    });
+
+    it('answers 404 for the old /:owner/:name spelling (no alias)', async () => {
+        const app = await bootBranches(async () => ({ names: ['x'], cursor: null }));
+        const response = await app.inject({ method: 'GET', url: '/api/repos/acme/web/branches' });
+        expect(response.statusCode).toBe(404);
+    });
+
+    it('refuses a GitLab ref as unknown without calling the reader', async () => {
+        let called = false;
+        const app = await bootBranches(async () => {
+            called = true;
+            return { names: [], cursor: null };
+        });
+        const response = await get(app, '', 'gitlab:gl.example/g/sub/p');
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('UNKNOWN_REPO');
+        expect(called).toBe(false);
+    });
+
+    it.each(['not-a-ref', 'acme/..', 'acme/.', 'acme/a b'])('answers 400 BAD_REPO for %j', async (id) => {
+        const app = await bootBranches(async () => ({ names: [], cursor: null }));
+        const response = await get(app, '', id);
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('BAD_REPO');
+    });
+
+    it('refuses an untracked leading-hyphen name as unknown, not malformed', async () => {
+        const app = await bootBranches(async () => ({ names: [], cursor: null }));
+        const response = await get(app, '', 'acme/-x');
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('UNKNOWN_REPO');
+    });
+
+    // The old route read whatever the tracked list held: a leading dot or hyphen was no reason to refuse.
+    it.each(['.github', '-tools', '_x', '.-a'])('serves a tracked acme/%s, as it did before ids', async (name) => {
+        const config = testConfig();
+        const repos = createRepoSource({
+            client: stubAppClient(async () =>
+                listing({
+                    repos: [{ owner: 'acme', name, private: false, defaultBranch: 'main', pushedAt: null }],
+                })
+            ),
+        });
+        const app = track(
+            await buildApp({
+                config,
+                orgs: staticRegistry({
+                    config,
+                    repos,
+                    telemetry: stubTelemetryClient(),
+                    listBranches: async () => ({ names: ['main'], cursor: null }),
+                }),
+            })
+        );
+        const response = await get(app as Awaited<ReturnType<typeof bootBranches>>, '', `acme/${name}`);
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json().branches).toEqual(['main']);
+    });
+
+    it('takes the longest valid GitHub name, and answers a clear 4xx past the router limit', async () => {
+        const long = `${'a'.repeat(100)}/${'b'.repeat(100)}`;
+        const config = testConfig();
+        const repos = createRepoSource({
+            client: stubAppClient(async () =>
+                listing({
+                    repos: [
+                        {
+                            owner: 'a'.repeat(100),
+                            name: 'b'.repeat(100),
+                            private: false,
+                            defaultBranch: 'main',
+                            pushedAt: null,
+                        },
+                    ],
+                })
+            ),
+        });
+        const app = track(
+            await buildApp({
+                config,
+                orgs: staticRegistry({
+                    config,
+                    repos,
+                    telemetry: stubTelemetryClient(),
+                    listBranches: async () => ({ names: ['main'], cursor: null }),
+                }),
+            })
+        );
+        const ok = await get(app as Awaited<ReturnType<typeof bootBranches>>, '', long);
+        expect(ok.statusCode).toBe(HTTP_OK);
+        const tooLong = await get(app as Awaited<ReturnType<typeof bootBranches>>, '', `${long}${'/c'.repeat(400)}`);
+        expect(tooLong.statusCode).toBeGreaterThanOrEqual(400);
+        expect(tooLong.statusCode).toBeLessThan(500);
     });
 });

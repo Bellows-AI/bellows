@@ -49,7 +49,7 @@ async function persistDraft(plan: BatchPlan, record: BatchRecord | null): Promis
 
 export function BatchDraft({ record, onChanged }: { record: BatchRecord | null; onChanged: () => void }) {
     const navigate = useNavigate();
-    const repos = useRepos(true).data?.repos.map((repo) => `${repo.owner}/${repo.name}`) ?? [];
+    const repos = useRepos(true).data?.repos.map((repo) => repo.id) ?? [];
     const [plan, setPlan] = useState<BatchPlan>(() => record?.plan ?? blankPlan(''));
     const [issues, setIssues] = useState<BatchPlanIssue[]>([]);
     const [message, setMessage] = useState('');

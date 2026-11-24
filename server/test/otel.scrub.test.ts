@@ -79,9 +79,9 @@ describe('URL scrubbing over a real SDK and loopback HTTP', () => {
     });
 
     it('exports server spans with the route pattern, client spans with scheme://host, and no secret anywhere', async () => {
-        await fetch(`${boardUrl}/api/repos/o-x/n-x/branches?t=tok_x`);
+        await fetch(`${boardUrl}/api/repos/o-x%2Fn-x/branches?t=tok_x`);
         await fetch(`${boardUrl}/api/attachments/uploads/${CAPABILITY}`, { method: 'PUT', body: 'x' });
-        await fetch(`${boardUrl}/api/repos/o-x/%ZZ/branches`);
+        await fetch(`${boardUrl}/api/repos/o-x%2F%ZZ/branches`);
         await fetch(`${githubUrl}/repos/o-x/n-x/pulls?x=1`);
         await otel.shutdown();
 
@@ -98,11 +98,11 @@ describe('URL scrubbing over a real SDK and loopback HTTP', () => {
         for (const secret of SECRETS) expect(everything).not.toContain(secret);
 
         const server = spans.find(
-            (s) => s.kind === SPAN_KIND_SERVER && attr(s, 'http.route') === '/api/repos/:owner/:name/branches'
+            (s) => s.kind === SPAN_KIND_SERVER && attr(s, 'http.route') === '/api/repos/:id/branches'
         );
         expect(server).toBeDefined();
-        expect(attr(server!, 'url.path')).toBe('/api/repos/:owner/:name/branches');
-        expect(attr(server!, 'http.target')).toBe('/api/repos/:owner/:name/branches');
+        expect(attr(server!, 'url.path')).toBe('/api/repos/:id/branches');
+        expect(attr(server!, 'http.target')).toBe('/api/repos/:id/branches');
         expect(attr(server!, 'url.query')).toBeUndefined();
         const rejected = spans.filter(
             (s) => s.kind === SPAN_KIND_SERVER && attr(s, 'http.response.status_code') === '400'

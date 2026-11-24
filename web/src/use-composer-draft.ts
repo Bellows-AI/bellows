@@ -29,7 +29,7 @@ export interface ComposerWorkflowOption {
     params?: WorkflowParamChoice[];
 }
 
-type Repos = readonly { owner: string; name: string }[] | null;
+type Repos = readonly { id: string }[] | null;
 /** The combined options, both scopes, as `composerExecutorOptions` builds them. */
 type Executors = readonly ComposerExecutorOption[];
 type Workflows = readonly ComposerWorkflowOption[] | null;
@@ -132,7 +132,7 @@ function useListClamps(
     // task with a repository the member no longer works in. Clamp to what exists — the first
     // repository, or none when the list is empty.
     useEffect(() => {
-        if (repos !== null && repo !== '' && !repos.some(({ owner, name }) => `${owner}/${name}` === repo)) {
+        if (repos !== null && repo !== '' && !repos.some(({ id }) => id === repo)) {
             update({ repo: firstRepo(repos) });
         }
     }, [repos, repo, update]);
