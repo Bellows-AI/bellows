@@ -86,7 +86,7 @@ const RUN = {
     rootJobId: JOB,
     command: 'task',
     status: 'running',
-    repo: 'acme/web',
+    repo: githubRepo('acme/web'),
     executor: null,
     mode: 'objective',
     createdAt: '2026-01-01T00:00:00.000Z',

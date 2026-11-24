@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { createServer } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
@@ -41,7 +42,7 @@ const RUN = {
     rootJobId: JOB,
     command: 'task',
     status: 'succeeded',
-    repo: 'acme/web',
+    repo: githubRepo('acme/web'),
     executor: null,
     mode: 'objective',
     createdAt: '2026-01-01T00:00:00.000Z',

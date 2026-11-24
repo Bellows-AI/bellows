@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import type { McpServer, ServerContext } from '@modelcontextprotocol/server';
 import { describe, expect, it, vi } from 'vitest';
 import { abortableSleep } from '../src/abortable-sleep.js';
@@ -146,7 +147,7 @@ const run = (overrides: Record<string, unknown> = {}) => ({
     rootJobId: TASK,
     command: 'task',
     status: 'running',
-    repo: 'acme/web',
+    repo: githubRepo('acme/web'),
     executor: null,
     mode: 'objective',
     createdAt: '2026-01-01T00:00:00.000Z',
