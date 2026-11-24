@@ -23,6 +23,8 @@ const job = (id: string): Job => ({
     author: null,
     stoppedBy: null,
     doneBy: null,
+    archivedAt: null,
+    archivedBy: null,
     sessionId: null,
     exitCode: 0,
     output: null,

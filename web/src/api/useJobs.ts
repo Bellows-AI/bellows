@@ -164,6 +164,8 @@ export interface Job {
     stoppedBy: AuthorRef | null;
     /** Who marked the task done; null when nobody has. */
     doneBy: AuthorRef | null;
+    /** Who archived the task, or null on an active task. */
+    archivedBy: AuthorRef | null;
     exitCode: number | null;
     output: string | null;
     /** Why a FAILED run failed, structured (issue 339); null is "not a failure". */
@@ -224,6 +226,8 @@ export interface Job {
     rootJobId: string;
     /** When the user declared the task done, or null while they have not. */
     doneAt: string | null;
+    /** When the task was archived — it left the active list — or null on an active task. */
+    archivedAt: string | null;
     /**
      * When a stop was requested on this run while it was running — the user's `/stop` landed on a
      * moving run and the driver has not parked it yet. Null on every other job.

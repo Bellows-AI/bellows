@@ -59,6 +59,8 @@ export function job(overrides: Partial<Job> = {}): Job {
         author: null,
         stoppedBy: null,
         doneBy: null,
+        archivedAt: null,
+        archivedBy: null,
         exitCode: 0,
         output: null,
         repo: null,
@@ -230,7 +232,8 @@ export const renderDetail = ({
                             doneId={null}
                             onStop={async () => {}}
                             onDone={async () => {}}
-                            onRemoveRequest={() => {}}
+                            onArchiveRequest={() => {}}
+                            onUnarchive={() => {}}
                             onRenameRequest={() => {}}
                         />
                     ) : null
@@ -275,7 +278,8 @@ export const renderHeader = ({
                     doneId={doneId}
                     onStop={async () => {}}
                     onDone={async () => {}}
-                    onRemoveRequest={() => {}}
+                    onArchiveRequest={() => {}}
+                    onUnarchive={() => {}}
                     onRenameRequest={() => {}}
                 />
             ) : null}

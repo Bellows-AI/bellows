@@ -31,6 +31,7 @@ const summary = (n: number, status: TaskSummary['status']): TaskSummary => ({
     status,
     cancelRequestedAt: null,
     doneAt: null,
+    archivedAt: null,
     repo: null,
     executor: null,
     executorScope: 'user',
@@ -51,7 +52,7 @@ const summary = (n: number, status: TaskSummary['status']): TaskSummary => ({
  */
 const ANSWER: TaskListResponse = {
     navigation: {
-        counts: { running: 1, review: 1, past: 0 },
+        counts: { running: 1, review: 1, past: 0, archived: 0 },
         running: [summary(1, 'running')],
         review: [summary(2, 'succeeded')],
     },
