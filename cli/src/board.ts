@@ -4,7 +4,6 @@ import type { BatchRoutes } from './batch.js';
 import { operatorRoutes } from './operator-routes.js';
 import type { OperatorRoutes } from './operator-routes.js';
 import { attachRoutes, type FollowUpExtras } from './attach.js';
-import type { RepoRef } from './repo-ref.js';
 import { preflightRoutes, type Preflight, type PreflightSelection } from './diagnostics.js';
 import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER, JSON_CONTENT_TYPE } from './http.js';
 import {
@@ -309,7 +308,7 @@ export interface BoardTaskPage {
 export interface BoardClient extends BatchRoutes, OperatorRoutes {
     createJob(input: {
         command: string;
-        repo?: RepoRef | undefined;
+        repo?: PreflightSelection['repo'];
         executor?: string | undefined;
         /** The scope `executor` names (issue 391); absent lets the board default to personal. */
         executorScope?: 'user' | 'org' | undefined;
