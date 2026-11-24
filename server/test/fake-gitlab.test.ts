@@ -657,6 +657,138 @@ describe('fake GitLab: project hooks', () => {
     });
 });
 
+describe('fake GitLab: version', () => {
+    it('answers the instance version to a signed-in caller, 401 otherwise, and a lane can change it', async () => {
+        const { access_token: token } = await gl.signIn();
+        const ok = await gl.send('GET', '/api/v4/version', { token });
+        expect(ok.status).toBe(200);
+        expect(ok.body.version).toMatch(/^\d+\.\d+\.\d+/);
+        expect((await gl.send('GET', '/api/v4/version')).status).toBe(401);
+        await gl.control('gitlab/version', { version: '16.11.2' });
+        expect((await gl.send('GET', '/api/v4/version', { token })).body.version).toBe('16.11.2');
+    });
+});
+
+describe('fake GitLab: group projects', () => {
+    const seedTree = async () => {
+        for (const path of ['acme/a', 'acme/b', 'acme/sub/c', 'acme/sub/deep/d', 'other/e'])
+            await gl.control('gitlab/projects', { path });
+        await gl.control('gitlab/members', { project: 'acme/b', login: 'dev', projectAccess: 20 });
+        await gl.control('gitlab/members', { project: 'acme/a', login: 'dev', projectAccess: 30 });
+        await gl.control('gitlab/members', { project: 'acme/sub/c', login: 'dev', groupAccess: 40 });
+        await gl.control('gitlab/members', { project: 'acme/sub/deep/d', login: 'dev', projectAccess: 0 });
+    };
+    const list = async (group: string, query = '', login = 'dev') => {
+        const { access_token: token } = await gl.signIn(login);
+        return gl.send('GET', `/api/v4/groups/${encodeURIComponent(group)}/projects${query}`, { token });
+    };
+    const paths = (res: { body: { path_with_namespace: string }[] }) => res.body.map((p) => p.path_with_namespace);
+
+    it('lists direct projects by default and nested ones with include_subgroups, with the member permissions', async () => {
+        await seedTree();
+        const direct = await list('acme');
+        expect(direct.status).toBe(200);
+        expect(paths(direct)).toEqual(['acme/a', 'acme/b']);
+        expect(direct.body[0].permissions.project_access.access_level).toBe(30);
+        const nested = await list('acme', '?include_subgroups=true');
+        expect(paths(nested)).toEqual(['acme/a', 'acme/b', 'acme/sub/c']);
+        expect(paths(await list('acme/sub', '?include_subgroups=true'))).toEqual(['acme/sub/c']);
+    });
+
+    it('filters by min_access_level and answers an unknown group 404', async () => {
+        await seedTree();
+        expect(paths(await list('acme', '?include_subgroups=true&min_access_level=30'))).toEqual([
+            'acme/a',
+            'acme/sub/c',
+        ]);
+        expect((await list('nope')).status).toBe(404);
+    });
+
+    it('paginates with X-Page, X-Next-Page and X-Total headers until the last page', async () => {
+        await seedTree();
+        const first = await list('acme', '?include_subgroups=true&per_page=2&page=1');
+        expect(paths(first)).toEqual(['acme/a', 'acme/b']);
+        expect(first.headers['x-next-page']).toBe('2');
+        expect(first.headers['x-total']).toBe('3');
+        const last = await list('acme', '?include_subgroups=true&per_page=2&page=2');
+        expect(paths(last)).toEqual(['acme/sub/c']);
+        expect(last.headers['x-next-page']).toBe('');
+    });
+});
+
+describe('fake GitLab: OAuth clients', () => {
+    it('binds a pair to the client that authorized it, and refuses another client and a wrong secret', async () => {
+        await gl.control('gitlab/oauth-clients', { clientId: 'app-1', clientSecret: 'secret-1' });
+        await gl.control('gitlab/oauth-clients', { clientId: 'app-2', clientSecret: 'secret-2' });
+        const authorize = await gl.send(
+            'GET',
+            '/oauth/authorize?redirect_uri=http://board.test/cb&client_id=app-1&login=dev'
+        );
+        const code = new URL(authorize.location as string).searchParams.get('code') as string;
+        const exchange = (clientSecret: string, clientId = 'app-1') =>
+            gl.send('POST', '/oauth/token', {
+                body: { grant_type: 'authorization_code', code, client_id: clientId, client_secret: clientSecret },
+            });
+        expect((await exchange('wrong')).status).toBe(401);
+        expect((await exchange('secret-2', 'app-2')).status).toBe(400);
+        const pair = (await exchange('secret-1')).body;
+        expect(pair.access_token).toBeTruthy();
+        const refresh = (clientId: string, clientSecret: string, token = pair.refresh_token) =>
+            gl.send('POST', '/oauth/token', {
+                body: {
+                    grant_type: 'refresh_token',
+                    refresh_token: token,
+                    client_id: clientId,
+                    client_secret: clientSecret,
+                },
+            });
+        expect((await refresh('app-2', 'secret-2')).status).toBe(400);
+        const rotated = await refresh('app-1', 'secret-1');
+        expect(rotated.status).toBe(200);
+        expect((await refresh('app-1', 'secret-1', rotated.body.refresh_token)).status).toBe(200);
+    });
+
+    it('stays open to any client while none is registered', async () => {
+        expect((await gl.signIn()).access_token).toBeTruthy();
+    });
+});
+
+describe('fake GitLab: fault controls', () => {
+    const FAST = 150;
+    const faultOn = (body: object) => gl.control('gitlab/faults', body);
+
+    it('answers 5xx on the matching path only, for the counted calls, then recovers', async () => {
+        const { access_token: token } = await gl.signIn('dev');
+        await seed();
+        await faultOn({ pathIncludes: '/projects/', mode: 'status', status: 503, count: 2 });
+        expect((await gl.send('GET', api(''), { token })).status).toBe(503);
+        expect((await gl.send('GET', api(''), { token })).status).toBe(503);
+        expect((await gl.send('GET', api(''), { token })).status).toBe(200);
+        expect((await gl.send('GET', '/api/v4/user', { token })).status).toBe(200);
+    });
+
+    it('answers a body that is not JSON with a 200', async () => {
+        const { access_token: token } = await gl.signIn('dev');
+        await faultOn({ pathIncludes: '/api/v4/version', mode: 'malformed' });
+        const res = await fetch(`${gl.base}/api/v4/version`, { headers: { authorization: `Bearer ${token}` } });
+        expect(res.status).toBe(200);
+        await expect(res.json()).rejects.toThrow();
+    });
+
+    it('never answers in timeout mode, and clears on mode none', async () => {
+        const { access_token: token } = await gl.signIn('dev');
+        await faultOn({ pathIncludes: '/api/v4/version', mode: 'timeout' });
+        await expect(
+            fetch(`${gl.base}/api/v4/version`, {
+                headers: { authorization: `Bearer ${token}` },
+                signal: AbortSignal.timeout(FAST),
+            })
+        ).rejects.toThrow();
+        await faultOn({ mode: 'none' });
+        expect((await gl.send('GET', '/api/v4/version', { token })).status).toBe(200);
+    });
+});
+
 describe('fake GitLab: the call log', () => {
     it('names the token kind, a stable token id and the holder, never the token', async () => {
         await seed();

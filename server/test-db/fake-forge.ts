@@ -43,6 +43,7 @@ export interface SendOptions {
 export interface Reply {
     status: number;
     location: string | null;
+    headers: Record<string, string>;
     // biome-ignore lint/suspicious/noExplicitAny: a JSON answer the test narrows by use
     body: any;
 }
@@ -79,7 +80,12 @@ export const startFakeForge = async ({ now = () => CLOCK_START_MS }: { now?: () 
         // a raw file answer stays text, even when the file happens to parse as JSON
         const json = (response.headers.get('content-type') ?? '').includes('json');
         const parsed: unknown = json ? JSON.parse(text) : text || null;
-        return { status: response.status, location: response.headers.get('location'), body: parsed };
+        return {
+            status: response.status,
+            location: response.headers.get('location'),
+            headers: Object.fromEntries(response.headers),
+            body: parsed,
+        };
     };
 
     return {
