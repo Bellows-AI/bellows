@@ -17,7 +17,15 @@ import { lockThreadRootInTx } from '../connection-bindings.js';
 import { cancelWaitsWithEvent, insertAdminActionEvent } from './job-store-admin-event.js';
 import { addFollowUpBindings, bindOnCreate } from './job-store-connections.js';
 import { bindAttachmentsInTx, revokeThreadAttachmentsInTx } from './job-store-attachments.js';
-import { backsBatchTask, batchThreadState, exists, workspacePathFor, hasRunningMember } from './job-store-rows.js';
+import {
+    backsBatchTask,
+    batchThreadState,
+    exists,
+    hasRunningMember,
+    stopReviewsOf,
+    stopRows,
+    workspacePathFor,
+} from './job-store-rows.js';
 import { stopJob } from './job-store-run-control.js';
 import { queueReclaimIfThreadDone } from './job-store-reclaim-queue.js';
 import { recordCreateDecisionInTx, recordFollowUpDecisionInTx } from './job-store-skill-pin.js';
@@ -556,6 +564,18 @@ export async function archiveJobThread(
     return sql.begin(async (tx) => {
         const rootJobId = await lockThreadOf(tx, orgId, id);
         if (!rootJobId) return 'missing';
+        // Stop again under the lock every writer of this thread takes: a follow-up or retry that committed after the
+        // stop phase above must not survive the stamp as a queued row the driver would claim.
+        const stop = { orgId, wallTick: ctx.wallTick, stoppedBy: archivedBy };
+        const stopped = await stopRows(tx, {
+            ...stop,
+            where: tx`root_job_id = ${rootJobId} and review_of is null`,
+        });
+        await stopReviewsOf(
+            tx,
+            stop,
+            stopped.map((row) => row.id)
+        );
         await tx`
             update job set archived_at = coalesce(archived_at, now()), archived_by = coalesce(archived_by, ${archivedBy})
             where org_id = ${orgId} and root_job_id = ${rootJobId}
