@@ -8,6 +8,7 @@ import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
+import { refOf, VARIANT_CASES, type RepoVariant } from './repo-variants.js';
 import { craftJob, mustCreate, randomGithubId, spendInterruptionBudget, testOrg } from './fixtures.js';
 
 /**
@@ -96,12 +97,10 @@ const finishPublished = async (command: string, status: 'succeeded' | 'failed' =
     return id;
 };
 
-const GITLAB_HOST = 'gl.example';
-
-/** The thread `finishPublished` makes, on a GitLab host: the same path REPO, published to the same PR number. */
-const finishPublishedOnGitlab = async (command: string): Promise<string> => {
+/** The thread `finishPublished` makes on another repository (forge or host): the same path REPO, the same PR number. */
+const finishPublishedOn = async (variant: RepoVariant, command: string): Promise<string> => {
     const { id } = await mustCreate(store.create(command, null, { repo: githubRepo(REPO), executor: null }));
-    await sql`update job set forge = 'gitlab', host = ${GITLAB_HOST} where org_id = ${ORG} and id = ${id}`;
+    await sql`update job set forge = ${variant.forge}, host = ${variant.host} where org_id = ${ORG} and id = ${id}`;
     const claim = await store.claim(WORKER, LEASE_SECONDS);
     if (claim === null) throw new Error('claim refused');
     await store.session(id, claim.leaseToken, SESSION);
@@ -112,7 +111,7 @@ const finishPublishedOnGitlab = async (command: string): Promise<string> => {
         publication: {
             repo: REPO,
             prNumber: PULL,
-            prUrl: `https://${GITLAB_HOST}/${REPO}/-/merge_requests/${PULL}`,
+            prUrl: `https://${variant.host}/${REPO}/-/merge_requests/${PULL}`,
             headBranch: `factory/${id}`,
             baseBranch: 'main',
         },
@@ -636,72 +635,152 @@ describe.skipIf(!enabled)('a merged PR closes its published threads (issue #390)
 });
 
 /** The same path on GitHub and on a GitLab host is two repositories: a GitHub merge closes only the GitHub thread. */
-describe.skipIf(!enabled)('a merged PR closes by repository ref, not by path', () => {
-    it('closes only the GitHub thread when a GitLab thread publishes the same path and number', async () => {
-        const github = await finishPublished('the github thread');
-        const gitlab = await finishPublishedOnGitlab('the gitlab thread');
+describe.skipIf(!enabled).each(VARIANT_CASES)(
+    'a merged PR closes by repository ref, not by path (%s)',
+    (_name, variant) => {
+        it('closes only the GitHub thread when a GitLab thread publishes the same path and number', async () => {
+            const github = await finishPublished('the github thread');
+            const gitlab = await finishPublishedOn(variant, 'the gitlab thread');
 
-        expect(await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-gh')).toEqual({
-            outcome: 'applied',
-            closedRoots: 1,
+            expect(await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-gh')).toEqual({
+                outcome: 'applied',
+                closedRoots: 1,
+            });
+
+            expect((await jobRowOf(github)).done_at).not.toBeNull();
+            expect((await jobRowOf(gitlab)).done_at).toBeNull();
         });
 
-        expect((await jobRowOf(github)).done_at).not.toBeNull();
-        expect((await jobRowOf(gitlab)).done_at).toBeNull();
-    });
+        it('does not apply a GitHub merge to a GitLab publication that lands after it', async () => {
+            await finishPublished('the github thread');
+            await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-gh');
 
-    it('does not apply a GitHub merge to a GitLab publication that lands after it', async () => {
-        await finishPublished('the github thread');
-        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-gh');
+            const gitlab = await finishPublishedOn(variant, 'the late gitlab thread');
 
-        const gitlab = await finishPublishedOnGitlab('the late gitlab thread');
-
-        expect((await jobRowOf(gitlab)).done_at).toBeNull();
-        expect(await store.get(gitlab)).toMatchObject({ publication: expect.objectContaining({ prNumber: PULL }) });
-    });
-
-    it('records the merge under the ref and answers duplicate to a redelivery', async () => {
-        await finishPublished('the github thread');
-
-        await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-first');
-        expect(await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-again')).toEqual({
-            outcome: 'duplicate',
-            closedRoots: 0,
-        });
-        expect(await sql`select forge, host, repo, pr_number from pr_merge where org_id = ${ORG}`).toEqual([
-            { forge: 'github', host: 'github.com', repo: REPO, pr_number: PULL },
-        ]);
-    });
-
-    it('parks a workflow round on the publication forge and host', async () => {
-        const { id } = await mustCreate(
-            store.create('walk', null, {
-                repo: githubRepo(REPO),
-                executor: null,
-                workflow: { id: randomUUID(), name: 'gl-park', node: 'verify', snapshot: waitingWorkflow, params: {} },
-            })
-        );
-        await sql`update job set forge = 'gitlab', host = ${GITLAB_HOST} where org_id = ${ORG} and id = ${id}`;
-        const claim = await claimOf(id);
-        await store.session(id, claim.leaseToken, SESSION);
-        await store.complete(id, claim.leaseToken, {
-            status: 'succeeded',
-            exitCode: 0,
-            output: 'published',
-            publication: {
-                repo: REPO,
-                prNumber: PULL,
-                prUrl: `https://${GITLAB_HOST}/${REPO}/-/merge_requests/${PULL}`,
-                headBranch: `factory/${id}`,
-                baseBranch: 'main',
-            },
+            expect((await jobRowOf(gitlab)).done_at).toBeNull();
+            expect(await store.get(gitlab)).toMatchObject({ publication: expect.objectContaining({ prNumber: PULL }) });
         });
 
-        expect(
-            await sql`select forge, host, repo, job_repo from workflow_round where org_id = ${ORG} and root_job_id = ${id}`
-        ).toEqual([{ forge: 'gitlab', host: GITLAB_HOST, repo: REPO, job_repo: REPO }]);
-        expect(await sql`select forge, host from workflow_wait where org_id = ${ORG} and root_job_id = ${id}`).toEqual([
-            { forge: 'gitlab', host: GITLAB_HOST },
-        ]);
-    });
-});
+        it('records the merge under the ref and answers duplicate to a redelivery', async () => {
+            await finishPublished('the github thread');
+
+            await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-first');
+            expect(await store.closeMergedPr(githubRepo(REPO), PULL, 'guid-again')).toEqual({
+                outcome: 'duplicate',
+                closedRoots: 0,
+            });
+            expect(await sql`select forge, host, repo, pr_number from pr_merge where org_id = ${ORG}`).toEqual([
+                { forge: 'github', host: 'github.com', repo: REPO, pr_number: PULL },
+            ]);
+        });
+
+        it('parks a workflow round on the publication forge and host', async () => {
+            const { id } = await mustCreate(
+                store.create('walk', null, {
+                    repo: githubRepo(REPO),
+                    executor: null,
+                    workflow: {
+                        id: randomUUID(),
+                        name: 'gl-park',
+                        node: 'verify',
+                        snapshot: waitingWorkflow,
+                        params: {},
+                    },
+                })
+            );
+            await sql`update job set forge = ${variant.forge}, host = ${variant.host} where org_id = ${ORG} and id = ${id}`;
+            const claim = await claimOf(id);
+            await store.session(id, claim.leaseToken, SESSION);
+            await store.complete(id, claim.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'published',
+                publication: {
+                    repo: REPO,
+                    prNumber: PULL,
+                    prUrl: `https://${variant.host}/${REPO}/-/merge_requests/${PULL}`,
+                    headBranch: `factory/${id}`,
+                    baseBranch: 'main',
+                },
+            });
+
+            expect(
+                await sql`select forge, host, repo, job_repo from workflow_round where org_id = ${ORG} and root_job_id = ${id}`
+            ).toEqual([{ forge: variant.forge, host: variant.host, repo: REPO, job_repo: REPO }]);
+            expect(
+                await sql`select forge, host from workflow_wait where org_id = ${ORG} and root_job_id = ${id}`
+            ).toEqual([{ forge: variant.forge, host: variant.host }]);
+        });
+
+        it('wakes the parked round into a continuation that keeps the forge, host and path', async () => {
+            const { id } = await mustCreate(
+                store.create('walk', null, {
+                    repo: githubRepo(REPO),
+                    executor: null,
+                    workflow: {
+                        id: randomUUID(),
+                        name: 'wake-ref',
+                        node: 'verify',
+                        snapshot: waitingWorkflow,
+                        params: {},
+                    },
+                })
+            );
+            await sql`update job set forge = ${variant.forge}, host = ${variant.host} where org_id = ${ORG} and id = ${id}`;
+            const claim = await claimOf(id);
+            await store.session(id, claim.leaseToken, SESSION);
+            await store.complete(id, claim.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'published',
+                publication: {
+                    repo: REPO,
+                    prNumber: PULL,
+                    prUrl: `https://${variant.host}/${REPO}/-/merge_requests/${PULL}`,
+                    headBranch: `factory/${id}`,
+                    baseBranch: 'main',
+                },
+            });
+            // The wait is addressed to the variant, so only an observation of the variant wakes it.
+            expect(
+                await prs.foldObservedActivity({
+                    repo: refOf(variant, REPO),
+                    prNumber: PULL,
+                    activityAt: new Date(Date.now() + 60_000),
+                    fingerprint: 'fp-wake',
+                })
+            ).toBe(1);
+
+            await sweepRuntimeWakes({ sql, orgId: ORG, prs });
+
+            expect(
+                await sql`select forge, host, repo from job where org_id = ${ORG} and root_job_id = ${id} and workflow_node = 'review'`
+            ).toEqual([{ forge: variant.forge, host: variant.host, repo: REPO }]);
+        });
+
+        it('closes only the variant thread when the variant merges the same path and number', async () => {
+            const github = await finishPublished('the github thread');
+            const other = await finishPublishedOn(variant, 'the other thread');
+
+            expect(await store.closeMergedPr(refOf(variant, REPO), PULL, 'guid-other')).toEqual({
+                outcome: 'applied',
+                closedRoots: 1,
+            });
+
+            expect((await jobRowOf(other)).done_at).not.toBeNull();
+            expect((await jobRowOf(github)).done_at).toBeNull();
+            expect(await sql`select forge, host, repo from pr_merge where org_id = ${ORG}`).toEqual([
+                { forge: variant.forge, host: variant.host, repo: REPO },
+            ]);
+        });
+
+        it('does not apply the variant merge to a GitHub publication that lands after it', async () => {
+            await finishPublishedOn(variant, 'the other thread');
+            await store.closeMergedPr(refOf(variant, REPO), PULL, 'guid-other');
+
+            const github = await finishPublished('the late github thread');
+
+            expect((await jobRowOf(github)).done_at).toBeNull();
+        });
+    }
+);

@@ -14,6 +14,7 @@ import { GitHubReadError } from '../src/github/pr-read.js';
 import { claimDue, withFollowClaim } from '../src/db/pr-follow-store.js';
 import { createPrFollower, type PrFollower } from '../src/pr-follower.js';
 import { useTestDb } from './harness.js';
+import { refOf, VARIANT_CASES } from './repo-variants.js';
 import { mustCreate, testOrg, testUser } from './fixtures.js';
 import {
     batchPlan,
@@ -594,70 +595,128 @@ describe.skipIf(!enabled)('PR follower — the cursor identifies what was observ
 });
 
 /** One path on GitHub and on a GitLab host is two repositories: the follow rows and their claims keep them apart. */
-describe.skipIf(!enabled)('PR follower — a GitLab repository on the same path', () => {
-    const GITLAB_HOST = 'gl.example';
+describe.skipIf(!enabled).each(VARIANT_CASES)(
+    'PR follower — another repository on the same path (%s)',
+    (_name, variant) => {
+        const GITLAB_HOST = variant.host;
 
-    /** `plainThread`, on a GitLab host. */
-    async function gitlabPlainThread(): Promise<{ root: string; number: number }> {
-        nextPr += 1;
-        const number = nextPr;
-        const { id: root } = await mustCreate(
-            jobs.create('plain work', null, { repo: githubRepo(REPO), executor: null })
-        );
-        await sql`update job set forge = 'gitlab', host = ${GITLAB_HOST} where org_id = ${ORG} and id = ${root}`;
-        const claim = (await jobs.claim(WORKER, LEASE_SECONDS)) as Claim;
-        await jobs.complete(claim.id, claim.leaseToken, {
-            status: 'succeeded',
-            exitCode: 0,
-            output: 'published',
-            publication: {
-                repo: REPO,
-                prNumber: number,
-                prUrl: `https://${GITLAB_HOST}/${REPO}/-/merge_requests/${number}`,
-                headBranch: `factory/${root}`,
-                baseBranch: 'main',
-            },
+        /** `plainThread`, on a GitLab host. */
+        async function otherPlainThread(): Promise<{ root: string; number: number }> {
+            nextPr += 1;
+            const number = nextPr;
+            const { id: root } = await mustCreate(
+                jobs.create('plain work', null, { repo: githubRepo(REPO), executor: null })
+            );
+            await sql`update job set forge = ${variant.forge}, host = ${GITLAB_HOST} where org_id = ${ORG} and id = ${root}`;
+            const claim = (await jobs.claim(WORKER, LEASE_SECONDS)) as Claim;
+            await jobs.complete(claim.id, claim.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'published',
+                publication: {
+                    repo: REPO,
+                    prNumber: number,
+                    prUrl: `https://${GITLAB_HOST}/${REPO}/-/merge_requests/${number}`,
+                    headBranch: `factory/${root}`,
+                    baseBranch: 'main',
+                },
+            });
+            return { root, number };
+        }
+
+        it('follows the PR a GitLab thread published under that forge and host', async () => {
+            const { number } = await otherPlainThread();
+
+            const claims = await claimDue({ sql, orgId: ORG }, 10, 0);
+
+            expect(claims).toEqual([expect.objectContaining({ repo: refOf(variant, REPO) })]);
+            expect(await sql`select forge, host, repo, pr_number from pr_follow where org_id = ${ORG}`).toEqual([
+                { forge: variant.forge, host: GITLAB_HOST, repo: REPO, pr_number: number },
+            ]);
         });
-        return { root, number };
-    }
 
-    it('follows the PR a GitLab thread published under that forge and host', async () => {
-        const { number } = await gitlabPlainThread();
-
-        const claims = await claimDue({ sql, orgId: ORG }, 10, 0);
-
-        expect(claims).toEqual([expect.objectContaining({ repo: { forge: 'gitlab', host: GITLAB_HOST, path: REPO } })]);
-        expect(await sql`select forge, host, repo, pr_number from pr_follow where org_id = ${ORG}`).toEqual([
-            { forge: 'gitlab', host: GITLAB_HOST, repo: REPO, pr_number: number },
-        ]);
-    });
-
-    it('never updates a GitLab follow row through a GitHub claim on the same path', async () => {
-        nextPr += 1;
-        const token = randomUUID();
-        await sql`
+        it('never updates a GitLab follow row through a GitHub claim on the same path', async () => {
+            nextPr += 1;
+            const token = randomUUID();
+            await sql`
             insert into pr_follow (org_id, forge, host, repo, pr_number, next_poll_at, claim_token, claimed_until)
-            values (${ORG}, 'gitlab', ${GITLAB_HOST}, ${REPO}, ${nextPr}, now(), ${token}::uuid, now() + interval '1 hour')
+            values (${ORG}, ${variant.forge}, ${GITLAB_HOST}, ${REPO}, ${nextPr}, now(), ${token}::uuid, now() + interval '1 hour')
         `;
 
-        const applied = await withFollowClaim(
-            { sql, orgId: ORG },
-            { repo: githubRepo(REPO), prNumber: nextPr, token },
-            async () => ({ kind: 'seen', closed: false })
-        );
+            const applied = await withFollowClaim(
+                { sql, orgId: ORG },
+                { repo: githubRepo(REPO), prNumber: nextPr, token },
+                async () => ({ kind: 'seen', closed: false })
+            );
 
-        expect(applied).toBe(false);
-    });
+            expect(applied).toBe(false);
+        });
 
-    it('answers a GitLab claim given GitHub facts for the same path as a failed read, applying nothing', async () => {
-        const { root, number } = await gitlabPlainThread();
-        github.replies.set(number, mergedPr(number));
+        it('answers a GitLab claim given GitHub facts for the same path as a failed read, applying nothing', async () => {
+            const { root, number } = await otherPlainThread();
+            github.replies.set(number, mergedPr(number));
 
-        await follower.observeDue();
+            await follower.observeDue();
 
-        expect(github.reads).toEqual([number]);
-        expect(await mergeRows(number)).toEqual([]);
-        expect(await doneAtOf(root)).toBeNull();
-        expect(await followRow(number)).toMatchObject({ failures: 1, error_code: 'binding' });
-    });
-});
+            expect(github.reads).toEqual([number]);
+            expect(await mergeRows(number)).toEqual([]);
+            expect(await doneAtOf(root)).toBeNull();
+            expect(await followRow(number)).toMatchObject({ failures: 1, error_code: 'binding' });
+        });
+
+        it('never updates a GitHub follow row through a claim on the other repository', async () => {
+            nextPr += 1;
+            const token = randomUUID();
+            await sql`
+            insert into pr_follow (org_id, forge, host, repo, pr_number, next_poll_at, claim_token, claimed_until)
+            values (${ORG}, 'github', 'github.com', ${REPO}, ${nextPr}, now(), ${token}::uuid, now() + interval '1 hour')
+        `;
+
+            const applied = await withFollowClaim(
+                { sql, orgId: ORG },
+                { repo: refOf(variant, REPO), prNumber: nextPr, token },
+                async () => ({ kind: 'seen', closed: false })
+            );
+
+            expect(applied).toBe(false);
+        });
+
+        it('keeps following a thread whose PR only the other repository merged', async () => {
+            const { number } = await otherPlainThread();
+            await sql`
+            insert into pr_merge (org_id, forge, host, repo, pr_number, delivery_id, merged_at)
+            values (${ORG}, 'github', 'github.com', ${REPO}, ${number}, 'gh-merge', now())
+        `;
+
+            const claims = await claimDue({ sql, orgId: ORG }, 10, 0);
+
+            expect(claims.map((claim) => claim.repo)).toEqual([refOf(variant, REPO)]);
+        });
+
+        it('keeps following a GitHub thread whose PR only the other repository merged', async () => {
+            const { number } = await plainThread();
+            await sql`
+            insert into pr_merge (org_id, forge, host, repo, pr_number, delivery_id, merged_at)
+            values (${ORG}, ${variant.forge}, ${variant.host}, ${REPO}, ${number}, 'other-merge', now())
+        `;
+
+            const claims = await claimDue({ sql, orgId: ORG }, 10, 0);
+
+            expect(claims.map((claim) => claim.repo)).toEqual([githubRepo(REPO)]);
+        });
+
+        it('forgets a follow row of the other repository that nothing follows any more', async () => {
+            const { number } = await otherPlainThread();
+            await sql`
+            insert into pr_follow (org_id, forge, host, repo, pr_number, next_poll_at)
+            values (${ORG}, 'github', 'github.com', ${REPO}, ${number}, now() + interval '1 day')
+        `;
+
+            await claimDue({ sql, orgId: ORG }, 10, 0);
+
+            expect(
+                await sql`select forge, host from pr_follow where org_id = ${ORG} and pr_number = ${number}`
+            ).toEqual([{ forge: variant.forge, host: variant.host }]);
+        });
+    }
+);

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { githubRepo, type RepoRef } from '@factory-ai/core';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import { issueVerdictReclaim } from '../src/db/jobs/job-store-reclaim-queue.js';
@@ -8,6 +8,7 @@ import type { Claim, JobStore, ReviewerSpec } from '../src/db/jobs/job-store-typ
 import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
+import { refOf, VARIANT_CASES } from './repo-variants.js';
 import { mustCreate, testOrg, testUser } from './fixtures.js';
 
 /**
@@ -21,8 +22,9 @@ const ORG = testOrg();
 const AUTHOR_USER = testUser('repo-ref-author');
 const ADMIN_USER = testUser('repo-ref-admin');
 const LEASE_SECONDS = 300;
-const GITLAB: RepoRef = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' };
-const TRIPLE = { forge: GITLAB.forge, host: GITLAB.host, repo: GITLAB.path };
+/** The non-GitHub-on-github.com repository the case runs against; set per variant below. */
+let GITLAB: RepoRef;
+let TRIPLE: { forge: string; host: string; repo: string };
 
 const db = useTestDb({ orgs: [ORG], users: [AUTHOR_USER, ADMIN_USER], max: 4 });
 
@@ -113,109 +115,119 @@ const must = <T extends { id: string }>(ref: T | string): T => {
     return ref;
 };
 
-describe.skipIf(!enabled)('derived job rows carry the thread forge and host', () => {
-    it('a follow-up child', async () => {
-        const root = await finishedGitlabRoot();
-        const child = must(await store.createFollowUp(root, 'again', AUTHOR_USER.id));
-        expect(await tripleOf(child.id)).toEqual(TRIPLE);
-    });
+describe.skipIf(!enabled).each(VARIANT_CASES)(
+    'derived job rows carry the thread forge and host (%s)',
+    (_name, variant) => {
+        beforeEach(() => {
+            GITLAB = refOf(variant, 'g/sub/p');
+            TRIPLE = { forge: GITLAB.forge, host: GITLAB.host, repo: GITLAB.path };
+        });
 
-    it('a retry and a reopen', async () => {
-        const root = await finishedGitlabRoot();
-        const retry = must(await store.createRetry(root, AUTHOR_USER.id));
-        expect(await tripleOf(retry.id)).toEqual(TRIPLE);
+        it('a follow-up child', async () => {
+            const root = await finishedGitlabRoot();
+            const child = must(await store.createFollowUp(root, 'again', AUTHOR_USER.id));
+            expect(await tripleOf(child.id)).toEqual(TRIPLE);
+        });
 
-        const claim = await claimOf(retry.id);
-        await store.complete(retry.id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
-        await store.markDone(root, AUTHOR_USER.id);
-        expect(await store.reopen(root)).toEqual({ result: 'ok' });
-        const rows = await sql<{ id: string; forge: string; host: string; repo: string }[]>`
+        it('a retry and a reopen', async () => {
+            const root = await finishedGitlabRoot();
+            const retry = must(await store.createRetry(root, AUTHOR_USER.id));
+            expect(await tripleOf(retry.id)).toEqual(TRIPLE);
+
+            const claim = await claimOf(retry.id);
+            await store.complete(retry.id, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
+            await store.markDone(root, AUTHOR_USER.id);
+            expect(await store.reopen(root)).toEqual({ result: 'ok' });
+            const rows = await sql<{ id: string; forge: string; host: string; repo: string }[]>`
             select id, forge, host, repo from job where org_id = ${ORG} and root_job_id = ${root}
         `;
-        expect(rows.length).toBeGreaterThanOrEqual(2);
-        for (const row of rows) expect({ forge: row.forge, host: row.host, repo: row.repo }).toEqual(TRIPLE);
-    });
+            expect(rows.length).toBeGreaterThanOrEqual(2);
+            for (const row of rows) expect({ forge: row.forge, host: row.host, repo: row.repo }).toEqual(TRIPLE);
+        });
 
-    it('a workflow successor', async () => {
-        const root = await gitlabRoot(true);
-        const claim = await claimOf(root);
-        await store.complete(root, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
-        const [second] = await sql<{ id: string }[]>`
+        it('a workflow successor', async () => {
+            const root = await gitlabRoot(true);
+            const claim = await claimOf(root);
+            await store.complete(root, claim.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
+            const [second] = await sql<{ id: string }[]>`
             select id from job where org_id = ${ORG} and root_job_id = ${root} and workflow_node = 'second'
         `;
-        expect(await tripleOf(second!.id)).toEqual(TRIPLE);
-    });
-
-    it('a review child', async () => {
-        const root = await gitlabRoot();
-        const caller = await claimOf(root, reviewing);
-        const asked = await reviewing.requestReview(caller.id, caller.leaseToken, {
-            key: 'sec-1',
-            profile: 'security',
-            revision: 'h:2',
-            ref: reviewRefOf(caller.id, 'sec-1'),
+            expect(await tripleOf(second!.id)).toEqual(TRIPLE);
         });
-        expect(asked).toMatchObject({ claim: expect.anything() });
-        const [review] = await sql<{ id: string }[]>`
+
+        it('a review child', async () => {
+            const root = await gitlabRoot();
+            const caller = await claimOf(root, reviewing);
+            const asked = await reviewing.requestReview(caller.id, caller.leaseToken, {
+                key: 'sec-1',
+                profile: 'security',
+                revision: 'h:2',
+                ref: reviewRefOf(caller.id, 'sec-1'),
+            });
+            expect(asked).toMatchObject({ claim: expect.anything() });
+            const [review] = await sql<{ id: string }[]>`
             select id from job where org_id = ${ORG} and review_of = ${caller.id}
         `;
-        expect(await tripleOf(review!.id)).toEqual(TRIPLE);
-    });
-
-    it('a removed thread reclaim, a done thread reclaim and a verdict reclaim', async () => {
-        const removed = await finishedGitlabRoot();
-        await store.removeThread(removed, null);
-        expect(
-            await sql`select forge, host, repo from task_reclaim where org_id = ${ORG} and root_job_id = ${removed}`
-        ).toEqual([TRIPLE]);
-
-        const done = await finishedGitlabRoot();
-        await store.markDone(done, AUTHOR_USER.id);
-        expect(
-            await sql`select forge, host, repo from task_reclaim where org_id = ${ORG} and root_job_id = ${done}`
-        ).toEqual([TRIPLE]);
-
-        await sql`delete from task_reclaim where org_id = ${ORG} and root_job_id = ${done}`;
-        await sql.begin((tx) =>
-            issueVerdictReclaim(tx, { orgId: ORG }, done, { worker: 'w', leaseToken: randomUUID() })
-        );
-        expect(
-            await sql`select forge, host, repo from task_reclaim where org_id = ${ORG} and root_job_id = ${done}`
-        ).toEqual([TRIPLE]);
-    });
-
-    it('the execution record after a claim and a PR operation', async () => {
-        const root = await gitlabRoot();
-        const claim = await claimOf(root);
-        expect(
-            await sql`select forge, host, repo from job_execution where org_id = ${ORG} and job_id = ${root}`
-        ).toEqual([TRIPLE]);
-
-        const written = await store.writePrOperation(root, claim.leaseToken, {
-            operationId: randomUUID(),
-            operation: 'created',
-            repo: GITLAB.path,
-            prNumber: 3,
-            prUrl: 'https://gl.example/g/sub/p/-/merge_requests/3',
-            branch: 'factory/x',
+            expect(await tripleOf(review!.id)).toEqual(TRIPLE);
         });
-        expect(written).toEqual({ result: 'ok' });
-        expect(
-            await sql`select forge, host, repo from job_pr_operation where org_id = ${ORG} and job_id = ${root}`
-        ).toEqual([TRIPLE]);
-    });
 
-    it("an admin's follow-up event", async () => {
-        const root = await finishedGitlabRoot();
-        const ref = must(await store.createFollowUp(root, 'admin says', ADMIN_USER.id, undefined, undefined, true));
-        expect(
-            await sql`select forge, host, repo from notification_event
+        it('a removed thread reclaim, a done thread reclaim and a verdict reclaim', async () => {
+            const removed = await finishedGitlabRoot();
+            await store.removeThread(removed, null);
+            expect(
+                await sql`select forge, host, repo from task_reclaim where org_id = ${ORG} and root_job_id = ${removed}`
+            ).toEqual([TRIPLE]);
+
+            const done = await finishedGitlabRoot();
+            await store.markDone(done, AUTHOR_USER.id);
+            expect(
+                await sql`select forge, host, repo from task_reclaim where org_id = ${ORG} and root_job_id = ${done}`
+            ).toEqual([TRIPLE]);
+
+            await sql`delete from task_reclaim where org_id = ${ORG} and root_job_id = ${done}`;
+            await sql.begin((tx) =>
+                issueVerdictReclaim(tx, { orgId: ORG }, done, { worker: 'w', leaseToken: randomUUID() })
+            );
+            expect(
+                await sql`select forge, host, repo from task_reclaim where org_id = ${ORG} and root_job_id = ${done}`
+            ).toEqual([TRIPLE]);
+        });
+
+        it('the execution record after a claim and a PR operation', async () => {
+            const root = await gitlabRoot();
+            const claim = await claimOf(root);
+            expect(
+                await sql`select forge, host, repo from job_execution where org_id = ${ORG} and job_id = ${root}`
+            ).toEqual([TRIPLE]);
+
+            const written = await store.writePrOperation(root, claim.leaseToken, {
+                operationId: randomUUID(),
+                operation: 'created',
+                repo: GITLAB.path,
+                prNumber: 3,
+                prUrl: 'https://gl.example/g/sub/p/-/merge_requests/3',
+                branch: 'factory/x',
+            });
+            expect(written).toEqual({ result: 'ok' });
+            expect(
+                await sql`select forge, host, repo from job_pr_operation where org_id = ${ORG} and job_id = ${root}`
+            ).toEqual([TRIPLE]);
+        });
+
+        it("an admin's follow-up event", async () => {
+            const root = await finishedGitlabRoot();
+            const ref = must(await store.createFollowUp(root, 'admin says', ADMIN_USER.id, undefined, undefined, true));
+            expect(
+                await sql`select forge, host, repo from notification_event
                       where org_id = ${ORG} and job_id = ${ref.id} and kind = 'task.admin_action'`
-        ).toEqual([TRIPLE]);
-    });
+            ).toEqual([TRIPLE]);
+        });
 
-    it('store.create writes the ref it is given', async () => {
-        const { id } = await mustCreate(store.create('from a ref', null, { repo: GITLAB, executor: null } as never));
-        expect(await tripleOf(id)).toEqual(TRIPLE);
-    });
-});
+        it('store.create writes the ref it is given', async () => {
+            const { id } = await mustCreate(
+                store.create('from a ref', null, { repo: GITLAB, executor: null } as never)
+            );
+            expect(await tripleOf(id)).toEqual(TRIPLE);
+        });
+    }
+);
