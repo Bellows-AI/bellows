@@ -74,18 +74,23 @@ export function repoReason(value: string): string | null {
     return null;
 }
 
-/**
- * The segment rules over a ref's whole path (GitLab nests groups), with `repoReason`'s messages. `allowDotted` is
- * the read side's: a tracked repo such as `acme/.github` is readable, so only `-`, `.` and `..` are refused there.
- */
-export function repoRefReason(ref: RepoRef, { allowDotted = false }: { allowDotted?: boolean } = {}): string | null {
+/** The segment rules over a ref's whole path (GitLab nests groups), with `repoReason`'s messages. */
+export function repoRefReason(ref: RepoRef): string | null {
     for (const part of ref.path.split('/')) {
         if (part.length > REPO_SEGMENT_LIMIT) return `repo segment exceeds ${REPO_SEGMENT_LIMIT} characters`;
-        const dotted = allowDotted && part.startsWith('.') && part !== '.' && part !== '..';
-        const reason = dotted ? null : badSegment('repo segment', part);
+        const reason = badSegment('repo segment', part);
         if (reason) return reason;
     }
     return null;
+}
+
+/**
+ * The read side's rule. The old `/:owner/:name` read routes did no shape check: a repo was readable when the tracked
+ * list held it, so `acme/-tools` and `acme/.github` were. Only what cannot be a path segment is refused here (`.`,
+ * `..`); `parseRepoRef` already holds the alphabet, and the visibility check bounds everything else.
+ */
+export function repoReadReason(ref: RepoRef): string | null {
+    return ref.path.split('/').some((part) => part === '.' || part === '..') ? 'repo segment is "." or ".."' : null;
 }
 
 /** The longest `:id` a repo route's router takes: the longest valid GitHub ref is 201 characters, 203 encoded, and a nested GitLab path needs room. */
@@ -93,12 +98,12 @@ export const REPO_ID_PARAM_LIMIT = 1024;
 
 /**
  * The ref a `/api/repos/:id/…` route names: the id is `formatRepoRef(ref)`, URL-decoded by the router. Reads accept
- * what they always did for GitHub (`allowDotted`), so a tracked `acme/.github` stays readable.
+ * what they always did (`repoReadReason`), so a tracked `acme/.github` or `acme/-tools` stays readable.
  */
 export function repoOfId(id: string): { ok: true; ref: RepoRef } | { ok: false; message: string } {
     const ref = parseRepoRef(id);
     if (!ref) return { ok: false, message: 'repo must be owner/name on GitHub, or forge:host/path' };
-    const reason = repoRefReason(ref, { allowDotted: true });
+    const reason = repoReadReason(ref);
     return reason ? { ok: false, message: reason } : { ok: true, ref };
 }
 

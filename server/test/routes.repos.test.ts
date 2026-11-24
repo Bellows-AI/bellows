@@ -258,19 +258,27 @@ describe('GET /api/repos/:id/branches', () => {
         expect(called).toBe(false);
     });
 
-    it.each(['not-a-ref', 'acme/-x', 'acme/..'])('answers 400 BAD_REPO for %j', async (id) => {
+    it.each(['not-a-ref', 'acme/..', 'acme/.', 'acme/a b'])('answers 400 BAD_REPO for %j', async (id) => {
         const app = await bootBranches(async () => ({ names: [], cursor: null }));
         const response = await get(app, '', id);
         expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('BAD_REPO');
     });
 
-    it('serves a dotted repo such as acme/.github, as it did before ids', async () => {
+    it('refuses an untracked leading-hyphen name as unknown, not malformed', async () => {
+        const app = await bootBranches(async () => ({ names: [], cursor: null }));
+        const response = await get(app, '', 'acme/-x');
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('UNKNOWN_REPO');
+    });
+
+    // The old route read whatever the tracked list held: a leading dot or hyphen was no reason to refuse.
+    it.each(['.github', '-tools', '_x', '.-a'])('serves a tracked acme/%s, as it did before ids', async (name) => {
         const config = testConfig();
         const repos = createRepoSource({
             client: stubAppClient(async () =>
                 listing({
-                    repos: [{ owner: 'acme', name: '.github', private: false, defaultBranch: 'main', pushedAt: null }],
+                    repos: [{ owner: 'acme', name, private: false, defaultBranch: 'main', pushedAt: null }],
                 })
             ),
         });
@@ -285,7 +293,7 @@ describe('GET /api/repos/:id/branches', () => {
                 }),
             })
         );
-        const response = await get(app as Awaited<ReturnType<typeof bootBranches>>, '', 'acme/.github');
+        const response = await get(app as Awaited<ReturnType<typeof bootBranches>>, '', `acme/${name}`);
         expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().branches).toEqual(['main']);
     });

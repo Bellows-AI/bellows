@@ -39,10 +39,23 @@ const get = (app: Awaited<ReturnType<typeof boot>>, query = '', repo = 'acme/web
 const builtinNames = () => skillCatalog().map((s) => s.name);
 
 describe('GET /api/repos/:id/skills', () => {
-    it('serves a dotted repo such as acme/.github and takes the longest valid name', async () => {
+    it.each(['.github', '-tools', '_x'])('serves a tracked acme/%s, as it did before ids', async (name) => {
         const reader: Reader = async () => ({ revision: 'r', skills: [], unreadable: [], complete: true });
-        const dotted = await get(await boot(reader, '.github'), '', 'acme/.github');
-        expect(dotted.statusCode).toBe(HTTP_OK);
+        const response = await get(await boot(reader, name), '', `acme/${name}`);
+        expect(response.statusCode).toBe(HTTP_OK);
+    });
+
+    it.each(['acme/..', 'acme/.'])(
+        'answers 400 BAD_REPO for %j, and UNKNOWN_REPO for an untracked acme/-x',
+        async (id) => {
+            const app = await boot(async () => ({ revision: 'r', skills: [], unreadable: [], complete: true }));
+            expect((await get(app, '', id)).json().code).toBe('BAD_REPO');
+            expect((await get(app, '', 'acme/-x')).json().code).toBe('UNKNOWN_REPO');
+        }
+    );
+
+    it('takes the longest valid name, and answers a clear 4xx past the router limit', async () => {
+        const reader: Reader = async () => ({ revision: 'r', skills: [], unreadable: [], complete: true });
         const long = 'b'.repeat(100);
         const app = await boot(reader, long);
         expect((await get(app, '', `acme/${long}`)).statusCode).toBe(HTTP_OK);

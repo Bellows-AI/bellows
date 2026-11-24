@@ -1,6 +1,6 @@
 import { githubRepo, type RepoRef } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
-import { checkReposVisible, repoRefReason } from '../src/routes/helpers.js';
+import { checkReposVisible, repoOfId, repoRefReason } from '../src/routes/helpers.js';
 
 const gitlab = (path: string): RepoRef => ({ forge: 'gitlab', host: 'gl.example', path });
 
@@ -30,13 +30,19 @@ describe('repoRefReason', () => {
     ])('refuses %j', (ref, message) => {
         expect(repoRefReason(ref)).toMatch(message);
     });
+});
 
-    it('lets a read name a dotted repo such as .github', () => {
-        expect(repoRefReason(githubRepo('acme/.github'))).toMatch(/starts with/);
-        expect(repoRefReason(githubRepo('acme/.github'), { allowDotted: true })).toBeNull();
-        expect(repoRefReason(githubRepo('acme/..'), { allowDotted: true })).not.toBeNull();
-        expect(repoRefReason(githubRepo('acme/-x'), { allowDotted: true })).not.toBeNull();
+describe('repoOfId (the read side)', () => {
+    it.each(['acme/.github', 'acme/-tools', 'acme/_x', 'gitlab:gl.example/g/-sub/.p'])('accepts %j', (id) => {
+        expect(repoOfId(id)).toMatchObject({ ok: true });
     });
+
+    it.each(['acme/..', 'acme/.', 'gitlab:gl.example/g/../p', 'not-a-ref', 'acme/a%2Fb', 'acme/ x'])(
+        'refuses %j',
+        (id) => {
+            expect(repoOfId(id)).toMatchObject({ ok: false });
+        }
+    );
 });
 
 describe('checkReposVisible over refs', () => {
