@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NO_MODEL_MESSAGE, noExecutorMessage } from '@factory-ai/core';
+import { NO_MODEL_MESSAGE, noExecutorMessage, githubRepo } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { ConnectionStore, ConnectionView } from '../src/db/connection-store.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
@@ -167,12 +167,14 @@ describe('POST /api/jobs/preflight model', () => {
     it('is blocked with the fix in cloud when the agent has no model key, ok once one is set', async () => {
         const env = memoryEnvVarStore();
         const booted = await boot({ cloudEnv: env });
-        const { check, body } = await verdict(booted, { repo: 'acme/web', executor: 'main' }, 'model');
+        const { check, body } = await verdict(booted, { repo: githubRepo('acme/web'), executor: 'main' }, 'model');
         expect(check).toMatchObject({ status: 'blocked', code: 'NO_MODEL', detail: NO_MODEL_MESSAGE });
         expect(body.ready).toBe(false);
 
         await env.replaceWorkspace(booted.member.user.id, [{ name: 'ANTHROPIC_API_KEY', value: 'k', isSecret: true }]);
-        expect((await verdict(booted, { repo: 'acme/web', executor: 'main' }, 'model')).check).toMatchObject({
+        expect(
+            (await verdict(booted, { repo: githubRepo('acme/web'), executor: 'main' }, 'model')).check
+        ).toMatchObject({
             status: 'ok',
         });
     });
@@ -180,25 +182,56 @@ describe('POST /api/jobs/preflight model', () => {
     it('is unverified, never blocked, when the env cannot be read', async () => {
         const env = memoryEnvVarStore();
         env.broken = true;
-        const { check, body } = await verdict(await boot({ cloudEnv: env }), { repo: 'acme/web' }, 'model');
+        const { check, body } = await verdict(await boot({ cloudEnv: env }), { repo: githubRepo('acme/web') }, 'model');
         expect(check).toMatchObject({ status: 'unverified' });
         expect(body.ready).toBe(true);
     });
 
     it('is not checked on a self-hosted board', async () => {
-        const { check } = await verdict(await boot(), { repo: 'acme/web', executor: 'main' }, 'model');
+        const { check } = await verdict(await boot(), { repo: githubRepo('acme/web'), executor: 'main' }, 'model');
         expect(check).toBeUndefined();
+    });
+});
+
+describe('POST /api/jobs/preflight repo ref', () => {
+    const ref = { forge: 'github', host: 'github.com', path: 'acme/web' };
+
+    it('is ok for a tracked {forge, host, path} ref, named by its text form', async () => {
+        const { check } = await verdict(await boot(), { repo: ref, executor: 'main' }, 'repo');
+        expect(check).toMatchObject({ name: 'acme/web', status: 'ok' });
+    });
+
+    it('refuses the text form with 400 BAD_REPO', async () => {
+        const response = await preflight(await boot(), { repo: 'acme/web' });
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('BAD_REPO');
+    });
+
+    it('refuses a bad segment with 400 BAD_REPO', async () => {
+        const response = await preflight(await boot(), { repo: { ...ref, path: 'acme/-x' } });
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('BAD_REPO');
+    });
+
+    it('is blocked for a gitlab ref, which the GitHub-only listing cannot track', async () => {
+        const gitlab = { forge: 'gitlab', host: 'gl.example', path: 'acme/web' };
+        const { check } = await verdict(await boot(), { repo: gitlab, executor: 'main' }, 'repo');
+        expect(check).toMatchObject({ name: 'gitlab:gl.example/acme/web', status: 'blocked' });
     });
 });
 
 describe('POST /api/jobs/preflight repo', () => {
     it('is ok for a tracked repo', async () => {
-        const { check } = await verdict(await boot(), { repo: 'acme/web', executor: 'main' }, 'repo');
+        const { check } = await verdict(await boot(), { repo: githubRepo('acme/web'), executor: 'main' }, 'repo');
         expect(check).toMatchObject({ name: 'acme/web', status: 'ok' });
     });
 
     it('is blocked for a repo the board does not track', async () => {
-        const { check, body } = await verdict(await boot(), { repo: 'acme/other', executor: 'main' }, 'repo');
+        const { check, body } = await verdict(
+            await boot(),
+            { repo: githubRepo('acme/other'), executor: 'main' },
+            'repo'
+        );
         expect(check).toMatchObject({ status: 'blocked' });
         expect(body.ready).toBe(false);
     });
@@ -211,7 +244,7 @@ describe('POST /api/jobs/preflight repo', () => {
     it('is unverified when the tracked list carries an error', async () => {
         const { check, body } = await verdict(
             await boot({ repos: [], repoError: 'rate limited' }),
-            { repo: 'acme/web', executor: 'main' },
+            { repo: githubRepo('acme/web'), executor: 'main' },
             'repo'
         );
         expect(check).toMatchObject({ status: 'unverified' });
@@ -222,7 +255,7 @@ describe('POST /api/jobs/preflight repo', () => {
     it('is unverified, not ok, when the refresh failed and the stale list still names the repo', async () => {
         const { check } = await verdict(
             await boot({ staleRepos: true, repoError: 'rate limited' }),
-            { repo: 'acme/web', executor: 'main' },
+            { repo: githubRepo('acme/web'), executor: 'main' },
             'repo'
         );
         expect(check).toMatchObject({ status: 'unverified' });
@@ -232,7 +265,7 @@ describe('POST /api/jobs/preflight repo', () => {
     it('is unverified when the tracked list cannot be read', async () => {
         const { check } = await verdict(
             await boot({ repoError: new Error('boom') }),
-            { repo: 'acme/web', executor: 'main' },
+            { repo: githubRepo('acme/web'), executor: 'main' },
             'repo'
         );
         expect(check).toMatchObject({ status: 'unverified' });
@@ -241,17 +274,17 @@ describe('POST /api/jobs/preflight repo', () => {
 
 describe('POST /api/jobs/preflight executor', () => {
     it("is ok for the caller's own profile", async () => {
-        const { check } = await verdict(await boot(), { repo: 'acme/web', executor: 'main' }, 'executor');
+        const { check } = await verdict(await boot(), { repo: githubRepo('acme/web'), executor: 'main' }, 'executor');
         expect(check).toMatchObject({ name: 'main', status: 'ok' });
     });
 
     it('is blocked when the profile is missing', async () => {
-        const { check } = await verdict(await boot(), { repo: 'acme/web', executor: 'nope' }, 'executor');
+        const { check } = await verdict(await boot(), { repo: githubRepo('acme/web'), executor: 'nope' }, 'executor');
         expect(check).toMatchObject({ name: 'nope', status: 'blocked' });
     });
 
     it('is ok when nothing is selected and the caller has a default, naming the profile create will stamp', async () => {
-        const { check } = await verdict(await boot(), { repo: 'acme/web' }, 'executor');
+        const { check } = await verdict(await boot(), { repo: githubRepo('acme/web') }, 'executor');
         expect(check).toMatchObject({ name: 'main', status: 'ok' });
         expect(check?.detail).toContain('your default');
     });
@@ -260,7 +293,7 @@ describe('POST /api/jobs/preflight executor', () => {
         const booted = await boot();
         const [row] = booted.executors.rows();
         await booted.executors.setPersonalSuspended(booted.member.user.id, row!.id, true);
-        const { check } = await verdict(booted, { repo: 'acme/web' }, 'executor');
+        const { check } = await verdict(booted, { repo: githubRepo('acme/web') }, 'executor');
         expect(check).toMatchObject({ name: null, status: 'blocked' });
         expect(check?.detail).toBe(noExecutorMessage);
     });
@@ -278,7 +311,7 @@ describe('POST /api/jobs/preflight executor', () => {
                 agentType: 'opencode',
                 model: 'anthropic/claude-sonnet-4-5',
             });
-            const { check } = await verdict(booted, { repo: 'acme/web' }, 'executor');
+            const { check } = await verdict(booted, { repo: githubRepo('acme/web') }, 'executor');
             expect(check).toMatchObject({ name: null, status: 'ok' });
             expect(check?.detail).toContain(detail);
             expect(check?.detail).toContain('opencode');
@@ -290,7 +323,7 @@ describe('POST /api/jobs/preflight executor', () => {
         const booted = await boot();
         const [row] = booted.executors.rows();
         await booted.executors.setPersonalSuspended(booted.member.user.id, row!.id, true);
-        const { check } = await verdict(booted, { repo: 'acme/web', executor: 'main' }, 'executor');
+        const { check } = await verdict(booted, { repo: githubRepo('acme/web'), executor: 'main' }, 'executor');
         expect(check).toMatchObject({ status: 'blocked' });
         expect(check?.detail).toContain('suspended');
     });
@@ -298,7 +331,7 @@ describe('POST /api/jobs/preflight executor', () => {
     it('is blocked for an org executor the org does not hold, even when the caller has that name', async () => {
         const { check } = await verdict(
             await boot(),
-            { repo: 'acme/web', executor: 'main', executorScope: 'org' },
+            { repo: githubRepo('acme/web'), executor: 'main', executorScope: 'org' },
             'executor'
         );
         expect(check).toMatchObject({ status: 'blocked' });
@@ -315,7 +348,7 @@ describe('POST /api/jobs/preflight executor', () => {
         });
         const { check } = await verdict(
             booted,
-            { repo: 'acme/web', executor: 'shared', executorScope: 'org' },
+            { repo: githubRepo('acme/web'), executor: 'shared', executorScope: 'org' },
             'executor'
         );
         expect(check).toMatchObject({ status: 'ok' });
@@ -323,14 +356,18 @@ describe('POST /api/jobs/preflight executor', () => {
 
     it("does not show one member another member's profile", async () => {
         const booted = await boot();
-        const response = await preflight(booted, { repo: 'acme/web', executor: 'main' }, booted.otherCookie);
+        const response = await preflight(
+            booted,
+            { repo: githubRepo('acme/web'), executor: 'main' },
+            booted.otherCookie
+        );
         const check = response.json().checks.find((c: { subject: string }) => c.subject === 'executor');
         expect(check).toMatchObject({ status: 'blocked' });
     });
 });
 
 describe('POST /api/jobs/preflight skills', () => {
-    const base = { repo: 'acme/web', executor: 'main' };
+    const base = { repo: githubRepo('acme/web'), executor: 'main' };
 
     const reads =
         (...names: string[]) =>
@@ -562,7 +599,7 @@ describe('POST /api/jobs/preflight skills', () => {
 });
 
 describe('POST /api/jobs/preflight connections', () => {
-    const base = { repo: 'acme/web', executor: 'main' };
+    const base = { repo: githubRepo('acme/web'), executor: 'main' };
 
     it('is ok for a connection the caller may bind', async () => {
         const { check } = await verdict(
@@ -640,7 +677,7 @@ describe('POST /api/jobs/preflight connections', () => {
 
 describe('POST /api/jobs/preflight body', () => {
     it('refuses an unknown field', async () => {
-        const response = await preflight(await boot(), { repo: 'acme/web', command: 'do it' });
+        const response = await preflight(await boot(), { repo: githubRepo('acme/web'), command: 'do it' });
         expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
     });
 
@@ -657,7 +694,7 @@ describe('POST /api/jobs/preflight body', () => {
 });
 
 describe('POST /api/jobs/preflight typed integration requirements', () => {
-    const base = { repo: 'acme/web', executor: 'main', skills: ['factory-jira'] };
+    const base = { repo: githubRepo('acme/web'), executor: 'main', skills: ['factory-jira'] };
     const open = (reason: 'missing' | 'ambiguous'): Resolution => ({
         ok: true,
         bindings: [],
@@ -687,7 +724,7 @@ describe('POST /api/jobs/preflight typed integration requirements', () => {
         expect(skill).toMatchObject({ integration: { provider: 'jira', reason: 'reconnect' } });
         const named = await integrationOf(
             await boot({ allowed: [], listed }),
-            { repo: 'acme/web', executor: 'main', connections: [CONN_A] },
+            { repo: githubRepo('acme/web'), executor: 'main', connections: [CONN_A] },
             'connection'
         );
         expect(named).toMatchObject({ status: 'blocked', integration: { provider: 'jira', reason: 'reconnect' } });
@@ -704,7 +741,7 @@ describe('POST /api/jobs/preflight typed integration requirements', () => {
         expect(unreadable).not.toHaveProperty('integration');
         const absent = await integrationOf(
             await boot({ allowed: [], listed: [] }),
-            { repo: 'acme/web', executor: 'main', connections: [CONN_A] },
+            { repo: githubRepo('acme/web'), executor: 'main', connections: [CONN_A] },
             'connection'
         );
         expect(absent).toMatchObject({ status: 'blocked' });
@@ -713,7 +750,7 @@ describe('POST /api/jobs/preflight typed integration requirements', () => {
 });
 
 describe('POST /api/jobs/preflight repo skills follow the executor', () => {
-    const base = { repo: 'acme/web', skills: ['oc-only'] };
+    const base = { repo: githubRepo('acme/web'), skills: ['oc-only'] };
     const OPENCODE_DIRS = ['.claude/skills', '.opencode/skills', '.opencode/skill', '.agents/skills'];
     /** A reader that holds `oc-only` only when asked for the opencode directories. */
     const dirAware =

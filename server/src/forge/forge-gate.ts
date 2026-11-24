@@ -1,3 +1,4 @@
+import type { RepoRef } from '@factory-ai/core';
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import { forgeConnectPath, forgeOfRepo } from './forges.js';
 
@@ -14,7 +15,7 @@ export type ForgeVerdict = { ok: true } | { ok: false; forge: string; standing: 
 
 export interface ForgeGate {
     /** Throws on a standing read it could not confirm. */
-    check(who: { orgId: string; userId: string; repo: string | null; returnTo: string }): Promise<ForgeVerdict>;
+    check(who: { orgId: string; userId: string; repo: RepoRef | null; returnTo: string }): Promise<ForgeVerdict>;
 }
 
 /** Absent when there is no grant store to read (AUTH_MODE=none): the run acts as the App, so nothing is gated. */

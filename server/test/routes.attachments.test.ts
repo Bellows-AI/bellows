@@ -12,6 +12,7 @@ import {
     MAX_IMAGE_SIDE,
     MAX_REQUEST_BYTES,
     OCTET_STREAM_CONTENT_TYPE,
+    githubRepo,
 } from '@factory-ai/core';
 import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
@@ -291,7 +292,7 @@ describe('POST /api/attachments', () => {
             method: 'POST',
             url: '/api/jobs',
             headers: { cookie: cookie.owner },
-            payload: { repo: 'acme/web', command: 'a text-only task' },
+            payload: { repo: githubRepo('acme/web'), command: 'a text-only task' },
         });
         expect(job.statusCode).toBe(HTTP_CREATED);
         expect(created).toEqual(['a text-only task']);

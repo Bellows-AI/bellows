@@ -10,7 +10,7 @@ import {
     SKILL_NAME_LIMIT,
     USER_SCOPE,
 } from '@factory-ai/core';
-import type { ExecutorScope } from '@factory-ai/core';
+import { readRepoRef, type ExecutorScope, type RepoRef } from '@factory-ai/core';
 import { UUID } from '../../identifiers.js';
 import { GATES_OUTCOMES, type RecordedEvidence } from '../../db/evidence-policy.js';
 import type { FailureCause, FailureKind, JobOutcome, JobStatus } from '../../db/jobs/job-store-types.js';
@@ -42,7 +42,7 @@ import {
     executorReason,
     leaseSeconds,
 } from './job-limits.js';
-import { repoReason } from '../helpers.js';
+import { repoReason, repoRefReason } from '../helpers.js';
 import { MS_PER_SECOND } from '../auth-shared.js';
 import { MAX_AGENT_MODEL_LENGTH } from '../agent-default.js';
 
@@ -94,12 +94,13 @@ export function validateTitleField(raw: unknown): { ok: true; value: string | nu
 }
 
 // Absent and explicit null both mean "not given" — what every job queued before the chat carries.
-export function validateRepoField(raw: unknown): { ok: true; value: string | null } | { ok: false; message: string } {
+export function validateRepoField(raw: unknown): { ok: true; value: RepoRef | null } | { ok: false; message: string } {
     if (raw === undefined || raw === null) return { ok: true, value: null };
-    if (typeof raw !== 'string') return { ok: false, message: 'repo must be a string' };
-    const reason = repoReason(raw);
+    const read = readRepoRef(raw);
+    if (!read.ok) return { ok: false, message: read.message };
+    const reason = repoRefReason(read.ref);
     if (reason) return { ok: false, message: reason };
-    return { ok: true, value: raw };
+    return { ok: true, value: read.ref };
 }
 
 export function validateExecutorField(

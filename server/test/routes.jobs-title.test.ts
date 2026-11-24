@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -44,7 +45,7 @@ const post = (instance: FastifyInstance, extra: Record<string, unknown>, headers
     instance.inject({
         method: 'POST',
         url: '/api/jobs',
-        payload: { repo: 'acme/web', command: 'echo hi', ...extra } as object,
+        payload: { repo: githubRepo('acme/web'), command: 'echo hi', ...extra } as object,
         headers,
     });
 

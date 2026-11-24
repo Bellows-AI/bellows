@@ -1,4 +1,4 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { ERROR_CODES, githubRepo } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { FORGE_ACCESS_REASON, type ForgeRequirementReason } from '../../db/forge-requirement.js';
 import { forgeOfRepo } from '../../forge/forges.js';
@@ -217,7 +217,7 @@ async function write(
     try {
         outcome = await carryOut(writer, who.repo, ask, { token: token.token, signal });
     } catch (e) {
-        const forge = forgeOfRepo(who.repo);
+        const forge = forgeOfRepo(githubRepo(who.repo)); // the publication's repo is a path;
         if (forge !== null && lacksWriteAccess(e, token.as)) return { answer: 'no-access', forge };
         throw e;
     }

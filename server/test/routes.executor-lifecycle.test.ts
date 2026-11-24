@@ -1,4 +1,4 @@
-import { executorMissingMessage, noExecutorMessage } from '@factory-ai/core';
+import { executorMissingMessage, noExecutorMessage, githubRepo } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
@@ -127,7 +127,12 @@ const queue = (b: Booted, cookie: string, executor: string, executorScope: 'user
         method: 'POST',
         url: '/api/jobs',
         headers: { cookie },
-        payload: { command: 'echo hi', executor, executorScope, repo: `${READY_REPO.owner}/${READY_REPO.name}` },
+        payload: {
+            command: 'echo hi',
+            executor,
+            executorScope,
+            repo: githubRepo(`${READY_REPO.owner}/${READY_REPO.name}`),
+        },
     });
 
 describe('personal profiles: remove by id', () => {
@@ -370,7 +375,7 @@ describe('POST /api/jobs naming no executor', () => {
             method: 'POST',
             url: '/api/jobs',
             headers: { cookie },
-            payload: { command: 'echo hi', repo: `${READY_REPO.owner}/${READY_REPO.name}`, ...extra },
+            payload: { command: 'echo hi', repo: githubRepo(`${READY_REPO.owner}/${READY_REPO.name}`), ...extra },
         });
 
     it("stamps the caller's resolved default, so the claim has a profile to run", async () => {
@@ -500,7 +505,7 @@ describe('POST /api/jobs against an executor the scope does not hold', () => {
             method: 'POST',
             url: '/api/jobs',
             headers: { cookie: b.memberCookie },
-            payload: { command: 'echo hi', executor: 'ghost', executorScope: 'user', repo: 'acme/other' },
+            payload: { command: 'echo hi', executor: 'ghost', executorScope: 'user', repo: githubRepo('acme/other') },
         });
         expect(response.statusCode).toBe(HTTP_NOT_FOUND);
         expect(response.json().code).toBe('UNKNOWN_EXECUTOR');
@@ -533,7 +538,7 @@ describe('POST /api/jobs against a repository the board does not track', () => {
 
     it('refuses a repository the board does not track', async () => {
         const b = await bootWithExecutor();
-        const response = await launch(b, { repo: 'acme/other' });
+        const response = await launch(b, { repo: githubRepo('acme/other') });
         expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('UNKNOWN_REPO');
         expect(b.queued).toEqual([]);
@@ -547,14 +552,14 @@ describe('POST /api/jobs against a repository the board does not track', () => {
             b.memberCookie,
             true
         );
-        const response = await launch(b, { repo: 'acme/other' });
+        const response = await launch(b, { repo: githubRepo('acme/other') });
         expect(response.statusCode).toBe(HTTP_CONFLICT);
         expect(response.json().code).toBe('EXECUTOR_SUSPENDED');
     });
 
     it('queues a task against a tracked repository', async () => {
         const b = await bootWithExecutor();
-        expect((await launch(b, { repo: 'acme/web' })).statusCode).toBe(HTTP_CREATED);
+        expect((await launch(b, { repo: githubRepo('acme/web') })).statusCode).toBe(HTTP_CREATED);
         expect(b.queued).toHaveLength(1);
     });
 });
@@ -575,7 +580,7 @@ describe('POST /api/jobs selecting a repo skill that only the executor CLI scans
             payload: {
                 command: 'echo hi',
                 executor,
-                repo: `${READY_REPO.owner}/${READY_REPO.name}`,
+                repo: githubRepo(`${READY_REPO.owner}/${READY_REPO.name}`),
                 skills: ['oc-only'],
             },
         });

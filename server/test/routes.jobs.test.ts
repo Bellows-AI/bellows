@@ -1,4 +1,11 @@
-import { NO_MODEL_MESSAGE, OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE, githubRepo } from '@factory-ai/core';
+import {
+    NO_MODEL_MESSAGE,
+    OBJECTIVE_MODE,
+    USER_SCOPE,
+    WORKFLOW_MODE,
+    githubRepo,
+    type RepoRef,
+} from '@factory-ai/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -91,6 +98,8 @@ interface StoreStub extends JobStore {
         executorScope: string | null;
         agentModel?: string | null;
     }[];
+    /** The repo ref each create was handed, parallel to `created`. */
+    createdRefs: (RepoRef | null | undefined)[];
     /** The skills each create was handed, parallel to `created`. */
     skillSelections: (readonly string[] | undefined)[];
     /** The workflow triple the create was handed, when one resolved — empty in objective mode. */
@@ -254,6 +263,7 @@ function stubStore(
     };
     const stub: StoreStub = {
         created: [],
+        createdRefs: [],
         skillSelections: [],
         workflowTargets: [],
         listed: [],
@@ -309,6 +319,7 @@ function stubStore(
                 executorScope: target?.executorScope ?? null,
                 ...(target?.agentModel !== undefined ? { agentModel: target.agentModel } : {}),
             });
+            stub.createdRefs.push(target?.repo);
             stub.skillSelections.push(target?.skills);
             if (target?.workflow) stub.workflowTargets.push(target.workflow);
             stub.commands.push(command);
@@ -657,12 +668,64 @@ const postAsWorker = (instance: FastifyInstance, url: string, payload: unknown) 
         headers: { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}` },
     });
 
+const ACME_WEB = { forge: 'github', host: 'github.com', path: 'acme/web' };
+
+describe('POST /api/jobs repo ref', () => {
+    it('queues a create whose repo is a {forge, host, path} ref, handing the store that ref', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: ACME_WEB });
+
+        expect(response.statusCode).toBe(201);
+        expect(store.createdRefs).toEqual([ACME_WEB]);
+    });
+
+    it('refuses the text form with 400 BAD_REPO, queueing nothing', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/web' });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_REPO');
+        expect(store.created).toEqual([]);
+    });
+
+    it('refuses a gitlab ref with 400 UNKNOWN_REPO while the listing is GitHub-only', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, '/api/jobs', {
+            command: 'echo hi',
+            repo: { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' },
+        });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('UNKNOWN_REPO');
+        expect(store.created).toEqual([]);
+    });
+
+    it('refuses a github ref with a bad segment with 400 BAD_REPO', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, '/api/jobs', {
+            command: 'echo hi',
+            repo: { ...ACME_WEB, path: 'acme/-x' },
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_REPO');
+    });
+});
+
 describe('POST /api/jobs', () => {
     it('queues a command', async () => {
         const store = stubStore();
         const instance = await harnessWith(store);
 
-        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'claude -p "fix the build"' });
+        const response = await post(instance, '/api/jobs', {
+            repo: githubRepo('acme/web'),
+            command: 'claude -p "fix the build"',
+        });
 
         expect(response.statusCode).toBe(201);
         expect(response.json()).toEqual({ id: ID, status: 'queued' });
@@ -688,7 +751,7 @@ describe('POST /api/jobs', () => {
 
         const response = await post(instance, '/api/jobs', {
             command: 'claude -p "fix the build"',
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             executor: 'main',
         });
 
@@ -709,7 +772,7 @@ describe('POST /api/jobs', () => {
         const store = stubStore();
         const instance = await harnessWith(store);
 
-        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi' });
+        const response = await post(instance, '/api/jobs', { repo: githubRepo('acme/web'), command: 'echo hi' });
 
         expect(response.statusCode).toBe(201);
         expect(store.created).toEqual([
@@ -725,7 +788,7 @@ describe('POST /api/jobs', () => {
 
         const response = await post(instance, '/api/jobs', {
             command: 'echo hi',
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             executor: null,
         });
 
@@ -754,7 +817,7 @@ describe('POST /api/jobs', () => {
         const store = stubStore();
         const instance = await harnessWith(store);
 
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/web' });
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: githubRepo('acme/web') });
 
         expect(response.statusCode).toBe(201);
         expect(store.created).toHaveLength(1);
@@ -764,7 +827,7 @@ describe('POST /api/jobs', () => {
         const store = stubStore();
         const instance = await harnessWith(store);
 
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/other' });
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: githubRepo('acme/other') });
 
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('UNKNOWN_REPO');
@@ -776,7 +839,7 @@ describe('POST /api/jobs', () => {
         const repos = staticRepoSource([], { error: 'database down' });
         const instance = await harnessWith(store, undefined, stubTelemetryClient(), repos);
 
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/web' });
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: githubRepo('acme/web') });
 
         expect(response.statusCode).toBe(503);
         expect(response.json().code).toBe('UNAVAILABLE');
@@ -788,7 +851,7 @@ describe('POST /api/jobs', () => {
         const repos = staticRepoSource([TRACKED], { error: 'refresh failed' });
         const instance = await harnessWith(store, undefined, stubTelemetryClient(), repos);
 
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/other' });
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: githubRepo('acme/other') });
 
         expect(response.statusCode).toBe(503);
         expect(response.json().code).toBe('UNAVAILABLE');
@@ -817,7 +880,7 @@ describe('POST /api/jobs', () => {
         };
         const instance = await harnessWith(store, undefined, stubTelemetryClient(), repos);
 
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/late' });
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: githubRepo('acme/late') });
 
         expect(response.statusCode).toBe(201);
         expect(base.invalidations()).toBe(1);
@@ -828,7 +891,7 @@ describe('POST /api/jobs', () => {
         const instance = await harnessWith(store);
 
         const response = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'echo hi',
             executor: 'team-runner',
             executorScope: 'org',
@@ -852,7 +915,7 @@ describe('POST /api/jobs', () => {
     ])('refuses %s as executorScope', async (_label, executorScope) => {
         const instance = await harnessWith(stubStore());
         const response = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'echo hi',
             executor: 'x',
             executorScope,
@@ -869,7 +932,7 @@ describe('POST /api/jobs', () => {
     ])('refuses %s with 400 and queues nothing', async (_label, model) => {
         const store = stubStore();
         const instance = await harnessWith(store);
-        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', model });
+        const response = await post(instance, '/api/jobs', { repo: githubRepo('acme/web'), command: 'echo hi', model });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_BODY');
         expect(store.created).toEqual([]);
@@ -878,7 +941,11 @@ describe('POST /api/jobs', () => {
     it('hands a chosen model to the store as the task model', async () => {
         const store = stubStore();
         const instance = await harnessWith(store);
-        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', model: 'm-200' });
+        const response = await post(instance, '/api/jobs', {
+            repo: githubRepo('acme/web'),
+            command: 'echo hi',
+            model: 'm-200',
+        });
         expect(response.statusCode).toBe(201);
         expect(store.created[0]?.agentModel).toBe('m-200');
     });
@@ -905,7 +972,11 @@ describe('POST /api/jobs', () => {
         ['a non-string executor', 7],
     ])('refuses %s', async (_label, executor) => {
         const instance = await harnessWith(stubStore());
-        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', executor });
+        const response = await post(instance, '/api/jobs', {
+            repo: githubRepo('acme/web'),
+            command: 'echo hi',
+            executor,
+        });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_EXECUTOR');
     });
@@ -964,7 +1035,7 @@ describe('POST /api/jobs workflow resolution', () => {
         const instance = await harnessWith(jobs, workflows);
 
         const response = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'fix it',
             workflow: 'fix-issue',
         });
@@ -984,7 +1055,11 @@ describe('POST /api/jobs workflow resolution', () => {
         const workflows = stubWorkflows({ found: null });
         const instance = await harnessWith(jobs, workflows);
 
-        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'fix it', workflow: 'ghost' });
+        const response = await post(instance, '/api/jobs', {
+            repo: githubRepo('acme/web'),
+            command: 'fix it',
+            workflow: 'ghost',
+        });
 
         expect(response.statusCode).toBe(404);
         expect(response.json().code).toBe('UNKNOWN_WORKFLOW');
@@ -998,7 +1073,7 @@ describe('POST /api/jobs workflow resolution', () => {
         const workflows = stubWorkflows();
         const instance = await harnessWith(jobs, workflows);
 
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/web' });
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: githubRepo('acme/web') });
 
         expect(response.statusCode).toBe(201);
         expect(workflows.calls.findByName).toEqual([]);
@@ -1011,7 +1086,7 @@ describe('POST /api/jobs workflow resolution', () => {
         const instance = await harnessWith(jobs, stubWorkflows());
 
         const response = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'echo hi',
             defaultWorkflow: { reviewReconciliation: true, mergeConflictAutofix: true },
         });
@@ -1028,7 +1103,7 @@ describe('POST /api/jobs skill selection', () => {
         const instance = await harnessWith(jobs, stubWorkflows());
 
         const response = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'echo hi',
             skills: ['factory-github', 'factory-jira'],
         });
@@ -1041,8 +1116,8 @@ describe('POST /api/jobs skill selection', () => {
         const jobs = stubStore();
         const instance = await harnessWith(jobs, stubWorkflows());
 
-        await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi' });
-        await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', skills: null });
+        await post(instance, '/api/jobs', { repo: githubRepo('acme/web'), command: 'echo hi' });
+        await post(instance, '/api/jobs', { repo: githubRepo('acme/web'), command: 'echo hi', skills: null });
 
         expect(jobs.skillSelections).toEqual([[], []]);
     });
@@ -1072,7 +1147,12 @@ describe('POST /api/jobs skill selection', () => {
         return instance;
     };
     const createWith = (instance: FastifyInstance, extra: object = {}) =>
-        post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', skills: ['repo-only'], ...extra });
+        post(instance, '/api/jobs', {
+            repo: githubRepo('acme/web'),
+            command: 'echo hi',
+            skills: ['repo-only'],
+            ...extra,
+        });
 
     it('accepts a name the repository ships, read at the task base branch', async () => {
         const jobs = stubStore();
@@ -1152,7 +1232,7 @@ describe('POST /api/jobs skill selection', () => {
         const instance = await harnessReading(jobs, readOf());
 
         const response = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'echo hi',
             skills: ['factory-github', 'ghost'],
         });
@@ -1174,7 +1254,11 @@ describe('POST /api/jobs skill selection', () => {
         const jobs = stubStore();
         const instance = await harnessWith(jobs, stubWorkflows());
 
-        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', skills });
+        const response = await post(instance, '/api/jobs', {
+            repo: githubRepo('acme/web'),
+            command: 'echo hi',
+            skills,
+        });
 
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_SKILLS');
@@ -1209,7 +1293,7 @@ describe('POST /api/jobs workflow parameters', () => {
         const { jobs, instance } = await boot();
         // Exactly the issue's repro: "fix the bug" with fix-issue selected used to launch.
         const response = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'fix the login bug',
             workflow: 'fix-issue',
         });
@@ -1221,7 +1305,7 @@ describe('POST /api/jobs workflow parameters', () => {
     it('refuses a malformed param value with BAD_WORKFLOW_PARAMS', async () => {
         const { jobs, instance } = await boot();
         const response = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'fix the login bug',
             workflow: 'fix-issue',
             workflowParams: { issue: '42' },
@@ -1236,7 +1320,7 @@ describe('POST /api/jobs workflow parameters', () => {
         const workflows = stubWorkflows({ found: null });
         const instance = await harnessWith(jobs, workflows);
         const response = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'echo hi',
             workflowParams: { issue: '#42' },
         });
@@ -1248,7 +1332,7 @@ describe('POST /api/jobs workflow parameters', () => {
     it('builds the root command from the entry prompt, carrying the param and the member command', async () => {
         const { jobs, instance } = await boot();
         const response = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'fix the login bug',
             workflow: 'fix-issue',
             workflowParams: { issue: '#127' },
@@ -1266,7 +1350,7 @@ describe('POST /api/jobs workflow parameters', () => {
         const instance = await harnessWith(jobs, workflows);
 
         const forged = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'fix the login bug',
             workflow: 'fix-issue',
             workflowParams: { issue: '#127' },
@@ -1279,7 +1363,7 @@ describe('POST /api/jobs workflow parameters', () => {
         // A body naming no workflow ignores a client-supplied workflowName entirely: objective
         // mode, no workflow target at all.
         const ghost = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'echo hi',
             workflowName: 'ghost',
         });
@@ -1300,7 +1384,7 @@ describe('POST /api/jobs workflow parameters', () => {
         const instance = await harnessWith(jobs, workflows);
         // The raw command is under the cap; the filled entry prompt is not.
         const response = await post(instance, '/api/jobs', {
-            repo: 'acme/web',
+            repo: githubRepo('acme/web'),
             command: 'x'.repeat(16_384),
             workflow: 'fix-issue',
         });
@@ -2608,7 +2692,10 @@ describe('lifecycle actor attribution', () => {
     it('create records the signed-in caller as the author', async () => {
         const { instance, store, caller, cookie } = await signedInHarness();
 
-        const response = await postAs(instance, '/api/jobs', cookie, { command: 'echo hi', repo: 'acme/web' });
+        const response = await postAs(instance, '/api/jobs', cookie, {
+            command: 'echo hi',
+            repo: githubRepo('acme/web'),
+        });
 
         expect(response.statusCode).toBe(201);
         expect(store.created).toEqual([
@@ -4107,7 +4194,7 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
 // answers unavailable rather than pretending the command was queued.
 it('answers 503 when the org runtime has no job store', async () => {
     const instance = await harnessWith();
-    const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi' });
+    const response = await post(instance, '/api/jobs', { repo: githubRepo('acme/web'), command: 'echo hi' });
     expect(response.statusCode).toBe(503);
     expect(response.json().code).toBe('JOBS_UNAVAILABLE');
 });
@@ -4414,7 +4501,7 @@ describe('Idempotency-Key on create, follow-up and retry (#589)', () => {
         instance.inject({ method: 'POST', url, payload: payload as object, headers: { 'idempotency-key': key } });
 
     const CASES = [
-        ['create', '/api/jobs', { command: 'echo hi', repo: 'acme/web' }],
+        ['create', '/api/jobs', { command: 'echo hi', repo: githubRepo('acme/web') }],
         ['follow-up', `/api/jobs/${ID}/follow-up`, { command: 'again' }],
         ['retry', `/api/jobs/${ID}/retry`, {}],
     ] as const;
@@ -4467,7 +4554,7 @@ describe('Idempotency-Key on create, follow-up and retry (#589)', () => {
     ])('refuses a key that is %s before touching the store', async (_label, key) => {
         const store = stubStore();
         const instance = await harnessWith(store);
-        const response = await keyed(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/web' }, key);
+        const response = await keyed(instance, '/api/jobs', { command: 'echo hi', repo: githubRepo('acme/web') }, key);
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_IDEMPOTENCY_KEY');
         expect(store.created).toEqual([]);
@@ -4476,9 +4563,9 @@ describe('Idempotency-Key on create, follow-up and retry (#589)', () => {
     it('fingerprints the request, not the order its fields were written in', async () => {
         const store = stubStore();
         const instance = await harnessWith(store);
-        await keyed(instance, '/api/jobs', { command: 'echo hi', repo: 'owner/name' });
-        await keyed(instance, '/api/jobs', { repo: 'owner/name', command: 'echo hi' });
-        await keyed(instance, '/api/jobs', { command: 'echo bye', repo: 'owner/name' });
+        await keyed(instance, '/api/jobs', { command: 'echo hi', repo: githubRepo('owner/name') });
+        await keyed(instance, '/api/jobs', { repo: githubRepo('owner/name'), command: 'echo hi' });
+        await keyed(instance, '/api/jobs', { command: 'echo bye', repo: githubRepo('owner/name') });
 
         const [a, b, c] = store.idempotencies.map((idem) => idem?.fingerprint);
         expect(a).toBe(b);
@@ -4499,8 +4586,8 @@ describe('Idempotency-Key on create, follow-up and retry (#589)', () => {
     it('fingerprints the model a create and a follow-up choose', async () => {
         const store = stubStore();
         const instance = await harnessWith(store);
-        await keyed(instance, '/api/jobs', { command: 'echo hi', repo: 'owner/name', model: 'a' });
-        await keyed(instance, '/api/jobs', { command: 'echo hi', repo: 'owner/name', model: 'b' });
+        await keyed(instance, '/api/jobs', { command: 'echo hi', repo: githubRepo('owner/name'), model: 'a' });
+        await keyed(instance, '/api/jobs', { command: 'echo hi', repo: githubRepo('owner/name'), model: 'b' });
         await keyed(instance, `/api/jobs/${ID}/follow-up`, { command: 'again', model: 'a' });
         await keyed(instance, `/api/jobs/${ID}/follow-up`, { command: 'again', model: 'b' });
         const [a, b, c, d] = store.idempotencies.map((idem) => idem?.fingerprint);
@@ -4660,7 +4747,7 @@ describe('error-path mapping', () => {
 
     // A down store answers 503, so the caller retries.
     it.each<[string, Request, string | null]>([
-        ['a create', POST('/api/jobs', { command: 'echo hi', repo: 'acme/web' }), 'UNAVAILABLE'],
+        ['a create', POST('/api/jobs', { command: 'echo hi', repo: githubRepo('acme/web') }), 'UNAVAILABLE'],
         ['a stop', POST(`${JOB}/stop`, {}), 'UNAVAILABLE'],
         ['a removal', POST(`${JOB}/remove`, {}), 'UNAVAILABLE'],
         ['a reopen', POST(`${JOB}/reopen`, {}), 'UNAVAILABLE'],
@@ -4766,7 +4853,7 @@ describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', 
                 method: 'POST',
                 url: '/api/jobs',
                 headers: { cookie },
-                payload: { command: 'echo hi', repo: `${TRACKED.owner}/${TRACKED.name}` },
+                payload: { command: 'echo hi', repo: githubRepo(`${TRACKED.owner}/${TRACKED.name}`) },
             });
         return { instance, executors, envVars, userId, created, create };
     }

@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -586,7 +587,7 @@ describe('with github auth configured', () => {
         const response = await server.inject({
             method: 'POST',
             url: '/api/jobs',
-            payload: { command: 'echo hi', repo: 'acme/web' },
+            payload: { command: 'echo hi', repo: githubRepo('acme/web') },
             headers: { cookie },
         });
 
@@ -1253,7 +1254,7 @@ describe('AUTH_MODE=none', () => {
         const response = await server.inject({
             method: 'POST',
             url: '/api/jobs',
-            payload: { command: 'echo hi', repo: 'acme/web' },
+            payload: { command: 'echo hi', repo: githubRepo('acme/web') },
         });
 
         expect(response.statusCode).toBe(HTTP_CREATED);
@@ -1583,7 +1584,7 @@ describe('a bridged caller carries scopes the route class is checked against', (
         const { server, Request } = await scopedServer(['factory:read', 'factory:write']);
         const response = await inject(server, 'POST', '/api/jobs', {
             Request,
-            payload: { command: 'echo hi', repo: 'acme/web' },
+            payload: { command: 'echo hi', repo: githubRepo('acme/web') },
         });
         expect(response.statusCode).toBe(HTTP_CREATED);
     });
@@ -1610,7 +1611,7 @@ describe('a bridged caller carries scopes the route class is checked against', (
         const cookie = await signedIn(store, store.seedMember(ORG, 'octocat'));
         const response = await inject(server, 'POST', '/api/jobs', {
             headers: { cookie },
-            payload: { command: 'echo hi', repo: 'acme/web' },
+            payload: { command: 'echo hi', repo: githubRepo('acme/web') },
         });
         expect(response.statusCode).toBe(HTTP_CREATED);
     });

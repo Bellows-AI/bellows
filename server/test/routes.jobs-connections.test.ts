@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
@@ -66,7 +67,7 @@ const create = (instance: FastifyInstance, cookie: string, extra: Record<string,
         method: 'POST',
         url: '/api/jobs',
         headers: { cookie, ...(key ? { 'idempotency-key': key } : {}) },
-        payload: { repo: 'Bellows-AI/bellows.ai', command: 'look at ABC-1', ...extra },
+        payload: { repo: githubRepo('Bellows-AI/bellows.ai'), command: 'look at ABC-1', ...extra },
     });
 
 describe('POST /api/jobs connections', () => {

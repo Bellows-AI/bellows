@@ -27,8 +27,12 @@ export const forgeConnectPath = (forge: string, who: { orgId: string; returnTo: 
         : `${signInPath}?${new URLSearchParams({ returnTo: who.returnTo, org: who.orgId })}`;
 };
 
-/** The forge a repo lives on; null for a task with no repo, which needs no grant. Every repo is GitHub's for now. */
-export const forgeOfRepo = (repo: string | null): string | null => (repo === null ? null : GITHUB_FORGE);
+/**
+ * The forge a repo lives on, spelled as the forge registry keys it: `github`, else `<forge>:<host>`. Null for a task
+ * with no repo, which needs no grant.
+ */
+export const forgeOfRepo = (repo: RepoRef | null): string | null =>
+    repo === null ? null : repo.forge === 'github' ? GITHUB_FORGE : `${repo.forge}:${repo.host}`;
 
 /** Whether the GitHub reader answers for this repository: GitHub on github.com, the only host it is wired to. */
 export const isGithubRepo = (repo: RepoRef): boolean => sameRepo(githubRepo(repo.path), repo);

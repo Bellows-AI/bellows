@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { InjectOptions } from 'fastify';
@@ -131,7 +132,7 @@ describe('personal access tokens: authentication', () => {
         const response = await server.inject({
             method: 'POST',
             url: '/api/jobs',
-            payload: { repo: 'Bellows-AI/bellows.ai', command: 'echo hi' },
+            payload: { repo: githubRepo('Bellows-AI/bellows.ai'), command: 'echo hi' },
             headers: bearer(token),
         });
 
@@ -196,7 +197,7 @@ describe('personal access tokens: credential precedence and lifecycle', () => {
         const both = await server.inject({
             method: 'POST',
             url: '/api/jobs',
-            payload: { repo: 'Bellows-AI/bellows.ai', command: 'echo hi' },
+            payload: { repo: githubRepo('Bellows-AI/bellows.ai'), command: 'echo hi' },
             headers: { cookie, ...bearer(token) },
         });
         const forgedCookie = await server.inject({
@@ -356,7 +357,7 @@ describe('organization access tokens: allowlist and reads', () => {
         const response = await server.inject({
             method: 'POST',
             url: '/api/jobs',
-            payload: { repo: 'Bellows-AI/bellows.ai', command: 'echo hi' },
+            payload: { repo: githubRepo('Bellows-AI/bellows.ai'), command: 'echo hi' },
             headers: bearer(token),
         });
 
@@ -578,7 +579,7 @@ describe('AUTH_MODE=none', () => {
         const response = await server.inject({
             method: 'POST',
             url: '/api/jobs',
-            payload: { repo: 'Bellows-AI/bellows.ai', command: 'echo hi' },
+            payload: { repo: githubRepo('Bellows-AI/bellows.ai'), command: 'echo hi' },
             headers: bearer(`${FAT}meaningless-here`),
         });
 

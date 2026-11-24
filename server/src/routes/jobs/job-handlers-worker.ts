@@ -1,4 +1,4 @@
-import { ERROR_CODES, EXECUTOR_TYPES, githubRepo } from '@factory-ai/core';
+import { ERROR_CODES, EXECUTOR_TYPES, formatRepoRef, type RepoRef } from '@factory-ai/core';
 import { interruptionOf } from './job-interruption-body.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
@@ -75,7 +75,7 @@ import type { JobWorkerStore } from '../../db/jobs/job-store-worker.js';
 async function refusedAsUntracked(
     request: FastifyRequest,
     reply: FastifyReply,
-    opts: { repos: Awaited<ReturnType<typeof reposFor>>; repo: string | null }
+    opts: { repos: Awaited<ReturnType<typeof reposFor>>; repo: RepoRef | null }
 ): Promise<boolean> {
     const { repos, repo } = opts;
     if (repo === null) {
@@ -83,12 +83,11 @@ async function refusedAsUntracked(
         return true;
     }
     if (!repos) return false;
-    const ref = githubRepo(repo); // until BEL-532b part 2
     const check = async () =>
         guard(
             reply,
             (e) => request.log.error({ err: e }, 'repo list read failed'),
-            () => checkReposVisible(repos, [ref], { subject: 'the repository' })
+            () => checkReposVisible(repos, [repo], { subject: 'the repository' })
         );
     let checked = await check();
     if (!checked.ok) return true;
@@ -117,7 +116,7 @@ async function refusedAsUnknownBranch(
     orgs: OrgRegistry,
     request: FastifyRequest,
     reply: FastifyReply,
-    opts: { repo: string | null; baseBranch: string | null }
+    opts: { repo: RepoRef | null; baseBranch: string | null }
 ): Promise<boolean> {
     const { repo, baseBranch } = opts;
     if (repo === null || baseBranch === null) return false;
@@ -128,7 +127,7 @@ async function refusedAsUnknownBranch(
     try {
         const read = (async () => {
             const branchHead = await branchHeadFor(orgs, request);
-            return branchHead ? await branchHead(repo, baseBranch) : 'unchecked';
+            return branchHead ? await branchHead(repo.path, baseBranch) : 'unchecked';
         })();
         // A read that loses the race may reject later: swallow it so it is never unhandled.
         read.catch(() => undefined);
@@ -143,7 +142,7 @@ async function refusedAsUnknownBranch(
     bad(
         reply,
         ERROR_CODES.UNKNOWN_BASE_BRANCH,
-        `"${repo}" has no branch ${baseBranch} the board can read`,
+        `"${formatRepoRef(repo)}" has no branch ${baseBranch} the board can read`,
         HTTP_UNPROCESSABLE
     );
     return true;
@@ -159,7 +158,7 @@ async function checkedTarget(
     orgs: OrgRegistry,
     request: FastifyRequest,
     reply: FastifyReply,
-    opts: { repo: string | null; rawBaseBranch: unknown }
+    opts: { repo: RepoRef | null; rawBaseBranch: unknown }
 ): Promise<string | null | undefined> {
     const { repo } = opts;
     if (await refusedAsUntracked(request, reply, { repos: await reposFor(orgs, request), repo })) return undefined;
@@ -182,7 +181,7 @@ async function refusedAsUnknownSkill(
     orgs: OrgRegistry,
     request: FastifyRequest,
     reply: FastifyReply,
-    opts: { names: readonly string[]; repo: string | null; baseBranch: string | null; executorType: ExecutorTypeRead }
+    opts: { names: readonly string[]; repo: RepoRef | null; baseBranch: string | null; executorType: ExecutorTypeRead }
 ): Promise<boolean> {
     const { names, repo, baseBranch, executorType } = opts;
     if (names.length === 0) return false;
@@ -190,7 +189,7 @@ async function refusedAsUnknownSkill(
     const catalog = await effectiveCatalog({
         builtin: skillCatalog(),
         read: rt?.repoSkills,
-        repo,
+        repo: repo?.path ?? null,
         branch: baseBranch,
         executorType,
         signal: abortOnClose(reply),
@@ -311,7 +310,7 @@ export async function handleCreateJob(
         (e) => request.log.error({ err: e }, 'job create failed'),
         () =>
             store.create(command, createdBy, {
-                repo: repo === null ? null : githubRepo(repo),
+                repo,
                 executor,
                 executorScope,
                 // The agent default that won, frozen on the task: the claim runs it, never a later default. A chosen
