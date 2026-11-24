@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -106,7 +107,7 @@ async function enqueue(): Promise<string> {
     const response = await fetch(`${boardUrl}/api/jobs`, {
         method: 'POST',
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ repo, command: `wire ${randomUUID()}` }),
+        body: JSON.stringify({ repo: githubRepo(repo), command: `wire ${randomUUID()}` }),
     });
     expect(response.status, await response.clone().text()).toBeLessThan(300);
     return ((await response.json()) as { id: string }).id;

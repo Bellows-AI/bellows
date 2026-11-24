@@ -165,7 +165,7 @@ const ROUTES: Route[] = [
     {
         name: 'POST /api/jobs',
         prepare: async () => '',
-        call: (who) => call(who, '/api/jobs', { repo: REPO, command: 'work' }),
+        call: (who) => call(who, '/api/jobs', { repo: githubRepo(REPO), command: 'work' }),
     },
     {
         name: 'POST /api/jobs/:id/follow-up',
@@ -363,7 +363,7 @@ describe.skipIf(!enabled)('a batch launch', () => {
 });
 
 describe.skipIf(!enabled)('preflight', () => {
-    const preflight = (who: Person) => call(who, '/api/jobs/preflight', { repo: REPO });
+    const preflight = (who: Person) => call(who, '/api/jobs/preflight', { repo: githubRepo(REPO) });
     type Check = { subject: string; name: string | null; status: string; code?: string; detail: string };
 
     it('reports a missing grant as a blocked forge check, with the connect URL', async () => {
