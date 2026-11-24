@@ -3,7 +3,9 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
+import { ERROR_CODES, formatRepoRef, parseRepoRef, readRepoRef } from '@factory-ai/core';
 import { USAGE } from '../../cli/src/usage.js';
+import { scopeColumnsOf } from '../src/db/repo-ref-row.js';
 import { ALL_BATCH_TOOLS, TOOLS } from '../src/mcp/registry.js';
 import { parseBellowsWithPolicy } from '../src/workspace/bellows.js';
 import { parseServices } from '../src/workspace/bellows-services.js';
@@ -116,6 +118,39 @@ describe('site/cli/commands.mdx', () => {
             if (m[1] !== 'batch') docs.add(m[2] ? `${m[1]} ${m[2]}` : m[1]!);
         }
         expect(diff(code, docs, 'commands.mdx')).toEqual({ undocumented: [], 'stale in commands.mdx': [] });
+    });
+});
+
+describe('site/guides/env-and-secrets.mdx repository scope forms', () => {
+    const page = read('guides/env-and-secrets.mdx');
+    const body = /`(\{"forge": "github", "host": "github\.com", "path": "acme\/web"\})`/.exec(page)?.[1];
+
+    it('documents the {forge, host, path} body, and the code reads it', () => {
+        expect(body).toBeDefined();
+        for (const route of ['PUT /api/env/repo', 'POST /api/workflows', 'GET /api/env', 'GET /api/workflows']) {
+            expect(page).toContain(`\`${route}\``);
+        }
+        expect(readRepoRef(JSON.parse(body as string))).toEqual({
+            ok: true,
+            ref: { forge: 'github', host: 'github.com', path: 'acme/web' },
+        });
+        expect(readRepoRef({ owner: 'acme', name: 'web' }).ok).toBe(false);
+    });
+
+    it('documents the text form of ?repo=, and the code round-trips it', () => {
+        expect(page).toContain('`GET /api/workflows?repo=`');
+        for (const text of ['acme/web', 'gitlab:gitlab.example.com/team/project']) {
+            expect(page).toContain(`\`${text}\``);
+            const ref = parseRepoRef(text);
+            expect(ref && formatRepoRef(ref)).toBe(text);
+        }
+    });
+
+    it('documents that a nested path has no repository scope and is refused BAD_SCOPE', () => {
+        expect(page).toContain(`\`${ERROR_CODES.BAD_SCOPE}\``);
+        const nested = parseRepoRef('gitlab:gitlab.example.com/group/sub/project');
+        expect(nested).not.toBeNull();
+        expect(scopeColumnsOf(nested)).toEqual({ forge: null, host: null, owner: null, name: null });
     });
 });
 
