@@ -8,7 +8,7 @@
 // Environment (set by the driver; paths, a URL, a branch name, and — when the claim carries a token —
 // the credential-helper CODE; never a credential value):
 //   CHECKOUT    — the task's own tree;
-//   REMOTE      — where it is cloned from (`<cloneBase>/<owner>/<name>.git`);
+//   REMOTE      — where it is cloned from (`<cloneBase>/<host>/<path>.git`);
 //   BRANCH      — the branch the tree runs on (`factory/<thread root id>`);
 //   BASE_BRANCH — optional, STARTING claims only: the branch the task bases on (a batch task's
 //                 target branch). The branch is created off, and rebased onto, origin/<base>
@@ -467,6 +467,21 @@ const defaultBranch = () => {
 const assertCredentialedOrigin = (present) => {
     if (!process.env.CRED_HELPER) return;
     const origin = present ? git('remote', 'get-url', 'origin') : remote;
+    if (present) {
+        // A retained checkout may have been pointed at another host; the credential goes only to the claim's own.
+        // `URL.host` lowercases and drops an https URL's default :443; credential-helper.sh normalizes the host the same way.
+        const hostOf = (/** @type {string} */ url) => new URL(url).host.toLowerCase();
+        for (const url of [origin, git('remote', 'get-url', '--push', 'origin')]) {
+            if (url.startsWith('https://') && hostOf(url) !== hostOf(remote)) {
+                refuse(
+                    'the credentialed fetch refuses origin ' +
+                        url +
+                        ': the credential goes only to the claim host ' +
+                        hostOf(remote)
+                );
+            }
+        }
+    }
     if (!origin.startsWith('https://')) {
         refuse(
             'the credentialed clone and fetch refuse origin ' +

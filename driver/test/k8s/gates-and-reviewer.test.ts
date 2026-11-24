@@ -43,6 +43,7 @@ import {
     kubeletLog,
     numberedLines,
 } from '../fixtures/k8s-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 /** A fake whose agent log reads `answer` gives, everything else as fakeRequest answers it. */
 const withAgentLog = (answer: (path: string) => K8sResponse) =>
@@ -181,7 +182,7 @@ describe('the gate sidecar', () => {
     it('points each declared cache name into the repo cache, the same path the agent gets', () => {
         const cacheJob: BoardJob = {
             ...gated,
-            repo: 'acme/widgets',
+            repo: githubRef('acme/widgets'),
             gates: { image: 'node:24', cache: ['NPM_CONFIG_CACHE'], gates: [{ name: 't', command: 't' }] },
         };
         const path = `${TASK_MOUNT}/.cache/acme/widgets/NPM_CONFIG_CACHE`;

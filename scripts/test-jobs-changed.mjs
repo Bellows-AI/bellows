@@ -70,7 +70,7 @@ export const RULES = [
     [/^driver\/src\/scripts\/(supervisor\.cjs|task-init\.sh|task-checkout\.cjs|git-probe\.cjs|git-harden\.cjs)$/, FULL, 'runs inside every task'],
     [/^docker\/executor-common\/(ctl-agent\.cjs|factory-launch\.sh|factory-tool\.cjs|tool-bash\.sh)$/, FULL, 'copied into the stub runner image'],
     [/^docker\/init-databases\.sh$/, FULL, 'postgres bootstrap'],
-    [/^driver\/src\/(claim|config|index|strip-secret-store-env|runner|runner-plan|commit-author|executors|docker\/docker|docker\/docker-runner|docker\/docker-runner-support|docker\/docker-create-runner|loop\/loop|loop\/loop-run|loop\/loop-types|loop\/loop-helpers|helpers|http|container-scripts|exec-codes|labels|json-parse|timestamps|runner-classes|quantities)\.ts$/, FULL, 'driver core every phase runs through'],
+    [/^driver\/src\/(claim|config|index|strip-secret-store-env|runner|runner-plan|commit-author|executors|docker\/docker|docker\/docker-runner|docker\/docker-runner-support|docker\/docker-create-runner|loop\/loop|loop\/loop-run|loop\/loop-types|loop\/loop-helpers|helpers|http|container-scripts|exec-codes|labels|json-parse|timestamps|runner-classes|quantities|repo-ref)\.ts$/, FULL, 'driver core every phase runs through'],
     [/^server\/src\/(mcp\/|auth\/oauth|routes\/oauth)/, ['mcp'], 'MCP server and its OAuth authorization server'],
     [/^scripts\/mcp-phase-client\.mjs$/, ['mcp'], 'the mcp phase client'],
     // The auth plugin, its worker, session and route-class checks and the auth store judge every request, the claim's included.

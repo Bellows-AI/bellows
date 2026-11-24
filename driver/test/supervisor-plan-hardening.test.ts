@@ -10,6 +10,7 @@ import { supervisorLiterals } from '../src/supervisor-plan.js';
 import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { boardJob } from './fixtures/board-job.js';
 import { readRepoFile } from './fixtures/repo-files.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /*
  * Every driver-side step reaches `git` through the supervisor's hardened one (`scripts/git-harden.cjs`,
@@ -24,7 +25,7 @@ const config = loadDriverConfig({} as NodeJS.ProcessEnv);
 
 describe('the hardened git of the supervisor’s steps', () => {
     it('is handed to the supervisor of every group shape, by content', () => {
-        const job = { ...boardJob(), repo: 'acme/widgets' } as BoardJob;
+        const job = { ...boardJob(), repo: githubRef('acme/widgets') } as BoardJob;
         const shapes = [
             { exporting: true },
             { exporting: false, agentless: true },

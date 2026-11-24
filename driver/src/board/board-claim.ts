@@ -1,5 +1,6 @@
 import { commitAuthorOf } from '../commit-author.js';
 import type { BoardJob } from './board.js';
+import { isRepoRef } from '../repo-ref.js';
 import type { ServiceSpec } from '../services.js';
 import { connectionOutcomesOf } from './board-connection.js';
 import { skillHiddenFields, skillPinFields } from './board-skills.js';
@@ -91,7 +92,7 @@ const TYPED: Record<string, Check> = {
     workspacePath: orNull(isString),
     rootJobId: orNull(isString),
     baseBranch: orNull(isString),
-    repo: orNull(isString),
+    repo: orNull(isRepoRef),
     runnerClass: orNull(isString),
     env: isStringMap,
     gateEnv: isStringMap,

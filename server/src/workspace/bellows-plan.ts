@@ -12,8 +12,9 @@
  * unsupported image is refused by the two parsers (`bellows.ts`, `bellows-services.ts`).
  */
 
-import { READ_RATE_LIMITED, READ_TRANSPORT } from '@factory-ai/core';
+import { formatRepoRef, GITHUB_HOST, READ_RATE_LIMITED, READ_TRANSPORT, type RepoRef } from '@factory-ai/core';
 import type { GitHubAppClient } from '../github/app-client.js';
+import type { RepoFileRead } from '../github/file-read.js';
 import { GitHubReadError } from '../github/pr-read.js';
 import { BellowsError } from './bellows-grammar.js';
 import { MAX_SERVICES, parseServices, type ServiceSpec } from './bellows-services.js';
@@ -125,42 +126,65 @@ const NO_PLAN: ExecutionPlan = { config: null, services: [], policy: {}, reviewe
 
 export interface PlanReader {
     /**
-     * The plan of `repo` at the tip of `baseBranch` (its default branch when null). A refusal is a
+     * The plan of `ref` at the tip of `baseBranch` (its default branch when null). A refusal is a
      * VALUE; a GitHub failure that says nothing about the repository (rate limit, transport)
      * rejects, so the claim is retried — an outage is never a task's failure.
      */
-    read(repo: string, baseBranch: string | null): Promise<PlanRead>;
+    read(ref: RepoRef, baseBranch: string | null): Promise<PlanRead>;
+}
+
+/** What a plan reader names in its refusals: the repository and the branch the read was about. */
+export const planSubject = (ref: RepoRef, baseBranch: string | null): string =>
+    `${formatRepoRef(ref)} at ${baseBranch ? `branch "${baseBranch}"` : 'its default branch'}`;
+
+/**
+ * The validation every plan source shares: `readFile` answers the plan file at the branch tip (null when the
+ * repository or branch is confirmed absent), and `where` names the subject in a refusal. An outage rejects.
+ */
+export async function readPlanWith(
+    readFile: (path: string) => Promise<RepoFileRead | null>,
+    where: string
+): Promise<PlanRead> {
+    let file: RepoFileRead | null;
+    try {
+        file = await readFile(BELLOWS_FILE);
+    } catch (e) {
+        // A rate limit or a dropped connection is the outage; a file the plan cannot use is the repository's.
+        if (e instanceof GitHubReadError && OUTAGE_KINDS.includes(e.kind)) throw e;
+        return {
+            ...NO_PLAN,
+            revision: null,
+            error: `${BELLOWS_FILE} of ${where} could not be read: ${(e as Error).message}`,
+        };
+    }
+    if (file === null) {
+        return {
+            ...NO_PLAN,
+            revision: null,
+            error: `the GitHub App installation cannot read ${where} — check the repository access and the branch name`,
+        };
+    }
+    if (file.text === null) return { ...NO_PLAN, revision: file.revision, error: null };
+    try {
+        return { ...resolveExecutionPlan(file.text), revision: file.revision, error: null };
+    } catch (e) {
+        return { ...NO_PLAN, revision: file.revision, error: (e as Error).message };
+    }
 }
 
 export function createPlanReader(client: Pick<GitHubAppClient, 'readFileAtBranchTip'>): PlanReader {
     return {
-        async read(repo, baseBranch) {
-            const where = `${repo} at ${baseBranch ? `branch "${baseBranch}"` : 'its default branch'}`;
-            let file: Awaited<ReturnType<typeof client.readFileAtBranchTip>>;
-            try {
-                file = await client.readFileAtBranchTip(repo, baseBranch, BELLOWS_FILE);
-            } catch (e) {
-                // A rate limit or a dropped connection is the outage; a file the plan cannot use is the repository's.
-                if (e instanceof GitHubReadError && OUTAGE_KINDS.includes(e.kind)) throw e;
+        async read(ref, baseBranch) {
+            const where = planSubject(ref, baseBranch);
+            // The App installation reads github.com only: any other host is a capability fact, not a read.
+            if (ref.forge !== 'github' || ref.host.toLowerCase() !== GITHUB_HOST) {
                 return {
                     ...NO_PLAN,
                     revision: null,
-                    error: `${BELLOWS_FILE} of ${where} could not be read: ${(e as Error).message}`,
+                    error: `${BELLOWS_FILE} of ${where} cannot be read: this board reads plans from github.com only, not ${ref.host}`,
                 };
             }
-            if (file === null) {
-                return {
-                    ...NO_PLAN,
-                    revision: null,
-                    error: `the GitHub App installation cannot read ${where} — check the repository access and the branch name`,
-                };
-            }
-            if (file.text === null) return { ...NO_PLAN, revision: file.revision, error: null };
-            try {
-                return { ...resolveExecutionPlan(file.text), revision: file.revision, error: null };
-            } catch (e) {
-                return { ...NO_PLAN, revision: file.revision, error: (e as Error).message };
-            }
+            return readPlanWith((path) => client.readFileAtBranchTip(ref.path, baseBranch, path), where);
         },
     };
 }

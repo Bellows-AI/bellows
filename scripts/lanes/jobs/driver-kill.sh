@@ -13,7 +13,7 @@ begin_phase driver-kill
 echo
 echo '# driver kill'
 
-DK_ORIGIN="$SMOKE_REPO.git" # under /origins on the origins volume
+DK_ORIGIN="github.com/$SMOKE_REPO.git" # under /origins on the origins volume, below the host
 
 driver_kill() { # driver_kill -> the driver gone with no drain: its lease is left to expire
     kill -9 "$driver_pid" 2>/dev/null

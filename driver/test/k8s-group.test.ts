@@ -23,6 +23,7 @@ import {
     type StepResult,
     type SupervisorReport,
 } from '../src/supervisor-contract.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * The kubernetes task group: one Job per attempt, created by its first step and ended
@@ -59,7 +60,7 @@ const job = {
     userId: USER,
     workspacePath: `bellows/${USER}`,
     rootCommand: 'fix the failing build',
-    repo: 'Bellows-AI/bellows',
+    repo: githubRef('Bellows-AI/bellows'),
     env: { GITHUB_TOKEN: 'ghs_claim' },
     supervisorEnv: {
         [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130',

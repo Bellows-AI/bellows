@@ -84,7 +84,7 @@ function gatedReader(answer: (call: number) => Plan = () => plan()) {
 const poisonReader =
     (poisoned: () => boolean): PlanReader['readFor'] =>
     async (repo) => {
-        if (repo === POISON && poisoned()) throw new Error('the plan source is rate limited');
+        if (repo.path === POISON && poisoned()) throw new Error('the plan source is rate limited');
         return plan();
     };
 

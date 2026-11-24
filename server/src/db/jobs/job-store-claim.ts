@@ -5,6 +5,7 @@
  */
 
 import { OBJECTIVE_MODE, type JobMode } from '@factory-ai/core';
+import { refOfRow } from '../repo-ref-row.js';
 import { forgeWaitIgnored } from '../forge-requirement.js';
 import { type ClaimConnections, claimConnectionsInTx, rowHeld } from './job-store-connections.js';
 import type { Fragment, TransactionSql } from 'postgres';
@@ -155,14 +156,12 @@ async function settleCancelledContinuation(
 export const CLAIM_PREPARE_SECONDS = 60;
 
 /** The candidate a claim reserved, as the preparation outside every lock needs it. */
-interface ReservedCandidate {
+interface ReservedCandidate extends Pick<ClaimCandidateRow, 'forge' | 'host' | 'repo' | 'workflow_node'> {
     id: string;
     root_job_id: string;
     claim_seq: string;
     /** The thread root's `execution_user_id`: the identity every row of the thread runs as. */
     run_as: string | null;
-    repo: string | null;
-    workflow_node: string | null;
     base_branch: string | null;
     /** The deferral the reservation overwrote, restored when a budget refuses the candidate. */
     prior_deferral: Date | null;
@@ -295,7 +294,7 @@ async function reserveCandidate(
         update job set claim_deferred_until = now() + make_interval(secs => ${CLAIM_PREPARE_SECONDS}::int)
         from picked
         where job.org_id = ${orgId} and job.id = picked.id
-        returning job.id, job.root_job_id, job.claim_seq, job.repo, job.workflow_node,
+        returning job.id, job.root_job_id, job.claim_seq, job.forge, job.host, job.repo, job.workflow_node,
                   (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as run_as,
                   ${baseBranch} as base_branch, picked.prior_deferral
     `;
@@ -730,7 +729,7 @@ export interface ResolvedClaimEvidence {
 export async function resolveClaimGates(
     planReader: CreateJobStoreDeps['plan'],
     ctx: { orgId: string; rootJobId: string },
-    row: { run_as: string | null; repo: string | null; base_branch: string | null }
+    row: Pick<ReservedCandidate, 'run_as' | 'forge' | 'host' | 'repo' | 'base_branch'>
 ): Promise<ResolvedClaimGates> {
     const claimPath = workspacePathFor(ctx.orgId, row.run_as);
     if (!planReader || !row.repo) {
@@ -744,7 +743,7 @@ export async function resolveClaimGates(
             claimReviewers: [],
         };
     }
-    const read = await planReader.readFor(row.repo, row.base_branch);
+    const read = await planReader.readFor(refOfRow({ ...row, repo: row.repo }), row.base_branch);
     return {
         claimGates: read.error ? null : read.config,
         claimServices: read.error ? [] : read.services,
@@ -976,7 +975,7 @@ export function buildClaimResult(
         ownSession: row.own_session,
         continuesInterrupted: row.resumes_interrupted,
         ...(claimEnv ? { env: claimEnv } : {}),
-        ...(row.repo !== null ? { repo: row.repo } : {}),
+        ...(row.repo !== null ? { repo: refOfRow({ ...row, repo: row.repo }) } : {}),
         ...(row.base_branch ? { baseBranch: row.base_branch } : {}),
         ...(row.finish_rounds !== null ? { finishRounds: row.finish_rounds } : {}),
         ...(claimGates ? { gates: claimGates } : {}),

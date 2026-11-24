@@ -26,7 +26,7 @@ describe('the driver config: basics', () => {
                 opencode: 'opencode-executor',
             },
             taskVolume: { storageClass: null, accessMode: 'ReadWriteOncePod', size: '20Gi' },
-            cloneBase: 'https://github.com',
+            cloneBase: null,
             network: null,
             concurrency: 2,
             pollMs: 5_000,
@@ -35,6 +35,12 @@ describe('the driver config: basics', () => {
             skipPermissions: false,
         });
         expect(config.passEnv).toEqual(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+    });
+
+    it("clones from each repository's own host by default, and under a base nested by host when one is set", () => {
+        expect(loadDriverConfig({}).cloneBase).toBeNull();
+        expect(loadDriverConfig({ REPO_CLONE_BASE: 'file:///o/' }).cloneBase).toBe('file:///o');
+        expect(loadDriverConfig({ REPO_CLONE_BASE: '  ' }).cloneBase).toBeNull();
     });
 
     it('trims the trailing slash, so a board url pastes in either form', () => {

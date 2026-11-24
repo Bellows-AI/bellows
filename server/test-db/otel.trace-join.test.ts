@@ -188,7 +188,7 @@ describe.skipIf(!enabled)('driver and board claim spans', () => {
         expect(claimed?.id).toBe(id);
         // The fixture reached the claim, so its absence from the spans below is the scrub, not a missing value.
         expect(claimed?.command).toBe(PROMPT);
-        expect(claimed?.repo).toBe(REPO);
+        expect(claimed?.repo).toEqual({ forge: 'github', host: 'github.com', path: REPO });
         expect(claimed?.baseBranch).toBe(BRANCH);
         expect(claimed?.env).toMatchObject({ PERSONAL_TOKEN: TOKEN });
 

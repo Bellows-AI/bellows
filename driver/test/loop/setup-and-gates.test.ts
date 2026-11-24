@@ -5,6 +5,7 @@ import type { GateRun } from '../../src/gate-manager.js';
 import { setupTimeoutMs } from '../../src/claim.js';
 import { ServicesNotRunning } from '../../src/service-restart.js';
 import { config, drive, gatedJob, job, ok, stubBoard, stubGateStack, stubRunner } from '../fixtures/loop-stubs.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 // Issue #733: environment.setup runs in the task worktree before the agent's first turn.
 describe('environment.setup before the agent starts', () => {
@@ -462,7 +463,7 @@ describe('environment.setup before the agent starts', () => {
     });
 
     it('answers a job with no environment "no gates" and starts no gate environment', async () => {
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
+        const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows') }]);
         const { stack, gates, doors, images } = recordedDoors();
         const runner = stubRunner(async () => ok());
 

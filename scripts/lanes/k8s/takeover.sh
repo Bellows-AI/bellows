@@ -3,7 +3,7 @@
 # volume only the pods of its thread mount, so they are reached through whichever of the job's pods
 # mounts /task — the origin's state, push log and push hold through the origin pod.
 TK_D="/task/.lane-kill-"
-TK_REPO="/origins/$SMOKE_REPO.git"
+TK_REPO="/origins/github.com/$SMOKE_REPO.git"
 TK_JOB=''
 
 tk_use() { # tk_use <job id> -> later tk_* reads and writes go to that job's task volume (a first job: its id is its thread's root)

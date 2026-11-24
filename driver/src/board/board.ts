@@ -227,11 +227,11 @@ export interface BoardJob extends ClaimSkills {
      */
     env?: Record<string, string>;
     /**
-     * The job's `owner/name` label — the checkout the job's gates are declared in, and the key the
-     * gate environment container is filed under. Read defensively: a board that predates gates
-     * omits it.
+     * The job's repository ref (forge, host, path) — the checkout the job's gates are declared in, the host
+     * it is cloned from, and the key the gate environment container is filed under. Absent or null for a
+     * repo-less job; a bare label or a malformed ref makes the claim malformed (`board-claim.ts`).
      */
-    repo?: string | null;
+    repo?: Reclaim['repo'];
     /**
      * The gates the repository declares in `.bellows.yaml` at `planRevision`, resolved by the board
      * at claim time: the environment image they run in and the named commands. Null when the

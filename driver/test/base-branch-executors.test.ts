@@ -9,6 +9,7 @@ import type { StepSink } from '../src/step-control.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { runnerJobSpec } from '../src/k8s/k8s-podspec.js';
 import { k8sSyncStep } from './k8s-sync-step.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * A claim that names its base branch (a batch task's target) on BOTH executors: the startup sync
@@ -42,7 +43,7 @@ const base: BoardJob = {
     continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
-    repo: 'Bellows-AI/bellows',
+    repo: githubRef('Bellows-AI/bellows'),
     env: {},
 };
 const onSandbox: BoardJob = { ...base, baseBranch: 'batch-sandbox' };

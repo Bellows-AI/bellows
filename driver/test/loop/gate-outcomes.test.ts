@@ -3,6 +3,7 @@ import type { Board } from '../../src/board/board.js';
 import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../../src/board/board-retry.js';
 import type { PublishResult } from '../../src/publish/publish.js';
 import { drive, gatedJob, job, ok, stubBoard, stubGateStack, stubRunner } from '../fixtures/loop-stubs.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 /**
  * Gates judge work: a run that did not finish cleanly left none, and a failed gate over it would
@@ -447,7 +448,7 @@ describe('a verdict the board refuses with a 5xx', () => {
 
     it('is retried, so the landed work keeps its verdict', async () => {
         const logs: string[] = [];
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
+        const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows') }]);
         const complete = board.board.complete.bind(board.board);
         let completes = 0;
         board.board.complete = async (j, result) => {
@@ -473,7 +474,7 @@ describe('a verdict the board refuses with a 5xx', () => {
         ['the last attempt', 3],
     ])('retries for the lease, then leaves %s to the lease with its verdict unrewritten', async (_l, attempts) => {
         const logs: string[] = [];
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows', attempts, maxAttempts: 3 }]);
+        const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows'), attempts, maxAttempts: 3 }]);
         const sent: Parameters<Board['complete']>[1][] = [];
         board.board.complete = async (_j, result) => {
             sent.push(result);
@@ -491,7 +492,7 @@ describe('a verdict the board refuses with a 5xx', () => {
 
     it('sends a verdict the board refuses as malformed exactly once', async () => {
         const logs: string[] = [];
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
+        const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows') }]);
         let completes = 0;
         board.board.complete = async () => {
             completes += 1;
@@ -506,7 +507,7 @@ describe('a verdict the board refuses with a 5xx', () => {
     });
 
     it('answers publishFailed when the runner throws mid-publish', async () => {
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
+        const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows') }]);
         const runner = stubRunner(async () => ok(), { publish: landed });
         runner.publishGit = async () => {
             throw new Error('apiserver blip');

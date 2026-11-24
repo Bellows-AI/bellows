@@ -24,6 +24,7 @@ import {
     stubGateStack,
     stubRunner,
 } from '../fixtures/loop-stubs.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 describe('a stand-down after the gates (issue #427)', () => {
     const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -60,7 +61,7 @@ describe('a stand-down after the gates (issue #427)', () => {
     it.each(['stop', 'lost', 'removed'] as const)(
         'G1 %s landing during a post-helper publishes nothing and reports no verdict',
         async (kind) => {
-            const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows', helperPlans: [postPlan] }]);
+            const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows'), helperPlans: [postPlan] }]);
             const fire = armHeartbeat(board.board, kind);
             const runner = stubRunner(async () => ok(), { publish: landed });
             runner.runHelper = async () => {
@@ -80,7 +81,7 @@ describe('a stand-down after the gates (issue #427)', () => {
     );
 
     it('G2 a stop landing during the publish token ask publishes nothing and parks the run', async () => {
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
+        const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows') }]);
         const fire = armHeartbeat(board.board, 'stop');
         let asks = 0;
         board.board.githubCredential = async () => {
@@ -168,7 +169,7 @@ describe('a stand-down after the gates (issue #427)', () => {
     it('#488 a lease lost after the push says so, and the push is not reported', async () => {
         // The push itself is not abortable, and a stand-down after it reports nothing: the next
         // holder re-runs the publish. Pinned here as the limit docs/jobs.md states.
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
+        const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows') }]);
         const fire = armHeartbeat(board.board, 'lost');
         const runner = stubRunner(async () => ok(), { publish: landed });
         const rawPublish = runner.publishGit.bind(runner);
@@ -191,7 +192,7 @@ describe('a stand-down after the gates (issue #427)', () => {
 
     // Guard, not RED: there is no second try before the retry exists; it keeps the retry from pushing past a stand-down.
     it('a lease lost after a failed try pushes no second time', async () => {
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
+        const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows') }]);
         const fire = armHeartbeat(board.board, 'lost');
         const runner = stubRunner(async () => ok(), { publishSequence: [retryable, landed] });
         const rawPublish = runner.publishGit.bind(runner);
@@ -211,7 +212,7 @@ describe('a stand-down after the gates (issue #427)', () => {
     });
 
     it('a stop landing during the retry token ask pushes nothing more', async () => {
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
+        const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows') }]);
         const fire = armHeartbeat(board.board, 'stop');
         let asks = 0;
         board.board.githubCredential = async () => {

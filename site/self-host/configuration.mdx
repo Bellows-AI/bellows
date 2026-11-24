@@ -179,7 +179,7 @@ The driver reads only the environment. It has no database access and talks to th
 | `DRIVER_CREDENTIAL_FILE` | | unset | A file holding the credential instead, read again for every call: a rotated credential takes effect without a restart. Not with `DRIVER_CREDENTIAL`. |
 | `DRIVER_WORKER` | | `driver-<pid>` | Name of this driver on every claim. |
 | `EXECUTOR` | | `docker` | `docker` or `kubernetes`. Any other value is fatal. |
-| `REPO_CLONE_BASE` | | `https://github.com` | Where checkouts are cloned from: `<base>/<owner>/<name>.git`. |
+| `REPO_CLONE_BASE` | | the repository's own host | Where checkouts are cloned from: `<base>/<host>/<path>.git`, for example `<base>/github.com/<owner>/<name>.git`. Unset, each repository is cloned from `https://<host>/<path>.git`. |
 
 ### Executor images and runner environment
 

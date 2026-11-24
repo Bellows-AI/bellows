@@ -17,6 +17,7 @@ import { SUPERVISOR_ENV, type StepRequest } from '../src/supervisor-contract.js'
 import { InputsUnconfirmed } from '../src/task-inputs.js';
 import { SKILLS_DIR } from '../src/task-volume.js';
 import { sha256Of, skillOf, tarOf } from './fixtures/skill-tar.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * Installing the claim's pinned skills before the agent is released: the real `deliverSkills`, control channel,
@@ -173,7 +174,7 @@ describe('deliverSkills', () => {
         const { tar, pin: mine } = skillOf('mine', V2, undefined, 'workspace');
         board.set(V2, tar);
         const pin = [hold('org-style', V1), mine];
-        expect(await deliver({ skillPin: pin, repo: 'acme/widgets' })).toEqual({ ok: true, reason: null });
+        expect(await deliver({ skillPin: pin, repo: githubRef('acme/widgets') })).toEqual({ ok: true, reason: null });
         expect(steps[0]?.env).toMatchObject({ CHECKOUT_DIR: '/task/widgets' });
         expect(existsSync(join(skillsDir(), 'org-style'))).toBe(false);
         expect(existsSync(join(skillsDir(), 'mine', 'SKILL.md'))).toBe(true);
@@ -189,7 +190,9 @@ describe('deliverSkills', () => {
         async (executorType, dirs, installed) => {
             mkdirSync(join(root, 'widgets', '.opencode', 'skills', 'org-style'), { recursive: true });
             writeFileSync(join(root, 'widgets', '.opencode', 'skills', 'org-style', 'SKILL.md'), 'repo copy\n');
-            expect(await deliver({ skillPin: [hold('org-style', V1)], repo: 'acme/widgets', executorType })).toEqual({
+            expect(
+                await deliver({ skillPin: [hold('org-style', V1)], repo: githubRef('acme/widgets'), executorType })
+            ).toEqual({
                 ok: true,
                 reason: null,
             });

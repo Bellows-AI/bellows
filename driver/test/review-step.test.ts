@@ -10,6 +10,7 @@ import { reviewBudgetMs, reviewRestoreEnv, reviewStepEnv, runReviewSteps } from 
 import { InputsUnconfirmed } from '../src/task-inputs.js';
 import type { StepSink } from '../src/step-control.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * A named reviewer's steps in the caller's task group: the restore starts at the
@@ -34,7 +35,7 @@ const review = {
     resumeSessionId: null,
     userId: USER,
     workspacePath: `bellows/${USER}`,
-    repo: 'Bellows-AI/bellows',
+    repo: githubRef('Bellows-AI/bellows'),
     env: { JIRA_TOKEN: 'jira' },
     reviewRun: { profile: 'security', ref: REF, timeoutMinutes: 5 },
 } as unknown as ReviewClaim;

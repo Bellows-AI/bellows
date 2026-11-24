@@ -1,5 +1,6 @@
 import type { Board, BoardJob, LeaseState, Reclaim } from '../board/board.js';
 import type { DriverConfig } from '../config.js';
+import { cloneHostRefusal, formatRepoRef } from '../repo-ref.js';
 import { repoCacheProblem, workspacePathOf } from '../claim.js';
 import type { Runner } from '../runner.js';
 import { checkoutKey } from '../publish/publish.js';
@@ -72,6 +73,10 @@ export const wait = (ms: number, until?: Promise<unknown> | AbortSignal) =>
  * on every lease expiry forever. Null when the claim is runnable.
  */
 function claimRefusal(job: BoardJob): { log: string; output: string; config?: true } | null {
+    // First of the repo checks: a host this driver holds no credential for starts nothing, so no sync, token ask or gate runs.
+    const hostRefusal = job.repo ? cloneHostRefusal(job.repo) : null;
+    if (hostRefusal) return { log: 'no git credential for its repo host, failing', output: hostRefusal, config: true };
+
     /*
      * A job whose author has no workspace is FAILED, never run in a fallback location.
      *
@@ -97,7 +102,7 @@ function claimRefusal(job: BoardJob): { log: string; output: string; config?: tr
     if (job.repo && !checkoutKey(job)) {
         return {
             log: 'no resolvable task worktree for its repo label, failing',
-            output: `This job names repository ${job.repo}, but its workspace and thread do not resolve to a task worktree directory this driver can run it in.`,
+            output: `This job names repository ${formatRepoRef(job.repo)}, but its workspace and thread do not resolve to a task worktree directory this driver can run it in.`,
         };
     }
 

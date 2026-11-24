@@ -47,6 +47,7 @@ import {
     DOCKER_TMP_VOLUME,
     DOCKERD_CONTAINER,
 } from '../../src/k8s/k8s-dockerd.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 /** The finish helper's re-ask window in the agent's env (`supervisor-plan-finish.test.ts` pins its value). */
 const FINISH_RETRY = {
@@ -213,7 +214,7 @@ describe('the runner job spec', () => {
     it('starts a repo job in its task worktree', () => {
         const repoSpec = runnerJobSpec(
             loadDriverConfig({ EXECUTOR: 'kubernetes' }),
-            { ...job, repo: 'Bellows-AI/bellows' },
+            { ...job, repo: githubRef('Bellows-AI/bellows') },
             {
                 id: SESSION,
                 resume: false,
@@ -229,7 +230,7 @@ describe('the runner job spec', () => {
         expect(() =>
             runnerJobSpec(
                 loadDriverConfig({ EXECUTOR: 'kubernetes' }),
-                { ...job, repo: 'Bellows-AI/bellows', rootJobId: 'not-a-uuid' },
+                { ...job, repo: githubRef('Bellows-AI/bellows'), rootJobId: 'not-a-uuid' },
                 {
                     id: SESSION,
                     resume: false,
@@ -684,7 +685,7 @@ describe('resources on every pod the driver specs', () => {
     // (not Job) in the fleet, a declared service under the attempt's headless Service, is sized
     // like everything else, or it lands wherever a pod slot is free.
     const REQUESTS = { requests: { cpu: '500m', memory: '1Gi' } };
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
 
     // The runner's pod is sized by its agent: the supervisor and the exporter beside it are small
     // scripts, and a request on each would multiply the pod's reservation by three.

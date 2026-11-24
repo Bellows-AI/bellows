@@ -38,6 +38,7 @@ import {
     configmapsPath,
     claimPathFor,
 } from '../fixtures/k8s-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 const kindsOf = (steps: { submitted: StepRequest[] }): string[] => steps.submitted.map((step) => step.kind);
 
@@ -55,7 +56,7 @@ const kindsOf = (steps: { submitted: StepRequest[] }): string[] => steps.submitt
  * here; the group's own lifecycle is k8s-group.test.ts.
  */
 describe('the worktree sync', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
     const WORKTREE = '/task/bellows';
     const syncOf = (steps: { submitted: StepRequest[] }): StepRequest =>
         steps.submitted.find((s) => s.kind === 'sync')!;
@@ -84,6 +85,13 @@ describe('the worktree sync', () => {
             BRANCH: `factory/${repoJob.id}`,
         });
         expect(steps.tokens).toEqual(new Set([CONTROL_TOKEN]));
+    });
+
+    it("the sync step's REMOTE carries the claim's host under a configured clone base", async () => {
+        const steps = fakeSteps();
+        const mirrored = runner(fakeRequest().request, { REPO_CLONE_BASE: 'git://origin:9418' }, undefined, steps.sink);
+        await mirrored.syncCheckout(repoJob, undefined, SESSION_OF, undefined);
+        expect(syncOf(steps).env).toMatchObject({ REMOTE: 'git://origin:9418/github.com/Bellows-AI/bellows.git' });
     });
 
     // The whole attempt in one pod (issues #771-#774): the sync, the setup, a gate, a declared
@@ -772,7 +780,7 @@ describe('the worktree sync', () => {
  * no request at all, and nothing a live follow-up could be hurt by.
  */
 describe('the terminal reclaim', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows', env: { GITHUB_TOKEN: 't0k-3n' } };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows'), env: { GITHUB_TOKEN: 't0k-3n' } };
 
     it.each([
         ['a job with a repository', repoJob],
@@ -795,7 +803,7 @@ describe('publishing the produced work', () => {
     const ISSUE_JOB: BoardJob = {
         ...job,
         command: '/fix https://github.com/Bellows-AI/bellows/issues/10',
-        repo: 'Bellows-AI/bellows',
+        repo: githubRef('Bellows-AI/bellows'),
         env: { GITHUB_TOKEN: 't0k-3n' },
     };
     const WT = `${TASK_MOUNT}/bellows`;

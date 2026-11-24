@@ -5,6 +5,7 @@ import { type PublishStep, publishCheckout, publishRetryable } from '../src/publ
 import { type FakePr, fakePullRequests } from './fixtures/fake-pull-requests.js';
 import type { PrOperationWrite as PrOperationNote } from '../src/board/board-pr-operations.js';
 import { StepChannelClosed, StepTimedOut } from '../src/step-control.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * Publication reconciliation: a publish is a chain of effects on a remote, and each can
@@ -26,7 +27,7 @@ const JOB = {
     followUp: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
-    repo: 'Bellows-AI/bellows',
+    repo: githubRef('Bellows-AI/bellows'),
     env: { GITHUB_TOKEN: 't0k-3n' },
 } as unknown as BoardJob;
 const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/1';

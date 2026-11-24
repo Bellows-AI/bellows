@@ -20,7 +20,8 @@ export const GITHUB_REPO_PATH_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 /** Any forge's path: two or more segments, so GitLab nested groups fit. */
 export const REPO_PATH_PATTERN = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)+$/;
 
-const HOST_PATTERN = /^[A-Za-z0-9.-]+(:[0-9]+)?$/;
+/** A host with an optional port; a host of only dots (`.`, `..`) is a path traversal, not a host. */
+export const HOST_PATTERN = /^(?!\.+(:|$))[A-Za-z0-9.-]+(:[0-9]+)?$/;
 const PREFIXED = /^([a-z]+):([^/]+)\/(.+)$/;
 
 /** The GitHub ref for an owner/name path on github.com. */

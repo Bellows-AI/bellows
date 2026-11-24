@@ -20,6 +20,7 @@ import {
     USER,
 } from '../fixtures/loop-stubs.js';
 import { DOCKER_CLASS_SIZING } from '../fixtures/runner-classes.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 /** A queue row's acquisition token, never its id. */
 const ROW_TOKEN = '77777777-7777-4777-8777-777777777777';
@@ -442,7 +443,7 @@ describe('the poll loop', () => {
     });
 
     it("hands a starting claim's sync a token minted for it, and asks nothing for a restore", async () => {
-        const repoJob = { ...job(1), repo: 'Bellows-AI/bellows', publish: false };
+        const repoJob = { ...job(1), repo: githubRef('Bellows-AI/bellows'), publish: false };
         const board = stubBoard([repoJob], { githubToken: 'ghs_sync' });
         const runner = stubRunner(async () => ok());
 
@@ -453,7 +454,7 @@ describe('the poll loop', () => {
 
         // A follow-up restores its tree: nothing touches the remote, so nothing is asked.
         const restoring = stubBoard(
-            [{ ...job(2, 'session-x'), repo: 'Bellows-AI/bellows', followUp: true, publish: false }],
+            [{ ...job(2, 'session-x'), repo: githubRef('Bellows-AI/bellows'), followUp: true, publish: false }],
             {
                 githubToken: 'ghs_unused',
             }
@@ -551,7 +552,7 @@ describe('the poll loop', () => {
         // is failed with a reason, never run in a fallback location.
         [
             'fails a repo job whose worktree path cannot be resolved, before anything runs',
-            { ...job(1), repo: 'Bellows-AI/bellows', rootJobId: 'not-a-uuid' },
+            { ...job(1), repo: githubRef('Bellows-AI/bellows'), rootJobId: 'not-a-uuid' },
             expect.stringContaining('do not resolve to a task worktree'),
             'runner_error',
         ],
@@ -571,7 +572,7 @@ describe('the poll loop', () => {
         const board = stubBoard([
             {
                 ...job(1),
-                repo: 'Bellows-AI/bellows',
+                repo: githubRef('Bellows-AI/bellows'),
                 services: [{ name: 'db', image: 'postgres:16', environment: [] }],
                 planRefusal: planReason,
             },
@@ -593,6 +594,36 @@ describe('the poll loop', () => {
         expect(board.board.completed).toHaveLength(1);
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
         expect(board.board.completed[0]?.output).toContain(planReason);
+    });
+
+    it.each([
+        ['a GitLab repository', { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' } as const, 'gl.example'],
+        [
+            'a GitHub repository on another host',
+            { forge: 'github', host: 'ghe.example', path: 'o/n' } as const,
+            'ghe.example',
+        ],
+    ])('refuses %s on a host it holds no credential for, before anything starts', async (_name, repo, host) => {
+        const board = stubBoard([
+            { ...job(1), repo, services: [{ name: 'db', image: 'postgres:16', environment: [] }] },
+        ]);
+        const stack = stubGateStack();
+        let ran = 0;
+        const runner = stubRunner(async () => {
+            ran += 1;
+            return ok();
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(ran).toBe(0);
+        expect(runner.synced).toHaveLength(0);
+        expect(runner.startedServices).toEqual([]);
+        expect(stack.stack.acquired).toEqual([]);
+        expect(board.board.completed).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
+        expect(board.board.completed[0]?.output).toContain(host);
+        expect(board.board.completed[0]?.output).toContain('no git credential');
     });
 
     it('fails the attempt with the reason when the checkout sync fails', async () => {
@@ -694,7 +725,7 @@ describe('the poll loop', () => {
     it('reclaims after a pre-run failure, once the whole thread is done', async () => {
         // A job whose checkout cannot be synced is completed failed without ever running; the
         // reclaim is the same downstream-of-the-verdict step it is for a run.
-        const repoJob = { ...job(1), repo: 'Bellows-AI/bellows', workspacePath: `bellows/${USER}` };
+        const repoJob = { ...job(1), repo: githubRef('Bellows-AI/bellows'), workspacePath: `bellows/${USER}` };
         const board = stubBoard([repoJob], { reclaimId: 'reclaim-1' });
         const runner = stubRunner(async () => ok(), { sync: { ok: false, reason: 'no disk' } });
 
@@ -1421,7 +1452,7 @@ describe('the poll loop', () => {
                     id: rowId,
                     token: ROW_TOKEN,
                     rootJobId: root,
-                    repo: 'Bellows-AI/bellows',
+                    repo: githubRef('Bellows-AI/bellows'),
                     workspacePath: `bellows/${USER}`,
                     leaseExpiresAt: '2026-08-21T12:05:00.000Z',
                 },
@@ -1455,7 +1486,7 @@ describe('the poll loop', () => {
                 workspacePath: `bellows/${USER}`,
                 rootJobId: root,
                 rootCommand: '',
-                repo: 'Bellows-AI/bellows',
+                repo: githubRef('Bellows-AI/bellows'),
                 executorType: 'claude-code',
                 executorRefusal: null,
                 planRefusal: null,
@@ -1545,7 +1576,7 @@ describe('the poll loop', () => {
             id: rowId,
             token: ROW_TOKEN,
             rootJobId: root,
-            repo: 'Bellows-AI/bellows',
+            repo: githubRef('Bellows-AI/bellows'),
             workspacePath: `bellows/${USER}`,
             leaseExpiresAt: '2026-08-21T12:05:00.000Z',
         };
@@ -1794,7 +1825,7 @@ describe('the poll loop', () => {
             id: rowId,
             token: ROW_TOKEN,
             rootJobId: root,
-            repo: 'Bellows-AI/bellows',
+            repo: githubRef('Bellows-AI/bellows'),
             workspacePath: `bellows/${USER}`,
             leaseExpiresAt: '2026-08-21T12:05:00.000Z',
         };

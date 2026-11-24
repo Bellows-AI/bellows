@@ -32,7 +32,7 @@ fg_driver_tail() { # fg_driver_tail <job-id> -> the driver's last finish and gat
 fg_plan_saved="$work/finish-gate.plan"
 lane_origin lane_run '
     if git -C "$1" cat-file -e main:.bellows.yaml 2>/dev/null; then git -C "$1" show main:.bellows.yaml; fi' \
-    "$SMOKE_REPO.git" >"$fg_plan_saved" || {
+    "github.com/$SMOKE_REPO.git" >"$fg_plan_saved" || {
     echo 'test-jobs: could not read the origin plan to restore'
     exit 1
 }

@@ -294,7 +294,7 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
 
     it('embeds the exact credential-helper snippet the push flow also carries', () => {
         const src = readFileSync(SCRIPT_PATH, 'utf8');
-        const match = /const CREDENTIAL_HELPER = (.+);/.exec(src);
+        const match = /const CREDENTIAL_HELPER =\s*(.+);/.exec(src);
         expect(match).not.toBeNull();
         const embedded = new Function(`return (${match![1]})`)() as string;
         const fileContent = readFileSync(

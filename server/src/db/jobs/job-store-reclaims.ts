@@ -1,6 +1,7 @@
 // The worktree-reclaim queue's worker half: claim, ack and renew, each under the
 // acquisition's own token.
 import { lockThreadInTx, lockThreadRootInTx } from '../connection-bindings.js';
+import { refOfNullableRow } from '../repo-ref-row.js';
 import type { JobStore, JobStoreContext, ReclaimClaim, ReclaimRenewal } from './job-store-types.js';
 
 /** The worktree-reclaim queue. */
@@ -46,6 +47,8 @@ export async function claimReclaimRow(
             id: string;
             claim_token: string;
             root_job_id: string;
+            forge: string;
+            host: string;
             repo: string | null;
             workspace_path: string | null;
             lease_expires_at: Date;
@@ -65,7 +68,7 @@ export async function claimReclaimRow(
             lease_expires_at = now() + make_interval(secs => ${leaseSeconds}::int)
         from candidate
         where task_reclaim.id = candidate.claim_id
-        returning id, claim_token, root_job_id, repo, workspace_path, lease_expires_at
+        returning id, claim_token, root_job_id, forge, host, repo, workspace_path, lease_expires_at
     `;
     const row = rows[0];
     if (!row) return null;
@@ -73,7 +76,7 @@ export async function claimReclaimRow(
         id: row.id,
         token: row.claim_token,
         rootJobId: row.root_job_id,
-        repo: row.repo,
+        repo: refOfNullableRow(row),
         workspacePath: row.workspace_path,
         leaseExpiresAt: row.lease_expires_at.toISOString(),
     };

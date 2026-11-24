@@ -14,6 +14,7 @@ import { dockerArgs } from '../src/docker/docker.js';
 import { runnerJobSpec } from '../src/k8s/k8s-podspec.js';
 import { AGENT_CONTAINER } from '../src/supervisor-contract.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * The runner's GitHub helper (docs/connections.md), shipped in both executor images: what it asks
@@ -466,7 +467,7 @@ describe('the token cache and the runner env, on both executors', () => {
         continuesInterrupted: false,
         userId: USER,
         workspacePath: `bellows/${USER}`,
-        repo: 'Bellows-AI/bellows',
+        repo: githubRef('Bellows-AI/bellows'),
         // A board that still sent one: both names are reserved, so neither may reach a runner.
         env: { GITHUB_TOKEN: MEMBER_TOKEN, GH_TOKEN: MEMBER_TOKEN, MEMBER_VAR: 'member' },
     } as BoardJob;

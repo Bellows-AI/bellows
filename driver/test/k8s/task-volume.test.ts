@@ -15,6 +15,7 @@ import {
     taskVolumeSpec,
 } from '../../src/task-volume.js';
 import { job, SESSION, POD_NAMES, everyPodSpec, namespace, routed, runner } from '../fixtures/k8s-suite.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 describe("scoping the kubernetes mounts to the thread's own task volume (issue #775)", () => {
     // Every pod of an attempt mounts ONE volume claim, the thread's own, by name: there is no spec
@@ -125,7 +126,7 @@ describe("the thread's task volume claim (issue #775)", () => {
         const { request, calls } = routed(() => undefined);
         const aborted = new AbortController();
         aborted.abort();
-        const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+        const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows') };
         await expect(runner(request).syncCheckout(repoJob, aborted.signal, SESSION_OF)).rejects.toThrow();
         expect(posts(calls)).toEqual([]);
     });

@@ -41,7 +41,7 @@ export type GitHubConfig =
           readonly mode: 'none';
           /**
            * The git origin the offline board reads a repo's `.bellows.yaml` plan from, as
-           * `<originBase>/<owner>/<name>.git` (REPO_CLONE_BASE, the base the driver clones from).
+           * `<originBase>/<host>/<path>.git` (REPO_CLONE_BASE, the base the driver clones from).
            * Absent, the board reads no plan. Ignored under the App, which reads through the API.
            */
           readonly originBase?: string;

@@ -5,6 +5,7 @@ import { checkpointScript } from '../src/container-scripts.js';
 import { supervisorLiterals } from '../src/supervisor-plan.js';
 import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { boardJob } from './fixtures/board-job.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * The environment the supervisor's finalize stage is configured by — one function both
@@ -17,7 +18,7 @@ const withControl = (over: Partial<BoardJob>): BoardJob =>
     ({
         ...boardJob(),
         id: ROOT,
-        repo: 'acme/widgets',
+        repo: githubRef('acme/widgets'),
         supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver', [SUPERVISOR_ENV.controlToken]: 't' },
         ...over,
     }) as BoardJob;

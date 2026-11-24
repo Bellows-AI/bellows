@@ -2823,10 +2823,10 @@ SQL
     give_up
 }
 # One line, no double quotes or backslashes: it is interpolated into the JSON override below.
-origin_script="set -e; mkdir -p /origins/${SMOKE_REPO%%/*}; git init -q --bare -b main /origins/$SMOKE_REPO.git;
+origin_script="set -e; mkdir -p /origins/github.com/${SMOKE_REPO%%/*}; git init -q --bare -b main /origins/github.com/$SMOKE_REPO.git;
 git init -q -b main /tmp/seed;
 git -C /tmp/seed -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m init;
-git -C /tmp/seed push -q /origins/$SMOKE_REPO.git main;
+git -C /tmp/seed push -q /origins/github.com/$SMOKE_REPO.git main;
 exec git daemon --reuseaddr --base-path=/origins --export-all --enable=receive-pack --listen=0.0.0.0 --port=9418 /origins"
 origin_script="$(printf '%s' "$origin_script" | tr '\n' ' ')"
 # On the multi-node layout the origin sits with the board on the control plane: a drain case moves the
@@ -2870,7 +2870,7 @@ spec:
 EOF
 )" || bad 'the lane admits runner pods to the smoke origin' "$origin_policy"
 kubectl wait --for=condition=Ready --timeout=180s "pod/$RELEASE-origin" -n "$NAMESPACE" >/dev/null 2>&1
-repo_seeded="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- git ls-remote "git://127.0.0.1:9418/$SMOKE_REPO.git" 2>&1 || true)"
+repo_seeded="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- git ls-remote "git://127.0.0.1:9418/github.com/$SMOKE_REPO.git" 2>&1 || true)"
 case "$repo_seeded" in
 *refs/heads/main*) ok 'the smoke origin is served inside the cluster' ;;
 *) bad 'the smoke origin is served inside the cluster' "$repo_seeded"

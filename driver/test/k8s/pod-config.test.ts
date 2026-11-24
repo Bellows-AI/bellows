@@ -29,11 +29,12 @@ import {
     runner,
 } from '../fixtures/k8s-suite.js';
 import { DOCKER_CLASS_SIZING, oneClass } from '../fixtures/runner-classes.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 describe('the block-helper transport (issue #207)', () => {
     const NOOP_DESCRIPTOR = lookupHelper('noop')!;
     const NOOP_VERDICT = JSON.stringify({ schema: 'helper-noop/v1', version: 1, ok: true, output: { echoed: true } });
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows', env: { GITHUB_TOKEN: 'claim-token' } };
+    const repoJob: BoardJob = { ...job, repo: githubRef('Bellows-AI/bellows'), env: { GITHUB_TOKEN: 'claim-token' } };
     const WT = `${TASK_MOUNT}/bellows`;
     const plan = (over: Partial<HelperPlan> = {}): HelperPlan => ({
         helperId: 'noop',

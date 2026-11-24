@@ -13,6 +13,7 @@ import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review/re
 import { StepChannelClosed, type StepSink, StepTimedOut } from '../src/step-control.js';
 import { runHelperStep } from '../src/supervised-steps.js';
 import { SUPERVISOR_ENV, type StepRequest, type StepResult } from '../src/supervisor-contract.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * Block-helper receipts across claims. Two claims of one job — a lost one and its
@@ -59,7 +60,7 @@ const claim = (seq: number, over: Partial<BoardJob> = {}): BoardJob =>
         leaseToken: `2222222${seq}-2222-4222-8222-222222222222`,
         userId: '44444444-4444-4444-8444-444444444444',
         workspacePath: 'bellows/44444444-4444-4444-8444-444444444444',
-        repo: 'octo/factory',
+        repo: githubRef('octo/factory'),
         env: {},
         supervisorEnv: { [SUPERVISOR_ENV.controlToken]: `control-${seq}` },
         // The board's per-organization key, the same on every claim of the row whichever driver holds it.

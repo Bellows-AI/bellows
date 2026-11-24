@@ -3,6 +3,7 @@ import { jobsPath, runnerJobName } from '../../src/k8s/k8s-podspec.js';
 import type { K8sMethod } from '../../src/k8s/k8s-transport.js';
 import { claimPathFor, namespace, routed, runner } from '../fixtures/k8s-suite.js';
 import { drive, job, stubBoard } from '../fixtures/loop-stubs.js';
+import { githubRef } from '../fixtures/repo-ref.js';
 
 /*
  * a takeover sweep that meets a leftover pod stuck terminating (its node gone) is handed
@@ -10,7 +11,7 @@ import { drive, job, stubBoard } from '../fixtures/loop-stubs.js';
  * real kubernetes runner, only the cluster's API faked.
  */
 describe('a takeover sweep blocked by a leftover pod stuck terminating', () => {
-    const claimed = { ...job(1), claimSeq: 2, repo: 'Bellows-AI/bellows' };
+    const claimed = { ...job(1), claimSeq: 2, repo: githubRef('Bellows-AI/bellows') };
     const OLD = '55555555-5555-4555-8555-555555555555';
     const podOf = (extra: Record<string, unknown>) => ({
         metadata: {

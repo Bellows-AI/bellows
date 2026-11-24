@@ -1,6 +1,7 @@
 import { authorEnv } from './commit-author.js';
 import type { BoardJob } from './board/board.js';
 import type { DriverConfig } from './config.js';
+import { formatRepoRef } from './repo-ref.js';
 import {
     npmQuietEnv,
     opencodeDataDir,
@@ -56,7 +57,7 @@ export interface RunnerPlan {
 export function assertWorktreeResolvable(job: BoardJob): void {
     if (job.repo && !checkoutDir(job)) {
         throw new Error(
-            `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`
+            `refusing to run job ${job.id}: the board reported a repo this driver cannot resolve a task worktree for (${formatRepoRef(job.repo)})`
         );
     }
 }

@@ -57,8 +57,11 @@ export interface DriverConfig {
      * bytes before it deletes the volume anyway and logs the loss.
      */
     taskVolumeExportAttempts: number;
-    /** Where a task's checkout is cloned from: `<cloneBase>/<owner>/<name>.git`. */
-    cloneBase: string;
+    /**
+     * Where a task's checkout is cloned from: `<cloneBase>/<host>/<path>.git`; null clones each repository
+     * from its own host, `https://<host>/<path>.git`.
+     */
+    cloneBase: string | null;
     /**
      * Where a runner's telemetry is pointed, as `OTEL_EXPORTER_OTLP_ENDPOINT`. Defaults to
      * `http://collector:4318` when `RUNNER_OTEL_ENDPOINT` is not set, so the endpoint is always
@@ -346,7 +349,7 @@ const DEFAULTS = {
     opencodeExecutorImage: 'opencode-executor',
     taskVolumeAccessMode: 'ReadWriteOncePod',
     taskVolumeSize: '20Gi',
-    cloneBase: 'https://github.com',
+    cloneBase: null,
     concurrency: 2,
     pollMs: 5_000,
     leaseSeconds: 300,
@@ -524,7 +527,7 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             accessMode: text(env.TASK_VOLUME_ACCESS_MODE, 'TASK_VOLUME_ACCESS_MODE', DEFAULTS.taskVolumeAccessMode),
             size: text(env.TASK_VOLUME_SIZE, 'TASK_VOLUME_SIZE', DEFAULTS.taskVolumeSize),
         },
-        cloneBase: text(env.REPO_CLONE_BASE, 'REPO_CLONE_BASE', DEFAULTS.cloneBase).replace(/\/+$/, ''),
+        cloneBase: optionalText(env.REPO_CLONE_BASE)?.replace(/\/+$/, '') || null,
         // Empty is unset, like every other optional value here: default to the collector on the
         // compose network, so the endpoint is always provided to the runner.
         otelEndpoint: (env.RUNNER_OTEL_ENDPOINT ?? '').trim() || DEFAULTS.otelEndpoint,

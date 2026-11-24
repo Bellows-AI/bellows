@@ -70,7 +70,7 @@ SQL
 
 advance_origin() { # advance_origin -> success once the origin's main has a new `lane-upstream` commit
     local out
-    out="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- sh -c "set -e; rm -rf /tmp/up; git clone -q /origins/$SMOKE_REPO.git /tmp/up; git -C /tmp/up -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m lane-upstream; git -C /tmp/up push -q origin HEAD:main; echo advanced" 2>&1 || true)"
+    out="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- sh -c "set -e; rm -rf /tmp/up; git clone -q /origins/github.com/$SMOKE_REPO.git /tmp/up; git -C /tmp/up -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m lane-upstream; git -C /tmp/up push -q origin HEAD:main; echo advanced" 2>&1 || true)"
     case "$out" in *advanced*) return 0 ;; esac
     return 1
 }
@@ -383,7 +383,7 @@ case "$skills_off" in
 esac
 # The checkout holds a skill named like the pinned workspace skill (and two others), so the resumed pod's view
 # is built against a real clash.
-skills_clash="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- sh -c "set -e; rm -rf /tmp/clash; git clone -q /origins/$SMOKE_REPO.git /tmp/clash; cd /tmp/clash
+skills_clash="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- sh -c "set -e; rm -rf /tmp/clash; git clone -q /origins/github.com/$SMOKE_REPO.git /tmp/clash; cd /tmp/clash
 for d in .claude/skills/lane-ws-skill .claude/skills/lane-repo-other-claude .agents/skills/lane-repo-other; do mkdir -p \$d; printf '%s\n' '---' \"name: \${d##*/}\" 'description: Lane fixture repo skill - use it never.' '---' 'Nothing to do.' >\$d/SKILL.md; done
 git -c user.name=test-k8s -c user.email=test-k8s@localhost add -A; git -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q -m lane-repo-skills; git push -q origin HEAD:main; echo pushed" 2>&1 || true)"
 case "$skills_clash" in *pushed*) ok 'the origin ships repo skills named like the workspace skill' ;; *) bad 'the origin ships repo skills named like the workspace skill' "$skills_clash" ;; esac

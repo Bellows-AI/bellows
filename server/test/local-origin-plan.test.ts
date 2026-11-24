@@ -15,7 +15,7 @@ import {
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { READ_TRANSPORT } from '@factory-ai/core';
+import { githubRepo, READ_TRANSPORT, type RepoRef } from '@factory-ai/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOriginPlanReader } from '../src/github/local-origin-plan.js';
 
@@ -49,10 +49,9 @@ const tempDir = (prefix: string) => {
     return dir;
 };
 
-/** A bare origin for `owner/name` under a fresh base dir, with one commit per entry of `commits` on `branch`. */
-function mirror(repo: string, commits: (string | null)[], branch = 'main') {
-    const dir = tempDir('origins-');
-    const bare = join(dir, `${repo}.git`);
+/** A bare origin for `path` on `host` under `dir`, with one commit per entry of `commits` on `branch`. */
+function seedOrigin(dir: string, at: { host: string; path: string }, commits: (string | null)[], branch = 'main') {
+    const bare = join(dir, at.host, `${at.path}.git`);
     mkdirSync(bare, { recursive: true });
     git(['init', '-q', '--bare', '-b', branch, bare]);
     const tree = tempDir('seed-');
@@ -67,6 +66,13 @@ function mirror(repo: string, commits: (string | null)[], branch = 'main') {
     git(['push', '-q', bare, `${branch}:${branch}`], tree);
     return { base: `file://${dir}`, tip: git(['rev-parse', 'HEAD'], tree) };
 }
+
+/** A github.com origin for the owner/name `repo` under a fresh base dir. */
+const mirror = (repo: string, commits: (string | null)[], branch = 'main') =>
+    seedOrigin(tempDir('origins-'), { host: 'github.com', path: repo }, commits, branch);
+
+const gh = (path: string) => githubRepo(path);
+const gl = (path: string): RepoRef => ({ forge: 'gitlab', host: 'gl.example', path });
 
 /** A reader over `base` whose scratch dirs land in a directory the test can inspect afterwards. */
 function readerOver(base: string, options: { timeoutMs?: number; gitBin?: string } = {}) {
@@ -174,7 +180,7 @@ describe('the origin plan reader', () => {
     it('reads the plan at a named branch, pinned to its revision', async () => {
         const { base, tip } = mirror('acme/web', [null, SERVICE]);
 
-        const plan = await readerOver(base).reader.read('acme/web', 'main');
+        const plan = await readerOver(base).reader.read(gh('acme/web'), 'main');
 
         expect(plan).toMatchObject({ revision: tip, error: null });
         expect(plan.services.map((service) => service.name)).toEqual(['stub-svc']);
@@ -183,13 +189,13 @@ describe('the origin plan reader', () => {
     it('reads the origin default branch when the thread has no base branch', async () => {
         const { base, tip } = mirror('acme/web', [SERVICE], 'trunk');
 
-        expect(await readerOver(base).reader.read('acme/web', null)).toMatchObject({ revision: tip, error: null });
+        expect(await readerOver(base).reader.read(gh('acme/web'), null)).toMatchObject({ revision: tip, error: null });
     });
 
     it('answers a malformed file with the refusal production gives', async () => {
         const { base } = mirror('acme/web', [MALFORMED]);
 
-        const plan = await readerOver(base).reader.read('acme/web', 'main');
+        const plan = await readerOver(base).reader.read(gh('acme/web'), 'main');
 
         expect(plan.error).toContain('.bellows.yaml');
         expect(plan.services).toEqual([]);
@@ -198,7 +204,7 @@ describe('the origin plan reader', () => {
     it('refuses a file over the size the App path refuses', async () => {
         const { base } = mirror('acme/web', [`${SERVICE}# ${'x'.repeat(70_000)}\n`]);
 
-        expect((await readerOver(base).reader.read('acme/web', 'main')).error).toContain(
+        expect((await readerOver(base).reader.read(gh('acme/web'), 'main')).error).toContain(
             '.bellows.yaml is larger than 65536 bytes'
         );
     });
@@ -206,7 +212,7 @@ describe('the origin plan reader', () => {
     it('answers no plan, with the revision, for a reachable repository without the file', async () => {
         const { base, tip } = mirror('acme/web', [null]);
 
-        expect(await readerOver(base).reader.read('acme/web', 'main')).toMatchObject({
+        expect(await readerOver(base).reader.read(gh('acme/web'), 'main')).toMatchObject({
             revision: tip,
             error: null,
             services: [],
@@ -217,7 +223,7 @@ describe('the origin plan reader', () => {
     it('answers a confirmed missing branch as a refusal value, not a throw', async () => {
         const { base } = mirror('acme/web', [SERVICE]);
 
-        expect(await readerOver(base).reader.read('acme/web', 'release')).toMatchObject({
+        expect(await readerOver(base).reader.read(gh('acme/web'), 'release')).toMatchObject({
             revision: null,
             services: [],
             error: expect.stringContaining('acme/web'),
@@ -227,7 +233,7 @@ describe('the origin plan reader', () => {
     it('refuses a revision expression as a branch name instead of resolving it', async () => {
         const { base } = mirror('acme/web', [SERVICE, null]);
 
-        expect(await readerOver(base).reader.read('acme/web', 'main~1')).toMatchObject({
+        expect(await readerOver(base).reader.read(gh('acme/web'), 'main~1')).toMatchObject({
             revision: null,
             services: [],
             error: expect.stringContaining('acme/web'),
@@ -238,7 +244,7 @@ describe('the origin plan reader', () => {
         const { base } = mirror('acme/web', [SERVICE]);
 
         for (const branch of ['main', null]) {
-            await expect(readerOver(base).reader.read('acme/other', branch)).rejects.toMatchObject({
+            await expect(readerOver(base).reader.read(gh('acme/other'), branch)).rejects.toMatchObject({
                 kind: READ_TRANSPORT,
             });
         }
@@ -249,7 +255,7 @@ describe('the origin plan reader', () => {
         const fatal = 'fatal: unable to connect to 127.0.0.1';
 
         for (const branch of ['main', null]) {
-            const read = readerOver(base, { gitBin: refusingGit(fatal) }).reader.read('acme/web', branch);
+            const read = readerOver(base, { gitBin: refusingGit(fatal) }).reader.read(gh('acme/web'), branch);
             await expect(read).rejects.toMatchObject({ kind: READ_TRANSPORT });
             await expect(read).rejects.toThrow(`git ls-remote: exited 128: ${fatal}`);
         }
@@ -260,14 +266,14 @@ describe('the origin plan reader', () => {
         const fatal = 'fatal: unable to connect to 127.0.0.1';
 
         const huge = await readerOver(base, { gitBin: refusingGit(fatal, 1 << 20) })
-            .reader.read('acme/web', 'main')
+            .reader.read(gh('acme/web'), 'main')
             .catch((e: Error) => e);
         expect((huge as Error).message).toContain(fatal);
         expect((huge as Error).message.length).toBeLessThan(400);
 
         // One megabyte with no line break at all still yields a bounded message.
         const unbroken = await readerOver(base, { gitBin: refusingGit('', 1 << 20) })
-            .reader.read('acme/web', 'main')
+            .reader.read(gh('acme/web'), 'main')
             .catch((e: Error) => e);
         expect((unbroken as Error).message).toMatch(/^git ls-remote: exited 128/);
         expect((unbroken as Error).message.length).toBeLessThan(400);
@@ -278,7 +284,7 @@ describe('the origin plan reader', () => {
         const origin = await silentOrigin();
         const { reader } = readerOver(origin.url, { timeoutMs: DEADLINE_MS });
 
-        const settled = reader.read('acme/web', 'main').then(
+        const settled = reader.read(gh('acme/web'), 'main').then(
             () => null,
             (e: unknown) => e
         );
@@ -298,7 +304,7 @@ describe('the origin plan reader', () => {
             gitBin: slowGit('for-each-ref', stalled.path),
         });
 
-        const settled = reader.read('acme/web', 'main').then(
+        const settled = reader.read(gh('acme/web'), 'main').then(
             () => null,
             (e: unknown) => e
         );
@@ -323,7 +329,7 @@ describe('the origin plan reader', () => {
         });
         const childGone = lifeline.drain(); // listening before the abort, so the EOF cannot be missed
 
-        const settled = reader.read('acme/web', 'main').then(
+        const settled = reader.read(gh('acme/web'), 'main').then(
             () => null,
             (e: unknown) => e
         );
@@ -343,19 +349,19 @@ describe('the origin plan reader', () => {
     it('leaves no scratch directory behind: success, missing branch, outage and timeout', async () => {
         const { base } = mirror('acme/web', [SERVICE]);
         const { reader, leftovers } = readerOver(base);
-        await reader.read('acme/web', 'main');
-        await reader.read('acme/web', 'release');
-        await expect(reader.read('acme/other', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
+        await reader.read(gh('acme/web'), 'main');
+        await reader.read(gh('acme/web'), 'release');
+        await expect(reader.read(gh('acme/other'), 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
         expect(leftovers()).toEqual([]);
 
         const hung = readerOver((await silentOrigin()).url, { timeoutMs: 500 });
-        await expect(hung.reader.read('acme/web', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
+        await expect(hung.reader.read(gh('acme/web'), 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
         expect(hung.leftovers()).toEqual([]);
     });
 
     it("fetches the plan blob only, leaving the repository's other blobs behind", async () => {
         const { base } = mirror('acme/web', [SERVICE]);
-        const bare = join(base.replace('file://', ''), 'acme/web.git');
+        const bare = join(base.replace('file://', ''), 'github.com/acme/web.git');
         git(['config', 'uploadpack.allowFilter', 'true'], bare);
         git(['config', 'uploadpack.allowAnySHA1InWant', 'true'], bare);
         const tree = tempDir('seed-big-');
@@ -373,19 +379,43 @@ describe('the origin plan reader', () => {
         );
         chmodSync(bin, 0o755);
 
-        const plan = await readerOver(base, { gitBin: bin }).reader.read('acme/web', 'main');
+        const plan = await readerOver(base, { gitBin: bin }).reader.read(gh('acme/web'), 'main');
 
         expect(plan.error).toBeNull();
         expect(plan.services.map((service) => service.name)).toEqual(['stub-svc']);
         expect(readFileSync(missing, 'utf8')).toMatch(/^\?/m);
     });
 
-    it('refuses a bad label without spawning git', async () => {
-        // A binary that cannot start would make any spawned git an outage; the label is refused as a value first.
-        const { reader } = readerOver('file:///nowhere', { gitBin: '/nonexistent/git' });
+    it("reads the plan from the ref's host", async () => {
+        const dir = tempDir('origins-');
+        const { tip: tipA } = seedOrigin(dir, { host: 'github.com', path: 'o/n' }, [SERVICE]);
+        const { base, tip: tipB } = seedOrigin(dir, { host: 'gl.example', path: 'o/n' }, [MALFORMED]);
+        const { reader } = readerOver(base);
 
-        for (const repo of ['../acme/web', 'acme/../acme/web', 'acme', '/etc/passwd']) {
-            expect((await reader.read(repo, 'main')).error).toContain(repo);
-        }
+        expect(await reader.read(gh('o/n'), 'main')).toMatchObject({ revision: tipA, error: null });
+        const gitlab = await reader.read(gl('o/n'), 'main');
+        expect(gitlab.revision).toBe(tipB);
+        expect(gitlab.error).toContain('.bellows.yaml');
+    });
+
+    it('reads a nested path', async () => {
+        const { base, tip } = seedOrigin(tempDir('origins-'), { host: 'gl.example', path: 'g/sub/p' }, [SERVICE]);
+
+        expect(await readerOver(base).reader.read(gl('g/sub/p'), 'main')).toMatchObject({ revision: tip, error: null });
+    });
+
+    it.each<RepoRef>([
+        gl('../acme/web'),
+        gl('acme/../web'),
+        gl('g/./p'),
+        { forge: 'gitlab', host: '..', path: 'o/n' },
+        { forge: 'gitlab', host: '.', path: 'o/n' },
+        { forge: 'gitlab', host: 'a/b', path: 'o/n' },
+    ])('refuses %j without spawning git', async (ref) => {
+        // A binary that cannot start would make any spawned git an outage; the ref is refused as a value first.
+        const { reader, leftovers } = readerOver('file:///nowhere', { gitBin: '/nonexistent/git' });
+
+        expect((await reader.read(ref, 'main')).error).toContain(ref.path);
+        expect(leftovers()).toEqual([]);
     });
 });

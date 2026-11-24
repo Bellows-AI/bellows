@@ -33,6 +33,9 @@ describe('parseRepoRef', () => {
         'gitlab:gl.example/p',
         'svn:h/a/b',
         'gitlab:/a/b',
+        'gitlab:./a/b',
+        'gitlab:../a/b',
+        'gitlab:...:80/a/b',
     ])('rejects %j', (text) => {
         expect(parseRepoRef(text)).toBeNull();
     });

@@ -101,7 +101,7 @@ async function notePrOperation(
     const { job, branch, operation, pr } = note;
     if (!record || !pr || !job.repo) return undefined;
     const operationId = randomUUID();
-    await record({ operationId, operation, repo: job.repo, prNumber: pr.number, prUrl: pr.url, branch }).catch(
+    await record({ operationId, operation, repo: job.repo.path, prNumber: pr.number, prUrl: pr.url, branch }).catch(
         () => undefined
     );
     return operationId;
@@ -266,7 +266,7 @@ export const publishedResult = (
     branch,
     prUrl: landed.prUrl,
     reason: null,
-    repository: job.repo ?? null,
+    repository: job.repo?.path ?? null,
     baseBranch: base ?? null,
     prNumber: landed.prNumber,
     cause: null,

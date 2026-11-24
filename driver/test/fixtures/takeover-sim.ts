@@ -43,6 +43,7 @@ import { bindingBody, orphanBoundMs, supervisorLiterals, takeoverBoundMs } from 
 import { StallWatch } from './host-stall.js';
 import { config as baseConfig, job as baseJob, ok, stubBoard, stubRunner } from './loop-stubs.js';
 import { stopSupervisorsOf, superviseTracked } from './supervisor-tracker.js';
+import { githubRef } from './repo-ref.js';
 
 process.env.SUPERVISOR_NO_MAIN = '1';
 const supervisor = createRequire(import.meta.url)('../../src/scripts/supervisor.cjs') as {
@@ -170,7 +171,7 @@ export class Driver {
 
 /** The job's declaration when `gated`: one gate only the agent asks for, so no end-of-run pass runs it. */
 const ON_DEMAND_GATE: Pick<BoardJob, 'repo' | 'gates'> = {
-    repo: 'Bellows-AI/bellows',
+    repo: githubRef('Bellows-AI/bellows'),
     gates: { image: 'node:24', gates: [{ name: 'verify', command: 'verify-it', onDemand: true }] },
 };
 

@@ -8,6 +8,7 @@ import {
     withConflictContext,
     type PublishStep,
 } from '../src/publish/publish.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * Issue #661: a conflict the sync hands to the agent is the agent's to resolve. A publish over a
@@ -18,7 +19,7 @@ const USER = '11111111-2222-3333-4444-555555555555';
 const job = {
     id: '00000001-1111-4111-8111-111111111111',
     command: 'fix it',
-    repo: 'acme/app',
+    repo: githubRef('acme/app'),
     workspacePath: `bellows/${USER}`,
 } as BoardJob;
 

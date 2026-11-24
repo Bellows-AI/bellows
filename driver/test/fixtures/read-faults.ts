@@ -52,6 +52,7 @@ import type { ExecDocker } from '../../src/docker/docker-runner-support.js';
 import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import type { StepSink } from '../../src/step-control.js';
 import type { StepRequest, StepResult } from '../../src/supervisor-contract.js';
+import { githubRef } from './repo-ref.js';
 
 /** The wall-clock cap on one run: a scenario that has not settled by then is a setup failure. */
 const CAP_MS = 5_000;
@@ -458,7 +459,7 @@ export function freshJob(over: Partial<BoardJob> = {}): BoardJob {
         continuesInterrupted: false,
         userId: user,
         workspacePath: `bellows/${user}`,
-        repo: 'acme/widgets',
+        repo: githubRef('acme/widgets'),
         supervisorEnv: {
             SUPERVISOR_CONTROL_URL: 'http://driver:7000',
             SUPERVISOR_CONTROL_TOKEN: randomUUID(),

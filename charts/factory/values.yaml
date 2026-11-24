@@ -431,8 +431,8 @@ driver:
     # the grace cannot be usefully zero below the default teardown span, but the knob exists.
     reapIntervalMs: '300000'
     reapGraceMs: '600000'
-    # Where a task's checkout is cloned from: `<base>/<owner>/<name>.git`. Empty is the driver's
-    # default, https://github.com; only a lane that serves its own origin sets it.
+    # Where a task's checkout is cloned from: `<base>/<host>/<path>.git`. Empty is the driver's
+    # default, the repository's own host (https://<host>/<path>.git); only a lane that serves its own origin sets it.
     repoCloneBase: ''
     # What the runner-side exporters flush and cap (consumed by the exporters that follow the
     # artifact store; the board enforces the same caps).

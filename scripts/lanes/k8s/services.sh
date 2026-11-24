@@ -44,7 +44,7 @@ commit_plan() { # commit_plan <label> <.bellows.yaml contents, empty to remove i
     reach="$(printf '%s\n' "$LANE_REACH" | base64 | tr -d '\n')"
     leave="$(printf '%s\n' "$LANE_LEAVE" | base64 | tr -d '\n')"
     # One line, no double quotes or backslashes: it is interpolated into the JSON override below.
-    script="set -e; rm -rf /tmp/plan; git clone -q git://$RELEASE-origin:9418/$SMOKE_REPO.git /tmp/plan;
+    script="set -e; rm -rf /tmp/plan; git clone -q git://$RELEASE-origin:9418/github.com/$SMOKE_REPO.git /tmp/plan;
 echo $plan | base64 -d > /tmp/plan/.bellows.yaml;
 [ -s /tmp/plan/.bellows.yaml ] || rm -f /tmp/plan/.bellows.yaml;
 mkdir -p /tmp/plan/lane; echo $reach | base64 -d > /tmp/plan/lane/reach.sh; echo $leave | base64 -d > /tmp/plan/lane/leave.sh;

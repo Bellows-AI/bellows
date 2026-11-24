@@ -658,7 +658,7 @@ write_bellows() { # write_bellows <contents>
         cat >/tmp/tree/.bellows.yaml
         git -C /tmp/tree add .bellows.yaml
         git -C /tmp/tree -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m bellows
-        git -C /tmp/tree push -q origin HEAD:main' sh "/origins/$SMOKE_REPO.git" \
+        git -C /tmp/tree push -q origin HEAD:main' sh "/origins/github.com/$SMOKE_REPO.git" \
         <<<"$1" >/dev/null || {
         echo 'test-jobs: could not commit the .bellows.yaml fixture'
         exit 1
@@ -1111,13 +1111,13 @@ start_open_board() { # boots the AUTH_MODE=none board on $BASE and waits until i
 docker volume create "$ORIGIN_VOLUME" >/dev/null &&
     docker network create "$NETWORK" >/dev/null &&
     docker run --rm -u 0 -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" sh -c \
-        "mkdir -p /origins/${SMOKE_REPO%%/*} && chown 1000:1000 /origins /origins/${SMOKE_REPO%%/*}" &&
+        "mkdir -p /origins/github.com/${SMOKE_REPO%%/*} && chown 1000:1000 /origins /origins/github.com /origins/github.com/${SMOKE_REPO%%/*}" &&
     docker run --rm -v "$ORIGIN_VOLUME:/origins" -e HOME=/tmp "$IMAGE_BASE" sh -c '
         set -e
-        git init -q --bare -b main "/origins/$1.git"
+        git init -q --bare -b main "/origins/github.com/$1.git"
         git init -q -b main /tmp/seed
         git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m init
-        git -C /tmp/seed push -q "/origins/$1.git" main' sh "$SMOKE_REPO" &&
+        git -C /tmp/seed push -q "/origins/github.com/$1.git" main' sh "$SMOKE_REPO" &&
     docker run -d --name "$ORIGIN_NAME" --network "$NETWORK" -p "127.0.0.1:$ORIGIN_PORT:9418" -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" \
         git daemon --reuseaddr --base-path=/origins --export-all --enable=receive-pack \
         --listen=0.0.0.0 --port=9418 /origins >/dev/null || {

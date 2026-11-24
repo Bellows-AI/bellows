@@ -253,14 +253,56 @@ describe('the container scripts', () => {
     it('the credential helper runs clean exactly as git spawns it', () => {
         expect(CREDENTIAL_HELPER.startsWith('!')).toBe(true);
         const snippet = CREDENTIAL_HELPER.slice(1);
-        const run = spawnSync('sh', ['-c', `${snippet} get`], {
-            env: { ...process.env, GITHUB_TOKEN: 'test-token' },
-            encoding: 'utf8',
-        });
+        const ask = (host: string) =>
+            spawnSync('sh', ['-c', `${snippet} get`], {
+                env: { ...process.env, GITHUB_TOKEN: 'test-token' },
+                input: `protocol=https\nhost=${host}\n\n`,
+                encoding: 'utf8',
+            });
+        const run = ask('github.com');
         expect(run.status).toBe(0);
         expect(run.stdout).toContain('username=x-access-token');
         expect(run.stdout).toContain('password=test-token');
     });
+
+    // The checkout guard (task-checkout.cjs) reads a retained origin's host through `new URL(...).host`, which lowercases
+    // it and drops an https URL's default port. Git hands the helper the spelling the URL carried, so the helper
+    // normalizes the same way: every spelling the guard takes for github.com is answered, and a non-default port is not.
+    it.each([
+        ['github.com', true],
+        ['GitHub.com', true],
+        ['GITHUB.COM', true],
+        ['github.com:443', true],
+        ['GitHub.com:443', true],
+        ['github.com:8443', false],
+        ['github.com:4430', false],
+        ['github.com:44', false],
+        ['github.com.:443', false],
+    ])('the credential helper and the checkout guard agree on host %j', (host, answered) => {
+        const run = spawnSync('sh', ['-c', `${CREDENTIAL_HELPER.slice(1)} get`], {
+            env: { ...process.env, GITHUB_TOKEN: 'test-token' },
+            input: `protocol=https\nhost=${host}\n\n`,
+            encoding: 'utf8',
+        });
+        expect(run.status).toBe(0);
+        expect(run.stdout.includes('password=test-token')).toBe(answered);
+        expect(new URL(`https://${host}/o/n.git`).host === 'github.com').toBe(answered);
+    });
+
+    // The helper answers the token to the claim's host only (github.com, the one host the driver can credential), so a
+    // checkout whose origin or push URL was pointed elsewhere gets no credential for fetch, lazy fetch or push.
+    it.each(['gl.example', 'github.com.evil.example', 'GitHub.com:8443', ''])(
+        'the credential helper answers no token to host %j',
+        (host) => {
+            const run = spawnSync('sh', ['-c', `${CREDENTIAL_HELPER.slice(1)} get`], {
+                env: { ...process.env, GITHUB_TOKEN: 'test-token' },
+                input: host ? `protocol=https\nhost=${host}\n\n` : '',
+                encoding: 'utf8',
+            });
+            expect(run.status).toBe(0);
+            expect(run.stdout).not.toContain('test-token');
+        }
+    );
 });
 
 // The loops' heartbeat runs alone here, never the loop itself: `serve` kills every process of its uid.

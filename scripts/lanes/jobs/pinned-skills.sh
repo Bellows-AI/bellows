@@ -135,13 +135,13 @@ process.exit(made.ok ? 0 : 1);
 ps_clash_repo() { # a bare origin <owner>/clash whose main ships .claude/skills/$PS_ORG_SKILL, and the org's row for it
     docker run --rm -v "$ORIGIN_VOLUME:/origins" -e HOME=/tmp "$IMAGE_BASE" sh -c '
         set -e
-        git init -q --bare -b main "/origins/$1.git"
+        git init -q --bare -b main "/origins/github.com/$1.git"
         git init -q -b main /tmp/seed
         mkdir -p "/tmp/seed/.claude/skills/$2"
         printf "%s\n" "---" "name: $2" "description: Lane fixture skill $3 - use it never." "---" "Nothing to do." >"/tmp/seed/.claude/skills/$2/SKILL.md"
         git -C /tmp/seed add -A
         git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q -m "repo skill"
-        git -C /tmp/seed push -q "/origins/$1.git" main' sh "$PS_CLASH_REPO" "$PS_ORG_SKILL" "$PS_REPO_SENTINEL" || return 1
+        git -C /tmp/seed push -q "/origins/github.com/$1.git" main' sh "$PS_CLASH_REPO" "$PS_ORG_SKILL" "$PS_REPO_SENTINEL" || return 1
     compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -v "org=$PS_ORG" -v "repo=$PS_CLASH_REPO" -f - >/dev/null <<'SQL'
 insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
 values (:'org', 'claude-code', 'test-jobs-pinned-clash', :'repo', 'main', now(), now());
@@ -151,7 +151,7 @@ SQL
 ps_ws_clash_repo() { # a bare origin <owner>/ws-clash: .claude/skills/$PS_WS_SKILL plus two other repo skills, and the org's row for it
     docker run --rm -v "$ORIGIN_VOLUME:/origins" -e HOME=/tmp "$IMAGE_BASE" sh -c '
         set -e
-        git init -q --bare -b main "/origins/$1.git"
+        git init -q --bare -b main "/origins/github.com/$1.git"
         git init -q -b main /tmp/seed
         skill() { # skill <dir> <name> <sentinel>
             mkdir -p "/tmp/seed/$1/$2"
@@ -162,7 +162,7 @@ ps_ws_clash_repo() { # a bare origin <owner>/ws-clash: .claude/skills/$PS_WS_SKI
         skill .claude/skills lane-repo-other-claude "$5"
         git -C /tmp/seed add -A
         git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q -m "repo skills"
-        git -C /tmp/seed push -q "/origins/$1.git" main' sh "$PS_WS_CLASH_REPO" "$PS_WS_SKILL" "$PS_REPO_WS_SENTINEL" "$PS_REPO_OTHER_SENTINEL" "$PS_REPO_OTHER_CLAUDE_SENTINEL" || return 1
+        git -C /tmp/seed push -q "/origins/github.com/$1.git" main' sh "$PS_WS_CLASH_REPO" "$PS_WS_SKILL" "$PS_REPO_WS_SENTINEL" "$PS_REPO_OTHER_SENTINEL" "$PS_REPO_OTHER_CLAUDE_SENTINEL" || return 1
     compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -v "org=$PS_ORG" -v "repo=$PS_WS_CLASH_REPO" -f - >/dev/null <<'SQL'
 insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
 values (:'org', 'claude-code', 'test-jobs-pinned-ws-clash', :'repo', 'main', now(), now());

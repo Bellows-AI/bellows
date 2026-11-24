@@ -3,6 +3,7 @@ import type { BoardJob } from '../src/board/board.js';
 import type { CheckpointRead } from '../src/board/board-checkpoint.js';
 import { TASK_ROOT_LABEL, taskVolumeName } from '../src/task-volume.js';
 import { k8sSyncRun } from './k8s-sync-step.js';
+import { githubRef } from './fixtures/repo-ref.js';
 
 /**
  * The kubernetes runner restoring a thread's task tree: the docker twins live in
@@ -35,7 +36,7 @@ const job = (over: Partial<BoardJob> = {}): BoardJob =>
         continuesInterrupted: false,
         userId: '44444444-4444-4444-8444-444444444444',
         workspacePath: 'bellows/44444444-4444-4444-8444-444444444444',
-        repo: 'acme/widgets',
+        repo: githubRef('acme/widgets'),
         env: {},
         ...over,
     }) as BoardJob;

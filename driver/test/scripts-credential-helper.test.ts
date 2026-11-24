@@ -156,6 +156,27 @@ describe.skipIf(!hasGit() || !hasOpenssl())('the checkout sync credential helper
         expect(result.reason).toContain('https');
         expect(existsSync(marker)).toBe(false);
     });
+
+    it.each(['origin', 'pushurl'])(
+        'refuses a retained checkout whose %s names another host, and never runs the helper',
+        async (which) => {
+            // The claim names one host; a tree that was pointed at another must not receive the credential.
+            const tree = join(fx.dir(), 'task', 'cred');
+            const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' };
+            execFileSync('git', ['init', '-q', tree], { env });
+            const run = (...args: string[]) => execFileSync('git', ['-C', tree, ...args], { env });
+            const own = 'https://127.0.0.1:1/repo.git';
+            run('remote', 'add', 'origin', which === 'origin' ? 'https://other.example/x.git' : own);
+            if (which === 'pushurl') run('remote', 'set-url', '--push', 'origin', 'https://other.example/x.git');
+            const marker = join(fx.dir(), 'helper-invoked');
+
+            const result = await fx.sync({ CRED_HELPER: markerHelper(marker), REMOTE: own });
+
+            expect(result.ok).toBe(false);
+            expect(result.reason).toContain('claim host');
+            expect(existsSync(marker)).toBe(false);
+        }
+    );
 });
 
 describe.skipIf(!hasGit() || !hasOpenssl())('the checkout sync credential helper: argv shape', () => {

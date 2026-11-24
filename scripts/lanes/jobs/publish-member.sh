@@ -24,7 +24,7 @@ echo '# publish as the member (board with member grants, fake GitHub, real drive
 PM_BASE="http://127.0.0.1:$PM_PORT" # loopback: only the host's driver and this script reach it
 PM_ORG=999001 # the installation the fake GitHub reports for its member (scripts/fake-forge/github.mjs)
 PM_STATE="$work/fake-forge"
-PM_ORIGIN="$SMOKE_REPO.git" # under /origins on the origins volume
+PM_ORIGIN="github.com/$SMOKE_REPO.git" # under /origins on the origins volume, below the host
 PM_COMMIT='cd "$WORKDIR" && echo x >lane-change && git add lane-change && { git diff --cached --quiet || git -c user.name=lane -c user.email=lane@localhost commit -q -m lane-commit; }'
 
 pm_forge() { # pm_forge <path> -> the fake forge's answer body (its own door: no credential)

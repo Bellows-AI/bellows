@@ -169,7 +169,7 @@ describe.skipIf(!enabled)('removing a task', () => {
         const claim = await store.claimReclaim('w1', LEASE_SECONDS);
         expect(claim).toMatchObject({
             rootJobId: root,
-            repo: 'acme/widgets',
+            repo: { forge: 'github', host: 'github.com', path: 'acme/widgets' },
             workspacePath: `${ORG}/${AUTHOR}`,
         });
     });
