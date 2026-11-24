@@ -7,7 +7,7 @@ import { trackApps } from './helpers-http.js';
 
 const track = trackApps();
 const SECRETS = ['tok_x', 'ck_x', 'code_x', 'st_x', 'o-x', 'n-x'];
-const BRANCHES = '/api/repos/:owner/:name/branches';
+const BRANCHES = '/api/repos/:id/branches';
 
 async function logged() {
     const capture = captureLogs();
@@ -33,7 +33,7 @@ describe('request logs', () => {
             headers: { authorization: 'Bearer tok_x', cookie: 's=ck_x' },
         });
         await app.inject({ method: 'GET', url: '/api/auth/github/callback?code=code_x&state=st_x' });
-        await app.inject({ method: 'GET', url: '/api/repos/o-x/n-x/branches?t=tok_x' });
+        await app.inject({ method: 'GET', url: '/api/repos/o-x%2Fn-x/branches?t=tok_x' });
         await app.inject({ method: 'GET', url: '/api/no-such-route/o-x?code=code_x' });
 
         expect(capture.records().length).toBeGreaterThan(0);
@@ -44,7 +44,7 @@ describe('request logs', () => {
 
     it('name the route pattern, or <unmatched>', async () => {
         const { app, capture } = await logged();
-        await app.inject({ method: 'GET', url: '/api/repos/o-x/n-x/branches' });
+        await app.inject({ method: 'GET', url: '/api/repos/o-x%2Fn-x/branches' });
         await app.inject({ method: 'GET', url: '/api/no-such-route' });
         const urls = capture
             .records()

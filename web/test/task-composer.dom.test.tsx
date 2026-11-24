@@ -14,8 +14,10 @@ const CREATED = '2026-01-01T00:00:00.000Z';
 const LAUNCHED_ID = '11111111-1111-4111-8111-111111111111';
 
 const tracked = (name = 'web') => ({
-    owner: 'acme',
-    name,
+    id: `acme/${name}`,
+    forge: 'github',
+    host: 'github.com',
+    path: `acme/${name}`,
     private: true,
     defaultBranch: 'main',
     pushedAt: null,
