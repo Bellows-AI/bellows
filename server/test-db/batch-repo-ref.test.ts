@@ -11,6 +11,7 @@ import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { GitHubReadError } from '../src/github/pr-read.js';
 import { useTestDb } from './harness.js';
+import { REPO_VARIANTS } from './repo-variants.js';
 import { testOrg, testUser } from './fixtures.js';
 import { BATCH_REPO, batchPlan, facts, prTask, recordPr, rootOf, setSucceeded } from './batch-fixtures.js';
 
@@ -63,9 +64,12 @@ let merger: BatchMerger;
 const github = {
     replies: new Map<number, PrFacts>(),
     merges: [] as number[],
+    reads: [] as number[],
+    branchReads: [] as string[],
 };
 const client: MergeClient = {
     async readPullRequest(_repo, number) {
+        github.reads.push(number);
         const reply = github.replies.get(number);
         if (reply === undefined) throw new GitHubReadError('not found', 'not_found');
         return reply;
@@ -74,7 +78,8 @@ const client: MergeClient = {
         github.merges.push(number);
         return { mergeCommitSha: `m${number}` };
     },
-    async readBranchState(_repo, _branch, shas) {
+    async readBranchState(_repo, branch, shas) {
+        github.branchReads.push(branch);
         return {
             headSha: 'tip',
             contains: Object.fromEntries(shas.map((sha) => [sha, true])),
@@ -110,6 +115,8 @@ beforeAll(() => {
 beforeEach(() => {
     github.replies.clear();
     github.merges.length = 0;
+    github.reads.length = 0;
+    github.branchReads.length = 0;
 });
 
 const admitAll = async () => true;
@@ -306,5 +313,108 @@ describe.skipIf(!enabled)('GitHub facts never settle a PR of another forge or ho
         expect(github.merges).toEqual([]);
         expect(await sql`select 1 from pr_merge where pr_number = ${number}`).toEqual([]);
         expect(await sql`select state from batch_merge where batch_id = ${id}`).toMatchObject([{ state: 'changed' }]);
+    });
+});
+
+/** Every variant of `github.com` the reader cannot answer for, at the batch's own path. */
+const UNREADABLE: Home[] = REPO_VARIANTS.map((variant) => ({ ...variant, path: BATCH_REPO }));
+
+describe.skipIf(!enabled)('a GitHub answer is applied only to the identity it was bound to', () => {
+    /** An automerge task whose merge request was sent and not answered: the intent the recovery reads back. */
+    async function uncertainAt(home: Home) {
+        const { id, number } = await succeededAt(home, 'automerge');
+        await observedReady(id, number);
+        const [intent] = await claimMerges({ sql, orgId: ORG }, 5, admitAll);
+        await sql`update batch_merge set state = 'uncertain' where id = ${intent!.id}::bigint`;
+        return { id, number };
+    }
+
+    it.each(UNREADABLE)('records no merge when recovering an uncertain intent on $name', async (home) => {
+        const { id, number } = await uncertainAt(home);
+        github.replies.set(
+            number,
+            facts(number, { state: 'closed', merged: true, mergedAt: '2026-01-01T00:00:00Z', mergeCommitSha: 'm1' })
+        );
+
+        await merger.mergeDue();
+
+        expect(await sql`select 1 from pr_merge where pr_number = ${number}`).toEqual([]);
+        expect(await sql`select state from batch_merge where batch_id = ${id}`).toMatchObject([{ state: 'uncertain' }]);
+        expect(await triplesOf('batch_acceptance', id)).toEqual([]);
+    });
+
+    it('records no merge when the answer to an uncertain GitHub intent is for another pull request', async () => {
+        const { id, number } = await uncertainAt(GITHUB_HOME);
+        github.replies.set(
+            number,
+            facts(number + 1, { state: 'closed', merged: true, mergedAt: '2026-01-01T00:00:00Z', mergeCommitSha: 'm1' })
+        );
+
+        await merger.mergeDue();
+
+        expect(await sql`select 1 from pr_merge where pr_number = ${number}`).toEqual([]);
+        expect(await sql`select state from batch_merge where batch_id = ${id}`).toMatchObject([{ state: 'uncertain' }]);
+    });
+
+    it('still records the merge of an uncertain GitHub intent the answer is bound to', async () => {
+        const { id, number } = await uncertainAt(GITHUB_HOME);
+        github.replies.set(
+            number,
+            facts(number, { state: 'closed', merged: true, mergedAt: '2026-01-01T00:00:00Z', mergeCommitSha: 'm1' })
+        );
+
+        await merger.mergeDue();
+
+        expect(await sql`select state from batch_merge where batch_id = ${id}`).toMatchObject([{ state: 'merged' }]);
+        expect(await sql`select 1 from pr_merge where pr_number = ${number}`).toHaveLength(1);
+    });
+
+    /** A stage whose only task is accepted and merged, with the merge commit already stored: verification is next. */
+    async function mergedStageAt(home: Home) {
+        const { id, number } = await succeededAt(home, 'automerge');
+        await observedReady(id, number);
+        const [intent] = await claimMerges({ sql, orgId: ORG }, 5, admitAll);
+        await sql`update batch_merge set state = 'merged', merge_commit_sha = 'm1' where id = ${intent!.id}::bigint`;
+        await sql`
+            insert into batch_acceptance (org_id, batch_id, task_key, attempt, kind, forge, host, repo, pr_number, pr_url)
+            values (${ORG}, ${id}, 'a', 1, 'pr_merged', ${home.forge}, ${home.host}, ${home.path}, ${number}, 'https://x/1')
+        `;
+        await sql`update batch_task set gate = 'passed' where batch_id = ${id} and key = 'a'`;
+        return id;
+    }
+
+    it.each(UNREADABLE)(
+        'keeps verification of a stage on $name inconclusive without reading the branch',
+        async (home) => {
+            const id = await mergedStageAt(home);
+
+            await merger.mergeDue();
+
+            expect(github.branchReads).toEqual([]);
+            expect(await sql`select state from batch_stage_verification where batch_id = ${id}`).toMatchObject([
+                { state: 'unknown' },
+            ]);
+            expect((await store.get(id))!.completedAt).toBeNull();
+        }
+    );
+
+    it('verifies a GitHub stage from its stored merge commit', async () => {
+        const id = await mergedStageAt(GITHUB_HOME);
+
+        await merger.mergeDue();
+
+        expect(github.branchReads).toEqual(['main']);
+        expect(await sql`select state from batch_stage_verification where batch_id = ${id}`).toMatchObject([
+            { state: 'pending' },
+        ]);
+    });
+
+    it.each(UNREADABLE)('reads no pull request for an observation on $name', async (home) => {
+        const { number } = await succeededAt(home);
+        github.replies.set(number, facts(number));
+
+        await observer.observeDue();
+
+        expect(github.reads).toEqual([]);
     });
 });

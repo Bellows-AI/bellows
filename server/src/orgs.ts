@@ -1,6 +1,7 @@
 import { readGrantStanding } from './db/forge-grant-standing.js';
 import type { Sql } from 'postgres';
 import { modelKeyRequired, type RepoRef } from '@factory-ai/core';
+import { isGithubRepo } from './forge/forges.js';
 import { orgSql } from './db/org-sql.js';
 import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
 import { createAttachmentRows } from './attachments/attachment-rows.js';
@@ -260,7 +261,12 @@ function buildOrgStores({
         githubApp: tokens !== undefined,
         deploymentMode: config.deploymentMode,
         planDefaults: config.planDefaults,
-        ...(client ? { revisionOf: (repo: RepoRef, branch: string) => client.readBranchHead(repo.path, branch) } : {}),
+        ...(client
+            ? {
+                  revisionOf: (repo: RepoRef, branch: string) =>
+                      isGithubRepo(repo) ? client.readBranchHead(repo.path, branch) : Promise.resolve(null),
+              }
+            : {}),
     });
     // The PR observer (063): reads the org's installation, records merges through the job store and
     // lets the gate judge them. Offline there is no client, so it only keeps rows and hints.

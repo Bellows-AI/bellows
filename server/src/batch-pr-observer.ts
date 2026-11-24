@@ -19,6 +19,7 @@ import {
     type ObservationResult,
     type RefreshHint,
 } from './db/batches/batch-store-observation.js';
+import { isGithubRepo } from './forge/forges.js';
 import { startIntervalLoop } from './interval-loop.js';
 import { GitHubReadError } from './github/pr-read.js';
 import { logger } from './log.js';
@@ -134,6 +135,15 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
                 kind: 'error',
                 error: READ_BINDING,
                 detail: `the PR is in ${formatRepoRef(claim.repo)}, the task targets ${formatRepoRef(claim.targetRepo)}`,
+                retryAfterMs: null,
+            };
+        }
+        // The reader answers for github.com only: any other identity is a binding error, with no request made.
+        if (!isGithubRepo(claim.repo)) {
+            return {
+                kind: 'error',
+                error: READ_BINDING,
+                detail: `${formatRepoRef(claim.repo)} is not a repository the GitHub reader answers for`,
                 retryAfterMs: null,
             };
         }
