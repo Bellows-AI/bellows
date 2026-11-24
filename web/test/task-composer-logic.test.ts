@@ -249,8 +249,8 @@ describe('the workflow choice is clamped to the choices the list offers', () => 
 });
 
 describe('repoReadiness — a tracked repository can run a task; readiness has no sync state', () => {
-    const web = { owner: 'acme', name: 'web' };
-    const api = { owner: 'acme', name: 'api' };
+    const web = { id: 'acme/web', path: 'acme/web' };
+    const api = { id: 'acme/api', path: 'acme/api' };
 
     it('is none when the tracked list is confirmed empty, whatever is chosen', () => {
         expect(repoReadiness('', [])).toBe('none');
@@ -318,7 +318,7 @@ describe('the parameter touched-state model', () => {
 });
 
 describe('the base branch in the draft and the create body', () => {
-    const lists = { repos: [{ owner: 'acme', name: 'web' }], executors: [], defaultExecutor: null };
+    const lists = { repos: [{ id: 'acme/web', path: 'acme/web' }], executors: [], defaultExecutor: null };
 
     it('starts on the repository default (empty) and a picked branch is not a fresh draft', () => {
         const fresh = initialComposerState(null, lists);
@@ -428,8 +428,8 @@ describe('the request counter (#280)', () => {
 
 describe('the composer draft — its fresh shape, a restore, and the dirty check (#280)', () => {
     const repos = [
-        { owner: 'acme', name: 'web' },
-        { owner: 'acme', name: 'api' },
+        { id: 'acme/web', path: 'acme/web' },
+        { id: 'acme/api', path: 'acme/api' },
     ];
     // The combined list as the page builds it from the poll (issue 391): personal first, org
     // after, each row carrying its scope.
@@ -508,7 +508,7 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
         storedParams: { workflowId: 'wf-1', values: { issue: '#12' } },
         paramTouched: {},
     };
-    const repos = [{ owner: 'acme', name: 'web' }];
+    const repos = [{ id: 'acme/web', path: 'acme/web' }];
     const executors: readonly (ExecutorChoice & { type: string })[] = [
         { name: 'main', type: 'claude-code', scope: 'user' },
     ];
@@ -574,7 +574,7 @@ describe('restoredDraftNotices — what changed while the member was away (#280)
     });
 
     it('names a deselected repository, and leaves the workflow to the reset it causes', () => {
-        const others = [{ owner: 'acme', name: 'api' }];
+        const others = [{ id: 'acme/api', path: 'acme/api' }];
         expect(
             restoredDraftNotices(restored, { repos: others, executors, workflows: [], defaultExecutor: null })
         ).toEqual(['Repository ‘acme/web’ is no longer selected — acme/api selected.']);

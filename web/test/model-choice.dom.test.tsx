@@ -25,7 +25,17 @@ const LAUNCHED_ID = '11111111-1111-4111-8111-111111111111';
 const SENT_ID = 'cccccccc-0000-4000-8000-000000000001';
 
 const repos = {
-    repos: [{ owner: 'acme', name: 'web', private: true, defaultBranch: 'main', pushedAt: null }],
+    repos: [
+        {
+            id: 'acme/web',
+            forge: 'github',
+            host: 'github.com',
+            path: 'acme/web',
+            private: true,
+            defaultBranch: 'main',
+            pushedAt: null,
+        },
+    ],
     installation: null,
     meta: { fetchedAt: CREATED, error: null },
 };
@@ -132,7 +142,7 @@ describe('the new-task Model control', () => {
 });
 
 describe('the draft carries the model', () => {
-    const lists = { repos: [{ owner: 'acme', name: 'web' }], executors: [], defaultExecutor: null };
+    const lists = { repos: [{ id: 'acme/web', path: 'acme/web' }], executors: [], defaultExecutor: null };
 
     it('starts at Default, sends a chosen model trimmed, and nothing for Default', () => {
         const fresh = initialComposerState(null, lists);

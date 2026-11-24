@@ -7,7 +7,15 @@ import type { InstallationRepo, UseRepos } from '../src/api/useRepos.js';
  * (possibly empty), or "not known" with the reason. A failed or errored read is never an empty list.
  */
 
-const web: InstallationRepo = { owner: 'acme', name: 'web', private: true, defaultBranch: 'main', pushedAt: null };
+const web: InstallationRepo = {
+    id: 'acme/web',
+    forge: 'github',
+    host: 'github.com',
+    path: 'acme/web',
+    private: true,
+    defaultBranch: 'main',
+    pushedAt: null,
+};
 
 const answered = (repos: InstallationRepo[], error: string | null): UseRepos['data'] => ({
     repos,
@@ -49,14 +57,14 @@ describe('trackedRepos', () => {
 
     it('keeps the last good list when the answer carries meta.error beside rows', () => {
         expect(trackedRepos(read({ data: answered([web], 'GitHub is unreachable') }))).toEqual({
-            repos: [{ owner: 'acme', name: 'web' }],
+            repos: [{ id: 'acme/web', forge: 'github', host: 'github.com', path: 'acme/web' }],
             error: null,
         });
     });
 
     it('keeps the list a later failed refresh leaves behind', () => {
         expect(trackedRepos(read({ data: answered([web], null), error: 'offline' }))).toEqual({
-            repos: [{ owner: 'acme', name: 'web' }],
+            repos: [{ id: 'acme/web', forge: 'github', host: 'github.com', path: 'acme/web' }],
             error: null,
         });
     });

@@ -51,7 +51,7 @@ async function readSkills(
         query.set('executorScope', executor.scope);
     }
     const suffix = query.size > 0 ? `?${query.toString()}` : '';
-    const result = await request<Partial<SkillsBody>>(`/api/repos/${repo}/skills${suffix}`, {
+    const result = await request<Partial<SkillsBody>>(`/api/repos/${encodeURIComponent(repo)}/skills${suffix}`, {
         signal,
         verb: 'Could not list skills',
         guard: (body): body is Partial<SkillsBody> => Array.isArray((body as Partial<SkillsBody> | null)?.skills),

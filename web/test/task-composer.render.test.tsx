@@ -126,8 +126,8 @@ describe('TaskComposer', () => {
         // executor select does for its own empty list.
         const html = renderComposer({
             repos: [
-                { owner: 'acme', name: 'web' },
-                { owner: 'acme', name: 'api' },
+                { id: 'acme/web', path: 'acme/web' },
+                { id: 'acme/api', path: 'acme/api' },
             ],
         });
         // The Listbox server-renders the trigger only — the options are client-side — so the
@@ -243,7 +243,7 @@ describe('TaskComposer — the prompt and the launch', () => {
 
     it('never emits a placeholder value', () => {
         const html = renderComposer({
-            repos: [{ owner: 'acme', name: 'web' }],
+            repos: [{ id: 'acme/web', path: 'acme/web' }],
             executors: [{ name: 'main', type: 'claude', scope: 'user' }],
             actionError: null,
         });
@@ -296,7 +296,7 @@ describe('TaskComposer — the prompt and the launch', () => {
 
     it('gathers repository, executor and workflow as one row of chips, with no section around them', () => {
         const html = renderComposer({
-            repos: [{ owner: 'acme', name: 'web' }],
+            repos: [{ id: 'acme/web', path: 'acme/web' }],
             executors: [{ name: 'main', type: 'claude', scope: 'user' }],
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
@@ -490,7 +490,7 @@ describe('the redesigned composer (#280)', () => {
             {
                 label: 'requires a selection when repositories are tracked but none is chosen',
                 input: {
-                    repos: [{ owner: 'acme', name: 'web' }],
+                    repos: [{ id: 'acme/web', path: 'acme/web' }],
                     restored: draft({ repo: '', repoTouched: true }),
                 },
                 disabled: true,
@@ -501,8 +501,8 @@ describe('the redesigned composer (#280)', () => {
                 label: 'lets any tracked repository launch: there is no sync state to wait on',
                 input: {
                     repos: [
-                        { owner: 'acme', name: 'web' },
-                        { owner: 'acme', name: 'api' },
+                        { id: 'acme/web', path: 'acme/web' },
+                        { id: 'acme/api', path: 'acme/api' },
                     ],
                     restored: draft({ repo: 'acme/api', workflowRepo: 'acme/api' }),
                 },
@@ -631,8 +631,8 @@ describe('the redesigned composer (#280)', () => {
     it('restores a held draft exactly: request, workflow, params and step overrides', () => {
         const html = renderComposer({
             repos: [
-                { owner: 'acme', name: 'web' },
-                { owner: 'acme', name: 'api' },
+                { id: 'acme/web', path: 'acme/web' },
+                { id: 'acme/api', path: 'acme/api' },
             ],
             executors: [
                 { name: 'main', type: 'claude-code', scope: 'user' },

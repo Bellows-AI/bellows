@@ -57,7 +57,7 @@ async function readPage(repo: string, query: string, cursor: string | null, sign
     if (query !== '') params.set('q', query);
     if (cursor !== null) params.set('cursor', cursor);
     const suffix = params.size > 0 ? `?${params.toString()}` : '';
-    const result = await request<Partial<BranchPage>>(`/api/repos/${repo}/branches${suffix}`, {
+    const result = await request<Partial<BranchPage>>(`/api/repos/${encodeURIComponent(repo)}/branches${suffix}`, {
         signal,
         verb: 'Could not list branches',
         guard: (body): body is Partial<BranchPage> => Array.isArray((body as Partial<BranchPage> | null)?.branches),

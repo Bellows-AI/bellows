@@ -32,8 +32,10 @@ const workspaceData = (over: Partial<WorkspacePayload> = {}): WorkspacePayload =
 });
 
 const repo = (name: string): InstallationRepo => ({
-    owner: 'acme',
-    name,
+    id: `acme/${name}`,
+    forge: 'github',
+    host: 'github.com',
+    path: `acme/${name}`,
     private: true,
     defaultBranch: 'main',
     pushedAt: null,

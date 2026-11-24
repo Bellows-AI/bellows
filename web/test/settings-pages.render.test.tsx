@@ -454,8 +454,10 @@ describe('Settings workflows page', () => {
 
 describe('Settings repositories page', () => {
     const tracked = (name: string, over: object = {}) => ({
-        owner: 'acme',
-        name,
+        id: `acme/${name}`,
+        forge: 'github',
+        host: 'github.com',
+        path: `acme/${name}`,
         private: false,
         defaultBranch: 'main',
         pushedAt: '2026-09-01T00:00:00.000Z',

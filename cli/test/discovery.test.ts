@@ -10,8 +10,8 @@ function harness(routes: Record<string, () => Response>) {
 
 const visible = (overrides: Record<string, unknown> = {}) => ({
     repos: [
-        { owner: 'acme', name: 'api', private: true, defaultBranch: 'main', pushedAt: null },
-        { owner: 'acme', name: 'web', private: false, defaultBranch: 'trunk', pushedAt: null },
+        { id: 'acme/api', forge: 'github', host: 'github.com', path: 'acme/api', private: true, defaultBranch: 'main', pushedAt: null },
+        { id: 'acme/web', forge: 'github', host: 'github.com', path: 'acme/web', private: false, defaultBranch: 'trunk', pushedAt: null },
     ],
     installation: { account: 'acme' },
     meta: { fetchedAt: '2026-10-01T00:00:00.000Z', error: null },
@@ -52,6 +52,21 @@ describe('bellows repo list', () => {
         expect(text).toContain('acme/api  private  main');
         expect(text).toContain('acme/web  public  trunk');
         for (const gone of ['visible', 'synced', 'workspace root']) expect(text).not.toContain(gone);
+    });
+
+    it('prints a non-GitHub repo by its id, the ref text', async () => {
+        const gitlab = {
+            id: 'gitlab:gl.example/g/sub/p',
+            forge: 'gitlab',
+            host: 'gl.example',
+            path: 'g/sub/p',
+            private: true,
+            defaultBranch: 'main',
+            pushedAt: null,
+        };
+        const { out, io } = harness({ '/api/repos': () => json(visible({ repos: [gitlab] })) });
+        expect(await run(['repo', 'list'], io)).toBe(0);
+        expect(out.join('')).toContain('gitlab:gl.example/g/sub/p  private  main');
     });
 
     it('says so for an empty list, and carries the board error with the last good list', async () => {

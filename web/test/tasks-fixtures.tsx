@@ -154,7 +154,7 @@ export interface ComposerArgs {
 }
 
 export const renderComposer = ({
-    repos = [{ owner: 'acme', name: 'web' }],
+    repos = [{ id: 'acme/web', path: 'acme/web' }],
     reposError = null,
     workspaceLoaded = true,
     workspaceError = null,

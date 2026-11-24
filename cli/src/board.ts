@@ -403,7 +403,7 @@ export type AuthMe =
 
 /** The tracked-repository read: the repositories the board runs tasks against. */
 export interface VisibleRepos {
-    repos: { owner: string; name: string; private: boolean; defaultBranch: string | null; pushedAt: string | null }[];
+    repos: { id: string; private: boolean; defaultBranch: string | null; pushedAt: string | null }[];
     installation: unknown;
     meta: { fetchedAt: string | null; error: string | null };
 }
