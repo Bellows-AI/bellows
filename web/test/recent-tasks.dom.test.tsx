@@ -26,6 +26,8 @@ const job = (over: Partial<Job> = {}): Job => ({
     author: { id: 'u-alice', login: 'alice', name: 'Alice Doe', avatarUrl: 'https://example.com/alice.png' },
     stoppedBy: null,
     doneBy: null,
+    archivedAt: null,
+    archivedBy: null,
     sessionId: null,
     exitCode: 0,
     output: null,

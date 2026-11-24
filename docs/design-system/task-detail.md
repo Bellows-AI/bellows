@@ -5,7 +5,7 @@ The task page. `web/src/styles/regions/task-detail.css`; shared system:
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Page frame, grid, panel order, remove dialog | `web/src/pages/TaskDetailPage.tsx`, `web/src/panels/TaskDetail.tsx`, `web/src/components/TaskRemoveDialog.tsx` | `web/test/task-detail.render.test.tsx`, `web/test/task-detail.dom.test.tsx`, `e2e/task-detail.spec.ts` |
+| Page frame, grid, panel order, archive dialog | `web/src/pages/TaskDetailPage.tsx`, `web/src/panels/TaskDetail.tsx`, `web/src/components/TaskArchiveDialog.tsx` | `web/test/task-detail.render.test.tsx`, `web/test/task-detail.dom.test.tsx`, `e2e/task-detail.spec.ts` |
 | Deletion date under a finished task's header, from the newest finish and the org's retention window; nothing while a run is going, for an unlimited window or a failed read | `web/src/components/TaskDeletionNote.tsx`, `web/src/api/retention.ts` | `web/test/retention.render.test.tsx` |
 | Head (title, `#id · Opened`) and the rail's controls tile (wall clock, state pill, small actions, More menu with Rename); the title is clamped to two lines (`task-heading`, `web/src/styles/primitives.css`) and renamed by its author or an admin | `web/src/panels/TaskHeader.tsx`, `web/src/components/TaskRenameDialog.tsx`, `web/src/task-title.ts` | `web/test/task-header.render.test.tsx`, `web/test/task-rename.dom.test.tsx` |
 | Collapsible rail tiles; Outcome (published work only), Verification, and one run's exchange, output, close-phase progress strip | `web/src/panels/TaskSection.tsx`, `web/src/panels/TaskOutcome.tsx`, `web/src/panels/TaskRun.tsx` | `web/test/task-outcome.render.test.tsx`, `web/test/task-run.render.test.tsx`, `e2e/task-detail.spec.ts` |

@@ -1,6 +1,6 @@
 ---
 name: task-control
-description: Drive a Factory task through its whole lifecycle from a local session — discover repos, executors and workflows, start a task, wait for it to settle, follow up, stop it, mark it done, remove it. Use when the user says "start a task", "run this on the board", "queue it on Factory", "wait for the task", "follow up on task X", "stop task X", "mark it done", or "remove the task". The read-only investigate-task skill stays the analysis half; this one is the half that writes.
+description: Drive a Factory task through its whole lifecycle from a local session — discover repos, executors and workflows, start a task, wait for it to settle, follow up, stop it, mark it done, archive it. Use when the user says "start a task", "run this on the board", "queue it on Factory", "wait for the task", "follow up on task X", "stop task X", "mark it done", or "archive the task". The read-only investigate-task skill stays the analysis half; this one is the half that writes.
 ---
 
 # Drive a task from a local session
@@ -130,16 +130,17 @@ parent.
 Refusals: `409 NOT_FINISHED` (the turn is still going — wait, or stop it), `409 TASK_DONE` (the
 thread was closed; start a new task), `403 FORBIDDEN` (a follow-up is the author's).
 
-## 6. Stop, done, remove
+## 6. Stop, done, archive
 
-These three change or destroy someone's work. **Confirm each one with the user first, quoting the
+These three change someone's work. **Confirm each one with the user first, quoting the
 task's command and id back to them**, and never chain them off your own inference that a task
 "looks stuck".
 
 ```bash
 npm run dev -w cli -- job stop <id>          # POST /api/jobs/<id>/stop
 npm run dev -w cli -- job done <id>          # POST /api/jobs/<id>/done
-npm run dev -w cli -- job remove <id> --yes  # POST /api/jobs/<id>/remove
+npm run dev -w cli -- job archive <id>       # POST /api/jobs/<id>/archive
+npm run dev -w cli -- job unarchive <id>     # POST /api/jobs/<id>/unarchive
 ```
 
 **Stop** ends the current turn, keeping the thread and the session, so a follow-up is still the
@@ -161,10 +162,12 @@ stage until the batch is cancelled) and leaves its PR open, naming it. `200 { id
 doneAt }`, or `202` with `doneAt: null` while the stopped run settles. Prefer the batch-control
 skill's actions; force only on the user's explicit word.
 
-**Remove** deletes the whole thread — every run, every output, the audit rows — and queues the
-worktree for reclaim. It **cannot be undone**, which is why the CLI demands `--yes` on top of
-the user's confirmation. `200 { id, removed: true }`. `409 TASK_RUNNING` means a turn is live:
-stop it first, wait for the settle, then remove.
+**Archive** takes the task off the active list and deletes nothing: the thread, runs, logs, PR
+links and attachments stay readable (`npm run dev -w cli -- task list --state archived`). A running
+task is **stopped first**, so it has the cost of a stop, which is why it needs the user's
+confirmation too. `200 { id, archived: true }`, idempotent; an archived task takes no follow-up or
+retry (`409 TASK_ARCHIVED`) until `job unarchive` (`200 { id, archived: false }`,
+`409 TASK_NOT_ARCHIVED` when it was not archived). There is no way to delete a task.
 
 ## Reporting back
 

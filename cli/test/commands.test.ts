@@ -573,16 +573,31 @@ describe('bellows job done', () => {
     });
 });
 
-describe('bellows job remove', () => {
-    it('deletes the thread once --yes is given', async () => {
-        const { out, calls, io } = harness(ENV, () => json({ id: 'job-1', removed: true }));
+describe('bellows job archive and unarchive', () => {
+    it('archives the thread, with nothing to confirm: unarchive brings it back', async () => {
+        const { out, calls, io } = harness(ENV, () => json({ id: 'job-1', archived: true }));
 
-        const code = await run(['job', 'remove', 'job-1', '--yes'], io);
+        const code = await run(['job', 'archive', 'job-1'], io);
 
         expect(code).toBe(0);
-        expect(out.join('')).toContain('removed');
-        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/remove');
+        expect(out.join('')).toBe('archived job-1\n');
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/archive');
         expect(calls[0]!.method).toBe('POST');
+    });
+
+    it('unarchives the thread', async () => {
+        const { out, calls, io } = harness(ENV, () => json({ id: 'job-1', archived: false }));
+
+        const code = await run(['job', 'unarchive', 'job-1'], io);
+
+        expect(code).toBe(0);
+        expect(out.join('')).toBe('unarchived job-1\n');
+        expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/unarchive');
+    });
+
+    it('is gone: there is no job remove', async () => {
+        const { io } = harness(ENV, () => json({}));
+        expect(await run(['job', 'remove', 'job-1', '--yes'], io)).toBe(2);
     });
 });
 
@@ -655,16 +670,6 @@ describe('--json on every outcome', () => {
             stderr: 'usage:',
         },
         {
-            // Remove deletes the whole thread and cannot be undone, so the irreversible step is the
-            // one the command line has to say out loud.
-            label: 'a remove without --yes',
-            argv: ['job', 'remove', 'job-1'],
-            respond: refusal,
-            outcome: 'usage',
-            exitCode: 2,
-            stderr: '--yes',
-        },
-        {
             label: 'a bad wait timeout',
             argv: ['job', 'wait', 'job-1', '--timeout', 'soon'],
             respond: refusal,
@@ -731,7 +736,8 @@ describe('--json on every outcome', () => {
         ['retry', ['job', 'retry', 'job-1', '--json'], { id: 'job-3', status: 'queued' }],
         ['stop', ['job', 'stop', 'job-1', '--json'], { id: 'job-1', status: 'stopped' }],
         ['done', ['job', 'done', 'job-1', '--json'], { id: 'job-1', status: 'succeeded', doneAt: null }],
-        ['remove', ['job', 'remove', 'job-1', '--yes', '--json'], { id: 'job-1', removed: true }],
+        ['archive', ['job', 'archive', 'job-1', '--json'], { id: 'job-1', archived: true }],
+        ['unarchive', ['job', 'unarchive', 'job-1', '--json'], { id: 'job-1', archived: false }],
     ])('prints the %s payload inside the envelope', async (name, argv, payload) => {
         const { out, err, io } = harness(ENV, () => json(payload));
 

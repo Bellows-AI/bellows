@@ -143,7 +143,7 @@ const storeOf = (board: Board) =>
             const last = items.at(-1);
             const more = from + items.length < all.length;
             return {
-                navigation: { counts: { running: 1, review: 2, past: 3 }, running: [], review: [] },
+                navigation: { counts: { running: 1, review: 2, past: 3, archived: 4 }, running: [], review: [] },
                 page: {
                     items,
                     nextCursor:
@@ -288,7 +288,7 @@ describe('list_tasks', () => {
         const { data } = await call(url, 'alice', 'list_tasks', { limit: 50 });
         expect(data.tasks.map((t: { state: string }) => t.state)).toEqual(['running', 'needs_attention']);
         expect(data.tasks[0]).toMatchObject({ id: JOB_A, headRunId: JOB_A, repo: 'acme/web', author: 'alice' });
-        expect(data.counts).toEqual({ running: 1, review: 2, past: 3 });
+        expect(data.counts).toEqual({ running: 1, review: 2, past: 3, archived: 4 });
         const bob = await call(url, 'bob', 'list_tasks');
         expect(bob.data.tasks.map((t: { id: string }) => t.id)).toEqual([JOB_B]);
     });

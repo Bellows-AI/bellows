@@ -3,7 +3,7 @@ import type { GateResult } from '@factory-ai/core';
 import { isTerminal, type GateCheck, type Job } from '../api/useJobs.js';
 import type { AnswerOutcome } from '../api/answer-question.js';
 import { Icon } from '../components/Icon.js';
-import { elapsedSeconds } from '../format.js';
+import { clockText, elapsedSeconds, gateRanMs } from '../format.js';
 import { FAILURE_KIND_LABEL, GATE_PILL, gateCounts, gateStatusLabel, inClosePhase } from '../task-outcome.js';
 import type { FollowUpViewer } from '../task-outcome.js';
 import { AttachmentHistory } from './AttachmentList.js';
@@ -405,6 +405,55 @@ function GateResultView({ result }: { result: GateResult | undefined }) {
     );
 }
 
+/** The seconds a gate ran, or counts: a running gate from the driver's stamp (the 2 s thread poll is the ticker), a settled one from its two stamps. */
+function gateDuration(gate: GateCheck, running: boolean): string | null {
+    if (running) return elapsedSeconds(gate.startedAt);
+    const ranMs = gateRanMs(gate);
+    return ranMs === null ? null : clockText(Math.round(ranMs / MS_PER_SECOND));
+}
+
+/** A failed gate that ran as long as the deadline it ran under was stopped by it. */
+const gateTimedOut = (gate: GateCheck): boolean => {
+    const ranMs = gateRanMs(gate);
+    return gate.status === 'failed' && ranMs !== null && gate.timeoutMs !== undefined && ranMs >= gate.timeoutMs;
+};
+
+function GateRow({ gate, terminal }: { gate: GateCheck; terminal: boolean }) {
+    const running = !terminal && gate.status === 'running';
+    const elapsed = gateDuration(gate, running);
+    return (
+        <li>
+            <details open={gate.status === 'failed'}>
+                <summary>
+                    <span>{gate.name}</span>
+                    {elapsed !== null ? (
+                        <span className="chat-activity" data-gate-duration={gate.name}>
+                            {elapsed}
+                        </span>
+                    ) : null}
+                    {gateTimedOut(gate) ? (
+                        <span className="chat-exit">
+                            timed out at {clockText(Math.round(gate.timeoutMs! / MS_PER_SECOND))}
+                        </span>
+                    ) : null}
+                    <span className={GATE_PILL[gate.status]}>
+                        {running ? <span className="run-spinner" aria-hidden="true" /> : null}
+                        {gateStatusLabel(gate.status, terminal)}
+                    </span>
+                    {gate.exitCode !== null ? <span className="chat-exit">exit {gate.exitCode}</span> : null}
+                </summary>
+                <GateResultView result={gate.result} />
+                {gate.output !== null ? (
+                    <div className="gate-output-wrap">
+                        <CopyButton text={gate.output} label={`Copy output of ${gate.name}`} />
+                        <OutputWell text={gate.output} label={`Output of ${gate.name}`} gate />
+                    </div>
+                ) : null}
+            </details>
+        </li>
+    );
+}
+
 /**
  * The task's verification: the newest run's gates, as the board last reported them — there is no
  * history and no per-test tree, because the board stores neither. Each gate is a native
@@ -415,6 +464,7 @@ function GateResultView({ result }: { result: GateResult | undefined }) {
 export function Verification({ gates, terminal }: { gates: GateCheck[]; terminal: boolean }) {
     const counts = gateCounts(gates);
     const walking = !terminal && counts.running + counts.pending > 0;
+    const totalMs = gates.reduce((sum, gate) => sum + (gateRanMs(gate) ?? 0), 0);
     return (
         <TaskSection
             title="Verification"
@@ -422,37 +472,15 @@ export function Verification({ gates, terminal }: { gates: GateCheck[]; terminal
             defaultOpen={counts.failed > 0 || walking}
             aside={<GateCountPills gates={gates} terminal={terminal} />}
         >
+            {totalMs > 0 ? (
+                <p className="chat-activity" data-gate-total="">
+                    Total gate time {clockText(Math.round(totalMs / MS_PER_SECOND))}
+                </p>
+            ) : null}
             <ul className="chat-gate-list">
-                {gates.map((gate) => {
-                    // The running gate counts its seconds from the driver's stamp; the 2 s thread
-                    // poll is the ticker.
-                    const running = !terminal && gate.status === 'running';
-                    const elapsed = running ? elapsedSeconds(gate.startedAt) : null;
-                    return (
-                        <li key={gate.name}>
-                            <details open={gate.status === 'failed'}>
-                                <summary>
-                                    <span>{gate.name}</span>
-                                    {elapsed !== null ? <span className="chat-activity">{elapsed}</span> : null}
-                                    <span className={GATE_PILL[gate.status]}>
-                                        {running ? <span className="run-spinner" aria-hidden="true" /> : null}
-                                        {gateStatusLabel(gate.status, terminal)}
-                                    </span>
-                                    {gate.exitCode !== null ? (
-                                        <span className="chat-exit">exit {gate.exitCode}</span>
-                                    ) : null}
-                                </summary>
-                                <GateResultView result={gate.result} />
-                                {gate.output !== null ? (
-                                    <div className="gate-output-wrap">
-                                        <CopyButton text={gate.output} label={`Copy output of ${gate.name}`} />
-                                        <OutputWell text={gate.output} label={`Output of ${gate.name}`} gate />
-                                    </div>
-                                ) : null}
-                            </details>
-                        </li>
-                    );
-                })}
+                {gates.map((gate) => (
+                    <GateRow key={gate.name} gate={gate} terminal={terminal} />
+                ))}
             </ul>
         </TaskSection>
     );

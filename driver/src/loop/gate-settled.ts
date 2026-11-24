@@ -1,8 +1,9 @@
 import type { DeclaredGate } from '../board/board.js';
-import { failureExcerpt } from '../gate-excerpt.js';
-import type { GateRun } from '../gate-manager.js';
-import { compactResult } from '../gate-result.js';
 import { SETUP_FAILED_PREFIX } from '../gate-cause.js';
+import { failureExcerpt } from '../gate-excerpt.js';
+import { gateDeadlineMs, type GateRun } from '../gate-manager.js';
+import { compactResult } from '../gate-result.js';
+import { declaredTimeoutMs } from '../gates.js';
 import { tailBytes } from '../runner.js';
 import type { GateReport } from './loop-gates.js';
 
@@ -22,7 +23,7 @@ export interface OutputBudgets {
  * The report must fit the board's 128 KiB body however many gates declared and however verbose they
  * were — JSON escaping can inflate bytes six-fold — so the raw budget is split by verdict: a passed
  * gate keeps a short tail, and the failed ones share what the rest leave. The gates that can fail
- * together are those of one parallel segment (a serial walk stops at the first failure); the
+ * together (`together`) are those of one parallel segment (a serial walk stops at the first failure); the
  * floor keeps 16 gates at 1 KiB each at the least.
  */
 export function outputBudgets(declared: number, together: number): OutputBudgets {
@@ -36,11 +37,25 @@ export function outputBudgets(declared: number, together: number): OutputBudgets
     };
 }
 
+/**
+ * When a gate ran, as its report entry tells the board. `startedAt` is on the `running` entry and kept
+ * on the settled one; `finishedAt` and `timeoutMs` (the deadline it ran under, so a gate that ended at it
+ * timed out) only on a settled entry that ran. A skipped or reused gate carries none.
+ */
+export type GateTiming = { startedAt?: string; finishedAt?: string; timeoutMs?: number };
+
+/** What a gate's settled entry measures against: its own `running` entry's start, and the driver's deadlines. */
+interface SettledContext {
+    running: GateTiming;
+    config: { jobTimeoutMs: number; gateTimeoutMs: number };
+}
+
 /** A finished gate's report entry, and the text a failure carries to the board. */
 export function settledGate(
     gate: DeclaredGate,
     outcome: GateRun,
-    budgets: OutputBudgets
+    budgets: OutputBudgets,
+    { running, config }: SettledContext
 ): { entry: GateReport; text: string } {
     // A failed setup is not this gate's verdict: the output names it so the board's `gates`
     // and the job's `output` tell the two apart.
@@ -56,6 +71,9 @@ export function settledGate(
             // so these lines are cut again to this gate's share, never taken from the capped log stream.
             output: failed ? failureExcerpt(text, budgets.failed) : tailBytes(text, budgets.passed),
             ...(outcome.result ? { result: compactResult(outcome.result) } : {}),
+            ...(running.startedAt === undefined ? {} : { startedAt: running.startedAt }),
+            finishedAt: new Date().toISOString(),
+            timeoutMs: gateDeadlineMs(config, config.gateTimeoutMs, declaredTimeoutMs(gate)),
         },
         text,
     };

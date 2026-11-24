@@ -157,29 +157,30 @@ function PrimaryControl({
 
 /**
  * The **More task actions** overflow: Mark done while the primary is Ask for another pass, Rename
- * task for its author or an admin, and Remove task while no member of the thread is running (the
- * board's 409 TASK_RUNNING stays the authority on any race the UI cannot see). Remove is the
- * destructive voice and lives nowhere else. Null when it would hold nothing.
+ * task for its author or an admin, and Archive task (Unarchive task once archived). Archive stops a
+ * running task first, so the page asks before it; Unarchive undoes it and asks nothing. Never null: every
+ * task can be archived or unarchived.
  */
 function MoreMenu({
     markDone,
     marking,
-    removeAvailable,
+    archived,
     onDone,
-    onRemoveRequest,
+    onArchiveRequest,
+    onUnarchive,
     onRenameRequest,
 }: {
     markDone: boolean;
     marking: boolean;
-    removeAvailable: boolean;
+    archived: boolean;
     onDone: () => void;
-    onRemoveRequest: () => void;
+    onArchiveRequest: () => void;
+    onUnarchive: () => void;
     onRenameRequest: (() => void) | null;
 }) {
     // Downward-only (issue 224): Headless UI's `anchor` prop always adds a `flip` middleware
     // with no way to disable it, so it is bypassed in favor of `useDownwardAnchor`.
     const { setReference, setFloating, floatingStyles } = useDownwardAnchor('end');
-    if (!markDone && !removeAvailable && onRenameRequest === null) return null;
     return (
         <Menu>
             <MenuButton ref={setReference} className="chat-resume" aria-label="More task actions">
@@ -187,7 +188,7 @@ function MoreMenu({
                 <Icon name="chevron-down" size={14} />
             </MenuButton>
             {/* Focus lands back on this trigger — the menu restores it on close, and the dialogs
-            Rename and Remove open restore it to the element focused before they captured the caret. */}
+            Rename and Archive open restore it to the element focused before they captured the caret. */}
             <MenuItems ref={setFloating} style={floatingStyles} portal className="popover">
                 {markDone ? (
                     <MenuItem>
@@ -203,13 +204,17 @@ function MoreMenu({
                         </button>
                     </MenuItem>
                 ) : null}
-                {removeAvailable ? (
-                    <MenuItem>
-                        <button type="button" className="popover-option chat-remove" onClick={onRemoveRequest}>
-                            Remove task
+                <MenuItem>
+                    {archived ? (
+                        <button type="button" className="popover-option" onClick={onUnarchive}>
+                            Unarchive task
                         </button>
-                    </MenuItem>
-                ) : null}
+                    ) : (
+                        <button type="button" className="popover-option chat-remove" onClick={onArchiveRequest}>
+                            Archive task
+                        </button>
+                    )}
+                </MenuItem>
             </MenuItems>
         </Menu>
     );
@@ -259,7 +264,7 @@ export function TaskHeader({
  * The right column's first tile: the task's wall clock, its state pill (the page's one live
  * region), the live summary, a review wait in words, and one small primary action plus the
  * overflow. The pill is `taskStatusLabel` / `taskTone` of the newest run — the one precedence the
- * inbox and sidebar share. The actions follow `primaryAction`; Stop, Mark done and Remove carry no
+ * inbox and sidebar share. The actions follow `primaryAction`; Stop, Mark done and Archive carry no
  * author restriction — only a follow-up does (`followUpEligibility`), because only the board's
  * follow-up route checks the author. Prop-driven: the mutations and dialogs live in the page.
  */
@@ -270,7 +275,8 @@ export function TaskControls({
     doneId,
     onStop,
     onDone,
-    onRemoveRequest,
+    onArchiveRequest,
+    onUnarchive,
     onRenameRequest,
 }: {
     /** The task's whole chain, oldest first; non-empty. */
@@ -282,8 +288,10 @@ export function TaskControls({
     doneId: string | null;
     onStop: (id: string) => Promise<void>;
     onDone: (id: string) => Promise<void>;
-    /** Opens the page's remove confirmation — the menu item never mutates by itself. */
-    onRemoveRequest: () => void;
+    /** Opens the page's archive confirmation — the menu item never mutates by itself. */
+    onArchiveRequest: () => void;
+    /** Unarchives at once: it undoes the archive and stops nothing, so it asks nothing. */
+    onUnarchive: () => void;
     /** Opens the page's rename dialog; offered only to the task's author or an admin. */
     onRenameRequest: () => void;
 }) {
@@ -291,9 +299,8 @@ export function TaskControls({
     const latestTask = jobs[jobs.length - 1]!;
     const rootTask = jobs[0]!;
     const primary = primaryAction(latestTask, stoppingId, followUpEligibility(latestTask, viewer));
-    // Remove is hidden while any member is running — not merely the newest. Queued members do
-    // not block it; nothing on the board is executing them.
-    const removeAvailable = !jobs.some((task) => task.status === 'running');
+    // The stamp rides every member; the root answers it.
+    const archived = rootTask.archivedAt !== null;
     // The task's live summary — the newest run's activity line, while there is one.
     const summary = taskSummary(latestTask.id, jobs);
     const verificationFailed = gateCounts(latestTask.gates).failed > 0;
@@ -328,6 +335,13 @@ export function TaskControls({
                     <RelativeTime at={latestTask.waitingSince} />.
                 </p>
             ) : null}
+            {archived ? (
+                <p className="muted task-wait">
+                    Archived <RelativeTime at={rootTask.archivedAt} />
+                    {rootTask.archivedBy !== null ? ` by ${rootTask.archivedBy.login}` : ''}. Unarchive it to follow it
+                    up or retry it.
+                </p>
+            ) : null}
             {!waiting && latestTask.waitTerminalReason !== null ? (
                 <p className="muted task-wait">Review wait ended: {latestTask.waitTerminalReason}.</p>
             ) : null}
@@ -342,9 +356,10 @@ export function TaskControls({
                 <MoreMenu
                     markDone={primary === 'ask'}
                     marking={marking}
-                    removeAvailable={removeAvailable}
+                    archived={archived}
                     onDone={() => void onDone(latestTask.id)}
-                    onRemoveRequest={onRemoveRequest}
+                    onArchiveRequest={onArchiveRequest}
+                    onUnarchive={onUnarchive}
                     onRenameRequest={canRename ? onRenameRequest : null}
                 />
             </div>

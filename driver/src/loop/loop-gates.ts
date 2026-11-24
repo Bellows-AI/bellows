@@ -3,10 +3,10 @@ import type { BoardJob, DeclaredGate } from '../board/board.js';
 import type { GateRunRecord, GateRunSource } from '../board/board-gate-runs.js';
 import { envFileBody, setupTimeoutMs } from '../claim.js';
 import { tailBytes, type DeadService } from '../runner.js';
-import { outputBudgets, settledGate, type OutputBudgets } from './gate-report-output.js';
 import { stepLost } from '../step-control.js';
 import type { GateRun } from '../gate-manager.js';
 import { declaredTimeoutMs, type GateLedger } from '../gates.js';
+import { type GateTiming, outputBudgets, settledGate, type OutputBudgets } from './gate-settled.js';
 import type { GateResult } from '../gate-result.js';
 import { gateIdentity, orgKeyOf } from '../gate-identity.js';
 import { recordGateRun, type GateEnd } from '../gate-record.js';
@@ -65,15 +65,13 @@ export type GateReport = {
     status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
     exitCode: number | null;
     output: string | null;
-    /** When a `running` entry started (ISO); the settled entry carries none. */
-    startedAt?: string;
     /** The recorded execution this entry is; absent for a gate no record covers. */
     executionId?: string;
     /** What the gate recorded beside its output: failed tests, selection, slowest files, resources; compacted for the board. */
     result?: GateResult;
     /** Set when the gate was not launched: it is served from an earlier verified pass. */
     reused?: { executionId: string; finishedAt: string | null; reason: string };
-};
+} & GateTiming;
 
 /**
  * Puts the gate server's registration key onto `job.gateEnv`, once. It is the driver's own handle on
@@ -551,7 +549,7 @@ async function executeGate(
     // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
     // and a cancelled gate is never reported failed — a verdict must not read it.
     if (!outcome || down(state)) return null;
-    const { entry, text } = settledGate(gate, outcome, budgets);
+    const { entry, text } = settledGate(gate, outcome, budgets, { running: results[index]!, config: w.rt.config });
     // Replace the gate's own entry — one entry per declared gate, always, so the list the
     // board stores IS the declared list at its current state.
     results[index] = { ...entry, executionId: raced!.value!.executionId };

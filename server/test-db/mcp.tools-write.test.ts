@@ -189,7 +189,8 @@ const WRITE_TOOLS: readonly (readonly [string, (id: string) => Record<string, un
     ['mark_task_done', (id) => ({ jobId: id })],
     ['force_close_task', (id) => ({ jobId: id, confirm: true })],
     ['reopen_task', (id) => ({ jobId: id })],
-    ['remove_task', (id) => ({ jobId: id, confirm: true })],
+    ['archive_task', (id) => ({ jobId: id, confirm: true })],
+    ['unarchive_task', (id) => ({ jobId: id })],
 ];
 
 describe.skipIf(!enabled)('the task write tools — database', () => {
@@ -266,7 +267,7 @@ describe.skipIf(!enabled)('the task write tools — database', () => {
         expect(retried.data.id).not.toBe(failing);
     });
 
-    it('stops a queued task and removes a stopped one, only with confirm:true', async () => {
+    it('stops a queued task, and archives and unarchives one without losing it; archive needs confirm:true', async () => {
         const { url } = await boot();
         const queued = await created(url, 'alice');
         const unconfirmed = await call(url, 'alice', 'stop_task', { jobId: queued });
@@ -277,21 +278,31 @@ describe.skipIf(!enabled)('the task write tools — database', () => {
         const again = await call(url, 'alice', 'stop_task', { jobId: queued, confirm: true });
         expect(again.data).toMatchObject({ outcome: 'refused', code: 'NOT_STOPPABLE', status: 409 });
 
-        const running = await created(url, 'alice');
-        await claimed(running);
-        const busy = await call(url, 'alice', 'remove_task', { jobId: running, confirm: true });
-        expect(busy.data).toMatchObject({ outcome: 'refused', code: 'TASK_RUNNING', status: 409 });
-
         for (const args of [{ jobId: queued }, { jobId: queued, confirm: false }]) {
-            const refused = await call(url, 'alice', 'remove_task', args);
+            const refused = await call(url, 'alice', 'archive_task', args);
             expect(refused.data).toMatchObject({ outcome: 'refused', code: 'confirmation_required' });
         }
-        expect(await commandOf(queued)).toBeDefined();
-        expect((await call(url, 'alice', 'remove_task', { jobId: queued, confirm: true })).data).toEqual({
+        const archivedAt = async () => (await sql`select archived_at from job where id = ${queued}`)[0]?.archived_at;
+        expect(await archivedAt()).toBeNull();
+        expect((await call(url, 'alice', 'archive_task', { jobId: queued, confirm: true })).data).toEqual({
             id: queued,
-            removed: true,
+            archived: true,
         });
-        expect(await commandOf(queued)).toBeUndefined();
+        expect(await archivedAt()).not.toBeNull();
+        // The task is kept, only off the active list: listed under archived, refused a follow-up.
+        expect(await commandOf(queued)).toBeDefined();
+        const listed = await call(url, 'alice', 'list_tasks', { state: 'archived' });
+        expect(JSON.stringify(listed.data)).toContain(queued);
+        const followUp = await call(url, 'alice', 'follow_up_task', { jobId: queued, command: 'more' });
+        expect(followUp.data).toMatchObject({ outcome: 'refused', code: 'TASK_ARCHIVED', status: 409 });
+
+        expect((await call(url, 'alice', 'unarchive_task', { jobId: queued })).data).toEqual({
+            id: queued,
+            archived: false,
+        });
+        expect(await archivedAt()).toBeNull();
+        const second = await call(url, 'alice', 'unarchive_task', { jobId: queued });
+        expect(second.data).toMatchObject({ outcome: 'refused', code: 'TASK_NOT_ARCHIVED', status: 409 });
     });
 
     it('replays a keyed write as the same task, and refuses a different request under the same key', async () => {

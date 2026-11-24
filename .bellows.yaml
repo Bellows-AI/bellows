@@ -4,19 +4,20 @@ environment:
     image: ghcr.io/bellows-ai/dev-runner:v0.0.17
     setup: "npm ci && sh scripts/gate-jq.sh"
     gates:
-         # The budgets, in minutes, each capped by the driver's DRIVER_JOB_TIMEOUT_MS.
-         # npm test outran the 10-minute default in a microVM runner.
-         # test and test:db run only the suites the change since origin/$BELLOWS_BASE_BRANCH reaches
-         # (scripts/gate-test-changed.sh); a shared file still runs everything in the test gate.
+         # lint and typecheck run at the finish, one after another. The test suites are on demand: the
+         # agent runs the ones its change needs while it works, and CI signs off.
          # CI's npm test and npm run test:db stay the merge gate.
-         # The gates run one after another. Run side by side in one microVM they shared one gate
-         # container and its I/O, and every one of them hit its deadline. build:core builds
-         # core into core/dist once, first, so each later gate's build is an up-to-date no-op.
-         - name: "build:core"
-           command: "npm run build -w core"
+         # An on_demand gate runs only ad hoc, which waits at most 10 minutes, so each declares 10.
+         # test and test:db run only the suites the change since origin/$BELLOWS_BASE_BRANCH reaches
+         # (scripts/gate-test-changed.sh). Each test gate builds core itself (the script, pretest:db,
+         # pretest:executors), and typecheck's tsc -b does too.
+         # test and test:executors run three forks (TEST_FORKS, vitest.forks.ts), not six: six forks
+         # reporting to one vitest process in a microVM starved it, and the workers' RPC timed out
+         # ("Timeout calling onTaskUpdate") with every test passed.
          - name: test
-           command: "sh scripts/gate-test-changed.sh"
-           timeout: 30
+           command: "TEST_FORKS=3 sh scripts/gate-test-changed.sh"
+           timeout: 10
+           on_demand: true
          - name: lint
            command: "npm run lint"
          - name: typecheck
@@ -26,11 +27,13 @@ environment:
            # The service is throwaway: durability off, and twice the default workers, since in a microVM
            # the suite waits on round trips and WAL syncs, not CPU.
            command: "sh scripts/gate-pg-fast.sh postgres://factory:factory@postgres:5432/postgres && TEST_DB_WORKERS=8 DATABASE_URL=postgres://factory:factory@postgres:5432/factory_test sh scripts/gate-test-changed.sh --db"
-           timeout: 30
+           timeout: 10
+           on_demand: true
          # The in-process driver, supervisor and job-route suites, whatever the change touched: no daemon.
          - name: "test:executors"
-           command: "npm run test:executors"
-           timeout: 15
+           command: "TEST_FORKS=3 npm run test:executors"
+           timeout: 10
+           on_demand: true
          # verify:ui in a real chromium against the declared postgres (scripts/gate-ui.sh): the agent's
          # image has no browser libraries. On demand, filtered to the specs a change touches, and at
          # most 10 minutes so the agent may run it while it works. CI's verify:ui stays the full check.

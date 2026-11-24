@@ -29,7 +29,7 @@ Use these to find valid values before you create a task.
 
 | Tool | What it does | Key inputs |
 | --- | --- | --- |
-| `list_tasks` | Lists tasks like the inbox. Sections: `attention` (default), `running`, `review`, `past` | `state`, `q`, `author`, `repo`, `sort`, `limit` (1-50), `cursor` |
+| `list_tasks` | Lists tasks like the inbox. Sections: `attention` (default), `running`, `review`, `past`, `archived` | `state`, `q`, `author`, `repo`, `sort`, `limit` (1-50), `cursor` |
 | `get_task` | Reads one task: head run status, repo, branches, pull request, open questions, every run, attachment metadata | `taskId` |
 | `get_task_result` | The verified outcome of the head run: state, summary, pull request, gate `checks`, what you must answer, and failure cause | `taskId` |
 | `list_jobs` | Lists runs, newest first. Use `list_tasks` to page through tasks | `status`, `repo`, `limit` (1-200) |
@@ -62,11 +62,12 @@ All of these act as you. Tools that create runs accept an `idempotencyKey` (8-12
 | `mark_task_done` | Marks a finished task done. Refused while it runs | `jobId` |
 | `reopen_task` | Clears the done mark so the task takes a follow-up again | `jobId` |
 | `force_close_task` | Forces a task closed, leaving its pull request open. Destructive | `jobId`, `confirm` |
-| `remove_task` | Deletes a task and its thread. Cannot be undone. Refused while running. Destructive | `jobId`, `confirm` |
+| `archive_task` | Archives a task: it leaves the active list and stays readable. A queued or running task is stopped first. Refused for a batch task. Destructive | `jobId`, `confirm` |
+| `unarchive_task` | Brings an archived task back to the active list. Refused if it is not archived | `jobId` |
 | `create_attachment_upload` | Returns a single-use upload link for one file; call again with `uploadId` to check its state | none, or `uploadId`, `maxBytes`, `mediaTypes` |
 
 <Warning>
-  Destructive tools (`stop_task`, `force_close_task`, `remove_task`) do nothing unless you pass `confirm: true`. Without it, the tool tells you what it would do.
+  Destructive tools (`stop_task`, `force_close_task`, `archive_task`) do nothing unless you pass `confirm: true`. Without it, the tool tells you what it would do.
 </Warning>
 
 ### Attach a file

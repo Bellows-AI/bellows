@@ -79,10 +79,21 @@ export function elapsedSeconds(startedAt: string | null | undefined, now: Date =
     if (!startedAt) return null;
     const from = Date.parse(startedAt);
     if (Number.isNaN(from) || from > now.getTime()) return null;
-    const total = Math.floor((now.getTime() - from) / MS_PER_SECOND);
+    return clockText(Math.floor((now.getTime() - from) / MS_PER_SECOND));
+}
+
+/** Whole seconds as "45s", "2m 14s", "1h 3m". */
+export function clockText(total: number): string {
     if (total < SECONDS_PER_MINUTE) return `${total}s`;
     if (total < SECONDS_PER_HOUR) return `${Math.floor(total / SECONDS_PER_MINUTE)}m ${total % SECONDS_PER_MINUTE}s`;
     return `${Math.floor(total / SECONDS_PER_HOUR)}h ${Math.floor((total % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE)}m`;
+}
+
+/** What one gate ran for, in ms: both stamps and a non-negative span, else null (never a made-up zero). */
+export function gateRanMs(gate: { startedAt?: string; finishedAt?: string }): number | null {
+    if (!gate.startedAt || !gate.finishedAt) return null;
+    const span = Date.parse(gate.finishedAt) - Date.parse(gate.startedAt);
+    return Number.isNaN(span) || span < 0 ? null : span;
 }
 
 /** One agent question's wait window, as a `JobQuestion` carries it. */

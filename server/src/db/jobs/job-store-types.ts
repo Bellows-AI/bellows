@@ -89,8 +89,12 @@ export interface GateReport {
     name: string;
     status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
     exitCode: number | null;
-    /** When a `running` entry started (ISO); absent on the others. */
+    /** When the gate started (ISO): a `running` entry's, kept on the settled one; absent on a gate not run. */
     startedAt?: string;
+    /** When the gate settled (ISO); only on a settled entry that ran. */
+    finishedAt?: string;
+    /** The deadline the gate ran under, in ms; only on a settled entry that ran. */
+    timeoutMs?: number;
     /** The gate's tail. Bounded by the driver's window; truncated again at the route. */
     output: string | null;
     /** The recorded execution this entry is; absent for a gate no record covers. */
@@ -234,6 +238,13 @@ export interface Job {
      * Null on every task closed before attribution existed.
      */
     doneBy: UserRef | null;
+    /**
+     * When the task was archived: it left the active list, its thread stays readable. The stamp rides every member
+     * of the thread, like `doneAt`, and is null on an active task. Filled by the detail reads (get/thread) only.
+     */
+    archivedAt: string | null;
+    /** Who archived the task; first writer wins beside `archivedAt`. Filled by the detail reads only. */
+    archivedBy: UserRef | null;
     /** The agent session this attempt runs as, once its driver has reported it. */
     /** The branch the thread bases on (batch target, else the root's request), or null for the remote default. Filled by the detail reads (get/thread) only. */
     baseBranch: string | null;
@@ -857,11 +868,12 @@ export type SettleRefusal = { result: 'lost' } | { result: 'missing' } | { resul
  * - `not_finished` the parent, or any other member of its thread, is still queued or running —
  *                  the thread's turn is not over, as a retry's refusal says.
  * - `task_done`    the user has declared the task done; the conversation is closed.
+ * - `task_archived` the task is archived; unarchive it first.
  * - `forbidden`    the parent was queued by a different account. The child would inherit the
  *                  parent's session, and a session resumes only in the checkout tree it ran in —
  *                  the author's; a member's command may only ever run in their own tree.
  */
-export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden';
+export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'task_archived' | 'forbidden';
 
 /**
  * The refusal of a task-path write (retry, follow-up, Done) on a thread that backs a batch task while
@@ -880,7 +892,7 @@ export type BatchesDisabledRefusal = 'batches_disabled';
  *                  worktree, which lives in the author's checkout tree — the author-scoped rule
  *                  follow-up takes.
  */
-export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden';
+export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'task_archived' | 'forbidden';
 
 /**
  * What a stop request did.
@@ -938,6 +950,19 @@ export type RemoveResult =
     | 'conflict'
     /** The thread backs a batch task: removing it would rewrite the batch's history. */
     | 'batch';
+
+/**
+ * What an archive did.
+ *
+ * - `ok`      the whole thread is archived (every live member was stopped first). It leaves the active
+ *             list; its thread, runs, logs, PR links and attachments stay readable.
+ * - `missing` no such job in this organization.
+ * - `batch`   the thread backs a batch task: archiving it would hide the batch's history.
+ */
+export type ArchiveResult = { result: 'ok'; rootJobId: string } | 'missing' | 'batch';
+
+/** What an unarchive did: `not_archived` is a thread no one archived (not idempotent, like reopen). */
+export type UnarchiveResult = { result: 'ok' } | 'missing' | 'not_archived';
 
 /**
  * What a user wait-cancel did.
@@ -1025,7 +1050,7 @@ export type JobStore = JobActionStore &
     TranscriptToolStore;
 
 /** The page states the task list serves. `attention` is the inbox view: running and review. */
-export type TaskState = 'attention' | 'running' | 'review' | 'past';
+export type TaskState = 'attention' | 'running' | 'review' | 'past' | 'archived';
 
 /**
  * One task: a thread root with the conversation's present tense. Every field is bounded — the
@@ -1050,6 +1075,8 @@ export interface TaskSummary {
     cancelRequestedAt: string | null;
     /** The head run's done stamp — null until the user declares the task done. */
     doneAt: string | null;
+    /** When the task was archived — null on an active task, which every bucket but `archived` is limited to. */
+    archivedAt: string | null;
     /** The grouping labels the task was queued with, inherited by every follow-up. */
     repo: string | null;
     executor: string | null;
@@ -1080,7 +1107,7 @@ export interface TaskSummary {
 
 /** The org-wide figures a task poll renders beside the list, immune to the page's filters. */
 export interface TaskNavigation {
-    counts: { running: number; review: number; past: number };
+    counts: { running: number; review: number; past: number; archived: number };
     /** At most three running tasks, newest first — the live work. */
     running: TaskSummary[];
     /** At most five finished-but-undeclared tasks, newest first — the reader's queue. */

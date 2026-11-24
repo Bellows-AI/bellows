@@ -30,7 +30,7 @@ import {
     renderJobDetail,
     renderJobLine,
     renderQuestions,
-    renderRemoved,
+    renderArchived,
     renderReopened,
     renderRepos,
     renderSkills,
@@ -433,16 +433,14 @@ async function runDone(args: readonly string[], io: RunIo): Promise<CommandResul
     return ok(done, renderDone(done));
 }
 
-async function runRemove(args: readonly string[], io: RunIo): Promise<CommandResult> {
-    // A remove deletes the whole thread and cannot be undone, and this CLI has no prompt to ask
-    // through — so the command line is where the intent has to be said out loud.
-    const { id, values } = onlyId(args, 'remove', { yes: { type: 'boolean' } });
-    if (!values.yes) {
-        throw new UsageError('remove deletes the whole task thread and cannot be undone — pass --yes to confirm');
-    }
-    const removed = await boardFor(io).removeJob(id);
-    return ok(removed, renderRemoved(removed));
-}
+// Archive stops a running task first, as `job stop` does, and nothing is lost: unarchive brings it back.
+const runArchiving =
+    (verb: 'archive' | 'unarchive') =>
+    async (args: readonly string[], io: RunIo): Promise<CommandResult> => {
+        const { id } = onlyId(args, verb);
+        const archived = await boardFor(io)[verb === 'archive' ? 'archiveJob' : 'unarchiveJob'](id);
+        return ok(archived, renderArchived(archived));
+    };
 
 async function runRepoList(args: readonly string[], io: RunIo): Promise<CommandResult> {
     noArguments(args, 'repo list');
@@ -493,7 +491,8 @@ const COMMANDS: Record<string, (args: readonly string[], io: RunIo) => Promise<C
     'job stop': runStop,
     'job done': runDone,
     'job reopen': runReopen,
-    'job remove': runRemove,
+    'job archive': runArchiving('archive'),
+    'job unarchive': runArchiving('unarchive'),
     'repo list': runRepoList,
     'executor list': runExecutorList,
     'skill list': runSkillList,

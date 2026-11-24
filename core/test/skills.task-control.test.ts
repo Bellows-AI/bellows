@@ -33,7 +33,7 @@ describe('the task-control skill', () => {
             'POST /api/jobs/<id>/follow-up',
             'POST /api/jobs/<id>/stop',
             'POST /api/jobs/<id>/done',
-            'POST /api/jobs/<id>/remove',
+            'POST /api/jobs/<id>/archive',
         ]) {
             expect(skill).toContain(route);
         }
@@ -69,7 +69,7 @@ describe('the task-control skill', () => {
         // npm claims --timeout/--json/--yes as its own configuration, so `npm run cli -- job list
         // --limit 1` reaches the CLI as `job list 1`. One layer is the most that forwards.
         expect(skill).toContain('npm run dev -w cli -- job wait <id> --timeout');
-        expect(skill).toContain('npm run dev -w cli -- job remove <id> --yes');
+        expect(skill).toContain('npm run dev -w cli -- job archive <id>');
         expect(skill).not.toMatch(/^bellows job /m);
         expect(skill).not.toMatch(/npm run cli -- job/);
     });
@@ -94,18 +94,18 @@ describe('the task-control skill', () => {
     });
 
     it('names what done does to a batch thread, and that force cancels its batch task (#676)', () => {
-        const done = skill.slice(skill.indexOf('**Done**'), skill.indexOf('**Remove**'));
+        const done = skill.slice(skill.indexOf('**Done**'), skill.indexOf('**Archive**'));
         expect(done).toContain('BATCH_TASK_THREAD');
         expect(done).toContain('npm run dev -w cli -- job done <id> --force');
         expect(done).toContain('cancels its batch task');
     });
 
-    it('confirms with the user before the two destructive steps', () => {
+    it('confirms with the user before the steps that stop or change a task', () => {
         const destructive = skill.slice(skill.indexOf('POST /api/jobs/<id>/stop'));
         expect(destructive).toMatch(/confirm/i);
-        expect(destructive).toContain('cannot be undone');
-        expect(destructive).toContain('TASK_RUNNING');
-        expect(destructive).toContain('stop it first');
+        expect(destructive).toContain('stopped first');
+        expect(destructive).toContain('TASK_ARCHIVED');
+        expect(destructive).toContain('no way to delete a task');
     });
 
     it('ships generic config only — no personal host, no pasted credential', () => {
