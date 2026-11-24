@@ -1,4 +1,4 @@
-import type { AttachmentMeta, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
+import type { AttachmentMeta, RepoRef, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
 import { usePoll } from './usePoll.js';
 
 /**
@@ -176,7 +176,7 @@ export interface Job {
     /** The root's compare-and-set token a rename sends back. */
     titleRevision: number;
     /** The repository tab the task was queued from, or null for one queued before the chat. */
-    repo: string | null;
+    repo: RepoRef | null;
     /** The member's executor name the task was stamped with, or null. Display metadata. */
     executor: string | null;
     /** Whose profile `executor` names: the author's own or the organization's. */

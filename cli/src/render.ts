@@ -15,6 +15,7 @@ import type {
     SkillView,
 } from './board.js';
 import { isTerminal } from './board.js';
+import { formatRepoRef } from './repo-ref.js';
 import type { TaskUsage, Tokens, UsageBlock } from './usage-types.js';
 import type { ConfigSummary, Preflight } from './diagnostics.js';
 import type { ExecutorRow, RepoDiscovery } from './discovery.js';
@@ -84,7 +85,13 @@ function commandPreview(command: string): string {
 
 /** One list row: id, status, created, repo, command preview — the board listing, one line each. */
 export function renderJobLine(job: BoardJobRecord): string {
-    return [job.id, job.status, job.createdAt, job.repo ?? DASH, commandPreview(job.command)].join('  ');
+    return [
+        job.id,
+        job.status,
+        job.createdAt,
+        job.repo ? formatRepoRef(job.repo) : DASH,
+        commandPreview(job.command),
+    ].join('  ');
 }
 
 function field(label: string, value: string | number | null): string {
@@ -143,7 +150,7 @@ export function renderJobDetail(job: BoardJobRecord): string {
         field('id:', job.id),
         field('status:', job.status),
         field('command:', job.command),
-        field('repo:', job.repo),
+        field('repo:', job.repo && formatRepoRef(job.repo)),
         field('executor:', job.executor),
         field('scope:', job.executorScope ?? null),
         field('base:', job.baseBranch ?? 'default'),
@@ -293,7 +300,7 @@ export function renderTaskPage(page: BoardTaskPage): string {
             task.status,
             `head:${task.headRunId}`,
             task.activityAt,
-            task.repo ?? DASH,
+            task.repo ? formatRepoRef(task.repo) : DASH,
             commandPreview(task.command),
         ].join('  ')
     );

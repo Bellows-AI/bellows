@@ -1,6 +1,7 @@
 import { TASK_SORTS, TASK_STATES } from './board.js';
 import type { BoardClient } from './board.js';
 import { UsageError } from './input.js';
+import { parseRepoFlag } from './selection.js';
 
 /** The `bellows task list` flags; the board validates the text filters, the CLI the enums and the limit. */
 export const TASK_LIST_OPTIONS = {
@@ -42,7 +43,7 @@ export function taskListFilters(
         state: parseChoice('state', values.state, TASK_STATES),
         q: values.q,
         author: values.author,
-        repo: values.repo,
+        repo: parseRepoFlag(values.repo),
         sort: parseChoice('sort', values.sort, TASK_SORTS),
         limit: parseTaskLimit(values.limit),
         cursor: values.cursor,

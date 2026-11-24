@@ -1,3 +1,4 @@
+import { formatRepoRef } from '@factory-ai/core';
 import { type ReactNode, useState } from 'react';
 import type { ThreadActivity } from '../api/useJobActivity.js';
 import type { AuthorRef, Job } from '../api/useJobs.js';
@@ -56,7 +57,7 @@ function executionPairs(jobs: Job[]): [string, ReactNode][] {
     const vitals = latest.runtime;
     const rows: [string, ReactNode][] = [
         ['Started by', startedByNode(root.author)],
-        ['Repository', latest.repo],
+        ['Repository', latest.repo && formatRepoRef(latest.repo)],
         ['Base branch', latest.baseBranch ?? 'Default'],
         ['Executor', latest.executor ?? 'No executor selected'],
         // What the latest claim handed the runner, never the request: null means the profile chose.

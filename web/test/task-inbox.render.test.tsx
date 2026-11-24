@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -23,7 +24,7 @@ const taskSummary = (over: Partial<import('../src/api/useTasks.js').TaskSummary>
     status: 'succeeded' as const,
     cancelRequestedAt: null,
     doneAt: null,
-    repo: 'acme/widgets',
+    repo: githubRepo('acme/widgets'),
     executor: null,
     author: null,
     activity: null,
@@ -274,6 +275,17 @@ describe('TaskInboxPage rows', () => {
         // The relative age is backed by a machine-readable stamp and a precise hover value.
         expect(html).toContain('dateTime="2026-09-01T12:10:00.000Z"');
         expect(html).toContain('title="2026-09-01 12:10"');
+    });
+
+    it('names a repository on another forge by its text form', () => {
+        const html = renderInbox({
+            navigation: navigation({ review: 1 }),
+            items: [taskSummary({ repo: { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' } })],
+            nextCursor: null,
+            initial: false,
+        });
+        expect(html).toContain('gitlab:gl.example/g/sub/p');
+        expect(html).not.toContain('[object Object]');
     });
 
     it('shows the live activity line only under a running task', () => {

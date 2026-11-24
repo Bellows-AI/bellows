@@ -14,6 +14,7 @@ import {
     MALFORMED_RESPONSE_CODE,
     realClock,
 } from './transport.js';
+import { formatRepoRef, type RepoRef } from './repo-ref.js';
 import type { BoardClock } from './transport.js';
 import type { TaskUsage, Tokens, UsageBlock } from './usage-types.js';
 
@@ -57,7 +58,7 @@ export interface BoardJobRecord {
     /** The open workflow wait's reason on a parked thread, else null. */
     waitReason: string | null;
     author: { login: string } | null;
-    repo: string | null;
+    repo: RepoRef | null;
     executor: string | null;
     /** The scope `executor` names (issue 391), as the board's read model normalizes it. */
     executorScope?: string | null;
@@ -82,7 +83,7 @@ export interface BoardJobRecord {
     waitTerminalReason?: string | null;
     /** The thread's recorded PR, else null — shared by every member of the thread. */
     publication?: {
-        repo: string;
+        repo: RepoRef;
         prNumber: number;
         prUrl: string;
         headBranch: string;
@@ -290,7 +291,7 @@ export interface BoardTaskSummary {
     command: string;
     status: string;
     doneAt: string | null;
-    repo: string | null;
+    repo: RepoRef | null;
     executor: string | null;
     author: { login: string } | null;
     waitReason: string | null;
@@ -330,14 +331,14 @@ export interface BoardClient extends BatchRoutes, OperatorRoutes {
     listJobs(filters: {
         status?: string | undefined;
         limit?: number | undefined;
-        repo?: string | undefined;
+        repo?: RepoRef | undefined;
     }): Promise<BoardJobRecord[]>;
     /** One page of logical tasks (`GET /api/tasks`); `cursor` is only valid under the query that minted it. */
     listTasks(filters: {
         state?: string | undefined;
         q?: string | undefined;
         author?: string | undefined;
-        repo?: string | undefined;
+        repo?: RepoRef | undefined;
         sort?: string | undefined;
         limit?: number | undefined;
         cursor?: string | undefined;
@@ -598,7 +599,7 @@ export function createBoardClient({
             const params = new URLSearchParams();
             if (filters.status !== undefined) params.set('status', filters.status);
             if (filters.limit !== undefined) params.set('limit', String(filters.limit));
-            if (filters.repo !== undefined) params.set('repo', filters.repo);
+            if (filters.repo !== undefined) params.set('repo', formatRepoRef(filters.repo));
             const query = params.toString();
             const payload = (await request(at(`/api/jobs${query ? `?${query}` : ''}`), {
                 headers: authHeaders(),
@@ -607,7 +608,7 @@ export function createBoardClient({
         },
 
         async listTasks(filters) {
-            const query = taskQuery(filters);
+            const query = taskQuery({ ...filters, repo: filters.repo && formatRepoRef(filters.repo) });
             return ((await request(at(`/api/tasks${query}`), { headers: authHeaders() })) as { page: BoardTaskPage })
                 .page;
         },

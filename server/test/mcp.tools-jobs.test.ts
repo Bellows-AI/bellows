@@ -57,7 +57,7 @@ const run = (id: string, over: Record<string, unknown> = {}) => ({
     rootJobId: JOB_A,
     command: `task ${id.slice(0, 4)}`,
     status: 'succeeded',
-    repo: 'acme/web',
+    repo: githubRepo('acme/web'),
     executor: null,
     executorScope: null,
     baseBranch: null,
@@ -89,7 +89,7 @@ const taskRow = (id: string, over: Record<string, unknown> = {}) => ({
     status: 'succeeded',
     cancelRequestedAt: null,
     doneAt: null,
-    repo: 'acme/web',
+    repo: githubRepo('acme/web'),
     executor: null,
     executorScope: 'user',
     author: { login: 'alice' },
@@ -290,6 +290,13 @@ describe('list_tasks', () => {
         expect(data.tasks.map((t: { state: string }) => t.state)).toEqual(['running', 'needs_attention']);
         expect(data.tasks[0]).toMatchObject({ id: JOB_A, headRunId: JOB_A, repo: 'acme/web', author: 'alice' });
         expect(data.counts).toEqual({ running: 1, review: 2, past: 3 });
+        const gitlab = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' };
+        const other = await boot({ a: { tasks: [taskRow(JOB_A, { repo: gitlab }), taskRow(JOB_B, { repo: null })] } });
+        const listed = await call(other, 'alice', 'list_tasks', { limit: 50 });
+        expect(listed.data.tasks.map((t: { repo: string | null }) => t.repo)).toEqual([
+            'gitlab:gl.example/g/sub/p',
+            null,
+        ]);
         const bob = await call(url, 'bob', 'list_tasks');
         expect(bob.data.tasks.map((t: { id: string }) => t.id)).toEqual([JOB_B]);
     });
@@ -785,6 +792,15 @@ describe('get_task', () => {
             questions: [question('q1')],
         }),
     ];
+
+    it('names a non-GitHub repository by its text form', async () => {
+        const gitlab = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' };
+        const url = await boot({ a: { thread: [run(JOB_A, { repo: gitlab })] } });
+        const { data } = await call(url, 'alice', 'get_task', { taskId: JOB_A });
+        expect(data).toMatchObject({ repo: 'gitlab:gl.example/g/sub/p' });
+        const runs = await call(url, 'alice', 'investigate_job', { jobId: JOB_A });
+        expect(runs.data.job).toMatchObject({ repo: 'gitlab:gl.example/g/sub/p' });
+    });
 
     it('describes the task from any of its runs: head run, runs, pull request, attention, attachment metadata only', async () => {
         const url = await boot({ a: { thread }, b: { thread: [run(JOB_B, { rootJobId: JOB_B })] } });

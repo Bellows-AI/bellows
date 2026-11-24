@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js';
 import { runDuration, taskTime, wallClock } from '../src/format.js';
@@ -484,12 +485,17 @@ describe('task outcome derivations — gates, issues and closure', () => {
     });
 
     describe('issueUrl', () => {
-        it('builds only from a repository an owner/name slug can construct', () => {
+        it("builds from the repository's forge and host", () => {
             const ISSUE_NUMBER = 44;
-            expect(issueUrl('acme/web', ISSUE_NUMBER)).toBe('https://github.com/acme/web/issues/44');
+            expect(issueUrl(githubRepo('acme/web'), ISSUE_NUMBER)).toBe('https://github.com/acme/web/issues/44');
+            expect(issueUrl({ forge: 'github', host: 'ghe.example', path: 'acme/web' }, ISSUE_NUMBER)).toBe(
+                'https://ghe.example/acme/web/issues/44'
+            );
+            expect(issueUrl({ forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' }, ISSUE_NUMBER)).toBe(
+                'https://gl.example/g/sub/p/-/issues/44'
+            );
             expect(issueUrl(null, ISSUE_NUMBER)).toBeNull();
-            expect(issueUrl('web', ISSUE_NUMBER)).toBeNull();
-            expect(issueUrl('acme/web', null)).toBeNull();
+            expect(issueUrl(githubRepo('acme/web'), null)).toBeNull();
         });
     });
 

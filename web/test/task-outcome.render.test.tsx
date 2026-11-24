@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { OBJECTIVE_MODE, WORKFLOW_MODE } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { job, renderDetail } from './tasks-fixtures.js';
@@ -181,7 +182,7 @@ describe('TaskOutcome', () => {
         const html = renderDetail({
             jobs: [
                 job({
-                    repo: 'acme/web',
+                    repo: githubRepo('acme/web'),
                     workspacePath: 'repos/web',
                     executor: 'main',
                     workflowName: 'fix-issue',
@@ -327,7 +328,7 @@ describe('TaskOutcome — gates, publication and services', () => {
     });
 
     it('links the issue only when the repository makes the url constructible', () => {
-        const linked = renderDetail({ jobs: [job({ repo: 'acme/web', command: 'fix #44 please' })] });
+        const linked = renderDetail({ jobs: [job({ repo: githubRepo('acme/web'), command: 'fix #44 please' })] });
         expect(linked).not.toContain('Open issue');
         expect(linked).toContain('href="https://github.com/acme/web/issues/44"');
         expect(linked).toContain('>#44</a>');
@@ -446,7 +447,7 @@ describe('TaskOutcome — services and the placeholder sweep', () => {
                     },
                     workflowName: 'fix-issue',
                     workflowNode: 'implement',
-                    repo: 'acme/web',
+                    repo: githubRepo('acme/web'),
                     workspacePath: 'repos/web',
                 }),
             ],

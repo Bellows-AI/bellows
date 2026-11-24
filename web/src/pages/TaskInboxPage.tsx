@@ -1,3 +1,4 @@
+import { formatRepoRef } from '@factory-ai/core';
 import {
     Listbox,
     ListboxButton,
@@ -505,7 +506,7 @@ function Row({ task }: { task: TaskSummary }) {
             <span className="inbox-repo">
                 <span className="inbox-repo-name">
                     <Icon name="repo" size={14} />
-                    <span className="inbox-cell-text">{task.repo ?? '—'}</span>
+                    <span className="inbox-cell-text">{task.repo === null ? '—' : formatRepoRef(task.repo)}</span>
                 </span>
                 {task.executor !== null ? <span className="inbox-executor">{task.executor}</span> : null}
             </span>

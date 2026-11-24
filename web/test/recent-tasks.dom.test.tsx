@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { OBJECTIVE_MODE } from '@factory-ai/core';
 import { cleanup, render as mount, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -33,7 +34,7 @@ const job = (over: Partial<Job> = {}): Job => ({
     failureKind: null,
     gates: null,
     runtime: null,
-    repo: 'Bellows-AI/bellows',
+    repo: githubRepo('Bellows-AI/bellows'),
     executor: null,
     executorScope: 'user',
     agentType: null,

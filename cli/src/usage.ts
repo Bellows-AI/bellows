@@ -4,8 +4,8 @@ export const REPO_FORM = 'owner/name on GitHub, forge:host/path otherwise';
 /** The CLI's whole help text: `bellows help` prints it, and every usage error ends with it. */
 export const USAGE = `usage: bellows job create (<command...> | --file <path> | --stdin) [--repo <repo>] [--executor name] [--executor-scope user|org]
                           [--base-branch <branch>] [--title <text>] [--model <name>] [--skill name]... [--connection <id>]... [--attach <path>]... [--idempotency-key <key>] [--json]
-       bellows job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
-       bellows task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
+       bellows job list [--status <status>] [--limit <n>] [--repo <repo>] [--json]
+       bellows task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo <repo>]
                          [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
        bellows job investigate <id> [--json]
        bellows job activity <id> [--json]

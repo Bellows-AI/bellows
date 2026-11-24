@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import type { Page } from '@playwright/test';
 
 const LONG = 'refactor-'.repeat(20);
@@ -7,10 +8,10 @@ const LONG = 'refactor-'.repeat(20);
 export async function routeLongTasks(page: Page): Promise<void> {
     await page.route('**/api/tasks*', async (route) => {
         const response = await route.fetch();
-        const body = (await response.json()) as { page: { items: Array<{ command: string; repo: string }> } };
+        const body = (await response.json()) as { page: { items: Array<{ command: string; repo: unknown }> } };
         for (const item of body.page.items.slice(0, 2)) {
             item.command = `${LONG}${LONG}`;
-            item.repo = `acme/${LONG}`;
+            item.repo = githubRepo(`acme/${LONG}`);
         }
         await route.fulfill({ response, json: body });
     });

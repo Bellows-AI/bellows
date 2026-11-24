@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { judge, success } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
 import { MAX_CURSOR_CHARS, MAX_NAME_CHARS, queryOf } from './paging.js';
+import { boardRepo, REPO_FORM } from './repo-arg.js';
 import {
     BoardRunSchema,
     BoardStatusSchema,
@@ -30,7 +31,7 @@ const BoardTask = z.object({
     command: z.string(),
     status: BoardStatusSchema,
     doneAt: nullableText,
-    repo: nullableText,
+    repo: boardRepo,
     executor: nullableText,
     author: z.object({ login: z.string() }).nullish(),
     summary: nullableText,
@@ -58,7 +59,7 @@ export const listTasks = defineTool({
             .describe('Inbox section (default attention).'),
         q: z.string().max(MAX_NAME_CHARS).optional().describe('Search text.'),
         author: z.string().max(MAX_NAME_CHARS).optional().describe("The task author's login."),
-        repo: z.string().max(MAX_NAME_CHARS).optional().describe('owner/name.'),
+        repo: z.string().max(MAX_NAME_CHARS).optional().describe(`The repository: ${REPO_FORM}.`),
         sort: z.enum(['newest', 'oldest']).optional(),
         limit: z.number().int().min(1).max(TASK_PAGE_MAX).optional().describe(`Page size, 1-${TASK_PAGE_MAX}.`),
         cursor: z
@@ -128,7 +129,7 @@ export const listJobs = defineTool({
     annotations: READ_ONLY,
     input: z.object({
         status: z.string().max(STATUS_MAX_CHARS).optional().describe("A board status, or 'terminal'."),
-        repo: z.string().max(MAX_NAME_CHARS).optional().describe('owner/name.'),
+        repo: z.string().max(MAX_NAME_CHARS).optional().describe(`The repository: ${REPO_FORM}.`),
         limit: z.number().int().min(1).max(JOB_PAGE_MAX).optional().describe(`1-${JOB_PAGE_MAX}.`),
     }),
     output: z.object({ jobs: z.array(RunViewSchema) }),

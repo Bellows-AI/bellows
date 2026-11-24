@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { OBJECTIVE_MODE } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import type { Job } from '../src/api/useJobs.js';
@@ -26,7 +27,7 @@ const summary = (over: Partial<TaskSummary> = {}): TaskSummary => ({
     status: over.status ?? 'succeeded',
     cancelRequestedAt: over.cancelRequestedAt ?? null,
     doneAt: over.doneAt ?? null,
-    repo: over.repo ?? 'acme/widgets',
+    repo: over.repo ?? githubRepo('acme/widgets'),
     executor: over.executor ?? null,
     author: over.author ?? null,
     activity: over.activity ?? null,

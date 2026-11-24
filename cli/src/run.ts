@@ -17,7 +17,7 @@ import { INPUT_OPTIONS, MODEL_OPTION, noArguments, parseOrUsage, resolveCommandI
 import type { InputIo } from './input.js';
 import { BoardError, MALFORMED_RESPONSE_CODE, isNoVerdict, realClock } from './transport.js';
 import type { BoardClock } from './transport.js';
-import { SELECTION_OPTIONS, selectionOf } from './selection.js';
+import { parseRepoFlag, SELECTION_OPTIONS, selectionOf } from './selection.js';
 import { USAGE } from './usage.js';
 import { createdResult, recoverable } from './writes.js';
 import { readCliVersion } from './version.js';
@@ -200,7 +200,7 @@ async function runList(args: readonly string[], io: RunIo): Promise<CommandResul
     const jobs = await boardFor(io).listJobs({
         status: parsed.values.status,
         limit,
-        repo: parsed.values.repo,
+        repo: parseRepoFlag(parsed.values.repo),
     });
     return { outcome: OUTCOME.ok, data: { jobs }, stdout: jobs.map((job) => `${renderJobLine(job)}\n`).join('') };
 }

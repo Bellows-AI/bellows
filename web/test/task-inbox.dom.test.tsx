@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
@@ -20,7 +21,7 @@ const summary = (id: string, login: string): TaskSummary => ({
     status: 'succeeded',
     cancelRequestedAt: null,
     doneAt: null,
-    repo: 'acme/web',
+    repo: githubRepo('acme/web'),
     executor: null,
     author: { id: login, login, name: null, avatarUrl: null },
     activity: null,

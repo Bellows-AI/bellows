@@ -82,7 +82,11 @@ describe('the board client', () => {
         const { calls, fetch } = recorder(() => json({ jobs: [] }));
 
         await client(fetch).listJobs({});
-        await client(fetch).listJobs({ status: 'running', limit: 5, repo: 'owner/name' });
+        await client(fetch).listJobs({
+            status: 'running',
+            limit: 5,
+            repo: { forge: 'github', host: 'github.com', path: 'owner/name' },
+        });
 
         expect(calls[0]!.url).toBe('http://board/api/jobs');
         expect(calls[1]!.url).toBe('http://board/api/jobs?status=running&limit=5&repo=owner%2Fname');
