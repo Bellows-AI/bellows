@@ -8,17 +8,19 @@ import {
     credentialRedirectMessage,
     ERROR_CODES,
     forbiddenCredentialIn,
-    githubRepo,
+    formatRepoRef,
     isCredentialRedirectMessage,
     isReservedEnvName,
     MAX_ENV_VARS_PER_SCOPE,
+    readRepoRef,
     redirectsPlatformCredential,
+    type RepoRef,
     STORED_CREDENTIAL_PREFIX,
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { Caller } from '../auth/store.js';
-import { bad, badSegment, body as jsonBody, checkReposVisible, guard } from './helpers.js';
+import { bad, body as jsonBody, checkReposVisible, guard, repoRefReason } from './helpers.js';
 import {
     EnvScopeRefusal,
     type EnvVarEntry,
@@ -28,7 +30,7 @@ import {
 } from '../db/env-var-store.js';
 import type { EnvSecretScope } from '../db/env-secrets.js';
 import { MAX_SECRET_BYTES } from '../secrets/secret-input.js';
-import type { AppConfig, Repo } from '../config.js';
+import type { AppConfig } from '../config.js';
 import type { OrgRegistry, OrgRuntime } from '../orgs.js';
 
 /**
@@ -181,29 +183,14 @@ function parseRemovedName(name: string): ScopeWrite | string {
     return { upsert: [], remove: [name] };
 }
 
-function parseRepo(raw: unknown): Repo | string {
-    const repo = jsonBody(raw).repo as { owner?: unknown; name?: unknown } | undefined;
-    if (!repo || typeof repo.owner !== 'string' || typeof repo.name !== 'string') {
-        return 'repo must be { owner: string, name: string }';
-    }
-    return { owner: repo.owner, name: repo.name };
+/** The scope's repo, `{ forge, host, path }`: a stale `{ owner, name }` body is refused here, not misread. */
+function parseRepo(raw: unknown): RepoRef | string {
+    const read = readRepoRef(jsonBody(raw).repo);
+    return read.ok ? read.ref : read.message;
 }
 
-/**
- * The scope becomes a check-constraint key here and a directory-shaped key at the row; the same
- * segment rules a checkout's name obeys, refused with a code rather than discovered as a
- * constraint violation.
- */
-function repoSegmentReason(repo: Repo): string | null {
-    for (const [label, value] of [
-        ['owner', repo.owner],
-        ['name', repo.name],
-    ] as const) {
-        const reason = badSegment(label, value);
-        if (reason) return `"${repo.owner}/${repo.name}": ${reason}`;
-    }
-    return null;
-}
+/** A repo scope is one owner and one name: the store's columns hold no more, so a nested path is refused up front. */
+const NESTED_SCOPE_REASON = 'repo scope must be owner/name: a nested path has no scope yet';
 
 /**
  * Every check the repo-scope PUT applies before it touches the store, in one place so the route
@@ -214,15 +201,20 @@ async function validatePutRepoRequest(
     repos: OrgRuntime['repos'],
     deploymentMode: DeploymentMode
 ): Promise<
-    { ok: true; repo: Repo; vars: EnvVarEntry[] } | { ok: false; code: string; message: string; status?: number }
+    { ok: true; repo: RepoRef; vars: EnvVarEntry[] } | { ok: false; code: string; message: string; status?: number }
 > {
     const repo = parseRepo(request.body);
     if (typeof repo === 'string') return { ok: false, code: ERROR_CODES.BAD_BODY, message: repo };
-    const segmentReason = repoSegmentReason(repo);
-    if (segmentReason) return { ok: false, code: ERROR_CODES.BAD_REPO_NAME, message: segmentReason };
+    const segmentReason = repoRefReason(repo);
+    if (segmentReason) {
+        return { ok: false, code: ERROR_CODES.BAD_REPO_NAME, message: `"${formatRepoRef(repo)}": ${segmentReason}` };
+    }
+    if (repo.path.split('/').length !== 2) {
+        return { ok: false, code: ERROR_CODES.BAD_SCOPE, message: NESTED_SCOPE_REASON };
+    }
     const vars = parseVars(request.body, deploymentMode);
     if (typeof vars === 'string') return { ok: false, code: varsCode(vars), message: vars };
-    const visible = await checkReposVisible(repos, [githubRepo(`${repo.owner}/${repo.name}`)], {
+    const visible = await checkReposVisible(repos, [repo], {
         subject: 'the repository',
     });
     if (!visible.ok) return visible;
@@ -355,11 +347,7 @@ export const envRoutes =
             return reply.code(HTTP_OK).send({
                 org: loaded.value[0],
                 workspace: loaded.value[1],
-                // The wire names a repository by owner and name (a repo scope holds exactly two segments).
-                repos: loaded.value[2].map(({ repo, vars }) => {
-                    const [owner, name] = repo.path.split('/');
-                    return { owner, name, vars };
-                }),
+                repos: loaded.value[2],
             });
         });
 
@@ -416,9 +404,8 @@ export const envRoutes =
                 reply,
                 (e) => request.log.error({ err: e }),
                 async () => {
-                    const ref = githubRepo(`${repo.owner}/${repo.name}`);
-                    await store.replaceRepo(caller.user.id, ref, vars);
-                    return store.listRepo(ref);
+                    await store.replaceRepo(caller.user.id, repo, vars);
+                    return store.listRepo(repo);
                 }
             );
             if (!saved.ok) return reply;

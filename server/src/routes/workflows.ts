@@ -4,10 +4,9 @@ import type { OrgRegistry } from '../orgs.js';
 import type { WorkflowStore, WorkflowSummary } from '../db/workflows/workflow-store.js';
 import type { Caller } from '../auth/store.js';
 import { blockCatalog } from '../db/workflows/workflow-blocks/index.js';
-import { bad, body, repoReason } from './helpers.js';
+import { bad, body, repoRefReason } from './helpers.js';
 import { resolveCallerRoute } from './route-guards.js';
-import { ADMIN_ROLE, ERROR_CODES, githubRepo, type RepoRef } from '@factory-ai/core';
-import { repoRefOf } from '../forge/forges.js';
+import { ADMIN_ROLE, ERROR_CODES, parseRepoRef, readRepoRef, type RepoRef } from '@factory-ai/core';
 
 export interface WorkflowRouteDeps {
     /**
@@ -42,7 +41,7 @@ function noStore(reply: FastifyReply) {
  * store (docs/workflows.md). A person's surface, like every task route: a driver credential never gets
  * past the auth wall here, because workflow selection is a human's decision, never a driver's.
  *
- * - `GET /api/workflows?repo=owner/name` — the caller-visible list (the org's, their own, the
+ * - `GET /api/workflows?repo=<repo>` — the caller-visible list (the org's, their own, the
  *   named repository's), the composer's dropdown feed.
  * - `POST /api/workflows` — create; org-level is an admin's move, user- and repo-level are any
  *   member's. A `kind: "block"` node is compiled (registry lookup, availability, config, expansion)
@@ -77,13 +76,15 @@ async function storeOf(orgs: OrgRegistry, request: FastifyRequest): Promise<Work
     return rt?.workflows ?? null;
 }
 
-/** The `repo` query field: absent, or a valid `owner/name`. */
-function validateRepoQuery(repoField: unknown): { ok: true; value: string | null } | { ok: false; message: string } {
+/** The `repo` query field: absent, or a repo's text form (`owner/name` on GitHub, `forge:host/path` otherwise). */
+function validateRepoQuery(repoField: unknown): { ok: true; value: RepoRef | null } | { ok: false; message: string } {
     if (repoField === undefined) return { ok: true, value: null };
     if (typeof repoField !== 'string') return { ok: false, message: 'repo must be a string' };
-    const reason = repoReason(repoField);
+    const ref = parseRepoRef(repoField);
+    if (!ref) return { ok: false, message: 'repo must be owner/name on GitHub, or forge:host/path' };
+    const reason = repoRefReason(ref);
     if (reason) return { ok: false, message: reason };
-    return { ok: true, value: repoField };
+    return { ok: true, value: ref };
 }
 
 /**
@@ -105,7 +106,7 @@ async function handleListWorkflows(orgs: OrgRegistry, request: FastifyRequest, r
     const parsed = validateRepoQuery(body(request.query as unknown).repo);
     if (!parsed.ok) return bad(reply, ERROR_CODES.BAD_REPO, parsed.message);
 
-    const workflows = await store.listVisible({ userId: caller.user.id, repo: repoRefOf(parsed.value) });
+    const workflows = await store.listVisible({ userId: caller.user.id, repo: parsed.value });
     return reply.code(HTTP_OK).send({ workflows });
 }
 
@@ -137,12 +138,11 @@ function resolveScope(
         return { ok: true, value: { kind: 'org' } };
     }
     if (scopeName === 'user') return { ok: true, value: { kind: 'user', userId: caller.user.id } };
-    if (typeof fields.repo !== 'string') {
-        return { ok: false, code: ERROR_CODES.BAD_SCOPE, message: 'repo scope must name a repository' };
-    }
-    const reason = repoReason(fields.repo);
+    const read = readRepoRef(fields.repo);
+    if (!read.ok) return { ok: false, code: ERROR_CODES.BAD_SCOPE, message: read.message };
+    const reason = repoRefReason(read.ref);
     if (reason) return { ok: false, code: ERROR_CODES.BAD_SCOPE, message: reason };
-    return { ok: true, value: { kind: 'repo', repo: githubRepo(fields.repo) } };
+    return { ok: true, value: { kind: 'repo', repo: read.ref } };
 }
 
 async function handleCreateWorkflow(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {

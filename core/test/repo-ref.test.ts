@@ -4,6 +4,7 @@ import {
     GITHUB_REPO_PATH_PATTERN,
     githubRepo,
     parseRepoRef,
+    readRepoRef,
     REPO_PATH_PATTERN,
     type RepoRef,
     repoKey,
@@ -34,6 +35,39 @@ describe('parseRepoRef', () => {
         'gitlab:/a/b',
     ])('rejects %j', (text) => {
         expect(parseRepoRef(text)).toBeNull();
+    });
+});
+
+describe('readRepoRef', () => {
+    it.each([
+        [
+            { forge: 'github', host: 'GitHub.com', path: 'acme/web' },
+            { forge: 'github', host: 'github.com', path: 'acme/web' },
+        ],
+        [
+            { forge: 'gitlab', host: 'gl.example:8443', path: 'g/sub/p' },
+            { forge: 'gitlab', host: 'gl.example:8443', path: 'g/sub/p' },
+        ],
+    ])('reads %j', (raw, ref) => {
+        expect(readRepoRef(raw)).toEqual({ ok: true, ref });
+    });
+
+    it.each([
+        [
+            'a github path of three segments',
+            { forge: 'github', host: 'github.com', path: 'a/b/c' },
+            'owner/name on GitHub',
+        ],
+        ['an unknown forge', { forge: 'svn', host: 'h', path: 'a/b' }, 'forge'],
+        ['an empty host', { forge: 'gitlab', host: '', path: 'a/b' }, 'host'],
+        ['an unknown field', { forge: 'github', host: 'github.com', path: 'a/b', owner: 'x' }, 'unknown field "owner"'],
+        ['the text form', 'acme/web', 'repo must be {forge, host, path}'],
+        ['null', null, 'repo must be {forge, host, path}'],
+        ['an array', [], 'repo must be {forge, host, path}'],
+    ])('refuses %s', (_label, raw, message) => {
+        const read = readRepoRef(raw);
+        expect(read.ok).toBe(false);
+        expect(!read.ok && read.message).toContain(message);
     });
 });
 

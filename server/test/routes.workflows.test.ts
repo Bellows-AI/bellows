@@ -48,19 +48,22 @@ const record: WorkflowRecord = {
 
 /** The in-memory double: the route tests are about the HTTP contract, not the SQL. */
 function stubWorkflows(options: { get?: WorkflowRecord | null; remove?: boolean } = {}): WorkflowStore & {
-    created: { name: string; scope: string; createdBy: string | null }[];
+    created: { name: string; scope: string; createdBy: string | null; repo?: unknown }[];
+    targets: { userId: string | null; repo: unknown }[];
     removed: string[];
     updated: { id: string; name: string; definition: unknown }[];
 } {
     const stub = {
-        created: [] as { name: string; scope: string; createdBy: string | null }[],
+        created: [] as { name: string; scope: string; createdBy: string | null; repo?: unknown }[],
+        targets: [] as { userId: string | null; repo: unknown }[],
         removed: [] as string[],
         updated: [] as { id: string; name: string; definition: unknown }[],
-        async create(input: { name: string; scope: { kind: string }; createdBy: string | null }) {
+        async create(input: { name: string; scope: { kind: string; repo?: unknown }; createdBy: string | null }) {
             stub.created.push({
                 name: input.name,
                 scope: input.scope.kind,
                 createdBy: input.createdBy,
+                repo: input.scope.repo,
             });
             return { id: WF_ID };
         },
@@ -68,7 +71,8 @@ function stubWorkflows(options: { get?: WorkflowRecord | null; remove?: boolean 
             stub.updated.push({ id, name: input.name, definition: input.definition });
             return { id };
         },
-        async listVisible() {
+        async listVisible(target: { userId: string | null; repo: unknown }) {
+            stub.targets.push(target);
             return [record];
         },
         async get(_id: string) {
@@ -116,6 +120,23 @@ describe('GET /api/workflows', () => {
         });
         expect(response.statusCode).toBe(HTTP_OK);
         expect(response.json().workflows).toEqual([record]);
+    });
+
+    it('keys the repo context by forge, host and path: the text form of a gitlab ref is not the github repo', async () => {
+        const workflows = stubWorkflows();
+        const { instance, memberCookie } = await boot(workflows);
+        for (const [query, repo] of [
+            ['acme/web', { forge: 'github', host: 'github.com', path: 'acme/web' }],
+            ['gitlab:gl.example/acme/web', { forge: 'gitlab', host: 'gl.example', path: 'acme/web' }],
+        ] as const) {
+            const response = await instance.inject({
+                method: 'GET',
+                url: `/api/workflows?repo=${encodeURIComponent(query)}`,
+                headers: { cookie: memberCookie },
+            });
+            expect(response.statusCode).toBe(HTTP_OK);
+            expect(workflows.targets.at(-1)?.repo).toEqual(repo);
+        }
     });
 
     it('refuses a repo context that is not owner/name', async () => {
@@ -168,11 +189,37 @@ describe('POST /api/workflows', () => {
         const repoPost = await instance.inject({
             method: 'POST',
             url: '/api/workflows',
-            payload: { name: 'repo-process', scope: 'repo', repo: 'acme/web', definition },
+            payload: {
+                name: 'repo-process',
+                scope: 'repo',
+                repo: { forge: 'github', host: 'github.com', path: 'acme/web' },
+                definition,
+            },
             headers: { cookie: memberCookie },
         });
         expect(repoPost.statusCode).toBe(HTTP_CREATED);
         expect(workflows.created.map((row) => row.scope)).toEqual(['user', 'repo']);
+    });
+
+    it('takes the repo scope as {forge, host, path} and refuses the text form', async () => {
+        const workflows = stubWorkflows();
+        const { instance, memberCookie } = await boot(workflows);
+        const post = (repo: unknown) =>
+            instance.inject({
+                method: 'POST',
+                url: '/api/workflows',
+                payload: { name: 'repo-process', scope: 'repo', repo, definition },
+                headers: { cookie: memberCookie },
+            });
+        const ref = { forge: 'github', host: 'github.com', path: 'acme/web' };
+        expect((await post(ref)).statusCode).toBe(HTTP_CREATED);
+        expect(workflows.created[0]?.repo).toEqual(ref);
+        for (const bad of ['acme/web', { owner: 'acme', name: 'web' }, { ...ref, path: 'acme/-x' }]) {
+            const refused = await post(bad);
+            expect(refused.statusCode).toBe(HTTP_BAD_REQUEST);
+            expect(refused.json().code).toBe('BAD_SCOPE');
+        }
+        expect(workflows.created).toHaveLength(1);
     });
 
     it("refuses a repo scope outside the caller's access, like POST /api/jobs does", async () => {
@@ -181,7 +228,12 @@ describe('POST /api/workflows', () => {
         const response = await instance.inject({
             method: 'POST',
             url: '/api/workflows',
-            payload: { name: 'x', scope: 'repo', repo: 'no owner', definition },
+            payload: {
+                name: 'x',
+                scope: 'repo',
+                repo: { forge: 'github', host: 'github.com', path: 'no owner' },
+                definition,
+            },
             headers: { cookie: memberCookie },
         });
         expect(response.statusCode).toBe(HTTP_BAD_REQUEST);

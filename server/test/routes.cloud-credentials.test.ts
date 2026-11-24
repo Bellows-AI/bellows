@@ -85,7 +85,12 @@ describe('cloud mode: env scopes refuse the OAuth token name', () => {
         const { send, envVars } = await boot('cloud');
         expectRefused(await send('PUT', '/api/env/org', vars(TOKEN)));
         expectRefused(await send('PUT', '/api/env/workspace', vars(TOKEN)));
-        expectRefused(await send('PUT', '/api/env/repo', { repo: { owner: 'acme', name: 'web' }, ...vars(TOKEN) }));
+        expectRefused(
+            await send('PUT', '/api/env/repo', {
+                repo: { forge: 'github', host: 'github.com', path: 'acme/web' },
+                ...vars(TOKEN),
+            })
+        );
         expect(await envVars.listOrg()).toEqual([]);
     });
 
@@ -111,7 +116,7 @@ describe('self-hosted mode keeps accepting the OAuth token', () => {
         expect((await send('POST', '/api/org/executors', org(DEEP))).statusCode).toBe(HTTP_CREATED);
         expect((await send('PUT', '/api/env/org', vars(TOKEN))).statusCode).toBe(HTTP_OK);
         expect((await send('PUT', '/api/env/workspace', vars(TOKEN))).statusCode).toBe(HTTP_OK);
-        const repo = { repo: { owner: 'acme', name: 'web' }, ...vars(TOKEN) };
+        const repo = { repo: { forge: 'github', host: 'github.com', path: 'acme/web' }, ...vars(TOKEN) };
         expect((await send('PUT', '/api/env/repo', repo)).statusCode).toBe(HTTP_OK);
     });
 });
