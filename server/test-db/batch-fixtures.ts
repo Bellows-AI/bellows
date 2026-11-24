@@ -1,6 +1,6 @@
 import { expect } from 'vitest';
 import type { Sql } from 'postgres';
-import { resolveBatchPlan, validateBatchPlan, type BatchPlan, type PrFacts } from '@factory-ai/core';
+import { githubRepo, resolveBatchPlan, validateBatchPlan, type BatchPlan, type PrFacts } from '@factory-ai/core';
 import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import type { PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { startRow } from './fixtures.js';
@@ -24,7 +24,7 @@ export function batchPlan(title: string, stages: Record<string, unknown>[], extr
     const result = validateBatchPlan({
         planVersion: 1,
         title,
-        targets: [{ key: 'web', repo: BATCH_REPO }],
+        targets: [{ key: 'web', repo: githubRepo(BATCH_REPO) }],
         defaultTarget: 'web',
         executor: 'claude',
         concurrency: 2,

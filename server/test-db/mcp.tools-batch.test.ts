@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { Sql } from 'postgres';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { githubRepo } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { McpCaller, OAuthStore } from '../src/auth/oauth-store.js';
 import { hashToken } from '../src/auth/session.js';
@@ -152,7 +153,7 @@ const call = async (url: URL, who: Who, name: string, args: Record<string, unkno
 const planOf = (title: string, extra: Record<string, unknown> = {}) => ({
     planVersion: 1,
     title,
-    targets: [{ key: 'web', repo: BATCH_REPO }],
+    targets: [{ key: 'web', repo: githubRepo(BATCH_REPO) }],
     defaultTarget: 'web',
     concurrency: 2,
     stages: [
@@ -165,8 +166,8 @@ const planOf = (title: string, extra: Record<string, unknown> = {}) => ({
 const twoRepoPlan = (title: string) =>
     planOf(title, {
         targets: [
-            { key: 'web', repo: BATCH_REPO },
-            { key: 'api', repo: OTHER_REPO },
+            { key: 'web', repo: githubRepo(BATCH_REPO) },
+            { key: 'api', repo: githubRepo(OTHER_REPO) },
         ],
         stages: [{ key: 'one', tasks: [prTask('a'), { ...prTask('b'), target: 'api' }] }],
     });
