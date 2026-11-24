@@ -3,7 +3,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { ERROR_CODES, formatRepoRef, parseRepoRef, readRepoRef } from '@factory-ai/core';
+import { ERROR_CODES, formatRepoRef, parseRepoRef, readRepoRef, validateBatchPlan } from '@factory-ai/core';
 import { USAGE } from '../../cli/src/usage.js';
 import { scopeColumnsOf } from '../src/db/repo-ref-row.js';
 import { ALL_BATCH_TOOLS, TOOLS } from '../src/mcp/registry.js';
@@ -151,6 +151,35 @@ describe('site/guides/env-and-secrets.mdx repository scope forms', () => {
         const nested = parseRepoRef('gitlab:gitlab.example.com/group/sub/project');
         expect(nested).not.toBeNull();
         expect(scopeColumnsOf(nested)).toEqual({ forge: null, host: null, owner: null, name: null });
+    });
+});
+
+describe('site/cli/commands.mdx batch plan targets', () => {
+    const page = read('cli/commands.mdx');
+    const example = /`("repo": \{"forge": "github", "host": "github\.com", "path": "acme\/web"\})`/.exec(page)?.[1];
+
+    it('documents the target repo as {forge, host, path}, and the plan reader takes it', () => {
+        expect(example).toBeDefined();
+        const repoOf = JSON.parse(`{${example}}`).repo;
+        const task = { key: 'a', objective: 'o', acceptance: 'a', verification: 'v' };
+        const plan = (target: unknown) => ({
+            planVersion: 1,
+            title: 't',
+            targets: [{ key: 'web', repo: target }],
+            defaultTarget: 'web',
+            stages: [{ key: 'one', tasks: [task] }],
+        });
+        expect(validateBatchPlan(plan(repoOf)).ok).toBe(true);
+        expect(validateBatchPlan(plan('acme/web')).ok).toBe(false);
+        expect(page).toContain('`targets[].repo`');
+    });
+
+    it('documents the text form a batch prints for a target', () => {
+        for (const text of ['acme/web', 'gitlab:gitlab.example.com/team/sub/project']) {
+            expect(page).toContain(`\`${text}\``);
+            const ref = parseRepoRef(text);
+            expect(ref && formatRepoRef(ref)).toBe(text);
+        }
     });
 });
 

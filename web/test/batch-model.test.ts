@@ -7,6 +7,7 @@ import {
     batchVerdict,
     blankPlan,
     canRetry,
+    collapseRepoIssues,
     gateInstruction,
     moveStage,
     morningReport,
@@ -14,9 +15,11 @@ import {
     nextKey,
     removeStage,
     removeTask,
+    repoFromText,
     retryLabel,
     stagePolicyOf,
     summaryVerdict,
+    targetLabel,
     VERDICT_LABEL,
     taskExecutorOf,
     taskStateLabel,
@@ -299,5 +302,36 @@ describe('batchUsageState', () => {
             state: 'measured',
             provisional: true,
         });
+    });
+});
+
+describe('a target repository in the editor', () => {
+    it('labels a target by its ref text and branch', () => {
+        const gitlab = {
+            ...filled(),
+            targets: [
+                { key: 'lab', repo: { forge: 'gitlab' as const, host: 'gl.example', path: 'g/sub/p' }, branch: 'main' },
+            ],
+        };
+        expect(targetLabel(blankPlan('acme/web'), 'main')).toBe('acme/web@default branch');
+        expect(targetLabel(gitlab, 'lab')).toBe('gitlab:gl.example/g/sub/p@main');
+    });
+
+    it('reads typed text as the ref the plan stores', () => {
+        expect(repoFromText('acme/web')).toEqual({ forge: 'github', host: 'github.com', path: 'acme/web' });
+        expect(repoFromText('gitlab:gl.example/g/sub/p')).toEqual({
+            forge: 'gitlab',
+            host: 'gl.example',
+            path: 'g/sub/p',
+        });
+    });
+
+    it('keeps malformed text as typed, as a GitHub path the plan refuses at the repo field', () => {
+        const plan = { ...blankPlan('acme/web'), targets: [{ key: 'main', repo: repoFromText('acme/') }] };
+        expect(plan.targets[0]!.repo.path).toBe('acme/');
+        const checked = validateBatchPlan(plan);
+        expect(!checked.ok && collapseRepoIssues(checked.issues).map((issue) => issue.path)).toContain(
+            'targets[0].repo'
+        );
     });
 });

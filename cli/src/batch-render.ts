@@ -1,3 +1,4 @@
+import { formatRepoRef } from './repo-ref.js';
 import { renderUsageBlock } from './render.js';
 import { BATCH_DRAFT, TASK_CANCELLED } from './batch.js';
 import type {
@@ -40,7 +41,9 @@ const executorOf = (executor: string | undefined, scope: string | undefined): st
 export function renderPlanSettings(plan: BatchPlanView): string[] {
     const lines = [
         `policy ${plan.policy} · concurrency ${plan.concurrency} · executor ${executorOf(plan.executor, plan.executorScope)}`,
-        ...plan.targets.map((target) => `target ${target.key}: ${target.repo}@${target.branch ?? 'default branch'}`),
+        ...plan.targets.map(
+            (target) => `target ${target.key}: ${formatRepoRef(target.repo)}@${target.branch ?? 'default branch'}`
+        ),
     ];
     return lines;
 }

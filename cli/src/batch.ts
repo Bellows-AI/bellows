@@ -1,3 +1,4 @@
+import type { RepoRef } from './repo-ref.js';
 import type { UsageBlock } from './usage-types.js';
 import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER, JSON_CONTENT_TYPE } from './http.js';
 
@@ -26,7 +27,7 @@ export interface BatchTaskPlan {
 
 export interface BatchPlanView {
     title: string;
-    targets: { key: string; repo: string; branch?: string }[];
+    targets: { key: string; repo: RepoRef; branch?: string }[];
     defaultTarget?: string;
     executor?: string;
     executorScope?: string;

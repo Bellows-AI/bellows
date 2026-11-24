@@ -7,9 +7,12 @@ import {
     DEFAULT_BATCH_REPAIRS,
     DEFAULT_BATCH_TIME_LIMIT_MINUTES,
     DEFAULT_BATCH_POLICY,
+    formatRepoRef,
+    githubRepo,
     isAccepted,
     isRetryable,
     ORG_SCOPE,
+    parseRepoRef,
     TASK_CANCELLED,
     TASK_FAILED,
     TASK_NO_PR,
@@ -26,7 +29,9 @@ import {
     type BatchPolicy,
     type BatchStage,
     type BatchTarget,
+    type BatchPlanIssue,
     type BatchTask,
+    type RepoRef,
     type UsageBlock,
 } from '@factory-ai/core';
 
@@ -265,7 +270,7 @@ export const taskTargetOf = (plan: BatchPlan, task: BatchTask): Inherited => ({
 
 export const targetLabel = (plan: BatchPlan, key: string): string => {
     const target = plan.targets.find((candidate) => candidate.key === key);
-    return target ? `${target.repo}@${target.branch ?? 'default branch'}` : key;
+    return target ? `${formatRepoRef(target.repo)}@${target.branch ?? 'default branch'}` : key;
 };
 
 /**
@@ -342,8 +347,18 @@ const allTaskKeys = (plan: BatchPlan): string[] => plan.stages.flatMap((stage) =
 
 const blankTask = (plan: BatchPlan): BatchTask => ({ key: nextKey('task', allTaskKeys(plan)), ...TASK_BLANK });
 
+/**
+ * The ref a typed repository text names. Text that is not one stays as typed, in a GitHub ref the plan refuses, so the
+ * editor shows what was typed and the refusal sits at the repo field.
+ */
+export const repoFromText = (text: string): RepoRef => parseRepoRef(text) ?? githubRepo(text);
+
+/** The plan's issues with a refusal inside a target's repo moved onto the repo field itself, where one input shows it. */
+export const collapseRepoIssues = (issues: BatchPlanIssue[]): BatchPlanIssue[] =>
+    issues.map((issue) => ({ ...issue, path: issue.path.replace(/^(targets\[\d+\]\.repo)\..*$/, '$1') }));
+
 export function blankPlan(repo: string): BatchPlan {
-    const target: BatchTarget = { key: 'main', repo };
+    const target: BatchTarget = { key: 'main', repo: repoFromText(repo) };
     return {
         planVersion: BATCH_PLAN_VERSION,
         title: '',
