@@ -49,6 +49,11 @@ export interface JobRow {
     doner_login: string | null;
     doner_name: string | null;
     doner_avatar_url: string | null;
+    archived_at?: Date | string | null;
+    archiver_id?: string | null;
+    archiver_login?: string | null;
+    archiver_name?: string | null;
+    archiver_avatar_url?: string | null;
     stopped_by: string | null;
     done_by: string | null;
     session_id: string | null;
@@ -136,6 +141,7 @@ export interface TaskRow {
     created_at: Date | string;
     status: JobStatus;
     done_at: Date | string | null;
+    archived_at: Date | string | null;
     cancel_requested_at: Date | string | null;
     summary: string | null;
     runtime: RuntimeVitals | null;
@@ -227,6 +233,13 @@ export function toJob(orgId: string, row: JobRow): Job {
         author: userRef(row.creator_id, row.creator_login, row.creator_name, row.creator_avatar_url),
         stoppedBy: userRef(row.stopper_id, row.stopper_login, row.stopper_name, row.stopper_avatar_url),
         doneBy: userRef(row.doner_id, row.doner_login, row.doner_name, row.doner_avatar_url),
+        archivedAt: stampOf(row.archived_at ?? null),
+        archivedBy: userRef(
+            row.archiver_id ?? null,
+            row.archiver_login ?? null,
+            row.archiver_name ?? null,
+            row.archiver_avatar_url ?? null
+        ),
         baseBranch: baseBranchOf(row),
         ...hiddenSkillsOf(row),
         sessionId: row.session_id,
@@ -300,6 +313,7 @@ export function toTask(row: TaskRow): TaskSummary {
         status: row.status,
         cancelRequestedAt: stampOf(row.cancel_requested_at),
         doneAt: stampOf(row.done_at),
+        archivedAt: stampOf(row.archived_at),
         repo: row.repo,
         executor: row.executor,
         executorScope: (row.executor_scope ?? USER_SCOPE) as ExecutorScope,
@@ -477,6 +491,7 @@ export function authorJoinFragment(sql: Sql): Fragment {
         left join app_user cu on cu.id = job.created_by
         left join app_user su on su.id = job.stopped_by
         left join app_user du on du.id = job.done_by
+        left join app_user au on au.id = job.archived_by
     `;
 }
 
@@ -488,6 +503,8 @@ export function authorColumnsFragment(sql: Sql): Fragment {
         , su.avatar_url as stopper_avatar_url
         , du.id as doner_id, du.github_login as doner_login, du.display_name as doner_name
         , du.avatar_url as doner_avatar_url
+        , au.id as archiver_id, au.github_login as archiver_login, au.display_name as archiver_name
+        , au.avatar_url as archiver_avatar_url
     `;
 }
 
@@ -562,7 +579,7 @@ export function publicationColumnsFragment(sql: Sql): Fragment {
 // navigation-preview and page subquery, which read the derived set rather than the tables.
 export function taskPreviewColumnsFragment(sql: Sql): Fragment {
     return sql`
-        id, head_id, command, repo, executor, executor_scope, created_at, status, done_at, cancel_requested_at,
+        id, head_id, command, repo, executor, executor_scope, created_at, status, done_at, archived_at, cancel_requested_at,
         summary, runtime, activity_at, creator_id, creator_login, creator_name, creator_avatar_url,
         wait_reason, waiting_since, wait_terminal_reason, needs_answer, title, title_origin, title_revision
     `;

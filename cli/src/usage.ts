@@ -2,7 +2,7 @@
 export const USAGE = `usage: bellows job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
                           [--base-branch <branch>] [--title <text>] [--model <name>] [--skill name]... [--connection <id>]... [--attach <path>]... [--idempotency-key <key>] [--json]
        bellows job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
-       bellows task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
+       bellows task list [--state attention|running|review|past|archived] [--q <text>] [--author <login>] [--repo owner/name]
                          [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
        bellows job investigate <id> [--json]
        bellows job activity <id> [--json]
@@ -18,7 +18,8 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
        bellows job stop <id> [--json]
        bellows job done <id> [--force] [--json]
        bellows job reopen <id> [--json]
-       bellows job remove <id> --yes [--json]
+       bellows job archive <id> [--json]    stops a running task first; list it with task list --state archived
+       bellows job unarchive <id> [--json]
        bellows repo list [--json]          repositories the board tracks
        bellows executor list [--json]      executor profiles by scope (--executor-scope)
        bellows skill list [--json]         skills a task may select (--skill)

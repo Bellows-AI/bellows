@@ -24,7 +24,8 @@ import {
     handleReclaimsAck,
     handleReclaimsClaim,
     handleReclaimsRenew,
-    handleRemove,
+    handleArchive,
+    handleUnarchive,
     handleReopen,
     handleRetry,
     handleStop,
@@ -139,8 +140,11 @@ export const jobRoutes =
         app.post('/api/jobs/:id/stop', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleStop(orgs, request, reply)
         );
-        app.post('/api/jobs/:id/remove', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleRemove(orgs, request, reply)
+        app.post('/api/jobs/:id/archive', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleArchive(orgs, request, reply)
+        );
+        app.post('/api/jobs/:id/unarchive', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleUnarchive(orgs, request, reply)
         );
         // Done's inverse: the mistake undone, while the worktree it would resume in
         // still exists. Person-gated like done, beside which it is registered.
@@ -149,7 +153,7 @@ export const jobRoutes =
         );
         // Both control a thread parked on a durable PR wait — person's actions on a
         // wait no worker holds a lease on, so no token and the actor off the session, exactly as
-        // stop/done/remove take them. The store author-scopes both and answers the no-open-wait
+        // stop/done/archive take them. The store author-scopes both and answers the no-open-wait
         // conflict the issue mandates.
         app.post('/api/jobs/:id/wait/cancel', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleWaitCancel(orgs, request, reply)

@@ -40,20 +40,20 @@ const BoardTask = z.object({
     activityAt: z.string(),
 });
 const BoardTasks = z.object({
-    navigation: z.object({ counts: z.object({ running: z.number(), review: z.number(), past: z.number() }) }),
+    navigation: z.object({ counts: z.object({ running: z.number(), review: z.number(), past: z.number(), archived: z.number() }) }),
     page: z.object({ items: z.array(BoardTask), nextCursor: z.string().nullable() }),
 });
 
 export const listTasks = defineTool({
     name: 'list_tasks',
     description:
-        "List tasks (one per conversation) as the board's inbox shows them. `state` filters the inbox: attention (default), running, review or past. Each row carries the head run's status and a `state` in the shared vocabulary (pending, running, succeeded, failed, cancelled, needs_attention); a task with an open question is needs_attention. A task waiting on an integration connection shows only its status here; investigate_job shows the requirement. Pass `nextCursor` back as `cursor` with the same filters until it is null.",
+        "List tasks (one per conversation) as the board's inbox shows them. `state` filters the inbox: attention (default), running, review, past or archived (archive_task's shelf; the other states never list an archived task). Each row carries the head run's status and a `state` in the shared vocabulary (pending, running, succeeded, failed, cancelled, needs_attention); a task with an open question is needs_attention. A task waiting on an integration connection shows only its status here; investigate_job shows the requirement. Pass `nextCursor` back as `cursor` with the same filters until it is null.",
     scope: 'factory:read',
     routes: [['GET', '/api/tasks']],
     annotations: READ_ONLY,
     input: z.object({
         state: z
-            .enum(['attention', 'running', 'review', 'past'])
+            .enum(['attention', 'running', 'review', 'past', 'archived'])
             .optional()
             .describe('Inbox section (default attention).'),
         q: z.string().max(MAX_NAME_CHARS).optional().describe('Search text.'),
@@ -87,7 +87,7 @@ export const listTasks = defineTool({
             })
         ),
         nextCursor: z.string().nullable(),
-        counts: z.object({ running: z.number(), review: z.number(), past: z.number() }),
+        counts: z.object({ running: z.number(), review: z.number(), past: z.number(), archived: z.number() }),
     }),
     async run(args, ctx) {
         const judged = judge(await ctx.fetch({ method: 'GET', url: `/api/tasks${queryOf(args)}` }), BoardTasks);
