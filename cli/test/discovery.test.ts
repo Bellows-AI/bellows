@@ -10,8 +10,24 @@ function harness(routes: Record<string, () => Response>) {
 
 const visible = (overrides: Record<string, unknown> = {}) => ({
     repos: [
-        { id: 'acme/api', forge: 'github', host: 'github.com', path: 'acme/api', private: true, defaultBranch: 'main', pushedAt: null },
-        { id: 'acme/web', forge: 'github', host: 'github.com', path: 'acme/web', private: false, defaultBranch: 'trunk', pushedAt: null },
+        {
+            id: 'acme/api',
+            forge: 'github',
+            host: 'github.com',
+            path: 'acme/api',
+            private: true,
+            defaultBranch: 'main',
+            pushedAt: null,
+        },
+        {
+            id: 'acme/web',
+            forge: 'github',
+            host: 'github.com',
+            path: 'acme/web',
+            private: false,
+            defaultBranch: 'trunk',
+            pushedAt: null,
+        },
     ],
     installation: { account: 'acme' },
     meta: { fetchedAt: '2026-10-01T00:00:00.000Z', error: null },
