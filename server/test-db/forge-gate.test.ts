@@ -245,7 +245,7 @@ describe.skipIf(!enabled).each(ROUTES)('$name', ({ prepare, call: act }) => {
 const PLAN = {
     planVersion: 1,
     title: 'One repo',
-    targets: [{ key: 'web', repo: REPO }],
+    targets: [{ key: 'web', repo: githubRepo(REPO) }],
     defaultTarget: 'web',
     stages: [
         {

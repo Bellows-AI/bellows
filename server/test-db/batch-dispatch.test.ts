@@ -1660,7 +1660,7 @@ describe.skipIf(!enabled)('the claim carries the batch target branch', () => {
             close: (id, by) => claimJobs.markDone(id, by),
         });
         const sandbox = batchPlan('Sandbox', [{ key: 'one', tasks: [task('a')] }], {
-            targets: [{ key: 'web', repo: BATCH_REPO, branch: 'batch-sandbox' }],
+            targets: [{ key: 'web', repo: githubRepo(BATCH_REPO), branch: 'batch-sandbox' }],
         });
         const id = await startBatch(claimBatches, sandbox, ALICE);
         await claimBatches.reconcile(id);
@@ -1694,7 +1694,7 @@ describe.skipIf(!enabled)('the claim carries the batch target branch', () => {
             close: (id, by) => readJobs.markDone(id, by),
         });
         const sandbox = batchPlan('Sandbox reads', [{ key: 'one', tasks: [task('a')] }], {
-            targets: [{ key: 'web', repo: BATCH_REPO, branch: 'release/1' }],
+            targets: [{ key: 'web', repo: githubRepo(BATCH_REPO), branch: 'release/1' }],
         });
         const id = await startBatch(readBatches, sandbox, ALICE);
         await readBatches.reconcile(id);

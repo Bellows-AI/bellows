@@ -51,7 +51,7 @@ const task = (key: string, extra: Record<string, unknown> = {}) => ({
 const plan = (overrides: Record<string, unknown> = {}) => ({
     planVersion: 1,
     title: 'Upgrade',
-    targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai' }],
+    targets: [{ key: 'web', repo: githubRepo('Bellows-AI/bellows.ai') }],
     defaultTarget: 'web',
     stages: [
         { key: 'one', tasks: [task('a'), task('b')] },
@@ -63,8 +63,8 @@ const plan = (overrides: Record<string, unknown> = {}) => ({
 const twoRepoPlan = () =>
     plan({
         targets: [
-            { key: 'web', repo: 'Bellows-AI/bellows.ai' },
-            { key: 'api', repo: 'Bellows-AI/api' },
+            { key: 'web', repo: githubRepo('Bellows-AI/bellows.ai') },
+            { key: 'api', repo: githubRepo('Bellows-AI/api') },
         ],
         stages: [{ key: 'one', tasks: [task('a'), task('b', { target: 'api' })] }],
     });
@@ -248,9 +248,9 @@ describe('POST /api/batches', () => {
         const { call, create } = await setup();
         const { id } = await create(twoRepoPlan());
         const record = (await call('GET', `/api/batches/${id}`)).json();
-        expect(record.plan.targets.map((target: { repo: string }) => target.repo)).toEqual([
-            'Bellows-AI/bellows.ai',
-            'Bellows-AI/api',
+        expect(record.plan.targets.map((target: { repo: unknown }) => target.repo)).toEqual([
+            githubRepo('Bellows-AI/bellows.ai'),
+            githubRepo('Bellows-AI/api'),
         ]);
     });
 
@@ -338,7 +338,7 @@ describe('launch checks: validate and start', () => {
         expect(response.statusCode).toBe(HTTP_OK);
         const body = response.json();
         expect(body).toMatchObject({ valid: true, version: 1 });
-        expect(body.plan.targets).toEqual([{ key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'main' }]);
+        expect(body.plan.targets).toEqual([{ key: 'web', repo: githubRepo('Bellows-AI/bellows.ai'), branch: 'main' }]);
         expect(batches.writes).toEqual(['create']);
     });
 
@@ -354,6 +354,34 @@ describe('launch checks: validate and start', () => {
             expect(response.json().code).toBe('UNKNOWN_REPO');
         }
         expect(batches.writes).toEqual(['create']);
+    });
+
+    it('refuses a target on another forge or host with UNKNOWN_REPO, the same path on GitHub being visible', async () => {
+        const { call, create, batches } = await setup({ repos: [{ ...WEB, defaultBranch: 'main' }] });
+        for (const repo of [
+            { forge: 'gitlab', host: 'gl.example', path: 'Bellows-AI/bellows.ai' },
+            { forge: 'github', host: 'ghe.example', path: 'Bellows-AI/bellows.ai' },
+        ]) {
+            const { id } = await create(plan({ targets: [{ key: 'web', repo }] }));
+            for (const [path, payload] of [
+                ['validate', {}],
+                ['start', { version: 1 }],
+            ] as const) {
+                const response = await call('POST', `/api/batches/${id}/${path}`, payload);
+                expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+                expect(response.json().code).toBe('UNKNOWN_REPO');
+            }
+        }
+        expect(batches.writes).toEqual(['create', 'create']);
+    });
+
+    it('refuses a plan whose target repo is the text form, naming the field', async () => {
+        const { call } = await setup();
+        const response = await call('POST', '/api/batches', {
+            plan: plan({ targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai' }] }),
+        });
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(JSON.stringify(response.json())).toContain('targets[0].repo');
     });
 
     it('answers 503, not UNKNOWN_REPO, when a target is missing from a stale list with lastError set', async () => {
@@ -395,12 +423,12 @@ describe('launch checks: validate and start', () => {
     it('validates and starts a target on a non-default branch the remote has', async () => {
         const { call, create } = await setup({ branches: ['main', 'batch-sandbox'] });
         const { id } = await create(
-            plan({ targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'batch-sandbox' }] })
+            plan({ targets: [{ key: 'web', repo: githubRepo('Bellows-AI/bellows.ai'), branch: 'batch-sandbox' }] })
         );
         const validate = await call('POST', `/api/batches/${id}/validate`, {});
         expect(validate.statusCode).toBe(HTTP_OK);
         expect(validate.json().plan.targets).toEqual([
-            { key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'batch-sandbox' },
+            { key: 'web', repo: githubRepo('Bellows-AI/bellows.ai'), branch: 'batch-sandbox' },
         ]);
         const start = await call('POST', `/api/batches/${id}/start`, { version: 1 });
         expect(start.statusCode).toBe(HTTP_OK);
@@ -410,7 +438,7 @@ describe('launch checks: validate and start', () => {
     it('accepts a non-default branch unchecked on a board that reads no branches', async () => {
         const { call, create } = await setup();
         const { id } = await create(
-            plan({ targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'batch-sandbox' }] })
+            plan({ targets: [{ key: 'web', repo: githubRepo('Bellows-AI/bellows.ai'), branch: 'batch-sandbox' }] })
         );
         expect((await call('POST', `/api/batches/${id}/validate`, {})).statusCode).toBe(HTTP_OK);
     });
@@ -418,7 +446,7 @@ describe('launch checks: validate and start', () => {
     it('answers 409 BATCH_UNKNOWN_BRANCH at validate and start for a branch the remote lacks', async () => {
         const { call, create, batches, jobCreates } = await setup({ branches: ['main'] });
         const { id } = await create(
-            plan({ targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'batch-sandbox' }] })
+            plan({ targets: [{ key: 'web', repo: githubRepo('Bellows-AI/bellows.ai'), branch: 'batch-sandbox' }] })
         );
         for (const response of [
             await call('POST', `/api/batches/${id}/validate`, {}),
@@ -435,7 +463,7 @@ describe('launch checks: validate and start', () => {
     it('a target branch read that answers forbidden or malformed is not BATCH_UNKNOWN_BRANCH', async () => {
         const { call, create, jobCreates } = await setup({ branchReadFails: new Error('read forbidden') });
         const { id } = await create(
-            plan({ targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai', branch: 'batch-sandbox' }] })
+            plan({ targets: [{ key: 'web', repo: githubRepo('Bellows-AI/bellows.ai'), branch: 'batch-sandbox' }] })
         );
         for (const response of [
             await call('POST', `/api/batches/${id}/validate`, {}),

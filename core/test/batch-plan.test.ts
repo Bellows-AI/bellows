@@ -12,6 +12,7 @@ import {
     resolveBatchPlan,
     validateBatchPlan,
 } from '../src/batch-plan.js';
+import { githubRepo } from '../src/repo-ref.js';
 
 const task = (key: string, extra: Record<string, unknown> = {}) => ({
     key,
@@ -21,10 +22,12 @@ const task = (key: string, extra: Record<string, unknown> = {}) => ({
     ...extra,
 });
 
+const gitlab = (path: string) => ({ forge: 'gitlab', host: 'gl.example', path });
+
 const plan = (overrides: Record<string, unknown> = {}) => ({
     planVersion: 1,
     title: 'Upgrade',
-    targets: [{ key: 'web', repo: 'acme/web' }],
+    targets: [{ key: 'web', repo: githubRepo('acme/web') }],
     defaultTarget: 'web',
     stages: [{ key: 'one', tasks: [task('a')] }],
     ...overrides,
@@ -47,7 +50,7 @@ describe('validateBatchPlan', () => {
             plan: {
                 planVersion: 1,
                 title: 'Upgrade',
-                targets: [{ key: 'web', repo: 'acme/web' }],
+                targets: [{ key: 'web', repo: githubRepo('acme/web') }],
                 defaultTarget: 'web',
                 policy: 'human',
                 concurrency: 1,
@@ -78,8 +81,8 @@ describe('validateBatchPlan', () => {
         const result = validateBatchPlan(
             plan({
                 targets: [
-                    { key: 'web', repo: 'acme/web', branch: 'release' },
-                    { key: 'api', repo: 'acme/api' },
+                    { key: 'web', repo: githubRepo('acme/web'), branch: 'release' },
+                    { key: 'api', repo: githubRepo('acme/api') },
                 ],
                 stages: [{ key: 'one', tasks: [task('a'), task('b', { target: 'api' })] }],
             })
@@ -123,7 +126,11 @@ describe('validateBatchPlan', () => {
             ['stages[0].tasks[0].completion.condition'],
         ],
         ['an unknown top-level field', plan({ extra: 1 }), ['extra']],
-        ['an unknown target field', plan({ targets: [{ key: 'web', repo: 'acme/web', x: 1 }] }), ['targets[0].x']],
+        [
+            'an unknown target field',
+            plan({ targets: [{ key: 'web', repo: githubRepo('acme/web'), x: 1 }] }),
+            ['targets[0].x'],
+        ],
         [
             'a stage dependsOn',
             plan({ stages: [{ key: 'one', dependsOn: ['x'], tasks: [task('a')] }] }),
@@ -144,8 +151,8 @@ describe('validateBatchPlan', () => {
             'a duplicate target key',
             plan({
                 targets: [
-                    { key: 'web', repo: 'acme/web' },
-                    { key: 'web', repo: 'acme/api' },
+                    { key: 'web', repo: githubRepo('acme/web') },
+                    { key: 'web', repo: githubRepo('acme/api') },
                 ],
             }),
             ['targets[1].key'],
@@ -186,8 +193,24 @@ describe('validateBatchPlan', () => {
     it.each([
         ['an unknown default target', plan({ defaultTarget: 'nope' }), 'defaultTarget'],
         ['empty targets', plan({ targets: [] }), 'targets'],
-        ['a malformed key', plan({ targets: [{ key: 'Web', repo: 'acme/web' }] }), 'targets[0].key'],
+        ['a malformed key', plan({ targets: [{ key: 'Web', repo: githubRepo('acme/web') }] }), 'targets[0].key'],
         ['a malformed repo', plan({ targets: [{ key: 'web', repo: 'acme' }] }), 'targets[0].repo'],
+        ['a repo in text form', plan({ targets: [{ key: 'web', repo: 'acme/web' }] }), 'targets[0].repo'],
+        [
+            'a github nested path',
+            plan({ targets: [{ key: 'web', repo: githubRepo('a/b/c') }] }),
+            'targets[0].repo.path',
+        ],
+        [
+            'an unknown repo field',
+            plan({ targets: [{ key: 'web', repo: { ...githubRepo('acme/web'), owner: 'x' } }] }),
+            'targets[0].repo.owner',
+        ],
+        [
+            'an unknown forge',
+            plan({ targets: [{ key: 'web', repo: { ...gitlab('g/p'), forge: 'svn' } }] }),
+            'targets[0].repo.forge',
+        ],
     ])('refuses %s, among its paths', (_label, raw, expected) => {
         expect(paths(raw)).toContain(expected);
     });
@@ -199,7 +222,8 @@ describe('validateBatchPlan', () => {
         });
 
         it('targets', () => {
-            const targets = (n: number) => Array.from({ length: n }, (_, i) => ({ key: keyOf(i), repo: `a/r${i}` }));
+            const targets = (n: number) =>
+                Array.from({ length: n }, (_, i) => ({ key: keyOf(i), repo: githubRepo(`a/r${i}`) }));
             expect(issuesOf(plan({ targets: targets(MAX_BATCH_TARGETS), defaultTarget: 'k0' }))).toEqual([]);
             expect(paths(plan({ targets: targets(MAX_BATCH_TARGETS + 1), defaultTarget: 'k0' }))).toEqual(['targets']);
         });
@@ -301,12 +325,35 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
     const defaults = { 'acme/web': 'main', 'acme/api': 'trunk' };
     const CAN_MERGE = { canMerge: true };
 
+    it('accepts a gitlab target with a nested path and resolves its default by the ref text', () => {
+        const raw = plan({ targets: [{ key: 'web', repo: gitlab('g/sub/p') }] });
+        expect(parsed(raw).targets[0]!.repo).toEqual(gitlab('g/sub/p'));
+        const resolved = resolveBatchPlan(parsed(raw), { 'gitlab:gl.example/g/sub/p': 'trunk' });
+        expect(resolved.targets[0]).toMatchObject({ branch: 'trunk' });
+    });
+
+    it('keeps one path on two hosts distinct', () => {
+        const resolved = resolveBatchPlan(
+            parsed(
+                plan({
+                    targets: [
+                        { key: 'web', repo: githubRepo('acme/web') },
+                        { key: 'lab', repo: gitlab('acme/web') },
+                    ],
+                    stages: [{ key: 'one', tasks: [task('a'), task('b', { target: 'lab' })] }],
+                })
+            ),
+            { 'acme/web': 'main', 'gitlab:gl.example/acme/web': 'main' }
+        );
+        expect(batchExecutionCapability(resolved, { canMerge: true })).toMatchObject({ reason: 'multi_target' });
+    });
+
     it('resolves branches, targets, stage policies and executors', () => {
         const resolved = resolveBatchPlan(
             parsed(plan({ executor: 'claude', policy: 'automerge', stages: [{ key: 'one', tasks: [task('a')] }] })),
             defaults
         );
-        expect(resolved.targets).toEqual([{ key: 'web', repo: 'acme/web', branch: 'main' }]);
+        expect(resolved.targets).toEqual([{ key: 'web', repo: githubRepo('acme/web'), branch: 'main' }]);
         expect(resolved.stages[0]!.policy).toBe('automerge');
         expect(resolved.stages[0]!.tasks[0]).toMatchObject({ target: 'web', executor: 'claude' });
     });
@@ -342,7 +389,7 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
         const resolved = resolveBatchPlan(parsed(plan()), defaults);
         expect(batchExecutionCapability(resolved, CAN_MERGE)).toEqual({ ok: true });
         const explicit = resolveBatchPlan(
-            parsed(plan({ targets: [{ key: 'web', repo: 'acme/web', branch: 'main' }] })),
+            parsed(plan({ targets: [{ key: 'web', repo: githubRepo('acme/web'), branch: 'main' }] })),
             defaults
         );
         expect(batchExecutionCapability(explicit, CAN_MERGE)).toEqual({ ok: true });
@@ -353,8 +400,8 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
             parsed(
                 plan({
                     targets: [
-                        { key: 'web', repo: 'acme/web' },
-                        { key: 'api', repo: 'acme/api' },
+                        { key: 'web', repo: githubRepo('acme/web') },
+                        { key: 'api', repo: githubRepo('acme/api') },
                     ],
                     stages: [{ key: 'one', tasks: [task('a'), task('b', { target: 'api' })] }],
                 })
@@ -368,12 +415,14 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
     });
 
     it.each(['a..b', '-x', 'with space'])('refuses a target branch no git branch can have (%s)', (branch) => {
-        expect(paths(plan({ targets: [{ key: 'web', repo: 'acme/web', branch }] }))).toEqual(['targets[0].branch']);
+        expect(paths(plan({ targets: [{ key: 'web', repo: githubRepo('acme/web'), branch }] }))).toEqual([
+            'targets[0].branch',
+        ]);
     });
 
     it('accepts a branch other than the repository default', () => {
         const resolved = resolveBatchPlan(
-            parsed(plan({ targets: [{ key: 'web', repo: 'acme/web', branch: 'release' }] })),
+            parsed(plan({ targets: [{ key: 'web', repo: githubRepo('acme/web'), branch: 'release' }] })),
             defaults
         );
         expect(batchExecutionCapability(resolved, CAN_MERGE)).toEqual({ ok: true });
@@ -399,8 +448,8 @@ describe('resolveBatchPlan and batchExecutionCapability', () => {
             parsed(
                 plan({
                     targets: [
-                        { key: 'web', repo: 'acme/web' },
-                        { key: 'api', repo: 'acme/api', branch: 'release' },
+                        { key: 'web', repo: githubRepo('acme/web') },
+                        { key: 'api', repo: githubRepo('acme/api'), branch: 'release' },
                     ],
                 })
             ),

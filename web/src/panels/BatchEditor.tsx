@@ -3,6 +3,7 @@ import {
     BATCH_COMPLETION_PR,
     BATCH_POLICIES,
     EXECUTOR_SCOPES,
+    formatRepoRef,
     MAX_BATCH_CONCURRENCY,
     MAX_BATCH_STAGES,
     MAX_STAGE_TASKS,
@@ -19,9 +20,11 @@ import { Children, isValidElement, useId, type ReactNode } from 'react';
 import {
     addStage,
     addTask,
+    collapseRepoIssues,
     moveStage,
     removeStage,
     removeTask,
+    repoFromText,
     updateStage,
     updateTask,
     withOptional,
@@ -292,7 +295,8 @@ function StageEditor({ plan, stage, stageIndex, ...rest }: EditorProps & { stage
 }
 
 export function BatchEditor(props: EditorProps) {
-    const { plan, onChange, issues, repos, disabled } = props;
+    const { plan, onChange, repos, disabled } = props;
+    const issues = collapseRepoIssues(props.issues);
     const reposId = useId();
     return (
         <div className="batch-editor">
@@ -382,14 +386,14 @@ export function BatchEditor(props: EditorProps) {
                             <input
                                 className="field"
                                 list={reposId}
-                                value={target.repo}
+                                value={formatRepoRef(target.repo)}
                                 placeholder="owner/name"
                                 disabled={disabled}
                                 onChange={(e) =>
                                     onChange({
                                         ...plan,
                                         targets: plan.targets.map((t, i) =>
-                                            i === index ? { ...t, repo: e.target.value } : t
+                                            i === index ? { ...t, repo: repoFromText(e.target.value) } : t
                                         ),
                                     })
                                 }

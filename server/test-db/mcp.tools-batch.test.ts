@@ -3,6 +3,7 @@ import { createServer } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { Sql } from 'postgres';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { githubRepo } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { McpCaller, OAuthStore } from '../src/auth/oauth-store.js';
 import { hashToken } from '../src/auth/session.js';
@@ -152,7 +153,7 @@ const call = async (url: URL, who: Who, name: string, args: Record<string, unkno
 const planOf = (title: string, extra: Record<string, unknown> = {}) => ({
     planVersion: 1,
     title,
-    targets: [{ key: 'web', repo: BATCH_REPO }],
+    targets: [{ key: 'web', repo: githubRepo(BATCH_REPO) }],
     defaultTarget: 'web',
     concurrency: 2,
     stages: [
@@ -165,8 +166,8 @@ const planOf = (title: string, extra: Record<string, unknown> = {}) => ({
 const twoRepoPlan = (title: string) =>
     planOf(title, {
         targets: [
-            { key: 'web', repo: BATCH_REPO },
-            { key: 'api', repo: OTHER_REPO },
+            { key: 'web', repo: githubRepo(BATCH_REPO) },
+            { key: 'api', repo: githubRepo(OTHER_REPO) },
         ],
         stages: [{ key: 'one', tasks: [prTask('a'), { ...prTask('b'), target: 'api' }] }],
     });
@@ -194,7 +195,7 @@ describe.skipIf(!enabled)('the batch tools — database', () => {
         const checked = await call(url, 'alice', 'validate_batch', { batchId: id });
         expect(checked.isError, JSON.stringify(checked.data)).toBeFalsy();
         expect(checked.data).toMatchObject({ valid: true, version: 1 });
-        expect(checked.data.plan.targets[0]).toMatchObject({ repo: BATCH_REPO, branch: 'main' });
+        expect(checked.data.plan.targets[0]).toMatchObject({ repo: githubRepo(BATCH_REPO), branch: 'main' });
         expect(await batches.get(id)).toMatchObject({ status: 'draft' });
 
         const draft = await call(url, 'alice', 'inspect_batch', { batchId: id });

@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { resolveBatchPlan, validateBatchPlan, type BatchPlan, type ResolvedBatchPlan } from '@factory-ai/core';
+import {
+    githubRepo,
+    resolveBatchPlan,
+    validateBatchPlan,
+    type BatchPlan,
+    type ResolvedBatchPlan,
+} from '@factory-ai/core';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import { readSnapshot } from '../src/db/batches/batch-store-report.js';
 import type { BatchStartInput, BatchStore } from '../src/db/batches/batch-store-types.js';
@@ -48,8 +54,8 @@ const twoRepoPlan = (title = 'Two repos') =>
         planVersion: 1,
         title,
         targets: [
-            { key: 'web', repo: 'acme/web' },
-            { key: 'api', repo: 'acme/api', branch: 'release' },
+            { key: 'web', repo: githubRepo('acme/web') },
+            { key: 'api', repo: githubRepo('acme/api'), branch: 'release' },
         ],
         defaultTarget: 'web',
         executor: 'claude',
@@ -76,7 +82,7 @@ const singlePlan = (title = 'One repo') =>
     parsed({
         planVersion: 1,
         title,
-        targets: [{ key: 'web', repo: 'acme/web' }],
+        targets: [{ key: 'web', repo: githubRepo('acme/web') }],
         defaultTarget: 'web',
         stages: [{ key: 'one', tasks: [task('a'), task('b')] }],
     });
@@ -128,7 +134,7 @@ describe.skipIf(!enabled)('the batch store', () => {
             parsed({
                 planVersion: 1,
                 title: 'Second',
-                targets: [{ key: 'other', repo: 'acme/other' }],
+                targets: [{ key: 'other', repo: githubRepo('acme/other') }],
                 defaultTarget: 'other',
                 stages: [{ key: 'one', tasks: [task('z')] }],
             }),
@@ -190,8 +196,8 @@ describe.skipIf(!enabled)('the batch store', () => {
         expect(record).toMatchObject({ status: 'running', version: 1, startedBy: ALICE });
         expect(record.startedAt).not.toBeNull();
         expect(record.plan.targets).toEqual([
-            { key: 'web', repo: 'acme/web', branch: 'main' },
-            { key: 'api', repo: 'acme/api', branch: 'release' },
+            { key: 'web', repo: githubRepo('acme/web'), branch: 'main' },
+            { key: 'api', repo: githubRepo('acme/api'), branch: 'release' },
         ]);
         expect(record.plan.stages.map((stage) => stage.policy)).toEqual(['automerge', 'human']);
         expect(

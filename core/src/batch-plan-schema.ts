@@ -3,6 +3,7 @@ import {
     BATCH_COMPLETION_ACCEPTED,
     BATCH_COMPLETION_PR,
     BATCH_EXECUTOR_LIMIT,
+    BATCH_HOST_LIMIT,
     BATCH_KEY_LIMIT,
     BATCH_KEY_PATTERN,
     BATCH_PLAN_VERSION,
@@ -28,7 +29,7 @@ import {
 } from './batch-plan.js';
 import { BRANCH_NAME_PATTERN } from './branch-name.js';
 import { EXECUTOR_SCOPES } from './executors.js';
-import { GITHUB_REPO_PATH_PATTERN } from './repo-ref.js';
+import { GITHUB_REPO_PATH_PATTERN, HOST_PATTERN, REPO_FORGES, REPO_PATH_PATTERN } from './repo-ref.js';
 
 /**
  * The batch plan (`batch-plan.ts`) as a plain JSON Schema, for clients that need to write one before the board reads it.
@@ -55,18 +56,35 @@ const bounded = (min: number, max: number, fallback: number): Record<string, unk
     default: fallback,
 });
 
+/** A repository by identity: GitHub is exactly owner/name, any other forge two or more path segments. */
+const repo: Record<string, unknown> = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['forge', 'host', 'path'],
+    properties: {
+        forge: { enum: [...REPO_FORGES] },
+        host: { type: 'string', pattern: HOST_PATTERN.source, maxLength: BATCH_HOST_LIMIT, description: 'github.com' },
+        path: { type: 'string', pattern: REPO_PATH_PATTERN.source, maxLength: BATCH_REPO_LIMIT },
+    },
+    oneOf: [
+        {
+            properties: {
+                forge: { const: 'github' },
+                path: { type: 'string', pattern: GITHUB_REPO_PATH_PATTERN.source },
+            },
+        },
+        { properties: { forge: { const: 'gitlab' } } },
+    ],
+    description: 'owner/name on GitHub (forge github, host github.com); the full group path on another forge.',
+};
+
 const target: Record<string, unknown> = {
     type: 'object',
     additionalProperties: false,
     required: ['key', 'repo'],
     properties: {
         key,
-        repo: {
-            type: 'string',
-            pattern: GITHUB_REPO_PATH_PATTERN.source,
-            maxLength: BATCH_REPO_LIMIT,
-            description: 'owner/name',
-        },
+        repo,
         branch: {
             type: 'string',
             pattern: `^(?!.*\\.\\.)${BRANCH_NAME_PATTERN.source.slice(1)}`,
