@@ -1,4 +1,4 @@
-import { ERROR_CODES, isBranchName, READ_NOT_FOUND } from '@factory-ai/core';
+import { ERROR_CODES, githubRepo, isBranchName, READ_NOT_FOUND } from '@factory-ai/core';
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
 import type { AppConfig } from '../config.js';
@@ -67,7 +67,9 @@ function registerBranchRoute(app: FastifyInstance, orgs: OrgRegistry) {
             if (refused) return bad(reply, refused.code, refused.message);
             const rt = await orgs.for(orgOf(request));
             if (!rt?.listBranches) return branchesUnavailable(reply, 'Branches cannot be read on this board');
-            const visible = await checkReposVisible(rt.repos, [{ owner, name }], { subject: 'the repository' });
+            const visible = await checkReposVisible(rt.repos, [githubRepo(`${owner}/${name}`)], {
+                subject: 'the repository',
+            });
             if (!visible.ok) return bad(reply, visible.code, visible.message, visible.status);
             try {
                 const page = await rt.listBranches(`${owner}/${name}`, {

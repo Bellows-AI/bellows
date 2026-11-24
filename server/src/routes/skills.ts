@@ -2,6 +2,7 @@ import {
     type CatalogEntry,
     connectionEnvNames,
     ERROR_CODES,
+    githubRepo,
     isBranchName,
     selectedBy,
     type Skill,
@@ -98,7 +99,9 @@ function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
         if (!query) return reply;
         const { branch, executor, scope } = query;
         const rt = await orgs.for(orgOf(request));
-        const visible = rt ? await checkReposVisible(rt.repos, [{ owner, name }], { subject: 'the repository' }) : null;
+        const visible = rt
+            ? await checkReposVisible(rt.repos, [githubRepo(`${owner}/${name}`)], { subject: 'the repository' })
+            : null;
         if (visible && !visible.ok) return bad(reply, visible.code, visible.message, visible.status);
 
         const result = await effectiveCatalog({

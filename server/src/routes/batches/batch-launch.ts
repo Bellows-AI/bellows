@@ -1,14 +1,15 @@
 import {
     batchExecutionCapability,
     ERROR_CODES,
+    githubRepo,
     resolveBatchPlan,
     type BatchPlan,
     type DefaultBranches,
     type ExecutorScope,
+    type RepoRef,
     type ResolvedBatchPlan,
 } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type { Repo } from '../../config.js';
 import type { BatchRecord } from '../../db/batches/batch-store-types.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from '../helpers.js';
@@ -25,11 +26,8 @@ import { validateExecutorField } from '../jobs/job-field-validation.js';
  * refusal and returns false once it has; none writes.
  */
 
-const reposOf = (plan: BatchPlan): Repo[] =>
-    [...new Set(plan.targets.map((target) => target.repo))].map((name) => {
-        const [owner, repo] = name.split('/') as [string, string];
-        return { owner, name: repo };
-    });
+const reposOf = (plan: BatchPlan): RepoRef[] =>
+    [...new Set(plan.targets.map((target) => target.repo))].map((path) => githubRepo(path)); // until BEL-532b part 4
 
 /** Installation visibility per target — the whole credential boundary (docs/repos.md). */
 async function targetsVisible(ctx: Context, request: FastifyRequest, reply: FastifyReply, plan: BatchPlan) {

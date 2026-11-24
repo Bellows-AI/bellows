@@ -1,7 +1,7 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { ERROR_CODES, formatRepoRef, type RepoRef } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
-import type { Repo } from '../config.js';
 import type { OrgRuntime } from '../orgs.js';
+import { refOfListed } from '../forge/forges.js';
 import { sendFailure } from './error-handler.js';
 
 const HTTP_UNAVAILABLE = 503;
@@ -75,6 +75,20 @@ export function repoReason(value: string): string | null {
 }
 
 /**
+ * The segment rules over a ref's whole path (GitLab nests groups), with `repoReason`'s messages. `allowDotted` is
+ * the read side's: a tracked repo such as `acme/.github` is readable, so only `-`, `.` and `..` are refused there.
+ */
+export function repoRefReason(ref: RepoRef, { allowDotted = false }: { allowDotted?: boolean } = {}): string | null {
+    for (const part of ref.path.split('/')) {
+        if (part.length > REPO_SEGMENT_LIMIT) return `repo segment exceeds ${REPO_SEGMENT_LIMIT} characters`;
+        const dotted = allowDotted && part.startsWith('.') && part !== '.' && part !== '..';
+        const reason = dotted ? null : badSegment('repo segment', part);
+        if (reason) return reason;
+    }
+    return null;
+}
+
+/**
  * Every named repo must be one this org tracks (the installation's list, narrowed by the
  * allowlist). A miss while the list read has an error is NOT "unknown": the list could not be
  * confirmed, so the answer is a 503 and never a negative verdict about the repo. The env route
@@ -83,12 +97,13 @@ export function repoReason(value: string): string | null {
  */
 export async function checkReposVisible(
     repos: OrgRuntime['repos'],
-    selection: readonly Repo[],
+    selection: readonly RepoRef[],
     { subject }: { subject: string }
 ): Promise<{ ok: true } | { ok: false; status?: number; code: string; message: string }> {
     // This read's own error, not lastError(): a concurrent read may have cleared it already.
     const read = await repos.detail();
-    const available = new Set(read.repos.map((r) => `${r.owner}/${r.name}`));
+    // Exact on (forge, host, path): never `sameRepo`, whose GitHub case fold would widen what a route accepts.
+    const available = new Set(read.repos.map((r) => formatRepoRef(refOfListed(r))));
     // The list is empty (or lacks the repo) in two very different situations — nothing is tracked,
     // or the source could not be asked — and only the first makes "no repository matches" true.
     const unconfirmed = (error: string): { ok: false; status: number; code: string; message: string } => ({
@@ -98,12 +113,12 @@ export async function checkReposVisible(
         message: `Cannot check ${subject} against the tracked repositories: ${error}`,
     });
     for (const repo of selection) {
-        if (available.has(`${repo.owner}/${repo.name}`)) continue;
+        if (available.has(formatRepoRef(repo))) continue;
         if (read.error) return unconfirmed(read.error);
         return {
             ok: false,
             code: ERROR_CODES.UNKNOWN_REPO,
-            message: `"${repo.owner}/${repo.name}" is not a repository this board tracks`,
+            message: `"${formatRepoRef(repo)}" is not a repository this board tracks`,
         };
     }
     return { ok: true };
