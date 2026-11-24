@@ -5,8 +5,9 @@
  */
 
 import type { Sql, TransactionSql } from 'postgres';
-import { type DeploymentMode, githubRepo, requiredProviders } from '@factory-ai/core';
+import { type DeploymentMode, requiredProviders } from '@factory-ai/core';
 import { forgeOfRepo } from '../../forge/forges.js';
+import { refOfNullableRow } from '../repo-ref-row.js';
 import type { ForgeStandingReader } from '../forge-grant-standing.js';
 import { closeForgeRequirement, openForgeRequirement } from '../forge-requirement.js';
 import { orgActiveForClaim } from '../org-status.js';
@@ -244,9 +245,9 @@ export async function recordForgeHold(
     if (!forgeStanding) return false;
     await lockThreadInTx(tx, rootJobId);
     const [root] = await tx<
-        { repo: string | null; execution_user_id: string | null }[]
-    >`select repo, execution_user_id from job where org_id = ${orgId} and id = ${rootJobId}`;
-    const forge = forgeOfRepo(root?.repo ? githubRepo(root.repo) : null); // until BEL-532b part 3: the row's repo is still a path;
+        { forge: string; host: string; repo: string | null; execution_user_id: string | null }[]
+    >`select forge, host, repo, execution_user_id from job where org_id = ${orgId} and id = ${rootJobId}`;
+    const forge = forgeOfRepo(root ? refOfNullableRow(root) : null);
     if (!root || forge === null) return false;
     const userId = root.execution_user_id;
     if (userId === null) {

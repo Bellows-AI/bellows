@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -25,8 +26,8 @@ const context = (executionUserId: string | null = 'user-1') => ({
     result: 'ok' as const,
     orgId: ORG,
     rootJobId: ID,
-    repo: 'acme/widgets',
-    rootRepo: 'acme/widgets',
+    repo: githubRepo('acme/widgets'),
+    rootRepo: githubRepo('acme/widgets'),
     executionUserId,
 });
 
@@ -119,7 +120,21 @@ describe('POST /api/jobs/:id/pull-request', () => {
         const other = await harness({
             writer: true,
             mint: true,
-            store: { prWriteContext: async () => ({ ...context(), rootRepo: 'acme/other' }) },
+            store: { prWriteContext: async () => ({ ...context(), rootRepo: githubRepo('acme/other') }) },
+        });
+        expect((await post(other, ASK)).statusCode).toBe(403);
+    });
+
+    it('refuses an attempt whose root names the same path on another host', async () => {
+        const other = await harness({
+            writer: true,
+            mint: true,
+            store: {
+                prWriteContext: async () => ({
+                    ...context(),
+                    rootRepo: { forge: 'gitlab', host: 'gl.example', path: 'acme/widgets' },
+                }),
+            },
         });
         expect((await post(other, ASK)).statusCode).toBe(403);
     });

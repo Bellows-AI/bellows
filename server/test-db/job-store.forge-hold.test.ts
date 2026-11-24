@@ -137,6 +137,27 @@ describe.skipIf(!enabled)('the claim holds a continuation whose starter has no l
         expect(await openForgeRows(root)).toEqual([{ target: 'github', reason: 'missing', source: 'create' }]);
     });
 
+    it("decides a GitLab task's standing for its own forge and host, whatever the GitHub grant says", async () => {
+        const root = await finishedRoot(ALICE);
+        await sql`update job set forge = 'gitlab', host = 'gl.example' where org_id = ${ORG} and root_job_id = ${root}`;
+        await followUp(root, ALICE);
+
+        // ALICE's GitHub grant is live: it must not stand in for a GitLab grant she does not hold.
+        expect(await claimNext()).toBeNull();
+
+        expect(await openForgeRows(root)).toEqual([
+            { target: 'gitlab:gl.example', reason: 'missing', source: 'create' },
+        ]);
+    });
+
+    it('decides a github.com task against the GitHub grant, as before', async () => {
+        const root = await finishedRoot(ALICE);
+        const next = await followUp(root, ALICE);
+
+        expect((await claimNext())?.id).toBe(next);
+        expect(await openForgeRows(root)).toEqual([]);
+    });
+
     it('a re-link satisfies the requirement and the next claim returns the row', async () => {
         const root = await finishedRoot(ALICE);
         const next = await followUp(root, ALICE);
