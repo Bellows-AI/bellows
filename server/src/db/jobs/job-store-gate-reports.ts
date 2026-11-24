@@ -10,6 +10,12 @@ export interface ThreadGateReports {
     last: LastGateReport[];
 }
 
+/** The run a stored report is, for its log stream: its own, or for a reused pass the one it was served from. */
+const executionOf = (gate: GateReport): { executionId?: string } => {
+    const executionId = gate.reused?.executionId ?? gate.executionId;
+    return executionId ? { executionId } : {};
+};
+
 /** The thread's rows before `jobId` that stored a gate report, oldest first, and what they say. */
 export async function readThreadGateReports(
     tx: TransactionSql,
@@ -35,6 +41,7 @@ export async function readThreadGateReports(
                 exitCode: gate.exitCode,
                 output: gate.output === null ? null : gateOutputTail(gate),
                 ...(gate.result ? { result: gate.result } : {}),
+                ...executionOf(gate),
             });
         }
     }

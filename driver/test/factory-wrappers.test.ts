@@ -153,6 +153,14 @@ describe('factory-gate', () => {
         expect(gate.seen).toHaveLength(1);
     });
 
+    it('sends --last --full as last and full, and refuses --full alone', async () => {
+        const gate = await serve(200, '{"exitCode":1,"last":true,"full":true}', true);
+        await run(GATE, ['test', '--last', '--full'], env(gate.listen));
+        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ tool: 'gate:test', input: { last: true, full: true } });
+        expect((await run(GATE, ['test', '--full'], env(gate.listen))).code).toBe(2);
+        expect(gate.seen).toHaveLength(1);
+    });
+
     it('keeps the "no report" answer of --last: body printed, HTTP exit', async () => {
         const body = '{"error":"no stored report for gate \\"test\\" in this thread"}';
         const gate = await serve(404, body, true);

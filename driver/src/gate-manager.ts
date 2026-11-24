@@ -7,7 +7,8 @@ import { type GateResources, type GateResult, gateResultOf } from './gate-result
 import { type GateExecution, type GateMeasure, measuredRun } from './gate-record.js';
 import { annotateActiveSpan, withChildSpan } from './lifecycle-span.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
-import { reportTail } from './runner.js';
+import { failureExcerpt } from './gate-excerpt.js';
+import { ARTIFACT_LIMIT, REPORT_BYTE_LIMIT, tailKept } from './runner.js';
 import { StepTokenUnanswered } from './step-control.js';
 import type { GateStepRequest } from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
@@ -36,7 +37,14 @@ const TIMEOUT_EXIT_CODE = 124;
 /** What one gate run came back with. `exitCode` is the gate command's own status. */
 export interface GateRun {
     exitCode: number | null;
+    /** What the answer carries: the whole output when it fits, else the failure lines and the tail (`failureExcerpt`). */
     output: string;
+    /**
+     * The run's whole output, tail-kept at `ARTIFACT_LIMIT` — what the gate-log artifact stream stores. Absent when
+     * `output` is all of it; `fullTruncated` when the head was cut.
+     */
+    fullOutput?: string;
+    fullTruncated?: true;
     /** True when the environment's `setup` command failed: the gate itself never ran. */
     setupFailed?: true;
     /** What the run measured around the gate command; present only for a run given an `execution`. */
@@ -183,18 +191,25 @@ export function envBodyRecord(body: string): Record<string, string> {
  */
 function gateRunOf(result: StepResult, deadlineMs: number): GateRun {
     if (result.tokenAskUnanswered) throw new StepTokenUnanswered();
-    const output = reportTail(`${result.stdout}${result.stderr}`.trim());
+    const full = tailKept(`${result.stdout}${result.stderr}`.trim(), ARTIFACT_LIMIT);
+    const output = failureExcerpt(full.content, REPORT_BYTE_LIMIT);
+    // Beside the answer only when the answer is less than the log: output that fits is its own whole.
+    const whole =
+        full.content === output
+            ? {}
+            : { fullOutput: full.content, ...(full.truncated ? { fullTruncated: true as const } : {}) };
     const recorded = gateResultOf(result.report, result.timedOut);
     const structured = recorded ? { result: recorded } : {};
     if (result.timedOut) {
         return {
             exitCode: TIMEOUT_EXIT_CODE,
             output: output || `[driver] gate killed after ${deadlineMs}ms`,
+            ...whole,
             ...structured,
         };
     }
     if (result.exitCode === null) throw gateHarness(result.stderr.trim() || 'the gate container answered no exit');
-    return { exitCode: result.exitCode, output, ...structured };
+    return { exitCode: result.exitCode, output, ...whole, ...structured };
 }
 
 interface SupervisedEntry {

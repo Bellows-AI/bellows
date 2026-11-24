@@ -1502,6 +1502,80 @@ describe('the gate server: reading the last stored report', () => {
         await server.close();
     });
 
+    describe('--last --full', () => {
+        const EXECUTION = '77777777-7777-4777-8777-777777777777';
+        const full = {
+            ...withReports,
+            lastGateReports: [{ ...withReports.lastGateReports![0]!, executionId: EXECUTION }],
+        };
+        const serveFull = async (readGateLog: GateClaim['readGateLog'], job: BoardJob = full) => {
+            const server = createGateServer({ host: '127.0.0.1', manager: idle });
+            server.register('tok-1', { key: KEY, image: 'node:24', job, gates: LONG_GATES, readGateLog });
+            const port = await server.listen();
+            const post = (input: object) =>
+                fetch(`http://127.0.0.1:${port}/run`, {
+                    method: 'POST',
+                    headers: { authorization: 'Bearer tok-1' },
+                    body: JSON.stringify({ tool: 'gate:test:db', input }),
+                });
+            return { server, post };
+        };
+
+        it("answers the run's whole stored output in place of the report excerpt", async () => {
+            const read = vi.fn(async () => ({
+                text: 'FAIL a.test.ts\n...stacks...\nTests 1 failed',
+                truncated: false,
+            }));
+            const { server, post } = await serveFull(read);
+
+            const answer = await post({ last: true, full: true });
+
+            expect(answer.status).toBe(OK_STATUS);
+            await expect(answer.json()).resolves.toEqual({
+                verdict: 'failed',
+                exitCode: 1,
+                output: 'FAIL a.test.ts\n...stacks...\nTests 1 failed',
+                artifacts: [],
+                last: true,
+                full: true,
+            });
+            expect(read).toHaveBeenCalledWith(EXECUTION, expect.any(AbortSignal));
+            await server.close();
+        });
+
+        it('says when the stored log kept only a tail', async () => {
+            const { server, post } = await serveFull(async () => ({ text: 'tail', truncated: true }));
+            await expect((await post({ last: true, full: true })).json()).resolves.toMatchObject({ truncated: true });
+            await server.close();
+        });
+
+        it('answers 404 when the report names no run, or the board no longer holds its log', async () => {
+            const gone = await serveFull(async () => null);
+            expect((await gone.post({ last: true, full: true })).status).toBe(NOT_FOUND_STATUS);
+            await gone.server.close();
+            const unnamed = await serveFull(async () => ({ text: 'x', truncated: false }), withReports);
+            expect((await unnamed.post({ last: true, full: true })).status).toBe(NOT_FOUND_STATUS);
+            await unnamed.server.close();
+        });
+
+        it('answers a retryable 503 when the board could not be read, never the excerpt', async () => {
+            const { server, post } = await serveFull(async () => {
+                throw new Error('board unreachable');
+            });
+            const answer = await post({ last: true, full: true });
+            expect(answer.status).toBe(UNAVAILABLE_STATUS);
+            await expect(answer.json()).resolves.toMatchObject({ retryable: true });
+            await server.close();
+        });
+
+        it('refuses full without last', async () => {
+            const { server, post } = await serveFull(async () => null);
+            expect((await post({ full: true })).status).toBe(BAD_REQUEST_STATUS);
+            expect((await post({ last: true, full: 'yes' })).status).toBe(BAD_REQUEST_STATUS);
+            await server.close();
+        });
+    });
+
     it('answers a clear "no report" for a declared gate the thread never ran', async () => {
         const { server, post } = await serveGates(idle, {
             gates: [...LONG_GATES, { name: 'typecheck', command: 'npm run typecheck' }],

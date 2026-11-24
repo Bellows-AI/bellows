@@ -296,6 +296,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/checkpoint/chunk', 'worker'],
     ['/api/jobs/:id/transcripts', 'worker'],
     ['/api/jobs/:id/transcripts/chunk', 'worker'],
+    // One gate run's whole output, read back under the live lease.
+    ['/api/jobs/:id/gate-log', 'worker'],
     // The task's input files, fetched by the runner under the live lease.
     ['/api/jobs/:id/attachments/:attachmentId/content', 'worker'],
     // A task's pinned skill bundles, fetched by the runner under the live lease.

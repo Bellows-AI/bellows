@@ -34,6 +34,10 @@ export const ARTIFACT_CAUSE = {
 } as const;
 /** The stream the driver's finalize stage uploads the task's git state and session on. */
 export const CHECKPOINT_STREAM = 'checkpoint';
+/** A gate run's whole output is the stream `gate-<name>-<execution id>`; the driver's twin is `ARTIFACT_STREAM.gatePrefix`. */
+export const GATE_STREAM_PREFIX = 'gate-';
+/** The cause the driver's manifest gives a stream whose head it cut at its capture limit (`UPLOAD_CAUSE.headDropped`). */
+export const HEAD_DROPPED_CAUSE = 'head_dropped';
 /** A checkpoint manifest's cause when the producer hit its cap and uploaded the header only. */
 export const CHECKPOINT_CAP_CAUSE = 'checkpoint_cap';
 export type ChunkRefusal = (typeof ARTIFACT_CAUSE)[keyof typeof ARTIFACT_CAUSE];

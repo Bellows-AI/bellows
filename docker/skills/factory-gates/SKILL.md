@@ -66,6 +66,18 @@ latest passed or failed report of that gate in this task, as of when this run st
 A gate that has never run in this task answers 404 `no stored report for gate "<name>" in this thread` (exit 22, body printed):
 say so instead of guessing. Takes no `--filter`.
 
+The report's output is an excerpt: for a failed gate, its failure lines (`FAIL`, `×`, the `Test Files` / `Tests` summary)
+first, then the tail. When the excerpt does not show what failed, read the run's whole output:
+
+```bash
+factory-gate test --last --full
+```
+
+`--last --full` answers the same JSON with `output` the gate's whole stored output (its last 512 KiB; `"truncated":true`
+says the head is gone), read from the board. A run whose log the board no longer holds answers 404 (exit 22); a read that
+could not be made answers a retryable 503 (exit 22) — try again, do not guess from the excerpt. Redirect it to a file and
+search that (`factory-gate test --last --full > /tmp/test.json`) rather than printing it whole.
+
 A follow-up that continues a run whose gates failed also starts with the failed gates' name, exit code and output after the
 person's message. When you are told a gate failed (or "fix tests") and you cannot see why, read it with `--last` before you
 guess at a fix; a long gate you cannot rerun here is exactly what it is for.

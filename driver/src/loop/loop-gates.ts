@@ -3,10 +3,11 @@ import type { BoardJob, DeclaredGate } from '../board/board.js';
 import type { GateRunRecord, GateRunSource } from '../board/board-gate-runs.js';
 import { envFileBody, setupTimeoutMs } from '../claim.js';
 import { tailBytes, type DeadService } from '../runner.js';
+import { outputBudgets, settledGate, type OutputBudgets } from './gate-report-output.js';
 import { stepLost } from '../step-control.js';
 import type { GateRun } from '../gate-manager.js';
 import { declaredTimeoutMs, type GateLedger } from '../gates.js';
-import { compactResult, type GateResult } from '../gate-result.js';
+import type { GateResult } from '../gate-result.js';
 import { gateIdentity, orgKeyOf } from '../gate-identity.js';
 import { recordGateRun, type GateEnd } from '../gate-record.js';
 import { SETUP_FAILED_PREFIX } from '../gate-cause.js';
@@ -15,15 +16,15 @@ import { down, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from '../supervisor-contract.js';
 import type { JobState } from './loop-attempt.js';
 import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
+import { gateStreamName, uploadGateLog } from '../artifact-upload.js';
 import { checkoutKey } from '../publish/publish.js';
 import { gatesUnderDaemon, readDaemon } from '../dockerd-loss.js';
 import { describeError } from '../log.js';
 import { declaresGateEnvironment, finishGates } from '../tools.js';
 
-/** The report must fit the board's 128 KiB body: the raw per-gate tail budget, and its floor. */
-const GATES_REPORT_BUDGET_BYTES = 16384;
-const PER_GATE_OUTPUT_FLOOR_BYTES = 1024;
 const REFUSED_TO_RUN_EXIT_CODE = 125;
+/** How long a gate's log upload retries a board that is down: the answer waits on it, so it is short. */
+const GATE_LOG_UPLOAD_MS = 30_000;
 
 /**
  * One gated job's live registration: the checkout key its environment is filed under, the token
@@ -150,6 +151,7 @@ export async function beginGates(
             job,
             gates: job.gates.gates,
             ledger,
+            readGateLog: (executionId, signal) => rt.board.gateLog(job, executionId, signal),
             // The agent's ad-hoc gate found the supervisor lost: the attempt's, once its run is over.
             onInfraLoss: (reason) => {
                 state.gateLoss ??= reason;
@@ -289,6 +291,14 @@ export function gateLedger(rt: LoopRuntime, job: BoardJob, runClaimSeq: number):
         probe: (signal, sinceMs) => rt.runner.probeGateTree(job, sinceMs ?? null, signal),
         identity: (gate) => gateIdentity(orgKeyOf(job), job, gate, stableGateEnvBody(job)),
         write: async (row, signal) => (await rt.board.gateRun(job, { runClaimSeq, ...row }, signal)) === 'ok',
+        async storeLog({ executionId, gate, text, truncated }) {
+            await uploadGateLog(
+                { board: rt.board, job, stream: gateStreamName(gate, executionId) },
+                { text, truncated },
+                rt,
+                { budgetMs: GATE_LOG_UPLOAD_MS, signal: AbortSignal.timeout(GATE_LOG_UPLOAD_MS) }
+            );
+        },
     };
 }
 
@@ -363,23 +373,6 @@ async function runOneGate(
     } finally {
         await record.finish(end);
     }
-}
-
-/** A finished gate's report entry, and the text a failure carries to the board. */
-function settledGate(gate: DeclaredGate, outcome: GateRun, perGate: number): { entry: GateReport; text: string } {
-    // A failed setup is not this gate's verdict: the output names it so the board's `gates`
-    // and the job's `output` tell the two apart.
-    const text = outcome.setupFailed ? `${SETUP_FAILED_PREFIX}${outcome.output}` : outcome.output;
-    return {
-        entry: {
-            name: gate.name,
-            status: outcome.exitCode !== 0 ? 'failed' : 'passed',
-            exitCode: outcome.exitCode,
-            output: tailBytes(text, perGate),
-            ...(outcome.result ? { result: compactResult(outcome.result) } : {}),
-        },
-        text,
-    };
 }
 
 /**
@@ -462,17 +455,14 @@ export async function runDeclaredGates(
         reporting = reporting.then(send);
         return reporting;
     };
-    // The report must fit the board's 128 KiB body however many gates declared and however
-    // verbose they were — JSON escaping can inflate bytes six-fold, so the raw budget per
-    // gate shrinks as the list grows (16 gates still get 1 KiB of tail each).
-    const perGate = Math.max(
-        PER_GATE_OUTPUT_FLOOR_BYTES,
-        Math.floor(GATES_REPORT_BUDGET_BYTES / gateSession.declared.length)
+    const budgets = outputBudgets(
+        gateSession.declared.length,
+        Math.max(1, ...segmentsOf(gateSession.declared).map((segment) => segment.length))
     );
     // A setup that failed in this claim's environment is retried by running the gates, never skipped
     // by serving them from an earlier pass: the reuse waits for a setup that succeeded.
     const content = job.setupFailure ? null : await contentOf(runCtx, treeAfter);
-    const walk: GateWalk = { ...runCtx, treeAfter, content, results, perGate, report };
+    const walk: GateWalk = { ...runCtx, treeAfter, content, results, budgets, report };
     // Ad-hoc admission is already closed and drained (`probeTreeNow`, before the pass's tree is read),
     // so every ad-hoc run has landed in the record read here.
     let earlier = content === null ? null : await readGateRuns(runCtx);
@@ -494,7 +484,7 @@ interface GateWalk extends GatesRunCtx {
     /** The content key of `treeAfter`: what a reused pass must have run on. Null: nothing is reused. */
     content: string | null;
     results: GateReport[];
-    perGate: number;
+    budgets: OutputBudgets;
     report: () => Promise<void>;
 }
 
@@ -543,7 +533,7 @@ async function executeGate(
     index: number,
     parallel: boolean
 ): Promise<GateFailure | null | typeof GATE_PASSED> {
-    const { state, results, perGate, report } = w;
+    const { state, results, budgets, report } = w;
     results[index] = {
         name: gate.name,
         status: 'running',
@@ -561,7 +551,7 @@ async function executeGate(
     // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
     // and a cancelled gate is never reported failed — a verdict must not read it.
     if (!outcome || down(state)) return null;
-    const { entry, text } = settledGate(gate, outcome, perGate);
+    const { entry, text } = settledGate(gate, outcome, budgets);
     // Replace the gate's own entry — one entry per declared gate, always, so the list the
     // board stores IS the declared list at its current state.
     results[index] = { ...entry, executionId: raced!.value!.executionId };

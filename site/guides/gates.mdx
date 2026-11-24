@@ -112,7 +112,11 @@ The gates that run when the agent finishes run after it has exited, so their out
 - A follow-up on a task whose last run failed a gate starts with that gate's name, exit code and the tail of its output after your message. A gate that passed or was skipped adds nothing.
 - The agent can read a gate's last stored report with `factory-gate <name> --last`, without running it, including a gate whose `timeout` above 10 refuses an ad hoc run. It answers the latest passed or failed report of that gate in the task, as of when the run started, and says so when the gate has not run in the task yet.
 
-Reports are cut to about 4 KiB, the same as `{{gate.output}}` in a workflow.
+Reports are cut to about 4 KiB, the same as `{{gate.output}}` in a workflow. A failed gate's cut keeps its failure lines first (`FAIL` and `×` lines and the `Test Files` and `Tests` summary), then the tail, so the failing files are named even when error stacks fill the log. Passed gates keep a short tail, and the failed ones share the rest of the report.
+
+### The whole output
+
+Every gate run also stores its whole output, up to its last 512 KiB, as a log stream of the task named `gate-<gate name>-<run id>`. The gate name is folded to letters, digits, `_` and `-`. List the streams with `bellows job streams <id>` and read one with `bellows job read <id> --stream gate-<gate name>-<run id>`; the MCP `read_job_log` tool reads the same stream. The agent reads the last run's whole output with `factory-gate <name> --last --full`, which answers the same JSON as `--last` with the whole output in `output`, and `"truncated": true` when the head was cut. A run whose log the board no longer holds answers 404, and a read that could not be made a retryable 503.
 
 ## What a gate records beside its output
 

@@ -224,3 +224,35 @@ describe('the round cap on the claim', () => {
         expect('finishRounds' in claim).toBe(false);
     });
 });
+
+describe("a gate run's whole output", () => {
+    const job = boardJob();
+    const executionId = '77777777-7777-4777-8777-777777777777';
+
+    it('reads the stored log by execution id under the lease', async () => {
+        const read = recorder(() => Response.json({ text: 'FAIL a.test.ts', truncated: true }));
+        expect(await boardOn(read.fetch).gateLog(job, executionId)).toEqual({
+            text: 'FAIL a.test.ts',
+            truncated: true,
+        });
+        expect(read.calls[0]!.url).toBe('http://board/api/jobs/job-1/gate-log');
+        expect(read.calls[0]!.body).toEqual({ leaseToken: job.leaseToken, executionId });
+    });
+
+    it('answers null for a log the board does not hold, and throws for any answer it cannot read', async () => {
+        const missing = recorder(() => Response.json({ code: 'NOT_FOUND' }, { status: 404 }));
+        expect(await boardOn(missing.fetch).gateLog(job, executionId)).toBeNull();
+        const down = recorder(() => Response.json({ error: 'down' }, { status: 500 }));
+        await expect(boardOn(down.fetch).gateLog(job, executionId)).rejects.toThrow();
+        const garbled = recorder(() => Response.json({ nothing: true }));
+        await expect(boardOn(garbled.fetch).gateLog(job, executionId)).rejects.toThrow('unreadable');
+    });
+
+    it('carries the execution id of a stored report through the claim', () => {
+        const { finishRounds: _none, ...wire } = boardJob();
+        const report = { name: 'test', status: 'failed', exitCode: 1, output: 'x', executionId };
+        const parsed = parseClaim({ ...wire, lastGateReports: [report] }) as { claim: BoardJob };
+        expect(parsed.claim.lastGateReports?.[0]?.executionId).toBe(executionId);
+        expect('claim' in parseClaim({ ...wire, lastGateReports: [{ ...report, executionId: 5 }] })).toBe(false);
+    });
+});

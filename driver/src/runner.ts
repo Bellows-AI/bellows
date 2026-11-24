@@ -659,7 +659,7 @@ export const OPENCODE_EXPORT_LIMIT = ARTIFACT_LIMIT / 2;
  * the one outcome worse than a short log.
  */
 const REPORT_LIMIT_KIB = 16;
-const REPORT_BYTE_LIMIT = REPORT_LIMIT_KIB * BYTES_PER_KIB;
+export const REPORT_BYTE_LIMIT = REPORT_LIMIT_KIB * BYTES_PER_KIB;
 
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder('utf-8');

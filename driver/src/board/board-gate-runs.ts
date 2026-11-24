@@ -9,6 +9,7 @@ import type { BoardJob } from './board.js';
 import { leasedWriter, type Post } from './board-lease-write.js';
 
 const CONFLICT_CODE = 'GATE_RUN_CONFLICT';
+const HTTP_NOT_FOUND = 404;
 
 /** Where a gate run came from: the agent's ad-hoc call, the end-of-run gates pass, or a finish pass inside the run. */
 export const GATE_RUN_SOURCES = ['adhoc', 'completion', 'finish'] as const;
@@ -115,6 +116,16 @@ export interface GateRunBoard {
      */
     gateRuns(job: BoardJob, signal?: AbortSignal): Promise<GateRunRecord[] | null>;
     /**
+     * One recorded run's whole output, the log stream the driver stored for it (`gate-<name>-<execution id>`), read
+     * under the lease from the thread's rows. Null when the board holds none; throws on any other answer, so an
+     * unreadable log is never read as a missing one.
+     */
+    gateLog(
+        job: BoardJob,
+        executionId: string,
+        signal?: AbortSignal
+    ): Promise<{ text: string; truncated: boolean } | null>;
+    /**
      * Records one answered finish pass under the lease: `ok` only when the board took it. Never throws:
      * `lost` when the lease is not this attempt's, `rejected` for anything else the board did not take.
      */
@@ -147,6 +158,21 @@ export function gateRunCalls(post: Post): GateRunBoard {
             } catch {
                 return null;
             }
+        },
+
+        async gateLog(job, executionId, signal) {
+            const response = await post(
+                `/api/jobs/${job.id}/gate-log`,
+                { leaseToken: job.leaseToken, executionId },
+                true,
+                {
+                    signal,
+                }
+            );
+            if (response.status === HTTP_NOT_FOUND) return null;
+            const body = (await response.json().catch(() => null)) as { text?: unknown; truncated?: unknown } | null;
+            if (typeof body?.text !== 'string') throw new Error(`job ${job.id}: the gate log answer is unreadable`);
+            return { text: body.text, truncated: body.truncated === true };
         },
 
         async finishPass(job, write, signal) {

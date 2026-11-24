@@ -247,6 +247,8 @@ export interface BoardJob extends ClaimSkills {
         exitCode: number | null;
         output: string | null;
         result?: GateResult;
+        /** The recorded run this report is (a reused pass: the run it was served from): the key of its full log stream. */
+        executionId?: string;
     }[];
     /**
      * The services the same file declares, already validated as one plan (`planRefusal` carries a

@@ -26,7 +26,7 @@ import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
 import type { GateManager, GateRun, GateRunOptions } from '../../src/gate-manager.js';
 import type { GateResult } from '../../src/gate-result.js';
-import type { GateServer } from '../../src/gates.js';
+import type { GateClaim, GateServer } from '../../src/gates.js';
 import type { FinishRelay } from '../../src/control-channel.js';
 import { measuredRun } from '../../src/gate-record.js';
 import type { HelperResult } from '../../src/helpers.js';
@@ -51,6 +51,7 @@ import type {
     Runner,
     RuntimeSample,
 } from '../../src/runner.js';
+import { reportTail } from '../../src/runner.js';
 import type { StepResult, SupervisorBinding } from '../../src/supervisor-contract.js';
 
 export const USER = '44444444-4444-4444-8444-444444444444';
@@ -403,6 +404,12 @@ export function stubBoard(
             const answer = options.gateRuns ?? null;
             return typeof answer === 'function' ? answer(signal) : answer;
         },
+        async gateLog(_claimed, executionId) {
+            const chunks = board.artifactChunks
+                .filter((chunk) => chunk.stream.startsWith('gate-') && chunk.stream.endsWith(`-${executionId}`))
+                .sort((a, b) => a.offset - b.offset);
+            return chunks.length === 0 ? null : { text: chunks.map((chunk) => chunk.text).join(''), truncated: false };
+        },
         async finishPass(_claimed, write) {
             board.finishPassesWritten.push(structuredClone(write));
             const answer = options.finishPassWrite ?? 'ok';
@@ -751,6 +758,8 @@ export function stubGateStack(
         measure?: boolean;
         /** The structured result each named gate answers beside its output, on every run. */
         results?: Record<string, GateResult>;
+        /** The whole output each named gate prints when it fails: the run answers its report tail beside it, as the manager does. */
+        fullOutputs?: Record<string, string>;
     } = {}
 ) {
     const runs = new Map<string, number>();
@@ -781,6 +790,8 @@ export function stubGateStack(
         registered: 0,
         /** Each token the gate server registered, in order. */
         registeredTokens: [] as string[],
+        /** Each claim the gate server registered, in order: what the ad-hoc endpoint reads of the run. */
+        claims: [] as GateClaim[],
         unregistered: 0,
         cancelled: [] as string[],
         /** Each token the gate server closed to ad-hoc runs, in order. */
@@ -812,9 +823,16 @@ export function stubGateStack(
                     await options.hold?.(name, runOptions.signal);
                     const code = nextCode(name);
                     const result = options.results?.[name];
+                    const full = code === 0 ? undefined : options.fullOutputs?.[name];
                     return {
                         exitCode: code,
-                        output: code === 0 ? `${name} ok` : `${name} failed badly`,
+                        output:
+                            full === undefined
+                                ? code === 0
+                                    ? `${name} ok`
+                                    : `${name} failed badly`
+                                : reportTail(full),
+                        ...(full === undefined ? {} : { fullOutput: full }),
                         ...(result ? { result } : {}),
                     };
                 };
@@ -832,9 +850,10 @@ export function stubGateStack(
             stop: async () => {},
         } as GateManager,
         server: {
-            register: (token: string) => {
+            register: (token: string, claim: GateClaim) => {
                 stack.registered += 1;
                 stack.registeredTokens.push(token);
+                stack.claims.push(claim);
             },
             unregister: () => {
                 stack.unregistered += 1;

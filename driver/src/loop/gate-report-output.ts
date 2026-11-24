@@ -1,0 +1,63 @@
+import type { DeclaredGate } from '../board/board.js';
+import { failureExcerpt } from '../gate-excerpt.js';
+import type { GateRun } from '../gate-manager.js';
+import { compactResult } from '../gate-result.js';
+import { SETUP_FAILED_PREFIX } from '../gate-cause.js';
+import { tailBytes } from '../runner.js';
+import type { GateReport } from './loop-gates.js';
+
+/** The report must fit the board's 128 KiB body: the raw per-gate tail budget, and its floor. */
+const GATES_REPORT_BUDGET_BYTES = 16384;
+const PER_GATE_OUTPUT_FLOOR_BYTES = 1024;
+/** A passed gate's excerpt: nobody reads its output for a reason, so it costs the least. */
+const PASSED_OUTPUT_BYTES = 512;
+
+/** How much output a gate's report entry keeps, by its verdict. */
+export interface OutputBudgets {
+    passed: number;
+    failed: number;
+}
+
+/**
+ * The report must fit the board's 128 KiB body however many gates declared and however verbose they
+ * were — JSON escaping can inflate bytes six-fold — so the raw budget is split by verdict: a passed
+ * gate keeps a short tail, and the failed ones share what the rest leave. The gates that can fail
+ * together are those of one parallel segment (a serial walk stops at the first failure); the
+ * floor keeps 16 gates at 1 KiB each at the least.
+ */
+export function outputBudgets(declared: number, together: number): OutputBudgets {
+    const passing = Math.max(0, declared - together);
+    return {
+        passed: PASSED_OUTPUT_BYTES,
+        failed: Math.max(
+            PER_GATE_OUTPUT_FLOOR_BYTES,
+            Math.floor((GATES_REPORT_BUDGET_BYTES - passing * PASSED_OUTPUT_BYTES) / together)
+        ),
+    };
+}
+
+/** A finished gate's report entry, and the text a failure carries to the board. */
+export function settledGate(
+    gate: DeclaredGate,
+    outcome: GateRun,
+    budgets: OutputBudgets
+): { entry: GateReport; text: string } {
+    // A failed setup is not this gate's verdict: the output names it so the board's `gates`
+    // and the job's `output` tell the two apart.
+    const prefix = outcome.setupFailed ? SETUP_FAILED_PREFIX : '';
+    const text = `${prefix}${outcome.output}`;
+    const failed = outcome.exitCode !== 0;
+    return {
+        entry: {
+            name: gate.name,
+            status: failed ? 'failed' : 'passed',
+            exitCode: outcome.exitCode,
+            // A failure keeps its failing lines first, from the whole output rather than from its report tail.
+            output: failed
+                ? failureExcerpt(`${prefix}${outcome.fullOutput ?? outcome.output}`, budgets.failed)
+                : tailBytes(text, budgets.passed),
+            ...(outcome.result ? { result: compactResult(outcome.result) } : {}),
+        },
+        text,
+    };
+}

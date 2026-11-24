@@ -19,7 +19,7 @@ const PRINTABLE_FILTER = /^[\x20-\x7e]+$/;
 const GATE_PREFIX = 'gate:';
 
 export type GateRequest =
-    | { ok: true; gate: string; filter?: string; last?: true }
+    | { ok: true; gate: string; filter?: string; last?: true; full?: true }
     | { ok: true; exec: string }
     | { ok: false; status: number; error: string };
 
@@ -37,18 +37,24 @@ const execRequest = (input: Record<string, unknown>): GateRequest => {
     return { ok: true, exec: input.command };
 };
 
-/** A gate tool's input: none, `{"filter": "<pattern>"}` or `{"last": true}`. */
+/** `{"last": true}` or `{"last": true, "full": true}`: the stored report, never with a filter, and `full` only beside `last`. */
+const lastRequest = (gate: string, input: Record<string, unknown>): GateRequest => {
+    if (input.last === undefined) return refused('full reads the last report: it needs last');
+    if (input.last !== true) return refused('last must be true');
+    if (input.filter !== undefined) return refused('last reads a stored report: it takes no filter');
+    if (input.full === undefined) return { ok: true, gate, last: true };
+    if (input.full !== true) return refused('full must be true');
+    return { ok: true, gate, last: true, full: true };
+};
+
+/** A gate tool's input: none, `{"filter": "<pattern>"}`, `{"last": true}` or `{"last": true, "full": true}`. */
 const gateRequest = (gate: string, input: Record<string, unknown> | undefined): GateRequest => {
     if (!gate.trim()) return refused('gate must be a name');
     if (input === undefined) return { ok: true, gate };
-    if (Object.keys(input).some((key) => key !== 'filter' && key !== 'last')) {
-        return refused('a gate input carries filter or last alone');
+    if (Object.keys(input).some((key) => key !== 'filter' && key !== 'last' && key !== 'full')) {
+        return refused('a gate input carries filter, or last with full, alone');
     }
-    if (input.last !== undefined) {
-        if (input.last !== true) return refused('last must be true');
-        if (input.filter !== undefined) return refused('last reads a stored report: it takes no filter');
-        return { ok: true, gate, last: true };
-    }
+    if (input.last !== undefined || input.full !== undefined) return lastRequest(gate, input);
     if (input.filter === undefined) return { ok: true, gate };
     if (typeof input.filter !== 'string' || !input.filter.trim() || input.filter.length > FILTER_MAX_CHARS) {
         return refused(`filter must be 1-${FILTER_MAX_CHARS} printable characters`);
