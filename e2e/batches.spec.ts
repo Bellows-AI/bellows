@@ -85,7 +85,11 @@ test.describe('batch pages', () => {
         const saved = (await page.request.get(`/api/batches/${id}`).then((r) => r.json())) as BatchRecord;
         expect(saved.status).toBe('draft');
         expect(saved.tasks).toHaveLength(3);
-        expect(saved.plan).toMatchObject({ executor: 'Main ORG', executorScope: 'org' });
+        expect(saved.plan).toMatchObject({
+            executor: 'Main ORG',
+            executorScope: 'org',
+            targets: [{ repo: { forge: 'github', host: 'github.com', path: 'acme/widgets' } }],
+        });
 
         // The review before launch: every effective value says where it came from.
         board.adopt({

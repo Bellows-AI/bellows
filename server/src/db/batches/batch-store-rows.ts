@@ -5,11 +5,10 @@ import {
     BATCH_COMPLETION_PR,
     type ExecutorScope,
     type ExecutorType,
-    githubRepo,
     TASK_NO_PR,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
-import { refColumns } from '../repo-ref-row.js';
+import { refColumns, refOfRow, type RepoRow } from '../repo-ref-row.js';
 import {
     BATCH_LIST_LIMIT,
     DECISION_ADVANCE,
@@ -105,9 +104,8 @@ interface BatchRow {
     expired_at: Date | null;
 }
 
-interface TargetRow {
+interface TargetRow extends RepoRow {
     key: string;
-    repo: string;
     branch: string | null;
 }
 
@@ -150,7 +148,11 @@ function planOf(batch: BatchRow, targets: TargetRow[], stages: StageRow[], tasks
     return {
         planVersion: batch.plan_version as BatchPlan['planVersion'],
         title: batch.title,
-        targets: targets.map((t) => ({ key: t.key, repo: t.repo, ...(t.branch === null ? {} : { branch: t.branch }) })),
+        targets: targets.map((t) => ({
+            key: t.key,
+            repo: refOfRow(t),
+            ...(t.branch === null ? {} : { branch: t.branch }),
+        })),
         ...(batch.default_target === null ? {} : { defaultTarget: batch.default_target }),
         ...(batch.executor === null ? {} : { executor: batch.executor }),
         ...(batch.executor_scope === null ? {} : { executorScope: batch.executor_scope }),
@@ -216,7 +218,7 @@ export async function readRecord(sql: Sql | TransactionSql, { orgId, id }: Batch
     if (!batch) return null;
     const [targets, stages, tasks, advanced, verification] = await Promise.all([
         sql<TargetRow[]>`
-            select key, repo, branch from batch_target
+            select key, forge, host, repo, branch from batch_target
             where org_id = ${orgId} and batch_id = ${id} order by position
         `,
         sql<StageRow[]>`
@@ -320,8 +322,7 @@ export async function insertChildren(tx: TransactionSql, { orgId, id }: BatchAdd
         batch_id: id,
         key: target.key,
         position,
-        // The plan wire is owner/name (GitHub); the stored target carries the whole triple.
-        ...refColumns(githubRepo(target.repo)),
+        ...refColumns(target.repo),
         branch: target.branch ?? null,
     }));
     await tx`insert into batch_target ${tx(targets, 'org_id', 'batch_id', 'key', 'position', 'forge', 'host', 'repo', 'branch')}`;

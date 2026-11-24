@@ -1,6 +1,7 @@
 import { createServer } from 'node:net';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { describe, expect, it } from 'vitest';
+import { githubRepo } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { McpCaller, OAuthStore } from '../src/auth/oauth-store.js';
 import { hashToken } from '../src/auth/session.js';
@@ -63,7 +64,7 @@ const task = (key: string, extra: Record<string, unknown> = {}) => ({
 const plan = (overrides: Record<string, unknown> = {}) => ({
     planVersion: 1,
     title: 'Upgrade',
-    targets: [{ key: 'web', repo: WEB }],
+    targets: [{ key: 'web', repo: githubRepo(WEB) }],
     defaultTarget: 'web',
     stages: [
         { key: 'one', tasks: [task('a'), task('b')] },
@@ -75,8 +76,8 @@ const plan = (overrides: Record<string, unknown> = {}) => ({
 const twoRepoPlan = () =>
     plan({
         targets: [
-            { key: 'web', repo: WEB },
-            { key: 'api', repo: API },
+            { key: 'web', repo: githubRepo(WEB) },
+            { key: 'api', repo: githubRepo(API) },
         ],
         stages: [{ key: 'one', tasks: [task('a'), task('b', { target: 'api' })] }],
     });
@@ -282,7 +283,7 @@ describe('the batch tools', () => {
         expect(checked.isError).toBeFalsy();
         expect(checked.data).toMatchObject({ valid: true, version: 1 });
         // The resolved plan: the default branch named, the task target filled in.
-        expect(checked.data.plan.targets[0]).toMatchObject({ key: 'web', repo: WEB, branch: 'main' });
+        expect(checked.data.plan.targets[0]).toMatchObject({ key: 'web', repo: githubRepo(WEB), branch: 'main' });
         expect(checked.data.plan.stages[0].tasks[0]).toMatchObject({ key: 'a', target: 'web' });
         expect(store.writes).toEqual(['create']);
 
@@ -897,6 +898,17 @@ describe('get_batch_tasks', () => {
         expect(byTarget.data.tasks[0]).toMatchObject({ target: 'api', repo: API });
         const web = await call(url, 'reader', 'get_batch_tasks', { batchId: draft, target: 'web' });
         expect(keysOf(web.data)).toEqual(['a']);
+    });
+
+    it('writes a gitlab target as its text form, in repo and in ref', async () => {
+        const { url } = await boot();
+        const gitlab = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' };
+        const { id } = await imported(url, plan({ targets: [{ key: 'web', repo: gitlab, branch: 'main' }] }));
+        const out = await call(url, 'reader', 'get_batch_tasks', { batchId: id, stage: 'one' });
+        expect(out.data.tasks[0]).toMatchObject({
+            repo: 'gitlab:gl.example/g/sub/p',
+            ref: 'gitlab:gl.example/g/sub/p@main',
+        });
     });
 
     it('lists the tasks of a draft from the record, without a report', async () => {

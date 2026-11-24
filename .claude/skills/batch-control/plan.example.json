@@ -1,7 +1,7 @@
 {
     "planVersion": 1,
     "title": "Add request logging to the API",
-    "targets": [{ "key": "app", "repo": "owner/name" }],
+    "targets": [{ "key": "app", "repo": { "forge": "github", "host": "github.com", "path": "owner/name" } }],
     "defaultTarget": "app",
     "policy": "human",
     "concurrency": 2,

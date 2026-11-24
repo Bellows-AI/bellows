@@ -1,7 +1,7 @@
 import {
     batchExecutionCapability,
     ERROR_CODES,
-    githubRepo,
+    formatRepoRef,
     resolveBatchPlan,
     type BatchPlan,
     type DefaultBranches,
@@ -14,7 +14,7 @@ import type { BatchRecord } from '../../db/batches/batch-store-types.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from '../helpers.js';
 import { HTTP_CONFLICT } from '../jobs/job-limits.js';
-import { forgeOfRepo } from '../../forge/forges.js';
+import { forgeOfRepo, refOfListed } from '../../forge/forges.js';
 import { refusedAsNoForgeGrant } from '../jobs/forge-usable.js';
 import { defaultExecutorOf, executorTypeOf, refusedAsNoModel, refusedAsUnusable } from '../jobs/executor-usable.js';
 import { validateExecutorField } from '../jobs/job-field-validation.js';
@@ -26,8 +26,9 @@ import { validateExecutorField } from '../jobs/job-field-validation.js';
  * refusal and returns false once it has; none writes.
  */
 
-const reposOf = (plan: BatchPlan): RepoRef[] =>
-    [...new Set(plan.targets.map((target) => target.repo))].map((path) => githubRepo(path)); // until BEL-532b part 4
+const reposOf = (plan: BatchPlan): RepoRef[] => [
+    ...new Map(plan.targets.map((target) => [formatRepoRef(target.repo), target.repo])).values(),
+];
 
 /** Installation visibility per target — the whole credential boundary (docs/repos.md). */
 async function targetsVisible(ctx: Context, request: FastifyRequest, reply: FastifyReply, plan: BatchPlan) {
@@ -57,14 +58,14 @@ async function defaultBranchesOf(
     if (!detail.ok) return null;
     const defaults: Record<string, string> = {};
     for (const repo of detail.value.repos) {
-        if (repo.defaultBranch !== null) defaults[`${repo.owner}/${repo.name}`] = repo.defaultBranch;
+        if (repo.defaultBranch !== null) defaults[formatRepoRef(refOfListed(repo))] = repo.defaultBranch;
     }
-    const missing = plan.targets.find((target) => defaults[target.repo] === undefined);
+    const missing = plan.targets.find((target) => defaults[formatRepoRef(target.repo)] === undefined);
     if (!missing) return defaults;
     bad(
         reply,
         ERROR_CODES.BATCH_NO_DEFAULT_BRANCH,
-        `"${missing.repo}" reports no default branch, so a branch cannot be resolved for "${missing.key}"`,
+        `"${formatRepoRef(missing.repo)}" reports no default branch, so a branch cannot be resolved for "${missing.key}"`,
         HTTP_CONFLICT
     );
     return null;
@@ -73,7 +74,9 @@ async function defaultBranchesOf(
 /** The used targets off their repository's default branch: the ones whose branch must be read. */
 const offDefaultTargets = (plan: ResolvedBatchPlan, defaults: DefaultBranches) => {
     const used = new Set(plan.stages.flatMap((stage) => stage.tasks.map((task) => task.target)));
-    return plan.targets.filter((target) => used.has(target.key) && defaults[target.repo] !== target.branch);
+    return plan.targets.filter(
+        (target) => used.has(target.key) && defaults[formatRepoRef(target.repo)] !== target.branch
+    );
 };
 
 /**
@@ -92,14 +95,14 @@ async function targetBranchesExist(
         const head = await guard(
             reply,
             (e) => request.log.error({ err: e }, 'batch target branch read failed'),
-            () => branchHead(target.repo, target.branch)
+            () => branchHead(target.repo.path, target.branch)
         );
         if (!head.ok) return false;
         if (head.value !== null) continue;
         bad(
             reply,
             ERROR_CODES.BATCH_UNKNOWN_BRANCH,
-            `"${target.repo}" has no branch ${target.branch} the installation can read, ` +
+            `"${formatRepoRef(target.repo)}" has no branch ${target.branch} the installation can read, ` +
                 `so "${target.key}" cannot run on it`,
             HTTP_CONFLICT
         );
@@ -190,8 +193,7 @@ async function forgeGrantsLive(
     launch: { plan: ResolvedBatchPlan; returnTo: string }
 ) {
     const repoOfForge = new Map<string, RepoRef>();
-    for (const { repo: path } of launch.plan.targets) {
-        const repo = githubRepo(path); // until BEL-532b part 4
+    for (const { repo } of launch.plan.targets) {
         const forge = forgeOfRepo(repo);
         if (forge !== null && !repoOfForge.has(forge)) repoOfForge.set(forge, repo);
     }
@@ -218,8 +220,7 @@ export async function retryRefusedAsNoGrant(ctx: Context, request: FastifyReques
     const repo = plan?.targets.find((candidate) => candidate.key === (target ?? plan.defaultTarget))?.repo;
     // A batch or task the board does not hold is the store's own 404.
     if (repo === undefined) return false;
-    // until BEL-532b part 4: a target's repo is still a path
-    return refusedAsNoForgeGrant(request, reply, ctx.forgeGate, { repo: githubRepo(repo), returnTo: `/batches/${id}` });
+    return refusedAsNoForgeGrant(request, reply, ctx.forgeGate, { repo, returnTo: `/batches/${id}` });
 }
 
 /**
@@ -232,7 +233,12 @@ async function modelKeysPresent(ctx: Context, request: FastifyRequest, reply: Fa
     const seen = new Set<string>();
     for (const task of plan.stages.flatMap((stage) => stage.tasks)) {
         const repo = repoOf.get(task.target) ?? null;
-        const key = JSON.stringify([repo, task.executor, task.executorScope, task.agentType ?? null]);
+        const key = JSON.stringify([
+            repo === null ? null : formatRepoRef(repo),
+            task.executor,
+            task.executorScope,
+            task.agentType ?? null,
+        ]);
         if (seen.has(key)) continue;
         seen.add(key);
         const profile =
@@ -245,9 +251,7 @@ async function modelKeysPresent(ctx: Context, request: FastifyRequest, reply: Fa
                       scope: task.executorScope,
                   });
         if (profile === 'refused') return false;
-        // until BEL-532b part 4: a target's repo is still a path
-        const ref = repo === null ? null : githubRepo(repo);
-        if (await refusedAsNoModel(request, reply, ctx.runtime, { userId: ctx.createdBy, repo: ref, ...profile })) {
+        if (await refusedAsNoModel(request, reply, ctx.runtime, { userId: ctx.createdBy, repo, ...profile })) {
             return false;
         }
     }

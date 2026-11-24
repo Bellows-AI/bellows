@@ -9,7 +9,7 @@
 
 import { BATCH_BRANCH_LIMIT, isBranchName } from './branch-name.js';
 import { EXECUTOR_SCOPES, type ExecutorScope, type ExecutorType, USER_SCOPE } from './executors.js';
-import { GITHUB_REPO_PATH_PATTERN } from './repo-ref.js';
+import { formatRepoRef, readRepoRef, type RepoRef } from './repo-ref.js';
 
 export const BATCH_PLAN_VERSION = 1;
 
@@ -26,7 +26,9 @@ export { BATCH_BRANCH_LIMIT };
 export const BATCH_KEY_LIMIT = 40;
 export const BATCH_TITLE_LIMIT = 200;
 export const BATCH_TEXT_LIMIT = 4000;
+/** The longest repo path and host a target names. */
 export const BATCH_REPO_LIMIT = 201;
+export const BATCH_HOST_LIMIT = 255;
 export const BATCH_EXECUTOR_LIMIT = 100;
 export const MAX_BATCH_TARGETS = 10;
 export const MAX_BATCH_STAGES = 20;
@@ -50,7 +52,7 @@ export type BatchCompletion =
 
 export interface BatchTarget {
     key: string;
-    repo: string;
+    repo: RepoRef;
     /** Omitted means the repository's default branch, resolved to a name at freeze. */
     branch?: string;
 }
@@ -263,20 +265,29 @@ const PLAN_FIELDS = [
     'stages',
 ];
 
+function parseTargetRepo(raw: unknown, path: string, issues: Issues): RepoRef | undefined {
+    const read = readRepoRef(raw);
+    if (!read.ok) {
+        issues.add(read.field === undefined ? path : `${path}.${read.field}`, read.message);
+        return undefined;
+    }
+    if (read.ref.path.length > BATCH_REPO_LIMIT) {
+        issues.add(`${path}.path`, `must be at most ${BATCH_REPO_LIMIT} characters`);
+    }
+    if (read.ref.host.length > BATCH_HOST_LIMIT) {
+        issues.add(`${path}.host`, `must be at most ${BATCH_HOST_LIMIT} characters`);
+    }
+    return read.ref;
+}
+
 function parseTarget(raw: unknown, path: string, issues: Issues): BatchTarget | undefined {
     const fields = objectAt(raw, TARGET_FIELDS, path, issues);
     if (!fields) return undefined;
     const targetKey = key(fields.key, `${path}.key`, issues);
-    if (
-        typeof fields.repo !== 'string' ||
-        fields.repo.length > BATCH_REPO_LIMIT ||
-        !GITHUB_REPO_PATH_PATTERN.test(fields.repo)
-    ) {
-        issues.add(`${path}.repo`, 'must be owner/name');
-    }
+    const repo = parseTargetRepo(fields.repo, `${path}.repo`, issues);
     const branch = optionalText(fields.branch, `${path}.branch`, BATCH_BRANCH_LIMIT, issues);
     if (branch !== undefined && !isBranchName(branch)) issues.add(`${path}.branch`, 'must be a valid git branch name');
-    return { key: targetKey!, repo: fields.repo as string, ...(branch === undefined ? {} : { branch }) };
+    return { key: targetKey!, repo: repo!, ...(branch === undefined ? {} : { branch }) };
 }
 
 function parseCompletion(raw: unknown, path: string, issues: Issues): BatchCompletion {
@@ -477,7 +488,7 @@ export function validateBatchPlan(raw: unknown): BatchPlanResult {
     return issues.list.length > 0 ? { ok: false, issues: issues.list } : { ok: true, plan };
 }
 
-/** `owner/name` → the default branch the repository answers with, for the repos the plan names. */
+/** The repo ref's text form (`formatRepoRef`) → the default branch the repository answers with, for the repos the plan names. */
 export type DefaultBranches = Readonly<Record<string, string>>;
 
 /**
@@ -490,7 +501,10 @@ export type DefaultBranches = Readonly<Record<string, string>>;
 export function resolveBatchPlan(plan: BatchPlan, defaults: DefaultBranches): ResolvedBatchPlan {
     return {
         ...plan,
-        targets: plan.targets.map((target) => ({ ...target, branch: target.branch ?? defaults[target.repo]! })),
+        targets: plan.targets.map((target) => ({
+            ...target,
+            branch: target.branch ?? defaults[formatRepoRef(target.repo)]!,
+        })),
         stages: plan.stages.map((stage) => ({
             ...stage,
             policy: stage.policy ?? plan.policy,
@@ -529,7 +543,9 @@ export interface BoardCapabilities {
 export function batchExecutionCapability(plan: ResolvedBatchPlan, board: BoardCapabilities): BatchCapability {
     const used = new Set(plan.stages.flatMap((stage) => stage.tasks.map((task) => task.target)));
     const pairs = new Set(
-        plan.targets.filter((target) => used.has(target.key)).map((target) => `${target.repo}\u0000${target.branch}`)
+        plan.targets
+            .filter((target) => used.has(target.key))
+            .map((target) => `${formatRepoRef(target.repo)}\u0000${target.branch}`)
     );
     if (pairs.size > 1) {
         return {

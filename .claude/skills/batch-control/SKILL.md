@@ -26,6 +26,7 @@ Start from `plan.example.json` beside this file and keep its shape. The contract
   `dependsOn` — any unknown field is refused.
 - **Each task is one PR.** `objective` is the command the agent runs; `acceptance` and
   `verification` state how a reviewer tells it is done. Up to 4000 characters each.
+- **A target's `repo` is an object, `{ "forge", "host", "path" }`**, never `owner/name` text: forge `github` with host `github.com` and path `owner/name`, or another forge with its host and full path (subgroups included). The board validates, starts and reports GitHub repos today; any other forge is refused `UNKNOWN_REPO`. Reads print a target as `owner/name`, or `forge:host/path`.
 - Keys (`targets`, `stages`, `tasks`) match `^[a-z0-9][a-z0-9-]*$`, at most 40 characters, unique.
 - `completion` is `{ "kind": "pr" }` for code changes. `{ "kind": "accepted", "condition": "…" }`
   is only for a task that changes no code, and a person must accept it.

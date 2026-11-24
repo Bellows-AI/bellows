@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { githubRepo } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
@@ -27,7 +28,7 @@ const track = trackApps();
 const plan = {
     planVersion: 1,
     title: 'Upgrade',
-    targets: [{ key: 'web', repo: 'Bellows-AI/bellows.ai' }],
+    targets: [{ key: 'web', repo: githubRepo('Bellows-AI/bellows.ai') }],
     defaultTarget: 'web',
     stages: [
         {

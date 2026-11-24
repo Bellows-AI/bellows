@@ -1,3 +1,4 @@
+import { formatRepoRef, REPO_FORGES } from '@factory-ai/core';
 import { z } from 'zod';
 import { inconclusive, judge, refusal, success, type Tagged } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
@@ -9,9 +10,11 @@ import { CURSOR_CODES, MAX_NAME_CHARS, PAGING_INPUT, DEFAULT_PAGE } from './pagi
  * the report read in the same snapshot. It reads, joins and slices; the verdict stays the board's `standing`.
  */
 
+const TargetRepoSchema = z.object({ forge: z.enum(REPO_FORGES), host: z.string(), path: z.string() });
+
 const PlanSchema = z.object({
     defaultTarget: z.string().nullish(),
-    targets: z.array(z.object({ key: z.string(), repo: z.string(), branch: z.string().nullish() }).loose()),
+    targets: z.array(z.object({ key: z.string(), repo: TargetRepoSchema, branch: z.string().nullish() }).loose()),
     stages: z.array(
         z.object({
             key: z.string(),
@@ -148,7 +151,7 @@ function itemOf(
     const { row, report } = joined;
     const key = planned.target ?? view.plan.defaultTarget ?? null;
     const one = view.plan.targets.find((candidate) => candidate.key === key);
-    const repo = one?.repo ?? null;
+    const repo = one === undefined ? null : formatRepoRef(one.repo);
     const branch = one?.branch ?? null;
     return {
         key: planned.key,

@@ -8,8 +8,9 @@ const PLAN = {
     planVersion: 1,
     title: 'Overnight',
     targets: [
-        { key: 'api', repo: 'o/api' },
-        { key: 'web', repo: 'o/web', branch: 'dev' },
+        { key: 'api', repo: { forge: 'github', host: 'github.com', path: 'o/api' } },
+        { key: 'web', repo: { forge: 'github', host: 'github.com', path: 'o/web' }, branch: 'dev' },
+        { key: 'lab', repo: { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' } },
     ],
     defaultTarget: 'api',
     policy: 'human',
@@ -330,6 +331,7 @@ describe('batch validate / start / inspect / list', () => {
         expect(result.code).toBe(0);
         expect(result.out).toContain('policy human · concurrency 2');
         expect(result.out).toContain('target web: o/web@dev');
+        expect(result.out).toContain('target lab: gitlab:gl.example/g/sub/p@default branch');
     });
 
     it('names the executor scope beside the executor, for the batch and a task that differs', async () => {

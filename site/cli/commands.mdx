@@ -213,5 +213,9 @@ Without it, output is plain text for people. Progress, such as attachment upload
 A succeeded run means the run's verdict, not that the pull request is merged.
 
 <Note>
-The CLI also has `bellows batch ...` commands. They work only on servers where batches are enabled, so they are not covered here.
+The CLI also has `bellows batch ...` commands. They work only on servers where batches are enabled, so they are not covered here, except for how a batch plan names a repository.
 </Note>
+
+### Batch plan targets
+
+Each entry of a batch plan's `targets[].repo` names a repository by its forge, host and path, for example `"repo": {"forge": "github", "host": "github.com", "path": "acme/web"}`. On GitHub the path is exactly `owner/name`; on another forge it is the full path, subgroups included. The same path on two hosts is two repositories. The old string form (`"repo": "acme/web"`) is refused, with the problem reported at `targets[].repo`. Batch commands print a target in text form: `acme/web` on GitHub, `forge:host/path` otherwise, for example `gitlab:gitlab.example.com/team/sub/project`.
