@@ -555,6 +555,30 @@ describe('TaskRun close phase', () => {
         expect(plain).not.toContain('gate-result');
     });
 
+    it('a settled gate shows its duration, a timed-out one its deadline, and the panel the total', () => {
+        const at = (minutes: number) => new Date(Date.UTC(2026, 10, 24, 10, minutes)).toISOString();
+        const gates = [
+            { name: 'lint', status: 'passed' as const, exitCode: 0, output: '', startedAt: at(0), finishedAt: at(2) },
+            {
+                name: 'slow',
+                status: 'failed' as const,
+                exitCode: 124,
+                output: '',
+                startedAt: at(2),
+                finishedAt: at(17),
+                timeoutMs: 15 * 60_000,
+            },
+            { name: 'reused', status: 'skipped' as const, exitCode: null, output: 'reused' },
+        ];
+        const html = renderDetail({ jobs: [job({ status: 'failed', gates })] });
+        const panel = html.slice(html.indexOf('task-verification'));
+        expect(panel).toContain('data-gate-duration="lint">2m 0s<');
+        expect(panel).toContain('data-gate-duration="slow">15m 0s<');
+        expect(panel).toContain('timed out at 15m 0s');
+        expect(panel).toContain('Total gate time 17m 0s');
+        expect(panel).not.toContain('data-gate-duration="reused"');
+    });
+
     it('a skipped gate renders a skipped pill and its "no changes" output', () => {
         const skipped = { name: 'test', status: 'skipped' as const, exitCode: null, output: 'no changes' };
         const html = renderDetail({ jobs: [job({ status: 'succeeded', gates: [skipped] })] });

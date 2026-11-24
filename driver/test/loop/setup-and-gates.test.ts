@@ -517,7 +517,7 @@ describe('verification gates', () => {
         expect(reports.at(-1)).toEqual(['failed', 'pending']);
     });
 
-    it('the running entry carries the time it started; the settled entry does not', async () => {
+    it('the running entry carries the time it started; the settled entry keeps it with its finish and deadline', async () => {
         const board = stubBoard([gatedJob(1)]);
         const stack = stubGateStack();
         const before = Date.now();
@@ -533,7 +533,13 @@ describe('verification gates', () => {
             expect(at).toBeLessThanOrEqual(after);
         }
         const settled = board.board.gatesReported.flatMap((r) => r.results).filter((g) => g.status === 'passed');
-        expect(settled.every((g) => g.startedAt === undefined)).toBe(true);
+        expect(settled.length).toBeGreaterThan(0);
+        for (const g of settled) {
+            expect(Date.parse(g.startedAt ?? '')).toBeGreaterThanOrEqual(before);
+            expect(Date.parse(g.finishedAt ?? '')).toBeGreaterThanOrEqual(Date.parse(g.startedAt ?? ''));
+            expect(Date.parse(g.finishedAt ?? '')).toBeLessThanOrEqual(after);
+            expect(g.timeoutMs).toBeGreaterThan(0);
+        }
     });
 
     it('uploads the run’s log under its claim sequence before the gates, and still succeeds', async () => {

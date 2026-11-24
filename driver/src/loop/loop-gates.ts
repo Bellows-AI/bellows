@@ -6,7 +6,8 @@ import { tailBytes, type DeadService } from '../runner.js';
 import { stepLost } from '../step-control.js';
 import type { GateRun } from '../gate-manager.js';
 import { declaredTimeoutMs, type GateLedger } from '../gates.js';
-import { compactResult, type GateResult } from '../gate-result.js';
+import { type GateTiming, settledGate } from './gate-settled.js';
+import type { GateResult } from '../gate-result.js';
 import { gateIdentity, orgKeyOf } from '../gate-identity.js';
 import { recordGateRun, type GateEnd } from '../gate-record.js';
 import { SETUP_FAILED_PREFIX } from '../gate-cause.js';
@@ -64,15 +65,13 @@ export type GateReport = {
     status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
     exitCode: number | null;
     output: string | null;
-    /** When a `running` entry started (ISO); the settled entry carries none. */
-    startedAt?: string;
     /** The recorded execution this entry is; absent for a gate no record covers. */
     executionId?: string;
     /** What the gate recorded beside its output: failed tests, selection, slowest files, resources; compacted for the board. */
     result?: GateResult;
     /** Set when the gate was not launched: it is served from an earlier verified pass. */
     reused?: { executionId: string; finishedAt: string | null; reason: string };
-};
+} & GateTiming;
 
 /**
  * Puts the gate server's registration key onto `job.gateEnv`, once. It is the driver's own handle on
@@ -365,23 +364,6 @@ async function runOneGate(
     }
 }
 
-/** A finished gate's report entry, and the text a failure carries to the board. */
-function settledGate(gate: DeclaredGate, outcome: GateRun, perGate: number): { entry: GateReport; text: string } {
-    // A failed setup is not this gate's verdict: the output names it so the board's `gates`
-    // and the job's `output` tell the two apart.
-    const text = outcome.setupFailed ? `${SETUP_FAILED_PREFIX}${outcome.output}` : outcome.output;
-    return {
-        entry: {
-            name: gate.name,
-            status: outcome.exitCode !== 0 ? 'failed' : 'passed',
-            exitCode: outcome.exitCode,
-            output: tailBytes(text, perGate),
-            ...(outcome.result ? { result: compactResult(outcome.result) } : {}),
-        },
-        text,
-    };
-}
-
 /**
  * The task tree's fingerprint as the run left it, before the gates; compared with the startup
  * sync's to answer whether the tree moved. Null when unknown: no before-fingerprint, or a probe
@@ -561,7 +543,7 @@ async function executeGate(
     // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
     // and a cancelled gate is never reported failed — a verdict must not read it.
     if (!outcome || down(state)) return null;
-    const { entry, text } = settledGate(gate, outcome, perGate);
+    const { entry, text } = settledGate(gate, outcome, perGate, { running: results[index]!, config: w.rt.config });
     // Replace the gate's own entry — one entry per declared gate, always, so the list the
     // board stores IS the declared list at its current state.
     results[index] = { ...entry, executionId: raced!.value!.executionId };

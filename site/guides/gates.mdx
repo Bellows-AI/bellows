@@ -190,7 +190,7 @@ The `dev-runner` image carries node 24, the docker CLI with the compose and buil
 
 ## Where results show
 
-Open the task and find the **Verification** panel. Each gate has a pill and, once it has run, its exit code, what it recorded (failed tests, selection, slowest files, resources) and its output. The panel shows the newest run only. A failed gate starts open, and its output has a **Copy** button.
+Open the task and find the **Verification** panel. Each gate has a pill and, once it has run, its exit code, what it recorded (failed tests, selection, slowest files, resources) and its output. Each gate that ran shows how long it took (a running gate counts its seconds), a gate stopped at its deadline reads **timed out at** that limit, and the panel's header line gives the total gate time of the run. A skipped or reused gate shows no duration. The same `startedAt`, `finishedAt` and `timeoutMs` (ms) are on each entry of `gates` in the job JSON that `bellows job investigate --json` prints. The panel shows the newest run only. A failed gate starts open, and its output has a **Copy** button.
 
 | Pill      | Meaning                                              |
 | --------- | ---------------------------------------------------- |
