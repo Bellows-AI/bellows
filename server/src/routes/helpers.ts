@@ -1,4 +1,4 @@
-import { ERROR_CODES, formatRepoRef, type RepoRef } from '@factory-ai/core';
+import { ERROR_CODES, formatRepoRef, parseRepoRef, type RepoRef } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
 import type { OrgRuntime } from '../orgs.js';
 import { refOfListed } from '../forge/forges.js';
@@ -86,6 +86,20 @@ export function repoRefReason(ref: RepoRef, { allowDotted = false }: { allowDott
         if (reason) return reason;
     }
     return null;
+}
+
+/** The longest `:id` a repo route's router takes: the longest valid GitHub ref is 201 characters, 203 encoded, and a nested GitLab path needs room. */
+export const REPO_ID_PARAM_LIMIT = 1024;
+
+/**
+ * The ref a `/api/repos/:id/…` route names: the id is `formatRepoRef(ref)`, URL-decoded by the router. Reads accept
+ * what they always did for GitHub (`allowDotted`), so a tracked `acme/.github` stays readable.
+ */
+export function repoOfId(id: string): { ok: true; ref: RepoRef } | { ok: false; message: string } {
+    const ref = parseRepoRef(id);
+    if (!ref) return { ok: false, message: 'repo must be owner/name on GitHub, or forge:host/path' };
+    const reason = repoRefReason(ref, { allowDotted: true });
+    return reason ? { ok: false, message: reason } : { ok: true, ref };
 }
 
 /**

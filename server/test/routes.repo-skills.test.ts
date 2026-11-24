@@ -20,10 +20,10 @@ import { HTTP_BAD_REQUEST, HTTP_OK, trackApps } from './helpers-http.js';
 const track = trackApps();
 type Reader = NonNullable<NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills']>;
 
-async function boot(repoSkills?: Reader) {
+async function boot(repoSkills?: Reader, name = 'web') {
     const config = testConfig();
     const client = listingClient(async () => ({
-        repos: [{ owner: 'acme', name: 'web', private: true, defaultBranch: 'main', pushedAt: null }],
+        repos: [{ owner: 'acme', name, private: true, defaultBranch: 'main', pushedAt: null }],
         installation: { id: '1', account: 'acme', repositorySelection: 'selected' },
     }));
     const repos = createRepoSource({ client });
@@ -34,11 +34,31 @@ async function boot(repoSkills?: Reader) {
         })
     );
 }
-const get = (app: Awaited<ReturnType<typeof boot>>, query = '') =>
-    app.inject({ method: 'GET', url: `/api/repos/acme/web/skills${query}` });
+const get = (app: Awaited<ReturnType<typeof boot>>, query = '', repo = 'acme/web') =>
+    app.inject({ method: 'GET', url: `/api/repos/${encodeURIComponent(repo)}/skills${query}` });
 const builtinNames = () => skillCatalog().map((s) => s.name);
 
-describe('GET /api/repos/:owner/:name/skills', () => {
+describe('GET /api/repos/:id/skills', () => {
+    it('serves a dotted repo such as acme/.github and takes the longest valid name', async () => {
+        const reader: Reader = async () => ({ revision: 'r', skills: [], unreadable: [], complete: true });
+        const dotted = await get(await boot(reader, '.github'), '', 'acme/.github');
+        expect(dotted.statusCode).toBe(HTTP_OK);
+        const long = 'b'.repeat(100);
+        const app = await boot(reader, long);
+        expect((await get(app, '', `acme/${long}`)).statusCode).toBe(HTTP_OK);
+        const past = await get(app, '', `acme${'/c'.repeat(600)}`);
+        expect(past.statusCode).toBeGreaterThanOrEqual(400);
+        expect(past.statusCode).toBeLessThan(500);
+    });
+
+    it('answers 404 for the old /:owner/:name spelling and 400 BAD_REPO for a bad id', async () => {
+        const app = await boot(async () => ({ revision: 'r', skills: [], unreadable: [], complete: true }));
+        expect((await app.inject({ method: 'GET', url: '/api/repos/acme/web/skills' })).statusCode).toBe(404);
+        const bad = await get(app, '', 'not-a-ref');
+        expect(bad.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(bad.json().code).toBe('BAD_REPO');
+    });
+
     it('built-ins plus repo skills', async () => {
         const calls: unknown[] = [];
         const app = await boot(async (repo, branch) => {
@@ -151,7 +171,7 @@ describe('GET /api/repos/:owner/:name/skills', () => {
     });
 });
 
-describe('GET /api/repos/:owner/:name/skills follows the executor', () => {
+describe('GET /api/repos/:id/skills follows the executor', () => {
     /** The board with a signed-in member holding a claude profile `main` and an opencode profile `oc`. */
     async function bootWithExecutors(
         repoSkills: Reader,
@@ -185,7 +205,7 @@ describe('GET /api/repos/:owner/:name/skills follows the executor', () => {
         return { app, executors, member, cookie: await signedIn(auth, member) };
     }
     const asMember = (b: Awaited<ReturnType<typeof bootWithExecutors>>, query: string) =>
-        b.app.inject({ method: 'GET', url: `/api/repos/acme/web/skills${query}`, headers: { cookie: b.cookie } });
+        b.app.inject({ method: 'GET', url: `/api/repos/acme%2Fweb/skills${query}`, headers: { cookie: b.cookie } });
     const names = (body: { skills: { name: string; source: string }[] }) =>
         body.skills.filter((s) => s.source === 'repo').map((s) => s.name);
 

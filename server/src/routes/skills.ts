@@ -2,7 +2,6 @@ import {
     type CatalogEntry,
     connectionEnvNames,
     ERROR_CODES,
-    githubRepo,
     isBranchName,
     selectedBy,
     type Skill,
@@ -12,7 +11,7 @@ import { callerOf, orgOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
 import { abortOnClose, effectiveCatalog, type EffectiveCatalog, storedOf } from '../skill-catalog.js';
 import { type BuiltinSkillView, readBuiltinSkill } from '../skills.js';
-import { bad, checkReposVisible } from './helpers.js';
+import { bad, checkReposVisible, repoOfId } from './helpers.js';
 import { readExecutorType } from './jobs/executor-usable.js';
 import { validateExecutorField, validateExecutorScopeField } from './jobs/job-field-validation.js';
 
@@ -75,7 +74,7 @@ function repoMenuOf(result: EffectiveCatalog, canRead: boolean) {
 }
 
 type RepoSkillsRoute = {
-    Params: { owner: string; name: string };
+    Params: { id: string };
     Querystring: { branch?: string; executor?: string; executorScope?: string };
 };
 
@@ -94,20 +93,20 @@ function menuQueryOf(reply: FastifyReply, query: RepoSkillsRoute['Querystring'])
 
 function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
     return async (request: FastifyRequest<RepoSkillsRoute>, reply: FastifyReply) => {
-        const { owner, name } = request.params;
+        const named = repoOfId(request.params.id);
+        if (!named.ok) return bad(reply, ERROR_CODES.BAD_REPO, named.message);
+        const { ref } = named;
         const query = menuQueryOf(reply, request.query);
         if (!query) return reply;
         const { branch, executor, scope } = query;
         const rt = await orgs.for(orgOf(request));
-        const visible = rt
-            ? await checkReposVisible(rt.repos, [githubRepo(`${owner}/${name}`)], { subject: 'the repository' })
-            : null;
+        const visible = rt ? await checkReposVisible(rt.repos, [ref], { subject: 'the repository' }) : null;
         if (visible && !visible.ok) return bad(reply, visible.code, visible.message, visible.status);
 
         const result = await effectiveCatalog({
             builtin,
             read: rt?.repoSkills,
-            repo: `${owner}/${name}`,
+            repo: ref.path,
             branch: branch ?? null,
             // The directories a repo's skills are read from are the selected executor's CLI's, as at create.
             executorType: await readExecutorType(
@@ -130,7 +129,7 @@ function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
  * with each connection's env NAMES — and never the SKILL.md body or any env value. Reading the
  * catalog at registration means a broken catalog fails boot rather than the first request.
  *
- * `GET /api/repos/:owner/:name/skills`: the slash menu's list — the same catalog plus the repository's
+ * `GET /api/repos/:id/skills`: the slash menu's list — the same catalog plus the repository's
  * own skills (the selected executor's CLI's directories) at a branch tip (`shadowed`: entries a higher source overrides, kept out of `skills`; `reserved`: names under the built-ins' prefix, not selectable). A repo read that did not confirm is `repoError`, never
  * "the repo has no skills".
  */
@@ -187,5 +186,5 @@ export const skillRoutes =
             return { ...wire, ...view, version };
         });
 
-        app.get<RepoSkillsRoute>('/api/repos/:owner/:name/skills', repoSkillsHandler(builtin, orgs));
+        app.get<RepoSkillsRoute>('/api/repos/:id/skills', repoSkillsHandler(builtin, orgs));
     };

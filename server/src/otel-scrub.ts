@@ -1,6 +1,6 @@
 /**
  * What a span may say about a URL. Paths and queries carry credentials (OAuth `?code=`, the attachment capability in
- * its PUT path) and repo names (`/api/repos/<owner>/<name>/branches`), so neither leaves the board: a SERVER span
+ * its PUT path) and repo names (`/api/repos/<id>/branches`), so neither leaves the board: a SERVER span
  * keeps the route pattern, a CLIENT span keeps `scheme://host`. docs/observability.md.
  */
 import { SpanKind, trace } from '@opentelemetry/api';
