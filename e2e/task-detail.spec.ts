@@ -283,7 +283,7 @@ test.describe('the task detail actions', () => {
         await page.screenshot({ path: `${SHOTS}/task-archived-detail.png`, fullPage: true });
         const trigger = header(page).getByRole('button', { name: 'More task actions' });
         await trigger.click();
-        await expect(page.getByRole('menuitem', { name: 'Archive task' })).toHaveCount(0);
+        await expect(page.getByRole('menuitem', { name: 'Archive task', exact: true })).toHaveCount(0);
         await page.getByRole('menuitem', { name: 'Unarchive task' }).click();
         await expect(page.locator('.task-controls')).not.toContainText('Archived');
 

@@ -118,7 +118,7 @@ describe.skipIf(!enabled)('listTasks', () => {
             await craft({ status, command: `task ${status}`, createdMinutesAgo: 30 });
         }
         const { navigation, page } = await store.listTasks({ state: 'running', sort: 'newest', limit: 30 });
-        expect(navigation.counts).toEqual({ running: RUNNING_STATUSES.length, review: 0, past: 0 });
+        expect(navigation.counts).toEqual({ running: RUNNING_STATUSES.length, review: 0, past: 0, archived: 0 });
         expect(page.items).toHaveLength(RUNNING_STATUSES.length);
     });
 
@@ -127,7 +127,7 @@ describe.skipIf(!enabled)('listTasks', () => {
         await enterWait(root, { activeMinutesAgo: 10 });
 
         const { navigation } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
-        expect(navigation.counts).toEqual({ running: 0, review: 1, past: 0 });
+        expect(navigation.counts).toEqual({ running: 0, review: 1, past: 0, archived: 0 });
         const review = await store.listTasks({ state: 'review', sort: 'newest', limit: 30 });
         expect(review.page.items).toHaveLength(1);
         expect(review.page.items[0]).toMatchObject({
@@ -143,7 +143,7 @@ describe.skipIf(!enabled)('listTasks', () => {
         await enterWait(root, { activeMinutesAgo: 10 });
 
         const { navigation } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
-        expect(navigation.counts).toEqual({ running: 0, review: 0, past: 1 });
+        expect(navigation.counts).toEqual({ running: 0, review: 0, past: 1, archived: 0 });
     });
 
     it('falls back to the ordinary bucket once the wait has gone terminal', async () => {
@@ -152,7 +152,7 @@ describe.skipIf(!enabled)('listTasks', () => {
 
         const { navigation } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
         // queued is not itself terminal, and the wait no longer overrides it — back to running.
-        expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0 });
+        expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0, archived: 0 });
         const running = await store.listTasks({ state: 'running', sort: 'newest', limit: 30 });
         expect(running.page.items[0]).toMatchObject({
             id: root,
@@ -172,6 +172,7 @@ describe.skipIf(!enabled)('listTasks', () => {
             running: 0,
             review: TERMINAL_STATUSES.length,
             past: TERMINAL_STATUSES.length,
+            archived: 0,
         });
         const review = await store.listTasks({ state: 'review', sort: 'newest', limit: 30 });
         expect(review.page.items).toHaveLength(TERMINAL_STATUSES.length);
@@ -193,7 +194,7 @@ describe.skipIf(!enabled)('listTasks', () => {
         const { navigation, page } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
         expect(page.items).toHaveLength(1);
         expect(page.items[0]).toMatchObject({ id: root, status: 'queued', doneAt: null });
-        expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0 });
+        expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0, archived: 0 });
     });
 });
 
@@ -432,7 +433,7 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
 
         const { navigation, page } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
 
-        expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0 });
+        expect(navigation.counts).toEqual({ running: 1, review: 0, past: 0, archived: 0 });
         expect(page.items).toHaveLength(1);
         expect(page.items[0]).toMatchObject({ id: root, headRunId: retry });
     });
@@ -449,7 +450,7 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
 
         const { navigation } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
 
-        expect(navigation.counts).toEqual({ running: RUNNING, review: REVIEW, past: 0 });
+        expect(navigation.counts).toEqual({ running: RUNNING, review: REVIEW, past: 0, archived: 0 });
         expect(navigation.running.map((task) => task.id)).toEqual(running.slice(0, 3));
         expect(navigation.review.map((task) => task.id)).toEqual(review.slice(0, 5));
     });
@@ -477,7 +478,7 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
             limit: 30,
             repo: 'acme/two',
         });
-        expect(navigation.counts).toEqual({ running: 1, review: 1, past: 1 });
+        expect(navigation.counts).toEqual({ running: 1, review: 1, past: 1, archived: 0 });
         expect(navigation.running).toHaveLength(1);
         expect(navigation.review).toHaveLength(1);
         // Preview rows arrive through the json path, where stamps read back as offset strings —
@@ -498,7 +499,7 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
         await otherOrgStore.complete(other.id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: null });
 
         const { navigation, page } = await store.listTasks({ state: 'attention', sort: 'newest', limit: 30 });
-        expect(navigation.counts).toEqual({ running: 1, review: 1, past: 0 });
+        expect(navigation.counts).toEqual({ running: 1, review: 1, past: 0, archived: 0 });
         expect(navigation.running.map((task) => task.command)).toEqual(['mine running']);
         expect(navigation.review.map((task) => task.command)).toEqual(['mine review']);
         // `mine review` finished 45 minutes ago; `mine running` last changed 59 minutes ago.
@@ -527,6 +528,7 @@ describe.skipIf(!enabled)('listTasks: organization-wide summary', () => {
         expect(Object.keys(page.items[0]!).sort()).toEqual([
             'activity',
             'activityAt',
+            'archivedAt',
             'author',
             'cancelRequestedAt',
             'command',
