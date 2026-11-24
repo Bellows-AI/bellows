@@ -18,9 +18,9 @@ export interface WorkflowSummary {
     id: string;
     name: string;
     scope: 'org' | 'user' | 'repo';
-    /** The scope's own labels — the owning account, or the `owner/name` the repo row names. */
+    /** The scope's own labels — the owning account, or the repository the repo row names. */
     userId: string | null;
-    repo: string | null;
+    repo: RepoRef | null;
     /**
      * The declared launch parameters — what the composer renders as explicit inputs and what
      * `POST /api/jobs` requires beside the command. [] on a param-less definition.
@@ -73,19 +73,24 @@ interface WorkflowRow {
 
 /** The scope a stored row already belongs to — scope is immutable after create, so `update` rebuilds
  * it from the row rather than accepting one from the caller. */
-const scopeOfRow = (row: WorkflowRow): WorkflowScope =>
-    row.user_id !== null
-        ? { kind: 'user', userId: row.user_id }
-        : row.repo_owner !== null && row.repo_name !== null
-          ? { kind: 'repo', repo: refOfRow({ ...row, repo: `${row.repo_owner}/${row.repo_name}` }) }
-          : { kind: 'org' };
+/** The repository a repo-scope row names, or null for an org or user row. */
+const repoOfRow = (row: WorkflowRow): RepoRef | null =>
+    row.repo_owner !== null && row.repo_name !== null
+        ? refOfRow({ ...row, repo: `${row.repo_owner}/${row.repo_name}` })
+        : null;
+
+const scopeOfRow = (row: WorkflowRow): WorkflowScope => {
+    if (row.user_id !== null) return { kind: 'user', userId: row.user_id };
+    const repo = repoOfRow(row);
+    return repo ? { kind: 'repo', repo } : { kind: 'org' };
+};
 
 const toSummary = (row: WorkflowRow): WorkflowSummary => ({
     id: row.id,
     name: row.name,
     scope: row.user_id !== null ? 'user' : row.repo_owner !== null ? 'repo' : 'org',
     userId: row.user_id,
-    repo: row.repo_owner !== null && row.repo_name !== null ? `${row.repo_owner}/${row.repo_name}` : null,
+    repo: repoOfRow(row),
     // `?? []` is the grammar's own normalization (absent in the JSON = []), applied to rows whose
     // jsonb was stored before parameters existed.
     params: row.definition.params ?? [],
@@ -311,7 +316,7 @@ export function createWorkflowStore({ sql, orgId, ready }: { sql: Sql; orgId: st
         async listVisible(target) {
             await gate();
             const rows = await sql<WorkflowRow[]>`
-                select id, name, user_id, repo_owner, repo_name, definition, created_at, updated_at
+                select id, name, user_id, forge, host, repo_owner, repo_name, definition, created_at, updated_at
                 from workflow
                 where org_id = ${orgId} ${visibleWhere(sql, target)}
                 order by name asc

@@ -1,3 +1,4 @@
+import type { RepoRef } from '@factory-ai/core';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { mutate } from './mutate.js';
 import { useResource } from './useResource.js';
@@ -96,7 +97,8 @@ export interface WorkflowSummaryView {
     name: string;
     scope: 'org' | 'user' | 'repo';
     userId: string | null;
-    repo: string | null;
+    /** The repository a repo-scope row names, by forge, host and path. */
+    repo: RepoRef | null;
     createdAt: string;
     updatedAt: string;
 }

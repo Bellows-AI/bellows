@@ -27,7 +27,12 @@ function stubEnv(role?: Role) {
                 ? {
                       org: [row('ORG_FLAG')],
                       workspace: [row('MY_FLAG')],
-                      repos: [{ owner: 'Bellows-AI', name: 'bellows.ai', vars: [row('REPO_FLAG')] }],
+                      repos: [
+                          {
+                              repo: { forge: 'github', host: 'github.com', path: 'Bellows-AI/bellows.ai' },
+                              vars: [row('REPO_FLAG')],
+                          },
+                      ],
                   }
                 : undefined
         )

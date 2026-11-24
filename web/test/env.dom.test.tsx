@@ -340,7 +340,14 @@ describe('the workspace and repository editors keep the last saved list', () => 
                 const snapshot = {
                     org: [],
                     workspace: putUrl.endsWith('workspace') ? stored : [],
-                    repos: putUrl.endsWith('repo') ? [{ owner: 'Bellows-AI', name: 'bellows.ai', vars: stored }] : [],
+                    repos: putUrl.endsWith('repo')
+                        ? [
+                              {
+                                  repo: { forge: 'github', host: 'github.com', path: 'Bellows-AI/bellows.ai' },
+                                  vars: stored,
+                              },
+                          ]
+                        : [],
                 };
                 return hold ? new Promise(() => {}) : snapshot;
             }

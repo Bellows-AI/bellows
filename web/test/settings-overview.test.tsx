@@ -306,8 +306,11 @@ describe('deriveReadiness — environment', () => {
                             org: [envRow({ name: 'SHARED' }), envRow({ name: 'ORG_TOKEN', isSecret: true })],
                             workspace: [envRow({ name: 'MINE' })],
                             repos: [
-                                { owner: 'acme', name: 'web', vars: [envRow({ name: 'DEPLOY', isSecret: true })] },
-                                { owner: 'acme', name: 'api', vars: [] },
+                                {
+                                    repo: { forge: 'github', host: 'github.com', path: 'acme/web' },
+                                    vars: [envRow({ name: 'DEPLOY', isSecret: true })],
+                                },
+                                { repo: { forge: 'github', host: 'github.com', path: 'acme/api' }, vars: [] },
                             ],
                         },
                     },

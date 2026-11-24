@@ -8,7 +8,7 @@ import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/re
  * only after the reader answered Discard changes, so the answer is the reset.
  */
 export interface UnsavedDraft {
-    /** Stable scope id — `'org'`, `'workspace'`, or `repo:owner/name`. */
+    /** Stable scope id — `'org'`, `'workspace'`, or `repo:<id>` (the repo's ref text). */
     id: string;
     /** The scope's human label, carried into the dialog's one-sentence body. */
     label: string;

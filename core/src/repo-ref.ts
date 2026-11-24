@@ -46,3 +46,27 @@ export const repoKey = (ref: RepoRef): string =>
 
 /** Whether `a` and `b` name one repository. */
 export const sameRepo = (a: RepoRef, b: RepoRef): boolean => repoKey(a) === repoKey(b);
+
+const REPO_REF_FIELDS = ['forge', 'host', 'path'];
+
+/**
+ * Reads a wire body's `{ forge, host, path }` object: the ref (host lowercased, path kept), or the reason it is
+ * refused. Unknown fields are refused, so a stale `{ owner, name }` caller hears about it.
+ */
+export function readRepoRef(raw: unknown): { ok: true; ref: RepoRef } | { ok: false; message: string } {
+    const shape = 'repo must be {forge, host, path}';
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { ok: false, message: shape };
+    const fields = raw as Record<string, unknown>;
+    const unknown = Object.keys(fields).find((key) => !REPO_REF_FIELDS.includes(key));
+    if (unknown !== undefined) return { ok: false, message: `repo has an unknown field "${unknown}"` };
+    const { forge, host, path } = fields;
+    if (typeof forge !== 'string' || !(REPO_FORGES as readonly string[]).includes(forge)) {
+        return { ok: false, message: `repo forge must be one of ${REPO_FORGES.join(', ')}` };
+    }
+    if (typeof host !== 'string' || !HOST_PATTERN.test(host)) return { ok: false, message: 'repo host is malformed' };
+    const github = forge === 'github';
+    if (typeof path !== 'string' || !(github ? GITHUB_REPO_PATH_PATTERN : REPO_PATH_PATTERN).test(path)) {
+        return { ok: false, message: github ? 'repo path must be owner/name on GitHub' : 'repo path is malformed' };
+    }
+    return { ok: true, ref: { forge: forge as RepoForge, host: host.toLowerCase(), path } };
+}
