@@ -189,7 +189,7 @@ describe.skipIf(!enabled)('the workflow repo scope is the repository triple', ()
         expect(await workflows.listVisible({ userId: ALICE, repo })).toEqual([]);
         expect(await workflows.findByName('wf', { userId: ALICE, repo })).toBeNull();
         expect((await workflows.listVisible({ userId: ALICE, repo: GITHUB })).map((row) => row.name)).toEqual(['wf']);
-        expect((await workflows.findByName('wf', { userId: ALICE, repo: GITHUB }))?.repo).toBe('o/n');
+        expect((await workflows.findByName('wf', { userId: ALICE, repo: GITHUB }))?.repo).toEqual(GITHUB);
     });
 
     it.each(SAME_PATH)(
