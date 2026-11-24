@@ -5,6 +5,7 @@ import type { Sql } from 'postgres';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { useTestDb } from './harness.js';
 import { craftJob, testOrg } from './fixtures.js';
+import { refOf, VARIANT_CASES } from './repo-variants.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -355,93 +356,116 @@ describe.skipIf(!enabled)('the pr lifecycle store: delivery folding', () => {
  * A repository path is not an identity: one `o/n` on GitHub and on a GitLab host are two repositories, so a GitHub
  * delivery, close or follow observation reaches only the GitHub waits (docs/repos.md).
  */
-describe.skipIf(!enabled)('the pr lifecycle store: one path on two forges', () => {
-    const PATH = 'o/n';
-    const GITLAB_HOST = 'gl.example';
+describe.skipIf(!enabled).each(VARIANT_CASES)(
+    'the pr lifecycle store: one path on two repositories (%s)',
+    (_name, variant) => {
+        const PATH = 'o/n';
+        const GITLAB_HOST = variant.host;
 
-    /** A thread root with an open `review` wait on PR 7 of PATH, on the given forge. */
-    const rootWaiting = async (forge: 'github' | 'gitlab'): Promise<string> => {
-        const root = await craftJob({ sql, org: ORG, author: randomUUID() }, { repo: PATH, author: null });
-        const host = forge === 'github' ? 'github.com' : GITLAB_HOST;
-        await sql`update job set forge = ${forge}, host = ${host} where org_id = ${ORG} and id = ${root}`;
-        await sql`
+        /** A thread root with an open `review` wait on PR 7 of PATH: the subject's (GitHub) or the variant's. */
+        const rootWaiting = async (which: 'github' | 'other'): Promise<string> => {
+            const forge = which === 'github' ? 'github' : variant.forge;
+            const root = await craftJob({ sql, org: ORG, author: randomUUID() }, { repo: PATH, author: null });
+            const host = which === 'github' ? 'github.com' : variant.host;
+            await sql`update job set forge = ${forge}, host = ${host} where org_id = ${ORG} and id = ${root}`;
+            await sql`
             insert into workflow_wait (org_id, root_job_id, reason, forge, host, repo, pr_number)
             values (${ORG}, ${root}, 'review', ${forge}, ${host}, ${PATH}, 7)
         `;
-        return root;
-    };
+            return root;
+        };
 
-    const stateOf = async (root: string) => {
-        const [row] = await sql<{ pending: number; cancelled_at: Date | null }[]>`
+        const stateOf = async (root: string) => {
+            const [row] = await sql<{ pending: number; cancelled_at: Date | null }[]>`
             select pending, cancelled_at from workflow_wait where org_id = ${ORG} and root_job_id = ${root}
         `;
-        return row!;
-    };
+            return row!;
+        };
 
-    it('cancels only the waits of the repository it names', async () => {
-        const github = await rootWaiting('github');
-        const gitlab = await rootWaiting('gitlab');
+        it('cancels only the waits of the repository it names', async () => {
+            const github = await rootWaiting('github');
+            const gitlab = await rootWaiting('other');
 
-        expect(await store.cancelForRepoPr(githubRepo(PATH), 7, 'pr closed')).toBe(1);
+            expect(await store.cancelForRepoPr(githubRepo(PATH), 7, 'pr closed')).toBe(1);
 
-        expect((await stateOf(github)).cancelled_at).not.toBeNull();
-        expect((await stateOf(gitlab)).cancelled_at).toBeNull();
-    });
-
-    it('folds observed activity only into the waits of the repository it names', async () => {
-        const github = await rootWaiting('github');
-        const gitlab = await rootWaiting('gitlab');
-        await sql`update workflow_wait set observed_since = now() - interval '1 hour' where org_id = ${ORG}`;
-
-        const woken = await store.foldObservedActivity({
-            repo: githubRepo(PATH),
-            prNumber: 7,
-            activityAt: new Date(),
-            fingerprint: 'fp-1',
+            expect((await stateOf(github)).cancelled_at).not.toBeNull();
+            expect((await stateOf(gitlab)).cancelled_at).toBeNull();
         });
 
-        expect(woken).toBe(1);
-        expect((await stateOf(github)).pending).toBe(1);
-        expect((await stateOf(gitlab)).pending).toBe(0);
-    });
+        it('cancels the variant waits through its own ref and leaves the GitHub ones', async () => {
+            const github = await rootWaiting('github');
+            const other = await rootWaiting('other');
 
-    it('folds a GitHub delivery only into the GitHub waits', async () => {
-        const github = await rootWaiting('github');
-        const gitlab = await rootWaiting('gitlab');
+            expect(await store.cancelForRepoPr(refOf(variant, PATH), 7, 'pr closed')).toBe(1);
 
-        expect(
-            await store.recordDelivery({
-                deliveryId: randomUUID(),
-                event: 'pull_request_review',
-                action: 'submitted',
+            expect((await stateOf(other)).cancelled_at).not.toBeNull();
+            expect((await stateOf(github)).cancelled_at).toBeNull();
+        });
+
+        it('enters a wait under the forge, host and path it is given', async () => {
+            const other = await craftJob({ sql, org: ORG, author: randomUUID() }, { repo: PATH, author: null });
+            await store.enterWait({ root: other, reason: 'review', repo: refOf(variant, PATH), prNumber: 7 });
+
+            expect(
+                await sql`select forge, host, repo from workflow_wait where org_id = ${ORG} and root_job_id = ${other}`
+            ).toEqual([{ forge: variant.forge, host: variant.host, repo: PATH }]);
+        });
+
+        it('folds observed activity only into the waits of the repository it names', async () => {
+            const github = await rootWaiting('github');
+            const gitlab = await rootWaiting('other');
+            await sql`update workflow_wait set observed_since = now() - interval '1 hour' where org_id = ${ORG}`;
+
+            const woken = await store.foldObservedActivity({
+                repo: githubRepo(PATH),
+                prNumber: 7,
+                activityAt: new Date(),
+                fingerprint: 'fp-1',
+            });
+
+            expect(woken).toBe(1);
+            expect((await stateOf(github)).pending).toBe(1);
+            expect((await stateOf(gitlab)).pending).toBe(0);
+        });
+
+        it('folds a GitHub delivery only into the GitHub waits', async () => {
+            const github = await rootWaiting('github');
+            const gitlab = await rootWaiting('other');
+
+            expect(
+                await store.recordDelivery({
+                    deliveryId: randomUUID(),
+                    event: 'pull_request_review',
+                    action: 'submitted',
+                    repo: PATH,
+                    prNumber: 7,
+                })
+            ).toBe('folded');
+
+            expect((await stateOf(github)).pending).toBe(1);
+            expect((await stateOf(gitlab)).pending).toBe(0);
+        });
+
+        it("records a publication under the root's forge and host", async () => {
+            const gitlab = await rootWaiting('other');
+            await store.recordPublication({
+                root: gitlab,
                 repo: PATH,
                 prNumber: 7,
-            })
-        ).toBe('folded');
+                prUrl: 'https://gl.example/o/n/-/merge_requests/7',
+                headBranch: 'factory/x',
+                baseBranch: 'main',
+            });
 
-        expect((await stateOf(github)).pending).toBe(1);
-        expect((await stateOf(gitlab)).pending).toBe(0);
-    });
-
-    it("records a publication under the root's forge and host", async () => {
-        const gitlab = await rootWaiting('gitlab');
-        await store.recordPublication({
-            root: gitlab,
-            repo: PATH,
-            prNumber: 7,
-            prUrl: 'https://gl.example/o/n/-/merge_requests/7',
-            headBranch: 'factory/x',
-            baseBranch: 'main',
-        });
-
-        const [row] = await sql`
+            const [row] = await sql`
             select forge, host, repo from job_pr where org_id = ${ORG} and root_job_id = ${gitlab}
         `;
-        expect(row).toEqual({ forge: 'gitlab', host: GITLAB_HOST, repo: PATH });
-        expect((await store.publicationOf(gitlab))?.repo).toEqual({
-            forge: 'gitlab',
-            host: GITLAB_HOST,
-            path: PATH,
+            expect(row).toEqual({ forge: variant.forge, host: GITLAB_HOST, repo: PATH });
+            expect((await store.publicationOf(gitlab))?.repo).toEqual({
+                forge: variant.forge,
+                host: GITLAB_HOST,
+                path: PATH,
+            });
         });
-    });
-});
+    }
+);
