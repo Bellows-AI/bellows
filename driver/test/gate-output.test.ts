@@ -38,6 +38,20 @@ describe("the gate manager keeps a run's whole output", () => {
         expect(run.fullTruncated).toBeUndefined();
     });
 
+    it('names every failing file when more than the artifact limit of stacks follows the failure list', async () => {
+        const files = ['web/test/a.test.ts', 'core/test/b.test.ts', 'server/test/c.test.ts'];
+        const list = files.map((file) => ` FAIL  ${file} > suite > case\n × case 12ms\n`).join('');
+        const noise = 'Error: Timeout calling "onTaskUpdate"\n    at frame (node:internal/x:1:1)\n'.repeat(12_000);
+        expect(bytes(noise)).toBeGreaterThan(ARTIFACT_LIMIT);
+        const run = await runWith({ exitCode: 1, stdout: `${list}${noise}${summary}` });
+
+        // The stored log keeps its tail, so the names are gone from it; the answer's excerpt was taken before the cut.
+        expect(run.fullOutput).not.toContain(files[0]);
+        for (const file of files) expect(run.output).toContain(file);
+        expect(run.output).toContain('Test Files  1 failed');
+        expect(bytes(run.output)).toBeLessThanOrEqual(REPORT_BYTE_LIMIT);
+    });
+
     it('tail-keeps the whole log at the artifact limit and says the head is gone', async () => {
         const run = await runWith({ exitCode: 1, stdout: `${failures}${'x'.repeat(ARTIFACT_LIMIT * 2)}tail` });
 

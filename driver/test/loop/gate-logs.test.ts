@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../../src/board/board.js';
+import { ARTIFACT_LIMIT } from '../../src/runner.js';
 import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from '../fixtures/loop-stubs.js';
 
 const REPORT_BUDGET = 16384;
@@ -51,6 +52,22 @@ describe.each(['docker', 'kubernetes'])('a gate run keeps its whole output (%s e
         expect(board.board.artifactManifests).toContainEqual(expect.objectContaining({ stream, state: 'complete' }));
     });
 
+    it('names every failing file in the report when stacks past the artifact limit follow the failure list', async () => {
+        const noise = 'Error: Timeout calling "onTaskUpdate"\n    at frame (node:internal/x:1:1)\n'.repeat(12_000);
+        const log = suiteLog(FILES).replace(/Error: Timeout[\s\S]*(?= Test Files)/, noise);
+        expect(bytes(noise)).toBeGreaterThan(ARTIFACT_LIMIT);
+        const board = stubBoard([jobWith(['test'])]);
+        const stack = stubGateStack({ test: 1 }, { fullOutputs: { test: log } });
+
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates: stack.gates }, { EXECUTOR: executor });
+
+        const reported = board.board.gatesReported.at(-1)!.results[0]!;
+        for (const file of FILES) expect(reported.output).toContain(file);
+        const stored = board.board.artifactChunks.map((chunk) => chunk.text).join('');
+        expect(bytes(stored)).toBeLessThanOrEqual(ARTIFACT_LIMIT);
+        expect(stored).not.toContain(FILES[0]);
+    });
+
     it('reads a stored run back by its execution id, as `factory-gate --last --full` does', async () => {
         const log = suiteLog(FILES);
         const board = stubBoard([jobWith(['test'])]);
@@ -63,6 +80,7 @@ describe.each(['docker', 'kubernetes'])('a gate run keeps its whole output (%s e
         await expect(claim.readGateLog!(executionId, new AbortController().signal)).resolves.toEqual({
             text: log,
             truncated: false,
+            cause: null,
         });
     });
 

@@ -191,8 +191,11 @@ export function envBodyRecord(body: string): Record<string, string> {
  */
 function gateRunOf(result: StepResult, deadlineMs: number): GateRun {
     if (result.tokenAskUnanswered) throw new StepTokenUnanswered();
-    const full = tailKept(`${result.stdout}${result.stderr}`.trim(), ARTIFACT_LIMIT);
-    const output = failureExcerpt(full.content, REPORT_BYTE_LIMIT);
+    const raw = `${result.stdout}${result.stderr}`.trim();
+    // The excerpt comes from the uncut output: the stored log keeps a tail, and a failure list that stacks
+    // pushed past it must still be named in the answer and in the report.
+    const output = failureExcerpt(raw, REPORT_BYTE_LIMIT);
+    const full = tailKept(raw, ARTIFACT_LIMIT);
     // Beside the answer only when the answer is less than the log: output that fits is its own whole.
     const whole =
         full.content === output

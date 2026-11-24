@@ -124,7 +124,7 @@ export interface GateRunBoard {
         job: BoardJob,
         executionId: string,
         signal?: AbortSignal
-    ): Promise<{ text: string; truncated: boolean } | null>;
+    ): Promise<{ text: string; truncated: boolean; cause: string | null } | null>;
     /**
      * Records one answered finish pass under the lease: `ok` only when the board took it. Never throws:
      * `lost` when the lease is not this attempt's, `rejected` for anything else the board did not take.
@@ -170,9 +170,17 @@ export function gateRunCalls(post: Post): GateRunBoard {
                 }
             );
             if (response.status === HTTP_NOT_FOUND) return null;
-            const body = (await response.json().catch(() => null)) as { text?: unknown; truncated?: unknown } | null;
+            const body = (await response.json().catch(() => null)) as {
+                text?: unknown;
+                truncated?: unknown;
+                cause?: unknown;
+            } | null;
             if (typeof body?.text !== 'string') throw new Error(`job ${job.id}: the gate log answer is unreadable`);
-            return { text: body.text, truncated: body.truncated === true };
+            return {
+                text: body.text,
+                truncated: body.truncated === true,
+                cause: typeof body.cause === 'string' ? body.cause : null,
+            };
         },
 
         async finishPass(job, write, signal) {

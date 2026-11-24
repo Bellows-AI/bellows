@@ -37,12 +37,14 @@ const SCOPE: RestoreScope = {
 interface Held {
     ref: StreamRef;
     chunks: string[];
-    terminalCause?: string;
+    /** The stream's manifest; null is a stream no manifest closed (still uploading, or its upload died). */
+    manifest: { state: 'complete' | 'partial' | 'truncated'; terminalCause: string | null } | null;
 }
-const held = (job: string, stream: string, chunks: string[], terminalCause?: string): Held => ({
+const COMPLETE = { state: 'complete', terminalCause: null } as const;
+const held = (job: string, stream: string, chunks: string[], manifest: Held['manifest'] = COMPLETE): Held => ({
     ref: { member: MEMBER, root: ROOT, job, claimSeq: 1, executor: 'claude-code', session: 'none', stream },
     chunks,
-    ...(terminalCause ? { terminalCause } : {}),
+    manifest,
 });
 
 /** An index over `streams`, each chunk at the byte offset its predecessors end at. */
@@ -71,8 +73,7 @@ function memoryArtifacts(streams: Held[], gone = false): ArtifactStore {
             return gone ? null : { offset, length: c.body.length, sha256: sha(c.body), body: c.body };
         },
         async readManifest(r: StreamRef) {
-            const cause = find(r)?.terminalCause ?? null;
-            return { terminalCause: cause } as never;
+            return find(r)?.manifest as never;
         },
     } as unknown as ArtifactStore;
 }
@@ -106,13 +107,37 @@ describe('POST /api/jobs/:id/gate-log', () => {
         const app = await boot(memoryArtifacts(STREAMS));
         const response = await post(app, { leaseToken: LEASE, executionId: RUN });
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ text: 'FAIL a.test.ts\nTests  1 failed\n', truncated: false });
+        expect(response.json()).toEqual({ text: 'FAIL a.test.ts\nTests  1 failed\n', truncated: false, cause: null });
     });
 
     it('says the head was cut when the driver kept a tail', async () => {
-        const app = await boot(memoryArtifacts([held(JOB, `gate-test-${RUN}`, ['tail'], 'head_dropped')]));
+        const manifest = { state: 'truncated', terminalCause: 'head_dropped' } as const;
+        const app = await boot(memoryArtifacts([held(JOB, `gate-test-${RUN}`, ['tail'], manifest)]));
         const response = await post(app, { leaseToken: LEASE, executionId: RUN });
-        expect(response.json()).toEqual({ text: 'tail', truncated: true });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ text: 'tail', truncated: true, cause: 'head_dropped' });
+    });
+
+    it.each([
+        ['an upload that failed after its first chunk', { state: 'partial', terminalCause: 'upload_failed' }],
+        ['a stream the board capped', { state: 'truncated', terminalCause: 'stream_cap' }],
+        ['a stream over the org quota', { state: 'truncated', terminalCause: 'org_quota' }],
+    ] as const)('serves the bytes of %s as incomplete, with why', async (_what, manifest) => {
+        const app = await boot(memoryArtifacts([held(JOB, `gate-test-${RUN}`, ['first chunk only'], manifest)]));
+        const response = await post(app, { leaseToken: LEASE, executionId: RUN });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+            text: 'first chunk only',
+            truncated: true,
+            cause: manifest.terminalCause,
+        });
+    });
+
+    it('answers a retryable 503, never a 404 or a prefix, for a stream no manifest closed', async () => {
+        const app = await boot(memoryArtifacts([held(JOB, `gate-test-${RUN}`, ['first chunk only'], null)]));
+        const response = await post(app, { leaseToken: LEASE, executionId: RUN });
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe(ERROR_CODES.ARTIFACTS_UNAVAILABLE);
     });
 
     it('answers 404 for a run with no stream, and when the store lost its chunks', async () => {

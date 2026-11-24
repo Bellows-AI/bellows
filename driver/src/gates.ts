@@ -189,7 +189,7 @@ const adHocRefusal = (gate: DeclaredGate, filter: string | undefined): string | 
 export type GateLogRead = (
     executionId: string,
     signal: AbortSignal
-) => Promise<{ text: string; truncated: boolean } | null>;
+) => Promise<{ text: string; truncated: boolean; cause: string | null } | null>;
 
 /**
  * `factory-gate <name> --last`: the thread's latest stored verdict of the gate, as the claim carried it. With `full`
@@ -231,7 +231,7 @@ const lastReportAnswer = async (
         if (!log) {
             return { status: HTTP_NOT_FOUND, body: { error: `the full output of gate "${name}" is no longer stored` } };
         }
-        return answer(log.text, { full: true, ...(log.truncated ? { truncated: true } : {}) });
+        return answer(log.text, { full: true, ...(log.truncated ? { truncated: true, cause: log.cause } : {}) });
     } catch (e) {
         if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
         return {

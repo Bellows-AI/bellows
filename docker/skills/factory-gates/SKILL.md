@@ -74,7 +74,7 @@ factory-gate test --last --full
 ```
 
 `--last --full` answers the same JSON with `output` the gate's whole stored output (its last 512 KiB; `"truncated":true`
-says the head is gone), read from the board. A run whose log the board no longer holds answers 404 (exit 22); a read that
+with a `cause` says it is not the whole output), read from the board. A run whose log the board no longer holds answers 404 (exit 22); a read that
 could not be made answers a retryable 503 (exit 22) — try again, do not guess from the excerpt. Redirect it to a file and
 search that (`factory-gate test --last --full > /tmp/test.json`) rather than printing it whole.
 

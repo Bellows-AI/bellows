@@ -1525,6 +1525,7 @@ describe('the gate server: reading the last stored report', () => {
             const read = vi.fn(async () => ({
                 text: 'FAIL a.test.ts\n...stacks...\nTests 1 failed',
                 truncated: false,
+                cause: null,
             }));
             const { server, post } = await serveFull(read);
 
@@ -1543,9 +1544,16 @@ describe('the gate server: reading the last stored report', () => {
             await server.close();
         });
 
-        it('says when the stored log kept only a tail', async () => {
-            const { server, post } = await serveFull(async () => ({ text: 'tail', truncated: true }));
-            await expect((await post({ last: true, full: true })).json()).resolves.toMatchObject({ truncated: true });
+        it('says when the stored log is incomplete, and why', async () => {
+            const { server, post } = await serveFull(async () => ({
+                text: 'prefix',
+                truncated: true,
+                cause: 'upload_failed',
+            }));
+            await expect((await post({ last: true, full: true })).json()).resolves.toMatchObject({
+                truncated: true,
+                cause: 'upload_failed',
+            });
             await server.close();
         });
 
@@ -1553,7 +1561,7 @@ describe('the gate server: reading the last stored report', () => {
             const gone = await serveFull(async () => null);
             expect((await gone.post({ last: true, full: true })).status).toBe(NOT_FOUND_STATUS);
             await gone.server.close();
-            const unnamed = await serveFull(async () => ({ text: 'x', truncated: false }), withReports);
+            const unnamed = await serveFull(async () => ({ text: 'x', truncated: false, cause: null }), withReports);
             expect((await unnamed.post({ last: true, full: true })).status).toBe(NOT_FOUND_STATUS);
             await unnamed.server.close();
         });

@@ -51,7 +51,8 @@ import type {
     Runner,
     RuntimeSample,
 } from '../../src/runner.js';
-import { reportTail } from '../../src/runner.js';
+import { failureExcerpt } from '../../src/gate-excerpt.js';
+import { ARTIFACT_LIMIT, REPORT_BYTE_LIMIT, tailKept } from '../../src/runner.js';
 import type { StepResult, SupervisorBinding } from '../../src/supervisor-contract.js';
 
 export const USER = '44444444-4444-4444-8444-444444444444';
@@ -408,7 +409,9 @@ export function stubBoard(
             const chunks = board.artifactChunks
                 .filter((chunk) => chunk.stream.startsWith('gate-') && chunk.stream.endsWith(`-${executionId}`))
                 .sort((a, b) => a.offset - b.offset);
-            return chunks.length === 0 ? null : { text: chunks.map((chunk) => chunk.text).join(''), truncated: false };
+            return chunks.length === 0
+                ? null
+                : { text: chunks.map((chunk) => chunk.text).join(''), truncated: false, cause: null };
         },
         async finishPass(_claimed, write) {
             board.finishPassesWritten.push(structuredClone(write));
@@ -831,8 +834,8 @@ export function stubGateStack(
                                 ? code === 0
                                     ? `${name} ok`
                                     : `${name} failed badly`
-                                : reportTail(full),
-                        ...(full === undefined ? {} : { fullOutput: full }),
+                                : failureExcerpt(full, REPORT_BYTE_LIMIT),
+                        ...(full === undefined ? {} : { fullOutput: tailKept(full, ARTIFACT_LIMIT).content }),
                         ...(result ? { result } : {}),
                     };
                 };

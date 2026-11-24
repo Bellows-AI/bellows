@@ -52,10 +52,9 @@ export function settledGate(
             name: gate.name,
             status: failed ? 'failed' : 'passed',
             exitCode: outcome.exitCode,
-            // A failure keeps its failing lines first, from the whole output rather than from its report tail.
-            output: failed
-                ? failureExcerpt(`${prefix}${outcome.fullOutput ?? outcome.output}`, budgets.failed)
-                : tailBytes(text, budgets.passed),
+            // A failure keeps its failing lines first: the run's answer is already an excerpt of the uncut output,
+            // so these lines are cut again to this gate's share, never taken from the capped log stream.
+            output: failed ? failureExcerpt(text, budgets.failed) : tailBytes(text, budgets.passed),
             ...(outcome.result ? { result: compactResult(outcome.result) } : {}),
         },
         text,

@@ -14,6 +14,8 @@ What a gate run keeps of its output: the whole log as a stream of the run, and a
 
 ## Invariants
 
+- The excerpt is taken from the uncut output, before the log's `ARTIFACT_LIMIT` cap; the stored log is a tail and may no longer hold the failing names.
+- A stream no manifest closed answers a retryable 503 (never 404, never a prefix as whole); one finalized short of `complete` answers its bytes with `truncated` and the manifest's `cause`.
 - The log never rides the gates report: the report keeps its 16 KiB raw budget (the 128 KiB body bound), and the log goes by chunked artifact upload under the claim.
 - A log that could not be stored costs the full read, never a verdict; `--last --full` answers 404 for a log the board lacks and a retryable 503 for one it could not read, never the excerpt in its place.
 - Both executors run the same driver path: a gate is a supervised step in the task group, so there is no kubernetes-only counterpart and no limit to state.

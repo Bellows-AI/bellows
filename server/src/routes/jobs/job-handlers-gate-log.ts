@@ -5,19 +5,18 @@ import {
     ArtifactIntegrityError,
     ArtifactObjectMissingError,
     GATE_STREAM_PREFIX,
-    HEAD_DROPPED_CAUSE,
 } from '../../artifacts/artifact-store.js';
 import type { StreamRef } from '../../artifacts/keys.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad, guard } from '../helpers.js';
 import { resolve, type Resolved } from './job-handlers-restore.js';
-import { CONTROL_BODY_LIMIT, HTTP_NOT_FOUND, HTTP_OK } from './job-limits.js';
+import { CONTROL_BODY_LIMIT, HTTP_NOT_FOUND, HTTP_OK, HTTP_UNAVAILABLE } from './job-limits.js';
 
 /**
  * `POST /api/jobs/:id/gate-log` — one gate run's whole output, the stream the driver stored when the run ended
  * (`gate-<name>-<execution id>`, `driver/src/artifact-upload.ts`), looked up by execution id across the rows of
  * the caller's own thread under the caller's live lease. What `factory-gate <name> --last --full` reads: the
- * stored gate report keeps an excerpt, this keeps the log. A run with no stream answers 404.
+ * stored gate report keeps an excerpt, this keeps the log. A run with no stream answers 404; one whose manifest is missing answers a retryable 503, and one finalized short of `complete` answers its bytes with `truncated` and the manifest's `cause`.
  */
 
 const HTTP_UNPROCESSABLE = 422;
@@ -36,21 +35,30 @@ async function findStream(r: Resolved, executionId: string): Promise<StreamRef |
     return null;
 }
 
-/** The stream's text, chunk by chunk in offset order, and whether its head was cut at capture. */
-async function readStream(r: Resolved, ref: StreamRef): Promise<{ text: string; truncated: boolean }> {
+/** The stream's text, chunk by chunk in offset order, and what its manifest says about how whole it is. */
+async function readStream(
+    r: Resolved,
+    ref: StreamRef
+): Promise<{ text: string; truncated: boolean; cause: string | null } | typeof UNFINALIZED> {
+    // The manifest first: a stream no manifest closed is still uploading, or its upload died — either way its
+    // chunks are a prefix of unknown length, and a read that cannot tell is not an answer.
+    const manifest = await r.artifacts.readManifest(ref);
+    if (!manifest) return UNFINALIZED;
     const parts: Uint8Array[] = [];
     for (const { offset } of await r.artifacts.listChunks(ref)) {
         const chunk = await r.artifacts.readChunk(ref, offset);
         if (!chunk) throw new ArtifactObjectMissingError('a chunk of the gate log is gone');
         parts.push(chunk.body);
     }
-    const manifest = await r.artifacts.readManifest(ref);
+    // Every finalization short of `complete` — the driver's cut head, a failed upload, the board's caps — is said.
     return {
         text: Buffer.concat(parts).toString('utf8'),
-        truncated: manifest?.terminalCause === HEAD_DROPPED_CAUSE,
+        truncated: manifest.state !== 'complete',
+        cause: manifest.terminalCause,
     };
 }
 
+const UNFINALIZED = Symbol('unfinalized');
 const MISSING = Symbol('missing');
 const CORRUPT = Symbol('corrupt');
 
@@ -84,6 +92,14 @@ export async function handleGateLog(orgs: OrgRegistry, request: FastifyRequest, 
             ERROR_CODES.ARTIFACT_CORRUPT,
             'The stored gate log fails its recorded sha256',
             HTTP_UNPROCESSABLE
+        );
+    }
+    if (read.value === UNFINALIZED) {
+        return bad(
+            reply,
+            ERROR_CODES.ARTIFACTS_UNAVAILABLE,
+            'The gate log is not finalized yet; retry shortly',
+            HTTP_UNAVAILABLE
         );
     }
     if (read.value === MISSING) return bad(reply, ERROR_CODES.NOT_FOUND, 'No such gate log', HTTP_NOT_FOUND);

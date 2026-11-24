@@ -230,10 +230,11 @@ describe("a gate run's whole output", () => {
     const executionId = '77777777-7777-4777-8777-777777777777';
 
     it('reads the stored log by execution id under the lease', async () => {
-        const read = recorder(() => Response.json({ text: 'FAIL a.test.ts', truncated: true }));
+        const read = recorder(() => Response.json({ text: 'FAIL a.test.ts', truncated: true, cause: 'upload_failed' }));
         expect(await boardOn(read.fetch).gateLog(job, executionId)).toEqual({
             text: 'FAIL a.test.ts',
             truncated: true,
+            cause: 'upload_failed',
         });
         expect(read.calls[0]!.url).toBe('http://board/api/jobs/job-1/gate-log');
         expect(read.calls[0]!.body).toEqual({ leaseToken: job.leaseToken, executionId });
