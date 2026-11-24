@@ -1,6 +1,13 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { githubRepo, resolveBatchPlan, type BatchPlan, type PrFacts, type RepoRef } from '@factory-ai/core';
+import {
+    formatRepoRef,
+    githubRepo,
+    resolveBatchPlan,
+    type BatchPlan,
+    type PrFacts,
+    type RepoRef,
+} from '@factory-ai/core';
 import { createBatchMerger, type BatchMerger, type MergeClient } from '../src/batch-merger.js';
 import { createBatchPrObserver, type BatchPrObserver } from '../src/batch-pr-observer.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
@@ -186,6 +193,29 @@ describe.skipIf(!enabled)('batch rows carry the repository triple', () => {
         const { id } = await store.create(source, ALICE);
         expect(await triplesOf('batch_target', id)).toEqual([tripleOf(home)]);
         expect((await store.get(id))!.plan.targets).toEqual([{ key: 'web', repo: refOf(home) }]);
+    });
+
+    it('keeps a mixed-case gitlab path exact from intake through the plan, the target and the root job', async () => {
+        const ref: RepoRef = { forge: 'gitlab', host: 'gl.example', path: 'Group/Sub/Project' };
+        const source = batchPlan('Case', [{ key: 'one', tasks: [prTask('a')] }], {
+            targets: [{ key: 'web', repo: ref }],
+        });
+        const { id } = await store.create(source, ALICE);
+        const started = await store.start({
+            id,
+            version: 1,
+            plan: resolveBatchPlan(source, { [formatRepoRef(ref)]: 'main' }),
+            startedBy: ALICE,
+        });
+        expect(started).toMatchObject({ result: 'ok' });
+        await store.reconcile(id);
+
+        const record = (await store.get(id))!;
+        expect(record.plan.targets).toEqual([{ key: 'web', repo: ref, branch: 'main' }]);
+        expect(await triplesOf('batch_target', id)).toEqual([{ forge: 'gitlab', host: 'gl.example', repo: ref.path }]);
+        const root = await rootOf(store, id, 'a');
+        const [job] = await sql`select forge, host, repo from job where id = ${root}`;
+        expect(job).toEqual({ forge: 'gitlab', host: 'gl.example', repo: ref.path });
     });
 
     it.each(HOMES)('keeps $name on the root job, the attempt, the observation and the acceptance', async (home) => {
