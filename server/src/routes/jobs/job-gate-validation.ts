@@ -42,6 +42,25 @@ function gateEntryRecord(entry: Record<string, unknown>): Pick<GateReport, 'exec
     };
 }
 
+/** When a gate started and settled and the deadline it ran under, or the reason it is refused. */
+function gateEntryTiming(
+    entry: Record<string, unknown>
+): Pick<GateReport, 'startedAt' | 'finishedAt' | 'timeoutMs'> | string {
+    const timing: Pick<GateReport, 'startedAt' | 'finishedAt' | 'timeoutMs'> = {};
+    for (const key of ['startedAt', 'finishedAt'] as const) {
+        const value = entry[key];
+        if (value === undefined) continue;
+        if (typeof value !== 'string' || !nullableTimestamp(value)) return `gate ${key} must be a timestamp`;
+        timing[key] = value;
+    }
+    const { timeoutMs } = entry;
+    if (timeoutMs === undefined) return timing;
+    if (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < 1) {
+        return 'gate timeoutMs must be a positive integer';
+    }
+    return { ...timing, timeoutMs };
+}
+
 function validateGateEntry(raw: unknown): GateReport | string {
     const entry = body(raw);
     const core = gateEntryCore(entry);
@@ -50,10 +69,8 @@ function validateGateEntry(raw: unknown): GateReport | string {
     if (output !== undefined && output !== null && typeof output !== 'string') {
         return 'gate output must be a string or null';
     }
-    const { startedAt } = entry;
-    if (startedAt !== undefined && (typeof startedAt !== 'string' || !nullableTimestamp(startedAt))) {
-        return 'gate startedAt must be a timestamp';
-    }
+    const timing = gateEntryTiming(entry);
+    if (typeof timing === 'string') return timing;
     const record = gateEntryRecord(entry);
     if (typeof record === 'string') return record;
     const result = parseGateResult(entry.result);
@@ -61,7 +78,7 @@ function validateGateEntry(raw: unknown): GateReport | string {
         ...core,
         ...(result ? { result } : {}),
         output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null,
-        ...(startedAt === undefined ? {} : { startedAt }),
+        ...timing,
         ...record,
     };
 }

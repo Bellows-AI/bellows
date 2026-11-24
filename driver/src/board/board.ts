@@ -624,6 +624,8 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
             exitCode: number | null;
             output: string | null;
             startedAt?: string;
+            finishedAt?: string;
+            timeoutMs?: number;
             result?: GateResult;
         }[]
     ): Promise<LeaseState>;

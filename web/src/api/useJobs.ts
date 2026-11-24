@@ -50,8 +50,12 @@ export interface GateCheck {
     status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
     exitCode: number | null;
     output: string | null;
-    /** When a `running` gate started (ISO), so the strip can count its seconds. */
+    /** When the gate started (ISO): a running gate counts its seconds from it, a settled one keeps it. */
     startedAt?: string;
+    /** When the gate settled (ISO); absent on a gate that is skipped, reused or still going. */
+    finishedAt?: string;
+    /** The deadline the gate ran under, in ms. */
+    timeoutMs?: number;
     /** What the gate recorded beside its output: failed tests, selection, slowest files, the guest's resources. */
     result?: GateResult;
 }

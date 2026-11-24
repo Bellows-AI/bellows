@@ -89,8 +89,12 @@ export interface GateReport {
     name: string;
     status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
     exitCode: number | null;
-    /** When a `running` entry started (ISO); absent on the others. */
+    /** When the gate started (ISO): a `running` entry's, kept on the settled one; absent on a gate not run. */
     startedAt?: string;
+    /** When the gate settled (ISO); only on a settled entry that ran. */
+    finishedAt?: string;
+    /** The deadline the gate ran under, in ms; only on a settled entry that ran. */
+    timeoutMs?: number;
     /** The gate's tail. Bounded by the driver's window; truncated again at the route. */
     output: string | null;
     /** The recorded execution this entry is; absent for a gate no record covers. */
