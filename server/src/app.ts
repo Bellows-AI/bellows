@@ -478,7 +478,7 @@ export async function buildApp({
     const app = Fastify({
         ...loggingOf(loggerInstance, logger),
         trustProxy: trustProxyOf(config.trustedProxies),
-        maxParamLength: REPO_ID_PARAM_LIMIT,
+        routerOptions: { maxParamLength: REPO_ID_PARAM_LIMIT },
     });
     app.setErrorHandler(errorHandler);
     const publicUrl = config.auth.mode === 'github' ? config.auth.publicUrl : '';
