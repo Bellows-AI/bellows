@@ -4,7 +4,7 @@ import { JOB_ID_HEADER, LEASE_TOKEN_HEADER } from '../auth/plugin.js';
 import type { AttemptCheck, AttemptOfLease, LiveAttempt } from '../db/attempt-of-lease.js';
 import { forgeConnectPath, forgeLabel, forgeOfRepo } from '../forge/forges.js';
 import { UUID } from '../identifiers.js';
-import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
+import type { MemberForgeGrants, MemberTokenResult } from '../integrations/member-forge-grant.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad, leasePending } from './helpers.js';
 
@@ -14,8 +14,10 @@ import { bad, leasePending } from './helpers.js';
  * auth/plugin.ts), and the attempt must be live on a GitLab repository, the thread root's own. The board reads the
  * starter's grant, refreshing it through the lineage (GitLab rotates the refresh token on every use), and answers:
  *
- * - `200 { forge, standing: 'live' }` — the grant serves. No token rides this answer yet: delivering one to the runner
- *   is the runner-side slice's, which adds it here.
+ * - `200 { forge, standing: 'live', token, expiresAt }` — the grant serves: the starter's current access token and its
+ *   expiry (ISO, or null for one that carries none), `Cache-Control: no-store`. The attempt is checked before the token
+ *   is read and again after, so a cancel, settle or takeover during the refresh withholds it. The token is in the
+ *   answer and nowhere else: no log line, no error text.
  * - `409 FORGE_GRANT_REQUIRED { forge, standing: 'missing' | 'broken', waiting: true, connectUrl }` — the grant was
  *   revoked, needs reconnect or is gone. The thread now waits (the runtime requirement with provider `forge` and target
  *   `gitlab:<host>`): the heartbeat tells the attempt, and a takeover of it, to stop and hand the task back, and the
@@ -88,7 +90,8 @@ async function waitAnswer(
     const held = await store.holdOnForgeGrant(attempt.jobId, leaseToken, { forge, reason });
     if (held.result === 'lost') return leasePending(reply);
     if (held.result === 'missing') return refused(reply);
-    if (held.result === 'serving') return reply.code(HTTP_OK).send({ forge, standing: 'live' });
+    // Live again by the time the hold ran (a re-link): no wait, and the retry reads the token.
+    if (held.result === 'serving') return unavailable(reply);
     const standing = reason === 'missing' ? 'missing' : 'broken';
     const path = forgeConnectPath(forge, { orgId: attempt.orgId, returnTo: `/tasks/${attempt.rootJobId}` });
     const connectUrl = `${deps.publicUrl}${path as string}`;
@@ -103,6 +106,25 @@ async function waitAnswer(
     });
 }
 
+/** The token, once the pair is still the live attempt's on the same claim: the refresh took time. */
+async function serveToken(
+    deps: ForgeCredentialDeps,
+    reply: FastifyReply,
+    served: {
+        attempt: LiveAttempt;
+        pair: { jobId: string; leaseToken: string };
+        forge: string;
+        token: Extract<MemberTokenResult, { ok: true }>;
+    }
+) {
+    const { attempt, pair, forge, token } = served;
+    const still = await deps.attemptOfLease(pair.jobId, pair.leaseToken);
+    if (!still.ok) return notLive(reply, still);
+    if (still.orgId !== attempt.orgId || still.claimSeq !== attempt.claimSeq) return refused(reply);
+    const expiresAt = token.expiresAt === null ? null : new Date(token.expiresAt).toISOString();
+    return reply.code(HTTP_OK).send({ forge, standing: 'live', token: token.accessToken, expiresAt });
+}
+
 const handler = (deps: ForgeCredentialDeps) => async (request: FastifyRequest, reply: FastifyReply) => {
     reply.header('cache-control', 'no-store');
     const pair = pairOf(request);
@@ -114,7 +136,7 @@ const handler = (deps: ForgeCredentialDeps) => async (request: FastifyRequest, r
         if (forge === null) return refused(reply, NOT_GITLAB);
         const signal = AbortSignal.timeout(DEADLINE_MS);
         const token = await deps.memberGrants.accessToken(attempt.orgId, attempt.executionUserId, forge, { signal });
-        if (token.ok) return reply.code(HTTP_OK).send({ forge, standing: 'live' });
+        if (token.ok) return await serveToken(deps, reply, { attempt, pair, forge, token });
         const { outcome } = token;
         if (outcome.outcome !== 'integration_required') return unavailable(reply);
         const reason = outcome.reason === 'missing' ? 'missing' : 'reconnect';
