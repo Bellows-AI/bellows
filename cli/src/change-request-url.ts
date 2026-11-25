@@ -22,7 +22,9 @@ const isNumber = (value: number): boolean => Number.isSafeInteger(value) && valu
 
 /** The ref for a URL's parts, or null when its host or path is not a repository's. */
 function repoOf(forge: RepoRef['forge'], host: string, path: string): RepoRef | null {
-    if (path.split('/').some((segment) => segment === '.' || segment === '..' || segment === '-')) return null;
+    // `/-/` separates a GitLab project from its route, so a GitLab path never holds a `-` segment.
+    const reserved = forge === 'gitlab' ? ['.', '..', '-'] : ['.', '..'];
+    if (path.split('/').some((segment) => reserved.includes(segment))) return null;
     return parseRepoRef(`${forge}:${host.toLowerCase()}/${path}`);
 }
 

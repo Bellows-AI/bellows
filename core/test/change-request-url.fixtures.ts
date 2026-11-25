@@ -12,6 +12,8 @@ export const ACCEPTED: Array<[string, ReturnType<typeof gh>]> = [
     ['https://ghe.example/acme/web/pull/7', gh('acme/web', 7, 'ghe.example')],
     ['https://github.com/acme/web/pull/2147483647', gh('acme/web', 2147483647)],
     ['https://gitlab.com/g/p/-/merge_requests/2147483647', gl('g/p', 2147483647, 'gitlab.com')],
+    ['https://github.com/acme/-/pull/7', gh('acme/-', 7)],
+    ['https://gitlab.com/g/pull/p/-/merge_requests/7', gl('g/pull/p', 7, 'gitlab.com')],
     ['https://gitlab.com/g/p/-/merge_requests/3', gl('g/p', 3, 'gitlab.com')],
     ['https://gitlab.com/g/p/-/merge_requests/3/', gl('g/p', 3, 'gitlab.com')],
     ['https://gitlab.com/g/sub/deep/p/-/merge_requests/41', gl('g/sub/deep/p', 41, 'gitlab.com')],
@@ -56,6 +58,7 @@ export const REJECTED = [
     'https://../g/p/-/merge_requests/3',
     'https://gitlab.com/-/merge_requests/3',
     'https://gitlab.com/g/p/-/-/merge_requests/3',
+    'https://gitlab.com/g/-/p/-/merge_requests/7',
     'https://gitlab.com/g/p/-/pull/3',
     'https://gl.example:abc/g/p/-/merge_requests/3',
 ];
