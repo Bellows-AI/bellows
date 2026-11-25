@@ -28,6 +28,14 @@ const SECRET_LIMIT = 4096;
 const GROUP_LIMIT = 100;
 const CA_BUNDLE_LIMIT = CA_BUNDLE_KIB * BYTES_PER_KIB;
 
+const MAX_PORT = 65_535;
+
+/** A port, when the host names one, is 1-65535: the pattern alone accepts digits a URL refuses. */
+const portInRange = (host: string): boolean => {
+    const port = host.split(':')[1];
+    return port === undefined || (Number(port) >= 1 && Number(port) <= MAX_PORT);
+};
+
 type Parsed = { ok: true; input: Parameters<ForgeConnectionStore['create']>[0] } | { ok: false; message: string };
 
 const text = (value: unknown, limit: number): string | null =>
@@ -37,7 +45,7 @@ const text = (value: unknown, limit: number): string | null =>
 function parse(raw: unknown): Parsed {
     const fields = body(raw);
     const host = text(fields.host, HOST_LIMIT);
-    if (host === null || !HOST_PATTERN.test(host))
+    if (host === null || !HOST_PATTERN.test(host) || !portInRange(host))
         return { ok: false, message: 'host must be a bare host name with an optional port' };
     const clientId = text(fields.clientId, FIELD_LIMIT);
     if (clientId === null || /\s/.test(clientId)) return { ok: false, message: 'clientId is required' };

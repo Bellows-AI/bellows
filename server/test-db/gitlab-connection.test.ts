@@ -215,6 +215,30 @@ describe.skipIf(!enabled)('forge connection store', () => {
         }
     });
 
+    it('stores a pending connection with a reason when the probe throws, synchronously or not', async () => {
+        const throwing = (probe: () => never | Promise<never>) =>
+            createForgeConnectionStore({
+                sql,
+                orgId: orgA,
+                secrets,
+                secretLog: () => {},
+                gitlab: { probe },
+            });
+        const sync = await throwing(() => {
+            throw new Error('setup failed');
+        }).create(input({ host: named('syncthrow') }));
+        const async_ = await throwing(() => Promise.reject(new Error('probe failed'))).create(
+            input({ host: named('asyncthrow') })
+        );
+        for (const made of [sync, async_]) {
+            if (!made.ok) throw new Error('create refused');
+            expect(made.connection).toMatchObject({
+                active: false,
+                probe: { status: 'unreachable', reason: 'unreachable' },
+            });
+        }
+    });
+
     it('reports an unreachable host as pending with reason unreachable', async () => {
         const made = await storeA.create(input({ host: '127.0.0.1:9' }));
         if (!made.ok) throw new Error('create refused');
@@ -521,6 +545,9 @@ describe.skipIf(!enabled)('GitLab connection routes', () => {
             input({ allowedGroups: [] }),
             input({ allowedGroups: ['a b'] }),
             input({ caBundle: 'not a pem' }),
+            input({ host: 'example.test:0' }),
+            input({ host: 'example.test:65536' }),
+            input({ host: 'example.test:' }),
         ]) {
             expect((await call(adminA, 'POST', PATH, bad)).status).toBe(BAD_REQUEST);
         }

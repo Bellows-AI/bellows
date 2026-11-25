@@ -72,4 +72,11 @@ describe('createGitlabApi.probe', () => {
         plain.at(-1)?.close();
         expect(await api.probe({ host: closed })).toEqual({ reachable: false, reason: 'unreachable' });
     });
+
+    it.each(['example.test:65536', 'example.test:0', 'example.test:99999999'])(
+        'answers unreachable, never throws, for a host no URL can name (%s)',
+        async (host) => {
+            expect(await createGitlabApi().probe({ host })).toEqual({ reachable: false, reason: 'unreachable' });
+        }
+    );
 });

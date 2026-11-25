@@ -80,7 +80,13 @@ export function createGitlabApi({
     return {
         probe: ({ host, caBundle }) =>
             new Promise<ProbeResult>((resolve) => {
-                const url = new URL('/api/v4/version', baseUrl(host));
+                let url: URL;
+                try {
+                    url = new URL('/api/v4/version', baseUrl(host));
+                } catch {
+                    // An input the route let through that no URL can name: pending, with a reason, never a throw.
+                    return resolve({ reachable: false, reason: 'unreachable' });
+                }
                 const send = url.protocol === 'http:' ? httpRequest : httpsRequest;
                 let settled = false;
                 const done = (result: ProbeResult) => {

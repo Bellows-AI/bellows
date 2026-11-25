@@ -239,7 +239,10 @@ export function createForgeConnectionStore({
                 where org_id = ${orgId} and forge = ${FORGE} and host = ${host} and removed_at is null
             `;
             if (taken.length > 0) return { ok: false, reason: 'exists' };
-            const probe = await gitlab.probe({ host, caBundle: input.caBundle });
+            // A probe that throws is an unreachable instance: the connection is still stored, pending, with the reason.
+            const probe = await Promise.resolve()
+                .then(() => gitlab.probe({ host, caBundle: input.caBundle }))
+                .catch((): ProbeResult => ({ reachable: false, reason: 'unreachable' }));
             const id = randomUUID();
             const refs = { secret: createSecretRef(), ca: input.caBundle === undefined ? null : createSecretRef() };
             if (!(await recordIntent({ id, host, input, refs, probe }))) return { ok: false, reason: 'exists' };
