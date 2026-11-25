@@ -653,13 +653,14 @@ describe.skipIf(!enabled).each(VARIANT_CASES)(
             expect(applied).toBe(false);
         });
 
-        it('answers a GitLab claim given GitHub facts for the same path as a failed read, applying nothing', async () => {
+        it('answers a GitLab claim as a failed read with no GitHub request, applying nothing', async () => {
             const { root, number } = await otherPlainThread();
             github.replies.set(number, mergedPr(number));
 
             await follower.observeDue();
 
-            expect(github.reads).toEqual([number]);
+            // The forge resolves to no client: the same path on GitHub is never asked.
+            expect(github.reads).toEqual([]);
             expect(await mergeRows(number)).toEqual([]);
             expect(await doneAtOf(root)).toBeNull();
             expect(await followRow(number)).toMatchObject({ failures: 1, error_code: 'binding' });
