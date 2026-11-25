@@ -1,29 +1,61 @@
 # Bellows
 
-Remote agentic engineering platform. Bellows runs a coding agent against a repository in a
-remote runner whose container, services and gates the repository defines in `.bellows.yaml`. A
-failing gate ships a draft pull request; `policy.gates: required` blocks publication until every
-gate passes.
+**Remote Agentic Engineering Platform**
 
-| Capability | What it is |
-| --- | --- |
-| Runner | The container image, setup, caches and services from `.bellows.yaml`; Kubernetes in production, Docker for development |
-| Gates | Build, test and lint commands every run must pass; the agent can run on-demand gates while it works |
-| Executors | Claude Code or OpenCode, with per-user or per-organization model profiles |
-| Tasks | A thread of jobs: questions, follow-ups and retries resume the same session and checkout |
-| Recovery | A lost node or runner interrupts a task; the next claim resumes surviving state or a saved checkpoint when available |
-| Access | Web app, `bellows` CLI and an MCP endpoint |
-| Process | Every task, from any entry point, runs the same runner, gates, base-branch policy and built-in skills |
-| Telemetry | OpenTelemetry from every run; sessions and token usage for the whole organization, and per task |
-| Ledger | Per task: jobs, gate runs, PR operations, logs and transcripts; an append-only audit log; full org export |
-| Context | Skills, Jira/Linear connections, env vars and secrets, attachments |
+Bellows gives your team a shared place to work with coding agents. Describe a change, let an
+agent work on it in a remote environment, and review the resulting pull request. You can follow
+the work, answer questions and ask for changes as the task progresses.
 
-Docs: [docs.bellows.cloud](https://docs.bellows.cloud) — usage, self-hosting, reference.
+Getting an agent to write code is one part of the job. As more people on a team use agents,
+the surrounding work matters too: setting up environments, providing access to tools, agreeing
+on checks, and understanding what happened. Bellows brings that work into a shared process
+that your team can configure, repeat and improve.
+
+## A shared way of working
+
+**Set up the process once.** Your repository defines the environment and checks, while shared
+skills give agents instructions for recurring work. Whether someone starts a task from the
+web app, CLI or an MCP client, it follows the same process. The team's expectations travel
+with the repository.
+
+**Give agents the access they need.** Configure shared model credentials, environment variables
+and connections to tools such as Jira and Linear in your organization. Teammates can use that
+setup when they start work, with personal profiles and credentials available where needed.
+You choose the coding agent and model; Bellows supports Claude Code and OpenCode.
+
+**See how the work is going.** Built-in telemetry shows sessions and token usage across your
+organization, with usage and activity available for each task. You can look at an individual
+run or understand how agents are being used across the team.
+
+**Keep a history you can follow.** Each task brings together the conversation, runs, checks,
+logs, agent transcripts and pull request operations. When you review a change or investigate
+a failure, you have the record of how the work unfolded. An organization audit log records
+administrative changes, and admins can export the organization's data.
+
+## From a task to a pull request
+
+Start with a repository and a description of the work. Bellows prepares a remote runner using
+the container image, setup commands and services in your repository's `.bellows.yaml`, then
+starts the agent. Follow-ups and retries stay with the task, so you can continue the work
+without creating a new thread.
+
+Build, test and lint checks run at the end of each job. These checks are called **gates**.
+By default, a failing gate leaves the work in a draft pull request for inspection. Set
+`policy.gates: required` to block publication until every gate passes. Your team reviews
+the resulting pull request and decides what to merge.
+
+If a runner or node is lost, Bellows can resume surviving state or restore a saved checkpoint
+when one is available.
+
+Use Bellows Cloud or host it on your own infrastructure.
+Read the [documentation](https://docs.bellows.cloud) to get started, configure your workflow
+or set up self-hosting.
 
 ## Development
 
-Needs Node 22+, Docker, and a GitHub App (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`); either
-missing refuses to boot. Every setting is in `.env.example`.
+To run Bellows locally, you'll need Node 22+, Docker, and a GitHub App. The server requires
+PostgreSQL and the app credentials (`GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`) to start.
+See `.env.example` for the available settings.
 
 ```bash
 npm install
@@ -32,7 +64,7 @@ cp .env.example .env          # set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY
 npm run dev                   # API on 127.0.0.1:8080, Vite on 5173 with /api proxied
 ```
 
-No credential? Seed a disposable database and browse it offline:
+To explore sample data without GitHub credentials, seed a disposable database for offline browsing:
 
 ```bash
 docker compose exec postgres psql -U factory -d postgres -c 'create database factory_seed'
@@ -47,7 +79,7 @@ docker compose up -d driver  # containers on the local docker socket
 npm run dev -w cli -- job create "fix the flaky test" --repo owner/name
 ```
 
-The full stack on a local kind cluster:
+To run the full stack on a local kind cluster:
 
 ```bash
 make start    # build images, create the cluster, install the chart, port-forward on 8081
@@ -67,4 +99,4 @@ npm run test:k8s
 npm run verify:ui
 ```
 
-Every command, the build coupling and the map to the code: [AGENTS.md](AGENTS.md).
+See [AGENTS.md](AGENTS.md) for development commands, build dependencies and a guide to the code.
