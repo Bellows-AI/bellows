@@ -689,7 +689,10 @@ describe('fake GitLab: group projects', () => {
         const direct = await list('acme');
         expect(direct.status).toBe(200);
         expect(paths(direct)).toEqual(['acme/a', 'acme/b']);
-        expect(direct.body[0].permissions.project_access.access_level).toBe(30);
+        for (const entry of direct.body) expect(entry).not.toHaveProperty('permissions');
+        const { access_token: token } = await gl.signIn('dev');
+        const single = await gl.send('GET', `/api/v4/projects/${encodeURIComponent('acme/a')}`, { token });
+        expect(single.body.permissions.project_access.access_level).toBe(30);
         const nested = await list('acme', '?include_subgroups=true');
         expect(paths(nested)).toEqual(['acme/a', 'acme/b', 'acme/sub/c']);
         expect(paths(await list('acme/sub', '?include_subgroups=true'))).toEqual(['acme/sub/c']);
@@ -856,6 +859,23 @@ describe('fake GitLab: fault controls', () => {
         const res = await fetch(`${gl.base}/api/v4/version`, { headers: { authorization: `Bearer ${token}` } });
         expect(res.status).toBe(200);
         await expect(res.json()).rejects.toThrow();
+    });
+
+    it('reaches an unauthenticated call before the 401, and recovers when cleared', async () => {
+        expect((await gl.send('GET', '/api/v4/version')).status).toBe(401);
+        await faultOn({ pathIncludes: '/api/v4/version', mode: 'status', status: 503 });
+        expect((await gl.send('GET', '/api/v4/version')).status).toBe(503);
+        await faultOn({ mode: 'none' });
+        expect((await gl.send('GET', '/api/v4/version')).status).toBe(401);
+        await faultOn({ pathIncludes: '/api/v4/version', mode: 'malformed' });
+        const res = await fetch(`${gl.base}/api/v4/version`);
+        expect(res.status).toBe(200);
+        await expect(res.json()).rejects.toThrow();
+        await faultOn({ mode: 'none' });
+        await faultOn({ pathIncludes: '/api/v4/version', mode: 'timeout' });
+        await expect(fetch(`${gl.base}/api/v4/version`, { signal: AbortSignal.timeout(FAST) })).rejects.toThrow();
+        await faultOn({ mode: 'none' });
+        expect((await gl.send('GET', '/api/v4/version')).status).toBe(401);
     });
 
     it('never answers in timeout mode, and clears on mode none', async () => {

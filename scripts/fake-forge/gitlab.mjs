@@ -178,8 +178,9 @@ export const registerGitlab = (forge) => {
         return true; // timeout: the call is never answered
     };
     const route = (method, pattern, handler, options = {}) =>
-        forge.route(method, `${API}${pattern}`, (ctx) => (faulted(ctx) ? undefined : handler(ctx)), {
+        forge.route(method, `${API}${pattern}`, handler, {
             deny: UNAUTHORIZED,
+            before: faulted,
             ...options,
         });
     const control = (pattern, handler) =>
@@ -209,7 +210,8 @@ export const registerGitlab = (forge) => {
     };
     const access = (level) => (level === null ? null : { access_level: level, notification_level: 3 });
 
-    const projectJson = (project, login, request) => {
+    /** `Entities::Project` omits `permissions`; only a single-project request (`ProjectWithAccess`) adds it. */
+    const projectJson = (project, login, request, { withPermissions = false } = {}) => {
         const held = project.members.get(login) ?? { project: MAINTAINER, group: null };
         const namespace = project.path.split('/').slice(0, -1).join('/');
         return {
@@ -225,7 +227,7 @@ export const registerGitlab = (forge) => {
             squash_option: project.squashOption,
             only_allow_merge_if_pipeline_succeeds: project.onlyPipeline,
             only_allow_merge_if_all_discussions_are_resolved: project.onlyDiscussions,
-            permissions: { project_access: access(held.project), group_access: access(held.group) },
+            ...(withPermissions ? { permissions: { project_access: access(held.project), group_access: access(held.group) } } : {}),
         };
     };
 
@@ -233,7 +235,7 @@ export const registerGitlab = (forge) => {
     route('GET', '/user', ({ response, token }) => forge.json(response, 200, userJson(token.login)));
     route('GET', '/projects/:id', (ctx) => {
         const project = guard(ctx, GUEST);
-        if (project) forge.json(ctx.response, 200, projectJson(project, ctx.token.login, ctx.request));
+        if (project) forge.json(ctx.response, 200, projectJson(project, ctx.token.login, ctx.request, { withPermissions: true }));
     });
 
     // --- groups ---

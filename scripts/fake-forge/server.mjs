@@ -73,12 +73,13 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
         },
         /**
          * Register `handler({ request, response, url, params, query, body, token })` for a method and a `:param` path.
-         * `deny` is the 401 body a forge answers an unauthenticated call with.
+         * `deny` is the 401 body a forge answers an unauthenticated call with. `before({ request, response, url })` runs
+         * ahead of the credential check and answers the call itself (returning true) or lets it through.
          */
-        route: (method, pattern, handler, { auth = true, holdable = false, deny = { message: 'Bad credentials' } } = {}) => {
+        route: (method, pattern, handler, { auth = true, holdable = false, deny = { message: 'Bad credentials' }, before = null } = {}) => {
             const keys = [];
             const regex = new RegExp(`^${pattern.replace(/:(\w+)/g, (_, key) => (keys.push(key), '([^/]+)'))}$`);
-            table.push({ method, regex, keys, handler, auth, holdable, deny });
+            table.push({ method, regex, keys, handler, auth, holdable, deny, before });
         },
         /** The token's holder, or null when it is unknown or past its expiry. */
         resolve: (value) => {
@@ -160,9 +161,10 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
             if (match) return handler({ request, response, url, token: holder, tokenKind, credential, match });
         }
         const body = await readBody(request);
-        for (const { method, regex, keys, handler, auth, holdable, deny } of table) {
+        for (const { method, regex, keys, handler, auth, holdable, deny, before } of table) {
             const match = method === request.method ? regex.exec(url.pathname) : null;
             if (!match) continue;
+            if (before?.({ request, response, url })) return;
             if (auth && !holder) return forge.json(response, 401, deny);
             const params = Object.fromEntries(keys.map((key, i) => [key, decodeURIComponent(match[i + 1])]));
             if (holdable) await forge.hold();
