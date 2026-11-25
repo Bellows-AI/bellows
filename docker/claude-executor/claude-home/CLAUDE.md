@@ -145,7 +145,7 @@ worktree — with `factory-exec`, the command as ONE quoted argument (it runs un
 factory-exec 'npx playwright test e2e/login.spec.ts'
 ```
 
-It prints `{"exitCode":N,"output":"..."}`. Use it for what only that image has: a browser, a toolchain
+It prints `{"exitCode":N,"output":"...","artifacts":[]}`. Use it for what only that image has: a browser, a toolchain
 or client the image provides, inspecting or finishing the environment's setup, reproducing a failed
 gate step. To check a change, prefer a declared gate. One run at a time, behind any gate already
 running, capped at 10 minutes; it gets no GitHub token and never runs the pending setup first. The

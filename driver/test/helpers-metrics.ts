@@ -68,6 +68,16 @@ export async function recordEveryDriverInstrument(meter: Meter): Promise<void> {
     await metrics.k8s(async () => ({ status: 200, body: '' }), 'runner')('GET', '/api/v1/namespaces/ns/pods');
     await metrics.docker(async () => ({ stdout: '' }), 'reaper')(['ps']);
     metrics.step('sync', 'ok', 1);
+    metrics.gate('test', 'passed', 1, {
+        samples: 2,
+        seconds: 10,
+        cpu: { user: 10, system: 29, iowait: 24, steal: 20, idle: 17 },
+        throttledPeriods: 1,
+        throttledMs: 40,
+        load: { start: 1, max: 2, end: 1 },
+        memAvailableMb: { min: 100, end: 200 },
+        memTotalMb: 4000,
+    });
     metrics.reaper.sweep('ok', 1);
     metrics.reaper.scanned('groups', 1);
     metrics.malformedClaim(['env']);

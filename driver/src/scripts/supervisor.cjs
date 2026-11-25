@@ -104,7 +104,8 @@ const { pipeline, Transform } = require('node:stream');
 /** @typedef {{ argv: string[], cwd?: string, env?: Record<string, string>, timeoutMs: number, parallel?: boolean }} SpawnSpec */
 /** @typedef {SpawnSpec & { id: string, invocation: string, kind: StepKind }} Step */
 /** @typedef {Step & { kind: LaneKind }} GateStep */
-/** @typedef {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean, replayed?: boolean, tokenAskUnanswered?: boolean }} StepResult */
+/** @typedef {{ sections: Record<string, unknown>, resources: string }} GateReportFiles */
+/** @typedef {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean, replayed?: boolean, tokenAskUnanswered?: boolean, failureLines?: string, outputCut?: true, report?: GateReportFiles }} StepResult */
 /** @typedef {{ result: StepResult, interrupted: boolean, tokens?: string[] }} Outcome */
 /** @typedef {{ state: string, result?: StepResult }} Call */
 /** @typedef {{ id: string, kind: string, effect: StepResult | null, invocations: Record<string, Call> }} Entry */
@@ -239,6 +240,18 @@ const GATE_FILES = {
     exit: 'exit',
     cancel: 'cancel',
 };
+/** What a gate request keeps beside its answer (`GATE_REPORT_FILES` of supervisor-contract.ts; scripts/gate-loop.sh spells the same). */
+const GATE_REPORT_FILES = { dir: 'report', resources: 'resources' };
+/** The most one report section answers: a larger one is cut down to it (`fittedSection`), never dropped. */
+const REPORT_SECTION_LIMIT = 65_536;
+/** The largest section file read to be cut down to the limit; a bigger one is not a report, it is garbage. */
+const REPORT_SECTION_READ_LIMIT = 4_194_304;
+/** The rounds of halving a section gets to fit: far more than a section the read limit admits needs. */
+const REPORT_FIT_ROUNDS = 32;
+/** The smallest a string is cut to while a section is brought under its limit. */
+const REPORT_STRING_FLOOR = 64;
+/** The most the loop's resource samples answer: their tail, which holds the end sample. */
+const REPORT_RESOURCES_LIMIT = 32_768;
 /** A gate request's GitHub token mailbox (`GATE_ASK_FILES` of supervisor-contract.ts; scripts/gate-github.sh spells the same). */
 const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', bin: 'bin' };
 /** A name `sh` can export: the gate loop applies the env with `export "$line"`. */
@@ -1049,12 +1062,167 @@ function readTail(file) {
     }
 }
 
+/** A line that names a failure, or sums a run up: `driver/src/gate-excerpt.ts` spells the same patterns. */
+const FAILURE_LINE = /^\s*(?:FAIL\b|[×✗✖]|❯ .*\bfailed\b)/;
+const SUMMARY_LINE = /^\s*(?:Test Files|Tests)\s+\d/;
+/** The most of one line kept, the failure lines kept in all, and the summary lines kept (the last ones). */
+const FAILURE_LINE_BYTES = 300;
+/** The bytes of a line's head read for it: four per character cut to `FAILURE_LINE_BYTES`, as UTF-8 takes at most. */
+const UTF8_MAX_BYTES_PER_CHAR = 4;
+const FAILURE_LINE_HEAD_BYTES = FAILURE_LINE_BYTES * UTF8_MAX_BYTES_PER_CHAR;
+const FAILURE_LINES_BYTES = 24_576;
+const SUMMARY_LINES_KEPT = 8;
+/** Read this much of the output file at a time, and no more of it in all than this: a bound on a runaway log. */
+const SCAN_CHUNK_BYTES = 262_144;
+const SCAN_FILE_LIMIT = 268_435_456;
+const NEWLINE = 0x0a;
+
+/**
+ * The failure and summary lines of a gate's WHOLE output file, for the lines its capped tail can no longer hold: read
+ * in chunks, a line at a time, never the file at once. Empty when the answer holds the whole file — it fits the step
+ * output cap in bytes AND once JSON-escaped (`escapedCut`: `fitTail` would cut it) — or holds no such line.
+ * @param {string} file
+ * @param {boolean} escapedCut
+ * @returns {string}
+ */
+function readFailureLines(file, escapedCut) {
+    let fd;
+    try {
+        fd = fs.openSync(file, 'r');
+        const size = fs.fstatSync(fd).size;
+        if (size <= STEP_OUTPUT_LIMIT && !escapedCut) return '';
+        /** @type {Set<string>} */
+        const failures = new Set();
+        /** @type {string[]} */
+        const summaries = [];
+        let kept = 0;
+        /** @param {Buffer} bytes */
+        const take = (bytes) => {
+            const line = bytes
+                .subarray(0, FAILURE_LINE_HEAD_BYTES)
+                .toString('utf8')
+                .trimEnd()
+                .slice(0, FAILURE_LINE_BYTES);
+            if (SUMMARY_LINE.test(line)) {
+                summaries.push(line);
+                if (summaries.length > SUMMARY_LINES_KEPT) summaries.shift();
+            } else if (
+                FAILURE_LINE.test(line) &&
+                !failures.has(line) &&
+                kept + line.length + 1 <= FAILURE_LINES_BYTES
+            ) {
+                failures.add(line);
+                kept += line.length + 1;
+            }
+        };
+        const buffer = Buffer.alloc(SCAN_CHUNK_BYTES);
+        let pending = Buffer.alloc(0);
+        for (let at = 0; at < Math.min(size, SCAN_FILE_LIMIT); ) {
+            const read = fs.readSync(fd, buffer, 0, SCAN_CHUNK_BYTES, at);
+            if (read === 0) break;
+            at += read;
+            let start = 0;
+            for (let end = buffer.indexOf(NEWLINE); end !== -1 && end < read; end = buffer.indexOf(NEWLINE, start)) {
+                take(Buffer.concat([pending, buffer.subarray(start, end)]));
+                pending = Buffer.alloc(0);
+                start = end + 1;
+            }
+            // Only the head of an unfinished line matters to the patterns: a longer one is cut, not accumulated.
+            const rest = Buffer.concat([pending, buffer.subarray(start, read)]);
+            pending = rest.subarray(0, FAILURE_LINE_HEAD_BYTES);
+        }
+        take(pending);
+        return [...failures, ...summaries].join('\n');
+    } catch {
+        return '';
+    } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+    }
+}
+
+/**
+ * A value cut down until its JSON fits `REPORT_SECTION_LIMIT`: every array to its first half and every string to its
+ * first half, round after round, so the head of each list and the other fields survive. Marked `truncated`.
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function halved(value) {
+    if (typeof value === 'string') return value.slice(0, Math.max(REPORT_STRING_FLOOR, Math.ceil(value.length / 2)));
+    if (Array.isArray(value)) return value.slice(0, Math.ceil(value.length / 2)).map(halved);
+    if (value && typeof value === 'object') {
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, halved(item)]));
+    }
+    return value;
+}
+
+/**
+ * A section as parsed, fitted to the limit: unchanged when it fits, else cut down and marked `truncated`; null
+ * for one that is not an object. Never dropped for its size.
+ * @param {unknown} value
+ * @returns {unknown}
+ */
+function fittedSection(value) {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+    /** @type {Record<string, unknown>} */
+    let fitted = /** @type {Record<string, unknown>} */ (value);
+    for (let round = 0; JSON.stringify(fitted).length > REPORT_SECTION_LIMIT && round < REPORT_FIT_ROUNDS; round += 1) {
+        fitted = { .../** @type {Record<string, unknown>} */ (halved(fitted)), truncated: true };
+    }
+    return JSON.stringify(fitted).length > REPORT_SECTION_LIMIT ? null : fitted;
+}
+
+/**
+ * What a finished request left in its report directory: every `<section>.json` that parses, and the loop's
+ * resource samples. A file that is too large, not JSON or not named so is left out; a gate that wrote nothing
+ * answers null. The report is evidence beside the verdict, never part of it.
+ * @param {string} dir the request's `done/<id>`
+ * @returns {GateReportFiles | null}
+ */
+function readGateReport(dir) {
+    const report = path.join(dir, GATE_REPORT_FILES.dir);
+    /** @type {Record<string, unknown>} */
+    const sections = {};
+    let resources = '';
+    let names = [];
+    try {
+        names = fs.readdirSync(report);
+    } catch {
+        return null;
+    }
+    for (const name of names) {
+        const file = path.join(report, name);
+        try {
+            if (name === GATE_REPORT_FILES.resources) {
+                resources = readTail(file).slice(-REPORT_RESOURCES_LIMIT);
+            } else if (/^[a-z][a-z0-9-]*\.json$/.test(name) && fs.statSync(file).size <= REPORT_SECTION_READ_LIMIT) {
+                const fitted = fittedSection(JSON.parse(fs.readFileSync(file, 'utf8')));
+                if (fitted) sections[name.slice(0, -'.json'.length)] = fitted;
+            }
+        } catch {
+            // Unreadable, or a gate killed mid-write: that section is simply absent.
+        }
+    }
+    return Object.keys(sections).length === 0 && resources === '' ? null : { sections, resources };
+}
+
+/**
+ * A file's size in bytes; 0 for one that cannot be read.
+ * @param {string} file
+ */
+function fileSize(file) {
+    try {
+        return fs.statSync(file).size;
+    } catch {
+        return 0;
+    }
+}
+
 /**
  * The answer of a finished request (`done/<id>`), read and removed; null while it is not done.
  * @param {Run} run
  * @param {LaneKind} lane
  * @param {string} name
- * @returns {{ exitCode: number | null, output: string } | null}
+ * @returns {{ exitCode: number | null, output: string, failureLines: string, outputCut: boolean, report: GateReportFiles | null } | null}
  */
 function takeGateAnswer(run, lane, name) {
     const done = path.join(run.file[lane].done, name);
@@ -1065,9 +1233,18 @@ function takeGateAnswer(run, lane, name) {
     } catch {
         // No exit: the loop restarted while it held the request, and its answer is gone.
     }
+    const outputFile = path.join(done, GATE_FILES.output);
+    const output = readTail(outputFile);
+    // The two cuts the answer's output takes: the file's head past the cap (`readTail`), and the head of what is
+    // left once its JSON form outgrows the cap (`fitTail`).
+    const rawCut = fileSize(outputFile) > STEP_OUTPUT_LIMIT;
+    const escapedCut = Buffer.byteLength(JSON.stringify(output)) > STEP_OUTPUT_LIMIT;
     const answer = {
         exitCode: Number.isFinite(code) ? code : null,
-        output: readTail(path.join(done, GATE_FILES.output)),
+        output,
+        failureLines: readFailureLines(outputFile, escapedCut),
+        outputCut: rawCut || escapedCut,
+        report: readGateReport(done),
     };
     fs.rmSync(done, { recursive: true, force: true });
     return answer;
@@ -1233,6 +1410,32 @@ function answeredGateResult(flight, step, answer) {
 }
 
 /**
+ * The outcome with the gate's report beside its result, when it left one.
+ * @param {Outcome} outcome
+ * @param {GateReportFiles | null} report
+ * @returns {Outcome}
+ */
+const withGateReport = (outcome, report) => (report ? { ...outcome, result: { ...outcome.result, report } } : outcome);
+
+/**
+ * The outcome with the failure lines of the gate's whole output beside its result, when its tail cut them off.
+ * @param {Outcome} outcome
+ * @param {string} failureLines
+ * @returns {Outcome}
+ */
+const withFailureLines = (outcome, failureLines) =>
+    failureLines ? { ...outcome, result: { ...outcome.result, failureLines } } : outcome;
+
+/**
+ * The outcome marked when the answer's output is not the gate's whole: `readTail` or `fitTail` removed bytes.
+ * @param {Outcome} outcome
+ * @param {boolean} cut
+ * @returns {Outcome}
+ */
+const withOutputCut = (outcome, cut) =>
+    cut ? { ...outcome, result: { ...outcome.result, outputCut: true } } : outcome;
+
+/**
  * A gate loop gone silent: no exit — never a verdict — whether it never took the request or went quiet on it.
  * @param {Run} run
  * @param {GateStep} step
@@ -1255,7 +1458,15 @@ function lostGateResult(run, step) {
  */
 function gateTick(run, step, flight) {
     const answer = takeGateAnswer(run, step.kind, step.id);
-    if (answer) return answeredGateResult(flight, step, answer);
+    if (answer) {
+        return withGateReport(
+            withOutputCut(
+                withFailureLines(answeredGateResult(flight, step, answer), answer.failureLines),
+                answer.outputCut
+            ),
+            answer.report
+        );
+    }
     if (!flight.why) {
         flight.why = gateStopReason(run, step, flight.startedAt);
         flight.stoppedAt = run.now();
@@ -2286,8 +2497,10 @@ const RELAYS = {
             { method: 'POST', match: (p) => p === '/publish', cap: MIB },
             { method: 'POST', match: (p) => p === '/review', cap: MIB },
             { method: 'POST', match: (p) => p === '/connection', cap: KIB },
-            // `{gate, filter}`; the answer carries the gate's output and is streamed back whole, never cut to a size.
-            { method: 'POST', match: (p) => p === '/gate/run', cap: JSON_KIB * KIB, timeout: 'gateRelayMs' },
+            // The run's tool manifest, a few hundred bytes.
+            { method: 'GET', match: (p) => p === '/tools', cap: JSON_KIB * KIB },
+            // `{tool, input}`; the answer carries the tool's output and is streamed back whole, never cut to a size.
+            { method: 'POST', match: (p) => p === '/tools/call', cap: JSON_KIB * KIB, timeout: 'gateRelayMs' },
             // The finish pass: no body to speak of; held while the declared gates run, the run budget paused.
             {
                 method: 'POST',
@@ -2761,6 +2974,7 @@ module.exports = {
     STEP_KINDS,
     GATE_FILES,
     GATE_ASK_FILES,
+    GATE_REPORT_FILES,
     GATE_TOKEN_PATH,
     GATE_LOST_MS: DEFAULT_GATE_LOST_MS,
     GATE_CANCEL_MS: DEFAULT_GATE_CANCEL_MS,

@@ -427,7 +427,7 @@ describe('a revision-bound publish across retries', () => {
     });
 });
 
-describe('the control server: POST /gate/run', () => {
+describe('the control server: POST /tools/call', () => {
     const KEY = 'root/repo';
     const gates: GateClaim['gates'] = [
         { name: 'verify', command: 'npm test', filter: true },
@@ -439,8 +439,8 @@ describe('the control server: POST /gate/run', () => {
     const SERVICE_UNAVAILABLE_STATUS = 503;
     const UNPROCESSABLE_STATUS = 422;
 
-    const post = (port: number, token: string, body: unknown = { gate: 'verify' }, signal?: AbortSignal) =>
-        fetch(`http://127.0.0.1:${port}/gate/run`, {
+    const post = (port: number, token: string, body: unknown = { tool: 'gate:verify' }, signal?: AbortSignal) =>
+        fetch(`http://127.0.0.1:${port}/tools/call`, {
             method: 'POST',
             headers: { authorization: `Bearer ${token}` },
             body: JSON.stringify(body),
@@ -481,7 +481,7 @@ describe('the control server: POST /gate/run', () => {
         register();
         const answer = await post(port, AGENT);
         expect(answer.status).toBe(OK_STATUS);
-        await expect(answer.json()).resolves.toMatchObject({ exitCode: 0, output: 'all green' });
+        await expect(answer.json()).resolves.toMatchObject({ verdict: 'passed', exitCode: 0, output: 'all green' });
         await server.close();
     });
 
@@ -530,9 +530,9 @@ describe('the control server: POST /gate/run', () => {
     it('keeps the ad-hoc rules: an undeclared gate is 404, a filter the gate does not take and a gate too long to wait for are 422', async () => {
         const { server, port, register } = await opened(passes);
         register();
-        expect((await post(port, AGENT, { gate: 'missing' })).status).toBe(NOT_FOUND_STATUS);
-        expect((await post(port, AGENT, { gate: 'slow' })).status).toBe(UNPROCESSABLE_STATUS);
-        expect((await post(port, AGENT, { gate: 'verify', filter: 'a-test' })).status).toBe(OK_STATUS);
+        expect((await post(port, AGENT, { tool: 'gate:missing' })).status).toBe(NOT_FOUND_STATUS);
+        expect((await post(port, AGENT, { tool: 'gate:slow' })).status).toBe(UNPROCESSABLE_STATUS);
+        expect((await post(port, AGENT, { tool: 'gate:verify', input: { filter: 'a-test' } })).status).toBe(OK_STATUS);
         await server.close();
     });
 
@@ -549,7 +549,7 @@ describe('the control server: POST /gate/run', () => {
         });
         register();
         const hangUp = new AbortController();
-        const asked = post(port, AGENT, { gate: 'verify' }, hangUp.signal).catch(() => undefined);
+        const asked = post(port, AGENT, { tool: 'gate:verify' }, hangUp.signal).catch(() => undefined);
         await running;
         hangUp.abort();
         await asked;

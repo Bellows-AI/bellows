@@ -15,6 +15,8 @@ import {
 import { INPUT_PATH, type InputAnswer, type InputDelivery, serveInput } from './input-control.js';
 import { parseJsonObject } from './json-parse.js';
 import { UUID } from './task-volume.js';
+import { type GateRunDoor, isToolRoute, serveToolRoute } from './tool-control.js';
+import type { ToolSpec } from './tools.js';
 import { createStepBroker, serveReport, serveStepPoll, serveStepResult, type StepBroker } from './step-control.js';
 import { GATE_TOKEN_PATH, REPORT_PATH, STEP_PATH } from './supervisor-contract.js';
 import { REVIEW_BODY_LIMIT, type ReviewRelay, serveReviewRead, serveReviewRequest } from './review/review-control.js';
@@ -43,8 +45,8 @@ import {
  *    (`/export`) and nothing else;
  *  - the AGENT token — all the agent container holds — reaches only the draft publication
  *    (`POST /publish`), the named reviewers (`/review`), the connection ask (`POST /connection`),
- *    its ad-hoc gate runs (`POST /gate/run`) and its finish pass (`POST /gate/finish`), the routes the baked
- *    skills and hooks call.
+ *    its tools (`GET /tools`, `POST /tools/call`, `tool-control.ts`) and its finish pass (`POST /gate/finish`),
+ *    the routes the baked skills and hooks call — and an older runner's `POST /gate/run`, only ever refused.
  *
  * A token used on another's route is 403; a gate token is no key here, and an unknown or closed
  * token is 401. One entry per attempt, so one per lease.
@@ -58,11 +60,10 @@ export const PUBLISH_PATH = '/publish';
 export const QUESTION_PATH = '/question';
 /** The reviewer routes beside them: `POST /review`, `GET /review/:key`. */
 export const REVIEW_PATH = '/review';
-/** The agent's ad-hoc gate run: `POST /gate/run {gate, filter?}`, served by the gate server's own run logic. */
-export const GATE_RUN_PATH = '/gate/run';
 /** The agent's finish pass before it stops: `POST /gate/finish`, every declared gate under the run's round cap. */
 export const FINISH_PATH = '/gate/finish';
 export { CONNECTION_PATH, GATE_TOKEN_PATH };
+export { LEGACY_GATE_RUN_PATH, TOOLS_CALL_PATH, TOOLS_PATH, type GateRunDoor } from './tool-control.js';
 
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
@@ -77,12 +78,6 @@ export interface BodyAnswer {
     status: number;
     body: unknown;
 }
-
-/**
- * What serves an attempt's `POST /gate/run`: the gate server's ad-hoc run of the gate token registered for it, which
- * answers the reply itself, or `none` for a job that declares no gates (`404 no gates`).
- */
-export type GateRunDoor = ((request: IncomingMessage, reply: ServerResponse) => Promise<void>) | 'none';
 
 /**
  * What a finish pass answers the agent (`POST /gate/finish`, 200): `pass` lets it stop; `fail` names the first failed
@@ -137,11 +132,13 @@ export interface ControlChannel {
     /** Gives an open token the relay of its supervisor's gate token ask: `/gate-token` answers 503 until then. */
     attachGateToken(token: string, gateToken: GateTokenRelay): void;
     /**
-     * Gives an open token the door of its agent's ad-hoc gate runs (`POST /gate/run`): 503 retryable until then, so a run
+     * Gives an open token the door of its agent's tool calls (`POST /tools/call`): 503 retryable until then, so a call
      * asked for in the takeover window, before the new holder registers its gate claim, is retried and never read as
      * "no gates".
      */
     attachGateRun(token: string, door: GateRunDoor): void;
+    /** Gives an open token its run's tool manifest (`GET /tools`): 503 retryable until then; no environment attaches `[]`. */
+    attachTools(token: string, manifest: readonly ToolSpec[]): void;
     /**
      * Gives an open token its agent's finish pass (`POST /gate/finish`): 503 retryable until then, so an ask in the
      * takeover window is retried; null — an attempt with no gate environment — answers `404 no gates`.
@@ -186,14 +183,14 @@ type Route =
     | 'control'
     | 'export'
     | 'finish'
-    | 'gate-run'
     | 'gate-token'
     | 'input'
     | 'publish'
     | 'question'
     | 'report'
     | 'review'
-    | 'step';
+    | 'step'
+    | 'tools';
 
 /** A path that is a POST of its own, or a GET of `<path>/<id>`: the shape the question and review routes share. */
 const isPostOrGetOf = (request: IncomingMessage, path: string): boolean => {
@@ -215,7 +212,6 @@ const POST_ROUTES = new Map<string, Route>([
     [PUBLISH_PATH, 'publish'],
     [CONNECTION_PATH, 'connection'],
     [GATE_TOKEN_PATH, 'gate-token'],
-    [GATE_RUN_PATH, 'gate-run'],
     [FINISH_PATH, 'finish'],
 ]);
 
@@ -226,6 +222,7 @@ function routeOf(request: IncomingMessage): Route | null {
     if (url === EXPORT_PATH || url.startsWith(`${EXPORT_PATH}/`)) return 'export';
     if (url === CHECKPOINT_PATH || url.startsWith(`${CHECKPOINT_PATH}/`)) return 'checkpoint';
     if (url.startsWith(`${INPUT_PATH}/`)) return 'input';
+    if (isToolRoute(request)) return 'tools';
     const post = request.method === 'POST' ? POST_ROUTES.get(url) : undefined;
     if (post) return post;
     if (isPostOrGetOf(request, QUESTION_PATH)) return 'question';
@@ -234,8 +231,8 @@ function routeOf(request: IncomingMessage): Route | null {
     return isPostOrGetOf(request, REVIEW_PATH) ? 'review' : null;
 }
 
-type RelayRoute = 'checkpoint' | 'export' | 'finish' | 'gate-run' | 'input';
-const RELAY_ROUTES: readonly Route[] = ['checkpoint', 'export', 'finish', 'gate-run', 'input'];
+type RelayRoute = 'checkpoint' | 'export' | 'finish' | 'input' | 'tools';
+const RELAY_ROUTES: readonly Route[] = ['checkpoint', 'export', 'finish', 'input', 'tools'];
 const isRelayRoute = (route: Route): route is RelayRoute => RELAY_ROUTES.includes(route);
 
 /** The routes each token opens: the supervisor's, the exporter's one and the agent's four. */
@@ -249,7 +246,7 @@ const SUPERVISOR_ROUTES: readonly Route[] = [
     'step',
 ];
 const EXPORTER_ROUTES: readonly Route[] = ['export'];
-const AGENT_ROUTES: readonly Route[] = ['connection', 'finish', 'gate-run', 'publish', 'review'];
+const AGENT_ROUTES: readonly Route[] = ['connection', 'finish', 'publish', 'review', 'tools'];
 
 /** `GET /step`, `POST /step/:id` and `POST /report`: the supervised steps' routes, under the supervisor token. */
 function serveSupervisorStep(
@@ -350,54 +347,9 @@ const serveGateTokenAsk = (
         });
     });
 
-/** What `POST /gate/run` answers while no gate claim is open for the attempt: retryable, never "no gates". */
-const GATE_RUN_NOT_OPEN: BodyAnswer = {
-    status: HTTP_SERVICE_UNAVAILABLE,
-    body: { error: 'the gate run is not open yet', retryable: true },
-};
-
-/**
- * A gate server's `attachGateRun`: opens `POST /gate/run` of a control token on `run`, the ad-hoc run of a registered gate
- * token (`null`: the job declares no gates). A gate token no longer in `claims` is the attempt's end: a retryable 503, never a run.
- */
-export const gateRunAttacher =
-    (
-        channel: Pick<ControlChannel, 'attachGateRun'>,
-        claims: ReadonlyMap<string, unknown>,
-        run: (request: IncomingMessage, reply: ServerResponse, gateToken: string) => Promise<void>
-    ) =>
-    (controlToken: string, gateToken: string | null): void =>
-        channel.attachGateRun(
-            controlToken,
-            gateToken === null
-                ? 'none'
-                : async (request, reply) =>
-                      claims.has(gateToken)
-                          ? run(request, reply, gateToken)
-                          : respondJson(reply, GATE_RUN_NOT_OPEN.status, GATE_RUN_NOT_OPEN.body)
-        );
-
-/** An attempt's gate door; the entry is dropped with the attempt, and its door with it. */
+/** An attempt's gate door and tool manifest; the entry is dropped with the attempt, and both with it. */
 const gateDoors = new WeakMap<ControlEntry, GateRunDoor>();
-
-/** `POST /gate/run`: the attempt's door answers the reply itself (null); none open yet is a retryable 503, a run that throws a 500. */
-async function serveGateRun(
-    door: GateRunDoor | undefined,
-    { request, reply }: { request: IncomingMessage; reply: ServerResponse }
-): Promise<BodyAnswer | null> {
-    if (door === 'none') return { status: HTTP_NOT_FOUND, body: { error: 'no gates' } };
-    if (door === undefined) return GATE_RUN_NOT_OPEN;
-    try {
-        await door(request, reply);
-        return null;
-    } catch (e) {
-        if (reply.headersSent) {
-            reply.destroy();
-            return null;
-        }
-        return { status: HTTP_INTERNAL_ERROR, body: { error: `gate run failed: ${(e as Error).message}` } };
-    }
-}
+const toolManifests = new WeakMap<ControlEntry, readonly ToolSpec[]>();
 
 /** An attempt's finish pass; the entry is dropped with the attempt, and its relay with it. */
 const finishDoors = new WeakMap<ControlEntry, FinishRelay | 'none'>();
@@ -486,14 +438,20 @@ const attachRelay = <R>(slot: { relay: R | null } | undefined, relay: R): void =
     if (slot) slot.relay = relay;
 };
 
-/** `/export` (the exporter's own slot where it has one), `/checkpoint` or `/input` (the supervisor's), or the agent's `/gate/run` and `/gate/finish`, once the token holds that door. */
+/** `/export` (the exporter's own slot where it has one), `/checkpoint` or `/input` (the supervisor's), or the agent's tool routes and `/gate/finish`, once the token holds that door. */
 const serveRelayRoute = (
     route: RelayRoute,
     control: ControlEntry,
     slot: ExportSlot | undefined,
     call: { request: IncomingMessage; reply: ServerResponse; open: () => boolean }
 ): Promise<BodyAnswer | InputAnswer | null> => {
-    if (route === 'gate-run') return serveGateRun(gateDoors.get(control), call);
+    if (route === 'tools') {
+        return serveToolRoute(call, {
+            door: gateDoors.get(control),
+            tools: toolManifests.get(control),
+            gone: FINISH_GONE,
+        });
+    }
     if (route === 'finish') return serveFinish(control, call.request, call.open);
     if (route === 'export') return serveExport(slot ?? control.exporting, call.request, call.open);
     if (route === 'input') return serveInput(control.inputs, call.request, call.open);
@@ -505,7 +463,13 @@ const relayAttachers = (
     controls: Map<string, ControlEntry>
 ): Pick<
     ControlChannel,
-    'attachExporter' | 'attachCheckpoint' | 'attachConnection' | 'attachGateToken' | 'attachGateRun' | 'attachFinish'
+    | 'attachExporter'
+    | 'attachCheckpoint'
+    | 'attachConnection'
+    | 'attachGateToken'
+    | 'attachGateRun'
+    | 'attachFinish'
+    | 'attachTools'
 > => ({
     attachExporter: (token, exporter) => attachRelay(controls.get(token)?.exporting, exporter),
     attachCheckpoint: (token, checkpoint) => attachRelay(controls.get(token)?.checkpointing, checkpoint),
@@ -518,6 +482,10 @@ const relayAttachers = (
     attachFinish(token, relay) {
         const control = controls.get(token);
         if (control) finishDoors.set(control, relay ?? 'none');
+    },
+    attachTools(token, manifest) {
+        const control = controls.get(token);
+        if (control) toolManifests.set(control, manifest);
     },
 });
 
@@ -669,9 +637,16 @@ export const attachersOf = ({
     attachGateToken,
     attachInputs,
     attachFinish,
+    attachTools,
 }: ControlChannel): Pick<
     ControlChannel,
-    'attachExporter' | 'attachCheckpoint' | 'attachConnection' | 'attachGateToken' | 'attachInputs' | 'attachFinish'
+    | 'attachExporter'
+    | 'attachCheckpoint'
+    | 'attachConnection'
+    | 'attachGateToken'
+    | 'attachInputs'
+    | 'attachFinish'
+    | 'attachTools'
 > => ({
     attachExporter,
     attachCheckpoint,
@@ -679,4 +654,5 @@ export const attachersOf = ({
     attachGateToken,
     attachInputs,
     attachFinish,
+    attachTools,
 });

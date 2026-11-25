@@ -26,6 +26,7 @@ import {
     nullableTimestamp,
 } from './job-limits.js';
 import { resolveLeasedRoute } from '../route-guards.js';
+import { registerGateLogRoute } from './job-handlers-gate-log.js';
 
 /** HMAC-SHA256 hex: the driver's gate identity. Anything else is not a digest and is never stored. */
 const IDENTITY = /^[0-9a-f]{64}$/;
@@ -236,4 +237,5 @@ export function gateRunRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
     app.post('/api/jobs/:id/finish-passes/read', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
         handleFinishRounds(orgs, request, reply)
     );
+    registerGateLogRoute(app, orgs);
 }

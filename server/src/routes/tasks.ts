@@ -19,7 +19,7 @@ export interface TaskRouteDeps {
  * keyset pagination that survives follow-ups landing between polls.
  */
 
-const TASK_STATES: readonly TaskState[] = ['attention', 'running', 'review', 'past'];
+const TASK_STATES: readonly TaskState[] = ['attention', 'running', 'review', 'past', 'archived'];
 const SORTS = ['newest', 'oldest'] as const;
 
 /** The page size bounds: a nav-sized window, not the run list's. */

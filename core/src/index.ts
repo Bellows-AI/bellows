@@ -409,3 +409,11 @@ export * from './integrations/redact.js';
 export * from './attachments.js';
 export * from './integration-catalog.js';
 export * from './repo-ref.js';
+export * from './change-request-url.js';
+export type {
+    GateFailedTest,
+    GateResources,
+    GateResult,
+    GateSelection,
+} from './gate-result.js';
+export { describeGateResult, parseGateResult } from './gate-result.js';

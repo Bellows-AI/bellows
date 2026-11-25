@@ -2,7 +2,7 @@ import { githubRepo } from '@factory-ai/core';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { removeDialogBody, removeDialogTitle } from '../src/components/TaskRemoveDialog.js';
+import { archiveDialogBody, archiveDialogTitle } from '../src/components/TaskArchiveDialog.js';
 import { taskTitleText } from '../src/task-title.js';
 import { job, question, renderHeader } from './tasks-fixtures.js';
 import { expectNoPlaceholder } from './fixtures.js';
@@ -133,11 +133,11 @@ describe('the task page header — Mark done, overflow and meta', () => {
         expect(plain).not.toContain('>Mark done<');
     });
 
-    it('hides More task actions while any member of the thread is running', () => {
+    it('keeps More task actions while a member of the thread is running: Archive stops it first', () => {
         const moving = { exitCode: null, finishedAt: null, startedAt: null, output: null };
-        expect(renderHeader({ jobs: [job({ status: 'running', ...moving })] })).not.toContain('More task actions');
+        expect(renderHeader({ jobs: [job({ status: 'running', ...moving })] })).toContain('More task actions');
 
-        // A follow-up still going closes the whole thread's menu — the removal would race the run.
+        // A follow-up still going: the one menu still holds Archive for the whole thread.
         const root = job({ status: 'stopped' });
         const child = {
             ...job({ status: 'running', ...moving }),
@@ -145,16 +145,7 @@ describe('the task page header — Mark done, overflow and meta', () => {
             followUpTo: root.id,
             rootJobId: root.id,
         };
-        expect(renderHeader({ jobs: [root, child] })).not.toContain('More task actions');
-
-        // Queued members do not block it: the board has no run to refuse.
-        const queued = {
-            ...job({ status: 'queued', ...moving }),
-            id: '44444444-4444-4444-8444-444444444444',
-            followUpTo: root.id,
-            rootJobId: root.id,
-        };
-        expect(renderHeader({ jobs: [root, queued] })).toContain('More task actions');
+        expect(renderHeader({ jobs: [root, child] }).match(/More task actions/g)).toHaveLength(1);
     });
 
     it('renders the actions on the newest run only — history runs grow none', () => {
@@ -240,7 +231,7 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
         has?: string[];
         lacks?: string[];
         /**
-         * More task actions present (true) or hidden (false). Present also pins that Remove lives
+         * More task actions present (true) or hidden (false). Present also pins that Archive lives
          * only in the client-rendered menu and that the overflow trigger is never the primary.
          */
         more?: boolean;
@@ -260,15 +251,14 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
         })),
         {
             // The board settles the stop at the worker's next heartbeat: pending is not terminal,
-            // so the pending state is a disabled, busy control. A run in flight cannot be removed
-            // yet: the board refuses with TASK_RUNNING.
-            label: 'stop requested, not yet parked: Stopping, not Stop run, and no More',
+            // so the pending state is a disabled, busy control. Archive stays on offer: it stops first.
+            label: 'stop requested, not yet parked: Stopping, not Stop run, and More still holds Archive',
             args: {
                 jobs: [job({ status: 'running', cancelRequestedAt: '2026-09-01T12:01:00.000Z', ...unstarted })],
             },
             has: ['Stopping…'],
             lacks: ['>Stop run<'],
-            more: false,
+            more: true,
         },
         {
             label: 'open task: Mark done is the one primary',
@@ -291,22 +281,22 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
             has: ['>Mark done<'],
         },
         ...(['queued', 'succeeded', 'failed', 'dead', 'stopped'] as const).map((status) => ({
-            label: `${status}: Remove task behind More task actions`,
+            label: `${status}: Archive task behind More task actions`,
             args: { jobs: [job({ status })] },
             more: true,
         })),
         {
-            label: 'queued: Stop run, with Remove in More and no Mark done',
+            label: 'queued: Stop run, with Archive in More and no Mark done',
             args: { jobs: [job({ status: 'queued', startedAt: null, ...moving })], viewer },
             primary: null,
             has: ['>Stop run<'],
             more: true,
         },
         {
-            label: 'running: Stop run, and no More while a member runs',
+            label: 'running: Stop run, and Archive in More, which stops it first',
             args: { jobs: [job({ status: 'running', ...moving })], viewer },
             has: ['>Stop run<'],
-            more: false,
+            more: true,
         },
         {
             label: 'running with a stop requested: one disabled, busy Stopping… button',
@@ -316,7 +306,7 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
             },
             has: [STOPPING_BUTTON],
             lacks: ['>Stop run<'],
-            more: false,
+            more: true,
         },
         // A failure parked on its review wait is the wait's to settle — no Ask for another pass.
         ...(['succeeded', 'failed'] as const).map((status) => ({
@@ -357,21 +347,21 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
             primary: 'Mark done',
         },
         {
-            label: 'done, whatever the wait: no primary, the closure, and Remove in More',
+            label: 'done, whatever the wait: no primary, the closure, and Archive in More',
             args: { jobs: [job({ status: 'failed', author: me, doneAt, doneBy: me, ...wait })], viewer },
             primary: null,
             has: ['Closed by me'],
             lacks: [PARKED_COPY],
             more: true,
         },
-        // Stop, Mark done and Remove carry no author restriction.
+        // Stop, Mark done and Archive carry no author restriction.
         {
             label: "a stranger on another member's running task: Stop run",
             args: { jobs: [job({ status: 'running', author: other, ...moving })], viewer: stranger },
             has: ['>Stop run<'],
         },
         {
-            label: "a stranger on another member's open task: Mark done, and Remove in More",
+            label: "a stranger on another member's open task: Mark done, and Archive in More",
             args: { jobs: [job({ author: other })], viewer: stranger },
             primary: 'Mark done',
             more: true,
@@ -388,10 +378,12 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
             if (more === false) expect(html).not.toContain('More task actions');
             if (more === true) {
                 expect(html).toContain('More task actions');
-                // The destructive item lives in the anchored menu, which only the client renders;
-                // the server-rendered action row must carry no Remove control of its own.
+                // The archive item lives in the anchored menu, which only the client renders;
+                // the server-rendered action row must carry no Archive control of its own, and
+                // nothing deletes a task any more.
+                expect(html).not.toContain('>Archive task<');
+                expect(html).not.toContain('>Unarchive task<');
                 expect(html).not.toContain('>Remove task<');
-                expect(html).not.toContain('>Remove<');
                 // The overflow trigger is a secondary control — the page's one primary is Mark done.
                 const at = html.indexOf('More task actions');
                 expect(html.slice(html.lastIndexOf('<button', at), at)).not.toContain('primary');
@@ -444,24 +436,35 @@ describe('the task page header — the display title', () => {
         expect(h1Of(html)[2]).toBe('Task #11111111');
     });
 
-    it('offers Rename task to the author and an admin, and to nobody else', () => {
+    it('keeps More task actions for every viewer: Archive is not author-gated, Rename is', () => {
         const author = { id: 'author-1', login: 'octocat', name: null, avatarUrl: null };
-        // Rename lives in the More menu, which portals its items; a running task offers neither Remove
-        // nor Mark done there, so the trigger alone says whether Rename is on offer.
+        // The menu portals its items, so a static render only shows the trigger: it is there for the
+        // author, an admin and a stranger alike, because Archive is offered to all of them.
         const jobs = [job({ author, status: 'running', finishedAt: null, exitCode: null })];
         const viewer = (id: string | null, admin: boolean) => ({ loading: false, id, admin });
-        expect(renderHeader({ jobs, viewer: viewer('author-1', false) })).toContain('More task actions');
-        expect(renderHeader({ jobs, viewer: viewer('someone-else', true) })).toContain('More task actions');
-        expect(renderHeader({ jobs, viewer: viewer('someone-else', false) })).not.toContain('More task actions');
-        expect(renderHeader({ jobs, viewer: { loading: true, id: null, admin: false } })).not.toContain(
+        for (const who of [viewer('author-1', false), viewer('someone-else', true), viewer('someone-else', false)]) {
+            expect(renderHeader({ jobs, viewer: who })).toContain('More task actions');
+        }
+        expect(renderHeader({ jobs, viewer: { loading: true, id: null, admin: false } })).toContain(
             'More task actions'
         );
     });
+
+    it('says an archived task is archived, by whom, and that follow-up waits for Unarchive', () => {
+        const archivedBy = { id: 'author-1', login: 'octocat', name: null, avatarUrl: null };
+        const html = renderHeader({
+            jobs: [job({ status: 'succeeded', archivedAt: '2026-09-01T14:00:00.000Z', archivedBy })],
+        });
+        expect(html).toContain('Archived');
+        expect(html).toContain('by octocat');
+        expect(html).toContain('Unarchive it to follow it');
+        expect(renderHeader({ jobs: [job({ status: 'succeeded' })] })).not.toContain('Unarchive it');
+    });
 });
 
-describe('TaskRemoveDialog', () => {
+describe('TaskArchiveDialog', () => {
     /**
-     * The remove confirmation is a Headless UI Dialog, so it portals, and a static render does not
+     * The archive confirmation is a Headless UI Dialog, so it portals, and a static render does not
      * render portals. The in-dialog contracts (initial focus, Escape,
      * backdrop, focus restoration, the live error) are a real browser's to assert —
      * e2e/task-detail.spec.ts owns them. What a static render CAN hold is the copy the dialog
@@ -470,25 +473,26 @@ describe('TaskRemoveDialog', () => {
     it('names the task in the title \u2014 the root command\u2019s first line, whatever the prose', () => {
         // The dialog names the task as the page's h1 does: `taskTitleText` (first line, or a stored title).
         const named = (command: string) =>
-            removeDialogTitle(taskTitleText({ id: 'x', command, title: null, titleOrigin: null }));
-        expect(named('fix the flaky login test')).toBe('Remove \u201Cfix the flaky login test\u201D?');
-        expect(named('first line\nsecond line')).toBe('Remove \u201Cfirst line\u201D?');
+            archiveDialogTitle(taskTitleText({ id: 'x', command, title: null, titleOrigin: null }));
+        expect(named('fix the flaky login test')).toBe('Archive \u201Cfix the flaky login test\u201D?');
+        expect(named('first line\nsecond line')).toBe('Archive \u201Cfirst line\u201D?');
     });
 
-    it('states every consequence in the body, with the thread\u2019s real run count', () => {
-        const RUN_COUNT = 3;
-        const body = removeDialogBody(RUN_COUNT);
-        expect(body).toContain('permanently deletes all 3 runs');
-        expect(body).toContain('their transcript');
-        expect(body).toContain('worktree will be queued for deletion');
-        expect(body).toContain('Published branches and pull requests are not deleted');
-        expect(body).toContain('cannot be undone');
-        // The count is the thread's length, not a decoration: one run reads as one.
-        expect(removeDialogBody(1)).toContain('deletes all 1 runs');
+    it('says nothing is deleted and that Unarchive undoes it', () => {
+        const body = archiveDialogBody(false);
+        expect(body).toContain('leaves the task list');
+        expect(body).toContain('stay readable under Archived');
+        expect(body).toContain('Unarchive brings it back');
+        expect(body).not.toMatch(/delet|cannot be undone|stopped first/);
+    });
+
+    it('warns that a running task is stopped first, and only then', () => {
+        expect(archiveDialogBody(true)).toContain('The running task is stopped first.');
+        expect(archiveDialogBody(false)).not.toContain('stopped first');
     });
 });
 
-describe('the remove flow', () => {
+describe('the archive flow', () => {
     /** The `window.confirm` path is the thing this dialog replaces — it must be gone outright. */
     it('carries no window.confirm anywhere in the task actions', () => {
         const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8');

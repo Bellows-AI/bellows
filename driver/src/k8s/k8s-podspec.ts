@@ -11,8 +11,6 @@ import {
 import { CLAUDE_CODE } from '../executors.js';
 import { defaultClassOf, jobClassOf, type RunnerClass } from '../runner-classes.js';
 import {
-    DOCKER_CLASS_HELPER_RESOURCES,
-    DOCKER_CLASS_SUPERVISOR_RESOURCES,
     DOCKERD_SECURITY_CONTEXT,
     DOCKERD_CONTAINER,
     DOCKERD_ENV,
@@ -82,6 +80,7 @@ import {
     gateResourcesField,
     bindingMount,
     bindingVolume,
+    HELPER_RESOURCES,
     mailboxMount,
     reviewerResourcesField,
     mailboxVolumes,
@@ -90,6 +89,7 @@ import {
     runnerVolumesField,
     schedulingField,
     serviceResourcesField,
+    SUPERVISOR_RESOURCES,
     type ContainerSecurityContext,
     type PrivilegedSecurityContext,
     type PodResources,
@@ -289,14 +289,12 @@ function supervisorContainer(
         services: readonly ServiceSpec[];
     }
 ): RunnerPodContainer {
-    const runnerClass = jobClassOf(config, job);
     return {
         name: SUPERVISOR_CONTAINER,
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
-        // In a docker class (a microVM sized by the sum of its containers' limits) a fixed pair,
-        // never the runner's limits again (DOCKER_CLASS_SUPERVISOR_RESOURCES); unsized elsewhere.
-        ...(runnerClass.docker ? fixedResourcesField(DOCKER_CLASS_SUPERVISOR_RESOURCES) : {}),
+        // A fixed pair on every class: a microVM is sized by the sum of its containers' limits.
+        ...fixedResourcesField(SUPERVISOR_RESOURCES),
         ...containerHardeningField(),
         command: ['node', '-e', supervisorScript],
         env: [
@@ -431,9 +429,23 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string, docker:
         command: gateLoopArgv(),
         workingDir: MAILBOXES.gate.path,
         env: [...gateEnv(job), ...(docker ? dockerClientEnv() : [])].map(([name, value]) => ({ name, value })),
-        volumeMounts: [taskMount(), mailboxMount(MAILBOXES.gate, 'rw'), ...(docker ? dockerClientMounts() : [])],
+        volumeMounts: [
+            taskMount(),
+            mailboxMount(MAILBOXES.gate, 'rw'),
+            { name: GATE_TMP_VOLUME, mountPath: '/tmp' },
+            ...(docker ? dockerClientMounts() : []),
+        ],
     };
 }
+
+/**
+ * The gate's /tmp — its HOME, the suites' temp dirs and their test git clones — in memory:
+ * a microVM's root filesystem is virtiofs, where that scratch waited on FUSE until every gate hit its
+ * deadline. A memory emptyDir is the guest's tmpfs; its pages are charged to the gate's memory limit,
+ * which bounds it (a Kata guest ignores `sizeLimit`, so none is set). It outlives a gate container
+ * restart and goes with the pod.
+ */
+const GATE_TMP_VOLUME = 'gate-tmp';
 
 /**
  * A docker class's daemon: the digest-pinned dind image as a native sidecar, first of the init
@@ -515,11 +527,6 @@ function fixedResourcesField(pair: {
     return { resources: { requests: { ...pair.requests }, limits: { ...pair.limits } } };
 }
 
-/** A docker class's fixed pair for `task-init` and the exporter (`DOCKER_CLASS_HELPER_RESOURCES`); unsized elsewhere. */
-function dockerClassHelperResourcesField(config: DriverConfig, job: BoardJob): { resources?: PodResources } {
-    return jobClassOf(config, job).docker ? fixedResourcesField(DOCKER_CLASS_HELPER_RESOURCES) : {};
-}
-
 /**
  * The init container that makes the reviewer's home on a fresh task volume (`scripts/task-init.sh`)
  * before the reviewer's subPath mount names it: the kubelet would create it root-owned, which the
@@ -531,7 +538,7 @@ function taskInitContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
         name: 'task-init',
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
-        ...dockerClassHelperResourcesField(config, job),
+        ...fixedResourcesField(HELPER_RESOURCES),
         ...containerHardeningField(),
         env: [],
         command: ['sh', '-c', taskInitScript, 'init', REVIEWER_TREE_PATH],
@@ -552,7 +559,7 @@ function exporterContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
         name: EXPORTER_CONTAINER,
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
-        ...dockerClassHelperResourcesField(config, job),
+        ...fixedResourcesField(HELPER_RESOURCES),
         ...containerHardeningField(),
         command: ['node', '-e', claudeExportScript],
         env: exportEnv(config, job).map(([name, value]) => ({ name, value })),
@@ -768,6 +775,7 @@ export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunS
                         ...mailboxVolumes(reviewing),
                         bindingVolume(secretName(job)),
                         ...servicesFields.volumes,
+                        ...(gateImage ? [{ name: GATE_TMP_VOLUME, emptyDir: { medium: 'Memory' as const } }] : []),
                         ...(docker ? dockerVolumes(runnerClass) : []),
                     ],
                 },

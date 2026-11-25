@@ -191,6 +191,8 @@ describe('taskSummary', () => {
         author: null,
         stoppedBy: null,
         doneBy: null,
+        archivedAt: null,
+        archivedBy: null,
         exitCode: 0,
         output: null,
         repo: null,
@@ -262,7 +264,12 @@ describe('sidenavPreview', () => {
         review?: TaskSummary[];
         counts?: TaskNavigation['counts'];
     }): TaskNavigation => ({
-        counts: over.counts ?? { running: over.running?.length ?? 0, review: over.review?.length ?? 0, past: 0 },
+        counts: over.counts ?? {
+            running: over.running?.length ?? 0,
+            review: over.review?.length ?? 0,
+            past: 0,
+            archived: 0,
+        },
         running: over.running ?? [],
         review: over.review ?? [],
     });
@@ -281,7 +288,7 @@ describe('sidenavPreview', () => {
         const nav = navigation({
             running: [running(1), running(2), running(THIRD)],
             review: [review(1), review(2), review(THIRD), review(FOURTH)],
-            counts: { running: 3, review: 4, past: 40 },
+            counts: { running: 3, review: 4, past: 40, archived: 0 },
         });
         const { rows } = sidenavPreview(nav, null);
         expect(rows).toHaveLength(MAX_PREVIEW_ROWS);
@@ -300,7 +307,7 @@ describe('sidenavPreview', () => {
         const nav = navigation({
             running: [running(1), running(2), running(THIRD)],
             review: [review(1), review(2)],
-            counts: { running: 3, review: 12, past: 0 },
+            counts: { running: 3, review: 12, past: 0, archived: 0 },
         });
         const preview = sidenavPreview(nav, null);
         expect(preview.rows).toHaveLength(MAX_PREVIEW_ROWS);
@@ -317,7 +324,7 @@ describe('sidenavPreview', () => {
         const nav = navigation({
             running: [running(1), running(2), running(THIRD)],
             review: [review(1), review(2), review(THIRD)],
-            counts: { running: 3, review: 3, past: 0 },
+            counts: { running: 3, review: 3, past: 0, archived: 0 },
         });
         const { rows } = sidenavPreview(nav, review(THIRD).id);
         expect(rows).toHaveLength(MAX_PREVIEW_ROWS);

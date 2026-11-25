@@ -28,6 +28,8 @@ import {
     editJobCommand,
     markJobDone,
     reopenJob,
+    archiveJobThread,
+    unarchiveJobThread,
     removeJobThread,
     cancelThreadWait,
     pokeThreadWait,
@@ -389,6 +391,14 @@ function jobStoreMethods(ctx: JobStoreContext): JobStore {
         },
         async suspend(id, leaseToken) {
             return suspendJob(ctx, id, leaseToken);
+        },
+
+        async archiveThread(id, archivedBy) {
+            return archiveJobThread(ctx, id, archivedBy);
+        },
+
+        async unarchiveThread(id) {
+            return unarchiveJobThread(ctx, id);
         },
 
         async removeThread(id, removedBy) {

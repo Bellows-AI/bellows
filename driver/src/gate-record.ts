@@ -46,6 +46,20 @@ export interface GateLedger {
     identity(gate: DeclaredGate): string;
     /** Whether the board took the row. Never throws; a false is "not recorded". */
     write(row: GateRunRow, signal?: AbortSignal): Promise<boolean>;
+    /**
+     * Stores a finished run's whole output as the gate's log stream. Never throws: a log the board did not take
+     * costs the full read, never the verdict. Absent: a run's output is only its report excerpt.
+     */
+    storeLog?(log: GateLog): Promise<void>;
+}
+
+/** One run's whole output, as the log stream stores it. */
+export interface GateLog {
+    executionId: string;
+    gate: string;
+    text: string;
+    /** The head was cut at the driver's capture limit. */
+    truncated: boolean;
 }
 
 /** A gate refused because its running row could not be recorded: retryable, and the gate never started. */
@@ -126,6 +140,9 @@ export interface GateRecord {
     /** Writes the one terminal row, once. Never throws: a row the board did not take is only "not recorded". */
     finish(end: GateEnd): Promise<void>;
 }
+
+/** The outcomes that leave output worth keeping: the gate ran, or its setup did and failed. */
+const LOGGED_OUTCOMES: readonly GateRunOutcome[] = ['passed', 'failed', 'setup_failed'];
 
 /** The terminal outcome of an execution: only `passed` is ever reusable (`loop/gate-reuse.ts`). */
 function outcomeOf({ run, error, cancelled }: GateEnd, started: boolean): Exclude<GateRunOutcome, 'running'> {
@@ -224,7 +241,15 @@ export function recordGateRun(
         async finish(end) {
             if (finished) return;
             finished = true;
-            await write(terminalRow(base, end, started), TERMINAL_WRITE_MS);
+            const row = terminalRow(base, end, started);
+            await write(row, TERMINAL_WRITE_MS);
+            // A run that ended with an answer of its own: a cancelled or lost one has no output to keep.
+            const text = end.run?.fullOutput ?? end.run?.output ?? '';
+            if (!end.cancelled && text !== '' && LOGGED_OUTCOMES.includes(row.outcome)) {
+                await ledger
+                    .storeLog?.({ executionId, gate: gate.name, text, truncated: end.run?.fullTruncated === true })
+                    .catch(() => undefined);
+            }
         },
     };
 }

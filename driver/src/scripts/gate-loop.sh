@@ -12,6 +12,11 @@
 #   parallel                         present while the loop can run requests side by side (`setsid` exists)
 #   bin/gh                           the GitHub helper ($2, scripts/gate-github.sh), installed at start
 #   running/<id>/{asks,answers}      a GitHub token ask of the running request and the supervisor's answer
+#   running/<id>/report/             what the gate and this loop record for the answer, moved to done/<id>/report/
+#                                    with it, so a gate killed at its deadline is answered with what it had written:
+#                                    the gate's own files (`$FACTORY_GATE_RUN/report/<section>.json`) and `resources`,
+#                                    this loop's samples of the guest, one line each at the start, every
+#                                    FACTORY_GATE_SAMPLE_SECONDS while the request runs, and the end
 #
 # A request's env is exported inside its own subshell alone, so it never reaches the loop's own
 # commands or the next request, and the env file is gone before the command starts; the loop's own
@@ -30,6 +35,8 @@
 box=${FACTORY_GATE_DIR:-/factory/gate}
 shell=$1
 github=$2
+interval=${FACTORY_GATE_SAMPLE_SECONDS:-30}
+case $interval in '' | *[!0-9]* | 0) interval=30 ;; esac
 
 beat() {
     true > "$box/alive"
@@ -63,10 +70,52 @@ others() {
     return 1
 }
 
+# Appends one line to the request's resources: the guest's uptime, its /proc/stat cpu counters (user, nice, system,
+# idle, iowait, irq, softirq, steal), the 1-minute load, memory (available/total kB) and this cgroup's cpu throttling
+# (periods throttled, microseconds throttled). A source the guest lacks reads 0; builtins only, so no PATH is trusted.
+sample() {
+    s_up=0 s_load=0 s_avail=0 s_total=0 s_nt=0 s_tu=0
+    s_cpu=0,0,0,0,0,0,0,0
+    [ -r /proc/uptime ] && read -r s_up _ < /proc/uptime
+    [ -r /proc/loadavg ] && read -r s_load _ < /proc/loadavg
+    if [ -r /proc/stat ]; then
+        read -r _ s_u s_n s_s s_i s_w s_q s_sq s_st _ < /proc/stat
+        s_cpu="${s_u:-0},${s_n:-0},${s_s:-0},${s_i:-0},${s_w:-0},${s_q:-0},${s_sq:-0},${s_st:-0}"
+    fi
+    if [ -r /proc/meminfo ]; then
+        while read -r s_k s_v _; do
+            case $s_k in
+            MemAvailable:) s_avail=$s_v ;;
+            MemTotal:) s_total=$s_v ;;
+            esac
+        done < /proc/meminfo
+    fi
+    if [ -r /sys/fs/cgroup/cpu.stat ]; then
+        while read -r s_k s_v _; do
+            case $s_k in
+            nr_throttled) s_nt=$s_v ;;
+            throttled_usec) s_tu=$s_v ;;
+            esac
+        done < /sys/fs/cgroup/cpu.stat
+    fi
+    echo "t=$s_up cpu=$s_cpu load=$s_load mem=$s_avail/$s_total throttled=$s_nt,$s_tu" >> "$1/report/resources" 2>/dev/null
+}
+
+# Samples the request in $1 every $interval seconds until it ends or its directory is moved to done/.
+sampler() {
+    while [ -d "$1" ] && [ ! -e "$1/code" ]; do
+        /bin/sleep "$interval" 2>/dev/null || return
+        [ -d "$1" ] && [ ! -e "$1/code" ] && sample "$1"
+    done
+}
+
 # Starts the request in $1. The inner subshell is the gate: its env, its worktree (126 when the sync
 # removed it), the gate shell — in a session of its own when `setsid` exists, which records its process
 # group. The outer one records the gate's status once the gate itself ends.
 start() {
+    /bin/mkdir -p "$1/report"
+    sample "$1"
+    sampler "$1" > /dev/null 2>&1 &
     (
         (
             if [ -f "$1/env" ]; then
@@ -97,6 +146,7 @@ finish() {
     else
         kill -KILL -1 2>/dev/null
     fi
+    sample "$1"
     code=137
     [ -e "$1/code" ] && IFS= read -r code < "$1/code"
     echo "$code" > "$1/exit.tmp" && /bin/mv -f "$1/exit.tmp" "$1/exit"

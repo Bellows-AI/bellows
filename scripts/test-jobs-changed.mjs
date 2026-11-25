@@ -64,6 +64,7 @@ export const RULES = [
     [/^scripts\/gate-pg-fast\.sh$/, NONE, "this repository's test:db gate postgres tuning; pinned by server/test/bellows.test.ts"],
     [/^scripts\/gate-diag(-pod)?\.sh$/, NONE, 'the gate diagnostic pass; pinned by server/test/gate-diag.test.ts'],
     [/^scripts\/gate-test-changed\.sh$/, NONE, "this repository's test and test:db gate wrapper; pinned by server/test/gate-test-changed.test.ts"],
+    [/^scripts\/gate-report(er)?\.mjs$/, NONE, "the gates' report mailbox and vitest reporter; pinned by server/test/gate-reporter.test.ts"],
     [/^scripts\/gate-ui\.sh$/, NONE, "this repository's ui gate wrapper; pinned by server/test/gate-ui.test.ts"],
     [/^scripts\/gate-base\.sh$/, NONE, "this repository's gate base resolution; pinned by server/test/gate-test-changed.test.ts"],
     [/^scripts\/test-jobs-groups\.mjs$/, NONE, '--parallel scheduling only; pinned by server/test/test-jobs.groups.test.ts'],
@@ -77,6 +78,7 @@ export const RULES = [
     [/^server\/src\/auth\/(plugin|request-limits|route-class|session|store|worker-auth|driver-credentials|access-token|bridge-binding|membership-guard|membership-store|membership|admin-promotion|member-removal|org-key|setup-store)\.ts$/, FULL, 'authentication every request passes'],
     [/^server\/src\/auth\/github\.ts$/, ['auth', 'capacity', 'mcp', 'pinned-skills'], 'GitHub sign-in, built only by the AUTH_MODE=github boards'],
     [/^server\/src\/auth\/driver-credential-(cli|command)\.ts$/, NONE, 'the driver credential command line, not called by any jobs phase'],
+    [/^driver\/src\/change-request-url\.ts$/, NONE, 'a copied URL parser nothing in the driver calls yet; pinned by server/test/change-request-url-parity.test.ts'],
     // Asked before every sync, publish and gate (driver/src/board/board.ts), and installed in every task.
     [/^driver\/src\/(github-credential-call\.ts|loop\/loop-github\.ts|scripts\/credential-helper\.sh)$/, FULL, 'the GitHub token ask every task makes'],
 
@@ -140,7 +142,8 @@ export const RULES = [
     [/^(server\/src\/github\/pr-write|server\/src\/forge\/pr-token|server\/src\/routes\/jobs\/job-handlers-pull-request|server\/src\/db\/jobs\/job-store-pr-write)\.ts$/, ['publish-member'], 'the board\'s PR write as the member'],
     [/^scripts\/publish-member-client\.mjs$/, ['publish-member'], 'the publish-member phase member'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
-    [/^driver\/src\/(loop\/loop-gates|loop\/loop-gate-pass|loop\/loop-finish|loop\/loop-run-control|gate-manager|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs|dockerd-loss)\.ts$/, ['driver', 'workflows', 'finish-gate'], 'gates and phases'],
+    [/^driver\/src\/(loop\/loop-gates|loop\/loop-gate-pass|loop\/loop-finish|loop\/loop-run-control|gate-manager|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|loop\/gate-settled|gate-record|gate-excerpt|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs|dockerd-loss|tools|tool-control)\.ts$/, ['driver', 'workflows', 'finish-gate'], 'gates and phases'],
+    [/^driver\/src\/gate-result\.ts$/, ['driver', 'workflows'], 'gates'],
     [/^driver\/src\/scripts\/gate-(loop|shell|github)\.sh$/, ['driver', 'workflows'], 'gates'],
     [/^driver\/src\/(docker\/docker-task-volume|task-volume)\.ts$/, ['driver', 'capacity', 'pinned-skills', ...RECOVERY], 'task volume'],
     [/^driver\/src\/(docker\/docker-close-read|close-read|docker\/docker-teardown|loop\/loop-conclusion|loop\/loop-post-run)\.ts$/, ['driver', ...RECOVERY], 'task conclusion'],

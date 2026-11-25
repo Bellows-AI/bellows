@@ -77,7 +77,7 @@ describe('nav model', () => {
         const REVIEW_COUNT = 12;
         const RUNNING_COUNT = 3;
         const counts = (review: number): TaskNavigation => ({
-            counts: { running: RUNNING_COUNT, review, past: 0 },
+            counts: { running: RUNNING_COUNT, review, past: 0, archived: 0 },
             running: [],
             review: [],
         });

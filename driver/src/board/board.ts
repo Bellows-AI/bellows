@@ -1,6 +1,8 @@
 import type { CommitAuthor } from '../commit-author.js';
 import { type ConnectionOutcome, connectionCalls, type RequirementVerdict } from './board-connection.js';
 import { type PullRequestAnswer, type PullRequestAsk, pullRequestCalls } from './board-pull-request.js';
+import type { GateResult } from '../gate-result.js';
+import type { LastGateReport } from './board-gate-runs.js';
 import { heldBeat } from './board-heartbeat.js';
 import type { Interruption } from './board-interruption.js';
 import { artifactCalls } from '../artifact-calls.js';
@@ -244,12 +246,7 @@ export interface BoardJob extends ClaimSkills {
      * The thread's latest passed or failed report per gate name, read by the board at claim (copied from the board's
      * `LastGateReport`): what `factory-gate <name> --last` answers. Absent on a board that predates it.
      */
-    lastGateReports?: readonly {
-        name: string;
-        status: 'passed' | 'failed';
-        exitCode: number | null;
-        output: string | null;
-    }[];
+    lastGateReports?: readonly LastGateReport[];
     /**
      * The services the same file declares, already validated as one plan (`planRefusal` carries a
      * refusal). Both executors start exactly this list; the driver reads no file. Absent: none.
@@ -274,7 +271,7 @@ export interface BoardJob extends ClaimSkills {
      * before spawn, never by the board, which is why it sits beside `env` rather than inside it:
      * the reserved-name filter that keeps a member's claim env from spoofing the name must not
      * strip the driver's own. It is no runner env: the agent asks for a gate through the control
-     * socket (`POST /gate/run`) and holds neither a gate URL nor a token.
+     * socket (`POST /tools/call`) and holds neither a gate URL nor a token.
      */
     gateEnv?: Record<string, string>;
     /**
@@ -626,6 +623,9 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
             exitCode: number | null;
             output: string | null;
             startedAt?: string;
+            finishedAt?: string;
+            timeoutMs?: number;
+            result?: GateResult;
         }[]
     ): Promise<LeaseState>;
     /**

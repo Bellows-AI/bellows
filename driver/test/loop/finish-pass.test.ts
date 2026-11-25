@@ -109,6 +109,26 @@ describe.each(EXECUTORS)('the finish pass on the %s executor', (_executor, env) 
     const verdicts = (answers: FinishAnswer[]) => answers.map((answer) => answer.verdict);
     const lastReports = (r: Awaited<ReturnType<typeof run>>) => r.board.gatesReported.at(-1)!.results;
 
+    it('hands the agent the failed tests of the red gate, and reports the structured result to the board', async () => {
+        const result = {
+            failures: [{ file: 'a.test.ts', test: 'adds two numbers', message: 'expected 3 to be 4' }],
+            selection: { mode: 'all', reason: 'a shared file changed' },
+        };
+        const r = await run({
+            outcomes: { test: [1, 0] },
+            stack: { results: { test: result } },
+            agent: async ({ ask }) => {
+                await ask();
+            },
+        });
+
+        const failed = r.answers[0] as Extract<FinishAnswer, { verdict: 'fail' }>;
+        expect(failed.message).toContain('Failed tests (1):');
+        expect(failed.message).toContain('a.test.ts > adds two numbers: expected 3 to be 4');
+        expect(failed.message).toContain('Selection: all, a shared file changed');
+        expect(lastReports(r).find((gate) => gate.name === 'test')?.result).toEqual(result);
+    });
+
     it('red, red, green ends in one run', async () => {
         const r = await run({
             outcomes: { test: [1, 1, 0] },
@@ -175,6 +195,30 @@ describe.each(EXECUTORS)('the finish pass on the %s executor', (_executor, env) 
         expect(r.runner.publishOptions).toEqual([
             { draft: true, recordPrOperation: expect.any(Function), pullRequests: expect.any(Function) },
         ]);
+    });
+
+    it('an on_demand gate never runs in the finish pass', async () => {
+        let ranInRun: string[] = [];
+        const r = await run({
+            job: claimedJob({
+                gates: {
+                    image: 'node:24',
+                    gates: [
+                        { name: 'test', command: 'npm test' },
+                        { name: 'e2e', command: 'npm run e2e', onDemand: true },
+                        { name: 'lint', command: 'npm run lint' },
+                    ],
+                },
+            }),
+            agent: async ({ ask, ran }) => {
+                await ask();
+                ranInRun = ran();
+            },
+        });
+
+        expect(verdicts(r.answers)).toEqual(['pass']);
+        expect(ranInRun).toEqual(['test', 'lint']);
+        expect(r.stack.ran.names).not.toContain('e2e');
     });
 
     it('cap 0 never runs a gate in the run', async () => {
