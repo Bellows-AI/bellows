@@ -22,14 +22,15 @@ export interface ForgeHandle {
     advance: (ms: number) => void;
     mintInstallationToken: () => string;
 }
-const { createFakeForge, GITLAB_TOKEN_TTL_S, USER_TOKEN_TTL_S } = (await import(
+const { createFakeForge, GITLAB_CODE_TTL_S, GITLAB_TOKEN_TTL_S, USER_TOKEN_TTL_S } = (await import(
     pathToFileURL(join(ROOT, 'scripts/fake-forge/server.mjs')).href
 )) as {
     createFakeForge: (options: { stateDir: string; now?: () => number }) => ForgeHandle;
+    GITLAB_CODE_TTL_S: number;
     GITLAB_TOKEN_TTL_S: number;
     USER_TOKEN_TTL_S: number;
 };
-export { GITLAB_TOKEN_TTL_S, USER_TOKEN_TTL_S };
+export { GITLAB_CODE_TTL_S, GITLAB_TOKEN_TTL_S, USER_TOKEN_TTL_S };
 
 /** The injected clock's start: fixed, so a token's expiry moves only when a test advances it. */
 export const CLOCK_START_MS = 1_700_000_000_000;
@@ -43,6 +44,7 @@ export interface SendOptions {
 export interface Reply {
     status: number;
     location: string | null;
+    headers: Record<string, string>;
     // biome-ignore lint/suspicious/noExplicitAny: a JSON answer the test narrows by use
     body: any;
 }
@@ -79,7 +81,12 @@ export const startFakeForge = async ({ now = () => CLOCK_START_MS }: { now?: () 
         // a raw file answer stays text, even when the file happens to parse as JSON
         const json = (response.headers.get('content-type') ?? '').includes('json');
         const parsed: unknown = json ? JSON.parse(text) : text || null;
-        return { status: response.status, location: response.headers.get('location'), body: parsed };
+        return {
+            status: response.status,
+            location: response.headers.get('location'),
+            headers: Object.fromEntries(response.headers),
+            body: parsed,
+        };
     };
 
     return {

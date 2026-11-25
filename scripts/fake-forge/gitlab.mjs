@@ -3,7 +3,8 @@
 // statuses, project hooks. Plugged into server.mjs, which owns the token table, the clock and the call log.
 // Routes live under GitLab's own prefixes (`/oauth`, `/api/v4`), so GitHub's never collide with them.
 // The `/_control/gitlab/*` routes are the lane's door: seed projects, set member levels, set pipeline and merge
-// status, fire a hook event. Repositories are gitlab-repo.mjs's: bare git repos that git smart-HTTP serves too,
+// status, fire a hook event, register OAuth clients (OAuth refuses every call until one is registered), set the
+// instance version, inject faults. Repositories are gitlab-repo.mjs's: bare git repos that git smart-HTTP serves too,
 // behind HTTP Basic `oauth2:<token>`.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -12,9 +13,31 @@ import { createRepos, GIT_ISOLATION } from './gitlab-repo.mjs';
 
 /** An OAuth access token's lifetime on GitLab (Doorkeeper's `access_token_expires_in`). */
 export const GITLAB_TOKEN_TTL_S = 2 * 3600;
+/** An authorization code's lifetime (Doorkeeper's `authorization_code_expires_in`). */
+export const GITLAB_CODE_TTL_S = 600;
+const DEFAULT_SCOPE = 'api';
+/** The scopes gitlab.com offers an OAuth application; a registered client is limited to the ones it was given. */
+const KNOWN_SCOPES = [
+    'api',
+    'read_api',
+    'read_user',
+    'read_repository',
+    'write_repository',
+    'read_registry',
+    'write_registry',
+    'openid',
+    'profile',
+    'email',
+];
 const DEFAULT_MEMBER = 'lane-member';
 const USER_ID_BASE = 8000;
 const UNAUTHORIZED = { message: '401 Unauthorized' };
+const DEFAULT_VERSION = '17.4.0';
+const DEFAULT_PER_PAGE = 20;
+const MAX_PER_PAGE = 100;
+const oauthError = (error, error_description) => ({ error, error_description });
+const CLIENT_ERROR = { error: 'invalid_client', error_description: 'Client authentication failed.' };
+const MALFORMED_BODY = '<html>not json';
 const API = '/api/v4';
 const HOOK_TIMEOUT_MS = 5000;
 /** One deadline for a whole git request, clone and push included. */
@@ -59,6 +82,12 @@ export const registerGitlab = (forge) => {
     const projects = new Map(); // id -> project
     const userIds = new Map(); // login -> id
     const pipelines = [];
+    /** client id -> { secret, redirectUris, scopes }; OAuth refuses every request until a client is registered */
+    const clients = new Map();
+    /** group full path -> its stable id, minted with the first project under it */
+    const groups = new Map();
+    const faults = [];
+    let version = DEFAULT_VERSION;
     const now = () => new Date(forge.clock()).toISOString();
 
     const userId = (login) => {
@@ -76,10 +105,15 @@ export const registerGitlab = (forge) => {
 
     // --- OAuth ---
 
-    const issuePair = (login) => {
+    const issuePair = (login, clientId = null, scope = DEFAULT_SCOPE) => {
         const id = forge.nextId();
-        const pair = { access: `gloas-fake${id}`, refresh: `glrt-fake${id}`, login };
-        forge.tokens.set(pair.access, { kind: 'user', login, expiresAt: forge.clock() + GITLAB_TOKEN_TTL_S * 1000 });
+        const pair = { access: `gloas-fake${id}`, refresh: `glrt-fake${id}`, login, clientId, scope };
+        forge.tokens.set(pair.access, {
+            kind: 'user',
+            login,
+            scopes: scope.split(' '),
+            expiresAt: forge.clock() + GITLAB_TOKEN_TTL_S * 1000,
+        });
         pairs.set(pair.access, pair);
         pairs.set(pair.refresh, pair);
         return {
@@ -87,7 +121,7 @@ export const registerGitlab = (forge) => {
             token_type: 'Bearer',
             expires_in: GITLAB_TOKEN_TTL_S,
             refresh_token: pair.refresh,
-            scope: 'api',
+            scope: pair.scope,
             created_at: Math.floor(forge.clock() / 1000),
         };
     };
@@ -97,18 +131,58 @@ export const registerGitlab = (forge) => {
         pairs.delete(pair.refresh);
     };
 
+    /** The registered client the request names, with the right secret; undefined otherwise. */
+    const authenticated = ({ client_id: id, client_secret: secret }) => {
+        const client = clients.get(id);
+        return client && client.secret === secret ? client : undefined;
+    };
+
     forge.route(
         'GET',
         '/oauth/authorize',
         ({ response, query }) => {
-            if (!query.redirect_uri) return forge.json(response, 400, { error: 'invalid_request' });
+            // Doorkeeper's order: the client and the redirect URI first, with a plain error page when either is wrong
+            // (nothing to redirect to safely); the rest come back on the redirect as `error=`.
+            const client = clients.get(query.client_id);
+            if (!client) return forge.json(response, 401, CLIENT_ERROR);
+            let target;
+            try {
+                target = new URL(query.redirect_uri);
+            } catch {
+                return forge.json(response, 400, oauthError('invalid_request', 'The redirect URI is missing or invalid.'));
+            }
+            if (client && !client.redirectUris.includes(query.redirect_uri)) {
+                return forge.json(
+                    response,
+                    400,
+                    oauthError('invalid_redirect_uri', 'The requested redirect uri is malformed or doesn\'t match client redirect URI.')
+                );
+            }
+            const redirect = (params) => {
+                for (const [key, value] of Object.entries({ ...params, state: query.state }))
+                    if (value !== undefined) target.searchParams.set(key, value);
+                response.writeHead(302, { location: target.toString() });
+                response.end();
+            };
+            if (query.response_type !== 'code') {
+                return query.response_type === undefined
+                    ? redirect(oauthError('invalid_request', 'The request is missing a required parameter, includes an unsupported parameter value, or is otherwise malformed.'))
+                    : redirect(oauthError('unsupported_response_type', 'The authorization server does not support this response type.'));
+            }
+            const scope = query.scope ?? DEFAULT_SCOPE;
+            const allowed = client.scopes;
+            if (scope.split(' ').some((one) => !allowed.includes(one))) {
+                return redirect(oauthError('invalid_scope', 'The requested scope is invalid, unknown, or malformed.'));
+            }
             const code = `code${forge.nextId()}`;
-            codes.set(code, query.login ?? DEFAULT_MEMBER);
-            const target = new URL(query.redirect_uri);
-            target.searchParams.set('code', code);
-            if (query.state) target.searchParams.set('state', query.state);
-            response.writeHead(302, { location: target.toString() });
-            response.end();
+            codes.set(code, {
+                login: query.login ?? DEFAULT_MEMBER,
+                clientId: query.client_id ?? null,
+                redirectUri: query.redirect_uri,
+                scope,
+                expiresAt: forge.clock() + GITLAB_CODE_TTL_S * 1000,
+            });
+            redirect({ code });
         },
         { auth: false }
     );
@@ -117,19 +191,37 @@ export const registerGitlab = (forge) => {
         'POST',
         '/oauth/token',
         ({ response, body }) => {
+            if (!authenticated(body)) return forge.json(response, 401, CLIENT_ERROR);
+            const missing = (field) => forge.json(response, 400, oauthError('invalid_request', `The ${field} is missing.`));
             if (body.grant_type === 'refresh_token') {
+                if (!body.refresh_token) return missing('refresh_token');
                 const pair = pairs.get(body.refresh_token);
-                if (!pair || pair.refresh !== body.refresh_token) return forge.json(response, 400, GRANT_ERROR);
+                if (!pair || pair.refresh !== body.refresh_token || pair.clientId !== body.client_id) {
+                    return forge.json(response, 400, GRANT_ERROR);
+                }
                 killPair(pair);
-                return forge.json(response, 200, issuePair(pair.login));
+                return forge.json(response, 200, issuePair(pair.login, pair.clientId, pair.scope));
             }
             if (body.grant_type !== 'authorization_code') {
-                return forge.json(response, 400, { error: 'unsupported_grant_type' });
+                return forge.json(
+                    response,
+                    400,
+                    oauthError('unsupported_grant_type', 'The authorization grant type is not supported by the authorization server.')
+                );
             }
-            const login = codes.get(body.code);
-            if (login === undefined) return forge.json(response, 400, GRANT_ERROR);
+            if (!body.code) return missing('code');
+            const issued = codes.get(body.code);
+            const refused =
+                issued === undefined ||
+                issued.expiresAt <= forge.clock() ||
+                issued.redirectUri !== body.redirect_uri ||
+                issued.clientId !== body.client_id;
+            if (refused) {
+                if (issued?.expiresAt <= forge.clock()) codes.delete(body.code);
+                return forge.json(response, 400, GRANT_ERROR);
+            }
             codes.delete(body.code);
-            forge.json(response, 200, issuePair(login));
+            forge.json(response, 200, issuePair(issued.login, issued.clientId, issued.scope));
         },
         { auth: false }
     );
@@ -137,7 +229,11 @@ export const registerGitlab = (forge) => {
         'POST',
         '/oauth/revoke',
         ({ response, body }) => {
+            if (!authenticated(body)) return forge.json(response, 401, CLIENT_ERROR);
             const pair = pairs.get(body.token);
+            if (pair && pair.clientId !== body.client_id) {
+                return forge.json(response, 403, oauthError('unauthorized_client', 'The token was issued to another client.'));
+            }
             if (pair) killPair(pair);
             forge.json(response, 200, {});
         },
@@ -146,8 +242,39 @@ export const registerGitlab = (forge) => {
 
     // --- routing helpers ---
 
-    const route = (method, pattern, handler, options = {}) =>
-        forge.route(method, `${API}${pattern}`, handler, { deny: UNAUTHORIZED, ...options });
+    /** Answer the call with the first armed fault its path matches; true when it did, and the handler must not run. */
+    const faulted = ({ url, response }) => {
+        const fault = faults.find((entry) => url.pathname.includes(entry.pathIncludes));
+        if (!fault) return false;
+        if (fault.remaining !== null && --fault.remaining <= 0) faults.splice(faults.indexOf(fault), 1);
+        if (fault.mode === 'status') forge.json(response, fault.status, { message: `${fault.status} injected fault` });
+        else if (fault.mode === 'malformed') {
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end(MALFORMED_BODY);
+        }
+        return true; // timeout: the call is never answered
+    };
+    /** The scopes whose holder may call a route: reads need `api` or `read_api`, writes `api`; `/user` also takes `read_user`. */
+    const scopesFor = (method, pattern) => {
+        if (pattern === '/user') return ['api', 'read_api', 'read_user'];
+        return method === 'GET' ? ['api', 'read_api'] : ['api'];
+    };
+    const insufficient = (response, needed) =>
+        forge.json(response, 403, {
+            error: 'insufficient_scope',
+            error_description: 'The request requires higher privileges than provided by the access token.',
+            scope: needed.join(' '),
+        });
+    const holds = (token, needed) => (token.scopes ?? [DEFAULT_SCOPE]).some((one) => needed.includes(one));
+    const route = (method, pattern, handler, options = {}) => {
+        const needed = scopesFor(method, pattern);
+        const scoped = (ctx) => (holds(ctx.token, needed) ? handler(ctx) : insufficient(ctx.response, needed));
+        return forge.route(method, `${API}${pattern}`, scoped, {
+            deny: UNAUTHORIZED,
+            before: faulted,
+            ...options,
+        });
+    };
     const control = (pattern, handler) =>
         forge.route('POST', `/_control/gitlab/${pattern}`, handler, { auth: false });
     const notFound = (response, what = 'Not found') => forge.json(response, 404, { message: `404 ${what}` });
@@ -175,7 +302,8 @@ export const registerGitlab = (forge) => {
     };
     const access = (level) => (level === null ? null : { access_level: level, notification_level: 3 });
 
-    const projectJson = (project, login, request) => {
+    /** `Entities::Project` omits `permissions`; only a single-project request (`ProjectWithAccess`) adds it. */
+    const projectJson = (project, login, request, { withPermissions = false } = {}) => {
         const held = project.members.get(login) ?? { project: MAINTAINER, group: null };
         const namespace = project.path.split('/').slice(0, -1).join('/');
         return {
@@ -185,20 +313,79 @@ export const registerGitlab = (forge) => {
             path_with_namespace: project.path,
             default_branch: project.defaultBranch,
             visibility: 'private',
-            namespace: { id: project.id, name: namespace.split('/').pop(), path: namespace, full_path: namespace, kind: 'group' },
+            namespace: { id: groups.get(namespace)?.id ?? null, name: namespace.split('/').pop(), path: namespace, full_path: namespace, kind: 'group' },
             web_url: `${origin(request)}/${project.path}`,
             http_url_to_repo: `${origin(request)}/${project.path}.git`,
             squash_option: project.squashOption,
             only_allow_merge_if_pipeline_succeeds: project.onlyPipeline,
             only_allow_merge_if_all_discussions_are_resolved: project.onlyDiscussions,
-            permissions: { project_access: access(held.project), group_access: access(held.group) },
+            ...(withPermissions ? { permissions: { project_access: access(held.project), group_access: access(held.group) } } : {}),
         };
     };
 
+    route('GET', '/version', ({ response }) => forge.json(response, 200, { version, revision: 'fake0000' }));
     route('GET', '/user', ({ response, token }) => forge.json(response, 200, userJson(token.login)));
     route('GET', '/projects/:id', (ctx) => {
         const project = guard(ctx, GUEST);
-        if (project) forge.json(ctx.response, 200, projectJson(project, ctx.token.login, ctx.request));
+        if (project) forge.json(ctx.response, 200, projectJson(project, ctx.token.login, ctx.request, { withPermissions: true }));
+    });
+
+    // --- groups ---
+
+    const ancestors = (path) => {
+        const parts = path.split('/').slice(0, -1);
+        return parts.map((_, i) => parts.slice(0, i + 1).join('/'));
+    };
+    const namespaceOf = (project) => project.path.split('/').slice(0, -1).join('/');
+    const ensureGroups = (path) => {
+        for (const group of ancestors(path)) if (!groups.has(group)) groups.set(group, { id: forge.nextId() });
+    };
+    /** The group's full path by its id or its path; a group the caller holds no project under is as good as absent. */
+    const groupOf = (key, login) => {
+        const text = String(key);
+        const found = /^\d+$/.test(text)
+            ? [...groups].find(([, group]) => group.id === Number(text))?.[0]
+            : groups.has(text) ? text : undefined;
+        const seen = (project) => levelOf(project, login) >= GUEST && ancestors(`${project.path}`).includes(found);
+        return found && [...projects.values()].some(seen) ? found : undefined;
+    };
+    const pageUrl = (ctx, number, per) => {
+        const url = new URL(ctx.url);
+        url.searchParams.set('page', String(number));
+        url.searchParams.set('per_page', String(per));
+        return `${origin(ctx.request)}${url.pathname}${url.search}`;
+    };
+    const page = (ctx, items) => {
+        const per = Math.min(Math.max(Number(ctx.query.per_page) || DEFAULT_PER_PAGE, 1), MAX_PER_PAGE);
+        const current = Math.max(Number(ctx.query.page) || 1, 1);
+        const last = Math.max(Math.ceil(items.length / per), 1);
+        const next = current < last ? String(current + 1) : '';
+        const prev = current > 1 ? String(current - 1) : '';
+        const links = [['first', 1], ...(prev ? [['prev', current - 1]] : []), ...(next ? [['next', current + 1]] : []), ['last', last]];
+        ctx.response.writeHead(200, {
+            'content-type': 'application/json',
+            'x-page': String(current),
+            'x-per-page': String(per),
+            'x-next-page': next,
+            'x-prev-page': prev,
+            'x-total': String(items.length),
+            'x-total-pages': String(last),
+            link: links.map(([rel, number]) => `<${pageUrl(ctx, number, per)}>; rel="${rel}"`).join(', '),
+        });
+        ctx.response.end(JSON.stringify(items.slice((current - 1) * per, current * per)));
+    };
+    route('GET', '/groups/:id/projects', (ctx) => {
+        const group = groupOf(ctx.params.id, ctx.token.login);
+        if (!group) return notFound(ctx.response, 'Group Not Found');
+        const { include_subgroups: subgroups, min_access_level: min = 0 } = ctx.query;
+        const visible = [...projects.values()]
+            .filter((project) => {
+                const namespace = namespaceOf(project);
+                return namespace === group || (flag(subgroups) && namespace.startsWith(`${group}/`));
+            })
+            .filter((project) => levelOf(project, ctx.token.login) >= Math.max(GUEST, Number(min)))
+            .sort((a, b) => a.id - b.id);
+        page(ctx, visible.map((project) => projectJson(project, ctx.token.login, ctx.request)));
     });
 
     // --- branches and files ---
@@ -821,6 +1008,8 @@ export const registerGitlab = (forge) => {
         const project = projectOf(rawPath.split('/').map(decodeURIComponent).join('/'));
         const push = service === 'git-receive-pack' || url.searchParams.get('service') === 'git-receive-pack';
         if (!ctx.token) return refuse(response, 401, 'HTTP Basic: Access denied', { 'www-authenticate': GIT_REALM });
+        const gitScopes = push ? ['api', 'write_repository'] : ['api', 'read_repository', 'write_repository'];
+        if (!holds(ctx.token, gitScopes)) return refuse(response, 403, 'The token lacks the scope git over HTTP needs.');
         const held = project ? levelOf(project, ctx.token.login) : 0;
         if (held < GUEST) return refuse(response, 404, 'Not Found');
         if (push && held < DEVELOPER) return refuse(response, 403, 'You are not allowed to push code to this project.');
@@ -917,7 +1106,11 @@ export const registerGitlab = (forge) => {
         if (!project) notFound(ctx.response, 'Project Not Found');
         return project;
     };
-    control('sign-in', ({ response, body }) => forge.json(response, 200, issuePair(body.login ?? DEFAULT_MEMBER)));
+    // Mints a pair without the OAuth round trip. It belongs to `clientId` when given, and refreshes only for that
+    // registered client; without one it cannot be refreshed.
+    control('sign-in', ({ response, body }) =>
+        forge.json(response, 200, issuePair(body.login ?? DEFAULT_MEMBER, body.clientId ?? null, body.scope ?? DEFAULT_SCOPE))
+    );
     control('projects', async ({ response, body, request }) => {
         if (!body.path || projectOf(body.path)) return badRequest(response, 'a project path is required and must be new');
         const id = forge.nextId();
@@ -935,8 +1128,36 @@ export const registerGitlab = (forge) => {
             statuses: [],
         };
         projects.set(id, project);
+        ensureGroups(project.path);
         await repos.create(id, { defaultBranch: project.defaultBranch, files: body.files ?? {}, seedDir: body.seedDir, author: SEED_AUTHOR, date: now() });
         forge.json(response, 200, { id, path_with_namespace: project.path, http_url_to_repo: `${origin(request)}/${project.path}.git` });
+    });
+    control('version', ({ response, body }) => {
+        version = body.version ?? DEFAULT_VERSION;
+        forge.json(response, 200, { version });
+    });
+    control('oauth-clients', ({ response, body }) => {
+        const { clientId, clientSecret, redirectUris, scopes = [DEFAULT_SCOPE] } = body;
+        if (!clientId || !clientSecret || !Array.isArray(redirectUris) || redirectUris.length === 0) {
+            return badRequest(response, 'clientId, clientSecret and a non-empty redirectUris are required');
+        }
+        if (scopes.some((one) => !KNOWN_SCOPES.includes(one))) return badRequest(response, 'unknown scope');
+        clients.set(clientId, { secret: clientSecret, redirectUris, scopes });
+        forge.json(response, 200, { clientId: body.clientId });
+    });
+    // `mode`: status (with `status`), malformed (a 200 whose body is not JSON), timeout (never answered), none (clears
+    // every fault). `pathIncludes` limits it to API paths containing the text; `count` to that many calls.
+    control('faults', ({ response, body }) => {
+        if (body.mode === 'none') faults.length = 0;
+        else if (['status', 'malformed', 'timeout'].includes(body.mode)) {
+            faults.push({
+                mode: body.mode,
+                status: Number(body.status ?? 500),
+                pathIncludes: body.pathIncludes ?? API,
+                remaining: body.count === undefined ? null : Number(body.count),
+            });
+        } else return badRequest(response, 'unknown fault mode');
+        forge.json(response, 200, { faults: faults.length });
     });
     control('commit', async (ctx) => {
         const project = controlProject(ctx);

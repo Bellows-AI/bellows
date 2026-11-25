@@ -2,7 +2,15 @@ import { rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type FakeGitlab, GITLAB_TOKEN_TTL_S, startFakeGitlab } from '../test-db/fake-gitlab.js';
+import {
+    CLIENT_AUTH,
+    FAKE_CLIENT,
+    type FakeGitlab,
+    GITLAB_CODE_TTL_S,
+    GITLAB_TOKEN_TTL_S,
+    REDIRECT_URI,
+    startFakeGitlab,
+} from '../test-db/fake-gitlab.js';
 
 let gl: FakeGitlab;
 
@@ -13,6 +21,7 @@ afterEach(async () => {
     await gl.stop();
 });
 
+const REDIRECT = REDIRECT_URI;
 const PROJECT = 'acme/group/proj';
 const ENCODED = encodeURIComponent(PROJECT);
 const api = (path: string) => `/api/v4/projects/${ENCODED}${path}`;
@@ -52,10 +61,12 @@ describe('fake GitLab: OAuth', () => {
     });
 
     it('signs a member in through the lane door, without the redirect round trip', async () => {
-        const pair = (await gl.control('gitlab/sign-in', { login: 'lane-dev' })).body;
+        const pair = (await gl.control('gitlab/sign-in', { login: 'lane-dev', clientId: FAKE_CLIENT.clientId })).body;
         expect(pair).toMatchObject({ token_type: 'Bearer', expires_in: GITLAB_TOKEN_TTL_S });
         expect((await gl.send('GET', '/api/v4/user', { token: pair.access_token })).body.username).toBe('lane-dev');
         expect((await gl.refresh(pair.refresh_token)).status).toBe(200);
+        const unbound = (await gl.control('gitlab/sign-in', { login: 'lane-dev' })).body;
+        expect((await gl.refresh(unbound.refresh_token)).status).toBe(400);
     });
 
     it('answers as the login the authorize call names', async () => {
@@ -64,16 +75,28 @@ describe('fake GitLab: OAuth', () => {
     });
 
     it('spends a code once, and refuses an unknown one', async () => {
-        const authorize = await gl.send('GET', '/oauth/authorize?redirect_uri=http://board.test/cb&state=abc');
+        const authorize = await gl.send(
+            'GET',
+            `/oauth/authorize?redirect_uri=${REDIRECT}&response_type=code&state=abc&client_id=${FAKE_CLIENT.clientId}`
+        );
         const target = new URL(authorize.location as string);
         expect(target.searchParams.get('state')).toBe('abc');
-        const grant = { grant_type: 'authorization_code', code: target.searchParams.get('code') as string };
+        const grant = {
+            grant_type: 'authorization_code',
+            code: target.searchParams.get('code') as string,
+            redirect_uri: REDIRECT,
+            ...CLIENT_AUTH,
+        };
         expect((await gl.send('POST', '/oauth/token', { body: grant })).status).toBe(200);
         const replay = await gl.send('POST', '/oauth/token', { body: grant });
         expect(replay.status).toBe(400);
         expect(replay.body.error).toBe('invalid_grant');
         expect(
-            (await gl.send('POST', '/oauth/token', { body: { grant_type: 'authorization_code', code: 'x' } })).status
+            (
+                await gl.send('POST', '/oauth/token', {
+                    body: { grant_type: 'authorization_code', code: 'x', redirect_uri: REDIRECT, ...CLIENT_AUTH },
+                })
+            ).status
         ).toBe(400);
     });
 
@@ -105,14 +128,14 @@ describe('fake GitLab: OAuth', () => {
 
     it('revokes both halves of the pair, by either token', async () => {
         const byAccess = await gl.signIn();
-        expect((await gl.send('POST', '/oauth/revoke', { body: { token: byAccess.access_token } })).status).toBe(200);
+        expect((await gl.revoke(byAccess.access_token)).status).toBe(200);
         expect((await gl.send('GET', '/api/v4/user', { token: byAccess.access_token })).status).toBe(401);
         expect((await gl.refresh(byAccess.refresh_token)).body.error).toBe('invalid_grant');
         const byRefresh = await gl.signIn();
-        await gl.send('POST', '/oauth/revoke', { body: { token: byRefresh.refresh_token } });
+        await gl.revoke(byRefresh.refresh_token);
         expect((await gl.send('GET', '/api/v4/user', { token: byRefresh.access_token })).status).toBe(401);
         expect((await gl.refresh(byRefresh.refresh_token)).status).toBe(400);
-        expect((await gl.send('POST', '/oauth/revoke', { body: { token: 'unknown' } })).status).toBe(200);
+        expect((await gl.revoke('unknown')).status).toBe(200);
     });
 });
 
@@ -654,6 +677,610 @@ describe('fake GitLab: project hooks', () => {
         } finally {
             await new Promise((resolve) => sink.close(resolve));
         }
+    });
+});
+
+describe('fake GitLab: version', () => {
+    it('answers the instance version to a signed-in caller, 401 otherwise, and a lane can change it', async () => {
+        const { access_token: token } = await gl.signIn();
+        const ok = await gl.send('GET', '/api/v4/version', { token });
+        expect(ok.status).toBe(200);
+        expect(ok.body.version).toMatch(/^\d+\.\d+\.\d+/);
+        expect((await gl.send('GET', '/api/v4/version')).status).toBe(401);
+        await gl.control('gitlab/version', { version: '16.11.2' });
+        expect((await gl.send('GET', '/api/v4/version', { token })).body.version).toBe('16.11.2');
+    });
+});
+
+describe('fake GitLab: group projects', () => {
+    const seedTree = async () => {
+        for (const path of ['acme/a', 'acme/b', 'acme/sub/c', 'acme/sub/deep/d', 'other/e'])
+            await gl.control('gitlab/projects', { path });
+        await gl.control('gitlab/members', { project: 'acme/b', login: 'dev', projectAccess: 20 });
+        await gl.control('gitlab/members', { project: 'acme/a', login: 'dev', projectAccess: 30 });
+        await gl.control('gitlab/members', { project: 'acme/sub/c', login: 'dev', groupAccess: 40 });
+        await gl.control('gitlab/members', { project: 'acme/sub/deep/d', login: 'dev', projectAccess: 0 });
+    };
+    const list = async (group: string, query = '', login = 'dev') => {
+        const { access_token: token } = await gl.signIn(login);
+        return gl.send('GET', `/api/v4/groups/${encodeURIComponent(group)}/projects${query}`, { token });
+    };
+    const paths = (res: { body: { path_with_namespace: string }[] }) => res.body.map((p) => p.path_with_namespace);
+
+    it('lists direct projects by default and nested ones with include_subgroups, with the member permissions', async () => {
+        await seedTree();
+        const direct = await list('acme');
+        expect(direct.status).toBe(200);
+        expect(paths(direct)).toEqual(['acme/a', 'acme/b']);
+        for (const entry of direct.body) expect(entry).not.toHaveProperty('permissions');
+        const { access_token: token } = await gl.signIn('dev');
+        const single = await gl.send('GET', `/api/v4/projects/${encodeURIComponent('acme/a')}`, { token });
+        expect(single.body.permissions.project_access.access_level).toBe(30);
+        const nested = await list('acme', '?include_subgroups=true');
+        expect(paths(nested)).toEqual(['acme/a', 'acme/b', 'acme/sub/c']);
+        expect(paths(await list('acme/sub', '?include_subgroups=true'))).toEqual(['acme/sub/c']);
+    });
+
+    it('filters by min_access_level and answers an unknown group 404', async () => {
+        await seedTree();
+        expect(paths(await list('acme', '?include_subgroups=true&min_access_level=30'))).toEqual([
+            'acme/a',
+            'acme/sub/c',
+        ]);
+        expect((await list('nope')).status).toBe(404);
+    });
+
+    it('lists a group by the namespace id a project response returned, and ids survive new projects', async () => {
+        await seedTree();
+        const { access_token: token } = await gl.signIn('dev');
+        const project = await gl.send('GET', `/api/v4/projects/${encodeURIComponent('acme/sub/c')}`, { token });
+        const subId = project.body.namespace.id;
+        expect(subId).toEqual(expect.any(Number));
+        const direct = await gl.send('GET', `/api/v4/groups/${subId}/projects`, { token });
+        expect(paths(direct)).toEqual(['acme/sub/c']);
+        await gl.control('gitlab/projects', { path: 'aaa/zzz/new' });
+        await gl.control('gitlab/projects', { path: 'acme/sub/more' });
+        const again = await gl.send('GET', `/api/v4/projects/${encodeURIComponent('acme/sub/c')}`, { token });
+        expect(again.body.namespace.id).toBe(subId);
+        expect(paths(await gl.send('GET', `/api/v4/groups/${subId}/projects`, { token }))).toEqual([
+            'acme/sub/c',
+            'acme/sub/more',
+        ]);
+        const acme = (await gl.send('GET', `/api/v4/projects/${encodeURIComponent('acme/a')}`, { token })).body
+            .namespace.id;
+        expect(acme).not.toBe(subId);
+        expect(paths(await gl.send('GET', `/api/v4/groups/${acme}/projects`, { token }))).toEqual(['acme/a', 'acme/b']);
+        expect((await gl.send('GET', '/api/v4/groups/999999/projects', { token })).status).toBe(404);
+    });
+
+    it('hides a group the caller holds no project under', async () => {
+        await seedTree();
+        await gl.control('gitlab/members', { project: 'other/e', login: 'dev', projectAccess: 0 });
+        expect((await list('other')).status).toBe(404);
+    });
+
+    it('sends a Link header with first, prev, next and last, and every page is reachable by next alone', async () => {
+        await seedTree();
+        const { access_token: token } = await gl.signIn('dev');
+        const rels = (link: string) =>
+            Object.fromEntries([...link.matchAll(/<([^>]+)>; rel="(\w+)"/g)].map((m) => [m[2], m[1]]));
+        const get = async (url: string) => {
+            const res = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
+            return { headers: res.headers, body: (await res.json()) as { path_with_namespace: string }[] };
+        };
+        let url = `${gl.base}/api/v4/groups/acme/projects?include_subgroups=true&per_page=1`;
+        const seen: string[] = [];
+        let first = true;
+        for (let guard = 0; guard < 10 && url; guard++) {
+            const res = await get(url);
+            seen.push(...res.body.map((p) => p.path_with_namespace));
+            const links = rels(res.headers.get('link') as string);
+            expect(Object.keys(links)).toContain('first');
+            expect(Object.keys(links)).toContain('last');
+            expect(new URL(links.first).searchParams.get('include_subgroups')).toBe('true');
+            expect(new URL(links.first).searchParams.get('per_page')).toBe('1');
+            expect('prev' in links).toBe(!first);
+            first = false;
+            url = links.next ?? '';
+        }
+        expect(seen).toEqual(['acme/a', 'acme/b', 'acme/sub/c']);
+        expect(url).toBe('');
+    });
+
+    it('paginates with X-Page, X-Next-Page and X-Total headers until the last page', async () => {
+        await seedTree();
+        const first = await list('acme', '?include_subgroups=true&per_page=2&page=1');
+        expect(paths(first)).toEqual(['acme/a', 'acme/b']);
+        expect(first.headers['x-next-page']).toBe('2');
+        expect(first.headers['x-total']).toBe('3');
+        const last = await list('acme', '?include_subgroups=true&per_page=2&page=2');
+        expect(paths(last)).toEqual(['acme/sub/c']);
+        expect(last.headers['x-next-page']).toBe('');
+    });
+});
+
+describe('fake GitLab: OAuth contract', () => {
+    const authorize = async (query = '') => {
+        const client = query.includes('client_id=') ? '' : `&client_id=${FAKE_CLIENT.clientId}`;
+        const res = await gl.send(
+            'GET',
+            `/oauth/authorize?redirect_uri=${REDIRECT}&response_type=code&login=dev${client}${query}`
+        );
+        return new URL(res.location as string).searchParams.get('code') as string;
+    };
+    const token = (body: object) => gl.send('POST', '/oauth/token', { body });
+    const exchange = (code: string, extra: object = { redirect_uri: REDIRECT, ...CLIENT_AUTH }) =>
+        token({ grant_type: 'authorization_code', code, ...extra });
+    const GITLAB_ERROR = { error: expect.any(String), error_description: expect.any(String) };
+
+    it('requires the redirect URI of the authorization request: missing and different are refused, matching passes', async () => {
+        const missing = await exchange(await authorize(), CLIENT_AUTH);
+        expect(missing.status).toBe(400);
+        expect(missing.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_grant' });
+        const different = await exchange(await authorize(), {
+            redirect_uri: 'http://board.test/other',
+            ...CLIENT_AUTH,
+        });
+        expect(different.status).toBe(400);
+        expect(different.body.error).toBe('invalid_grant');
+        const code = await authorize();
+        expect((await exchange(code, { redirect_uri: 'http://board.test/other', ...CLIENT_AUTH })).status).toBe(400);
+        expect((await exchange(code)).status).toBe(200);
+    });
+
+    it('checks grant_type: only authorization_code and refresh_token are served', async () => {
+        for (const grant_type of ['password', 'client_credentials', undefined]) {
+            const res = await token({ grant_type, code: await authorize(), redirect_uri: REDIRECT, ...CLIENT_AUTH });
+            expect(res.status).toBe(400);
+            expect(res.body).toMatchObject({ ...GITLAB_ERROR, error: 'unsupported_grant_type' });
+        }
+        const pair = await gl.signIn();
+        expect(
+            (await token({ grant_type: 'refresh_token', refresh_token: pair.refresh_token, ...CLIENT_AUTH })).status
+        ).toBe(200);
+    });
+
+    it('names a missing code or refresh token invalid_request', async () => {
+        expect(
+            (await token({ grant_type: 'authorization_code', redirect_uri: REDIRECT, ...CLIENT_AUTH })).body
+        ).toMatchObject({
+            ...GITLAB_ERROR,
+            error: 'invalid_request',
+        });
+        expect((await token({ grant_type: 'refresh_token', ...CLIENT_AUTH })).body.error).toBe('invalid_request');
+    });
+
+    it('spends a code once and lets it expire after its lifetime on the injected clock', async () => {
+        const code = await authorize();
+        expect((await exchange(code)).status).toBe(200);
+        const replay = await exchange(code);
+        expect(replay.status).toBe(400);
+        expect(replay.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_grant' });
+        const stale = await authorize();
+        gl.forge.advance((GITLAB_CODE_TTL_S + 1) * 1000);
+        const expired = await exchange(stale);
+        expect(expired.status).toBe(400);
+        expect(expired.body.error).toBe('invalid_grant');
+        const fresh = await authorize();
+        gl.forge.advance((GITLAB_CODE_TTL_S - 1) * 1000);
+        expect((await exchange(fresh)).status).toBe(200);
+    });
+
+    it('echoes the requested scope in the token response, and keeps it across a refresh', async () => {
+        expect((await exchange(await authorize())).body.scope).toBe('api');
+        const pair = (await exchange(await authorize('&scope=read_user+openid'))).body;
+        expect(pair.scope).toBe('read_user openid');
+        const rotated = await token({ grant_type: 'refresh_token', refresh_token: pair.refresh_token, ...CLIENT_AUTH });
+        expect(rotated.body.scope).toBe('read_user openid');
+    });
+
+    it('refuses the used refresh token after rotation with invalid_grant', async () => {
+        const pair = await gl.signIn();
+        const rotated = await token({ grant_type: 'refresh_token', refresh_token: pair.refresh_token, ...CLIENT_AUTH });
+        expect(rotated.status).toBe(200);
+        const replay = await token({ grant_type: 'refresh_token', refresh_token: pair.refresh_token, ...CLIENT_AUTH });
+        expect(replay.status).toBe(400);
+        expect(replay.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_grant' });
+    });
+
+    it('answers a client failure 401 invalid_client and a code issued to another client 400 invalid_grant', async () => {
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-1',
+            clientSecret: 'secret-1',
+            redirectUris: [REDIRECT],
+        });
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-2',
+            clientSecret: 'secret-2',
+            redirectUris: [REDIRECT],
+        });
+        const code = await authorize('&client_id=app-1');
+        const bad = await exchange(code, { redirect_uri: REDIRECT, client_id: 'app-1', client_secret: 'nope' });
+        expect(bad.status).toBe(401);
+        expect(bad.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_client' });
+        const other = await exchange(code, { redirect_uri: REDIRECT, client_id: 'app-2', client_secret: 'secret-2' });
+        expect(other.status).toBe(400);
+        expect(other.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_grant' });
+        const own = await exchange(code, { redirect_uri: REDIRECT, client_id: 'app-1', client_secret: 'secret-1' });
+        expect(own.status).toBe(200);
+    });
+});
+
+describe('fake GitLab: OAuth authorize', () => {
+    const go = (query: Record<string, string | undefined>) => {
+        const params = new URLSearchParams({
+            redirect_uri: REDIRECT,
+            response_type: 'code',
+            client_id: FAKE_CLIENT.clientId,
+            ...query,
+        } as Record<string, string>);
+        for (const [key, value] of Object.entries(query)) if (value === undefined) params.delete(key);
+        return gl.send('GET', `/oauth/authorize?${params}`);
+    };
+    const back = (res: { location: string | null }) => new URL(res.location as string).searchParams;
+    const GITLAB_ERROR = { error: expect.any(String), error_description: expect.any(String) };
+    const register = () =>
+        gl.control('gitlab/oauth-clients', {
+            clientId: 'app-1',
+            clientSecret: 'secret-1',
+            redirectUris: [REDIRECT],
+            scopes: ['api', 'read_user'],
+        });
+
+    it('requires response_type=code, redirecting with error= and the state otherwise, and issues no code', async () => {
+        await register();
+        for (const [response_type, error] of [
+            [undefined, 'invalid_request'],
+            ['token', 'unsupported_response_type'],
+        ] as const) {
+            const res = await go({ client_id: 'app-1', response_type, state: 'st' });
+            expect(res.status).toBe(302);
+            const params = back(res);
+            expect(params.get('error')).toBe(error);
+            expect(params.get('error_description')).toBeTruthy();
+            expect(params.get('state')).toBe('st');
+            expect(params.has('code')).toBe(false);
+        }
+    });
+
+    it('requires a registered client: unknown and missing are a 401 invalid_client with no redirect', async () => {
+        await register();
+        for (const client_id of ['ghost', undefined]) {
+            const res = await go({ client_id });
+            expect(res.status).toBe(401);
+            expect(res.location).toBeNull();
+            expect(res.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_client' });
+        }
+    });
+
+    it('requires a redirect URI registered for the client: a different or missing one is a 400, never a redirect', async () => {
+        await register();
+        const other = await go({ client_id: 'app-1', redirect_uri: 'http://evil.test/cb' });
+        expect(other.status).toBe(400);
+        expect(other.location).toBeNull();
+        expect(other.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_redirect_uri' });
+        const missing = await go({ client_id: 'app-1', redirect_uri: undefined });
+        expect(missing.status).toBe(400);
+        expect(missing.location).toBeNull();
+        expect((await go({ client_id: 'app-1', redirect_uri: 'not a url' })).status).toBe(400);
+        expect((await go({ client_id: 'app-1' })).status).toBe(302);
+    });
+
+    it('sends the state back unchanged, on success and on error', async () => {
+        const state = 'a b&c=d/é?';
+        expect(back(await go({ state })).get('state')).toBe(state);
+        expect(back(await go({ state, scope: 'nonsense' })).get('state')).toBe(state);
+        expect(back(await go({})).has('state')).toBe(false);
+    });
+
+    it('checks scope against what the client may have, redirecting with invalid_scope', async () => {
+        await register();
+        const ok = back(await go({ client_id: 'app-1', scope: 'api read_user' }));
+        expect(ok.get('code')).toBeTruthy();
+        for (const scope of ['write_repository', 'api read_registry', 'nonsense']) {
+            const params = back(await go({ client_id: 'app-1', scope, state: 's' }));
+            expect(params.get('error')).toBe('invalid_scope');
+            expect(params.has('code')).toBe(false);
+        }
+    });
+
+    it('with no client registered, needs response_type=code and a known scope all the same', async () => {
+        expect(back(await go({ response_type: undefined })).get('error')).toBe('invalid_request');
+        expect(back(await go({ response_type: 'token' })).get('error')).toBe('unsupported_response_type');
+        expect(back(await go({ scope: 'bogus' })).get('error')).toBe('invalid_scope');
+        expect(back(await go({ scope: 'read_user' })).get('code')).toBeTruthy();
+    });
+
+    it('keeps the redirect URI query and adds code and state to it', async () => {
+        const target = new URL(`${REDIRECT}?keep=1`);
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-q',
+            clientSecret: 'secret-q',
+            redirectUris: [target.toString()],
+        });
+        const res = await go({ client_id: 'app-q', redirect_uri: target.toString(), state: 'x' });
+        const params = back(res);
+        expect(params.get('keep')).toBe('1');
+        expect(params.get('code')).toBeTruthy();
+        expect(params.get('state')).toBe('x');
+    });
+
+    it('refuses to register a client without redirect URIs', async () => {
+        const res = await gl.control('gitlab/oauth-clients', { clientId: 'a', clientSecret: 'b' });
+        expect(res.status).toBe(400);
+    });
+});
+
+describe('fake GitLab: OAuth clients', () => {
+    it('binds a pair to the client that authorized it, and refuses another client and a wrong secret', async () => {
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-1',
+            clientSecret: 'secret-1',
+            redirectUris: [REDIRECT],
+        });
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-2',
+            clientSecret: 'secret-2',
+            redirectUris: [REDIRECT],
+        });
+        const authorize = await gl.send(
+            'GET',
+            '/oauth/authorize?redirect_uri=http://board.test/cb&response_type=code&client_id=app-1&login=dev'
+        );
+        const code = new URL(authorize.location as string).searchParams.get('code') as string;
+        const exchange = (clientSecret: string, clientId = 'app-1') =>
+            gl.send('POST', '/oauth/token', {
+                body: {
+                    grant_type: 'authorization_code',
+                    code,
+                    redirect_uri: 'http://board.test/cb',
+                    client_id: clientId,
+                    client_secret: clientSecret,
+                },
+            });
+        expect((await exchange('wrong')).status).toBe(401);
+        expect((await exchange('secret-2', 'app-2')).status).toBe(400);
+        const pair = (await exchange('secret-1')).body;
+        expect(pair.access_token).toBeTruthy();
+        const refresh = (clientId: string, clientSecret: string, token = pair.refresh_token) =>
+            gl.send('POST', '/oauth/token', {
+                body: {
+                    grant_type: 'refresh_token',
+                    refresh_token: token,
+                    client_id: clientId,
+                    client_secret: clientSecret,
+                },
+            });
+        expect((await refresh('app-2', 'secret-2')).status).toBe(400);
+        const rotated = await refresh('app-1', 'secret-1');
+        expect(rotated.status).toBe(200);
+        expect((await refresh('app-1', 'secret-1', rotated.body.refresh_token)).status).toBe(200);
+    });
+
+    it('refuses an unknown client with no credentials, and a known client with a wrong or missing secret', async () => {
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-1',
+            clientSecret: 'secret-1',
+            redirectUris: [REDIRECT],
+        });
+        const code = async () => {
+            const authorize = await gl.send(
+                'GET',
+                '/oauth/authorize?redirect_uri=http://board.test/cb&response_type=code&client_id=app-1&login=dev'
+            );
+            return new URL(authorize.location as string).searchParams.get('code') as string;
+        };
+        const exchange = async (extra: object) =>
+            gl.send('POST', '/oauth/token', {
+                body: {
+                    grant_type: 'authorization_code',
+                    code: await code(),
+                    redirect_uri: 'http://board.test/cb',
+                    ...extra,
+                },
+            });
+        expect((await exchange({})).status).toBe(401);
+        expect((await exchange({ client_id: 'ghost' })).status).toBe(401);
+        expect((await exchange({ client_id: 'ghost', client_secret: 'secret-1' })).status).toBe(401);
+        expect((await exchange({ client_id: 'app-1' })).status).toBe(401);
+        expect((await exchange({ client_id: 'app-1', client_secret: 'wrong' })).status).toBe(401);
+        expect((await exchange({ client_id: 'app-1', client_secret: 'secret-1' })).status).toBe(200);
+        const unknownAuthorize = await gl.send(
+            'GET',
+            '/oauth/authorize?redirect_uri=http://board.test/cb&response_type=code&client_id=ghost'
+        );
+        expect(unknownAuthorize.status).toBe(401);
+    });
+
+    it('has no permissive mode: an empty registry refuses authorize, token, refresh and revoke', async () => {
+        await gl.stop();
+        gl = await startFakeGitlab({ client: false });
+        const query = new URLSearchParams({ redirect_uri: REDIRECT, response_type: 'code', client_id: 'anyone' });
+        expect((await gl.send('GET', `/oauth/authorize?${query}`)).status).toBe(401);
+        expect((await gl.send('GET', `/oauth/authorize?${query}`)).location).toBeNull();
+        const pair = (await gl.control('gitlab/sign-in', { login: 'dev' })).body;
+        const grants = [
+            { grant_type: 'authorization_code', code: 'x', redirect_uri: REDIRECT },
+            { grant_type: 'refresh_token', refresh_token: pair.refresh_token },
+        ];
+        for (const grant of grants) {
+            for (const auth of [{}, { client_id: 'anyone' }, { client_id: 'anyone', client_secret: 'x' }]) {
+                const res = await gl.send('POST', '/oauth/token', { body: { ...grant, ...auth } });
+                expect(res.status).toBe(401);
+                expect(res.body.error).toBe('invalid_client');
+            }
+        }
+        expect((await gl.send('POST', '/oauth/revoke', { body: { token: pair.access_token } })).status).toBe(401);
+        expect((await gl.send('GET', '/api/v4/user', { token: pair.access_token })).status).toBe(200);
+    });
+
+    it('does not let a code issued to one client be exchanged by an unregistered one', async () => {
+        const query = new URLSearchParams({ redirect_uri: REDIRECT, response_type: 'code', client_id: 'ghost' });
+        expect((await gl.send('GET', `/oauth/authorize?${query}`)).status).toBe(401);
+        const code = new URL(
+            (await gl.send('GET', `/oauth/authorize?${query}`.replace('ghost', FAKE_CLIENT.clientId)))
+                .location as string
+        ).searchParams.get('code');
+        const res = await gl.send('POST', '/oauth/token', {
+            body: { grant_type: 'authorization_code', code, redirect_uri: REDIRECT, client_id: 'ghost' },
+        });
+        expect(res.status).toBe(401);
+    });
+
+    it('revokes only for the client that holds the token, and authenticates the client first', async () => {
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-2',
+            clientSecret: 'secret-2',
+            redirectUris: [REDIRECT],
+        });
+        const pair = await gl.signIn();
+        const other = await gl.send('POST', '/oauth/revoke', {
+            body: { token: pair.access_token, client_id: 'app-2', client_secret: 'secret-2' },
+        });
+        expect(other.status).toBe(403);
+        expect((await gl.send('GET', '/api/v4/user', { token: pair.access_token })).status).toBe(200);
+        const wrong = await gl.send('POST', '/oauth/revoke', {
+            body: { token: pair.access_token, client_id: FAKE_CLIENT.clientId, client_secret: 'no' },
+        });
+        expect(wrong.status).toBe(401);
+        expect((await gl.revoke(pair.access_token)).status).toBe(200);
+        expect((await gl.send('GET', '/api/v4/user', { token: pair.access_token })).status).toBe(401);
+    });
+});
+
+describe('fake GitLab: token scopes', () => {
+    const INSUFFICIENT = {
+        error: 'insufficient_scope',
+        error_description: expect.any(String),
+        scope: expect.any(String),
+    };
+    const reach = async (token: string) => {
+        await seed();
+        const get = (path: string) => gl.send('GET', path, { token });
+        return {
+            user: (await get('/api/v4/user')).status,
+            version: (await get('/api/v4/version')).status,
+            project: (await get(`/api/v4/projects/${ENCODED}`)).status,
+            group: (await get('/api/v4/groups/acme/projects')).status,
+            write: (
+                await gl.send('POST', api('/merge_requests'), {
+                    token,
+                    body: { source_branch: 'feature', target_branch: 'main', title: 't' },
+                })
+            ).status,
+        };
+    };
+
+    it('lets read_user reach /user only, with GitLab 403 insufficient_scope everywhere else', async () => {
+        const pair = await gl.signIn('dev', 'read_user');
+        expect(pair.scope).toBe('read_user');
+        expect(await reach(pair.access_token)).toEqual({
+            user: 200,
+            version: 403,
+            project: 403,
+            group: 403,
+            write: 403,
+        });
+        const denied = await gl.send('GET', `/api/v4/projects/${ENCODED}`, { token: pair.access_token });
+        expect(denied.body).toMatchObject(INSUFFICIENT);
+        expect(denied.body.scope).toContain('api');
+    });
+
+    it('lets read_api read but not write, and api do both', async () => {
+        const reader = await gl.signIn('dev', 'read_api');
+        expect(await reach(reader.access_token)).toEqual({
+            user: 200,
+            version: 200,
+            project: 200,
+            group: 200,
+            write: 403,
+        });
+        const full = await gl.signIn('dev', 'api');
+        expect((await reach(full.access_token)).write).toBe(201);
+    });
+
+    it('carries the scopes across a refresh, so a narrow token stays narrow and a wide one stays wide', async () => {
+        const narrow = await gl.signIn('dev', 'read_user');
+        const renewed = (await gl.refresh(narrow.refresh_token)).body;
+        expect(renewed.scope).toBe('read_user');
+        const again = await gl.send('GET', `/api/v4/projects/${ENCODED}`, { token: renewed.access_token });
+        expect(again.status).toBe(403);
+        expect(again.body).toMatchObject(INSUFFICIENT);
+        expect((await gl.send('GET', '/api/v4/user', { token: renewed.access_token })).status).toBe(200);
+        const wide = await gl.signIn('dev', 'api');
+        const wideRenewed = (await gl.refresh(wide.refresh_token)).body;
+        await seed();
+        expect((await gl.send('GET', `/api/v4/projects/${ENCODED}`, { token: wideRenewed.access_token })).status).toBe(
+            200
+        );
+    });
+
+    it('applies git over HTTP scopes: read_repository clones, only write_repository or api pushes', async () => {
+        await seed();
+        const reader = await gl.signIn('dev', 'read_repository');
+        const git = (token: string, service: string) =>
+            fetch(`${gl.base}/${PROJECT}.git/info/refs?service=${service}`, {
+                headers: { authorization: `Basic ${Buffer.from(`oauth2:${token}`).toString('base64')}` },
+            });
+        expect((await git(reader.access_token, 'git-upload-pack')).status).toBe(200);
+        expect((await git(reader.access_token, 'git-receive-pack')).status).toBe(403);
+        const userOnly = await gl.signIn('dev', 'read_user');
+        expect((await git(userOnly.access_token, 'git-upload-pack')).status).toBe(403);
+        const writer = await gl.signIn('dev', 'write_repository');
+        expect((await git(writer.access_token, 'git-receive-pack')).status).toBe(200);
+    });
+});
+
+describe('fake GitLab: fault controls', () => {
+    const FAST = 150;
+    const faultOn = (body: object) => gl.control('gitlab/faults', body);
+
+    it('answers 5xx on the matching path only, for the counted calls, then recovers', async () => {
+        const { access_token: token } = await gl.signIn('dev');
+        await seed();
+        await faultOn({ pathIncludes: '/projects/', mode: 'status', status: 503, count: 2 });
+        expect((await gl.send('GET', api(''), { token })).status).toBe(503);
+        expect((await gl.send('GET', api(''), { token })).status).toBe(503);
+        expect((await gl.send('GET', api(''), { token })).status).toBe(200);
+        expect((await gl.send('GET', '/api/v4/user', { token })).status).toBe(200);
+    });
+
+    it('answers a body that is not JSON with a 200', async () => {
+        const { access_token: token } = await gl.signIn('dev');
+        await faultOn({ pathIncludes: '/api/v4/version', mode: 'malformed' });
+        const res = await fetch(`${gl.base}/api/v4/version`, { headers: { authorization: `Bearer ${token}` } });
+        expect(res.status).toBe(200);
+        await expect(res.json()).rejects.toThrow();
+    });
+
+    it('reaches an unauthenticated call before the 401, and recovers when cleared', async () => {
+        expect((await gl.send('GET', '/api/v4/version')).status).toBe(401);
+        await faultOn({ pathIncludes: '/api/v4/version', mode: 'status', status: 503 });
+        expect((await gl.send('GET', '/api/v4/version')).status).toBe(503);
+        await faultOn({ mode: 'none' });
+        expect((await gl.send('GET', '/api/v4/version')).status).toBe(401);
+        await faultOn({ pathIncludes: '/api/v4/version', mode: 'malformed' });
+        const res = await fetch(`${gl.base}/api/v4/version`);
+        expect(res.status).toBe(200);
+        await expect(res.json()).rejects.toThrow();
+        await faultOn({ mode: 'none' });
+        await faultOn({ pathIncludes: '/api/v4/version', mode: 'timeout' });
+        await expect(fetch(`${gl.base}/api/v4/version`, { signal: AbortSignal.timeout(FAST) })).rejects.toThrow();
+        await faultOn({ mode: 'none' });
+        expect((await gl.send('GET', '/api/v4/version')).status).toBe(401);
+    });
+
+    it('never answers in timeout mode, and clears on mode none', async () => {
+        const { access_token: token } = await gl.signIn('dev');
+        await faultOn({ pathIncludes: '/api/v4/version', mode: 'timeout' });
+        await expect(
+            fetch(`${gl.base}/api/v4/version`, {
+                headers: { authorization: `Bearer ${token}` },
+                signal: AbortSignal.timeout(FAST),
+            })
+        ).rejects.toThrow();
+        await faultOn({ mode: 'none' });
+        expect((await gl.send('GET', '/api/v4/version', { token })).status).toBe(200);
     });
 });
 
