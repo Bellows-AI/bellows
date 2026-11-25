@@ -270,6 +270,19 @@ describe.skipIf(!enabled)('picking the projects to track', () => {
         }
     );
 
+    it('answers 503 when a later page is a 404, and a save from it writes nothing', async () => {
+        for (const path of ['a', 'b', 'c', 'd']) await project(`${grp}/${path}`);
+        const id = await h.linked(org, 'dev-one', { groups: [grp] });
+        await track(id, [`${grp}/a`]);
+        const gone = { mode: 'status', status: 404, pathIncludes: '/groups/', count: 2, after: 1 };
+        await h.fake.control('gitlab/faults', gone);
+        expect((await listProjects(id)).statusCode).toBe(UNAVAILABLE);
+        await h.fake.control('gitlab/faults', { mode: 'none' });
+        await h.fake.control('gitlab/faults', gone);
+        expect((await track(id, [`${grp}/b`])).statusCode).toBe(UNAVAILABLE);
+        expect(keys(await trackedRepos({ sql, orgId: org.id }))).toEqual([`gitlab:${HOST}/${grp}/a`]);
+    });
+
     it('lists the tracked GitLab repos in GET /api/repos, and drops them with the connection', async () => {
         await project(`${grp}/a`);
         const id = await h.linked(org, 'dev-one', { groups: [grp] });

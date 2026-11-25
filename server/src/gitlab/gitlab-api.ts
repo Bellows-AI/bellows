@@ -189,10 +189,13 @@ type Send = (request: GitlabRequest) => Promise<GitlabResponse>;
 
 const authorized = (token: string) => ({ authorization: `Bearer ${token}` });
 
-/** One listing page's projects; `null` for an answer that is not a clean page (a 404 is an empty one: no such group). */
-function pageOf(answer: GitlabResponse): GitlabProject[] | null {
+/**
+ * One listing page's projects; `null` for an answer that is not a clean page. A 404 is an empty listing (no such group)
+ * only on the first page: once pagination started, a 404 is no answer, and the pages read so far are discarded.
+ */
+function pageOf(answer: GitlabResponse, first: boolean): GitlabProject[] | null {
     if (!answer.ok) return null;
-    if (answer.status === HTTP_NOT_FOUND) return [];
+    if (answer.status === HTTP_NOT_FOUND) return first ? [] : null;
     const body = answer.status === HTTP_OK ? jsonOf(answer.text) : undefined;
     if (!Array.isArray(body)) return null;
     const projects = body.map(projectOf);
@@ -215,7 +218,8 @@ async function listGroupProjects(
         });
         const path = `/api/v4/groups/${encodeURIComponent(group)}/projects?${query}`;
         const read = pageOf(
-            await send({ host, path, headers: authorized(token), caBundle, signal, maxBytes: LIST_BODY_LIMIT })
+            await send({ host, path, headers: authorized(token), caBundle, signal, maxBytes: LIST_BODY_LIMIT }),
+            page === 1
         );
         if (read === null) return { ok: false };
         for (const project of read) projects.set(project.path, project);

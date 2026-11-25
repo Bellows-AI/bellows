@@ -19,7 +19,7 @@ import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { failingPoolQuery, faultySecrets, testSecretStore } from './env-secrets-harness.js';
 import { createPostgresHarness, dbError, MutableKeys } from './secrets-postgres-harness.js';
 import { type FakeGitlab, startFakeGitlab } from './fake-gitlab.js';
-import { randomGithubId, testOrg } from './fixtures.js';
+import { account, randomGithubId, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -258,6 +258,34 @@ describe.skipIf(!enabled)('forge connection store', () => {
         expect(await rowOf(made.connection.id)).toBeUndefined();
         expect(await readSecret(orgA, made.connection.id, 'client-secret', row.secret_ref)).toMatch(/^not-found/);
         expect(await readSecret(orgA, made.connection.id, 'ca-bundle', row.ca_secret_ref!)).toMatch(/^not-found/);
+    });
+
+    it('a retried removal of a tombstoned connection leaves a replacement’s tracking and grants alone', async () => {
+        const first = await storeA.create(input({ host: named('retry') }));
+        if (!first.ok) throw new Error('create refused');
+        const down = faultySecrets(secrets, { delete: unavailable });
+        await expect(storeOf(orgA, down).remove(first.connection.id)).rejects.toBeInstanceOf(EnvSecretError);
+        // The host is connected anew while the old tombstone still owes its cleanup, and tracks a project.
+        const second = await storeA.create(input({ host: named('retry') }));
+        if (!second.ok) throw new Error('create refused');
+        await sql`insert into tracked_repo (org_id, owner, name, forge, host) values (${orgA}, 'g', 'p', 'gitlab', ${named('retry')})`;
+        const userId = await account(sql, randomGithubId(), `u-${randomUUID().slice(0, 8)}`);
+        await sql`
+            insert into integration_grant
+                (org_id, principal_kind, principal_user_id, provider, external_account_id, authority, status,
+                 forge_connection_id)
+            values (${orgA}, 'user', ${userId}, ${`gitlab:${named('retry')}`}, 'x', '{}'::jsonb, 'reconnect_required',
+                    ${second.connection.id})
+        `;
+        // The retry finishes the old removal and touches nothing of the new connection's.
+        expect(await storeA.remove(first.connection.id)).toBe(true);
+        const kept = await sql`select 1 from tracked_repo where org_id = ${orgA} and host = ${named('retry')}`;
+        expect(kept).toHaveLength(1);
+        const grants = await sql`
+            select 1 from integration_grant where forge_connection_id = ${second.connection.id} and status <> 'revoked'
+        `;
+        expect(grants).toHaveLength(1);
+        expect(await storeA.get(second.connection.id)).not.toBeNull();
     });
 
     it('writes nothing when the secret store fails: no row, EnvSecretError for the route to answer 503', async () => {

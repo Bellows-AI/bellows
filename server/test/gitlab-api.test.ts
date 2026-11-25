@@ -240,6 +240,16 @@ describe('createGitlabApi.listGroupProjects', () => {
         expect(await api.listGroupProjects({ host: endless, token: 't', group: 'g' })).toEqual({ ok: false });
     });
 
+    it('a 404 after pagination started is no answer: nothing collected is returned as a complete listing', async () => {
+        const host = await serve((req, res) => {
+            const page = Number(new URL(req.url ?? '', 'http://x').searchParams.get('page'));
+            if (page === 1) json(res, 200, [listed('g/a'), listed('g/b')]);
+            else json(res, 404, { message: '404 Not Found' });
+        });
+        const api = createGitlabApi({ baseUrl: (h) => `http://${h}`, probeTimeoutMs: 1000, pageSize: 2 });
+        expect(await api.listGroupProjects({ host, token: 't', group: 'g' })).toEqual({ ok: false });
+    });
+
     it('encodes the group path', async () => {
         const seen: string[] = [];
         const host = await serve((req, res) => {
