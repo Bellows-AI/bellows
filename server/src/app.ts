@@ -42,6 +42,7 @@ import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './ro
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
 import { createConnectorRegistry, type ConnectorRegistry } from './notifications/connector.js';
+import { gitlabConnectionRoutes } from './routes/gitlab-connections.js';
 import { notificationSubscriptionRoutes } from './routes/notification-subscriptions.js';
 import { orgMemberRoutes } from './routes/org-members.js';
 import { auditRoutes } from './routes/audit.js';
@@ -416,7 +417,7 @@ async function registerRunnerCredentialRoutes(
 
 /**
  * The routes that exist only with their dependency — commerce (and COMMERCE_ENABLED), the provider key check — and
- * the model setup the key check serves, which every board has.
+ * the model setup the key check serves and the org's GitLab connection (pending until activated), which every board has.
  */
 async function registerOptionalRoutes(
     app: FastifyInstance,
@@ -427,6 +428,7 @@ async function registerOptionalRoutes(
     if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
     if (providerKeys) await app.register(modelSetupVerifyRoutes({ providerKeys, now }));
     await app.register(modelSetupRoutes({ config, orgs }));
+    await app.register(gitlabConnectionRoutes({ orgs }));
 }
 
 /** What the personal and the organization executor routes share: the deployment mode and the runner classes. */

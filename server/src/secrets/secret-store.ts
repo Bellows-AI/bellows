@@ -25,6 +25,7 @@ export const SECRET_PURPOSES = [
     'connection-grant',
     'executor-credential',
     'notification-credential',
+    'forge-connection',
 ] as const;
 export type SecretPurpose = (typeof SECRET_PURPOSES)[number];
 

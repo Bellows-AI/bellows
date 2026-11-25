@@ -19,6 +19,8 @@ import type { BatchStore } from './db/batches/batch-store-types.js';
 import { createConnectionGrants, type ConnectionGrants } from './db/connection-grants.js';
 import { createConnectionStore, type ConnectionStore } from './db/connection-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
+import { createForgeConnectionStore, type ForgeConnectionStore } from './db/forge-connections.js';
+import { createGitlabApi, type GitlabApi } from './gitlab/gitlab-api.js';
 import type { SecretDiagnostic, SecretStore } from './secrets/secret-store.js';
 import { createJobStore } from './db/jobs/job-store.js';
 import type { ClaimObserver } from './db/jobs/job-store-admission.js';
@@ -108,6 +110,8 @@ export interface OrgRuntime {
     userExecutors?: UserExecutorStore | undefined;
     /** The org's notification subscriptions (103); present with the other stores. */
     notificationSubscriptions?: NotificationSubscriptionStore | undefined;
+    /** The org's GitLab connection (170), stored pending; present with the other stores. */
+    forgeConnections?: ForgeConnectionStore | undefined;
     /** The org's notification outbox (104); present with the other stores. */
     notificationOutbox?: NotificationOutboxStore | undefined;
     /** The usage outbox and the pushed plan (094); present with the other stores, and only when COMMERCE_ENABLED. */
@@ -141,6 +145,8 @@ export type OrgRegistryDeps = {
     orgKeyOf?: (orgId: string) => string;
     /** The members' forge grants (`AUTH_MODE=github`): automerge merges with the batch starter's token. Absent under `AUTH_MODE=none`, where the installation merges. */
     memberGrants?: MemberForgeGrants | undefined;
+    /** The GitLab client the connection's reachability probe uses; the default reaches every host over https. */
+    gitlabApi?: GitlabApi;
 } & (
     | {
           withStores: true;
@@ -181,7 +187,9 @@ function buildOrgStores({
     secrets,
     secretLog,
     memberGrants,
+    gitlabApi,
 }: {
+    gitlabApi: GitlabApi;
     memberGrants: MemberForgeGrants | undefined;
     claimMetrics: ClaimObserver | undefined;
     orgKey: string | undefined;
@@ -203,6 +211,7 @@ function buildOrgStores({
     connectionGrants: ConnectionGrants;
     userExecutors: UserExecutorStore;
     notificationSubscriptions: NotificationSubscriptionStore;
+    forgeConnections: ForgeConnectionStore;
     notificationOutbox: NotificationOutboxStore;
     prs: PrLifecycleStore;
     jobs: JobStore;
@@ -215,6 +224,7 @@ function buildOrgStores({
     const connectionGrants = createConnectionGrants({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready, secrets, secretLog });
     const notificationSubscriptions = createNotificationSubscriptionStore({ sql, orgId, ready, secrets, secretLog });
+    const forgeConnections = createForgeConnectionStore({ sql, orgId, ready, secrets, secretLog, gitlab: gitlabApi });
     const notificationOutbox = createNotificationOutboxStore({ sql, orgId, ready, secrets });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
     // transaction records the thread's publication identity through it.
@@ -319,6 +329,7 @@ function buildOrgStores({
         connectionGrants,
         userExecutors,
         notificationSubscriptions,
+        forgeConnections,
         notificationOutbox,
         prs,
         jobs,
@@ -339,6 +350,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.connectionGrants = stores.connectionGrants;
     runtime.userExecutors = stores.userExecutors;
     runtime.notificationSubscriptions = stores.notificationSubscriptions;
+    runtime.forgeConnections = stores.forgeConnections;
     runtime.notificationOutbox = stores.notificationOutbox;
     runtime.jobs = stores.jobs;
     runtime.prs = stores.prs;
@@ -417,6 +429,7 @@ function orgExportOf(sql: Sql, orgId: string, backend: ArtifactBackend | undefin
 }
 
 export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
+    const defaultGitlabApi = createGitlabApi();
     const { sql: pool, ready, config, artifacts, claimMetrics } = deps;
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
 
@@ -480,6 +493,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                 secrets: deps.secrets,
                 secretLog: deps.secretLog,
                 memberGrants: deps.memberGrants,
+                gitlabApi: deps.gitlabApi ?? defaultGitlabApi,
             });
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });
