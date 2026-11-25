@@ -23,6 +23,7 @@ import { testOrg, testUser } from './fixtures.js';
 import { BATCH_REPO, batchPlan, facts, prTask, recordPr, rootOf, setSucceeded } from './batch-fixtures.js';
 import type { GitHubAppClient } from '../src/github/app-client.js';
 import { githubForge } from '../test/helpers-forge.js';
+import { recordingForge } from '../test/helpers-recording-forge.js';
 
 /**
  * Batch rows carry and key by the repository triple (forge, host, path), against a real database. A target is made
@@ -448,6 +449,57 @@ describe.skipIf(!enabled)('a GitHub answer is applied only to the identity it wa
         expect(await sql`select state from batch_stage_verification where batch_id = ${id}`).toMatchObject([
             { state: 'pending' },
         ]);
+    });
+
+    // The credential is a side effect too: a ref no client answers for must reach no mint, no token read, no request.
+    function recordingDeps() {
+        const recording = recordingForge();
+        const mergeTokens: string[] = [];
+        const settled = { recordMerge: async () => undefined, reconcile: (id: string) => store.reconcile(id) };
+        return {
+            recording,
+            mergeTokens,
+            observer: createBatchPrObserver({ sql, orgId: ORG, forge: recording.forge, ...settled }),
+            merger: createBatchMerger({
+                sql,
+                orgId: ORG,
+                forge: recording.forge,
+                mergeToken: async () => {
+                    mergeTokens.push('merge token');
+                    return { ok: true, token: 'ghs_member' };
+                },
+                ...settled,
+            }),
+            seen: () => ({ credentials: recording.credentials, requests: recording.requests, mergeTokens }),
+        };
+    }
+    const NONE = { credentials: [], requests: [], mergeTokens: [] };
+
+    it.each(UNREADABLE)('reads no credential and makes no request to observe or merge on $name', async (home) => {
+        const deps = recordingDeps();
+        // An automerge task that is otherwise eligible: the merger claims it, so an empty record is the guard.
+        const eligible = await succeededAt(home, 'automerge');
+        await observedReady(eligible.id, eligible.number);
+
+        await deps.observer.observeDue();
+        await deps.merger.mergeDue();
+
+        expect(deps.seen()).toEqual(NONE);
+        expect(await sql`select state from batch_merge where batch_id = ${eligible.id}`).toMatchObject([
+            { state: 'changed' },
+        ]);
+    });
+
+    it.each(UNREADABLE)('reads no credential and makes no request to verify a stage on $name', async (home) => {
+        const deps = recordingDeps();
+        const id = await mergedStageAt(home);
+
+        await deps.merger.mergeDue();
+
+        expect(deps.seen()).toEqual(NONE);
+        expect(
+            await sql`select 1 from batch_stage_verification where batch_id = ${id} and state = 'unknown'`
+        ).toHaveLength(1);
     });
 
     it.each(UNREADABLE)('reads no pull request for an observation on $name', async (home) => {

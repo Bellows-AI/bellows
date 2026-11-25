@@ -7,7 +7,9 @@ import {
     INSTALLATION_CREDENTIAL,
 } from '../src/forge/forge-client.js';
 import { effectiveCatalog, standingOf } from '../src/skill-catalog.js';
+import { createPlanReader } from '../src/workspace/bellows-plan.js';
 import { githubForge } from './helpers-forge.js';
+import { recordingForge } from './helpers-recording-forge.js';
 import { staticRegistry } from './helpers.js';
 import { trackApps } from './helpers-http.js';
 
@@ -117,5 +119,29 @@ describe('OrgRuntime.forge, as the org registry hands it out', () => {
             });
         }
         expect(calls).toEqual(['head acme/web@main']);
+    });
+});
+
+describe('the readers read no credential for a ref no client answers for', () => {
+    it.each(TWINS)('mints no installation token and makes no request for %j', async (twin) => {
+        const recording = recordingForge();
+        await readBranchHead(recording.forge, twin, 'main');
+        await effectiveCatalog({
+            builtin: [],
+            forge: recording.forge,
+            repo: twin,
+            branch: null,
+            executorType: { state: 'known', type: null },
+            need: ['deploy'],
+        });
+        await createPlanReader(recording.forge).read(twin, null);
+        expect({ credentials: recording.credentials, requests: recording.requests }).toEqual({
+            credentials: [],
+            requests: [],
+        });
+        // The same client does mint and request for the github.com repo: the record is the guard, not a dead recorder.
+        await readBranchHead(recording.forge, GITHUB, 'main').catch(() => undefined);
+        expect(recording.credentials).not.toEqual([]);
+        expect(recording.requests).not.toEqual([]);
     });
 });

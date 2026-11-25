@@ -27,6 +27,7 @@ import {
 } from './batch-fixtures.js';
 import type { GitHubAppClient } from '../src/github/app-client.js';
 import { githubForge } from '../test/helpers-forge.js';
+import { recordingForge } from '../test/helpers-recording-forge.js';
 
 /**
  * The PR follower against a real database (docs/workflows.md, docs/architecture.md): the periodic
@@ -664,6 +665,28 @@ describe.skipIf(!enabled).each(VARIANT_CASES)(
             expect(await mergeRows(number)).toEqual([]);
             expect(await doneAtOf(root)).toBeNull();
             expect(await followRow(number)).toMatchObject({ failures: 1, error_code: 'binding' });
+        });
+
+        it('reads no credential and makes no request to follow a claim on that repository', async () => {
+            const { number } = await otherPlainThread();
+            const recording = recordingForge();
+            const recordingFollower = createPrFollower({
+                sql,
+                orgId: ORG,
+                forge: recording.forge,
+                prs,
+                recordMerge: async () => undefined,
+                spreadMs: 0,
+            });
+
+            await recordingFollower.observeDue();
+
+            // The row was claimed and answered as a failed read, so the empty record is the guard.
+            expect(await followRow(number)).toMatchObject({ failures: 1, error_code: 'binding' });
+            expect({ credentials: recording.credentials, requests: recording.requests }).toEqual({
+                credentials: [],
+                requests: [],
+            });
         });
 
         it('never updates a GitHub follow row through a claim on the other repository', async () => {
