@@ -12,8 +12,8 @@
  * unsupported image is refused by the two parsers (`bellows.ts`, `bellows-services.ts`).
  */
 
-import { formatRepoRef, GITHUB_HOST, READ_RATE_LIMITED, READ_TRANSPORT, type RepoRef } from '@factory-ai/core';
-import type { GitHubAppClient } from '../github/app-client.js';
+import { formatRepoRef, READ_RATE_LIMITED, READ_TRANSPORT, type RepoRef } from '@factory-ai/core';
+import { INSTALLATION_CREDENTIAL, resolveForgeClient, type ForgeSource } from '../forge/forge-client.js';
 import type { RepoFileRead } from '../github/file-read.js';
 import { GitHubReadError } from '../github/pr-read.js';
 import { BellowsError } from './bellows-grammar.js';
@@ -172,19 +172,20 @@ export async function readPlanWith(
     }
 }
 
-export function createPlanReader(client: Pick<GitHubAppClient, 'readFileAtBranchTip'>): PlanReader {
+export function createPlanReader(forge: ForgeSource): PlanReader {
     return {
         async read(ref, baseBranch) {
             const where = planSubject(ref, baseBranch);
-            // The App installation reads github.com only: any other host is a capability fact, not a read.
-            if (ref.forge !== 'github' || ref.host.toLowerCase() !== GITHUB_HOST) {
+            // The App installation reads github.com only: any other forge or host is a capability fact, not a read.
+            const resolution = resolveForgeClient(forge, ref, INSTALLATION_CREDENTIAL);
+            if (!resolution.ok) {
                 return {
                     ...NO_PLAN,
                     revision: null,
                     error: `${BELLOWS_FILE} of ${where} cannot be read: this board reads plans from github.com only, not ${ref.host}`,
                 };
             }
-            return readPlanWith((path) => client.readFileAtBranchTip(ref.path, baseBranch, path), where);
+            return readPlanWith((path) => resolution.client.readFile(baseBranch, path), where);
         },
     };
 }

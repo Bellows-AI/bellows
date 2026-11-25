@@ -7,7 +7,7 @@ import { refusedAsNoModel, usableSelection } from './executor-usable.js';
 import {
     type FairBoardScanner,
     boardsFor,
-    branchHeadFor,
+    forgeFor,
     everyBoard,
     executorsFor,
     reposFor,
@@ -15,6 +15,7 @@ import {
     workflowsFor,
 } from './job-context.js';
 import { taskRefsOf } from './job-task-refs.js';
+import { INSTALLATION_CREDENTIAL, resolveForgeClient } from '../../forge/forge-client.js';
 import { paramsWithoutWorkflow, resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import { createIdempotencyOf, guardKeyed, sendQueued } from './job-idempotency.js';
 import {
@@ -126,8 +127,9 @@ async function refusedAsUnknownBranch(
     });
     try {
         const read = (async () => {
-            const branchHead = await branchHeadFor(orgs, request);
-            return branchHead ? await branchHead(repo.path, baseBranch) : 'unchecked';
+            // A forge no client answers for, or a board with none, cannot say: unchecked, never absent.
+            const resolution = resolveForgeClient(await forgeFor(orgs, request), repo, INSTALLATION_CREDENTIAL);
+            return resolution.ok ? await resolution.client.readBranchHead(baseBranch) : 'unchecked';
         })();
         // A read that loses the race may reject later: swallow it so it is never unhandled.
         read.catch(() => undefined);
@@ -188,8 +190,8 @@ async function refusedAsUnknownSkill(
     const rt = await orgs.for(orgOf(request));
     const catalog = await effectiveCatalog({
         builtin: skillCatalog(),
-        read: rt?.repoSkills,
-        repo: repo?.path ?? null,
+        forge: rt?.forge,
+        repo,
         branch: baseBranch,
         executorType,
         signal: abortOnClose(reply),

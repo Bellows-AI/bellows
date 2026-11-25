@@ -8,6 +8,7 @@ import {
     READ_NOT_FOUND,
     READ_RATE_LIMITED,
     READ_TRANSPORT,
+    formatChangeRequestUrl,
     githubRepo,
     sameRepo,
     type CheckItem,
@@ -294,7 +295,7 @@ export async function readPullRequest(call: ApiCall, repo: string, number: numbe
     return {
         repo: baseRepo,
         number,
-        url: pull.html_url ?? `https://github.com/${repo}/pull/${number}`,
+        url: pull.html_url ?? formatChangeRequestUrl(githubRepo(repo), number),
         state,
         merged,
         mergedAt: pull.merged_at ?? null,

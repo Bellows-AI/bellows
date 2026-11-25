@@ -8,7 +8,7 @@ import {
     type PrFacts,
     type RepoRef,
 } from '@factory-ai/core';
-import { createBatchMerger, type BatchMerger, type MergeClient } from '../src/batch-merger.js';
+import { createBatchMerger, type BatchMerger } from '../src/batch-merger.js';
 import { createBatchPrObserver, type BatchPrObserver } from '../src/batch-pr-observer.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import type { BatchStore } from '../src/db/batches/batch-store-types.js';
@@ -21,6 +21,8 @@ import { useTestDb } from './harness.js';
 import { REPO_VARIANTS } from './repo-variants.js';
 import { testOrg, testUser } from './fixtures.js';
 import { BATCH_REPO, batchPlan, facts, prTask, recordPr, rootOf, setSucceeded } from './batch-fixtures.js';
+import type { GitHubAppClient } from '../src/github/app-client.js';
+import { githubForge } from '../test/helpers-forge.js';
 
 /**
  * Batch rows carry and key by the repository triple (forge, host, path), against a real database. A target is made
@@ -74,7 +76,7 @@ const github = {
     reads: [] as number[],
     branchReads: [] as string[],
 };
-const client: MergeClient = {
+const client: Pick<GitHubAppClient, 'readPullRequest' | 'mergePullRequest' | 'readBranchState'> = {
     async readPullRequest(_repo, number) {
         github.reads.push(number);
         const reply = github.replies.get(number);
@@ -105,14 +107,14 @@ beforeAll(() => {
     observer = createBatchPrObserver({
         sql,
         orgId: ORG,
-        reader: client,
+        forge: githubForge(client),
         recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
     });
     merger = createBatchMerger({
         sql,
         orgId: ORG,
-        client,
+        forge: githubForge(client),
         mergeToken: async () => ({ ok: true, token: 'ghs_installation' }),
         recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),

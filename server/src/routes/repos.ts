@@ -5,12 +5,19 @@ import type { AppConfig } from '../config.js';
 import { BranchCursorError } from '../github/app-client.js';
 import { GitHubReadError } from '../github/pr-read.js';
 import type { OrgRegistry, OrgRuntime } from '../orgs.js';
+import {
+    FORGE_UNCONFIGURED,
+    INSTALLATION_CREDENTIAL,
+    resolveForgeClient,
+    type ForgeClient,
+} from '../forge/forge-client.js';
 import { refOfListed } from '../forge/forges.js';
 import { bad, checkReposVisible, repoOfId } from './helpers.js';
 
 const HTTP_OK = 200;
 const HTTP_UNAVAILABLE = 503;
 const BRANCH_QUERY_LIMIT = 255;
+const NO_BRANCH_READ = 'Branches cannot be read on this board';
 const CURSOR_LIMIT = 512;
 
 export interface RepoRouteDeps {
@@ -56,6 +63,29 @@ const pageOptions = (query: string | undefined, cursor: string | undefined) => (
     ...(cursor === undefined ? {} : { cursor }),
 });
 
+/**
+ * The client that lists `ref`'s branches, or null once the refusal has landed on `reply`: a board with no installation
+ * and an untracked repository answer as they always did, and a forge no client answers for yet is unconfirmed (a 503),
+ * never an empty list.
+ */
+async function branchClientFor(reply: FastifyReply, rt: OrgRuntime, ref: RepoRef): Promise<ForgeClient | null> {
+    const resolution = resolveForgeClient(rt.forge, ref, INSTALLATION_CREDENTIAL);
+    if (!resolution.ok && resolution.reason === FORGE_UNCONFIGURED) {
+        void branchesUnavailable(reply, NO_BRANCH_READ);
+        return null;
+    }
+    const visible = await checkReposVisible(rt.repos, [ref], { subject: 'the repository' });
+    if (!visible.ok) {
+        void bad(reply, visible.code, visible.message, visible.status);
+        return null;
+    }
+    if (!resolution.ok) {
+        void branchesUnavailable(reply, `Branches of ${resolution.forge} repositories cannot be read yet`);
+        return null;
+    }
+    return resolution.client;
+}
+
 /** Branch names for the composer's base-branch picker. */
 function registerBranchRoute(app: FastifyInstance, orgs: OrgRegistry) {
     // Branch names for the composer's base-branch picker. One GitHub request per call; the cursor
@@ -71,11 +101,11 @@ function registerBranchRoute(app: FastifyInstance, orgs: OrgRegistry) {
             if (!named.ok) return bad(reply, ERROR_CODES.BAD_REPO, named.message);
             const { ref } = named;
             const rt = await orgs.for(orgOf(request));
-            if (!rt?.listBranches) return branchesUnavailable(reply, 'Branches cannot be read on this board');
-            const visible = await checkReposVisible(rt.repos, [ref], { subject: 'the repository' });
-            if (!visible.ok) return bad(reply, visible.code, visible.message, visible.status);
+            if (!rt) return branchesUnavailable(reply, NO_BRANCH_READ);
+            const client = await branchClientFor(reply, rt, ref);
+            if (!client) return reply;
             try {
-                const page = await rt.listBranches(ref.path, pageOptions(query, cursor));
+                const page = await client.listBranches(pageOptions(query, cursor));
                 const defaultBranch = await defaultBranchOf(rt.repos, ref);
                 return reply.code(HTTP_OK).send({ branches: page.names, cursor: page.cursor, defaultBranch });
             } catch (e) {

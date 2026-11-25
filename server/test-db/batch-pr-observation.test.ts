@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { BatchPlan, PrFacts } from '@factory-ai/core';
-import { createBatchPrObserver, type BatchPrObserver, type PrReader } from '../src/batch-pr-observer.js';
+import { createBatchPrObserver, type BatchPrObserver } from '../src/batch-pr-observer.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import {
@@ -29,6 +29,8 @@ import {
     setSucceeded,
     startBatch,
 } from './batch-fixtures.js';
+import type { GitHubAppClient } from '../src/github/app-client.js';
+import { githubForge } from '../test/helpers-forge.js';
 
 /**
  * PR observation against a real database (docs/batches.md): leases, supersession, invalidation by
@@ -60,7 +62,7 @@ const github = {
     replies: new Map<number, PrFacts | Error>(),
     reads: [] as number[],
 };
-const reader: PrReader = {
+const reader: Pick<GitHubAppClient, 'readPullRequest'> = {
     async readPullRequest(_repo, number) {
         github.reads.push(number);
         const reply = github.replies.get(number);
@@ -74,7 +76,7 @@ const observerFor = (orgId: string, jobStore: JobStore, batchStore: BatchStore) 
     createBatchPrObserver({
         sql,
         orgId,
-        reader,
+        forge: githubForge(reader),
         recordMerge: (repo, number, deliveryId, mergedAt) => jobStore.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (id) => batchStore.reconcile(id),
         now,

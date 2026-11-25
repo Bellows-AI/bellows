@@ -37,9 +37,14 @@ import {
     type VerificationJob,
 } from './db/batches/batch-store-merge.js';
 import { GitHubMergeError, type MergeResult } from './github/pr-merge.js';
-import type { BranchState } from './github/pr-read.js';
 import type { MergeTokenSource } from './forge/pr-token.js';
-import { isGithubRepo } from './forge/forges.js';
+import {
+    INSTALLATION_CREDENTIAL,
+    resolveForgeClient,
+    type ActingCredential,
+    type ForgeClient,
+    type ForgeSource,
+} from './forge/forge-client.js';
 import { logger } from './log.js';
 
 /**
@@ -59,29 +64,17 @@ const DELIVERY_ID_LIMIT = 64;
 /** Token read and refresh for one batch's starter; the merge request has its own timeout after it. */
 export const MERGE_TOKEN_DEADLINE_MS = 15_000;
 
-/** What the merger needs of the GitHub client. */
-export interface MergeClient {
-    readPullRequest(repo: string, number: number): Promise<PrFacts>;
-    mergePullRequest(
-        repo: string,
-        number: number,
-        request: { sha: string; method: string },
-        token: string
-    ): Promise<MergeResult>;
-    readBranchState(repo: string, branch: string, shas: readonly string[]): Promise<BranchState>;
-}
-
 export interface BatchMergerDeps {
     sql: Sql;
     orgId: string;
     ready?: Promise<unknown> | undefined;
-    /** Absent offline: nothing is merged or verified. */
-    client?: MergeClient | undefined;
+    /** What the org's PRs are read and merged through; absent offline: nothing is merged or verified. */
+    forge?: ForgeSource | undefined;
     /** Records a merge in the ledger: the job store's `closeMergedPr`. */
     recordMerge: (repo: RepoRef, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
     /** Lets the gate judge the merge just recorded and the scheduler advance a verified stage. */
     reconcile: (batchId: string) => Promise<unknown>;
-    /** The token a merge is sent with: the batch starter's (docs/batches.md). Reads stay on `client`'s installation. */
+    /** The token a merge is sent with: the batch starter's (docs/batches.md). Reads stay on the installation. */
     mergeToken: MergeTokenSource;
     now?: (() => Date) | undefined;
     concurrency?: number | undefined;
@@ -94,7 +87,7 @@ export interface BatchMerger {
 
 interface Run {
     store: MergeDeps;
-    client: MergeClient;
+    forge: ForgeSource;
     recordMerge: BatchMergerDeps['recordMerge'];
     reconcile: BatchMergerDeps['reconcile'];
     clock: () => Date;
@@ -151,16 +144,18 @@ function outcomeOfMergeError(e: unknown): MergeOutcome {
  */
 class UnboundRead extends Error {}
 
-const githubOnly = (repo: RepoRef): void => {
-    if (!isGithubRepo(repo)) {
+/** The client for `repo` acting as `credential`; a forge no client answers for is an unbound read, no request made. */
+const clientFor = (run: Run, repo: RepoRef, credential: ActingCredential): ForgeClient => {
+    const resolution = resolveForgeClient(run.forge, repo, credential);
+    if (!resolution.ok) {
         throw new UnboundRead(`${formatRepoRef(repo)} is not a repository the GitHub reader answers for`);
     }
+    return resolution.client;
 };
 
 /** The one place a pull request is read: the answer is returned only when it is for this repository and number. */
 async function readBound(run: Run, repo: RepoRef, prNumber: number): Promise<PrFacts> {
-    githubOnly(repo);
-    const facts = await run.client.readPullRequest(repo.path, prNumber);
+    const facts = await clientFor(run, repo, INSTALLATION_CREDENTIAL).readChangeRequest(prNumber);
     if (!sameRepo(githubRepo(facts.repo), repo) || facts.number !== prNumber) {
         throw new UnboundRead('GitHub answered for another pull request');
     }
@@ -203,12 +198,10 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
     }
     let result: MergeResult;
     try {
-        result = await run.client.mergePullRequest(
-            intent.repo.path,
-            intent.prNumber,
-            { sha: fresh.headSha, method: MERGE_METHOD },
-            token
-        );
+        result = await clientFor(run, intent.repo, { kind: 'token', token }).mergeChangeRequest(intent.prNumber, {
+            sha: fresh.headSha,
+            method: MERGE_METHOD,
+        });
     } catch (e) {
         return settled(run, intent, outcomeOfMergeError(e));
     }
@@ -264,8 +257,8 @@ async function mergeCommitOf(run: Run, repo: RepoRef, prNumber: number): Promise
 async function judgeStage(run: Run, job: VerificationJob): Promise<StageVerification> {
     try {
         // Stored merge commits are judged against the target's branch, so every identity must be one the reader answers for.
-        githubOnly(job.repo);
-        for (const merge of job.merges) githubOnly(merge.repo);
+        const target = clientFor(run, job.repo, INSTALLATION_CREDENTIAL);
+        for (const merge of job.merges) clientFor(run, merge.repo, INSTALLATION_CREDENTIAL);
         const merges = await Promise.all(
             job.merges.map(async (merge) => ({
                 task: merge.task,
@@ -273,8 +266,8 @@ async function judgeStage(run: Run, job: VerificationJob): Promise<StageVerifica
             }))
         );
         const shas = merges.flatMap((merge) => (merge.sha === null ? [] : [merge.sha]));
-        const target = await run.client.readBranchState(job.repo.path, job.branch, shas);
-        return judgeStageVerification({ merges, target: { branch: job.branch, ...target } });
+        const state = await target.readBranchState(job.branch, shas);
+        return judgeStageVerification({ merges, target: { branch: job.branch, ...state } });
     } catch (e) {
         return { state: VERIFY_UNKNOWN, detail: `the target could not be read: ${errorMessage(e)}`, headSha: null };
     }
@@ -294,17 +287,17 @@ const guarded = (what: string, fields: Record<string, unknown>, work: () => Prom
     });
 
 export function createBatchMerger(deps: BatchMergerDeps): BatchMerger {
-    const { sql, orgId, ready, client, now } = deps;
+    const { sql, orgId, ready, forge, now } = deps;
     const concurrency = deps.concurrency ?? MERGE_CONCURRENCY;
     const store: MergeDeps = { sql, orgId, now };
 
     return {
         async mergeDue() {
             if (ready) await ready;
-            if (!client) return 0;
+            if (!forge) return 0;
             const run: Run = {
                 store,
-                client,
+                forge,
                 recordMerge: deps.recordMerge,
                 reconcile: deps.reconcile,
                 clock: () => (now ? now() : new Date()),

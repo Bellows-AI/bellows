@@ -19,7 +19,7 @@ import {
     type ObservationResult,
     type RefreshHint,
 } from './db/batches/batch-store-observation.js';
-import { isGithubRepo } from './forge/forges.js';
+import { INSTALLATION_CREDENTIAL, resolveForgeClient, type ForgeSource } from './forge/forge-client.js';
 import { startIntervalLoop } from './interval-loop.js';
 import { GitHubReadError } from './github/pr-read.js';
 import { logger } from './log.js';
@@ -38,16 +38,12 @@ export const OBSERVER_CONCURRENCY = 4;
 /** Batches of claims one tick may work through, so a large backlog cannot starve the next tick. */
 export const MAX_ROUNDS_PER_TICK = 50;
 
-export interface PrReader {
-    readPullRequest(repo: string, number: number): Promise<PrFacts>;
-}
-
 export interface BatchPrObserverDeps {
     sql: Sql;
     orgId: string;
     ready?: Promise<unknown> | undefined;
-    /** Absent offline: nothing is observed. */
-    reader?: PrReader | undefined;
+    /** What the org's PRs are read through; absent offline: nothing is observed. */
+    forge?: ForgeSource | undefined;
     /** Records a merge GitHub reports as done: the job store's `closeMergedPr`, with the merge's own time. */
     recordMerge: (repo: RepoRef, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
     /** Lets the human gate judge a merge just recorded. */
@@ -85,9 +81,23 @@ const failure = (error: GitHubReadError): ObservationResult => ({
  * One provider read as a result: the facts, or the kind of failure. A non-provider error is a
  * transport failure, so no read ever escapes as an answer; the PR follower reads through this too.
  */
-export async function readFacts(reader: PrReader, repo: string, number: number): Promise<ObservationResult> {
+export async function readFacts(
+    forge: ForgeSource | undefined,
+    repo: RepoRef,
+    number: number
+): Promise<ObservationResult> {
+    // A forge no client answers for is a binding error with no request made, never an answer about the PR.
+    const resolution = resolveForgeClient(forge, repo, INSTALLATION_CREDENTIAL);
+    if (!resolution.ok) {
+        return {
+            kind: 'error',
+            error: READ_BINDING,
+            detail: `${formatRepoRef(repo)} is not a repository the GitHub reader answers for`,
+            retryAfterMs: null,
+        };
+    }
     try {
-        return { kind: 'facts', facts: await reader.readPullRequest(repo, number) };
+        return { kind: 'facts', facts: await resolution.client.readChangeRequest(number) };
     } catch (e) {
         if (e instanceof GitHubReadError) return failure(e);
         return failure(new GitHubReadError((e as Error).message, READ_TRANSPORT));
@@ -119,7 +129,7 @@ export function createReadPause(now?: (() => Date) | undefined): ReadPause {
 }
 
 export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserver {
-    const { sql, orgId, ready, reader, recordMerge, reconcile } = deps;
+    const { sql, orgId, ready, forge, recordMerge, reconcile } = deps;
     const now = deps.now;
     const concurrency = deps.concurrency ?? OBSERVER_CONCURRENCY;
     const store = { sql, orgId, now };
@@ -138,16 +148,7 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
                 retryAfterMs: null,
             };
         }
-        // The reader answers for github.com only: any other identity is a binding error, with no request made.
-        if (!isGithubRepo(claim.repo)) {
-            return {
-                kind: 'error',
-                error: READ_BINDING,
-                detail: `${formatRepoRef(claim.repo)} is not a repository the GitHub reader answers for`,
-                retryAfterMs: null,
-            };
-        }
-        return readFacts(reader!, claim.repo.path, claim.prNumber);
+        return readFacts(forge, claim.repo, claim.prNumber);
     };
 
     const observeOne = async (claim: ObservationClaim): Promise<boolean> => {
@@ -178,7 +179,7 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
     return {
         async observeDue() {
             await gate();
-            if (!reader) return 0;
+            if (!forge) return 0;
             let committed = 0;
             for (let round = 0; round < MAX_ROUNDS_PER_TICK && pause.open(); round += 1) {
                 const claims = await claimDue(store, concurrency);

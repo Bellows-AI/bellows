@@ -5,6 +5,7 @@ import type { GitHubConfig } from '../src/config.js';
 import { createGitHubAppClient } from '../src/github/app-client.js';
 import type { InstallationTokenProvider } from '../src/github/app-token.js';
 import { createPlanReader, planProblems, resolveExecutionPlan } from '../src/workspace/bellows-plan.js';
+import { githubForge } from './helpers-forge.js';
 import { parseServices } from '../src/workspace/bellows-services.js';
 
 /**
@@ -269,7 +270,7 @@ function readerOver(routes: Record<string, Reply>, requests: string[]) {
         const reply = routes[path] ?? { status: 404, body: { message: 'Not Found' } };
         return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status ?? 200 });
     }) as typeof fetch;
-    return createPlanReader(createGitHubAppClient(github, tokens, fetchFn));
+    return createPlanReader(githubForge(createGitHubAppClient(github, tokens, fetchFn)));
 }
 
 const encoded = (text: string) => ({
@@ -419,12 +420,14 @@ describe('the server reads no .bellows.yaml from disk', () => {
 describe('the App plan reader on another host', () => {
     it('refuses a non-GitHub ref as a value, without a request', async () => {
         const requests: string[] = [];
-        const reader = createPlanReader({
-            readFileAtBranchTip: async (...args) => {
-                requests.push(String(args[0]));
-                return null;
-            },
-        });
+        const reader = createPlanReader(
+            githubForge({
+                readFileAtBranchTip: async (...args) => {
+                    requests.push(String(args[0]));
+                    return null;
+                },
+            })
+        );
 
         const plan = await reader.read({ forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' }, null);
 

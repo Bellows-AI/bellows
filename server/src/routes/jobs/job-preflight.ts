@@ -444,8 +444,8 @@ async function handlePreflight({ orgs, forgeGate }: ForgeGatedDeps, request: Fas
     const executor = await executorCheck(log, selection, userId, rt);
     const catalog = await effectiveCatalog({
         builtin: skillCatalog(),
-        read: rt.repoSkills,
-        repo: selection.repo?.path ?? null,
+        forge: rt.forge,
+        repo: selection.repo,
         branch: selection.baseBranch,
         executorType: executor.type,
         signal: abortOnClose(reply),

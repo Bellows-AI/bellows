@@ -9,6 +9,7 @@ import {
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
+import { INSTALLATION_CREDENTIAL, resolveForgeClient } from '../forge/forge-client.js';
 import { abortOnClose, effectiveCatalog, type EffectiveCatalog, storedOf } from '../skill-catalog.js';
 import { type BuiltinSkillView, readBuiltinSkill } from '../skills.js';
 import { bad, checkReposVisible, repoOfId } from './helpers.js';
@@ -105,8 +106,8 @@ function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
 
         const result = await effectiveCatalog({
             builtin,
-            read: rt?.repoSkills,
-            repo: ref.path,
+            forge: rt?.forge,
+            repo: ref,
             branch: branch ?? null,
             // The directories a repo's skills are read from are the selected executor's CLI's, as at create.
             executorType: await readExecutorType(
@@ -120,7 +121,7 @@ function repoSkillsHandler(builtin: readonly Skill[], orgs: OrgRegistry) {
             onUnconfirmed: (err) => request.log.warn({ err }, 'repo skills read failed'),
         });
         if (result.storedError !== null) return storedUnavailable(reply, result);
-        return repoMenuOf(result, rt?.repoSkills !== undefined);
+        return repoMenuOf(result, resolveForgeClient(rt?.forge, ref, INSTALLATION_CREDENTIAL).ok);
     };
 }
 
@@ -146,7 +147,7 @@ export const skillRoutes =
         const builtin = catalog();
         await effectiveCatalog({
             builtin,
-            read: undefined,
+            forge: undefined,
             repo: null,
             branch: null,
             executorType: { state: 'known', type: null },
@@ -155,7 +156,7 @@ export const skillRoutes =
             const rt = await orgs.for(orgOf(request));
             const result = await effectiveCatalog({
                 builtin,
-                read: undefined,
+                forge: undefined,
                 repo: null,
                 branch: null,
                 executorType: { state: 'known', type: null },

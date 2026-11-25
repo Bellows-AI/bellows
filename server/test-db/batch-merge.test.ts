@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { BatchPlan, PrFacts } from '@factory-ai/core';
-import { createBatchMerger, type BatchMerger, type MergeClient } from '../src/batch-merger.js';
+import { createBatchMerger, type BatchMerger } from '../src/batch-merger.js';
 import { createBatchPrObserver, type BatchPrObserver } from '../src/batch-pr-observer.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import type { BatchStore } from '../src/db/batches/batch-store-types.js';
@@ -14,6 +14,8 @@ import { GitHubReadError, type BranchState } from '../src/github/pr-read.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
 import { batchPlan, checks, facts, prTask, recordPr, rootOf, setSucceeded, startBatch } from './batch-fixtures.js';
+import type { GitHubAppClient } from '../src/github/app-client.js';
+import { githubForge } from '../test/helpers-forge.js';
 
 /**
  * Protected automerge and verified stage progression against a real database (docs/batches.md):
@@ -76,7 +78,7 @@ const land = (number: number) => {
     );
 };
 
-const client: MergeClient = {
+const client: Pick<GitHubAppClient, 'readPullRequest' | 'mergePullRequest' | 'readBranchState'> = {
     async readPullRequest(_repo, number) {
         github.reads.push(number);
         const hook = github.beforeRead;
@@ -114,7 +116,7 @@ beforeAll(() => {
     observer = createBatchPrObserver({
         sql,
         orgId: ORG,
-        reader: client,
+        forge: githubForge(client),
         recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
         now,
@@ -122,7 +124,7 @@ beforeAll(() => {
     merger = createBatchMerger({
         sql,
         orgId: ORG,
-        client,
+        forge: githubForge(client),
         mergeToken: async () => ({ ok: true, token: 'ghs_installation' }),
         recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
