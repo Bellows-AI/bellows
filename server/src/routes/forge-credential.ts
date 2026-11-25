@@ -88,6 +88,7 @@ async function waitAnswer(
     const held = await store.holdOnForgeGrant(attempt.jobId, leaseToken, { forge, reason });
     if (held.result === 'lost') return leasePending(reply);
     if (held.result === 'missing') return refused(reply);
+    if (held.result === 'serving') return reply.code(HTTP_OK).send({ forge, standing: 'live' });
     const standing = reason === 'missing' ? 'missing' : 'broken';
     const path = forgeConnectPath(forge, { orgId: attempt.orgId, returnTo: `/tasks/${attempt.rootJobId}` });
     const connectUrl = `${deps.publicUrl}${path as string}`;

@@ -89,13 +89,14 @@ export interface JobWorkerStore {
      * The running attempt's thread starter has no usable grant for `wait.forge` (a GitLab grant revoked or needing
      * reconnect), found while serving its credential request: opens the thread's `forge` requirement as a runtime wait,
      * so the heartbeat tells the attempt to hand the task back and the claim holds it until the member re-links.
-     * Lease-fenced: `lost` / `missing` as every lease-fenced write.
+     * `serving` when the starter's grant is live again by now (nothing opened). Lease-fenced: `lost` / `missing` as
+     * every lease-fenced write.
      */
     holdOnForgeGrant(
         id: string,
         leaseToken: string,
         wait: { forge: string; reason: ForgeRequirementReason }
-    ): Promise<{ result: 'ok' | 'lost' | 'missing' }>;
+    ): Promise<{ result: 'ok' | 'serving' | 'lost' | 'missing' }>;
 
     /**
      * Records the agent session the running attempt is using, so a reader can open it. Lease-guarded

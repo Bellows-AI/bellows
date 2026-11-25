@@ -1,10 +1,18 @@
-import { ERROR_CODES, type RepoRef, REPO_PATH_PATTERN, gitlabForgeOf } from '@factory-ai/core';
+import {
+    ERROR_CODES,
+    GITLAB_FORGE,
+    GITLAB_SETTINGS_PATH,
+    type RepoRef,
+    REPO_PATH_PATTERN,
+    gitlabForgeOf,
+} from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { AuthStore } from '../auth/store.js';
 import type { ConnectionView, GitlabApplication } from '../db/forge-connections.js';
 import { forgeConnectPath } from '../forge/forges.js';
 import type { GitlabApi, GitlabProject } from '../gitlab/gitlab-api.js';
+import { UUID } from '../identifiers.js';
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad, body as jsonBody, guard } from './helpers.js';
@@ -13,20 +21,19 @@ import { forgeRefused } from './jobs/forge-usable.js';
 /**
  * Tracking a GitLab project (docs/gitlab.md): the admin lists the projects under the connection's allowed root groups
  * with their OWN grant, and picks the ones the org tracks. The selection replaces only this host's `tracked_repo`
- * rows; an unconfirmed listing page leaves no partial list and saves nothing (503).
+ * rows; an unconfirmed listing page leaves no partial list and saves nothing (503). A tracked project this admin's
+ * listing does not show (another admin's, archived, gone) is listed with `listed: false` rather than hidden, and stays
+ * tracked until the admin leaves it out of a save: a save never drops a row its admin was not shown.
  */
 
 const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_UNAVAILABLE = 503;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PATH = '/api/org/gitlab-connections/:id';
 const LISTING_DEADLINE_MS = 60_000;
 const TRACKED_LIMIT = 5000;
 const CONTROL_BODY_LIMIT = 524_288;
-/** The page an admin who must link first is sent to. */
-const RETURN_TO = '/settings/integrations/gitlab';
 
 export interface GitlabTrackingDeps {
     orgs: OrgRegistry;
@@ -92,7 +99,7 @@ async function adminToken(
     if (token?.ok) return token.accessToken;
     if (token?.outcome.outcome !== 'integration_required')
         return refuse(() => unconfirmed(reply, 'Your GitLab connection'));
-    const path = forgeConnectPath(forge, { orgId, returnTo: RETURN_TO }) as string;
+    const path = forgeConnectPath(forge, { orgId, returnTo: GITLAB_SETTINGS_PATH }) as string;
     const standing = token.outcome.reason === 'missing' ? 'missing' : 'broken';
     return refuse(() => forgeRefused(reply, { ok: false, forge, standing, connectUrl: `${deps.publicUrl}${path}` }));
 }
@@ -124,7 +131,7 @@ async function listingFor(
     return { connection, projects: [...found.values()].sort((a, b) => a.path.localeCompare(b.path)) };
 }
 
-const scopeOf = (host: string) => ({ forge: 'gitlab', host }) as const;
+const scopeOf = (host: string) => ({ forge: GITLAB_FORGE, host }) as const;
 
 const pathsOf = (raw: unknown): string[] | null => {
     const { paths } = jsonBody(raw);
@@ -146,16 +153,19 @@ export const gitlabTrackingRoutes =
             );
             if (!tracked.ok) return reply;
             const picked = new Set(tracked.value.map((ref) => ref.path));
-            return reply
-                .code(HTTP_OK)
-                .header('cache-control', 'no-store')
-                .send({
-                    projects: listing.projects.map(({ path, defaultBranch }) => ({
-                        path,
-                        defaultBranch,
-                        tracked: picked.has(path),
-                    })),
-                });
+            const shown = new Set(listing.projects.map((project) => project.path));
+            const entries = [
+                ...listing.projects.map(({ path, defaultBranch }) => ({
+                    path,
+                    defaultBranch,
+                    tracked: picked.has(path),
+                    listed: true,
+                })),
+                ...[...picked]
+                    .filter((path) => !shown.has(path))
+                    .map((path) => ({ path, defaultBranch: null, tracked: true, listed: false })),
+            ].sort((a, b) => a.path.localeCompare(b.path));
+            return reply.code(HTTP_OK).header('cache-control', 'no-store').send({ projects: entries });
         });
 
         app.put(`${PATH}/tracked-repos`, { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
@@ -163,8 +173,15 @@ export const gitlabTrackingRoutes =
             if (!paths) return bad(reply, ERROR_CODES.BAD_BODY, 'paths must list project paths, group/name');
             const listing = await listingFor(deps, request, reply);
             if (!listing) return reply;
-            const visible = new Set(listing.projects.map((project) => project.path));
-            const unknown = paths.find((path) => !visible.has(path));
+            const { host } = listing.connection;
+            const orgId = orgOf(request);
+            const current = await guard(reply, log(request), () => deps.auth.trackedRepos(orgId, scopeOf(host)));
+            if (!current.ok) return reply;
+            const allowed = new Set([
+                ...listing.projects.map((project) => project.path),
+                ...current.value.map((ref) => ref.path),
+            ]);
+            const unknown = paths.find((path) => !allowed.has(path));
             if (unknown !== undefined) {
                 return bad(
                     reply,
@@ -172,9 +189,7 @@ export const gitlabTrackingRoutes =
                     `"${unknown}" is not a project you can see under this connection's allowed groups`
                 );
             }
-            const { host } = listing.connection;
-            const refs: RepoRef[] = paths.map((path) => ({ forge: 'gitlab', host, path }));
-            const orgId = orgOf(request);
+            const refs: RepoRef[] = paths.map((path) => ({ forge: GITLAB_FORGE, host, path }));
             const saved = await guard(reply, log(request), async () => {
                 await deps.auth.replaceTrackedRepos(orgId, scopeOf(host), refs);
                 (await deps.orgs.for(orgId))?.repos.invalidate();

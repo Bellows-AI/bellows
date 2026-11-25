@@ -302,6 +302,25 @@ describe.skipIf(!enabled)('a running task whose starter’s GitLab grant is lost
         expect(await blind.grants.standing(org.id, org.memberId, FORGE)).toBe('live');
     });
 
+    it('opens no wait for a grant that is live again by the time the hold runs: a re-link between the read and the hold', async () => {
+        const board = await boot();
+        await setUp(board);
+        const { id, claim } = await board.running(org, repo());
+        const held = await (await board.jobs(org)).holdOnForgeGrant(id, claim.leaseToken, {
+            forge: FORGE,
+            reason: 'reconnect',
+        });
+        expect(held).toEqual({ result: 'serving' });
+        expect(await waits(id)).toEqual([]);
+        expect(await heartbeat(board, id, claim.leaseToken)).toMatchObject({ requirementWait: false });
+        await sql`update integration_grant set status = 'reconnect_required' where org_id = ${org.id}
+                  and principal_user_id = ${org.memberId}`;
+        expect(
+            await (await board.jobs(org)).holdOnForgeGrant(id, claim.leaseToken, { forge: FORGE, reason: 'reconnect' })
+        ).toEqual({ result: 'ok' });
+        expect(await waits(id)).toHaveLength(1);
+    });
+
     it('refuses a pair that is not the live attempt’s, and a GitHub task', async () => {
         const board = await boot();
         await setUp(board);

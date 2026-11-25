@@ -1,5 +1,6 @@
 import { GITHUB_HOST, REPO_FORGES, REPO_PATH_PATTERN, type RepoForge, type RepoRef } from '@factory-ai/core';
 import type { Sql } from 'postgres';
+import { GITHUB_FORGE } from '../integrations/providers/github-user.js';
 
 /**
  * The org's tracked-repo allowlist — the onboarding screen's per-org checkbox answer.
@@ -14,7 +15,7 @@ import type { Sql } from 'postgres';
 /** The forge and host one selection covers: GitHub's, or one GitLab instance's. */
 export type TrackedScope = Pick<RepoRef, 'forge' | 'host'>;
 
-export const GITHUB_SCOPE: TrackedScope = { forge: 'github', host: GITHUB_HOST };
+export const GITHUB_SCOPE: TrackedScope = { forge: GITHUB_FORGE, host: GITHUB_HOST };
 
 const isForge = (forge: string): forge is RepoForge => (REPO_FORGES as readonly string[]).includes(forge);
 

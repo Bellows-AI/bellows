@@ -1,6 +1,7 @@
 import { githubRepo, type RepoRef, repoKey } from '@factory-ai/core';
 import { createCache } from '../cache.js';
 import type { Repo } from '../config.js';
+import { GITHUB_FORGE } from '../integrations/providers/github-user.js';
 import type { GitHubAppClient, Installation, InstallationRepo } from './app-client.js';
 
 /**
@@ -159,13 +160,13 @@ export function createRepoSource({
             allowlistError = message;
             return { listing: narrowed ?? { repos: empty, installation: listing.installation }, error: message };
         }
-        const githubTracked = tracked.filter((ref) => ref.forge === 'github');
+        const githubTracked = tracked.filter((ref) => ref.forge === GITHUB_FORGE);
         const allowed = new Set(githubTracked.map(repoKey));
         const github =
             githubTracked.length === 0
                 ? listing.repos
                 : listing.repos.filter((r) => allowed.has(repoKey(githubRepo(ownerName(r)))));
-        const gitlab = tracked.filter((ref) => ref.forge !== 'github').map(listedOf);
+        const gitlab = tracked.filter((ref) => ref.forge !== GITHUB_FORGE).map(listedOf);
         const result = { ...listing, repos: Object.freeze([...github, ...gitlab]) };
         // An older read resolving after a newer one never overwrites it.
         if (read > landed) {

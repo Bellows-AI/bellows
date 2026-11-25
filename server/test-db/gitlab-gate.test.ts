@@ -75,7 +75,7 @@ afterAll(async () => {
     await h?.stop();
 });
 
-const repo = () => ({ forge: 'gitlab', host: HOST, path: `${grp}/web` });
+const repo = () => ({ forge: 'gitlab' as const, host: HOST, path: `${grp}/web` });
 const create = (token = org.member) =>
     board.app.inject({
         method: 'POST',
@@ -297,6 +297,20 @@ describe.skipIf(!enabled)('a batch task retry on a GitLab target', () => {
         const res = await retry(batch);
         expect(res.statusCode).toBe(CONFLICT);
         expect(res.json()).toMatchObject({ code: 'FORGE_GRANT_REQUIRED', forge: FORGE });
+    });
+});
+
+describe.skipIf(!enabled)('a gate that cannot reach the connection store', () => {
+    it('throws: a missing store is never a verdict that the connection is gone', async () => {
+        await board.link(org, id, 'dev-one');
+        const gate = createForgeGate({
+            memberGrants: board.grants,
+            publicUrl: 'http://board.test',
+            gitlab: { connectionsOf: async () => undefined, api: h.gitlabApi() },
+        });
+        await expect(
+            gate?.check({ orgId: org.id, userId: org.memberId, repo: repo(), returnTo: '/tasks/new' })
+        ).rejects.toThrow();
     });
 });
 

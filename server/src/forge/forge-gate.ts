@@ -48,7 +48,10 @@ async function gitlabVerdict(
         connectUrl: `${deps.publicUrl}${forgeConnectPath(forge, { orgId, returnTo })}`,
         repo: formatRepoRef(repo),
     });
-    const application = await (await deps.gitlab.connectionsOf(orgId))?.application(host);
+    const connections = await deps.gitlab.connectionsOf(orgId);
+    // A board with no connection store cannot say the connection is gone: unconfirmed, never a refusal.
+    if (!connections) throw new Error('the GitLab connection store is not available');
+    const application = await connections.application(host);
     if (!application?.active) return refused('missing');
     const signal = AbortSignal.timeout(ACCESS_DEADLINE_MS);
     const token = await deps.memberGrants.accessToken(orgId, userId, forge, { signal });

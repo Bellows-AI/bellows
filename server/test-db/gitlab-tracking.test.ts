@@ -190,6 +190,29 @@ describe.skipIf(!enabled)('picking the projects to track', () => {
         expect(keys(await trackedRepos({ sql, orgId: org.id }))).toEqual(['github:github.com/acme/web']);
     });
 
+    it('never drops a tracked project the admin was not shown: it is listed unlisted, kept by a save that names it, removed only when left out', async () => {
+        await project(`${grp}/a`);
+        const id = await h.linked(org, 'dev-one', { groups: [grp] });
+        // Tracked, but not in this admin's listing: another admin's project, an archived or a deleted one.
+        await sql`insert into tracked_repo (org_id, owner, name, forge, host) values (${org.id}, ${grp}, 'elsewhere', 'gitlab', ${HOST})`;
+        const shown = (await listProjects(id)).json<{
+            projects: { path: string; tracked: boolean; listed: boolean }[];
+        }>();
+        expect(Object.fromEntries(shown.projects.map((p) => [p.path, [p.tracked, p.listed]]))).toEqual({
+            [`${grp}/a`]: [false, true],
+            [`${grp}/elsewhere`]: [true, false],
+        });
+        expect((await track(id, [`${grp}/a`, `${grp}/elsewhere`])).statusCode).toBe(OK);
+        expect(keys(await trackedRepos({ sql, orgId: org.id }))).toEqual([
+            `gitlab:${HOST}/${grp}/a`,
+            `gitlab:${HOST}/${grp}/elsewhere`,
+        ]);
+        // A path that is neither listed nor tracked is still refused.
+        expect((await track(id, [`${grp}/ghost`])).statusCode).toBe(BAD_REQUEST);
+        expect((await track(id, [`${grp}/a`])).statusCode).toBe(OK);
+        expect(keys(await trackedRepos({ sql, orgId: org.id }))).toEqual([`gitlab:${HOST}/${grp}/a`]);
+    });
+
     it('refuses a path outside the allowed groups, or one the admin cannot see, and changes nothing', async () => {
         await project(`${grp}/a`);
         await project(`${grp}x/z`);
