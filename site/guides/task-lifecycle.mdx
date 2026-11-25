@@ -51,6 +51,8 @@ Commits made in a task are authored by the member who started it and committed b
 
 Bellows opens and edits the task's pull request as the member who started the task, with that member's GitHub connection. If the connection is broken when the branch is ready to publish, the task waits for the member to reconnect GitHub, then publishes; it does not fail. If the member cannot write to the repository, the task waits and retries the pull request about every 10 minutes until they get access or someone stops it.
 
+The Outcome tile and the CLI's job detail call a GitHub change request a pull request (**PR**) and a GitLab one a merge request (**MR**). Bellows cannot yet publish to or act on a GitLab merge request: a run that reports one is refused with `FORGE_UNSUPPORTED`.
+
 <Tip>
 **Mark done** closes the task in Bellows only. It does not merge or close the pull request.
 </Tip>

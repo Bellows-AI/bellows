@@ -137,6 +137,37 @@ describe('POST /api/jobs/:id/conclusion', () => {
         expect(store.staged).toEqual([]);
     });
 
+    const publicationOf = (prUrl: string, extra: Record<string, unknown> = {}) => ({
+        publication: { repo: 'acme/web', prNumber: 7, prUrl, headBranch: 'factory/x', baseBranch: 'main', ...extra },
+    });
+
+    it.each<[string, string, Record<string, unknown>]>([
+        [
+            'a GitLab merge request url',
+            'FORGE_UNSUPPORTED',
+            publicationOf('https://gitlab.example.com/acme/web/-/merge_requests/7'),
+        ],
+        [
+            'a nested GitLab merge request url',
+            'FORGE_UNSUPPORTED',
+            publicationOf('https://gitlab.example.com:8443/a/b/web/-/merge_requests/7'),
+        ],
+        ['a malformed url', 'BAD_PUBLICATION', publicationOf('https://gitlab.example.com/acme/web/-/merge_requests/x')],
+        ['a url for another repo', 'BAD_PUBLICATION', publicationOf('https://github.com/acme/other/pull/7')],
+        ['a url for another number', 'BAD_PUBLICATION', publicationOf('https://github.com/acme/web/pull/8')],
+    ])('refuses %s with %s on complete and conclusion, staging nothing', async (_label, code, fields) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const staged = await post(instance, `/api/jobs/${ID}/conclusion`, { ...done, ...fields });
+        const completed = await post(instance, `/api/jobs/${ID}/complete`, { ...done, ...fields });
+
+        expect([staged.statusCode, staged.json().code]).toEqual([400, code]);
+        expect([completed.statusCode, completed.json().code]).toEqual([400, code]);
+        expect(store.staged).toEqual([]);
+        expect(store.completed).toEqual([]);
+    });
+
     it.each<[Answer, number, string]>([
         ['lost', 409, 'LEASE_LOST'],
         ['conflict', 409, 'CONCLUSION_CONFLICT'],

@@ -1,4 +1,4 @@
-import type { RepoRef } from '@factory-ai/core';
+import { parseChangeRequestUrl, type RepoRef } from '@factory-ai/core';
 import { isTerminal, type FailureKind, type GateCheck, type Job, type JobInterruption } from './api/useJobs.js';
 
 /**
@@ -79,17 +79,26 @@ export function threadPublish(jobs: Job[]): ThreadPublish | null {
 /** A publish line's url becomes a link only when it is one the reader can safely open. */
 export const isHttpUrl = (url: string): boolean => url.startsWith('https://') || url.startsWith('http://');
 
+/** What a change request is called, per forge: GitHub's pull request, GitLab's merge request. */
+export interface ChangeRequestLabel {
+    /** The long name, `Pull request` or `Merge request`. */
+    name: string;
+    /** The short form, `PR` or `MR`. */
+    short: string;
+}
+
+const PULL_REQUEST: ChangeRequestLabel = { name: 'Pull request', short: 'PR' };
+const MERGE_REQUEST: ChangeRequestLabel = { name: 'Merge request', short: 'MR' };
+
 /**
- * The pull request a publish url names — `.../pull/<n>`, the shape `gh pr view/create` prints —
- * read back out because the board carries no structured PR field, only the url. Null when the
- * url names no number; the panel then links it by name alone. The same bound as an issue
- * reference: positive and within the safe-integer range.
+ * The change request a publish url names, read back out because the board carries no structured field here, only
+ * the url: its number (positive INT4, per `parseChangeRequestUrl`) and the forge's label. Null number when the url
+ * names none; the panel then links it by name alone, still labelled for the forge when the url names one.
  */
-export const prNumber = (url: string): number | null => {
-    const match = /\/pull\/(\d+)/.exec(url);
-    if (match === null) return null;
-    const number = Number(match[1]);
-    return Number.isSafeInteger(number) && number > 0 ? number : null;
+export const changeRequestOf = (url: string): { number: number | null; label: ChangeRequestLabel } => {
+    const parsed = parseChangeRequestUrl(url);
+    if (parsed === null) return { number: null, label: PULL_REQUEST };
+    return { number: parsed.number, label: parsed.ref.forge === 'gitlab' ? MERGE_REQUEST : PULL_REQUEST };
 };
 
 /**

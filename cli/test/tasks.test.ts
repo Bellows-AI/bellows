@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import type { BoardJobRecord } from '../src/board.js';
+import { renderJobDetail } from '../src/render.js';
 import { run } from '../src/run.js';
 import { recordingBoard } from './harness.js';
 
@@ -162,5 +164,27 @@ describe('bellows task list', () => {
         expect(code).toBe(2);
         expect(err.join('')).toContain(named);
         expect(urls).toHaveLength(0);
+    });
+});
+
+describe('job detail change-request line', () => {
+    const detail = (prUrl: string, prNumber: number) =>
+        renderJobDetail({
+            id: 'job-1',
+            status: 'succeeded',
+            repo: 'acme/api',
+            publication: { repo: 'acme/api', prNumber, prUrl, headBranch: 'f', baseBranch: 'main' },
+        } as unknown as BoardJobRecord);
+
+    it('labels a GitHub pull request pr:', () => {
+        const text = detail('https://github.com/acme/api/pull/7', 7);
+        expect(text).toContain('pr:');
+        expect(text).not.toContain('mr:');
+    });
+
+    it('labels a GitLab merge request mr:', () => {
+        const text = detail('https://gitlab.example.com/g/sub/api/-/merge_requests/7', 7);
+        expect(text).toContain('mr:');
+        expect(text).not.toContain('pr:');
     });
 });

@@ -15,6 +15,7 @@ import type {
     SkillView,
 } from './board.js';
 import { isTerminal } from './board.js';
+import { parseChangeRequestUrl } from './change-request-url.js';
 import { formatRepoRef } from './repo-ref.js';
 import type { TaskUsage, Tokens, UsageBlock } from './usage-types.js';
 import type { ConfigSummary, Preflight } from './diagnostics.js';
@@ -124,12 +125,19 @@ function gateLines(job: BoardJobRecord): string[] {
     });
 }
 
+/** `mr:` for a GitLab merge request url, `pr:` for anything else. */
+const changeRequestField = (url: string): string =>
+    parseChangeRequestUrl(url)?.ref.forge === 'gitlab' ? 'mr:' : 'pr:';
+
 /** The PR the thread published, and why it is waiting or what the agent is asking a person. */
 function evidenceLines(job: BoardJobRecord): string[] {
     const lines: string[] = [];
     if (job.publication) {
         lines.push(
-            field('pr:', `${job.publication.prUrl} (${job.publication.headBranch} → ${job.publication.baseBranch})`)
+            field(
+                changeRequestField(job.publication.prUrl),
+                `${job.publication.prUrl} (${job.publication.headBranch} → ${job.publication.baseBranch})`
+            )
         );
     }
     if (job.waitReason) lines.push(field('waiting:', `${job.waitReason} since ${job.waitingSince ?? DASH}`));

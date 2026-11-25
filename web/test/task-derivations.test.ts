@@ -12,7 +12,7 @@ import {
     gateStatusLabel,
     issueUrl,
     newestTerminalExit,
-    prNumber,
+    changeRequestOf,
     publicationForRun,
     threadContextTokens,
     threadCostUsd,
@@ -319,19 +319,36 @@ describe('task outcome derivations', () => {
         });
     });
 
-    describe('prNumber', () => {
-        it('reads the number a pull url names', () => {
+    describe('changeRequestOf', () => {
+        it('reads the number a pull url names, labelled a pull request', () => {
             const PULL_NUMBER = 9;
             const LARGE_PULL_NUMBER = 177;
-            expect(prNumber('https://github.com/o/r/pull/9')).toBe(PULL_NUMBER);
-            expect(prNumber('https://github.example.com/acme/widgets/pull/177')).toBe(LARGE_PULL_NUMBER);
+            expect(changeRequestOf('https://github.com/o/r/pull/9')).toEqual({
+                number: PULL_NUMBER,
+                label: { name: 'Pull request', short: 'PR' },
+            });
+            expect(changeRequestOf('https://github.example.com/acme/widgets/pull/177').number).toBe(LARGE_PULL_NUMBER);
         });
 
-        it('answers null for a url that names no pull request, or an impossible one', () => {
-            expect(prNumber('https://github.com/o/r/pulls')).toBeNull();
-            expect(prNumber('https://example.com/pr/9')).toBeNull();
-            expect(prNumber('https://github.com/o/r/pull/0')).toBeNull();
-            expect(prNumber('https://github.com/o/r/pull/99999999999999999999')).toBeNull();
+        it('reads a GitLab merge request url, nested groups and self-managed hosts included, labelled MR', () => {
+            const MERGE_NUMBER = 12;
+            const label = { name: 'Merge request', short: 'MR' };
+            expect(changeRequestOf('https://gitlab.com/g/p/-/merge_requests/12')).toEqual({
+                number: MERGE_NUMBER,
+                label,
+            });
+            expect(changeRequestOf('https://git.example.com:8443/a/b/c/-/merge_requests/12/')).toEqual({
+                number: MERGE_NUMBER,
+                label,
+            });
+        });
+
+        it('answers a null number for a url that names no change request, or an impossible one', () => {
+            expect(changeRequestOf('https://github.com/o/r/pulls').number).toBeNull();
+            expect(changeRequestOf('https://example.com/pr/9').number).toBeNull();
+            expect(changeRequestOf('https://github.com/o/r/pull/0').number).toBeNull();
+            expect(changeRequestOf('https://github.com/o/r/pull/99999999999999999999').number).toBeNull();
+            expect(changeRequestOf('https://gitlab.com/g/p/-/merge_requests/0').number).toBeNull();
         });
     });
 

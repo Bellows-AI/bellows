@@ -35,7 +35,6 @@ export function executorReason(value: string): string | null {
  * validated to the one spelling the driver mints — it is not data, it is a protocol. Branch names
  * are git refs truncated to the shape a ref can take, bounded far below scanner depth.
  */
-export const PR_URL = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+\/?$/;
 export const BRANCH_LIMIT = 255;
 /** Past any legal PR url — a value this long is a protocol violation, not a long link. */
 export const PR_URL_LIMIT = 2048;

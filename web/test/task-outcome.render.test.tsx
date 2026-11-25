@@ -311,6 +311,19 @@ describe('TaskOutcome — gates, publication and services', () => {
         expect(unsafe).not.toContain('<a href="javascript:');
     });
 
+    it('labels a GitLab change request a merge request, with MR in the closed head', () => {
+        const html = renderDetail({
+            jobs: [
+                job({ output: '[driver] published fix/45 — https://gitlab.example.com/g/sub/p/-/merge_requests/12' }),
+            ],
+        });
+        const outcome = html.slice(html.indexOf('task-outcome'), html.indexOf('task-main'));
+        expect(outcome).toContain('Merge request');
+        expect(outcome).toContain('>#12</a>');
+        expect(outcome).toContain('<span class="task-section-aside">MR #12</span>');
+        expect(outcome).not.toContain('PR #12');
+    });
+
     it('links a publish url that names no number as Pull request, never a CTA verbatim', () => {
         const html = renderDetail({
             jobs: [job({ output: '[driver] published fix/6 — https://github.com/o/r/compare/main...fix/6' })],

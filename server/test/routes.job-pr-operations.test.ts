@@ -91,6 +91,30 @@ describe('POST /api/jobs/:id/pr-operation', () => {
     });
 
     it.each([
+        ['a url for another repo', { prUrl: 'https://github.com/Bellows-AI/other/pull/42' }],
+        ['a url for another number', { prUrl: 'https://github.com/Bellows-AI/bellows/pull/43' }],
+        ['a url on another github host', { prUrl: 'https://github.example.com/Bellows-AI/bellows/pull/42' }],
+        ['a url with a suffix', { prUrl: 'https://github.com/Bellows-AI/bellows/pull/42/files' }],
+        [
+            'a number past int4',
+            { prNumber: 2_147_483_648, prUrl: 'https://github.com/Bellows-AI/bellows/pull/2147483648' },
+        ],
+    ])('refuses %s with BAD_BODY and stores nothing', async (_label, patch) => {
+        const { store, written } = stubStore();
+        const res = await post(await harnessWith(store), { ...good, ...patch });
+        expect([res.statusCode, res.json().code]).toEqual([400, 'BAD_BODY']);
+        expect(written).toEqual([]);
+    });
+
+    it('refuses a well-formed GitLab merge request url as FORGE_UNSUPPORTED and stores nothing', async () => {
+        const { store, written } = stubStore();
+        const prUrl = 'https://gitlab.example.com/Bellows-AI/bellows/-/merge_requests/42';
+        const res = await post(await harnessWith(store), { ...good, prUrl });
+        expect([res.statusCode, res.json().code]).toEqual([400, 'FORGE_UNSUPPORTED']);
+        expect(written).toEqual([]);
+    });
+
+    it.each([
         ['missing', 404, 'NOT_FOUND'],
         ['lost', 409, 'LEASE_LOST'],
     ] as const)('answers %s as %i with code %s', async (answer, status, code) => {
