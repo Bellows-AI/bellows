@@ -192,7 +192,18 @@ export async function finalizeLineage(
                 set version = version + 1, secret_version = ${input.secretVersion},
                     secret_ref = coalesce(lineage_secret_ref, secret_ref),
                     authority = ${db.json(input.authority as never)},
-                    status = case when status = 'revoked' then 'revoked' else 'active' end,
+                    status = case
+                        when status = 'revoked' then 'revoked'
+                        -- A grant published against a forge connection goes live only while that connection is
+                        -- live, under a share lock on its row (grant row first, as removal locks them): a removal
+                        -- either finished before this statement, and the grant ends revoked, or waits for it.
+                        when forge_connection_id is not null and not exists (
+                            select 1 from forge_connection c
+                            where c.org_id = integration_grant.org_id and c.id = integration_grant.forge_connection_id
+                              and c.removed_at is null
+                            for share of c
+                        ) then 'revoked'
+                        else 'active' end,
                     secret_wedged_at = null, secret_destroyed_at = null, updated_at = now(),
                     lineage_finalized_claim = ${claimToken},
                     lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,

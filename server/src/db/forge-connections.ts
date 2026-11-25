@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { gitlabForgeOf } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import type { GitlabApi, ProbeReason, ProbeResult } from '../gitlab/gitlab-api.js';
 import type { SecretDiagnostic, SecretIdentity, SecretRef, SecretStore } from '../secrets/secret-store.js';
@@ -93,13 +92,6 @@ export interface ForgeConnectionStore {
      * unconfirmed read throws: it is never "no connection".
      */
     application(host: string): Promise<GitlabApplication | null>;
-    /**
-     * Whether the connection a link started from is still this live row (not removed, not replaced by a re-create of
-     * the host), and, for a member's link, active. A failed read throws: it is never "gone".
-     */
-    holds(id: string, options: { active: boolean }): Promise<boolean>;
-    /** Revokes the member's grant on the host (their lineage and its secret are retired by the recovery pass). */
-    revokeMemberGrant(host: string, userId: string): Promise<void>;
     /** The authenticated check confirmed the instance: the connection is active at `version`. False when gone. */
     activate(id: string, version: string): Promise<boolean>;
     /** The authenticated check refused the instance; the connection stays pending, with the reason. */
@@ -295,18 +287,6 @@ export function createForgeConnectionStore({
             await gate();
             return readApplication({ sql, orgId, secrets, host, deadlineMs: writeDeadlineMs });
         },
-        async holds(id, { active }) {
-            await gate();
-            const rows = await sql`
-                select 1 from forge_connection
-                where org_id = ${orgId} and id = ${id} and removed_at is null and (active or not ${active}::boolean)
-            `;
-            return rows.length > 0;
-        },
-        async revokeMemberGrant(host, userId) {
-            await gate();
-            await revokeGrants(sql, orgId, { host, userId });
-        },
         async activate(id, version) {
             await gate();
             return markActivated(sql, orgId, id, version);
@@ -318,31 +298,27 @@ export function createForgeConnectionStore({
         async remove(id) {
             await gate();
             // The tombstone is the durable record of the cleanup owed; a repeated delete of a tombstoned row retries it.
-            const rows = await sql<(RetiringRow & { host: string })[]>`
-                update forge_connection set removed_at = coalesce(removed_at, now())
-                where org_id = ${orgId} and id = ${id}
-                returning org_id, id, host, secret_ref, ca_secret_ref
-            `;
+            // One transaction, grants first (the lock order a grant's activation takes: grant row, then connection row):
+            // every grant published against the connection is revoked as the tombstone is set, and a grant activating
+            // concurrently either commits first and is revoked here, or finds the tombstone and ends revoked.
+            const rows = await sql.begin(async (tx) => {
+                await tx`
+                    update integration_grant set status = 'revoked', revoked_at = now(), updated_at = now()
+                    where org_id = ${orgId} and forge_connection_id = ${id} and status <> 'revoked'
+                `;
+                return tx<RetiringRow[]>`
+                    update forge_connection set removed_at = coalesce(removed_at, now())
+                    where org_id = ${orgId} and id = ${id}
+                    returning org_id, id, secret_ref, ca_secret_ref
+                `;
+            });
             if (!rows[0]) return false;
-            // After the tombstone is durable: a link that stores its grant later finds the connection gone and revokes
-            // it itself (`holds`), so no grant made through a removed connection stays live.
-            await revokeGrants(sql, orgId, { host: rows[0].host });
             if (!(await finishRemoval(sql, secrets, rows[0], cleanup()))) {
                 throw new EnvSecretError(id, 'unavailable', 'provider-unavailable');
             }
             return true;
         },
     };
-}
-
-/** Revokes the grants on `gitlab:<host>` in the org, one member's or all; recovery destroys their secrets. */
-async function revokeGrants(sql: Sql, orgId: string, { host, userId }: { host: string; userId?: string }) {
-    const forge = gitlabForgeOf(host);
-    await sql`
-        update integration_grant set status = 'revoked', updated_at = now()
-        where org_id = ${orgId} and provider = ${forge} and status <> 'revoked'
-          and (${userId ?? null}::uuid is null or principal_user_id = ${userId ?? null}::uuid)
-    `;
 }
 
 /** The live connection's application by host with its secrets read back; null for a confirmed absence. */
@@ -448,7 +424,15 @@ async function finishRemoval(
         cleanup.diagnose({ event: 'cleanup-failed', kind: 'delete', ref: row.secret_ref as SecretRef });
         return false;
     }
-    await sql`delete from forge_connection where org_id = ${row.org_id} and id = ${row.id} and removed_at is not null`;
+    await sql.begin(async (tx) => {
+        // The grants were revoked at the tombstone; detach them (the key is NO ACTION) so recovery can still destroy
+        // their secrets, then drop the row.
+        await tx`
+            update integration_grant set forge_connection_id = null, status = 'revoked'
+            where org_id = ${row.org_id} and forge_connection_id = ${row.id}
+        `;
+        await tx`delete from forge_connection where org_id = ${row.org_id} and id = ${row.id} and removed_at is not null`;
+    });
     return true;
 }
 

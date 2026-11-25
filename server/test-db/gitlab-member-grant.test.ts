@@ -17,7 +17,10 @@ import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { type FakeGitlab, startFakeGitlab } from './fake-gitlab.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
-import { lineageHarness } from './integration-store-faults.js';
+import type { LineageTiming } from '../src/integrations/grant-lineage.js';
+import { recoverIntegrations } from '../src/integrations/integration-recovery.js';
+import type { SecretStore } from '../src/secrets/secret-store.js';
+import { faultyStore, lineageHarness, throwAfterActivate } from './integration-store-faults.js';
 
 /**
  * A member's GitLab link and the admin's activation (docs/connections.md), through the real routes, link service,
@@ -86,9 +89,11 @@ const storeOf = (orgId: string) =>
  * and keyring: nothing in memory, so a refresh through a fresh one is a recovery after a restart. The org registry
  * reads each org's connection with its own secret store, as in production. `api` is the only boundary faked.
  */
-function replica(options: { api?: GitlabApi; clock?: () => number } = {}) {
+function replica(
+    options: { api?: GitlabApi; clock?: () => number; secrets?: SecretStore; timing?: Partial<LineageTiming> } = {}
+) {
     const api = options.api ?? gitlabApi();
-    const secrets = keyring.openWith(keyring.realRepo);
+    const secrets = options.secrets ?? keyring.openWith(keyring.realRepo);
     const ready = Promise.resolve();
     const composed = composeIntegrations({
         config: boardConfig,
@@ -98,6 +103,7 @@ function replica(options: { api?: GitlabApi; clock?: () => number } = {}) {
         ready,
         gitlab: { api, originOf: baseUrl },
         ...(options.clock ? { clock: options.clock } : {}),
+        ...(options.timing ? { timing: options.timing } : {}),
     });
     const orgs = createOrgRegistry({
         sql,
@@ -501,6 +507,8 @@ describe.skipIf(!enabled)('removing a connection while a callback is in flight',
         await userGate.reached;
         return { pending };
     }
+    const rowsOf = (userId: string) =>
+        sql`select id from integration_grant where org_id = ${orgA.id} and principal_user_id = ${userId} and provider = ${FORGE}`;
     const removeAndRecreate = async (org: Org, id: string) => {
         expect(await org.store.remove(id)).toBe(true);
         return connect(org);
@@ -516,6 +524,8 @@ describe.skipIf(!enabled)('removing a connection while a callback is in flight',
         expect(done.result).toBe('connection-gone');
         expect((await grantRows(orgA.id)).filter((r) => r.status !== 'revoked')).toHaveLength(0);
         expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('missing');
+        // Nothing was written for the callback that lost the race: not even a grant row.
+        expect(await rowsOf(orgA.memberId)).toHaveLength(0);
         expect(await orgA.store.get(recreated)).toMatchObject({ active: false });
     });
 
@@ -528,7 +538,66 @@ describe.skipIf(!enabled)('removing a connection while a callback is in flight',
         expect(done.result).toBe('connection-gone');
         expect(await orgA.store.get(recreated)).toMatchObject({ active: false, version: null });
         expect(await grants.standing(orgA.id, orgA.adminId, FORGE)).toBe('missing');
+        expect(await rowsOf(orgA.adminId)).toHaveLength(0);
     });
+
+    /** One callback through a replica's own link service, as the caller; its result. */
+    async function viaReplica(rep: ReturnType<typeof replica>, who: { userId: string; admin: boolean }, id: string) {
+        const started = await rep.links.start({
+            orgId: orgA.id,
+            userId: who.userId,
+            connectionId: id,
+            purpose: who.admin ? 'activate' : 'link',
+        });
+        if (!started.ok) throw new Error(`start refused: ${started.reason}`);
+        const url = new URL(started.authorizeUrl);
+        url.searchParams.set('login', who.admin ? 'admin-login' : 'dev-one');
+        const back = new URL((await fetch(url, { redirect: 'manual' })).headers.get('location') as string);
+        return rep.links.complete({
+            orgId: orgA.id,
+            userId: who.userId,
+            admin: who.admin,
+            state: back.searchParams.get('state') ?? undefined,
+            code: back.searchParams.get('code') ?? undefined,
+            error: undefined,
+        });
+    }
+    const expireClaims = () =>
+        sql`update integration_grant set lineage_claim_expires_at = now() - interval '1 second' where org_id = ${orgA.id} and lineage_claim is not null`;
+    const liveGrantsOf = (userId: string) =>
+        sql`select id from integration_grant where org_id = ${orgA.id} and principal_user_id = ${userId} and provider = ${FORGE} and status <> 'revoked'`;
+
+    it.each([
+        ['a member’s link', false],
+        ['an admin’s activation', true],
+    ])(
+        '%s whose holder crashed after the secret was stored never goes live on a removed connection',
+        async (_name, admin) => {
+            const id = await connect(orgA);
+            if (!admin) await activate(orgA, id);
+            const who = admin ? { userId: orgA.adminId, admin } : { userId: orgA.memberId, admin };
+            // The holder stores the secret, loses the answer and dies: claim and operation stay recorded.
+            const crashing = replica({
+                secrets: faultyStore(keyring, { activate: throwAfterActivate }).store,
+                timing: { persistBudgetMs: 0, retryDelayMs: 0 },
+            });
+            expect((await viaReplica(crashing, who, id)).ok).toBe(false);
+            const [pending] =
+                await sql`select lineage_claim, lineage_operation_id, status from integration_grant where principal_user_id = ${who.userId} and provider = ${FORGE}`;
+            expect(pending?.lineage_claim).not.toBeNull();
+            expect(pending?.status).not.toBe('active');
+            // The connection is tombstoned, without the revocation removal does, as if the process died in between.
+            await sql`update forge_connection set removed_at = now() where org_id = ${orgA.id} and id = ${id}`;
+            await expireClaims();
+            // A restarted board recovers the lineage: the finalize is guarded by the connection, so the grant ends revoked.
+            await recoverIntegrations(replica().integrations);
+            expect(await liveGrantsOf(who.userId)).toHaveLength(0);
+            expect(await grants.standing(orgA.id, who.userId, FORGE)).toBe('missing');
+            // And once the removal completes, the row can go: nothing live references it.
+            expect(await orgA.store.remove(id)).toBe(true);
+            expect(await liveGrantsOf(who.userId)).toHaveLength(0);
+        }
+    );
 
     it('removing a connection revokes the grants made through it', async () => {
         const id = await connect(orgA);

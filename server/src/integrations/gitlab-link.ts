@@ -166,21 +166,23 @@ async function complete(deps: GitlabLinksDeps, input: CompleteInput): Promise<Li
     if (!issued.ok) return refuse(returnTo, issued.failure);
     const checked = link.purpose === 'activate' ? await versionOf(deps, target, issued.accessToken) : null;
     if (checked && !checked.ok) return refuse(returnTo, checked.failure);
+    // The grant is published against the connection the link started from, in one transaction that locks that row, and
+    // goes live only under the same lock (docs/gitlab.md): a removed or replaced connection stores nothing.
     const stored = await deps.memberGrants.store({
         orgId: input.orgId,
         userId: input.userId,
         forge: target.forge,
         externalAccountId: issued.externalAccountId,
         tokens: issued.tokens,
+        connection: { id: target.connection.id, requireActive: checked === null },
     });
     if (!stored.ok) return refuse(returnTo, storeFailureOf(stored.reason));
-    // The grant is written outside any lock a removal could take, so the connection the link started from is checked
-    // after it: removal marks the row before it revokes, so a grant it did not revoke is seen here and revoked.
-    const activated = checked ? await target.store.activate(target.connection.id, checked.version) : true;
-    if (!activated || !(await target.store.holds(target.connection.id, { active: checked === null }))) {
-        await target.store.revokeMemberGrant(target.connection.host, input.userId);
+    if (checked && !(await target.store.activate(target.connection.id, checked.version))) {
         return refuse(returnTo, 'connection-gone');
     }
+    // A removal between the write and the activation leaves the grant revoked, never live; the answer follows it.
+    const standing = await deps.memberGrants.standing(input.orgId, input.userId, target.forge);
+    if (standing !== 'live') return refuse(returnTo, 'connection-gone');
     return { ok: true, returnTo, result: checked ? 'activated' : 'linked' };
 }
 
@@ -235,6 +237,7 @@ export const createGitlabLinks = (deps: GitlabLinksDeps): GitlabLinks => ({
 
 const storeFailureOf = (reason: StoreMemberGrantRefusal): LinkFailure => {
     if (reason === 'conflict') return 'grant-conflict';
+    if (reason === 'connection-changed') return 'connection-gone';
     return reason === 'busy' ? 'busy' : 'storage-failed';
 };
 

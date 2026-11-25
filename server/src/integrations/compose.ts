@@ -7,6 +7,7 @@ import { createGitlabApi } from '../gitlab/gitlab-api.js';
 import type { OrgRegistry } from '../orgs.js';
 import type { SecretStore } from '../secrets/secret-store.js';
 import { createGitlabLinks } from './gitlab-link.js';
+import type { LineageTiming } from './grant-lineage.js';
 import { createIntegrationRuntime } from './integration-recovery.js';
 import { createMemberForgeGrants, type MemberForgeGrants } from './member-forge-grant.js';
 import { combineRegistrations, type ProviderRegistry } from './provider-registry.js';
@@ -36,6 +37,8 @@ export function composeIntegrations(deps: {
     gitlab?: { api?: GitlabApi; originOf?: (host: string) => string };
     /** The tests' seam: the member grants' clock. */
     clock?: () => number;
+    /** The tests' seam: the lineage's timing. */
+    timing?: Partial<LineageTiming>;
 }) {
     const { config, sql, crossOrg, secrets, ready } = deps;
     const gitlab = composeGitlab({ sql, config, ...deps.gitlab });
@@ -58,6 +61,7 @@ export function composeIntegrations(deps: {
             return (await gitlab.provider.clientOf(orgId, host)) ?? undefined;
         },
         callbackOrigin: config.integrations.callbackOrigin,
+        ...(deps.timing ? { timing: deps.timing } : {}),
         log: (d) => logger('integrations').info(d, 'integration diagnostic'),
     });
     const memberGrants = githubUser
