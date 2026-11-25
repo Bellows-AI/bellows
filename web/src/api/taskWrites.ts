@@ -1,4 +1,4 @@
-import { ERROR_CODES, type ExecutorScope, type RepoRef } from '@factory-ai/core';
+import { ERROR_CODES, type ExecutorScope, gitlabHostOf, parseRepoRef, type RepoRef } from '@factory-ai/core';
 import type { RefusalBody } from './refusal.js';
 import { request, type RequestResult } from './request.js';
 import type { ConnectPrompt, QueueResult } from './useJobs.js';
@@ -49,14 +49,31 @@ const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
 /** What a person calls each forge in a gate refusal; a forge the page does not know is named as the board names it. */
 const FORGE_LABELS: Record<string, string> = { github: 'GitHub' };
 
+const OPEN_GITLAB_SETTINGS = 'Open GitLab settings';
+
+const forgeLabelOf = (forge: string): string => {
+    const host = gitlabHostOf(forge);
+    return host === null ? (FORGE_LABELS[forge] ?? forge) : `GitLab (${host})`;
+};
+
 /**
- * The forge start gate's refusal (docs/connections.md), as the page words it: the board's own sentence carries the
- * link for the CLI and MCP, so the page says the state and offers the link as a control of its own.
+ * The forge start gate's refusals (docs/connections.md), as the page words them: the board's own sentence carries the
+ * link for the CLI and MCP, so the page says the state and offers the link as a control of its own. A missing or broken
+ * grant is the member's to make; a denial is a live grant the forge does not honor on this repository.
  */
 function forgeGateRefusal(body: RefusalBody | undefined): { error: string; connect: ConnectPrompt } | null {
-    if (body?.code !== ERROR_CODES.FORGE_GRANT_REQUIRED || typeof body.connectUrl !== 'string') return null;
+    if (typeof body?.connectUrl !== 'string') return null;
     const forge = typeof body.forge === 'string' ? body.forge : '';
-    const label = FORGE_LABELS[forge] ?? forge;
+    const label = forgeLabelOf(forge);
+    if (body.code === ERROR_CODES.FORGE_ACCESS_DENIED) {
+        // The board names the repo by its ref text (`gitlab:host/path`); the page says the path, the host being in the label.
+        const repo = typeof body.repo === 'string' ? (parseRepoRef(body.repo)?.path ?? body.repo) : 'this repository';
+        return {
+            error: `Your ${label} account does not have Developer access to ${repo}. Ask for access, or link another account.`,
+            connect: { url: body.connectUrl, label, text: OPEN_GITLAB_SETTINGS },
+        };
+    }
+    if (body.code !== ERROR_CODES.FORGE_GRANT_REQUIRED) return null;
     const state = body.standing === 'broken' ? 'needs reconnecting' : 'is missing';
     return {
         error: `Your ${label} connection ${state}. Connect it to start work on this repository.`,

@@ -1,4 +1,4 @@
-import { canConnect, integrationProvider, LISTED_PROVIDERS } from '@factory-ai/core';
+import { canConnect, GITLAB_SETTINGS_PATH, integrationProvider, LISTED_PROVIDERS } from '@factory-ai/core';
 import { Link } from 'react-router-dom';
 import { type ForgeGrantView, useForgeGrants } from '../api/forgeGrants.js';
 import { useConnections } from '../api/useConnections.js';
@@ -74,7 +74,12 @@ export function SettingsIntegrationsPage() {
                 eyebrow="Settings"
                 title="Integrations"
                 description="The services your tasks can use as you."
-                actions={<Link to={BROWSE_PATH}>Browse integrations</Link>}
+                actions={
+                    <>
+                        <Link to={GITLAB_SETTINGS_PATH}>GitLab</Link>
+                        <Link to={BROWSE_PATH}>Browse integrations</Link>
+                    </>
+                }
             />
             {notice ? <IntegrationNoticeBanner notice={notice} /> : null}
             {read.state === 'loading' ? <StateNote state="loading">Loading integrations…</StateNote> : null}
