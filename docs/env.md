@@ -10,7 +10,7 @@ list live in `core/src/env.ts`; the driver keeps a deliberately narrower copy in
 | A secret's value in the store: reference, identity, batched fail-closed read | `server/src/db/env-secrets.ts`, `server/migrations/093_env_var_secret_ref.sql`, `server/migrations/113_env_var_secret_form.sql` | `server/test-db/migration.093-env-secret-ref.test.ts`, `server/test-db/migration.113-env-secret-form.test.ts`, `server/test-db/env-secrets.claim.test.ts` |
 | PUT write path, the (org, scope) lock and compensation | `server/src/db/env-var-store.ts`, `server/src/db/env-var-write.ts`, `server/src/db/env-secrets.ts` | `server/test-db/env-secrets.writes.test.ts`, `server/test-db/env-var-store.test.ts` |
 | Whole-list PUT; single-name write and delete, multi-name write (`/vars/:name`, `/vars`); validation codes, reserved names | `server/src/routes/env.ts`, `core/src/env.ts` | `server/test/routes.env.test.ts` |
-| Claim-time resolution (`withoutGithubToken`) | `server/src/db/jobs/job-store-claim.ts`, `server/src/db/jobs/job-store-claim-executor.ts` | `server/test/job-store.env.test.ts`, `server/test-db/job-store.attribution.test.ts` |
+| Claim-time resolution (`withoutForgeTokens`) | `server/src/db/jobs/job-store-claim.ts`, `server/src/db/jobs/job-store-claim-executor.ts` | `server/test/job-store.env.test.ts`, `server/test-db/job-store.attribution.test.ts` |
 | `claimEnv`: the driver's filter and synthesized executor names | `driver/src/claim.ts` | `driver/test/docker/`, `driver/test/k8s/` |
 | Docker: 0600 `--env-file` around the run | `driver/src/docker/docker.ts` | `driver/test/docker/` |
 | Kubernetes: per-attempt Secret, `secretKeyRef` | `driver/src/k8s/k8s-podspec.ts` | `driver/test/k8s/` |
