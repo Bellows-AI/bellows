@@ -140,7 +140,12 @@ describe('POST /api/jobs/:id/pull-request', () => {
                         ...options,
                         writer,
                         repo: GITLAB,
-                        store: { openPrForgeWait: async (...args) => (waits.push(args), { result: 'ok' }) },
+                        store: {
+                            openPrForgeWait: async (...args) => {
+                                waits.push(args);
+                                return { result: 'ok' };
+                            },
+                        },
                     }),
                     ASK
                 );

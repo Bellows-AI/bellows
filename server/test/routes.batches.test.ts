@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
     emptyBlock,
     NO_MODEL_MESSAGE,
@@ -45,11 +45,6 @@ const OTHER_ORG = 'other-org';
 const WEB = { owner: 'Bellows-AI', name: 'bellows.ai' };
 const API = { owner: 'Bellows-AI', name: 'api' };
 
-// A GitLab repo can be listed (`ref`) only through the mocked listing: the real one is GitHub-only.
-vi.mock('../src/forge/forges.js', async (importOriginal) =>
-    (await import('./helpers-listed-refs.js')).listedRefsMock(importOriginal as never)
-);
-
 const track = trackApps();
 
 const task = (key: string, extra: Record<string, unknown> = {}) => ({
@@ -87,7 +82,7 @@ function reposWithDefaults(
     error: string | null = null
 ) {
     const base = staticRepoSource(
-        entries.map(({ owner, name }) => ({ owner, name })),
+        entries.map(({ owner, name, ref }) => ({ owner, name, ref })),
         { error }
     );
     return {

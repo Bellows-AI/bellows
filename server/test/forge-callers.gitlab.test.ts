@@ -1,16 +1,11 @@
 import { githubRepo, parseRepoRef, type RepoRef } from '@factory-ai/core';
 import type { FastifyInstance } from 'fastify';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
-import type { ListedWithRef } from './helpers-listed-refs.js';
 import { trackApps } from './helpers-http.js';
 import { jobStoreSlice, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
-
-vi.mock('../src/forge/forges.js', async (importOriginal) =>
-    (await import('./helpers-listed-refs.js')).listedRefsMock(importOriginal as never)
-);
 
 /**
  * The routes' forge reads BELOW the tracking check, with a GitLab repo listed beside the github.com repo at the same
@@ -22,7 +17,7 @@ const GITHUB = githubRepo('acme/web');
 const GITLAB = parseRepoRef('gitlab:gitlab.example.test/acme/web')!;
 const idOf = (ref: RepoRef) =>
     encodeURIComponent(ref.forge === 'github' ? ref.path : `${ref.forge}:${ref.host}/${ref.path}`);
-const LISTED: ListedWithRef[] = [
+const LISTED: { owner: string; name: string; ref?: RepoRef }[] = [
     { owner: 'acme', name: 'web' },
     { owner: 'acme', name: 'web', ref: GITLAB },
 ];
