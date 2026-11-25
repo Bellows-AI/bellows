@@ -768,7 +768,9 @@ describe.skipIf(!enabled)('the refresh of a GitLab grant', () => {
     });
 
     /** A fake whose token endpoint is wrapped: `mode` decides what a refresh call sees. */
-    const wrapped = (mode: () => 'pass' | 'refused' | 'lost' | 'bad-gateway' | 'gateway-timeout') =>
+    const wrapped = (
+        mode: () => 'pass' | 'refused' | 'lost' | 'bad-gateway' | 'gateway-timeout' | 'stripped' | 'emptied'
+    ) =>
         replica({
             clock: later,
             api: gitlabApi((api) => ({
@@ -781,6 +783,14 @@ describe.skipIf(!enabled)('the refresh of a GitLab grant', () => {
                     // replaces the answer.
                     if (what === 'bad-gateway') return { ok: true, status: 502, text: '<html>Bad Gateway</html>' };
                     if (what === 'gateway-timeout') return { ok: true, status: 504, text: '' };
+                    // GitLab rotated, and the answer reaches the board without its replacement refresh token.
+                    if ((what === 'stripped' || what === 'emptied') && answer.ok) {
+                        const { refresh_token: _spent, ...rest } = JSON.parse(answer.text);
+                        return {
+                            ...answer,
+                            text: JSON.stringify(what === 'emptied' ? { ...rest, refresh_token: '' } : rest),
+                        };
+                    }
                     return what === 'lost' ? { ok: false, reason: 'timeout', sent: true } : answer;
                 },
             })),
@@ -915,6 +925,38 @@ describe.skipIf(!enabled)('the refresh of a GitLab grant', () => {
         expect(second).toMatchObject({ ok: false, outcome: { outcome: 'integration_required', reason: 'reconnect' } });
         expect(tokenCalls()).toBe(calls + 1);
     });
+
+    it.each(['stripped', 'emptied'] as const)(
+        'a successful rotation whose answer has a %s replacement refresh token ends in reconnect, and the spent token is never resent',
+        async (mode) => {
+            await linked(orgA, 'dev-one');
+            const calls = tokenCalls();
+            const [before] = await sql<{ secret_version: string }[]>`
+                select secret_version from integration_grant
+                where org_id = ${orgA.id} and provider = ${FORGE} and principal_user_id = ${orgA.memberId}
+            `;
+            const first = await asUserOf(wrapped(() => mode).memberGrants, orgA, orgA.memberId);
+            expect(first).toMatchObject({
+                ok: false,
+                outcome: { outcome: 'integration_required', reason: 'reconnect' },
+            });
+            expect(tokenCalls()).toBe(calls + 1);
+            // Nothing was committed over the spent token.
+            const [after] = await sql<{ secret_version: string; status: string }[]>`
+                select secret_version, status from integration_grant
+                where org_id = ${orgA.id} and provider = ${FORGE} and principal_user_id = ${orgA.memberId}
+            `;
+            expect(after).toEqual({ secret_version: before?.secret_version, status: 'reconnect_required' });
+            for (const replica_ of [replica({ clock: later }), replica({ clock: later })]) {
+                expect(await asUserOf(replica_.memberGrants, orgA, orgA.memberId)).toMatchObject({
+                    ok: false,
+                    outcome: { outcome: 'integration_required', reason: 'reconnect' },
+                });
+            }
+            expect(tokenCalls()).toBe(calls + 1);
+            expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('broken');
+        }
+    );
 
     it.each(['bad-gateway', 'gateway-timeout'] as const)(
         'never replays a token after a %s: GitLab processed the refresh, so the grant needs reconnect and nobody resends',

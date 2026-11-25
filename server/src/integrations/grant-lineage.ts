@@ -144,6 +144,7 @@ const payloadOf = (
 ): GrantPayload => ({
     accessToken: tokens.accessToken,
     accessExpiresAt: tokens.expiresAt,
+    // Only a provider that rotates nothing reaches the fallback: a rotating one without a replacement never commits.
     refreshToken: tokens.refreshToken ?? spent.refreshToken,
     authority: tokens.authority ?? { scopes: authorityScopes(claim.authority) ?? spent.authority.scopes },
 });
@@ -164,6 +165,28 @@ async function closeUnsettled(
     const spent = possiblySpent && hooks.rotatesRefreshToken && hooks.retryTransientRefresh !== true;
     const ended = await endClaim(ctx, claim, spent ? { reconnect: true } : { provablyUnsent: true }).catch(() => false);
     if (ended && spent) ctx.log('reconnect-required', claim.grantId);
+}
+
+/**
+ * A rotating provider's success that does not carry a replacement refresh token (absent, empty, or the one just
+ * sent) spent the old token and gave nothing to store: it is never committed over the old token, which a later
+ * refresh would replay. The grant goes to reconnect through the guarded exit, whatever the provider says about retries.
+ * Null when the answer is usable (and always, for a provider that rotates nothing and keeps its token).
+ */
+async function rotationLost(
+    ctx: LineageCtx,
+    claim: LineageClaim,
+    hooks: OAuthProviderHooks,
+    found: { answer: Extract<ExchangeResult, { ok: true }>; sent: string }
+): Promise<{ result: RefreshResult; settled: boolean } | null> {
+    const next = found.answer.tokens.refreshToken;
+    if (!hooks.rotatesRefreshToken || (next && next !== found.sent)) return null;
+    return failedExchange(
+        ctx,
+        claim,
+        { ok: false, failure: 'ambiguous' },
+        { rotating: true, retryTransient: false, aborted: false }
+    );
 }
 
 /** Steps 2-6 under a held claim. The claim ends exactly one way: released here, ended by the failure, or committed. */
@@ -210,6 +233,12 @@ async function exchangeUnderClaim(
             });
             settled = failed.settled;
             return failed.result;
+        }
+
+        const unusable = await rotationLost(ctx, claim, hooks, { answer, sent: refreshToken });
+        if (unusable) {
+            settled = unusable.settled;
+            return unusable.result;
         }
 
         // Success: from here the caller's signal is detached; only the lease governs persistence.

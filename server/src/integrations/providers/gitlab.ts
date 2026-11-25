@@ -36,11 +36,34 @@ const scopesOf = (scope: unknown): string[] | null =>
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
+/**
+ * GitLab's success, strictly. It rotates the refresh token on every use, so a 2xx that does not carry a usable
+ * replacement means the old token is spent and nothing can be stored to replace it: such an answer is not a success.
+ * Required: a bearer `token_type`, a non-empty access token, a positive `expires_in`, and a non-empty string
+ * `refresh_token` that is not the one just sent (`sent`, absent for the code exchange).
+ */
+function validSuccess(text: string, sent: string | undefined): boolean {
+    let json: unknown;
+    try {
+        json = JSON.parse(text);
+    } catch {
+        return false;
+    }
+    if (!isRecord(json)) return false;
+    const { access_token: access, refresh_token: refresh, expires_in: expires, token_type: type } = json;
+    if (typeof type !== 'string' || type.toLowerCase() !== 'bearer') return false;
+    if (typeof access !== 'string' || access === '') return false;
+    if (typeof expires !== 'number' || !Number.isFinite(expires) || expires <= 0) return false;
+    return typeof refresh === 'string' && refresh !== '' && refresh !== sent;
+}
+
 /** The token endpoint's answer, split by whether GitLab can have consumed the code or refresh token (see `tokenCall`). */
-function tokenAnswer(answer: GitlabResponse): ExchangeResult {
+function tokenAnswer(answer: GitlabResponse, sent: string | undefined): ExchangeResult {
     if (!answer.ok) return { ok: false, failure: answer.sent ? 'ambiguous' : 'not-sent' };
     const { status } = answer;
-    return answerOf({ ok: status >= HTTP_OK && status < HTTP_MULTIPLE, status }, answer.text, scopesOf);
+    const success = status >= HTTP_OK && status < HTTP_MULTIPLE;
+    if (success && !validSuccess(answer.text, sent)) return { ok: false, failure: 'ambiguous' };
+    return answerOf({ ok: success, status }, answer.text, scopesOf);
 }
 
 /** The JSON of a 2xx answer, or null for anything else. */
@@ -84,7 +107,7 @@ export function createGitlabProvider({
                 caBundle: app.caBundle,
                 signal,
             });
-            return tokenAnswer(answer);
+            return tokenAnswer(answer, grant.refresh_token);
         }
 
         return {
