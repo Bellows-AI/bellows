@@ -20,6 +20,8 @@ import { useTestDb } from './harness.js';
 import type { LineageTiming } from '../src/integrations/grant-lineage.js';
 import { recoverIntegrations } from '../src/integrations/integration-recovery.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
+import { orgSql } from '../src/db/org-sql.js';
+import { faultySecrets } from './env-secrets-harness.js';
 import { faultyStore, lineageHarness, throwAfterActivate } from './integration-store-faults.js';
 
 /**
@@ -542,7 +544,7 @@ describe.skipIf(!enabled)('removing a connection while a callback is in flight',
     });
 
     /** One callback through a replica's own link service, as the caller; its result. */
-    async function viaReplica(rep: ReturnType<typeof replica>, who: { userId: string; admin: boolean }, id: string) {
+    async function prepareVia(rep: ReturnType<typeof replica>, who: { userId: string; admin: boolean }, id: string) {
         const started = await rep.links.start({
             orgId: orgA.id,
             userId: who.userId,
@@ -553,19 +555,109 @@ describe.skipIf(!enabled)('removing a connection while a callback is in flight',
         const url = new URL(started.authorizeUrl);
         url.searchParams.set('login', who.admin ? 'admin-login' : 'dev-one');
         const back = new URL((await fetch(url, { redirect: 'manual' })).headers.get('location') as string);
-        return rep.links.complete({
-            orgId: orgA.id,
-            userId: who.userId,
-            admin: who.admin,
-            state: back.searchParams.get('state') ?? undefined,
-            code: back.searchParams.get('code') ?? undefined,
-            error: undefined,
-        });
+        return () =>
+            rep.links.complete({
+                orgId: orgA.id,
+                userId: who.userId,
+                admin: who.admin,
+                state: back.searchParams.get('state') ?? undefined,
+                code: back.searchParams.get('code') ?? undefined,
+                error: undefined,
+            });
+    }
+    const viaReplica = async (rep: ReturnType<typeof replica>, who: { userId: string; admin: boolean }, id: string) =>
+        (await prepareVia(rep, who, id))();
+    /** Resolves once some backend waits on a row lock: the deterministic signal that a statement is queued behind one. */
+    async function untilBlockedOnALock() {
+        for (let tries = 0; tries < 500; tries += 1) {
+            const [row] = await sql<{ n: number }[]>`
+                select count(*)::int as n from pg_stat_activity
+                where wait_event_type = 'Lock' and datname = current_database()
+            `;
+            if (row && row.n > 0) return;
+            await new Promise((resume) => setTimeout(resume, 20));
+        }
+        throw new Error('nothing ever waited on a lock');
     }
     const expireClaims = () =>
         sql`update integration_grant set lineage_claim_expires_at = now() - interval '1 second' where org_id = ${orgA.id} and lineage_claim is not null`;
     const liveGrantsOf = (userId: string) =>
         sql`select id from integration_grant where org_id = ${orgA.id} and principal_user_id = ${userId} and provider = ${FORGE} and status <> 'revoked'`;
+
+    it.each([
+        ['a member’s link', false],
+        ['an admin’s activation', true],
+    ])('%s waits behind a removal holding the connection lock, then writes nothing', async (_name, admin) => {
+        const id = await connect(orgA);
+        if (!admin) await activate(orgA, id);
+        const who = admin ? { userId: orgA.adminId, admin } : { userId: orgA.memberId, admin };
+        const callback = await prepareVia(replica(), who, id);
+        const queued = await orgSql(sql, orgA.id).begin(async (tx) => {
+            // What removal does first: the connection row, then the tombstone and the revocation, uncommitted.
+            await tx`select 1 from forge_connection where org_id = ${orgA.id} and id = ${id} for update`;
+            await tx`update forge_connection set removed_at = now(), active = false where org_id = ${orgA.id} and id = ${id}`;
+            await tx`update integration_grant set status = 'revoked' where org_id = ${orgA.id} and forge_connection_id = ${id} and status <> 'revoked'`;
+            const publishing = callback();
+            await untilBlockedOnALock();
+            // The publication is parked on the lock: it has written nothing a reader can see.
+            expect(await rowsOf(who.userId)).toHaveLength(0);
+            return { publishing };
+        });
+        expect((await queued.publishing).ok).toBe(false);
+        expect(await rowsOf(who.userId)).toHaveLength(0);
+        expect(await liveGrantsOf(who.userId)).toHaveLength(0);
+    });
+
+    it('removal that commits and then fails its secret cleanup leaves no live grant, and token reads refuse', async () => {
+        const id = await connect(orgA);
+        await activate(orgA, id);
+        expect((await link(orgA, id, 'dev-one')).result).toBe('linked');
+        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('live');
+        const crashing = createForgeConnectionStore({
+            sql,
+            orgId: orgA.id,
+            secrets: faultySecrets(keyring.openWith(keyring.realRepo), {
+                delete: async () => {
+                    throw new Error('the process died during cleanup');
+                },
+            }),
+            secretLog: noLog,
+            gitlab: gitlabApi(),
+        });
+        await expect(crashing.remove(id)).rejects.toThrow();
+        // The tombstone and the revocations committed before cleanup began.
+        const [row] =
+            await sql`select removed_at, active from forge_connection where org_id = ${orgA.id} and id = ${id}`;
+        expect(row?.removed_at).not.toBeNull();
+        expect(await liveGrantsOf(orgA.memberId)).toHaveLength(0);
+        expect(await liveGrantsOf(orgA.adminId)).toHaveLength(0);
+        expect(await asUserOf(grants, orgA, orgA.memberId)).toMatchObject({
+            ok: false,
+            outcome: { outcome: 'integration_required', reason: 'missing' },
+        });
+        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('missing');
+    });
+
+    it('refuses the token of a grant whose connection is inactive, even one written by SQL that revoked nothing', async () => {
+        const id = await connect(orgA);
+        await sql`
+            insert into integration_grant
+                (org_id, principal_kind, principal_user_id, provider, external_account_id, authority, status,
+                 forge_connection_id)
+            values (${orgA.id}, 'user', ${orgA.memberId}, ${FORGE}, 'sql-made', '{"scopes":[]}'::jsonb, 'active', ${id})
+        `;
+        expect(await asUserOf(grants, orgA, orgA.memberId)).toMatchObject({
+            ok: false,
+            outcome: { outcome: 'integration_required', reason: 'missing' },
+        });
+        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('missing');
+        // Only the connection stood in the way: once it is active the same row is found (and has no credential yet).
+        await sql`update forge_connection set active = true where org_id = ${orgA.id} and id = ${id}`;
+        expect(await asUserOf(grants, orgA, orgA.memberId)).toMatchObject({
+            ok: false,
+            outcome: { outcome: 'unavailable', reason: 'credential-pending' },
+        });
+    });
 
     it.each([
         ['a member’s link', false],

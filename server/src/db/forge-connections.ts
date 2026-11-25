@@ -298,19 +298,25 @@ export function createForgeConnectionStore({
         async remove(id) {
             await gate();
             // The tombstone is the durable record of the cleanup owed; a repeated delete of a tombstoned row retries it.
-            // One transaction, grants first (the lock order a grant's activation takes: grant row, then connection row):
-            // every grant published against the connection is revoked as the tombstone is set, and a grant activating
-            // concurrently either commits first and is revoked here, or finds the tombstone and ends revoked.
-            const rows = await sql.begin(async (tx) => {
+            // One transaction, the connection row first (the order publication takes: connection, then grants): the
+            // lock serializes with a grant being published, the tombstone and a set-based revocation of every grant
+            // naming the connection commit together, and secret cleanup runs only after that commit.
+            const rows = await sql.begin(async (tx): Promise<RetiringRow[]> => {
+                const locked = await tx<RetiringRow[]>`
+                    select org_id, id, secret_ref, ca_secret_ref from forge_connection
+                    where org_id = ${orgId} and id = ${id}
+                    for update
+                `;
+                if (!locked[0]) return [];
+                await tx`
+                    update forge_connection set removed_at = coalesce(removed_at, now()), active = false
+                    where org_id = ${orgId} and id = ${id}
+                `;
                 await tx`
                     update integration_grant set status = 'revoked', revoked_at = now(), updated_at = now()
                     where org_id = ${orgId} and forge_connection_id = ${id} and status <> 'revoked'
                 `;
-                return tx<RetiringRow[]>`
-                    update forge_connection set removed_at = coalesce(removed_at, now())
-                    where org_id = ${orgId} and id = ${id}
-                    returning org_id, id, secret_ref, ca_secret_ref
-                `;
+                return locked;
             });
             if (!rows[0]) return false;
             if (!(await finishRemoval(sql, secrets, rows[0], cleanup()))) {
@@ -425,8 +431,9 @@ async function finishRemoval(
         return false;
     }
     await sql.begin(async (tx) => {
-        // The grants were revoked at the tombstone; detach them (the key is NO ACTION) so recovery can still destroy
-        // their secrets, then drop the row.
+        // The connection row first, as everywhere; the grants were revoked at the tombstone. Detach them (the key is
+        // NO ACTION) so recovery can still destroy their secrets, then drop the row.
+        await tx`select 1 from forge_connection where org_id = ${row.org_id} and id = ${row.id} for update`;
         await tx`
             update integration_grant set forge_connection_id = null, status = 'revoked'
             where org_id = ${row.org_id} and forge_connection_id = ${row.id}

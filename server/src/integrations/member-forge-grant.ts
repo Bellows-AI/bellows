@@ -109,6 +109,11 @@ async function readMemberGrant(deps: Settings, orgId: string, userId: string, fo
     const rows = await orgSql(deps.sql, orgId)<GrantRow[]>`
         select id, status, secret_ref, secret_version, secret_wedged_at from integration_grant
         where org_id = ${orgId} and principal_user_id = ${userId} and provider = ${forge} and status <> 'revoked'
+          and (forge_connection_id is null or exists (
+              select 1 from forge_connection c
+              where c.org_id = integration_grant.org_id and c.id = integration_grant.forge_connection_id
+                and c.removed_at is null and c.active
+          ))
         order by updated_at desc
         limit 1
     `;
@@ -144,8 +149,8 @@ class ConnectionChanged extends Error {}
 const FOREIGN_KEY_VIOLATION = '23503';
 
 /**
- * The same row, published against a connection in one transaction: the grant row is written first and the connection
- * row share-locked last (the order a removal takes them in), and a connection that is not live rolls the write back.
+ * The same row, published against a connection in one transaction: the connection row is locked first (the order
+ * removal and activation take: connection, then grants), and a connection that is not live writes nothing.
  * Nothing is left behind for a callback that lost the race.
  */
 async function rowForConnection(
@@ -156,6 +161,13 @@ async function rowForConnection(
     const { orgId, userId, forge, externalAccountId } = input;
     try {
         return await orgSql(deps.sql, orgId).begin(async (tx) => {
+            const live = await tx`
+                select 1 from forge_connection
+                where org_id = ${orgId} and id = ${connection.id} and removed_at is null
+                  and (active or not ${connection.requireActive}::boolean)
+                for update
+            `;
+            if (live.length === 0) throw new ConnectionChanged();
             const find = () => grantOfAccount({ sql: tx as unknown as Sql, orgId }, forge, externalAccountId);
             let existing = await find();
             if (existing && existing.principalUserId !== userId) return 'conflict';
@@ -176,13 +188,6 @@ async function rowForConnection(
                 `;
             }
             if (!existing || existing.principalUserId !== userId) return 'conflict';
-            const live = await tx`
-                select 1 from forge_connection
-                where org_id = ${orgId} and id = ${connection.id} and removed_at is null
-                  and (active or not ${connection.requireActive}::boolean)
-                for share
-            `;
-            if (live.length === 0) throw new ConnectionChanged();
             return existing.id;
         });
     } catch (error) {
