@@ -12,12 +12,16 @@ import { createRepos, GIT_ISOLATION } from './gitlab-repo.mjs';
 
 /** An OAuth access token's lifetime on GitLab (Doorkeeper's `access_token_expires_in`). */
 export const GITLAB_TOKEN_TTL_S = 2 * 3600;
+/** An authorization code's lifetime (Doorkeeper's `authorization_code_expires_in`). */
+export const GITLAB_CODE_TTL_S = 600;
+const DEFAULT_SCOPE = 'api';
 const DEFAULT_MEMBER = 'lane-member';
 const USER_ID_BASE = 8000;
 const UNAUTHORIZED = { message: '401 Unauthorized' };
 const DEFAULT_VERSION = '17.4.0';
 const DEFAULT_PER_PAGE = 20;
 const MAX_PER_PAGE = 100;
+const oauthError = (error, error_description) => ({ error, error_description });
 const CLIENT_ERROR = { error: 'invalid_client', error_description: 'Client authentication failed.' };
 const MALFORMED_BODY = '<html>not json';
 const API = '/api/v4';
@@ -87,9 +91,9 @@ export const registerGitlab = (forge) => {
 
     // --- OAuth ---
 
-    const issuePair = (login, clientId = null) => {
+    const issuePair = (login, clientId = null, scope = DEFAULT_SCOPE) => {
         const id = forge.nextId();
-        const pair = { access: `gloas-fake${id}`, refresh: `glrt-fake${id}`, login, clientId };
+        const pair = { access: `gloas-fake${id}`, refresh: `glrt-fake${id}`, login, clientId, scope };
         forge.tokens.set(pair.access, { kind: 'user', login, expiresAt: forge.clock() + GITLAB_TOKEN_TTL_S * 1000 });
         pairs.set(pair.access, pair);
         pairs.set(pair.refresh, pair);
@@ -98,7 +102,7 @@ export const registerGitlab = (forge) => {
             token_type: 'Bearer',
             expires_in: GITLAB_TOKEN_TTL_S,
             refresh_token: pair.refresh,
-            scope: 'api',
+            scope: pair.scope,
             created_at: Math.floor(forge.clock() / 1000),
         };
     };
@@ -112,10 +116,18 @@ export const registerGitlab = (forge) => {
         'GET',
         '/oauth/authorize',
         ({ response, query }) => {
-            if (!query.redirect_uri) return forge.json(response, 400, { error: 'invalid_request' });
+            if (!query.redirect_uri) {
+                return forge.json(response, 400, oauthError('invalid_request', 'The redirect URI is missing.'));
+            }
             if (clients.size > 0 && !clients.has(query.client_id)) return forge.json(response, 401, CLIENT_ERROR);
             const code = `code${forge.nextId()}`;
-            codes.set(code, { login: query.login ?? DEFAULT_MEMBER, clientId: query.client_id ?? null });
+            codes.set(code, {
+                login: query.login ?? DEFAULT_MEMBER,
+                clientId: query.client_id ?? null,
+                redirectUri: query.redirect_uri,
+                scope: query.scope ?? DEFAULT_SCOPE,
+                expiresAt: forge.clock() + GITLAB_CODE_TTL_S * 1000,
+            });
             const target = new URL(query.redirect_uri);
             target.searchParams.set('code', code);
             if (query.state) target.searchParams.set('state', query.state);
@@ -132,23 +144,36 @@ export const registerGitlab = (forge) => {
             if (clients.size > 0 && !(clients.has(body.client_id) && clients.get(body.client_id) === body.client_secret)) {
                 return forge.json(response, 401, CLIENT_ERROR);
             }
+            const missing = (field) => forge.json(response, 400, oauthError('invalid_request', `The ${field} is missing.`));
             if (body.grant_type === 'refresh_token') {
+                if (!body.refresh_token) return missing('refresh_token');
                 const pair = pairs.get(body.refresh_token);
                 if (!pair || pair.refresh !== body.refresh_token || (clients.size > 0 && pair.clientId !== body.client_id)) {
                     return forge.json(response, 400, GRANT_ERROR);
                 }
                 killPair(pair);
-                return forge.json(response, 200, issuePair(pair.login, pair.clientId));
+                return forge.json(response, 200, issuePair(pair.login, pair.clientId, pair.scope));
             }
             if (body.grant_type !== 'authorization_code') {
-                return forge.json(response, 400, { error: 'unsupported_grant_type' });
+                return forge.json(
+                    response,
+                    400,
+                    oauthError('unsupported_grant_type', 'The authorization grant type is not supported by the authorization server.')
+                );
             }
+            if (!body.code) return missing('code');
             const issued = codes.get(body.code);
-            if (issued === undefined || (clients.size > 0 && issued.clientId !== body.client_id)) {
+            const refused =
+                issued === undefined ||
+                issued.expiresAt <= forge.clock() ||
+                issued.redirectUri !== body.redirect_uri ||
+                (clients.size > 0 && issued.clientId !== body.client_id);
+            if (refused) {
+                if (issued?.expiresAt <= forge.clock()) codes.delete(body.code);
                 return forge.json(response, 400, GRANT_ERROR);
             }
             codes.delete(body.code);
-            forge.json(response, 200, issuePair(issued.login, issued.clientId));
+            forge.json(response, 200, issuePair(issued.login, issued.clientId, issued.scope));
         },
         { auth: false }
     );

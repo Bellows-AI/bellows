@@ -11,9 +11,9 @@ import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { registerGithub, USER_TOKEN_TTL_S } from './github.mjs';
-import { GITLAB_TOKEN_TTL_S, registerGitlab } from './gitlab.mjs';
+import { GITLAB_CODE_TTL_S, GITLAB_TOKEN_TTL_S, registerGitlab } from './gitlab.mjs';
 
-export { GITLAB_TOKEN_TTL_S, USER_TOKEN_TTL_S };
+export { GITLAB_CODE_TTL_S, GITLAB_TOKEN_TTL_S, USER_TOKEN_TTL_S };
 const HOLD_POLL_MS = 50;
 const HOLD_DEADLINE_MS = 600_000;
 

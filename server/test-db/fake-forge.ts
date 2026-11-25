@@ -22,14 +22,15 @@ export interface ForgeHandle {
     advance: (ms: number) => void;
     mintInstallationToken: () => string;
 }
-const { createFakeForge, GITLAB_TOKEN_TTL_S, USER_TOKEN_TTL_S } = (await import(
+const { createFakeForge, GITLAB_CODE_TTL_S, GITLAB_TOKEN_TTL_S, USER_TOKEN_TTL_S } = (await import(
     pathToFileURL(join(ROOT, 'scripts/fake-forge/server.mjs')).href
 )) as {
     createFakeForge: (options: { stateDir: string; now?: () => number }) => ForgeHandle;
+    GITLAB_CODE_TTL_S: number;
     GITLAB_TOKEN_TTL_S: number;
     USER_TOKEN_TTL_S: number;
 };
-export { GITLAB_TOKEN_TTL_S, USER_TOKEN_TTL_S };
+export { GITLAB_CODE_TTL_S, GITLAB_TOKEN_TTL_S, USER_TOKEN_TTL_S };
 
 /** The injected clock's start: fixed, so a token's expiry moves only when a test advances it. */
 export const CLOCK_START_MS = 1_700_000_000_000;

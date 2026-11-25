@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type FakeGitlab, GITLAB_TOKEN_TTL_S, startFakeGitlab } from '../test-db/fake-gitlab.js';
+import { type FakeGitlab, GITLAB_CODE_TTL_S, GITLAB_TOKEN_TTL_S, startFakeGitlab } from '../test-db/fake-gitlab.js';
 
 let gl: FakeGitlab;
 
@@ -67,13 +67,21 @@ describe('fake GitLab: OAuth', () => {
         const authorize = await gl.send('GET', '/oauth/authorize?redirect_uri=http://board.test/cb&state=abc');
         const target = new URL(authorize.location as string);
         expect(target.searchParams.get('state')).toBe('abc');
-        const grant = { grant_type: 'authorization_code', code: target.searchParams.get('code') as string };
+        const grant = {
+            grant_type: 'authorization_code',
+            code: target.searchParams.get('code') as string,
+            redirect_uri: 'http://board.test/cb',
+        };
         expect((await gl.send('POST', '/oauth/token', { body: grant })).status).toBe(200);
         const replay = await gl.send('POST', '/oauth/token', { body: grant });
         expect(replay.status).toBe(400);
         expect(replay.body.error).toBe('invalid_grant');
         expect(
-            (await gl.send('POST', '/oauth/token', { body: { grant_type: 'authorization_code', code: 'x' } })).status
+            (
+                await gl.send('POST', '/oauth/token', {
+                    body: { grant_type: 'authorization_code', code: 'x', redirect_uri: 'http://board.test/cb' },
+                })
+            ).status
         ).toBe(400);
     });
 
@@ -776,6 +784,95 @@ describe('fake GitLab: group projects', () => {
     });
 });
 
+describe('fake GitLab: OAuth contract', () => {
+    const REDIRECT = 'http://board.test/cb';
+    const authorize = async (query = '') => {
+        const res = await gl.send('GET', `/oauth/authorize?redirect_uri=${REDIRECT}&login=dev${query}`);
+        return new URL(res.location as string).searchParams.get('code') as string;
+    };
+    const token = (body: object) => gl.send('POST', '/oauth/token', { body });
+    const exchange = (code: string, extra: object = { redirect_uri: REDIRECT }) =>
+        token({ grant_type: 'authorization_code', code, ...extra });
+    const GITLAB_ERROR = { error: expect.any(String), error_description: expect.any(String) };
+
+    it('requires the redirect URI of the authorization request: missing and different are refused, matching passes', async () => {
+        const missing = await exchange(await authorize(), {});
+        expect(missing.status).toBe(400);
+        expect(missing.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_grant' });
+        const different = await exchange(await authorize(), { redirect_uri: 'http://board.test/other' });
+        expect(different.status).toBe(400);
+        expect(different.body.error).toBe('invalid_grant');
+        const code = await authorize();
+        expect((await exchange(code, { redirect_uri: 'http://board.test/other' })).status).toBe(400);
+        expect((await exchange(code)).status).toBe(200);
+    });
+
+    it('checks grant_type: only authorization_code and refresh_token are served', async () => {
+        for (const grant_type of ['password', 'client_credentials', undefined]) {
+            const res = await token({ grant_type, code: await authorize(), redirect_uri: REDIRECT });
+            expect(res.status).toBe(400);
+            expect(res.body).toMatchObject({ ...GITLAB_ERROR, error: 'unsupported_grant_type' });
+        }
+        const pair = await gl.signIn();
+        expect((await token({ grant_type: 'refresh_token', refresh_token: pair.refresh_token })).status).toBe(200);
+    });
+
+    it('names a missing code or refresh token invalid_request', async () => {
+        expect((await token({ grant_type: 'authorization_code', redirect_uri: REDIRECT })).body).toMatchObject({
+            ...GITLAB_ERROR,
+            error: 'invalid_request',
+        });
+        expect((await token({ grant_type: 'refresh_token' })).body.error).toBe('invalid_request');
+    });
+
+    it('spends a code once and lets it expire after its lifetime on the injected clock', async () => {
+        const code = await authorize();
+        expect((await exchange(code)).status).toBe(200);
+        const replay = await exchange(code);
+        expect(replay.status).toBe(400);
+        expect(replay.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_grant' });
+        const stale = await authorize();
+        gl.forge.advance((GITLAB_CODE_TTL_S + 1) * 1000);
+        const expired = await exchange(stale);
+        expect(expired.status).toBe(400);
+        expect(expired.body.error).toBe('invalid_grant');
+        const fresh = await authorize();
+        gl.forge.advance((GITLAB_CODE_TTL_S - 1) * 1000);
+        expect((await exchange(fresh)).status).toBe(200);
+    });
+
+    it('echoes the requested scope in the token response, and keeps it across a refresh', async () => {
+        expect((await exchange(await authorize())).body.scope).toBe('api');
+        const pair = (await exchange(await authorize('&scope=read_user+openid'))).body;
+        expect(pair.scope).toBe('read_user openid');
+        const rotated = await token({ grant_type: 'refresh_token', refresh_token: pair.refresh_token });
+        expect(rotated.body.scope).toBe('read_user openid');
+    });
+
+    it('refuses the used refresh token after rotation with invalid_grant', async () => {
+        const pair = await gl.signIn();
+        const rotated = await token({ grant_type: 'refresh_token', refresh_token: pair.refresh_token });
+        expect(rotated.status).toBe(200);
+        const replay = await token({ grant_type: 'refresh_token', refresh_token: pair.refresh_token });
+        expect(replay.status).toBe(400);
+        expect(replay.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_grant' });
+    });
+
+    it('answers a client failure 401 invalid_client and a code issued to another client 400 invalid_grant', async () => {
+        await gl.control('gitlab/oauth-clients', { clientId: 'app-1', clientSecret: 'secret-1' });
+        await gl.control('gitlab/oauth-clients', { clientId: 'app-2', clientSecret: 'secret-2' });
+        const code = await authorize('&client_id=app-1');
+        const bad = await exchange(code, { redirect_uri: REDIRECT, client_id: 'app-1', client_secret: 'nope' });
+        expect(bad.status).toBe(401);
+        expect(bad.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_client' });
+        const other = await exchange(code, { redirect_uri: REDIRECT, client_id: 'app-2', client_secret: 'secret-2' });
+        expect(other.status).toBe(400);
+        expect(other.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_grant' });
+        const own = await exchange(code, { redirect_uri: REDIRECT, client_id: 'app-1', client_secret: 'secret-1' });
+        expect(own.status).toBe(200);
+    });
+});
+
 describe('fake GitLab: OAuth clients', () => {
     it('binds a pair to the client that authorized it, and refuses another client and a wrong secret', async () => {
         await gl.control('gitlab/oauth-clients', { clientId: 'app-1', clientSecret: 'secret-1' });
@@ -787,7 +884,13 @@ describe('fake GitLab: OAuth clients', () => {
         const code = new URL(authorize.location as string).searchParams.get('code') as string;
         const exchange = (clientSecret: string, clientId = 'app-1') =>
             gl.send('POST', '/oauth/token', {
-                body: { grant_type: 'authorization_code', code, client_id: clientId, client_secret: clientSecret },
+                body: {
+                    grant_type: 'authorization_code',
+                    code,
+                    redirect_uri: 'http://board.test/cb',
+                    client_id: clientId,
+                    client_secret: clientSecret,
+                },
             });
         expect((await exchange('wrong')).status).toBe(401);
         expect((await exchange('secret-2', 'app-2')).status).toBe(400);
@@ -819,7 +922,12 @@ describe('fake GitLab: OAuth clients', () => {
         };
         const exchange = async (extra: object) =>
             gl.send('POST', '/oauth/token', {
-                body: { grant_type: 'authorization_code', code: await code(), ...extra },
+                body: {
+                    grant_type: 'authorization_code',
+                    code: await code(),
+                    redirect_uri: 'http://board.test/cb',
+                    ...extra,
+                },
             });
         expect((await exchange({})).status).toBe(401);
         expect((await exchange({ client_id: 'ghost' })).status).toBe(401);

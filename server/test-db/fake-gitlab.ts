@@ -1,6 +1,6 @@
-import { GITLAB_TOKEN_TTL_S, startFakeForge } from './fake-forge.js';
+import { GITLAB_CODE_TTL_S, GITLAB_TOKEN_TTL_S, startFakeForge } from './fake-forge.js';
 
-export { GITLAB_TOKEN_TTL_S };
+export { GITLAB_CODE_TTL_S, GITLAB_TOKEN_TTL_S };
 
 export interface TokenPair {
     access_token: string;
