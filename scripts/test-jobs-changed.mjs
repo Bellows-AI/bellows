@@ -105,7 +105,7 @@ export const RULES = [
     [/^server\/src\/(provider-keys\/|net\/pinned-request\.ts$)/, FULL, 'the provider key check server/src/main.ts builds on every board'],
     [/^server\/src\/oauth\/(rate-limit|special-use-address)\.ts$/, FULL, 'the rate limiter every request passes'],
     [/^server\/src\/attachments\/(attachment-collector|attachment-store|attachment-rows)\.ts$/, FULL, 'the attachment sweep every board runs over the shared object store'],
-    [/^server\/src\/routes\/(auth|auth-onboarding|auth-shared|auth-member-grant|health|error-handler|executor-fields|helpers|route-guards|plan-limit|env|workspace|org-executors|github-credential|operation-receipts|ingest|stats|connections|agent-default|onboarding-setup)\.ts$/, FULL, 'routes the lane fixture, the driver or a runner calls in every phase'],
+    [/^server\/src\/routes\/(auth|auth-onboarding|auth-shared|auth-member-grant|health|error-handler|executor-fields|helpers|route-guards|plan-limit|env|workspace|org-executors|github-credential|forge-credential|runner-credentials|operation-receipts|ingest|stats|connections|agent-default|onboarding-setup)\.ts$/, FULL, 'routes the lane fixture, the driver or a runner calls in every phase'],
     // Registration runs at boot: a route file whose plugin body calls something besides declaring routes (pinned by the test).
     [/^server\/src\/routes\/(skills|skills-store|version|webhook|attachments|notification-subscriptions|operator|org-export|repos|connection-credential|batches\/batches|model-setup-verify)\.ts$/, FULL, 'registration does work at every boot'],
     // Called by named phases only.
@@ -119,7 +119,7 @@ export const RULES = [
     [/^server\/src\/(commerce\/|db\/commerce-|routes\/commerce\.ts$)/, NONE, 'commerce, off unless COMMERCE_ENABLED, which no lane sets; not called by any jobs phase'],
     [/^server\/src\/(db\/batches\/|routes\/batches\/|batch-merger\.ts$|batch-reconciler\.ts$)/, NONE, 'batches: their loops need BATCHES_ENABLED, which no lane sets, and no phase makes one; not called by any jobs phase'],
     [/^server\/src\/db\/forge-connection-sweep\.ts$/, FULL, 'a loop every board starts at boot (server/src/main.ts)'],
-    [/^server\/src\/(gitlab\/|db\/forge-connections\.ts$|db\/forge-links\.ts$|routes\/gitlab-connections\.ts$|routes\/gitlab-links\.ts$|integrations\/gitlab-link\.ts$|integrations\/providers\/gitlab\.ts$)/, NONE, 'the org GitLab connection and link: admin and member routes and a GitLab client, not called by any jobs phase'],
+    [/^server\/src\/(gitlab\/|db\/forge-connections\.ts$|db\/forge-links\.ts$|routes\/gitlab-connections\.ts$|routes\/gitlab-links\.ts$|routes\/gitlab-tracking\.ts$|integrations\/gitlab-link\.ts$|integrations\/providers\/gitlab\.ts$)/, NONE, 'the org GitLab connection and link: admin and member routes and a GitLab client, not called by any jobs phase'],
     [/^server\/src\/(routes\/(org-members|forge-grants|org-retention|audit|tokens|tasks|operator-driver-credentials|integrations|integration-catalog|attachment-uploads|attachment-ingest|model-setup|model-setup-save)\.ts|db\/org-export\.ts|attachments\/(name|sniff)\.ts)$/, NONE, 'settings, admin and dashboard routes; not called by any jobs phase'],
     [/^server\/src\/seed\//, NONE, 'synthetic data command line, not called by any jobs phase'],
 
