@@ -155,13 +155,20 @@ export function createGitlabApi({
                 req.destroy();
                 resolve(result);
             };
-            const onAbort = () => done({ ok: false, reason: 'timeout', sent: true });
-            // A timeout before the connection was made never reached the instance; after it, the request may have.
+            // Whether the request may have reached the instance: it was handed to a connection that was open, or its own
+            // write finished. Never inferred from a pooled socket's events: every request has a connection of its own.
             let connected = false;
-            const timer = setTimeout(() => done({ ok: false, reason: 'timeout', sent: connected }), probeTimeoutMs);
+            const possiblySent = () => connected || req.writableFinished;
+            const onAbort = () => done({ ok: false, reason: 'timeout', sent: possiblySent() });
+            const timer = setTimeout(
+                () => done({ ok: false, reason: 'timeout', sent: possiblySent() }),
+                probeTimeoutMs
+            );
             signal?.addEventListener('abort', onAbort, { once: true });
             const req = send(url, {
                 method,
+                // No keep-alive pool: a reused socket raises no connect event, so "sent" could not be told from "not".
+                agent: false,
                 headers: {
                     accept: JSON_CONTENT_TYPE,
                     ...(body === undefined ? {} : { 'content-length': String(Buffer.byteLength(body)) }),
@@ -170,12 +177,13 @@ export function createGitlabApi({
                 ...(caBundle === undefined ? {} : { ca: caBundle }),
             });
             req.on('socket', (socket) => {
-                const opened = () => {
+                socket.once(url.protocol === 'http:' ? 'connect' : 'secureConnect', () => {
                     connected = true;
-                };
-                socket.once(url.protocol === 'http:' ? 'connect' : 'secureConnect', opened);
+                });
             });
-            req.on('error', (error) => done({ ok: false, reason: failureOf(error), sent: !neverSent(error) }));
+            req.on('error', (error) =>
+                done({ ok: false, reason: failureOf(error), sent: possiblySent() || !neverSent(error) })
+            );
             req.on('response', (response) => {
                 const chunks: Buffer[] = [];
                 let size = 0;

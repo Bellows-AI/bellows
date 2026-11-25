@@ -234,7 +234,7 @@ export const registerGitlab = (forge) => {
             codes.delete(body.code);
             forge.json(response, 200, issuePair(issued.login, issued.clientId, issued.scope));
         },
-        { auth: false }
+        { auth: false, before: (ctx) => faulted(ctx) }
     );
     forge.route(
         'POST',
@@ -258,6 +258,12 @@ export const registerGitlab = (forge) => {
         const fault = faults.find((entry) => url.pathname.includes(entry.pathIncludes));
         if (!fault) return false;
         if (fault.remaining !== null && --fault.remaining <= 0) faults.splice(faults.indexOf(fault), 1);
+        if (fault.mode === 'lost') {
+            // The handler runs (a refresh token is spent) and its answer never leaves: the board sees a timeout.
+            response.writeHead = () => response;
+            response.end = () => response;
+            return false;
+        }
         if (fault.mode === 'status') forge.json(response, fault.status, { message: `${fault.status} injected fault` });
         else if (fault.mode === 'malformed') {
             response.writeHead(200, { 'content-type': 'application/json' });
@@ -1156,11 +1162,12 @@ export const registerGitlab = (forge) => {
         clients.set(clientId, { secret: clientSecret, redirectUris, scopes });
         forge.json(response, 200, { clientId: body.clientId });
     });
-    // `mode`: status (with `status`), malformed (a 200 whose body is not JSON), timeout (never answered), none (clears
+    // `mode`: status (with `status`), malformed (a 200 whose body is not JSON), timeout (never answered), lost (handled, answer
+    // dropped), none (clears
     // every fault). `pathIncludes` limits it to API paths containing the text; `count` to that many calls.
     control('faults', ({ response, body }) => {
         if (body.mode === 'none') faults.length = 0;
-        else if (['status', 'malformed', 'timeout'].includes(body.mode)) {
+        else if (['status', 'malformed', 'timeout', 'lost'].includes(body.mode)) {
             faults.push({
                 mode: body.mode,
                 status: Number(body.status ?? 500),

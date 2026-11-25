@@ -574,6 +574,46 @@ describe.skipIf(!enabled)('the refresh of a GitLab grant', () => {
         }
     );
 
+    it.each([
+        ['a warmed connection', true],
+        ['a fresh connection', false],
+    ])(
+        'never replays a token whose answer was lost on %s: the real client times out after GitLab spent it',
+        async (_name, warmed) => {
+            await linked(orgA, 'dev-one');
+            let boardCalls = 0;
+            const api = gitlabApi((real) => ({
+                ...real,
+                request: (req) => {
+                    if (req.path === '/oauth/token') boardCalls += 1;
+                    return real.request(req);
+                },
+            }));
+            if (warmed) {
+                // An earlier call to the same host, as a pooled client would have kept the socket for.
+                expect(await api.checkVersion({ host: HOST, token: 'any' })).toBeDefined();
+            }
+            const held = await asUserOf(grants, orgA, orgA.memberId);
+            if (!held.ok) throw new Error('no token to spend');
+            await fake.control('gitlab/faults', { mode: 'lost', pathIncludes: '/oauth/token', count: 1 });
+            const first = await asUserOf(replica({ clock: later, api }).memberGrants, orgA, orgA.memberId);
+            expect(first).toMatchObject({
+                ok: false,
+                outcome: { outcome: 'integration_required', reason: 'reconnect' },
+            });
+            // GitLab did process it (the old pair is dead) and the board sent it exactly once.
+            expect((await fake.send('GET', '/api/v4/user', { token: held.accessToken })).status).toBe(401);
+            expect(boardCalls).toBe(1);
+            const second = await asUserOf(replica({ clock: later, api }).memberGrants, orgA, orgA.memberId);
+            expect(second).toMatchObject({
+                ok: false,
+                outcome: { outcome: 'integration_required', reason: 'reconnect' },
+            });
+            expect(boardCalls).toBe(1);
+            expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('broken');
+        }
+    );
+
     it('never replays a refresh token whose consumption is unknown: the lost answer ends in reconnect, once', async () => {
         await linked(orgA, 'dev-one');
         const calls = tokenCalls();

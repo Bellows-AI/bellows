@@ -143,3 +143,22 @@ describe('createGitlabApi.request: whether the request was sent', () => {
         });
     });
 });
+
+describe('createGitlabApi.request: no connection is reused', () => {
+    it('sends every request on its own connection, so a deadline after a warm-up still counts as sent', async () => {
+        const sockets = new Set<unknown>();
+        const received: string[] = [];
+        const host = await serve((req, res) => {
+            sockets.add(req.socket);
+            received.push(`${req.method} ${req.url}`);
+            // The warm-up is answered; the refresh is processed and never answered.
+            if (req.method === 'GET') res.writeHead(200, { connection: 'keep-alive' }).end('{}');
+        });
+        const api = httpApi();
+        expect(await api.request({ host, path: '/warm' })).toMatchObject({ ok: true });
+        const lost = await api.request({ host, path: '/oauth/token', method: 'POST', body: '{}' });
+        expect(lost).toEqual({ ok: false, reason: 'timeout', sent: true });
+        expect(received).toEqual(['GET /warm', 'POST /oauth/token']);
+        expect(sockets.size).toBe(2);
+    });
+});
