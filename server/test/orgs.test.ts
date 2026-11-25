@@ -4,6 +4,7 @@ import type { AppConfig } from '../src/config.js';
 import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import { createOrgRegistry, planReaderOf, type OrgRegistry } from '../src/orgs.js';
 import { createReferenceSecretStore, createReferenceState } from './secrets-reference-store.js';
+import { githubForge } from './helpers-forge.js';
 import { testConfig } from './helpers.js';
 
 /**
@@ -124,9 +125,9 @@ describe('createOrgRegistry', () => {
 
         expect(planReaderOf(none('file:///srv/git'), undefined)).not.toBeNull();
         expect(planReaderOf(none(), undefined)).toBeNull();
-        const client = { readFileAtBranchTip: async () => null };
-        expect(planReaderOf(none(), client)).not.toBeNull();
-        expect(planReaderOf(none('file:///srv/git'), client)).not.toBeNull();
+        const forge = githubForge({ readFileAtBranchTip: async () => null });
+        expect(planReaderOf(none(), forge)).not.toBeNull();
+        expect(planReaderOf(none('file:///srv/git'), forge)).not.toBeNull();
     });
 
     it('lists the organizations and warms each runtime', async () => {

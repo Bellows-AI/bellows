@@ -9,7 +9,10 @@ import type { EnvVarStore } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import type { WorkflowStore } from '../src/db/workflows/workflow-store.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
+import type { ForgeSource } from '../src/forge/forge-client.js';
+import type { GitHubAppClient } from '../src/github/app-client.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
+import { githubForge } from './helpers-forge.js';
 import { type RepoSource, staticRepoSource } from '../src/github/repo-source.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { InstallationRepo } from '../src/github/app-client.js';
@@ -22,6 +25,21 @@ import { stubTelemetryClient, type TelemetryStub } from './helpers-telemetry.js'
  * registry that holds the whole store. Only that concern's methods can be named (`Slice` is its
  * interface, e.g. `JobQuestionStore`); a method the route should not reach is simply absent.
  */
+/** The forge source of the stubbed reads a test named, or none: the board that reads nothing. */
+function forgeOfReads(parts: {
+    branchHead?: GitHubAppClient['readBranchHead'] | undefined;
+    listBranches?: GitHubAppClient['listBranches'] | undefined;
+    repoSkills?: GitHubAppClient['listRepoSkills'] | undefined;
+}): ForgeSource | undefined {
+    const { branchHead, listBranches, repoSkills } = parts;
+    if (!branchHead && !listBranches && !repoSkills) return undefined;
+    return githubForge({
+        ...(branchHead ? { readBranchHead: branchHead } : {}),
+        ...(listBranches ? { listBranches } : {}),
+        ...(repoSkills ? { listRepoSkills: repoSkills } : {}),
+    });
+}
+
 export function jobStoreSlice<Slice extends Partial<JobStore>>(stub: { [K in keyof Slice]?: unknown }): JobStore {
     return stub as unknown as JobStore;
 }
@@ -45,12 +63,12 @@ export function staticRegistry(
         batchObserver?: OrgRuntime['batchObserver'];
         /** Present when the org's board can merge: its absence refuses an automerge plan at start. */
         batchMerger?: OrgRuntime['batchMerger'];
-        /** Present when the org's board reads branches through an installation. */
-        branchHead?: OrgRuntime['branchHead'];
-        /** Present when the org's board lists branches through an installation. */
-        listBranches?: OrgRuntime['listBranches'];
-        /** Present when the org's board reads repo skills through an installation. */
-        repoSkills?: OrgRuntime['repoSkills'];
+        /** Installation reads of GitHub the org's board has (the GitHub client's own signatures); each present one puts the org on a GitHub forge source. */
+        branchHead?: GitHubAppClient['readBranchHead'] | undefined;
+        listBranches?: GitHubAppClient['listBranches'] | undefined;
+        repoSkills?: GitHubAppClient['listRepoSkills'] | undefined;
+        /** The org's forge source itself, for a test that needs more than those three reads. */
+        forge?: ForgeSource;
         /** The org's own runtime store, when a test needs two orgs that do not share one. */
         batchesByOrg?: Readonly<Record<string, NonNullable<OrgRuntime['batches']>>>;
         connections?: OrgRuntime['connections'];
@@ -79,9 +97,7 @@ export function staticRegistry(
         batches: parts.batches,
         batchObserver: parts.batchObserver,
         batchMerger: parts.batchMerger,
-        branchHead: parts.branchHead,
-        listBranches: parts.listBranches,
-        repoSkills: parts.repoSkills,
+        forge: parts.forge ?? forgeOfReads(parts),
         connections: parts.connections,
         githubToken: parts.githubToken,
         userExecutors: parts.userExecutors,

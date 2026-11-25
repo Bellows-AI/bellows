@@ -40,5 +40,5 @@ export const isGithubRepo = (repo: RepoRef): boolean => sameRepo(githubRepo(repo
 /** The ref of a wire `owner/name`, the edge into the stores: GitHub's until a route carries a forge; null for none. */
 export const repoRefOf = (repo: string | null): RepoRef | null => (repo === null ? null : githubRepo(repo));
 
-/** The ref of a listed repo: the one place the GitHub-only listing becomes refs, until a mixed-forge source replaces it. */
-export const refOfListed = (repo: Repo): RepoRef => githubRepo(`${repo.owner}/${repo.name}`);
+/** The ref of a listed repo: GitHub's unless the entry carries its own `ref` (what a mixed-forge listing sets); the one place a listing becomes refs. */
+export const refOfListed = (repo: Repo): RepoRef => repo.ref ?? githubRepo(`${repo.owner}/${repo.name}`);

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { BatchPlan, PrFacts } from '@factory-ai/core';
-import { createBatchMerger, type BatchMerger, type MergeClient } from '../src/batch-merger.js';
+import { createBatchMerger, type BatchMerger } from '../src/batch-merger.js';
 import { createBatchPrObserver } from '../src/batch-pr-observer.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import type { BatchStore } from '../src/db/batches/batch-store-types.js';
@@ -17,6 +17,8 @@ import { batchPlan, facts, prTask, recordPr, rootOf, setSucceeded, startBatch } 
 import { testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 import { memberGrantsOver, signMemberIn } from './member-grant-rig.js';
+import type { GitHubAppClient } from '../src/github/app-client.js';
+import { githubForge } from '../test/helpers-forge.js';
 
 /**
  * Automerge merges as the batch's starter (docs/batches.md): the `PUT …/merge` carries the starter's user token, every
@@ -47,7 +49,7 @@ const reads: number[] = [];
 const replies = new Map<number, PrFacts>();
 let mergeFailure: GitHubMergeError | undefined;
 
-const client: MergeClient = {
+const client: Pick<GitHubAppClient, 'readPullRequest' | 'mergePullRequest' | 'readBranchState'> = {
     async readPullRequest(_repo, number) {
         reads.push(number);
         return replies.get(number)!;
@@ -90,7 +92,7 @@ const mergerOf = (memberGrants: MemberForgeGrants | undefined): BatchMerger => {
     return createBatchMerger({
         sql,
         orgId: ORG,
-        client,
+        forge: githubForge(client),
         recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
         mergeToken: (who, signal) =>
@@ -116,7 +118,7 @@ async function readyBatch(starter = STARTER.id) {
     const observer = createBatchPrObserver({
         sql,
         orgId: ORG,
-        reader: client,
+        forge: githubForge(client),
         recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (batchId) => store.reconcile(batchId),
     });

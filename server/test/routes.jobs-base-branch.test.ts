@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
-import type { OrgRuntime } from '../src/orgs.js';
+import type { GitHubAppClient } from '../src/github/app-client.js';
 import { trackApps } from './helpers-http.js';
 import { jobStoreSlice, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 
@@ -20,7 +20,7 @@ interface Created {
     idempotency: { fingerprint: string } | undefined;
 }
 
-async function boot(branchHead?: OrgRuntime['branchHead']) {
+async function boot(branchHead?: GitHubAppClient['readBranchHead']) {
     const created: Created[] = [];
     const jobs = jobStoreSlice<JobStore>({
         create: async (

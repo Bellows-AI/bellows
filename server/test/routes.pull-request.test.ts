@@ -1,7 +1,9 @@
-import { githubRepo } from '@factory-ai/core';
+import { githubRepo, parseRepoRef, type RepoRef } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
+import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
+import type { GithubMint } from '../src/routes/github-credential.js';
 import type { PrWriteStore } from '../src/db/jobs/job-store-pr-write.js';
 import { createPrWriter, type PrWriter } from '../src/github/pr-write.js';
 import { trackApps } from './helpers-http.js';
@@ -22,19 +24,27 @@ const ASK = {
     create: { title: 'T', body: 'B', draft: false, base: 'main' },
 };
 
-const context = (executionUserId: string | null = 'user-1') => ({
+const context = (executionUserId: string | null = 'user-1', repo: RepoRef = githubRepo('acme/widgets')) => ({
     result: 'ok' as const,
     orgId: ORG,
     rootJobId: ID,
-    repo: githubRepo('acme/widgets'),
-    rootRepo: githubRepo('acme/widgets'),
+    repo,
+    rootRepo: repo,
     executionUserId,
 });
 
-async function harness(options: { writer?: boolean | PrWriter; mint?: boolean; store?: Partial<PrWriteStore> } = {}) {
+async function harness(
+    options: {
+        writer?: boolean | PrWriter;
+        mint?: boolean | GithubMint;
+        repo?: RepoRef;
+        memberGrants?: MemberForgeGrants;
+        store?: Partial<PrWriteStore>;
+    } = {}
+) {
     const config = testConfig();
     const store = jobStoreSlice<PrWriteStore>({
-        prWriteContext: async () => context(),
+        prWriteContext: async () => context('user-1', options.repo),
         openPrForgeWait: async () => ({ result: 'ok' }),
         closePrForgeWait: async () => {},
         ...options.store,
@@ -45,7 +55,9 @@ async function harness(options: { writer?: boolean | PrWriter; mint?: boolean; s
         ...(options.writer
             ? { prWriter: options.writer === true ? createPrWriter({ apiUrl: 'http://127.0.0.1:9' }) : options.writer }
             : {}),
-        ...(options.mint
+        ...(options.memberGrants ? { memberGrants: options.memberGrants } : {}),
+        ...(typeof options.mint === 'function' ? { githubMint: options.mint } : {}),
+        ...(options.mint === true
             ? {
                   githubMint: async () => ({
                       token: 'ghs_x',
@@ -76,6 +88,72 @@ describe('POST /api/jobs/:id/pull-request', () => {
         const res = await post(instance, ASK);
         expect(res.statusCode).toBe(409);
         expect(res.json()).toMatchObject({ code: 'GITHUB_UNAVAILABLE' });
+    });
+
+    // The base branch's order: the missing writer is the 409 before any credential is read, whatever the credential says.
+    it('answers 409 before the installation mint or a grant read when the board has no writer', async () => {
+        const reads: string[] = [];
+        const mint: GithubMint = async () => {
+            reads.push('mint');
+            throw new Error('the mint is down');
+        };
+        const grants = {
+            accessToken: async () => {
+                reads.push('grant');
+                throw new Error('the grant store is down');
+            },
+        } as unknown as MemberForgeGrants;
+        for (const options of [{ mint }, { memberGrants: grants }]) {
+            const res = await post(await harness(options), ASK);
+            expect(res.statusCode).toBe(409);
+            expect(res.json()).toMatchObject({ code: 'GITHUB_UNAVAILABLE' });
+        }
+        expect(reads).toEqual([]);
+    });
+
+    describe('a task on a forge no client answers for (GitLab)', () => {
+        const GITLAB = parseRepoRef('gitlab:gl.example/acme/widgets')!;
+
+        it('is unconfirmed (503): no mint, no grant read, no wait opened, no GitHub request', async () => {
+            const reads: string[] = [];
+            const waits: unknown[] = [];
+            const requests: string[] = [];
+            const writer = new Proxy({} as PrWriter, {
+                get: (_target, name) => async () => {
+                    requests.push(String(name));
+                    return null;
+                },
+            });
+            const mint: GithubMint = async (_org, path) => {
+                reads.push(`mint ${path}`);
+                return null;
+            };
+            const grants = {
+                accessToken: async () => {
+                    reads.push('grant');
+                    return { ok: false, outcome: { outcome: 'integration_required', reason: 'missing' } };
+                },
+            } as unknown as MemberForgeGrants;
+            for (const options of [{ mint }, { memberGrants: grants }]) {
+                const res = await post(
+                    await harness({
+                        ...options,
+                        writer,
+                        repo: GITLAB,
+                        store: {
+                            openPrForgeWait: async (...args) => {
+                                waits.push(args);
+                                return { result: 'ok' };
+                            },
+                        },
+                    }),
+                    ASK
+                );
+                expect(res.statusCode).toBe(503);
+                expect(res.json()).toMatchObject({ code: 'UNAVAILABLE' });
+            }
+            expect({ reads, waits, requests }).toEqual({ reads: [], waits: [], requests: [] });
+        });
     });
 
     it.each([

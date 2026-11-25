@@ -4,22 +4,15 @@ import {
     resolveSkillCatalog,
     type CatalogEntry,
     type ExecutorType,
+    type RepoRef,
     type Skill,
     type SourceSkill,
 } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from './auth/plugin.js';
 import type { SkillStore } from './db/skill-store.js';
-import type { RepoSkillRead } from './github/skill-read.js';
+import { forgeClientOrThrow, INSTALLATION_CREDENTIAL, type ForgeSource } from './forge/forge-client.js';
 import type { OrgRuntime } from './orgs.js';
-
-/** The org's repo skills read (`OrgRuntime.repoSkills`): rejects when the read did not confirm. */
-export type RepoSkillReader = (
-    repo: string,
-    branch: string | null,
-    dirs: readonly string[],
-    signal?: AbortSignal
-) => Promise<RepoSkillRead>;
 
 /**
  * The executor type whose CLI scans the checkout, as far as it was confirmed. `known` with a null type is a task that
@@ -51,9 +44,10 @@ export interface EffectiveCatalog {
 
 export interface CatalogRequest {
     builtin: readonly Skill[];
-    /** The reader of the caller's org board; undefined when it has none. */
-    read: RepoSkillReader | undefined;
-    repo: string | null;
+    /** What the caller's org board reads repositories through (`OrgRuntime.forge`); undefined when it has none. */
+    forge: ForgeSource | undefined;
+    /** The complete ref, so another host or forge never reaches the GitHub client by its path. */
+    repo: RepoRef | null;
     branch: string | null;
     /** Which directories of the checkout the repository's skills are read from; required, nothing is assumed. */
     executorType: ExecutorTypeRead;
@@ -84,9 +78,14 @@ export async function effectiveCatalog(request: CatalogRequest): Promise<Effecti
     if (request.repo !== null && needsRepo) {
         try {
             if (request.executorType.state === 'unconfirmed') throw new Error(request.executorType.error);
-            if (!request.read) throw new Error('Repository skills cannot be read on this board');
+            const client = forgeClientOrThrow(
+                request.forge,
+                request.repo,
+                INSTALLATION_CREDENTIAL,
+                'Repository skills'
+            );
             const dirs = checkoutSkillDirsOf(request.executorType.type);
-            const read = await request.read(request.repo, request.branch, dirs, request.signal);
+            const read = await client.listSkills(request.branch, dirs, request.signal);
             held = read.skills;
             repo = {
                 state: 'read',

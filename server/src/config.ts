@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { CLOUD, DEPLOYMENT_MODES, type DeploymentMode, SELF_HOSTED } from '@factory-ai/core';
+import { CLOUD, DEPLOYMENT_MODES, type DeploymentMode, type RepoRef, SELF_HOSTED } from '@factory-ai/core';
 import { loadArtifactsConfig, refuseSecondRetentionKnob, type ArtifactsConfig } from './config-artifacts.js';
 import { loadCommerceConfig, type CommerceConfig } from './config-commerce.js';
 import { type JiraOAuthConfig, type LinearOAuthConfig, loadJiraOAuth, loadLinearOAuth } from './config-integrations.js';
@@ -12,6 +12,8 @@ import type { PlanLimits } from './db/plan-limits.js';
 export interface Repo {
     readonly owner: string;
     readonly name: string;
+    /** The repo's complete identity when it is not on github.com: set by a mixed-forge listing, absent for GitHub's. */
+    readonly ref?: RepoRef | undefined;
 }
 
 /**

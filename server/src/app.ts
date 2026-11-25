@@ -336,7 +336,7 @@ const jobRouteDepsOf = (
         forgeGate,
         pullRequests: {
             tokens: createPrTokenSource({ memberGrants, mint: githubMint ?? orgMint(orgs) }),
-            writer: prWriter ?? (apiUrl === null ? undefined : createPrWriter({ apiUrl })),
+            forge: { github: { writer: prWriter ?? (apiUrl === null ? undefined : createPrWriter({ apiUrl })) } },
         },
         ...(metrics ? { claimPoll: metrics.claimPoll } : {}),
     };

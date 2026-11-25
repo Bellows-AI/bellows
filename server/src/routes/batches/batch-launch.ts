@@ -16,6 +16,7 @@ import { bad, checkReposVisible, guard } from '../helpers.js';
 import { HTTP_CONFLICT } from '../jobs/job-limits.js';
 import { forgeOfRepo, refOfListed } from '../../forge/forges.js';
 import { refusedAsNoForgeGrant } from '../jobs/forge-usable.js';
+import { readBranchHead } from '../../forge/forge-client.js';
 import { defaultExecutorOf, executorTypeOf, refusedAsNoModel, refusedAsUnusable } from '../jobs/executor-usable.js';
 import { validateExecutorField } from '../jobs/job-field-validation.js';
 
@@ -81,7 +82,7 @@ const offDefaultTargets = (plan: ResolvedBatchPlan, defaults: DefaultBranches) =
 
 /**
  * Each target off its repository's default branch must exist on the remote, or every task would
- * fail at checkout. Offline the board reads no branches and the checkout's own refusal stands.
+ * fail at checkout. Offline, or on a forge the board has no client for, it reads no branches and the checkout's own refusal stands.
  */
 async function targetBranchesExist(
     ctx: Context,
@@ -89,13 +90,12 @@ async function targetBranchesExist(
     reply: FastifyReply,
     targets: ResolvedBatchPlan['targets']
 ) {
-    const branchHead = ctx.runtime.branchHead;
-    if (!branchHead) return true;
     for (const target of targets) {
+        // A board with no client for the target's forge cannot say the branch is absent: the checkout's refusal stands.
         const head = await guard(
             reply,
             (e) => request.log.error({ err: e }, 'batch target branch read failed'),
-            () => branchHead(target.repo.path, target.branch)
+            () => readBranchHead(ctx.runtime.forge, target.repo, target.branch)
         );
         if (!head.ok) return false;
         if (head.value !== null) continue;

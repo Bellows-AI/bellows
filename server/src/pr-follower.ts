@@ -8,7 +8,6 @@ import {
     observedMergeId,
     OBSERVER_CONCURRENCY,
     readFacts,
-    type PrReader,
     type ReadPause,
 } from './batch-pr-observer.js';
 import type { PrLifecycleStore } from './db/pr-lifecycle-store.js';
@@ -19,6 +18,7 @@ import {
     type PrFollowClaim,
     type PrFollowResult,
 } from './db/pr-follow-store.js';
+import type { ForgeSource } from './forge/forge-client.js';
 import { logger } from './log.js';
 
 /**
@@ -34,7 +34,7 @@ export interface PrFollowerDeps {
     orgId: string;
     ready?: Promise<unknown> | undefined;
     /** Absent offline: nothing is followed. */
-    reader?: PrReader | undefined;
+    forge?: ForgeSource | undefined;
     prs: Pick<PrLifecycleStore, 'cancelForRepoPr' | 'foldObservedActivity'>;
     /** Records a merge GitHub reports: the job store's `closeMergedPr`, the batch observer's own hand-off. */
     recordMerge: (repo: RepoRef, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
@@ -77,7 +77,7 @@ const validDate = (value: string | null): Date | undefined => {
 };
 
 export function createPrFollower(deps: PrFollowerDeps): PrFollower {
-    const { sql, orgId, ready, reader, prs, recordMerge, now } = deps;
+    const { sql, orgId, ready, forge, prs, recordMerge, now } = deps;
     const concurrency = deps.concurrency ?? OBSERVER_CONCURRENCY;
     const spreadMs = deps.spreadMs ?? PR_FOLLOW_INTERVAL_MS;
     const store = { sql, orgId, now };
@@ -114,7 +114,7 @@ export function createPrFollower(deps: PrFollowerDeps): PrFollower {
     };
 
     const followOne = async (claim: PrFollowClaim): Promise<boolean> => {
-        const read = await readFacts(reader!, claim.repo.path, claim.prNumber);
+        const read = await readFacts(forge, claim.repo, claim.prNumber);
         pause.note(read);
         return withFollowClaim(store, claim, async (tx): Promise<PrFollowResult> => {
             if (read.kind === 'error') return { kind: 'failed', error: read.error, retryAfterMs: read.retryAfterMs };
@@ -129,7 +129,7 @@ export function createPrFollower(deps: PrFollowerDeps): PrFollower {
     return {
         async observeDue() {
             if (ready) await ready;
-            if (!reader) return 0;
+            if (!forge) return 0;
             let committed = 0;
             for (let round = 0; round < MAX_ROUNDS_PER_TICK && pause.open(); round += 1) {
                 const claims = await claimDue(store, concurrency, spreadMs);

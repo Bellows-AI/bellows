@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { BatchPlan, PrFacts } from '@factory-ai/core';
-import { createBatchPrObserver, type BatchPrObserver, type PrReader } from '../src/batch-pr-observer.js';
+import { createBatchPrObserver, type BatchPrObserver } from '../src/batch-pr-observer.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import { claimDue, commitObservation, requestRefresh } from '../src/db/batches/batch-store-observation.js';
@@ -24,6 +24,8 @@ import {
     setSucceeded,
     startBatch,
 } from './batch-fixtures.js';
+import type { GitHubAppClient } from '../src/github/app-client.js';
+import { githubForge } from '../test/helpers-forge.js';
 
 /**
  * A batch task whose run published a PR is ready only once the board has nothing left to
@@ -47,7 +49,7 @@ const clock = { ms: Date.now() };
 const now = () => new Date(clock.ms);
 
 const replies = new Map<number, PrFacts>();
-const reader: PrReader = {
+const reader: Pick<GitHubAppClient, 'readPullRequest'> = {
     async readPullRequest(_repo, number) {
         const reply = replies.get(number);
         if (reply === undefined) throw new GitHubReadError('not found', 'not_found');
@@ -70,7 +72,7 @@ beforeEach(() => {
     observer = createBatchPrObserver({
         sql,
         orgId: ORG,
-        reader,
+        forge: githubForge(reader),
         recordMerge: (repo, number, deliveryId, mergedAt) => jobs.closeMergedPr(repo, number, deliveryId, mergedAt),
         reconcile: (id) => store.reconcile(id),
         now,

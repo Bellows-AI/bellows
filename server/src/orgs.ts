@@ -1,7 +1,7 @@
 import { readGrantStanding } from './db/forge-grant-standing.js';
 import type { Sql } from 'postgres';
 import { modelKeyRequired, type RepoRef } from '@factory-ai/core';
-import { isGithubRepo } from './forge/forges.js';
+import { BRANCH_UNCHECKED, readBranchHead, type ForgeSource } from './forge/forge-client.js';
 import { orgSql } from './db/org-sql.js';
 import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
 import { createAttachmentRows } from './attachments/attachment-rows.js';
@@ -32,10 +32,9 @@ import {
     type NotificationSubscriptionStore,
 } from './notifications/subscription-store.js';
 import { createNotificationOutboxStore, type NotificationOutboxStore } from './notifications/outbox-store.js';
-import { createGitHubAppClient, type GitHubAppClient } from './github/app-client.js';
+import { createGitHubAppClient } from './github/app-client.js';
 import { installationTokenProvider, type InstallationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
-import type { RepoSkillReader } from './skill-catalog.js';
 import { trackedRepos } from './db/tracked-repos.js';
 import { type CommerceStore, createCommerceStore } from './db/commerce-store.js';
 import { createWorkflowStore, type WorkflowStore } from './db/workflows/workflow-store.js';
@@ -85,12 +84,11 @@ export interface OrgRuntime {
     prFollower?: PrFollower | undefined;
     /** Merges the PRs of automerge stages and verifies each merged stage (064); absent offline, where the board cannot merge. */
     batchMerger?: BatchMerger | undefined;
-    /** A page of the repository's branch names (or a prefix search) through the org's installation; absent offline. */
-    listBranches?: GitHubAppClient['listBranches'] | undefined;
-    /** The repository's own skills at a branch tip through the org's installation; rejects when unconfirmed; absent offline. */
-    repoSkills?: RepoSkillReader | undefined;
-    /** A branch's tip through the org's installation, null when it cannot be read; absent offline. */
-    branchHead?: ((repo: string, branch: string) => Promise<string | null>) | undefined;
+    /**
+     * What the org reads its repositories' forges through (docs/repos.md): resolved per complete repo ref with
+     * `resolveForgeClient` for branches, files, skills and change requests; absent offline.
+     */
+    forge?: ForgeSource | undefined;
     /** The artifact index over the object store (070): the org's chunks and manifests; present with the other stores. */
     artifacts?: ArtifactStore | undefined;
     /** The member uploads (115) over the same object store; present with the artifact index. */
@@ -166,8 +164,8 @@ export type OrgRegistryDeps = {
  * The execution-plan source: the App installation's API read, else (code-only `none` arm) a git
  * read from the origin named by `REPO_CLONE_BASE`, else none.
  */
-export function planReaderOf(config: AppConfig, client: Parameters<typeof createPlanReader>[0] | undefined) {
-    if (client) return createPlanReader(client);
+export function planReaderOf(config: AppConfig, forge: ForgeSource | undefined) {
+    if (forge) return createPlanReader(forge);
     if (config.github.mode === 'none' && config.github.originBase) {
         return createOriginPlanReader(config.github.originBase);
     }
@@ -181,7 +179,7 @@ function buildOrgStores({
     ready,
     config,
     tokens,
-    client,
+    forge,
     claimMetrics,
     orgKey,
     secrets,
@@ -200,7 +198,7 @@ function buildOrgStores({
     ready: Promise<unknown>;
     config: AppConfig;
     tokens: ReturnType<typeof installationTokenProvider> | undefined;
-    client: ReturnType<typeof createGitHubAppClient> | undefined;
+    forge: ForgeSource | undefined;
 }): {
     envVars: EnvVarStore;
     batches: BatchStore;
@@ -229,7 +227,7 @@ function buildOrgStores({
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
     // transaction records the thread's publication identity through it.
     const prs = createPrLifecycleStore({ sql, orgId, ready });
-    const planReader = planReaderOf(config, client);
+    const planReader = planReaderOf(config, forge);
     const jobs = createJobStore({
         sql,
         orgId,
@@ -271,10 +269,12 @@ function buildOrgStores({
         githubApp: tokens !== undefined,
         deploymentMode: config.deploymentMode,
         planDefaults: config.planDefaults,
-        ...(client
+        ...(forge
             ? {
-                  revisionOf: (repo: RepoRef, branch: string) =>
-                      isGithubRepo(repo) ? client.readBranchHead(repo.path, branch) : Promise.resolve(null),
+                  revisionOf: async (repo: RepoRef, branch: string) => {
+                      const head = await readBranchHead(forge, repo, branch);
+                      return head === BRANCH_UNCHECKED ? null : head;
+                  },
               }
             : {}),
     });
@@ -286,7 +286,7 @@ function buildOrgStores({
         sql,
         orgId,
         ready,
-        reader: client,
+        forge,
         pause,
         recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
         reconcile: (batchId) => batches.reconcile(batchId),
@@ -297,7 +297,7 @@ function buildOrgStores({
         sql,
         orgId,
         ready,
-        reader: client,
+        forge,
         prs,
         pause,
         recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
@@ -305,12 +305,12 @@ function buildOrgStores({
     // The merger (064): needs the installation to read through; offline the board cannot merge and
     // refuses an automerge plan at start. It merges as the batch's starter, as the installation without member grants.
     const batchMerger =
-        client && tokens
+        forge && tokens
             ? createBatchMerger({
                   sql,
                   orgId,
                   ready,
-                  client,
+                  forge,
                   mergeToken: createMergeTokenSource({ memberGrants, installation: () => tokens.get() }),
                   recordMerge: (repo, prNumber, deliveryId, mergedAt) =>
                       jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
@@ -428,6 +428,17 @@ function orgExportOf(sql: Sql, orgId: string, backend: ArtifactBackend | undefin
     return createOrgExport({ sql, objects: backend.objects, prefix: backend.prefix, orgId });
 }
 
+/** The org's installation: the token provider, the GitHub client over it and the forge source it makes; none offline. */
+function installationOf(config: AppConfig, installationId: string | null) {
+    if (config.github.mode !== 'app' || installationId === null) {
+        return { tokens: undefined, client: undefined, forge: undefined };
+    }
+    const tokens = installationTokenProvider({ github: config.github, installationId });
+    const client = createGitHubAppClient(config.github, tokens);
+    const forge: ForgeSource = { github: { reads: client } };
+    return { tokens, client, forge };
+}
+
 export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
     const defaultGitlabApi = createGitlabApi();
     const { sql: pool, ready, config, artifacts, claimMetrics } = deps;
@@ -446,12 +457,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
         // The repo-read credential, per org: minted from THIS org's installation, never a
         // process-wide one. Offline there is no App to mint from, and the stored fallback keeps
         // a seeded database browsable — the same bargain the single-org repo source made.
-        let client: ReturnType<typeof createGitHubAppClient> | undefined;
-        let tokens: ReturnType<typeof installationTokenProvider> | undefined;
-        if (config.github.mode === 'app' && row.installation_id !== null) {
-            tokens = installationTokenProvider({ github: config.github, installationId: row.installation_id });
-            client = createGitHubAppClient(config.github, tokens);
-        }
+        const { tokens, client, forge } = installationOf(config, row.installation_id);
 
         const repos = createRepoSource({
             client,
@@ -475,20 +481,13 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
             telemetry,
             service: createStatsService({ config, repos, telemetry }),
             retention: () => orgRetentionView(sql, orgId, config.planDefaults),
-            ...(client
-                ? {
-                      branchHead: (repo: string, branch: string) => client.readBranchHead(repo, branch),
-                      listBranches: (repo: string, request: { query?: string; cursor?: string }) =>
-                          client.listBranches(repo, request),
-                      repoSkills: (repo, branch, dirs, signal) => client.listRepoSkills(repo, branch, dirs, signal),
-                  }
-                : {}),
+            ...(forge ? { forge } : {}),
             githubToken: tokens,
         };
 
         if (deps.withStores) {
             const stores = buildOrgStores({
-                ...{ sql, orgId, ready, config, tokens, client, claimMetrics },
+                ...{ sql, orgId, ready, config, tokens, forge, claimMetrics },
                 orgKey: deps.orgKeyOf?.(orgId),
                 secrets: deps.secrets,
                 secretLog: deps.secretLog,

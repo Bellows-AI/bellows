@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { PrFacts } from '@factory-ai/core';
-import type { PrReader } from '../src/batch-pr-observer.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
@@ -26,6 +25,9 @@ import {
     setSucceeded,
     startBatch,
 } from './batch-fixtures.js';
+import type { GitHubAppClient } from '../src/github/app-client.js';
+import { githubForge } from '../test/helpers-forge.js';
+import { recordingForge } from '../test/helpers-recording-forge.js';
 
 /**
  * The PR follower against a real database (docs/workflows.md, docs/architecture.md): the periodic
@@ -70,7 +72,7 @@ let follower: PrFollower;
 
 /** What the fake GitHub answers per PR number, and which numbers were actually read. */
 const github = { replies: new Map<number, PrFacts | Error>(), reads: [] as number[] };
-const reader: PrReader = {
+const reader: Pick<GitHubAppClient, 'readPullRequest'> = {
     async readPullRequest(_repo, number) {
         github.reads.push(number);
         const reply = github.replies.get(number);
@@ -84,12 +86,12 @@ const followerFor = (
     orgId: string,
     jobStore: JobStore,
     lifecycle: PrLifecycleStore,
-    options: { concurrency?: number; reader?: PrReader; now?: () => Date } = {}
+    options: { concurrency?: number; reader?: Pick<GitHubAppClient, 'readPullRequest'>; now?: () => Date } = {}
 ) =>
     createPrFollower({
         sql,
         orgId,
-        reader: options.reader ?? reader,
+        forge: githubForge(options.reader ?? reader),
         prs: lifecycle,
         recordMerge: (repo, number, deliveryId, mergedAt) => jobStore.closeMergedPr(repo, number, deliveryId, mergedAt),
         // The first poll of a new row is spread over the interval in production; a test wants it due.
@@ -456,7 +458,7 @@ describe.skipIf(!enabled)('PR follower — effects belong to the current claim',
     it('applies nothing for a read taken by an owner whose lease another replica has since replaced', async () => {
         const { root, number } = await parkedThread('stale-owner');
         let release: (facts: PrFacts) => void = () => {};
-        const stalled: PrReader = {
+        const stalled: Pick<GitHubAppClient, 'readPullRequest'> = {
             readPullRequest: () => new Promise<PrFacts>((resolve) => (release = resolve)),
         };
         const stale = followerFor(ORG, jobs, prs, { reader: stalled });
@@ -652,16 +654,39 @@ describe.skipIf(!enabled).each(VARIANT_CASES)(
             expect(applied).toBe(false);
         });
 
-        it('answers a GitLab claim given GitHub facts for the same path as a failed read, applying nothing', async () => {
+        it('answers a GitLab claim as a failed read with no GitHub request, applying nothing', async () => {
             const { root, number } = await otherPlainThread();
             github.replies.set(number, mergedPr(number));
 
             await follower.observeDue();
 
-            expect(github.reads).toEqual([number]);
+            // The forge resolves to no client: the same path on GitHub is never asked.
+            expect(github.reads).toEqual([]);
             expect(await mergeRows(number)).toEqual([]);
             expect(await doneAtOf(root)).toBeNull();
             expect(await followRow(number)).toMatchObject({ failures: 1, error_code: 'binding' });
+        });
+
+        it('reads no credential and makes no request to follow a claim on that repository', async () => {
+            const { number } = await otherPlainThread();
+            const recording = recordingForge();
+            const recordingFollower = createPrFollower({
+                sql,
+                orgId: ORG,
+                forge: recording.forge,
+                prs,
+                recordMerge: async () => undefined,
+                spreadMs: 0,
+            });
+
+            await recordingFollower.observeDue();
+
+            // The row was claimed and answered as a failed read, so the empty record is the guard.
+            expect(await followRow(number)).toMatchObject({ failures: 1, error_code: 'binding' });
+            expect({ credentials: recording.credentials, requests: recording.requests }).toEqual({
+                credentials: [],
+                requests: [],
+            });
         });
 
         it('never updates a GitHub follow row through a claim on the other repository', async () => {

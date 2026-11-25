@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { emptyBlock, NO_MODEL_MESSAGE, noExecutorMessage, githubRepo } from '@factory-ai/core';
+import {
+    emptyBlock,
+    NO_MODEL_MESSAGE,
+    noExecutorMessage,
+    githubRepo,
+    parseRepoRef,
+    type RepoRef,
+} from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
@@ -71,11 +78,11 @@ const twoRepoPlan = () =>
 
 /** A repo source whose installation listing carries default branches, as the real one does. */
 function reposWithDefaults(
-    entries: { owner: string; name: string; defaultBranch: string | null }[],
+    entries: { owner: string; name: string; defaultBranch: string | null; ref?: RepoRef }[],
     error: string | null = null
 ) {
     const base = staticRepoSource(
-        entries.map(({ owner, name }) => ({ owner, name })),
+        entries.map(({ owner, name, ref }) => ({ owner, name, ref })),
         { error }
     );
     return {
@@ -90,7 +97,7 @@ function reposWithDefaults(
 
 async function setup(
     options: {
-        repos?: { owner: string; name: string; defaultBranch: string | null }[];
+        repos?: { owner: string; name: string; defaultBranch: string | null; ref?: RepoRef }[];
         userExecutors?: UserExecutorStore;
         /** The org's board holds an installation it can merge through. */
         canMerge?: boolean;
@@ -112,6 +119,7 @@ async function setup(
     const batches = memoryBatchStore();
     const otherBatches = memoryBatchStore();
     const jobCreates: string[] = [];
+    const branchReads: string[] = [];
     const jobs = jobStoreSlice<JobActionStore>({
         async create(command: string) {
             jobCreates.push(command);
@@ -141,15 +149,18 @@ async function setup(
             ...(options.canMerge ? { batchMerger: { mergeDue: async () => 0 } } : {}),
             ...(options.branchReadFails
                 ? {
-                      branchHead: async () => {
+                      branchHead: async (repo: string, branch: string) => {
+                          branchReads.push(`${repo}@${branch}`);
                           throw options.branchReadFails;
                       },
                   }
                 : {}),
             ...(options.branches
                 ? {
-                      branchHead: async (_repo: string, branch: string) =>
-                          options.branches!.includes(branch) ? `sha-${branch}` : null,
+                      branchHead: async (repo: string, branch: string) => {
+                          branchReads.push(`${repo}@${branch}`);
+                          return options.branches!.includes(branch) ? `sha-${branch}` : null;
+                      },
                   }
                 : {}),
             ...(options.userExecutors ? { userExecutors: options.userExecutors } : {}),
@@ -178,7 +189,7 @@ async function setup(
         const response = await call('POST', '/api/batches', { plan: body });
         return response.json() as { id: string; version: number };
     };
-    return { call, create, batches, otherBatches, jobCreates, memberCookie, otherCookie };
+    return { call, create, batches, otherBatches, jobCreates, branchReads, memberCookie, otherCookie };
 }
 
 describe('POST /api/batches', () => {
@@ -458,6 +469,28 @@ describe('launch checks: validate and start', () => {
         }
         expect(jobCreates).toEqual([]);
         expect(batches.writes).toEqual(['create']);
+    });
+
+    it('reads a github.com target by its own path; a GitLab target at the same path is unchecked, GitHub unasked', async () => {
+        const gitlab = parseRepoRef('gitlab:gitlab.example.test/Bellows-AI/bellows.ai')!;
+        const { call, create, branchReads } = await setup({
+            branches: ['main'],
+            repos: [
+                { owner: 'Bellows-AI', name: 'bellows.ai', defaultBranch: 'main' },
+                { owner: 'Bellows-AI', name: 'bellows.ai', defaultBranch: 'main', ref: gitlab },
+            ],
+        });
+        const own = await create(
+            plan({ targets: [{ key: 'web', repo: githubRepo('Bellows-AI/bellows.ai'), branch: 'batch-sandbox' }] })
+        );
+        // The github.com branch is absent: a confirmed absence, by the repo's own path.
+        expect((await call('POST', `/api/batches/${own.id}/validate`, {})).json().code).toBe('BATCH_UNKNOWN_BRANCH');
+        expect(branchReads).toEqual(['Bellows-AI/bellows.ai@batch-sandbox']);
+        const twin = await create(plan({ targets: [{ key: 'web', repo: gitlab, branch: 'batch-sandbox' }] }));
+        // No client answers for GitLab: the branch is unchecked (the checkout's refusal stands), not absent.
+        const response = await call('POST', `/api/batches/${twin.id}/validate`, {});
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(branchReads).toEqual(['Bellows-AI/bellows.ai@batch-sandbox']);
     });
 
     it('a target branch read that answers forbidden or malformed is not BATCH_UNKNOWN_BRANCH', async () => {

@@ -1,15 +1,16 @@
 import { ERROR_CODES, formatRepoRef, type RepoRef } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { FORGE_ACCESS_REASON, type ForgeRequirementReason } from '../../db/forge-requirement.js';
+import {
+    FORGE_UNCONFIGURED,
+    resolveForgeClient,
+    writeGap,
+    type ForgeClient,
+    type ForgeSource,
+} from '../../forge/forge-client.js';
 import { forgeOfRepo } from '../../forge/forges.js';
 import type { PrTokenSource } from '../../forge/pr-token.js';
-import {
-    GitHubWriteError,
-    type PrCreate,
-    type PrEdit,
-    type PrWriter,
-    type PullRequestFacts,
-} from '../../github/pr-write.js';
+import { GitHubWriteError, type PrCreate, type PrEdit, type PullRequestFacts } from '../../github/pr-write.js';
 import type { JobStore } from '../../db/jobs/job-store-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad } from '../helpers.js';
@@ -44,8 +45,8 @@ const REFUSED_REPO = 'This attempt may not write a pull request: its task names 
 export interface PullRequestDeps {
     /** The token a write is made with: the starter's grant, or the installation's under `AUTH_MODE=none`. */
     tokens: PrTokenSource;
-    /** The GitHub REST writer; absent when the board has no API to reach. */
-    writer: PrWriter | undefined;
+    /** What a change request is written through (the REST writer over the configured API); no writer is no forge. */
+    forge: ForgeSource;
 }
 
 /** What a create carries: GitHub's fields, and the branch the new PR targets. */
@@ -119,29 +120,25 @@ type Outcome =
     | { answer: 'none' };
 
 /** The view, create, retarget and edit the ask names, under one token. A failure is the writer's classified error. */
-async function carryOut(
-    writer: PrWriter,
-    repo: RepoRef,
-    ask: Ask,
-    auth: { token: string; signal: AbortSignal }
-): Promise<Outcome> {
+async function carryOut(client: ForgeClient, ask: Ask, signal: AbortSignal): Promise<Outcome> {
     let pr: PullRequestFacts | null;
     let operation: 'created' | 'reused' = 'reused';
     if (ask.create) {
         // A create names its own base; the top-level `base` only retargets a PR that already exists.
         const { base, ...fields } = ask.create;
-        const opened = await writer.openPullRequest(repo.path, { branch: ask.branch, base, create: fields }, auth);
+        const opened = await client.openChangeRequest({ branch: ask.branch, base, create: fields }, signal);
         ({ pr, operation } = opened);
     } else {
-        pr = await writer.findPullRequest(repo.path, ask.branch, auth);
+        pr = await client.findChangeRequest(ask.branch, signal);
     }
     if (!pr) return { answer: 'none' };
     let wrote = operation === 'created';
     if (operation === 'reused') {
         const moved = ask.base !== null && pr.base !== ask.base ? { base: ask.base } : {};
         const change = { ...moved, ...(ask.edit ?? {}) };
-        if (ask.edit) pr = await writer.edit(repo.path, pr.number, change, auth);
-        else if (ask.base !== null && 'base' in moved) pr = await writer.retarget(repo.path, pr.number, ask.base, auth);
+        if (ask.edit) pr = await client.editChangeRequest(pr.number, change, signal);
+        else if (ask.base !== null && 'base' in moved)
+            pr = await client.retargetChangeRequest(pr.number, ask.base, signal);
         wrote = ask.edit !== null || 'base' in moved;
     }
     return { answer: 'pr', pr, operation, wrote };
@@ -203,7 +200,7 @@ async function openWait(
  * throw there is a 503, and the driver's retry reuses the PR by head and edits it, closing again.
  */
 async function write(
-    writer: PrWriter,
+    client: ForgeClient,
     run: {
         store: Pick<JobStore, 'closePrForgeWait'>;
         who: Written;
@@ -215,7 +212,7 @@ async function write(
     const { store, who, token, ask, signal } = run;
     let outcome: Outcome;
     try {
-        outcome = await carryOut(writer, who.repo, ask, { token: token.token, signal });
+        outcome = await carryOut(client, ask, signal);
     } catch (e) {
         const forge = forgeOfRepo(who.repo);
         if (forge !== null && lacksWriteAccess(e, token.as)) return { answer: 'no-access', forge };
@@ -225,6 +222,25 @@ async function write(
         await store.closePrForgeWait(who.rootJobId, who.executionUserId);
     }
     return outcome;
+}
+
+/**
+ * Whether the board can write on this repo's forge at all, decided before any credential is read or wait opened:
+ * false when it holds no API to write through (the 409), a throw for a forge no client answers for yet (nothing is
+ * written, nothing concluded: a 503).
+ */
+function canWrite(forge: ForgeSource, repo: RepoRef): boolean {
+    const gap = writeGap(forge, repo);
+    if (gap === null) return true;
+    if (gap.reason === FORGE_UNCONFIGURED) return false;
+    throw new Error(`no client answers for ${gap.forge} repositories`);
+}
+
+/** The client the PR is written through under the confirmed `token`; the forge was checked by `canWrite`. */
+function writerFor(forge: ForgeSource, repo: RepoRef, token: string): ForgeClient {
+    const resolution = resolveForgeClient(forge, repo, { kind: 'token', token });
+    if (!resolution.ok) throw new Error(`no client answers for ${resolution.forge} repositories`);
+    return resolution.client;
 }
 
 export async function handlePullRequest(
@@ -248,7 +264,7 @@ export async function handlePullRequest(
     try {
         const who = await contextOf(store, reply, attempt);
         if (!who) return reply;
-        if (!deps.writer) return bad(reply, ERROR_CODES.GITHUB_UNAVAILABLE, NO_FORGE, HTTP_CONFLICT);
+        if (!canWrite(deps.forge, who.repo)) return bad(reply, ERROR_CODES.GITHUB_UNAVAILABLE, NO_FORGE, HTTP_CONFLICT);
         const signal = AbortSignal.any([AbortSignal.timeout(PR_WRITE_DEADLINE_MS), request.closing, closedBy(reply)]);
         const token = await deps.tokens(who, signal);
         if (!token.ok) {
@@ -256,7 +272,8 @@ export async function handlePullRequest(
             if (token.answer === 'unavailable') throw new Error('the member token is not confirmed');
             return await openWait(store, reply, attempt, { forge: token.forge, reason: token.reason });
         }
-        const done = await write(deps.writer, { store, who, token, ask: asked.value, signal });
+        const client = writerFor(deps.forge, who.repo, token.token);
+        const done = await write(client, { store, who, token, ask: asked.value, signal });
         if (done.answer === 'no-access') {
             return await openWait(store, reply, attempt, { forge: done.forge, reason: FORGE_ACCESS_REASON });
         }
