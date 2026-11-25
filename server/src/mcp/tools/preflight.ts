@@ -8,7 +8,7 @@ const Check = z.object({
     subject: z.enum(['repo', 'forge', 'executor', 'model', 'skill', 'connection']),
     name: z.string().nullable(),
     status: z.enum(['ok', 'blocked', 'unverified']),
-    /** The code create would refuse with (`NO_MODEL`, `FORGE_GRANT_REQUIRED`), on a blocked check that has one. */
+    /** The code create would refuse with (`NO_MODEL`, `FORGE_GRANT_REQUIRED`, `FORGE_ACCESS_DENIED`), on a blocked check that has one. */
     code: z.string().optional(),
     detail: z.string(),
     integration: z
