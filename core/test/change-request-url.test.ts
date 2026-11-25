@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { formatChangeRequestUrl, parseChangeRequestUrl } from '../src/change-request-url.js';
-import { ACCEPTED, gh, gl, REJECTED } from './change-request-url.fixtures.js';
+import { ACCEPTED, gh, gl, INVALID_NUMBERS, REJECTED } from './change-request-url.fixtures.js';
 
 describe('parseChangeRequestUrl', () => {
     it.each(ACCEPTED)('reads %s', (text, expected) => {
@@ -27,7 +27,13 @@ describe('formatChangeRequestUrl', () => {
         }
     });
 
-    it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])('refuses the number %s', (number) => {
+    it.each(INVALID_NUMBERS)('refuses the number %s', (number) => {
         expect(() => formatChangeRequestUrl(gh('acme/web', 1).ref as never, number)).toThrow(RangeError);
+    });
+
+    it('writes the INT4 maximum', () => {
+        expect(formatChangeRequestUrl(gh('acme/web', 1).ref as never, 2147483647)).toBe(
+            'https://github.com/acme/web/pull/2147483647'
+        );
     });
 });

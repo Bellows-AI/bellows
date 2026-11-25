@@ -15,7 +15,10 @@ const GITLAB_MERGE_REQUEST = /^\/(.+)\/-\/merge_requests\/([^/]+)\/?$/;
 const NUMBER_TEXT = /^[1-9][0-9]*$/;
 const HTTPS_URL = /^https:\/\/([A-Za-z0-9.:-]+)(\/[A-Za-z0-9._\/-]*)$/;
 
-const isNumber = (value: number): boolean => Number.isSafeInteger(value) && value > 0;
+/** PR and MR numbers are stored as INT4. */
+const MAX_NUMBER = 2147483647;
+
+const isNumber = (value: number): boolean => Number.isSafeInteger(value) && value > 0 && value <= MAX_NUMBER;
 
 /** The ref for a URL's parts, or null when its host or path is not a repository's. */
 function repoOf(forge: RepoRef['forge'], host: string, path: string): RepoRef | null {
@@ -27,7 +30,7 @@ function repoOf(forge: RepoRef['forge'], host: string, path: string): RepoRef | 
  * Reads a change-request URL: `https://<host>/<owner>/<name>/pull/<n>` (GitHub) or
  * `https://<host>/<group>/.../<name>/-/merge_requests/<iid>` (GitLab, any nesting, host with optional port).
  * Null for anything else: other schemes, credentials, a query or fragment, a suffix such as `/files`, or a number
- * that is not a positive safe integer. Whether the forge is supported is the caller's question, not the parser's.
+ * that is not a positive INT4. Whether the forge is supported is the caller's question, not the parser's.
  */
 export function parseChangeRequestUrl(text: string): ChangeRequestRef | null {
     const url = HTTPS_URL.exec(text);
@@ -45,7 +48,7 @@ export function parseChangeRequestUrl(text: string): ChangeRequestRef | null {
 
 /** The URL {@link parseChangeRequestUrl} reads back to `ref` and `number`; throws on a number it would refuse. */
 export function formatChangeRequestUrl(ref: RepoRef, number: number): string {
-    if (!isNumber(number)) throw new RangeError(`a change request number is a positive safe integer, got ${number}`);
+    if (!isNumber(number)) throw new RangeError(`a change request number is a positive INT4, got ${number}`);
     const tail = ref.forge === 'github' ? `pull/${number}` : `-/merge_requests/${number}`;
     return `https://${ref.host}/${ref.path}/${tail}`;
 }

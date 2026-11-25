@@ -10,7 +10,8 @@ export const ACCEPTED: Array<[string, ReturnType<typeof gh>]> = [
     ['https://github.com/acme/web/pull/7/', gh('acme/web', 7)],
     ['https://GitHub.com/acme/Web.js/pull/12', gh('acme/Web.js', 12)],
     ['https://ghe.example/acme/web/pull/7', gh('acme/web', 7, 'ghe.example')],
-    ['https://github.com/acme/web/pull/9007199254740991', gh('acme/web', Number.MAX_SAFE_INTEGER)],
+    ['https://github.com/acme/web/pull/2147483647', gh('acme/web', 2147483647)],
+    ['https://gitlab.com/g/p/-/merge_requests/2147483647', gl('g/p', 2147483647, 'gitlab.com')],
     ['https://gitlab.com/g/p/-/merge_requests/3', gl('g/p', 3, 'gitlab.com')],
     ['https://gitlab.com/g/p/-/merge_requests/3/', gl('g/p', 3, 'gitlab.com')],
     ['https://gitlab.com/g/sub/deep/p/-/merge_requests/41', gl('g/sub/deep/p', 41, 'gitlab.com')],
@@ -29,7 +30,10 @@ export const REJECTED = [
     'https://github.com/acme/web/pull/-1',
     'https://github.com/acme/web/pull/007',
     'https://github.com/acme/web/pull/1.5',
+    'https://github.com/acme/web/pull/2147483648',
+    'https://github.com/acme/web/pull/9007199254740991',
     'https://github.com/acme/web/pull/9007199254740992',
+    'https://gitlab.com/g/p/-/merge_requests/2147483648',
     'https://github.com/acme/web/pull/',
     'https://github.com/acme/web/pull/7//',
     'https://github.com/acme/web/pull/7/files',
@@ -55,3 +59,6 @@ export const REJECTED = [
     'https://gitlab.com/g/p/-/pull/3',
     'https://gl.example:abc/g/p/-/merge_requests/3',
 ];
+
+/** Numbers every formatter refuses: not positive, not an integer, or above INT4. */
+export const INVALID_NUMBERS = [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2147483648, Number.MAX_SAFE_INTEGER];
