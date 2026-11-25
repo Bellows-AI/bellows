@@ -94,6 +94,44 @@ describe.skipIf(!enabled)('executor settings never read back a provider key', ()
     });
 });
 
+describe.skipIf(!enabled)('a provider key that names a secret is a reference, not a credential (BEL-603)', () => {
+    it('the {env:NAME} reference stays verbatim in the row and in the claim read, and the store is never written', async () => {
+        const executors = store();
+        await executors.replace(ALICE, [
+            {
+                name: 'gateway',
+                type: 'opencode',
+                config: {
+                    provider: {
+                        sealed: { options: { apiKey: KEY, baseURL: 'https://a.example.test' } },
+                        referenced: { options: { apiKey: '{env:GATEWAY_KEY}', baseURL: 'https://b.example.test' } },
+                    },
+                },
+            },
+        ]);
+        const [row] = await rawRows();
+        expect(row?.config).toEqual({
+            provider: {
+                sealed: {
+                    options: {
+                        apiKey: expect.stringMatching(/^stored-credential:/),
+                        baseURL: 'https://a.example.test',
+                    },
+                },
+                referenced: { options: { apiKey: '{env:GATEWAY_KEY}', baseURL: 'https://b.example.test' } },
+            },
+        });
+        // One stored credential: the pasted key. The reference wrote nothing to the store.
+        expect(row?.secret_refs).toHaveLength(1);
+        expect(row?.secret_refs[0]?.path).toEqual(['provider', 'sealed', 'options', 'apiKey']);
+
+        const claim = (await executors.claimConfigFor(ALICE, 'gateway', 'user', sql))?.config as {
+            provider: { referenced: { options: { apiKey: string } } };
+        };
+        expect(claim.provider.referenced.options.apiKey).toBe('{env:GATEWAY_KEY}');
+    });
+});
+
 describe.skipIf(!enabled)('a save keeps, replaces or drops a stored key', () => {
     it('the marker sent back keeps the value through a rename and a scope change', async () => {
         const executors = store();

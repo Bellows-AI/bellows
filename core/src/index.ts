@@ -229,6 +229,7 @@ export {
     CREDENTIAL_REDIRECTS,
     credentialRedirectMessage,
     DEPLOYMENT_MODES,
+    ENV_SUBSTITUTION,
     forbiddenCredentialIn,
     isCredentialKey,
     isCredentialRedirectMessage,
@@ -250,6 +251,7 @@ export {
     inferProvider,
     isAgentProvider,
     isModelProvider,
+    missingProviderSecretMessage,
     MODEL_PROVIDERS,
     modelKeyRequired,
     NO_MODEL_MESSAGE,
@@ -262,8 +264,17 @@ export {
     PROVIDER_ENV,
     providerAvailable,
     providerEnvNames,
+    resolveProviderReferences,
     stackClaudeCodeEnv,
 } from './model-providers.js';
+export type { ExecutorProvider } from './executor-providers.js';
+export {
+    customProviderId,
+    EXECUTOR_PROVIDER_AGENTS,
+    EXECUTOR_PROVIDERS,
+    guidedExecutorConfig,
+    isExecutorProvider,
+} from './executor-providers.js';
 export type { JobMode } from './job-mode.js';
 export { JOB_MODES, OBJECTIVE_MODE, WORKFLOW_MODE } from './job-mode.js';
 export type { ExecutorScope, ExecutorType } from './executors.js';

@@ -73,13 +73,27 @@ describe('redirectsPlatformCredential', () => {
         expect(redirectsPlatformCredential({ OPENAI_BASE_URL: URL })).toBe('OPENAI_BASE_URL');
     });
 
-    it('refuses an opencode provider baseURL whose apiKey is absent or reads the runner env', () => {
+    it('refuses an opencode provider baseURL whose apiKey is absent or reads the runner env or a file', () => {
         const provider = (options: Record<string, unknown>) => ({ provider: { anthropic: { options } } });
         expect(redirectsPlatformCredential({}, provider({ baseURL: URL }), 'opencode')).toBe('baseURL');
-        expect(
-            redirectsPlatformCredential({}, provider({ baseURL: URL, apiKey: '{env:ANTHROPIC_API_KEY}' }), 'opencode')
-        ).toBe('baseURL');
+        expect(redirectsPlatformCredential({}, provider({ baseURL: URL, apiKey: '{file:/run/key}' }), 'opencode')).toBe(
+            'baseURL'
+        );
         expect(redirectsPlatformCredential({}, provider({ baseURL: URL, apiKey: VALUE }), 'opencode')).toBeNull();
+    });
+
+    it('accepts a provider key that is exactly the {env:NAME} reference the board resolves at claim (BEL-603)', () => {
+        const provider = (options: Record<string, unknown>) => ({ provider: { anthropic: { options } } });
+        expect(
+            redirectsPlatformCredential({}, provider({ baseURL: URL, apiKey: '{env:GATEWAY_KEY}' }), 'opencode')
+        ).toBeNull();
+        // A reference beside other text, or naming nothing at all, is not the one form the board resolves.
+        expect(
+            redirectsPlatformCredential({}, provider({ baseURL: URL, apiKey: 'Bearer {env:KEY}' }), 'opencode')
+        ).toBe('baseURL');
+        expect(redirectsPlatformCredential({}, provider({ baseURL: URL, apiKey: '{env:}' }), 'opencode')).toBe(
+            'baseURL'
+        );
     });
 
     it('passes a redirect that carries the member key anywhere in the effective env', () => {

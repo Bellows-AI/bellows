@@ -1,4 +1,12 @@
-import { CLAUDE_CODE_OAUTH_TOKEN, CLOUD, type DeploymentMode, platformCredentialBlanks } from './deployment-mode.js';
+import {
+    CLAUDE_CODE_OAUTH_TOKEN,
+    CLOUD,
+    type DeploymentMode,
+    ENV_SUBSTITUTION,
+    platformCredentialBlanks,
+    PROVIDER_API_KEY,
+    PROVIDER_BASE_URL,
+} from './deployment-mode.js';
 import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
 
 /**
@@ -208,9 +216,6 @@ const MODEL_KEYS: Readonly<Record<ExecutorType, readonly string[]>> = {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** opencode's `{env:NAME}` substitution, alone in the value: the key is whatever `NAME` holds in the run's env. */
-const ENV_SUBSTITUTION = /^\{env:([^}]+)\}$/;
-
 /**
  * Whether an OpenCode provider `apiKey` gives the run a key: a non-empty literal, or `{env:NAME}` with `NAME` among the
  * names the run gets. `{file:…}` (the board cannot see the file) and any other option do not count.
@@ -242,5 +247,49 @@ export function hasModelKey(names: readonly string[], config: unknown, agentType
     return Object.values(settings.provider).some(
         (provider) =>
             isRecord(provider) && isRecord(provider.options) && providerKeyPresent(provider.options.apiKey, present)
+    );
+}
+
+/**
+ * A custom provider key that names a secret instead of carrying one (BEL-603): exactly `{env:NAME}`
+ * beside a `baseURL`. The board resolves it at claim from the member's own scopes — the env the
+ * claim already merged — and writes the value into the rendered provider config, so opencode never
+ * substitutes it itself: a raw `{env:…}` would read the runner's whole environment, the deployment
+ * credential included. Anything the scopes do not hold is unresolved and refuses the task.
+ */
+export function resolveProviderReferences(
+    config: Record<string, unknown>,
+    env: Readonly<Record<string, string>> | undefined
+): { config: Record<string, unknown>; missing: string[] } {
+    const missing = new Set<string>();
+    /** One object step: a baseURL provider's `{env:NAME}` apiKey is where a reference can stand. */
+    const step = (value: Record<string, unknown>): unknown => {
+        const out: Record<string, unknown> = {};
+        for (const [key, inner] of Object.entries(value)) out[key] = walk(inner);
+        const apiKey = out[PROVIDER_API_KEY];
+        if (nonEmpty(out[PROVIDER_BASE_URL]) && typeof apiKey === 'string') {
+            const reference = ENV_SUBSTITUTION.exec(apiKey);
+            if (reference) {
+                const name = reference[1] as string;
+                const value = env?.[name];
+                if (nonEmpty(value)) out[PROVIDER_API_KEY] = value;
+                else missing.add(name);
+            }
+        }
+        return out;
+    };
+    const walk = (value: unknown): unknown => {
+        if (Array.isArray(value)) return value.map(walk);
+        return isRecord(value) ? step(value) : value;
+    };
+    return { config: walk(config) as Record<string, unknown>, missing: [...missing] };
+}
+
+/** The sentence an unresolved provider reference fails the task with, naming every missing secret. */
+export function missingProviderSecretMessage(names: readonly string[]): string {
+    const list = names.join(', ');
+    return (
+        `The executor's provider key {env:${list}} names no secret this task carries. ` +
+        `Add ${list} under Settings → Environment — organization, workspace, or repository scope — and start a new task.`
     );
 }
