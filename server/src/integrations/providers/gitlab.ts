@@ -30,8 +30,6 @@ export interface GitlabProvider {
 
 const HTTP_OK = 200;
 const HTTP_MULTIPLE = 300;
-const HTTP_SERVER_ERROR = 500;
-const HTTP_TOO_MANY = 429;
 
 const scopesOf = (scope: unknown): string[] | null =>
     typeof scope === 'string' ? scope.split(' ').filter(Boolean) : null;
@@ -42,7 +40,6 @@ const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 function tokenAnswer(answer: GitlabResponse): ExchangeResult {
     if (!answer.ok) return { ok: false, failure: answer.sent ? 'ambiguous' : 'not-sent' };
     const { status } = answer;
-    if (status >= HTTP_SERVER_ERROR || status === HTTP_TOO_MANY) return { ok: false, failure: 'not-sent' };
     return answerOf({ ok: status >= HTTP_OK && status < HTTP_MULTIPLE, status }, answer.text, scopesOf);
 }
 
@@ -68,10 +65,10 @@ export function createGitlabProvider({
         const application = (): Promise<GitlabApplication | null> => applicationOf(orgId, host).catch(() => null);
 
         /**
-         * GitLab spends a refresh token the moment it processes the request, so an unconfirmed answer is split: refused
-         * before it could have been consumed (never connected, a 5xx or 429, which issue no token) is `not-sent` and
-         * retried; anything else after dispatch (a timeout, a cut or malformed answer) may have consumed it and is
-         * `ambiguous`, which the lineage ends in reconnect-required (`retryTransientRefresh` is off): the spent token is
+         * GitLab spends a refresh token the moment it processes the request, and a gateway in front of it can lose the
+         * answer, so only a failure before the request reached GitLab (refused, DNS, TLS handshake, a connect timeout)
+         * is `not-sent` and retried; every HTTP status that is not a success or an explicit OAuth refusal (a 502 or 504
+         * included), a response timeout and a cut or malformed answer may have consumed it and is `ambiguous`, which the lineage ends in reconnect-required (`retryTransientRefresh` is off): the spent token is
          * never replayed.
          */
         async function tokenCall(grant: Record<string, string>, signal: AbortSignal): Promise<ExchangeResult> {

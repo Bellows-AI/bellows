@@ -156,7 +156,9 @@ export function createGitlabApi({
                 resolve(result);
             };
             const onAbort = () => done({ ok: false, reason: 'timeout', sent: true });
-            const timer = setTimeout(() => done({ ok: false, reason: 'timeout', sent: true }), probeTimeoutMs);
+            // A timeout before the connection was made never reached the instance; after it, the request may have.
+            let connected = false;
+            const timer = setTimeout(() => done({ ok: false, reason: 'timeout', sent: connected }), probeTimeoutMs);
             signal?.addEventListener('abort', onAbort, { once: true });
             const req = send(url, {
                 method,
@@ -166,6 +168,12 @@ export function createGitlabApi({
                     ...headers,
                 },
                 ...(caBundle === undefined ? {} : { ca: caBundle }),
+            });
+            req.on('socket', (socket) => {
+                const opened = () => {
+                    connected = true;
+                };
+                socket.once(url.protocol === 'http:' ? 'connect' : 'secureConnect', opened);
             });
             req.on('error', (error) => done({ ok: false, reason: failureOf(error), sent: !neverSent(error) }));
             req.on('response', (response) => {

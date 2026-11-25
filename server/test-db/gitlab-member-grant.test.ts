@@ -519,7 +519,7 @@ describe.skipIf(!enabled)('the refresh of a GitLab grant', () => {
     });
 
     /** A fake whose token endpoint is wrapped: `mode` decides what a refresh call sees. */
-    const wrapped = (mode: () => 'pass' | 'refused' | 'lost' | 'five-hundred') =>
+    const wrapped = (mode: () => 'pass' | 'refused' | 'lost' | 'bad-gateway' | 'gateway-timeout') =>
         replica({
             clock: later,
             api: gitlabApi((api) => ({
@@ -527,30 +527,50 @@ describe.skipIf(!enabled)('the refresh of a GitLab grant', () => {
                 request: async (req) => {
                     const what = req.path === '/oauth/token' ? mode() : 'pass';
                     if (what === 'refused') return { ok: false, reason: 'unreachable', sent: false };
-                    if (what === 'five-hundred') return { ok: true, status: 503, text: '{"message":"down"}' };
                     const answer = await api.request(req);
-                    // The instance processed the call (the refresh token is spent); its answer never arrives.
+                    // The instance processed the call (the refresh token is spent); a proxy or the network
+                    // replaces the answer.
+                    if (what === 'bad-gateway') return { ok: true, status: 502, text: '<html>Bad Gateway</html>' };
+                    if (what === 'gateway-timeout') return { ok: true, status: 504, text: '' };
                     return what === 'lost' ? { ok: false, reason: 'timeout', sent: true } : answer;
                 },
             })),
         });
 
-    it.each(['refused', 'five-hundred'] as const)(
-        'does not break the grant on a refresh GitLab provably did not consume (%s): the next refresh succeeds',
-        async (failure) => {
+    it('retries a refresh that never reached GitLab (connection refused): the grant stays live', async () => {
+        await linked(orgA, 'dev-one');
+        let down = true;
+        const flaky = wrapped(() => (down ? 'refused' : 'pass'));
+        const calls = tokenCalls();
+        expect((await asUserOf(flaky.memberGrants, orgA, orgA.memberId)).ok).toBe(false);
+        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('live');
+        expect(tokenCalls()).toBe(calls);
+        down = false;
+        const before = (await grantRows(orgA.id)).map((r) => r.secret_version);
+        await asUserOf(flaky.memberGrants, orgA, orgA.memberId);
+        // The clock runs three hours ahead, so the new token still reads as due; the stored credential moved.
+        expect((await grantRows(orgA.id)).map((r) => r.secret_version)).not.toEqual(before);
+        expect(tokenCalls()).toBe(calls + 1);
+    });
+
+    it.each(['bad-gateway', 'gateway-timeout'] as const)(
+        'never replays a token after a %s: GitLab processed the refresh, so the grant needs reconnect and nobody resends',
+        async (gateway) => {
             await linked(orgA, 'dev-one');
-            let down: 'pass' | typeof failure = failure;
-            const flaky = wrapped(() => down);
             const calls = tokenCalls();
-            expect((await asUserOf(flaky.memberGrants, orgA, orgA.memberId)).ok).toBe(false);
-            expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('live');
-            down = 'pass';
-            const before = (await grantRows(orgA.id)).map((r) => r.secret_version);
-            await asUserOf(flaky.memberGrants, orgA, orgA.memberId);
-            // The clock runs three hours ahead, so the new token still reads as due; the stored credential moved.
-            expect((await grantRows(orgA.id)).map((r) => r.secret_version)).not.toEqual(before);
-            // The refused call never left the board and the 5xx issued nothing: only the retry reached the fake.
+            const first = await asUserOf(wrapped(() => gateway).memberGrants, orgA, orgA.memberId);
+            expect(first).toMatchObject({
+                ok: false,
+                outcome: { outcome: 'integration_required', reason: 'reconnect' },
+            });
             expect(tokenCalls()).toBe(calls + 1);
+            const second = await asUserOf(replica({ clock: later }).memberGrants, orgA, orgA.memberId);
+            expect(second).toMatchObject({
+                ok: false,
+                outcome: { outcome: 'integration_required', reason: 'reconnect' },
+            });
+            expect(tokenCalls()).toBe(calls + 1);
+            expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('broken');
         }
     );
 

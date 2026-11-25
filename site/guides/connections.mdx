@@ -10,6 +10,7 @@ description: "What Bellows connects to, what each connection lets tasks do, and 
 | GitHub | Cloning, branches, pull requests | Your organization, through the GitHub App |
 | Jira | Tasks look up and comment on your Jira issues | You, with your own Atlassian account |
 | Linear | Tasks look up and comment on your Linear issues | You, with your own Linear account |
+| GitLab (API only for now) | Your organization's self-hosted GitLab; a member's own account | An admin connects the instance, each member links their account |
 | Discord | Notifications about task events | You or an admin, through a webhook |
 
 Open **Settings → Integrations** to see what you have connected. **Browse integrations** lists everything available.
@@ -88,6 +89,30 @@ Mention the issue in the task, for example "Fix PROJ-123", or paste its `linear.
 
 If a task is bound to both Jira and Linear, a bare key such as `PROJ-123` could belong to either, so the agent asks you which one before it reads or comments. With Linear connected, the agent reads the issue and sets the task title from its subject. Creating, assigning or moving Linear issues is not supported.
 
+## GitLab
+
+<Note>
+GitLab support is being built in steps. Connecting an instance and linking accounts work through the API today; the **Settings** page for it, choosing repositories and starting tasks on GitLab repositories come later.
+</Note>
+
+An organization can connect a self-hosted GitLab instance, and each member then links their own GitLab account. Bellows acts as that member, never through a shared token. The calls below need a signed-in session or a personal access token, and the first three are admin-only.
+
+1. **Register an OAuth application on GitLab** with scope `api` and the redirect URI `<your Bellows URL>/api/forge-grants/gitlab/callback`.
+2. **Connect the instance** (admin): `POST /api/org/gitlab-connections` with `host` (a bare host, optional port), `clientId`, `clientSecret`, `allowedGroups` (root group paths) and, for a private CA, `caBundle` (PEM). The secret and the bundle are stored encrypted and never shown again. The connection starts **pending**; Bellows only checks that the instance answers.
+3. **Activate it** (admin): `POST /api/org/gitlab-connections/{id}/activation` returns an `authorizeUrl`. Open it in your browser while signed in to Bellows and authorize on GitLab. Bellows then asks GitLab for its version with your authorization, and activates the connection only if it is **GitLab 17.0 or later**. On an older version the connection stays pending and `activationRefusal` says `version-too-old`. If GitLab cannot be reached or answers something unexpected, nothing changes and nothing is deleted: try again.
+4. **Link your account** (every member, once the connection is active): `POST /api/forge-grants/gitlab/{id}/link` returns an `authorizeUrl` to open the same way, and `GET /api/forge-grants/gitlab` lists the active connections and whether you are `live`, `broken` or `missing` on each. Bellows asks for scope `api` only.
+
+After either authorization Bellows sends you back to **Settings → Integrations** with `integration=gitlab` and a `result` in the address: `activated` or `linked`, or the reason it did not finish (for example `denied`, `version-too-old` or `unconfirmed`). Each authorization link works once and only for the person who started it.
+
+### When you need to reconnect
+
+A link is `broken` and you must link again (run the link step once more) when:
+
+- GitLab no longer accepts the grant: you revoked the application on GitLab, or it was rotated away.
+- A token refresh got no clear answer. GitLab replaces a refresh token each time it is used, so after a lost, timed-out or gateway-error answer Bellows cannot tell whether the old token is already spent. It never tries it again; it asks you to reconnect instead.
+
+Nothing is deleted when this happens, and linking again makes the grant live. Two organizations connecting the same GitLab host keep separate applications and separate links.
+
 ## Discord notifications
 
 Discord sends task events to a channel you choose. It uses a webhook, not an account login.
@@ -113,7 +138,7 @@ The webhook URL is stored encrypted and never shown again. When you edit a notif
 
 ## Coming later
 
-Slack, GitLab and MCP servers are not connectable yet.
+Slack and MCP servers are not connectable yet. For GitLab, the **Settings** page, choosing repositories and starting tasks come later.
 
 **Worked example:** [Fix a bug from a Jira ticket](/use-cases/fix-jira-bug).
 
