@@ -13,6 +13,9 @@ gate passes.
 | Tasks | A thread of jobs: questions, follow-ups and retries resume the same session and checkout |
 | Recovery | A lost node or runner interrupts a task; the next claim resumes surviving state or a saved checkpoint when available |
 | Access | Web app, `bellows` CLI and an MCP endpoint |
+| Process | Every task, from any entry point, runs the same runner, gates, base-branch policy and built-in skills |
+| Telemetry | OpenTelemetry from every run; sessions and token usage for the whole organization, and per task |
+| Ledger | Per task: jobs, gate runs, PR operations, logs and transcripts; an append-only audit log; full org export |
 | Context | Skills, Jira/Linear connections, env vars and secrets, attachments |
 
 Docs: [docs.bellows.cloud](https://docs.bellows.cloud) — usage, self-hosting, reference.

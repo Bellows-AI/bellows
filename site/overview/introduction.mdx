@@ -3,12 +3,15 @@ title: "Introduction"
 description: "Remote agentic engineering platform: a coding agent runs in an environment your repository defines and is checked by your gates."
 ---
 
-Bellows is a remote agentic engineering platform. It runs a coding agent against your repository in a remote runner, so every run starts from the same environment:
+Bellows is a remote agentic engineering platform. It runs a coding agent against your repository in a remote runner:
 
 - **Defined environment.** The runner's image, setup commands, caches and services come from `.bellows.yaml` in your repo.
 - **Required checks.** Gates (build, test, lint) run at the end of every job. By default a failing gate ships the work as a draft pull request; with `gates: required` in the repo's [policy](/guides/policy-and-reviewers), nothing is published until every gate passes.
 - **Reviewable result.** The output is a pull request you review. Questions, follow-ups and retries continue the same task.
 - **Recoverable runs.** If a node or runner is lost, Bellows resumes surviving state or restores a saved checkpoint when available.
+- **Standardized process.** Every task takes the same path, whoever starts it and from wherever (web app, CLI, MCP): the runner from `.bellows.yaml`, the gates, the [policy and reviewers](/guides/policy-and-reviewers) read from the base branch, and the built-in [skills](/guides/skills) for fixing, reviewing and publishing.
+- **Telemetry for the whole organization.** Executors report OpenTelemetry for every run. The dashboard shows sessions and token usage across the organization, and each task shows its own usage and activity.
+- **Ledger.** Each task keeps its jobs, gate runs, pull request operations, run logs and agent transcripts. Changes to the organization go to an append-only [audit log](/guides/audit-log), and an admin can [export](/guides/export) all of it.
 
 ## Ways to use Bellows
 
