@@ -1,7 +1,8 @@
 import type { ModelProvider } from '@factory-ai/core';
 import { useState } from 'react';
 import type { SetupScope } from '../api/useModelSetup.js';
-import { PROVIDER_META, secretNames } from './providers.js';
+import type { ProviderMeta } from './providers.js';
+import { secretNames } from './providers.js';
 import type { KeyCheck } from './useKeyCheck.js';
 
 const MARK: Partial<Record<KeyCheck['kind'], string>> = { ok: '✓ ', warn: '▲ ', bad: '✕ ' };
@@ -68,19 +69,19 @@ function CheckLine({ ids, check }: { ids: string; check: KeyCheck & { retry: () 
 /** The key: masked with a Show toggle, where to get one, and the live check under it. */
 export function KeyField({
     ids,
-    provider,
+    meta,
     value,
     onChange,
     check,
 }: {
     ids: string;
-    provider: ModelProvider;
+    /** The provider's copy: the field's label, its placeholder and where to get a key. */
+    meta: ProviderMeta;
     value: string;
     onChange: (key: string) => void;
     check: KeyCheck & { retry: () => void };
 }) {
     const [shown, setShown] = useState(false);
-    const meta = PROVIDER_META[provider];
     return (
         <div className="picker-field">
             <label htmlFor={`${ids}-key`}>{meta.keyLabel}</label>
@@ -120,19 +121,19 @@ export function KeyField({
 /** The optional base URL, for a gateway the member runs; LiteLLM and a subscription have none here. */
 export function AdvancedBase({
     ids,
-    provider,
+    name,
     value,
     hidden,
     onChange,
 }: {
     ids: string;
-    provider: ModelProvider;
+    /** The env name the base URL is saved beside, for the help's sentence. */
+    name: string;
     value: string;
     /** A base URL is saved as a secret: it stays unless the member enters another. */
     hidden: boolean;
     onChange: (v: string) => void;
 }) {
-    const name = secretNames(provider, true)[1];
     return (
         <details className="model-advanced">
             <summary>Advanced</summary>

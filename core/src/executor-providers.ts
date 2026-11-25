@@ -107,17 +107,18 @@ function guidedClaudeConfig(provider: ExecutorProvider, model: string, key: stri
     return { model, ...(Object.keys(env).length > 0 ? { env } : {}) };
 }
 
-/** The OpenAI-compatible half: one OpenCode provider block under the endpoint's slugified host. */
+/** The OpenAI-compatible half: one OpenCode provider block under the endpoint's slugified host.
+ * An incomplete choice — no base URL typed yet — generates with what it has: the dialog's own
+ * validation holds Save until the endpoint and the key are there. */
 function guidedCompatibleConfig(model: string, key: string, baseUrl: string | undefined, modelId: string) {
-    if (baseUrl === undefined) throw new Error('an OpenAI-compatible endpoint needs its base URL');
-    const id = customProviderId(baseUrl);
+    const id = customProviderId(baseUrl ?? '');
     return {
         model: modelId,
         provider: {
             [id]: {
                 npm: '@ai-sdk/openai-compatible',
                 name: id,
-                options: { baseURL: baseUrl, apiKey: key },
+                options: { baseURL: baseUrl ?? '', apiKey: key },
                 models: { [model]: { ...customModelEntry, name: model } },
             },
         },

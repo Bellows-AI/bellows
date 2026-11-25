@@ -16,6 +16,13 @@ import {
     type ExecutorRow,
     type ValidExecutor,
 } from '../workspace/executors.js';
+import {
+    EXECUTOR_PROVIDER_META,
+    GUIDED_COPY,
+    guidedFromConfig,
+    guidedProvidersFor,
+} from '../workspace/executor-guided.js';
+import type { ExecutorProvider } from '@factory-ai/core';
 import { useDraftReturnHref } from './DraftReturnBanner.js';
 import {
     AdvancedConfiguration,
@@ -27,6 +34,9 @@ import {
     NameField,
     RunnerClassField,
 } from './executor-dialog-parts.js';
+import { GuidedProviderFields } from './executor-guided-fields.js';
+import { useGuidedStep } from './executor-guided-step.js';
+import { ProviderCards } from '../model-setup/ProviderCards.js';
 import type { RunnerClassOption } from '../api/useWorkspace.js';
 import { UnsavedChangesDialog } from './UnsavedChangesDialog.js';
 
@@ -127,6 +137,7 @@ export function ExecutorDialog({
     const isEdit = editing !== null;
     const { type } = draft;
     const view = executorEditorView({ draft, baseline, existing, editing, nameTouched });
+    const { guided, check, suggestions, setGuided, pickProvider, removeGuided } = useGuidedStep(draft, setDraft, cloud);
 
     const setConfig = (text: string, customModel: boolean) =>
         setDraft((current) => ({
@@ -137,13 +148,27 @@ export function ExecutorDialog({
 
     // Guided writes re-serialize the parsed object: every other key survives, in its order.
     const writeModel = (next: string | null, customModel: boolean) => {
-        if (view.parsed.ok) setConfig(JSON.stringify(withModel(view.parsed.value, next), null, 2), customModel);
+        if (guided === null && view.parsed.ok) {
+            setConfig(JSON.stringify(withModel(view.parsed.value, next), null, 2), customModel);
+        }
     };
 
-    // A raw edit that parses decides the Model control's choice; one that does not leaves it be.
+    // A raw edit that parses re-reads the guided choice from it: the same generated shape keeps the
+    // fields live, anything else hands the configuration back to the raw editor.
     const editJson = (text: string) => {
         const next = parseExecutorConfig(text);
-        setConfig(text, next.ok ? readModel(next.value).kind === 'custom' : view.custom);
+        setDraft((current) => ({
+            ...current,
+            configs: { ...current.configs, [current.type]: text },
+            customModel: {
+                ...current.customModel,
+                [current.type]: next.ok ? readModel(next.value).kind === 'custom' : current.customModel[current.type],
+            },
+            guided: {
+                ...current.guided,
+                [current.type]: next.ok ? guidedFromConfig(current.type, next.value) : null,
+            },
+        }));
     };
 
     const format = () => {
@@ -186,54 +211,30 @@ export function ExecutorDialog({
                     </DialogTitle>
                     <p className="muted">{INHERITED_NOTE}</p>
 
-                    <NameField
+                    <DialogFields
                         ids={ids}
-                        value={draft.name}
-                        error={view.nameError}
-                        onChange={(name) => setDraft({ ...draft, name })}
-                        onBlur={() => setNameTouched(true)}
-                    />
-                    <AgentField ids={ids} value={type} onChange={(next) => setDraft({ ...draft, type: next })} />
-                    <ModelField
-                        ids={ids}
-                        type={type}
-                        custom={view.custom}
-                        model={view.model}
-                        blocked={modelBlockedNote(view.parsed.ok, view.modelUnsupported)}
-                        error={view.modelError}
-                        onDefault={() => writeModel(null, false)}
-                        onCustom={() => setConfig(draft.configs[type], true)}
+                        draft={draft}
+                        view={view}
+                        guidedStep={{ guided, check, suggestions, setGuided, pickProvider, removeGuided }}
+                        isEdit={isEdit}
+                        runnerClasses={runnerClasses}
+                        envHref={envHref}
+                        cloud={cloud}
+                        failure={failure}
+                        saving={saving}
+                        onName={(name) => setDraft({ ...draft, name })}
+                        onNameBlur={() => setNameTouched(true)}
+                        onAgent={(next) => setDraft({ ...draft, type: next })}
+                        onModelDefault={() => writeModel(null, false)}
+                        onModelCustom={() => setConfig(draft.configs[type], true)}
                         onModel={(value) => writeModel(value.trim() || null, true)}
-                    />
-                    <RunnerClassField
-                        ids={ids}
-                        value={draft.runnerClass}
-                        declared={runnerClasses}
-                        onChange={(runnerClass) => setDraft({ ...draft, runnerClass })}
-                    />
-                    <CredentialsNote href={envHref} onFollow={followEnvLink} cloud={cloud} />
-
-                    <AdvancedConfiguration
-                        ids={ids}
-                        type={type}
-                        json={draft.configs[type]}
-                        jsonError={view.jsonError}
-                        managed={view.managed}
-                        rounds={draft.gateFixRounds}
-                        roundsError={view.roundsError}
+                        onRunnerClass={(runnerClass) => setDraft({ ...draft, runnerClass })}
                         onJson={editJson}
                         onFormat={format}
                         onRounds={(gateFixRounds) => setDraft({ ...draft, gateFixRounds })}
-                    />
-
-                    <ExecutorActions
-                        ids={ids}
-                        failure={failure}
-                        isEdit={isEdit}
-                        saving={saving}
-                        unavailable={view.unavailable}
                         onCancel={() => requestClose()}
                         onSave={() => void save()}
+                        onFollowEnvLink={followEnvLink}
                     />
 
                     {pendingDiscard ? (
@@ -249,5 +250,128 @@ export function ExecutorDialog({
                 </DialogPanel>
             </div>
         </Dialog>
+    );
+}
+
+/** The dialog's fields, presentational: the state owner above hands each part its value, its
+ * error and its callback, exactly as executor-dialog-parts does one field at a time. */
+function DialogFields(props: {
+    ids: string;
+    draft: ExecutorDraft;
+    view: ReturnType<typeof executorEditorView>;
+    guidedStep: ReturnType<typeof useGuidedStep>;
+    isEdit: boolean;
+    runnerClasses?: readonly RunnerClassOption[] | undefined;
+    envHref: string;
+    cloud: boolean;
+    failure: string | null;
+    saving: boolean;
+    onName: (name: string) => void;
+    onNameBlur: () => void;
+    onAgent: (type: ExecutorDraft['type']) => void;
+    onModelDefault: () => void;
+    onModelCustom: () => void;
+    onModel: (value: string) => void;
+    onRunnerClass: (value: string) => void;
+    onJson: (value: string) => void;
+    onFormat: () => void;
+    onRounds: (value: string) => void;
+    onCancel: () => void;
+    onSave: () => void;
+    onFollowEnvLink: (event: MouseEvent<HTMLAnchorElement>) => void;
+}) {
+    const { ids, draft, view, guidedStep, isEdit } = props;
+    const guided = guidedStep.guided;
+    const { type } = draft;
+    return (
+        <>
+            <NameField
+                ids={ids}
+                value={draft.name}
+                error={view.nameError}
+                onChange={props.onName}
+                onBlur={props.onNameBlur}
+            />
+            <AgentField ids={ids} value={type} onChange={props.onAgent} />
+            {guided === null ? (
+                <details className="picker-advanced">
+                    <summary>{GUIDED_COPY.PROVIDER_STEP_LABEL}</summary>
+                    <ProviderCards
+                        ids={ids}
+                        choices={guidedProvidersFor(type).map((id) => ({ id, ...EXECUTOR_PROVIDER_META[id] }))}
+                        value=""
+                        onChange={guidedStep.pickProvider}
+                    />
+                    <p className="picker-help">
+                        Pick a provider to give this executor its own key, endpoint and model — the same guided setup
+                        Connect a model runs. The configuration below is replaced by what you pick; without a provider
+                        the key connected in Settings → Model runs the task.
+                    </p>
+                </details>
+            ) : (
+                <GuidedProviderFields
+                    ids={ids}
+                    agent={type}
+                    choice={guided}
+                    suggestions={guidedStep.suggestions}
+                    check={guidedStep.check}
+                    error={view.guidedError}
+                    onProvider={(provider: ExecutorProvider) =>
+                        guidedStep.setGuided({ provider, key: { kind: 'none' }, baseUrl: '', model: '' })
+                    }
+                    onKey={(value: string) => guidedStep.setGuided({ key: { kind: 'key', value } })}
+                    onKeySource={(reference: boolean) =>
+                        guidedStep.setGuided({ key: reference ? { kind: 'reference', name: '' } : { kind: 'none' } })
+                    }
+                    onReference={(name: string) => guidedStep.setGuided({ key: { kind: 'reference', name } })}
+                    onBaseUrl={(baseUrl: string) => guidedStep.setGuided({ baseUrl })}
+                    onModel={(model: string) => guidedStep.setGuided({ model })}
+                    onRemove={guidedStep.removeGuided}
+                />
+            )}
+            {guided === null ? (
+                <ModelField
+                    ids={ids}
+                    type={type}
+                    custom={view.custom}
+                    model={view.model}
+                    blocked={modelBlockedNote(view.parsed.ok, view.modelUnsupported)}
+                    error={view.modelError}
+                    onDefault={props.onModelDefault}
+                    onCustom={props.onModelCustom}
+                    onModel={props.onModel}
+                />
+            ) : null}
+            <RunnerClassField
+                ids={ids}
+                value={draft.runnerClass}
+                declared={props.runnerClasses}
+                onChange={props.onRunnerClass}
+            />
+            <CredentialsNote href={props.envHref} onFollow={props.onFollowEnvLink} cloud={props.cloud} />
+
+            <AdvancedConfiguration
+                ids={ids}
+                type={type}
+                json={draft.configs[type]}
+                jsonError={view.jsonError}
+                managed={view.managed}
+                rounds={draft.gateFixRounds}
+                roundsError={view.roundsError}
+                onJson={props.onJson}
+                onFormat={props.onFormat}
+                onRounds={props.onRounds}
+            />
+
+            <ExecutorActions
+                ids={ids}
+                failure={props.failure}
+                isEdit={isEdit}
+                saving={props.saving}
+                unavailable={view.unavailable}
+                onCancel={props.onCancel}
+                onSave={props.onSave}
+            />
+        </>
     );
 }

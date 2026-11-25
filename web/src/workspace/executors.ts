@@ -10,6 +10,7 @@ import {
     RUNNER_MANAGED_KEYS,
     USER_SCOPE,
 } from '@factory-ai/core';
+import { guidedChoiceError, guidedFromConfig, type GuidedChoice } from './executor-guided.js';
 
 /**
  * The executor editor's pure half (issue 261): the draft the dialog holds, its validation, and the JSON
@@ -82,7 +83,7 @@ export type ValidExecutor = {
 };
 
 /** Which field a draft's failure belongs to, so the dialog shows it beside that field. */
-export type ExecutorField = 'name' | 'model' | 'config' | 'rounds';
+export type ExecutorField = 'name' | 'model' | 'guided' | 'config' | 'rounds';
 
 export type ExecutorValidation =
     | { ok: true; value: ValidExecutor }
@@ -249,6 +250,14 @@ export interface ExecutorDraft {
     type: ExecutorType;
     configs: Record<ExecutorType, string>;
     customModel: Record<ExecutorType, boolean>;
+    /**
+     * The guided provider step's choice per agent (BEL-603): null is the raw configuration, the
+     * JSON under Advanced alone. `preGuided` keeps the configuration text a guided pick started
+     * from, so removing the provider settings puts back what was there. Both live in
+     * executor-guided.ts's module: the choice, its detection and the generation it drives.
+     */
+    guided: Record<ExecutorType, GuidedChoice | null>;
+    preGuided: Record<ExecutorType, string>;
     gateFixRounds: string;
     /** The chosen runner class; '' is the deployment's default. */
     runnerClass: string;
@@ -262,11 +271,14 @@ function perType<T>(value: (type: ExecutorType) => T): Record<ExecutorType, T> {
 export function initialExecutorDraft(row: ExecutorRow | undefined): ExecutorDraft {
     const rowType = row?.type as ExecutorType | undefined;
     const config = (row?.config ?? {}) as Record<string, unknown>;
+    const configs = perType((type) => (type === rowType ? JSON.stringify(config, null, 2) : '{}'));
     return {
         name: row?.name ?? '',
         type: rowType ?? EXECUTOR_TYPES[0],
-        configs: perType((type) => (type === rowType ? JSON.stringify(config, null, 2) : '{}')),
+        configs,
         customModel: perType((type) => type === rowType && readModel(config).kind === 'custom'),
+        guided: perType((type) => (type === rowType ? guidedFromConfig(type, config) : null)),
+        preGuided: configs,
         gateFixRounds: row ? String(row.gateFixRounds) : '',
         runnerClass: row?.runnerClass ?? '',
     };
@@ -299,6 +311,9 @@ export function validateExecutorDraft(
     if (nameError) return { ok: false, error: nameError, field: 'name' };
 
     const { type } = draft;
+    const guidedError = draft.guided[type] === null ? null : guidedChoiceError(draft.guided[type]!);
+    if (guidedError !== null) return { ok: false, error: guidedError, field: 'guided' };
+
     const parsed = parseExecutorConfig(draft.configs[type]);
     if (!parsed.ok) return { ok: false, error: parsed.error, field: 'config' };
     for (const field of REQUIRED_FIELDS[type]) {
@@ -372,6 +387,7 @@ export function executorDraftChanges(
 export const SAVE_HINTS: Record<ExecutorField, string> = {
     name: 'Enter a valid name to save.',
     model: 'Finish the Model choice to save.',
+    guided: 'Finish the provider settings to save.',
     config: 'Fix the JSON in Advanced configuration to save.',
     rounds: 'Fix the gate repair rounds in Advanced configuration to save.',
 };
@@ -557,7 +573,10 @@ export const INHERITED_NOTE =
     'Anything you leave unset is inherited from this deployment’s runner configuration. Saving checks the form only — not your credentials or whether the model is available.';
 
 /** Where credentials go instead: the member's environment, on the Workspace settings page. */
-export const CREDENTIALS_NOTE = 'Keep API keys out of this configuration — set them as environment variables in';
+/** Where credentials end up: the secret store keeps the value, the configuration a reference — and
+ * environment variables remain the other way to bring a key, on the Workspace settings page. */
+export const CREDENTIALS_NOTE =
+    'A key here is stored in the secret store; the configuration keeps only a reference. Environment variables work too — set them in';
 
 /** Shown in Bellows Cloud only: the board refuses a Claude subscription OAuth token everywhere. */
 export const CLOUD_OAUTH_NOTE =
@@ -631,6 +650,7 @@ export function executorEditorView({
     const parsed = parseExecutorConfig(draft.configs[type]);
     const model = parsed.ok ? readModel(parsed.value) : null;
     const custom = draft.customModel[type];
+    const guided = draft.guided[type];
     const validation = validateExecutorDraft(draft, existing, editing);
     const changes = executorDraftChanges(baseline, draft);
     const nameError = validateExecutorName(draft.name, existing, editing);
@@ -639,13 +659,15 @@ export function executorEditorView({
     return {
         parsed,
         custom,
+        guided,
+        guidedError: guided === null ? null : guidedChoiceError(guided),
         model: model?.kind === 'custom' ? model.model : '',
         modelUnsupported: model?.kind === 'unsupported',
         validation,
         changes,
         unavailable: saveUnavailableReason(validation, changes.payloadChanged, editing !== null),
         nameError: nameError && (nameTouched || draft.name.trim() !== '') ? nameError : null,
-        modelError: editable ? validateModelChoice(parsed.value, custom, type) : null,
+        modelError: guided === null && editable ? validateModelChoice(parsed.value, custom, type) : null,
         jsonError: parsed.ok ? null : parsed.error,
         roundsError: rounds.ok ? null : rounds.error,
         managed: parsed.ok ? runnerManagedSettings(type, parsed.value) : [],
