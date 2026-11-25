@@ -15,6 +15,19 @@ export const GITLAB_TOKEN_TTL_S = 2 * 3600;
 /** An authorization code's lifetime (Doorkeeper's `authorization_code_expires_in`). */
 export const GITLAB_CODE_TTL_S = 600;
 const DEFAULT_SCOPE = 'api';
+/** The scopes gitlab.com offers an OAuth application; a registered client is limited to the ones it was given. */
+const KNOWN_SCOPES = [
+    'api',
+    'read_api',
+    'read_user',
+    'read_repository',
+    'write_repository',
+    'read_registry',
+    'write_registry',
+    'openid',
+    'profile',
+    'email',
+];
 const DEFAULT_MEMBER = 'lane-member';
 const USER_ID_BASE = 8000;
 const UNAUTHORIZED = { message: '401 Unauthorized' };
@@ -68,7 +81,7 @@ export const registerGitlab = (forge) => {
     const projects = new Map(); // id -> project
     const userIds = new Map(); // login -> id
     const pipelines = [];
-    /** client id -> secret; empty means any client is accepted */
+    /** client id -> { secret, redirectUris, scopes }; empty means any client is accepted */
     const clients = new Map();
     /** group full path -> its stable id, minted with the first project under it */
     const groups = new Map();
@@ -116,23 +129,48 @@ export const registerGitlab = (forge) => {
         'GET',
         '/oauth/authorize',
         ({ response, query }) => {
-            if (!query.redirect_uri) {
-                return forge.json(response, 400, oauthError('invalid_request', 'The redirect URI is missing.'));
+            // Doorkeeper's order: the client and the redirect URI first, with a plain error page when either is wrong
+            // (nothing to redirect to safely); the rest come back on the redirect as `error=`.
+            const client = clients.get(query.client_id);
+            if (clients.size > 0 && !client) return forge.json(response, 401, CLIENT_ERROR);
+            let target;
+            try {
+                target = new URL(query.redirect_uri);
+            } catch {
+                return forge.json(response, 400, oauthError('invalid_request', 'The redirect URI is missing or invalid.'));
             }
-            if (clients.size > 0 && !clients.has(query.client_id)) return forge.json(response, 401, CLIENT_ERROR);
+            if (client && !client.redirectUris.includes(query.redirect_uri)) {
+                return forge.json(
+                    response,
+                    400,
+                    oauthError('invalid_redirect_uri', 'The requested redirect uri is malformed or doesn\'t match client redirect URI.')
+                );
+            }
+            const redirect = (params) => {
+                for (const [key, value] of Object.entries({ ...params, state: query.state }))
+                    if (value !== undefined) target.searchParams.set(key, value);
+                response.writeHead(302, { location: target.toString() });
+                response.end();
+            };
+            if (query.response_type !== 'code') {
+                return query.response_type === undefined
+                    ? redirect(oauthError('invalid_request', 'The request is missing a required parameter, includes an unsupported parameter value, or is otherwise malformed.'))
+                    : redirect(oauthError('unsupported_response_type', 'The authorization server does not support this response type.'));
+            }
+            const scope = query.scope ?? DEFAULT_SCOPE;
+            const allowed = client ? client.scopes : KNOWN_SCOPES;
+            if (scope.split(' ').some((one) => !allowed.includes(one))) {
+                return redirect(oauthError('invalid_scope', 'The requested scope is invalid, unknown, or malformed.'));
+            }
             const code = `code${forge.nextId()}`;
             codes.set(code, {
                 login: query.login ?? DEFAULT_MEMBER,
                 clientId: query.client_id ?? null,
                 redirectUri: query.redirect_uri,
-                scope: query.scope ?? DEFAULT_SCOPE,
+                scope,
                 expiresAt: forge.clock() + GITLAB_CODE_TTL_S * 1000,
             });
-            const target = new URL(query.redirect_uri);
-            target.searchParams.set('code', code);
-            if (query.state) target.searchParams.set('state', query.state);
-            response.writeHead(302, { location: target.toString() });
-            response.end();
+            redirect({ code });
         },
         { auth: false }
     );
@@ -141,7 +179,7 @@ export const registerGitlab = (forge) => {
         'POST',
         '/oauth/token',
         ({ response, body }) => {
-            if (clients.size > 0 && !(clients.has(body.client_id) && clients.get(body.client_id) === body.client_secret)) {
+            if (clients.size > 0 && !(clients.has(body.client_id) && clients.get(body.client_id).secret === body.client_secret)) {
                 return forge.json(response, 401, CLIENT_ERROR);
             }
             const missing = (field) => forge.json(response, 400, oauthError('invalid_request', `The ${field} is missing.`));
@@ -1064,8 +1102,11 @@ export const registerGitlab = (forge) => {
         forge.json(response, 200, { version });
     });
     control('oauth-clients', ({ response, body }) => {
-        if (!body.clientId || !body.clientSecret) return badRequest(response, 'clientId and clientSecret are required');
-        clients.set(body.clientId, body.clientSecret);
+        const { clientId, clientSecret, redirectUris, scopes = [DEFAULT_SCOPE] } = body;
+        if (!clientId || !clientSecret || !Array.isArray(redirectUris) || redirectUris.length === 0) {
+            return badRequest(response, 'clientId, clientSecret and a non-empty redirectUris are required');
+        }
+        clients.set(clientId, { secret: clientSecret, redirectUris, scopes });
         forge.json(response, 200, { clientId: body.clientId });
     });
     // `mode`: status (with `status`), malformed (a 200 whose body is not JSON), timeout (never answered), none (clears

@@ -13,6 +13,7 @@ afterEach(async () => {
     await gl.stop();
 });
 
+const REDIRECT = 'http://board.test/cb';
 const PROJECT = 'acme/group/proj';
 const ENCODED = encodeURIComponent(PROJECT);
 const api = (path: string) => `/api/v4/projects/${ENCODED}${path}`;
@@ -64,7 +65,10 @@ describe('fake GitLab: OAuth', () => {
     });
 
     it('spends a code once, and refuses an unknown one', async () => {
-        const authorize = await gl.send('GET', '/oauth/authorize?redirect_uri=http://board.test/cb&state=abc');
+        const authorize = await gl.send(
+            'GET',
+            '/oauth/authorize?redirect_uri=http://board.test/cb&response_type=code&state=abc'
+        );
         const target = new URL(authorize.location as string);
         expect(target.searchParams.get('state')).toBe('abc');
         const grant = {
@@ -785,9 +789,11 @@ describe('fake GitLab: group projects', () => {
 });
 
 describe('fake GitLab: OAuth contract', () => {
-    const REDIRECT = 'http://board.test/cb';
     const authorize = async (query = '') => {
-        const res = await gl.send('GET', `/oauth/authorize?redirect_uri=${REDIRECT}&login=dev${query}`);
+        const res = await gl.send(
+            'GET',
+            `/oauth/authorize?redirect_uri=${REDIRECT}&response_type=code&login=dev${query}`
+        );
         return new URL(res.location as string).searchParams.get('code') as string;
     };
     const token = (body: object) => gl.send('POST', '/oauth/token', { body });
@@ -859,8 +865,16 @@ describe('fake GitLab: OAuth contract', () => {
     });
 
     it('answers a client failure 401 invalid_client and a code issued to another client 400 invalid_grant', async () => {
-        await gl.control('gitlab/oauth-clients', { clientId: 'app-1', clientSecret: 'secret-1' });
-        await gl.control('gitlab/oauth-clients', { clientId: 'app-2', clientSecret: 'secret-2' });
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-1',
+            clientSecret: 'secret-1',
+            redirectUris: [REDIRECT],
+        });
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-2',
+            clientSecret: 'secret-2',
+            redirectUris: [REDIRECT],
+        });
         const code = await authorize('&client_id=app-1');
         const bad = await exchange(code, { redirect_uri: REDIRECT, client_id: 'app-1', client_secret: 'nope' });
         expect(bad.status).toBe(401);
@@ -873,13 +887,119 @@ describe('fake GitLab: OAuth contract', () => {
     });
 });
 
+describe('fake GitLab: OAuth authorize', () => {
+    const go = (query: Record<string, string | undefined>) => {
+        const params = new URLSearchParams({ redirect_uri: REDIRECT, response_type: 'code', ...query } as Record<
+            string,
+            string
+        >);
+        for (const [key, value] of Object.entries(query)) if (value === undefined) params.delete(key);
+        return gl.send('GET', `/oauth/authorize?${params}`);
+    };
+    const back = (res: { location: string | null }) => new URL(res.location as string).searchParams;
+    const GITLAB_ERROR = { error: expect.any(String), error_description: expect.any(String) };
+    const register = () =>
+        gl.control('gitlab/oauth-clients', {
+            clientId: 'app-1',
+            clientSecret: 'secret-1',
+            redirectUris: [REDIRECT],
+            scopes: ['api', 'read_user'],
+        });
+
+    it('requires response_type=code, redirecting with error= and the state otherwise, and issues no code', async () => {
+        await register();
+        for (const [response_type, error] of [
+            [undefined, 'invalid_request'],
+            ['token', 'unsupported_response_type'],
+        ] as const) {
+            const res = await go({ client_id: 'app-1', response_type, state: 'st' });
+            expect(res.status).toBe(302);
+            const params = back(res);
+            expect(params.get('error')).toBe(error);
+            expect(params.get('error_description')).toBeTruthy();
+            expect(params.get('state')).toBe('st');
+            expect(params.has('code')).toBe(false);
+        }
+    });
+
+    it('requires a registered client: unknown and missing are a 401 invalid_client with no redirect', async () => {
+        await register();
+        for (const client_id of ['ghost', undefined]) {
+            const res = await go({ client_id });
+            expect(res.status).toBe(401);
+            expect(res.location).toBeNull();
+            expect(res.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_client' });
+        }
+    });
+
+    it('requires a redirect URI registered for the client: a different or missing one is a 400, never a redirect', async () => {
+        await register();
+        const other = await go({ client_id: 'app-1', redirect_uri: 'http://evil.test/cb' });
+        expect(other.status).toBe(400);
+        expect(other.location).toBeNull();
+        expect(other.body).toMatchObject({ ...GITLAB_ERROR, error: 'invalid_redirect_uri' });
+        const missing = await go({ client_id: 'app-1', redirect_uri: undefined });
+        expect(missing.status).toBe(400);
+        expect(missing.location).toBeNull();
+        expect((await go({ client_id: 'app-1', redirect_uri: 'not a url' })).status).toBe(400);
+        expect((await go({ client_id: 'app-1' })).status).toBe(302);
+    });
+
+    it('sends the state back unchanged, on success and on error', async () => {
+        const state = 'a b&c=d/é?';
+        expect(back(await go({ state })).get('state')).toBe(state);
+        expect(back(await go({ state, scope: 'nonsense' })).get('state')).toBe(state);
+        expect(back(await go({})).has('state')).toBe(false);
+    });
+
+    it('checks scope against what the client may have, redirecting with invalid_scope', async () => {
+        await register();
+        const ok = back(await go({ client_id: 'app-1', scope: 'api read_user' }));
+        expect(ok.get('code')).toBeTruthy();
+        for (const scope of ['write_repository', 'api read_registry', 'nonsense']) {
+            const params = back(await go({ client_id: 'app-1', scope, state: 's' }));
+            expect(params.get('error')).toBe('invalid_scope');
+            expect(params.has('code')).toBe(false);
+        }
+    });
+
+    it('with no client registered, needs response_type=code and a known scope all the same', async () => {
+        expect(back(await go({ response_type: undefined })).get('error')).toBe('invalid_request');
+        expect(back(await go({ response_type: 'token' })).get('error')).toBe('unsupported_response_type');
+        expect(back(await go({ scope: 'bogus' })).get('error')).toBe('invalid_scope');
+        expect(back(await go({ scope: 'read_user' })).get('code')).toBeTruthy();
+    });
+
+    it('keeps the redirect URI query and adds code and state to it', async () => {
+        const target = new URL(`${REDIRECT}?keep=1`);
+        const res = await go({ redirect_uri: target.toString(), state: 'x' });
+        const params = back(res);
+        expect(params.get('keep')).toBe('1');
+        expect(params.get('code')).toBeTruthy();
+        expect(params.get('state')).toBe('x');
+    });
+
+    it('refuses to register a client without redirect URIs', async () => {
+        const res = await gl.control('gitlab/oauth-clients', { clientId: 'a', clientSecret: 'b' });
+        expect(res.status).toBe(400);
+    });
+});
+
 describe('fake GitLab: OAuth clients', () => {
     it('binds a pair to the client that authorized it, and refuses another client and a wrong secret', async () => {
-        await gl.control('gitlab/oauth-clients', { clientId: 'app-1', clientSecret: 'secret-1' });
-        await gl.control('gitlab/oauth-clients', { clientId: 'app-2', clientSecret: 'secret-2' });
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-1',
+            clientSecret: 'secret-1',
+            redirectUris: [REDIRECT],
+        });
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-2',
+            clientSecret: 'secret-2',
+            redirectUris: [REDIRECT],
+        });
         const authorize = await gl.send(
             'GET',
-            '/oauth/authorize?redirect_uri=http://board.test/cb&client_id=app-1&login=dev'
+            '/oauth/authorize?redirect_uri=http://board.test/cb&response_type=code&client_id=app-1&login=dev'
         );
         const code = new URL(authorize.location as string).searchParams.get('code') as string;
         const exchange = (clientSecret: string, clientId = 'app-1') =>
@@ -912,11 +1032,15 @@ describe('fake GitLab: OAuth clients', () => {
     });
 
     it('refuses an unknown client with no credentials, and a known client with a wrong or missing secret', async () => {
-        await gl.control('gitlab/oauth-clients', { clientId: 'app-1', clientSecret: 'secret-1' });
+        await gl.control('gitlab/oauth-clients', {
+            clientId: 'app-1',
+            clientSecret: 'secret-1',
+            redirectUris: [REDIRECT],
+        });
         const code = async () => {
             const authorize = await gl.send(
                 'GET',
-                '/oauth/authorize?redirect_uri=http://board.test/cb&client_id=app-1&login=dev'
+                '/oauth/authorize?redirect_uri=http://board.test/cb&response_type=code&client_id=app-1&login=dev'
             );
             return new URL(authorize.location as string).searchParams.get('code') as string;
         };
@@ -937,7 +1061,7 @@ describe('fake GitLab: OAuth clients', () => {
         expect((await exchange({ client_id: 'app-1', client_secret: 'secret-1' })).status).toBe(200);
         const unknownAuthorize = await gl.send(
             'GET',
-            '/oauth/authorize?redirect_uri=http://board.test/cb&client_id=ghost'
+            '/oauth/authorize?redirect_uri=http://board.test/cb&response_type=code&client_id=ghost'
         );
         expect(unknownAuthorize.status).toBe(401);
     });
