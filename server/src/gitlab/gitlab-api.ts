@@ -3,8 +3,9 @@ import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 
 /**
- * The board's GitLab HTTP client. Only the unauthenticated reachability probe exists so far: the authenticated
- * calls (version check, projects) arrive with the member and admin grants (docs/connections.md).
+ * The board's GitLab HTTP client: the unauthenticated reachability probe, the authenticated version check that
+ * activates a connection, and the bounded request the OAuth hooks call the token and user endpoints with
+ * (docs/connections.md). Every call is deadline-bound, reads at most 64 KiB and is CA-aware.
  */
 
 /** How long one probe may take, connect to last byte. */
@@ -23,7 +24,42 @@ export type ProbeReason = (typeof PROBE_REASONS)[number];
 
 export type ProbeResult = { reachable: true; version: string | null } | { reachable: false; reason: ProbeReason };
 
+/** The lowest GitLab the board activates a connection against. */
+export const GITLAB_MIN_VERSION = { major: 17, minor: 0 } as const;
+
+export interface GitlabRequest {
+    host: string;
+    /** A path under the instance origin, query included. */
+    path: string;
+    method?: 'GET' | 'POST';
+    headers?: Record<string, string>;
+    body?: string;
+    caBundle?: string | undefined;
+    signal?: AbortSignal | undefined;
+}
+
+/** An answer, whatever its status; or why no answer was had. Never throws. */
+export type GitlabResponse = { ok: true; status: number; text: string } | { ok: false; reason: ProbeReason };
+
+/**
+ * What the authenticated `/version` said. `too-old` is a verdict about the instance; `inconclusive` is any answer that
+ * is not one (unreachable, 5xx, a refused token, a malformed body): the caller leaves the connection pending.
+ */
+export type VersionCheck =
+    | { ok: true; version: string }
+    | { ok: false; reason: 'too-old'; version: string }
+    | { ok: false; reason: 'inconclusive' };
+
 export interface GitlabApi {
+    /** One bounded request; every failure is a reason, never a throw. */
+    request(request: GitlabRequest): Promise<GitlabResponse>;
+    /** `GET /api/v4/version` with the token; the minimum is `GITLAB_MIN_VERSION`. */
+    checkVersion(target: {
+        host: string;
+        token: string;
+        caBundle?: string | undefined;
+        signal?: AbortSignal | undefined;
+    }): Promise<VersionCheck>;
     /**
      * `GET /api/v4/version` with no credential. GitLab answers 401 JSON to an anonymous caller, which proves the API
      * is there; a 200 also names the version. Never throws: every failure is a reason.
@@ -69,6 +105,18 @@ function judge(status: number, text: string): ProbeResult {
     return { reachable: false, reason: 'malformed' };
 }
 
+const VERSION_PATTERN = /^(\d+)\.(\d+)/;
+
+/** The verdict on a version string: null when it is not a version at all. */
+function versionVerdict(version: string): VersionCheck | null {
+    const match = VERSION_PATTERN.exec(version);
+    if (!match) return null;
+    const [major, minor] = [Number(match[1]), Number(match[2])];
+    const old =
+        major < GITLAB_MIN_VERSION.major || (major === GITLAB_MIN_VERSION.major && minor < GITLAB_MIN_VERSION.minor);
+    return old ? { ok: false, reason: 'too-old', version } : { ok: true, version };
+}
+
 export function createGitlabApi({
     baseUrl = (host) => `https://${host}`,
     probeTimeoutMs = GITLAB_PROBE_TIMEOUT_MS,
@@ -77,46 +125,76 @@ export function createGitlabApi({
     baseUrl?: (host: string) => string;
     probeTimeoutMs?: number;
 } = {}): GitlabApi {
+    const request = ({ host, path, method = 'GET', headers = {}, body, caBundle, signal }: GitlabRequest) =>
+        new Promise<GitlabResponse>((resolve) => {
+            let url: URL;
+            try {
+                url = new URL(path, baseUrl(host));
+            } catch {
+                // An input the route let through that no URL can name: unreachable, never a throw.
+                return resolve({ ok: false, reason: 'unreachable' });
+            }
+            if (signal?.aborted) return resolve({ ok: false, reason: 'timeout' });
+            const send = url.protocol === 'http:' ? httpRequest : httpsRequest;
+            let settled = false;
+            const done = (result: GitlabResponse) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                signal?.removeEventListener('abort', onAbort);
+                req.destroy();
+                resolve(result);
+            };
+            const onAbort = () => done({ ok: false, reason: 'timeout' });
+            const timer = setTimeout(() => done({ ok: false, reason: 'timeout' }), probeTimeoutMs);
+            signal?.addEventListener('abort', onAbort, { once: true });
+            const req = send(url, {
+                method,
+                headers: {
+                    accept: JSON_CONTENT_TYPE,
+                    ...(body === undefined ? {} : { 'content-length': String(Buffer.byteLength(body)) }),
+                    ...headers,
+                },
+                ...(caBundle === undefined ? {} : { ca: caBundle }),
+            });
+            req.on('error', (error) => done({ ok: false, reason: failureOf(error) }));
+            req.on('response', (response) => {
+                const chunks: Buffer[] = [];
+                let size = 0;
+                response.on('data', (chunk: Buffer) => {
+                    size += chunk.length;
+                    if (size > PROBE_BODY_LIMIT) return done({ ok: false, reason: 'malformed' });
+                    chunks.push(chunk);
+                });
+                response.on('end', () =>
+                    done({
+                        ok: true,
+                        status: response.statusCode ?? 0,
+                        text: Buffer.concat(chunks).toString('utf8'),
+                    })
+                );
+                response.on('error', (error) => done({ ok: false, reason: failureOf(error) }));
+            });
+            req.end(body);
+        });
     return {
-        probe: ({ host, caBundle }) =>
-            new Promise<ProbeResult>((resolve) => {
-                let url: URL;
-                try {
-                    url = new URL('/api/v4/version', baseUrl(host));
-                } catch {
-                    // An input the route let through that no URL can name: pending, with a reason, never a throw.
-                    return resolve({ reachable: false, reason: 'unreachable' });
-                }
-                const send = url.protocol === 'http:' ? httpRequest : httpsRequest;
-                let settled = false;
-                const done = (result: ProbeResult) => {
-                    if (settled) return;
-                    settled = true;
-                    clearTimeout(timer);
-                    req.destroy();
-                    resolve(result);
-                };
-                const timer = setTimeout(() => done({ reachable: false, reason: 'timeout' }), probeTimeoutMs);
-                const req = send(url, {
-                    method: 'GET',
-                    headers: { accept: JSON_CONTENT_TYPE },
-                    ...(caBundle === undefined ? {} : { ca: caBundle }),
-                });
-                req.on('error', (error) => done({ reachable: false, reason: failureOf(error) }));
-                req.on('response', (response) => {
-                    const chunks: Buffer[] = [];
-                    let size = 0;
-                    response.on('data', (chunk: Buffer) => {
-                        size += chunk.length;
-                        if (size > PROBE_BODY_LIMIT) return done({ reachable: false, reason: 'malformed' });
-                        chunks.push(chunk);
-                    });
-                    response.on('end', () =>
-                        done(judge(response.statusCode ?? 0, Buffer.concat(chunks).toString('utf8')))
-                    );
-                    response.on('error', (error) => done({ reachable: false, reason: failureOf(error) }));
-                });
-                req.end();
-            }),
+        request,
+        probe: async ({ host, caBundle }) => {
+            const answer = await request({ host, path: '/api/v4/version', caBundle });
+            return answer.ok ? judge(answer.status, answer.text) : { reachable: false, reason: answer.reason };
+        },
+        checkVersion: async ({ host, token, caBundle, signal }) => {
+            const answer = await request({
+                host,
+                path: '/api/v4/version',
+                headers: { authorization: `Bearer ${token}` },
+                caBundle,
+                signal,
+            });
+            if (!answer.ok || answer.status !== HTTP_OK) return { ok: false, reason: 'inconclusive' };
+            const body = jsonOf(answer.text);
+            const verdict = isObject(body) && typeof body.version === 'string' ? versionVerdict(body.version) : null;
+            return verdict ?? { ok: false, reason: 'inconclusive' };
+        },
     };
 }

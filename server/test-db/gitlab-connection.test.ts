@@ -222,7 +222,7 @@ describe.skipIf(!enabled)('forge connection store', () => {
                 orgId: orgA,
                 secrets,
                 secretLog: () => {},
-                gitlab: { probe },
+                gitlab: { ...gitlabApi(), probe },
             });
         const sync = await throwing(() => {
             throw new Error('setup failed');

@@ -401,6 +401,7 @@ export type { RollupFacts, SessionFieldTotal } from './usage-rollups.js';
 export type * from './types.js';
 export * from './integrations/context.js';
 export * from './integrations/definition.js';
+export * from './integrations/gitlab.js';
 export * from './integrations/jira.js';
 export * from './integrations/linear.js';
 export * from './integrations/operation.js';

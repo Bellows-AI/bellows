@@ -24,6 +24,7 @@ import { agentTitleRoutes } from './routes/agent-title.js';
 import { errorHandler } from './routes/error-handler.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
+import type { GitlabLinks } from './integrations/gitlab-link.js';
 import type { MemberForgeGrants } from './integrations/member-forge-grant.js';
 import { combineRegistrations } from './integrations/provider-registry.js';
 import { batchRoutes } from './routes/batches/batches.js';
@@ -43,6 +44,7 @@ import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
 import { createConnectorRegistry, type ConnectorRegistry } from './notifications/connector.js';
 import { gitlabConnectionRoutes } from './routes/gitlab-connections.js';
+import { gitlabLinkRoutes } from './routes/gitlab-links.js';
 import { notificationSubscriptionRoutes } from './routes/notification-subscriptions.js';
 import { orgMemberRoutes } from './routes/org-members.js';
 import { auditRoutes } from './routes/audit.js';
@@ -179,6 +181,8 @@ export interface AppDeps {
     identity?: GitHubIdentityClient | undefined;
     /** The member forge grants: a sign-in keeps the GitHub grant here, and the revoke webhook breaks it. Absent, none. */
     memberGrants?: MemberForgeGrants | undefined;
+    /** A person's GitLab authorization (the member's link, the admin's activation); the routes exist with it and `memberGrants`. */
+    gitlabLinks?: GitlabLinks | undefined;
     /** The GitHub REST writer behind the PR route; absent, it is built from the configured API URL, and with none the route answers GITHUB_UNAVAILABLE. */
     prWriter?: PrWriter | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
@@ -278,10 +282,14 @@ async function registerAccountRoutes(
         auth,
         orgs,
         memberGrants,
+        gitlabLinks,
         oauth,
         version,
         metrics,
-    }: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'oauth' | 'metrics'> & { auth: AuthStore; version: string }
+    }: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'gitlabLinks' | 'oauth' | 'metrics'> & {
+        auth: AuthStore;
+        version: string;
+    }
 ): Promise<void> {
     // The mint/list/revoke routes are github-mode only. Under `none` the hook ignores every
     // credential, so a token minted here would be inert at best — and a live personal
@@ -296,6 +304,7 @@ async function registerAccountRoutes(
         await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret, memberGrants }));
     }
     await app.register(forgeGrantRoutes({ memberGrants }));
+    if (memberGrants && gitlabLinks) await app.register(gitlabLinkRoutes({ orgs, links: gitlabLinks, memberGrants }));
     await registerMcp(app, { config, auth, oauth, version, metrics });
 }
 
@@ -462,6 +471,7 @@ export async function buildApp({
     attachmentMaxInFlight,
     uploadCapabilities,
     identity,
+    gitlabLinks,
     memberGrants,
     prWriter,
     appSlug,
@@ -535,7 +545,7 @@ export async function buildApp({
         await app.register(
             authRoutes({ config, store: auth, orgs, identity, memberGrants, appSlug, installationListing, oauth })
         );
-        await registerAccountRoutes(app, { config, auth, orgs, memberGrants, oauth, version, metrics });
+        await registerAccountRoutes(app, { config, auth, orgs, memberGrants, gitlabLinks, oauth, version, metrics });
     }
     await app.register(skillRoutes(skillCatalog, orgs, { version }));
     await app.register(skillStoreRoutes({ orgs, builtin: skillCatalog }));

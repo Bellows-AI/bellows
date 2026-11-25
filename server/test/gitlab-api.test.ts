@@ -80,3 +80,47 @@ describe('createGitlabApi.probe', () => {
         }
     );
 });
+
+describe('createGitlabApi.checkVersion', () => {
+    const answer = (status: number, body: string) => async () =>
+        serve((_req, res) => void res.writeHead(status, { 'content-type': 'application/json' }).end(body));
+    const check = async (host: string) => httpApi().checkVersion({ host, token: 'tok' });
+
+    it('presents the token and accepts the minimum version and above, however the build is suffixed', async () => {
+        let seen = '';
+        const host = await serve((req, res) => {
+            seen = String(req.headers.authorization);
+            res.writeHead(200, { 'content-type': 'application/json' }).end('{"version":"17.0.0-ee"}');
+        });
+        expect(await check(host)).toEqual({ ok: true, version: '17.0.0-ee' });
+        expect(seen).toBe('Bearer tok');
+        expect(await check(await answer(200, '{"version":"18.2.1"}')())).toMatchObject({ ok: true });
+    });
+
+    it('refuses a version below the minimum with its verdict', async () => {
+        expect(await check(await answer(200, '{"version":"16.11.9"}')())).toEqual({
+            ok: false,
+            reason: 'too-old',
+            version: '16.11.9',
+        });
+    });
+
+    it.each([
+        ['a refused token', 401, '{"message":"401 Unauthorized"}'],
+        ['a 5xx', 503, '{"message":"down"}'],
+        ['a body that is not JSON', 200, '<html>'],
+        ['a version that is not one', 200, '{"version":"next"}'],
+    ])('is inconclusive on %s, never a verdict', async (_name, status, body) => {
+        expect(await check(await answer(status, body)())).toEqual({ ok: false, reason: 'inconclusive' });
+    });
+
+    it('is inconclusive when nothing answers or the caller gives up', async () => {
+        const hang = await serve(() => undefined);
+        expect(await check(hang)).toEqual({ ok: false, reason: 'inconclusive' });
+        const aborted = AbortSignal.abort();
+        expect(await httpApi().checkVersion({ host: hang, token: 'tok', signal: aborted })).toEqual({
+            ok: false,
+            reason: 'inconclusive',
+        });
+    });
+});

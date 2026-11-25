@@ -62,4 +62,8 @@ export interface OAuthProviderHooks {
     discoverIdentity(input: { accessToken: string; signal: AbortSignal }): Promise<DiscoveredIdentity | null>;
 }
 
-export type OAuthProviderLookup = (provider: string) => OAuthProviderHooks | undefined;
+/**
+ * The hooks of a provider. `orgId` names the organization asking: a provider whose OAuth application is the org's own
+ * (GitLab) answers per org, and the runtime always passes it; one registered per deployment ignores it.
+ */
+export type OAuthProviderLookup = (provider: string, orgId?: string) => OAuthProviderHooks | undefined;

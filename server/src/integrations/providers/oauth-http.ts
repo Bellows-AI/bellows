@@ -59,7 +59,7 @@ function tokensFrom(json: unknown, scopesOf: ScopeParser): IssuedTokens | null {
 }
 
 /** A token endpoint answer: tokens, a refusal the provider meant, or unconfirmed. */
-export function answerOf(res: Response, text: string, scopesOf: ScopeParser): ExchangeResult {
+export function answerOf(res: Pick<Response, 'ok' | 'status'>, text: string, scopesOf: ScopeParser): ExchangeResult {
     let json: unknown = null;
     try {
         json = JSON.parse(text);

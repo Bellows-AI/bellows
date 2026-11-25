@@ -38,7 +38,10 @@ import {
     startIntegrationRecovery,
 } from './integrations/integration-recovery.js';
 import { combineRegistrations, type ProviderRegistry } from './integrations/provider-registry.js';
-import { createMemberForgeGrants } from './integrations/member-forge-grant.js';
+import { createGitlabLinks } from './integrations/gitlab-link.js';
+import { createMemberForgeGrants, type MemberForgeGrants } from './integrations/member-forge-grant.js';
+import { createGitlabProvider } from './integrations/providers/gitlab.js';
+import { createGitlabApi } from './gitlab/gitlab-api.js';
 import { createGitHubUserHooks } from './integrations/providers/github-user.js';
 import { jiraProvider } from './integrations/providers/jira.js';
 import { linearProvider } from './integrations/providers/linear.js';
@@ -287,21 +290,62 @@ function composeIntegrations(deps: {
     ready: Promise<unknown>;
 }) {
     const { config, sql, crossOrg, secrets, ready } = deps;
+    const gitlab = composeGitlab({ sql, config });
     const registry = providerRegistry(config.integrations);
     const githubUser = config.auth.mode === 'github' ? createGitHubUserHooks(config.auth) : null;
     const integrations = createIntegrationRuntime({
         sql,
         crossOrgSql: crossOrg.sql,
         secrets,
-        providers: (provider) => (githubUser?.id === provider ? githubUser : registry.providers(provider)),
-        clients: registry.clients,
+        // A GitLab provider is the org's own application (`gitlab:<host>`): looked up with the org, never shared.
+        providers: (provider, orgId) =>
+            githubUser?.id === provider
+                ? githubUser
+                : ((orgId === undefined ? undefined : gitlab.provider.hooksFor(orgId, provider)) ??
+                  registry.providers(provider)),
+        clients: (provider) => registry.clients(provider),
         callbackOrigin: config.integrations.callbackOrigin,
         log: (d) => logger('integrations').info(d, 'integration diagnostic'),
     });
     const memberGrants = githubUser
         ? createMemberForgeGrants({ sql, crossOrgSql: crossOrg.sql, ready, secrets, lineageOf: integrations.lineageOf })
         : undefined;
-    return { registry, integrations, memberGrants };
+    return { registry, integrations, memberGrants, gitlab };
+}
+
+/**
+ * The GitLab side of the OAuth runtime: the API client and the per-org hooks. The hooks read the org's application
+ * through the org registry, which is built after the runtime needs them, so `bindOrgs` hands it over once it exists.
+ */
+function composeGitlab({ sql, config }: { sql: Sql; config: AppConfig }) {
+    const gitlabApi = createGitlabApi();
+    const late: { orgs?: OrgRegistry } = {};
+    const gitlab = createGitlabProvider({
+        api: gitlabApi,
+        applicationOf: async (orgId, host) => {
+            const runtime = await late.orgs?.for(orgId);
+            if (!runtime?.forgeConnections) throw new Error('organization unavailable');
+            return runtime.forgeConnections.application(host);
+        },
+    });
+    return {
+        api: gitlabApi,
+        provider: gitlab,
+        /** Hands the provider the org registry, and builds the link service over it; none without member grants. */
+        bindOrgs: (orgs: OrgRegistry, memberGrants: MemberForgeGrants | undefined) => {
+            late.orgs = orgs;
+            return memberGrants
+                ? createGitlabLinks({
+                      sql,
+                      connectionsOf: async (orgId) => (await orgs.for(orgId))?.forgeConnections,
+                      provider: gitlab,
+                      api: gitlabApi,
+                      memberGrants,
+                      callbackOrigin: config.integrations.callbackOrigin,
+                  })
+                : undefined;
+        },
+    };
 }
 
 /**
@@ -386,7 +430,8 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         admission: config.admission,
         occupancy: (signal) => admissionOccupancy(sql, { signal }),
     });
-    const { registry, integrations, memberGrants } = composeIntegrations({ config, sql, crossOrg, secrets, ready });
+    const composed = composeIntegrations({ config, sql, crossOrg, secrets, ready });
+    const { registry, integrations, memberGrants } = composed;
     const orgs = createOrgRegistry({
         sql,
         ready,
@@ -463,6 +508,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,
         memberGrants,
+        gitlabLinks: composed.gitlab.bindOrgs(orgs, memberGrants),
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
         providerKeys: createProviderKeys({ deploymentMode: config.deploymentMode }),
         metrics,
