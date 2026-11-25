@@ -92,6 +92,7 @@
         "server/test/gate-diag.test.ts",
         "server/test/gate-test-changed.test.ts",
         "server/test/gate-ui.test.ts",
+        "server/test/gitlab-api.test.ts",
         "server/test/lane-capacity-samples.test.ts",
         "server/test/lane-slow-jobs.test.ts",
         "server/test/local-origin-plan.test.ts",
