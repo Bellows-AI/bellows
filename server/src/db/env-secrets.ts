@@ -221,7 +221,13 @@ async function eachLimited<T>(items: readonly T[], concurrency: number, fn: (ite
  */
 export async function createEnvSecrets(
     store: SecretStore,
-    items: readonly { name: string; identity: SecretIdentity; value: string }[],
+    items: readonly {
+        name: string;
+        identity: SecretIdentity;
+        value: string;
+        /** A reference the caller already recorded durably; minted here when absent. */
+        ref?: SecretRef;
+    }[],
     { signal, concurrency = 4 }: { signal: AbortSignal; concurrency?: number }
 ): Promise<{ created: CreatedEnvSecret[]; unknown: UnknownEnvSecret[]; failure?: EnvSecretError }> {
     const created: CreatedEnvSecret[] = [];
@@ -229,8 +235,8 @@ export async function createEnvSecrets(
     let failure: EnvSecretError | undefined;
     let next = 0;
 
-    const createOne = async ({ name, identity, value }: (typeof items)[number]): Promise<void> => {
-        const ref = createSecretRef();
+    const createOne = async ({ name, identity, value, ref: given }: (typeof items)[number]): Promise<void> => {
+        const ref = given ?? createSecretRef();
         let operationId: OperationId;
         try {
             const issued = await untilAborted(store.issueOperationId(), signal);
@@ -275,18 +281,11 @@ export async function createEnvSecrets(
     return failure ? { created, unknown, failure } : { created, unknown };
 }
 
-/** Deletes one stored record; reports, never throws, and answers true only for a confirmed delete (or a confirmed absence). */
-async function deleteOne(
-    store: SecretStore,
-    target: RetiredEnvSecret,
-    signal: AbortSignal,
-    diagnose: Diagnose
-): Promise<boolean> {
+/** Deletes one stored record; reports, never throws, and counts only a confirmed answer as done. */
+async function deleteOne(store: SecretStore, target: RetiredEnvSecret, signal: AbortSignal, diagnose: Diagnose) {
     const { ref, identity, version } = target;
-    const report = (code: SecretErrorCode, reason: SecretErrorReason) => {
+    const report = (code: SecretErrorCode, reason: SecretErrorReason) =>
         diagnose({ event: 'cleanup-failed', kind: 'delete', ref, code, reason });
-        return false;
-    };
     try {
         const issued = await untilAborted(store.issueOperationId(), signal);
         if (issued.lost) return report('unavailable', 'provider-timeout');
@@ -296,12 +295,10 @@ async function deleteOne(
         );
         if (answer.lost) return report('unavailable', 'provider-timeout');
         const result = answer.value;
-        if (result.ok || (result.error.code === 'not-found' && result.error.reason === 'reference-not-found')) {
-            return true;
-        }
-        return report(result.error.code, result.error.reason);
+        if (result.ok || (result.error.code === 'not-found' && result.error.reason === 'reference-not-found')) return;
+        report(result.error.code, result.error.reason);
     } catch {
-        return report('unavailable', 'provider-unavailable');
+        report('unavailable', 'provider-unavailable');
     }
 }
 
@@ -318,8 +315,7 @@ async function reconcileOne(store: SecretStore, target: UnknownEnvSecret, signal
         const { status } = result;
         if (status.state === 'failed') return;
         if (status.state === 'succeeded' && status.result.version !== null) {
-            await deleteOne(store, { ref, identity, version: status.result.version }, signal, diagnose);
-            return;
+            return await deleteOne(store, { ref, identity, version: status.result.version }, signal, diagnose);
         }
         report('outcome-unknown', 'operation-pending');
     } catch {
@@ -363,10 +359,11 @@ export async function releaseEnvSecrets(
         return;
     }
     const orphans = candidates.filter(({ ref }) => !referenced.has(ref));
-    await eachLimited(orphans, CLEANUP_CONCURRENCY, async (target) => {
-        if ('operationId' in target) await reconcileOne(store, target, signal, diagnose);
-        else await deleteOne(store, target, signal, diagnose);
-    });
+    await eachLimited(orphans, CLEANUP_CONCURRENCY, (target) =>
+        'operationId' in target
+            ? reconcileOne(store, target, signal, diagnose)
+            : deleteOne(store, target, signal, diagnose)
+    );
 }
 
 /** The post-commit deletes of the records the committed rows no longer name. Never throws. */
@@ -375,22 +372,5 @@ export async function retireEnvSecrets(
     retired: readonly RetiredEnvSecret[],
     { signal, diagnose }: { signal: AbortSignal; diagnose: Diagnose }
 ): Promise<void> {
-    await eachLimited(
-        retired,
-        CLEANUP_CONCURRENCY,
-        async (target) => void (await deleteOne(store, target, signal, diagnose))
-    );
-}
-
-/** Like `retireEnvSecrets`, but answers whether the store confirmed every delete: an unconfirmed one is not a success. */
-export async function retireEnvSecretsConfirmed(
-    store: SecretStore,
-    retired: readonly RetiredEnvSecret[],
-    { signal, diagnose }: { signal: AbortSignal; diagnose: Diagnose }
-): Promise<boolean> {
-    let confirmed = true;
-    await eachLimited(retired, CLEANUP_CONCURRENCY, async (target) => {
-        if (!(await deleteOne(store, target, signal, diagnose))) confirmed = false;
-    });
-    return confirmed;
+    await eachLimited(retired, CLEANUP_CONCURRENCY, (target) => deleteOne(store, target, signal, diagnose));
 }

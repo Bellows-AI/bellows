@@ -17,6 +17,7 @@ import { createOrgRegistry } from '../src/orgs.js';
 import type { SecretIdentity, SecretRef, SecretStore } from '../src/secrets/secret-store.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { failingPoolQuery, faultySecrets, testSecretStore } from './env-secrets-harness.js';
+import { createPostgresHarness, dbError, MutableKeys } from './secrets-postgres-harness.js';
 import { type FakeGitlab, startFakeGitlab } from './fake-gitlab.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
@@ -272,19 +273,105 @@ describe.skipIf(!enabled)('forge connection store', () => {
     const tombstoned = async (id: string) =>
         (await sql<{ removed_at: Date | null }[]>`select removed_at from forge_connection where id = ${id}`)[0];
 
-    it('leaves no secret behind when both are created and the row insert then fails', async () => {
+    /** The pool with the connection's publish and the immediate cleanup's read failing: a database still down. */
+    const databaseDown = () =>
+        failingPoolQuery(failingPoolQuery(sql, 'set secret_version'), 'ca_secret_ref from forge_connection');
+    const backdate = (host: string) =>
+        sql`update forge_connection set removed_at = now() - interval '10 minutes' where host = ${host}`;
+    const rowOfHost = async (host: string) =>
+        (
+            await sql<{ id: string; removed_at: Date | null; secret_version: string | null }[]>`
+            select id, removed_at, secret_version from forge_connection where host = ${host}
+        `
+        )[0];
+
+    it('keeps a tombstone naming the secrets when the publish fails and the cleanup read fails; recovery retires them', async () => {
         const { store, created } = recording();
-        const failing = createForgeConnectionStore({
-            sql: failingPoolQuery(sql, 'insert into forge_connection'),
+        const host = named('publishdown');
+        const down = createForgeConnectionStore({
+            sql: databaseDown(),
             orgId: orgA,
             secrets: store,
             secretLog: () => {},
             gitlab: gitlabApi(),
         });
-        await expect(failing.create(input({ host: named('insertfail'), caBundle: CA_PEM }))).rejects.toThrow();
+        await expect(down.create(input({ host, caBundle: CA_PEM }))).rejects.toThrow();
         expect(created).toHaveLength(2);
+        expect(await live(created)).toHaveLength(2);
+        const row = await rowOfHost(host);
+        expect(row).toMatchObject({ secret_version: null });
+        expect(row?.removed_at).not.toBeNull();
+        expect(await storeA.get(row!.id)).toBeNull();
+        // The creating process may still publish: the sweep leaves a young unpublished row alone.
+        expect(await sweepRemovedConnections({ sql, secrets, secretLog: () => {} })).toBe(0);
+        expect(await live(created)).toHaveLength(2);
+        // After a restart past the grace period, recovery retires both and drops the row.
+        await backdate(host);
+        expect(await sweepRemovedConnections({ sql, secrets, secretLog: () => {} })).toBeGreaterThanOrEqual(1);
         expect(await live(created)).toEqual([]);
-        expect((await sql`select 1 from forge_connection where host = ${named('insertfail')}`).length).toBe(0);
+        expect(await rowOfHost(host)).toBeUndefined();
+    });
+
+    it('keeps a tombstone when the publish fails and the secret delete then fails; recovery retires them', async () => {
+        const { store, created } = recording();
+        const host = named('deletedown');
+        const down = createForgeConnectionStore({
+            sql: failingPoolQuery(sql, 'set secret_version'),
+            orgId: orgA,
+            secrets: faultySecrets(store, { delete: unavailable }),
+            secretLog: () => {},
+            gitlab: gitlabApi(),
+        });
+        await expect(down.create(input({ host, caBundle: CA_PEM }))).rejects.toThrow();
+        expect(await live(created)).toHaveLength(2);
+        expect(await rowOfHost(host)).toBeDefined();
+        await backdate(host);
+        await sweepRemovedConnections({ sql, secrets, secretLog: () => {} });
+        expect(await live(created)).toEqual([]);
+        expect(await rowOfHost(host)).toBeUndefined();
+    });
+
+    it('retires a secret whose earlier write left an unresolved operation, after a restart', async () => {
+        const keys = new MutableKeys();
+        const harness = createPostgresHarness(sql, { keys, deadlineMs: 3000 });
+        const made = await storeOf(orgA, harness.open()).create(input({ host: named('unresolved') }));
+        if (!made.ok) throw new Error('create refused');
+        const { id } = made.connection;
+        const row = (await rowOf(id))!;
+        const identity = gitlabConnectionIdentity(orgA, id, 'client-secret');
+        // A write whose commit was sent and never answered: the version is staged, the operation recorded `unknown`.
+        const ambiguous = harness.openWith({
+            ...harness.realRepo,
+            activate: async () => {
+                throw dbError('CONNECTION_CLOSED');
+            },
+        });
+        const operationId = await ambiguous.issueOperationId();
+        const replaced = await ambiguous.replace({
+            identity,
+            ref: row.secret_ref as SecretRef,
+            operationId,
+            expectedVersion: row.secret_version as never,
+            payload: new TextEncoder().encode('half-written'),
+        });
+        expect(replaced).toMatchObject({ ok: false, error: { code: 'outcome-unknown' } });
+        const [op] = await sql<
+            { state: string }[]
+        >`select state from secret_operation where operation_id = ${operationId}`;
+        expect(op?.state).toBe('unknown');
+
+        // Delete while the store cannot delete: the removal stays pending.
+        const down = faultySecrets(harness.open(), { delete: unavailable });
+        await expect(storeOf(orgA, down).remove(id)).rejects.toBeInstanceOf(EnvSecretError);
+        // A restart: a new store, a recovery pass. It reconciles the unknown operation before it deletes.
+        expect(await sweepRemovedConnections({ sql, secrets: harness.reopen(), secretLog: () => {} })).toBe(1);
+        expect(await rowOf(id)).toBeUndefined();
+        const [left] = await sql<{ n: number }[]>`
+            select count(*)::int as n from secret_operation
+            where ref = ${row.secret_ref} and state in ('pending', 'unknown')
+        `;
+        expect(left?.n).toBe(0);
+        expect((await secrets.readActive({ identity, ref: row.secret_ref as SecretRef })).ok).toBe(false);
     });
 
     it('leaves no secret behind when only one of the two is created', async () => {

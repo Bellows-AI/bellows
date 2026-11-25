@@ -110,7 +110,7 @@ export interface OrgRuntime {
     userExecutors?: UserExecutorStore | undefined;
     /** The org's notification subscriptions (103); present with the other stores. */
     notificationSubscriptions?: NotificationSubscriptionStore | undefined;
-    /** The org's GitLab connection (170), stored pending; present with the other stores. */
+    /** The org's GitLab connection (171), stored pending; present with the other stores. */
     forgeConnections?: ForgeConnectionStore | undefined;
     /** The org's notification outbox (104); present with the other stores. */
     notificationOutbox?: NotificationOutboxStore | undefined;
@@ -151,7 +151,7 @@ export type OrgRegistryDeps = {
     | {
           withStores: true;
           /** Holds every environment secret; the env store's claim-time resolve reads it (docs/env.md). */
-          secrets: SecretStore;
+          secrets: SecretStore & { collect?: () => Promise<unknown> };
           /** Where the env store reports a compensation it could not finish: the secret store's sink. */
           secretLog: (diagnostic: SecretDiagnostic) => void;
       }
@@ -193,7 +193,7 @@ function buildOrgStores({
     memberGrants: MemberForgeGrants | undefined;
     claimMetrics: ClaimObserver | undefined;
     orgKey: string | undefined;
-    secrets: SecretStore;
+    secrets: SecretStore & { collect?: () => Promise<unknown> };
     secretLog: (diagnostic: SecretDiagnostic) => void;
     sql: Sql;
     orgId: string;
