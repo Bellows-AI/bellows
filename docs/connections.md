@@ -1,7 +1,7 @@
 # Managed connections
 
 Which external services a task may use and as whom: an authorized connection the board owns and spends on
-the runner's behalf, selected per task — and GitHub, whose token the board mints for each attempt from the App.
+the runner's behalf, selected per task — and GitHub, whose token the board mints for each attempt from the App. A self-hosted GitLab is [gitlab.md](gitlab.md).
 
 | Concern | Code | Test |
 | --- | --- | --- |
