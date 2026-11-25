@@ -5,6 +5,17 @@ description: "What changed in each Bellows release, in plain words."
 
 User-facing changes only. Self-hosting upgrade notes live in the release notes on [GitHub](https://github.com/Bellows-AI/bellows/releases).
 
+<Update label="v0.1.7" description="2026-11-25">
+  **New**
+  - **Archive replaces remove.** An archived task leaves the task list but keeps its thread, logs, PR links and attachments readable under **Archived**. **Unarchive task** brings it back. See [Run tasks](/guides/run-tasks).
+  - **Gate durations.** The **Verification** panel shows how long each gate ran, with a gate stopped at its deadline reading **timed out at** that limit, and its header line gives the run's total gate time. See [Gates](/guides/gates).
+
+  **Improved**
+  - A failed gate keeps its whole output as a log stream of the task, readable with `bellows job read <id> --stream gate-<gate name>-<run id>` or `factory-gate <name> --last --full`. The report's excerpt names the failing files even when long stack traces follow them. See [Gates](/guides/gates).
+  - Each gate run records a structured result: failed tests, selection, slowest files and resources.
+  - On Kubernetes, each container of a runner pod is sized by its role, so a microVM runner fits its node, and the gate's `/tmp` is kept in memory. Gates on microVM runners no longer time out on a shared CPU cap or slow disk.
+</Update>
+
 <Update label="v0.1.6" description="2026-11-22">
   **New**
   - **Finish gate inside the run.** When an agent finishes, the gates run in the same run. A red gate resumes the same session with the failure, up to the profile's round limit (3 by default), instead of queuing a separate fix job. See [Gates](/guides/gates).
