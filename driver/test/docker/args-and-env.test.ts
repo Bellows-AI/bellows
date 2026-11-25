@@ -363,6 +363,17 @@ describe("the board's environment", () => {
         ).toEqual({});
     });
 
+    // GitHub is the App's and GitLab the member's grant, both fetched from the board on demand: no claim value may
+    // stand in for a forge token, in the env or the env file.
+    it.each(['GITHUB_TOKEN', 'GH_TOKEN', 'GITLAB_TOKEN', 'GL_TOKEN', 'CI_JOB_TOKEN'])(
+        'refuses %s from a claim',
+        (name) => {
+            const forged = { ...job, env: { [name]: 'member-token', OTHER: 'fine' } };
+            expect(claimEnv(forged)).toEqual({ OTHER: 'fine' });
+            expect(envFileBody(forged)).toBe('OTHER=fine\n');
+        }
+    );
+
     // The driver alone grants a takeover's runner the unwritten-session fallback: a
     // member value would hand it to a follow-up, whose missing transcript must stay a refusal.
     it('refuses the unwritten-resume permission from a claim', () => {

@@ -14,7 +14,7 @@ import {
     type DeploymentMode,
     EXECUTOR_TYPES,
     forbiddenCredentialIn,
-    GITHUB_ENV_NAMES,
+    FORGE_ENV_NAMES,
     hasModelKey,
     modelKeyRequired,
     NO_MODEL_MESSAGE,
@@ -76,13 +76,13 @@ export function mergeExecutorConfigEnv(
 }
 
 /**
- * The resolved env without GitHub's credential names. They are refused at PUT and a migration
+ * The resolved env without the forges' credential names. They are refused at PUT and migrations
  * deleted the stored rows; this is the claim's own guarantee that no member token reaches a runner,
- * which obtains the App's from the board instead (docs/connections.md).
+ * which obtains its forge token from the board instead (docs/connections.md).
  */
-export function withoutGithubToken(env: Record<string, string> | undefined): Record<string, string> | undefined {
+export function withoutForgeTokens(env: Record<string, string> | undefined): Record<string, string> | undefined {
     if (env === undefined) return undefined;
-    return Object.fromEntries(Object.entries(env).filter(([name]) => !GITHUB_ENV_NAMES.includes(name)));
+    return Object.fromEntries(Object.entries(env).filter(([name]) => !FORGE_ENV_NAMES.includes(name)));
 }
 
 /** The entries of `env` named in `grant`, nothing else: a reviewer profile's `connections`. */
@@ -119,7 +119,7 @@ export async function resolveClaimExecutor(
     const { env, executorConfig, deploymentMode, platformModelProvided = false, grant } = deps;
     const { executorType, executorRefusal, source, runnerClass } = await claimExecutorOf(tx, executorConfig, row);
     // Read once the agent is known: a Claude Code run takes its model names from one scope (`stackClaudeCodeEnv`).
-    const resolvedEnv = withoutGithubToken(
+    const resolvedEnv = withoutForgeTokens(
         env
             ? await env.resolveFor({ userId: row.run_as, repo: refOfNullableRow(row) }, tx, { agentType: executorType })
             : undefined

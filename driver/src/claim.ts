@@ -230,10 +230,13 @@ export const RESERVED_ENV_NAMES = [
     // The driver's grant alone: a member value would let a follow-up start its parent's lost
     // conversation empty instead of failing.
     RESUME_MAY_BE_UNWRITTEN_ENV,
-    // GitHub is the App's: the runner's helper and the supervised steps obtain a token from the
-    // board (docs/connections.md), so no claim value may stand in for it.
+    // GitHub is the App's and GitLab the member's grant: the runner's helper and the supervised steps obtain a token
+    // from the board (docs/connections.md), so no claim value may stand in for it.
     'GITHUB_TOKEN',
     'GH_TOKEN',
+    'GITLAB_TOKEN',
+    'GL_TOKEN',
+    'CI_JOB_TOKEN',
     // The agent container starts as root to launch its tool broker: the glibc loader
     // reads these for that root shell before any line of it runs. Every `LD_` name too (claimEnv).
     'GCONV_PATH',
