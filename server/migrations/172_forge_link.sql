@@ -12,6 +12,8 @@ create table if not exists forge_link (
     connection_id uuid not null,
     purpose text not null,
     state_hash text not null,
+    -- The PKCE verifier, nulled by the statement that consumes the row.
+    pkce_verifier text,
     return_to text not null,
     created_at timestamptz not null default now(),
     expires_at timestamptz not null,

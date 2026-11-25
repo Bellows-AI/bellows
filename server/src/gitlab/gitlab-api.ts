@@ -39,7 +39,10 @@ export interface GitlabRequest {
 }
 
 /** An answer, whatever its status; or why no answer was had. Never throws. */
-export type GitlabResponse = { ok: true; status: number; text: string } | { ok: false; reason: ProbeReason };
+export type GitlabResponse =
+    | { ok: true; status: number; text: string }
+    /** `sent` is false only when the request provably never reached the instance (connect or TLS handshake failed). */
+    | { ok: false; reason: ProbeReason; sent: boolean };
 
 /**
  * What the authenticated `/version` said. `too-old` is a verdict about the instance; `inconclusive` is any answer that
@@ -80,6 +83,13 @@ const TLS_CODES = new Set([
 const failureOf = (error: unknown): ProbeReason => {
     const code = (error as { code?: string }).code ?? '';
     return TLS_CODES.has(code) || code.startsWith('ERR_SSL') || code.startsWith('CERT_') ? 'tls' : 'unreachable';
+};
+
+/** Errors raised before a request could have been written: no connection, or no TLS session to write it on. */
+const CONNECT_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
+const neverSent = (error: unknown): boolean => {
+    const code = (error as { code?: string }).code ?? '';
+    return CONNECT_CODES.has(code) || failureOf(error) === 'tls';
 };
 
 const jsonOf = (text: string): unknown => {
@@ -132,9 +142,9 @@ export function createGitlabApi({
                 url = new URL(path, baseUrl(host));
             } catch {
                 // An input the route let through that no URL can name: unreachable, never a throw.
-                return resolve({ ok: false, reason: 'unreachable' });
+                return resolve({ ok: false, reason: 'unreachable', sent: false });
             }
-            if (signal?.aborted) return resolve({ ok: false, reason: 'timeout' });
+            if (signal?.aborted) return resolve({ ok: false, reason: 'timeout', sent: false });
             const send = url.protocol === 'http:' ? httpRequest : httpsRequest;
             let settled = false;
             const done = (result: GitlabResponse) => {
@@ -145,8 +155,8 @@ export function createGitlabApi({
                 req.destroy();
                 resolve(result);
             };
-            const onAbort = () => done({ ok: false, reason: 'timeout' });
-            const timer = setTimeout(() => done({ ok: false, reason: 'timeout' }), probeTimeoutMs);
+            const onAbort = () => done({ ok: false, reason: 'timeout', sent: true });
+            const timer = setTimeout(() => done({ ok: false, reason: 'timeout', sent: true }), probeTimeoutMs);
             signal?.addEventListener('abort', onAbort, { once: true });
             const req = send(url, {
                 method,
@@ -157,13 +167,13 @@ export function createGitlabApi({
                 },
                 ...(caBundle === undefined ? {} : { ca: caBundle }),
             });
-            req.on('error', (error) => done({ ok: false, reason: failureOf(error) }));
+            req.on('error', (error) => done({ ok: false, reason: failureOf(error), sent: !neverSent(error) }));
             req.on('response', (response) => {
                 const chunks: Buffer[] = [];
                 let size = 0;
                 response.on('data', (chunk: Buffer) => {
                     size += chunk.length;
-                    if (size > PROBE_BODY_LIMIT) return done({ ok: false, reason: 'malformed' });
+                    if (size > PROBE_BODY_LIMIT) return done({ ok: false, reason: 'malformed', sent: true });
                     chunks.push(chunk);
                 });
                 response.on('end', () =>
@@ -173,7 +183,7 @@ export function createGitlabApi({
                         text: Buffer.concat(chunks).toString('utf8'),
                     })
                 );
-                response.on('error', (error) => done({ ok: false, reason: failureOf(error) }));
+                response.on('error', (error) => done({ ok: false, reason: failureOf(error), sent: true }));
             });
             req.end(body);
         });

@@ -14,6 +14,7 @@ export interface NewForgeLink {
     connectionId: string;
     purpose: ForgeLinkPurpose;
     stateHash: string;
+    verifier: string;
     returnTo: string;
     ttlMs: number;
 }
@@ -23,6 +24,8 @@ export interface ForgeLink {
     connectionId: string;
     purpose: ForgeLinkPurpose;
     returnTo: string;
+    /** The PKCE verifier as it was before consume; the consuming statement nulls it. */
+    verifier: string;
 }
 
 export interface LinkOwner {
@@ -39,9 +42,9 @@ const RETENTION = '1 day';
 export async function insertForgeLink(sql: Sql, input: NewForgeLink): Promise<{ expiresAt: string }> {
     await sql`delete from forge_link where org_id = ${input.orgId} and expires_at < now() - ${RETENTION}::interval`;
     const [row] = await sql<{ expires_at: Date }[]>`
-        insert into forge_link (org_id, user_id, connection_id, purpose, state_hash, return_to, expires_at)
+        insert into forge_link (org_id, user_id, connection_id, purpose, state_hash, pkce_verifier, return_to, expires_at)
         values (${input.orgId}, ${input.userId}, ${input.connectionId}, ${input.purpose}, ${input.stateHash},
-                ${input.returnTo}, now() + (${input.ttlMs}::double precision * interval '1 millisecond'))
+                ${input.verifier}, ${input.returnTo}, now() + (${input.ttlMs}::double precision * interval '1 millisecond'))
         returning expires_at
     `;
     return { expiresAt: row!.expires_at.toISOString() };
@@ -52,17 +55,31 @@ interface Raw {
     connection_id: string;
     purpose: ForgeLinkPurpose;
     return_to: string;
+    verifier: string;
 }
 
 /** Consumes the link once, for its own person, before its time is up; null consumed nothing. */
 export async function consumeForgeLink(sql: Sql, owner: LinkOwner): Promise<ForgeLink | null> {
     const [row] = await sql<Raw[]>`
-        update forge_link set consumed_at = now()
-        where org_id = ${owner.orgId} and user_id = ${owner.userId} and state_hash = ${owner.stateHash}
-          and consumed_at is null and expires_at > now()
-        returning id, connection_id, purpose, return_to
+        with target as (
+            select id, pkce_verifier from forge_link
+            where org_id = ${owner.orgId} and user_id = ${owner.userId} and state_hash = ${owner.stateHash}
+              and consumed_at is null and expires_at > now()
+            for update
+        )
+        update forge_link l set consumed_at = now(), pkce_verifier = null
+        from target t where l.org_id = ${owner.orgId} and l.id = t.id
+        returning l.id, l.connection_id, l.purpose, l.return_to, t.pkce_verifier as verifier
     `;
-    return row ? { id: row.id, connectionId: row.connection_id, purpose: row.purpose, returnTo: row.return_to } : null;
+    return row
+        ? {
+              id: row.id,
+              connectionId: row.connection_id,
+              purpose: row.purpose,
+              returnTo: row.return_to,
+              verifier: row.verifier,
+          }
+        : null;
 }
 
 /** Why a state was not consumed: another person's or an unknown state is `state-mismatch` and names no path. */

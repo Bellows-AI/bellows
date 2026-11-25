@@ -109,12 +109,14 @@ async function start(deps: GitlabLinksDeps, input: StartInput): Promise<StartLin
     const client = await deps.provider.clientOf(orgId, connection.host);
     if (!hooks || !client) return { ok: false, reason: 'not-found' };
     const state = randomBytes(RANDOM_BYTES).toString('base64url');
+    const verifier = randomBytes(RANDOM_BYTES).toString('base64url');
     const { expiresAt } = await insertForgeLink(orgSql(deps.sql, orgId), {
         orgId,
         userId,
         connectionId,
         purpose,
         stateHash: hashLinkState(state),
+        verifier,
         returnTo: safeReturnPath(input.returnTo ?? INTEGRATIONS_RETURN_PATH, callbackOrigin),
         ttlMs: deps.ttlMs ?? GITLAB_LINK_TTL_MS,
     });
@@ -123,6 +125,7 @@ async function start(deps: GitlabLinksDeps, input: StartInput): Promise<StartLin
         redirectUri: redirectUriOf(callbackOrigin),
         scopes: client.scopesFor('read'),
         state,
+        codeChallenge: createHash('sha256').update(verifier).digest('base64url'),
     });
     return { ok: true, authorizeUrl, expiresAt };
 }
@@ -155,7 +158,11 @@ async function complete(deps: GitlabLinksDeps, input: CompleteInput): Promise<Li
     if (input.error !== undefined || !input.code) return refuse(returnTo, 'denied');
     const target = await targetOf(deps, input, link);
     if (!target.ok) return refuse(returnTo, target.failure);
-    const issued = await issuedFor(deps.provider, target, input.code, redirectUriOf(deps.callbackOrigin!));
+    const issued = await issuedFor(deps.provider, target, {
+        code: input.code,
+        redirectUri: redirectUriOf(deps.callbackOrigin!),
+        verifier: link.verifier,
+    });
     if (!issued.ok) return refuse(returnTo, issued.failure);
     const checked = link.purpose === 'activate' ? await versionOf(deps, target, issued.accessToken) : null;
     if (checked && !checked.ok) return refuse(returnTo, checked.failure);
@@ -231,13 +238,12 @@ const storeFailureOf = (reason: StoreMemberGrantRefusal): LinkFailure => {
 async function issuedFor(
     provider: GitlabProvider,
     target: Target,
-    code: string,
-    redirectUri: string
+    { code, redirectUri, verifier }: { code: string; redirectUri: string; verifier: string }
 ): Promise<{ ok: true; accessToken: string; externalAccountId: string; tokens: MemberGrantTokens } | Refused> {
     const hooks = provider.hooksFor(target.orgId, target.forge);
     if (!hooks) return { ok: false, failure: 'connection-gone' };
     const exchanged: ExchangeResult = await hooks
-        .exchangeCode({ code, redirectUri, signal: AbortSignal.timeout(EXCHANGE_DEADLINE_MS) })
+        .exchangeCode({ code, redirectUri, codeVerifier: verifier, signal: AbortSignal.timeout(EXCHANGE_DEADLINE_MS) })
         .catch((): ExchangeResult => ({ ok: false, failure: 'ambiguous' }));
     if (!exchanged.ok) return { ok: false, failure: 'exchange-failed' };
     const { accessToken, refreshToken, expiresAt, authority } = exchanged.tokens;

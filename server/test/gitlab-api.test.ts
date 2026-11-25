@@ -124,3 +124,22 @@ describe('createGitlabApi.checkVersion', () => {
         });
     });
 });
+
+describe('createGitlabApi.request: whether the request was sent', () => {
+    it('says a refused connection never sent, and a hang or a cut answer did', async () => {
+        const api = httpApi();
+        const refused = await api.request({ host: '127.0.0.1:1', path: '/oauth/token', method: 'POST', body: '{}' });
+        expect(refused).toEqual({ ok: false, reason: 'unreachable', sent: false });
+        const hang = await serve(() => undefined);
+        expect(await api.request({ host: hang, path: '/oauth/token', method: 'POST', body: '{}' })).toEqual({
+            ok: false,
+            reason: 'timeout',
+            sent: true,
+        });
+        const cut = await serve((req) => void req.socket.destroy());
+        expect(await api.request({ host: cut, path: '/oauth/token', method: 'POST', body: '{}' })).toMatchObject({
+            ok: false,
+            sent: true,
+        });
+    });
+});

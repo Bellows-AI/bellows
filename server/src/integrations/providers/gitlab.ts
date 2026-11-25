@@ -30,11 +30,21 @@ export interface GitlabProvider {
 
 const HTTP_OK = 200;
 const HTTP_MULTIPLE = 300;
+const HTTP_SERVER_ERROR = 500;
+const HTTP_TOO_MANY = 429;
 
 const scopesOf = (scope: unknown): string[] | null =>
     typeof scope === 'string' ? scope.split(' ').filter(Boolean) : null;
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
+
+/** The token endpoint's answer, split by whether GitLab can have consumed the code or refresh token (see `tokenCall`). */
+function tokenAnswer(answer: GitlabResponse): ExchangeResult {
+    if (!answer.ok) return { ok: false, failure: answer.sent ? 'ambiguous' : 'not-sent' };
+    const { status } = answer;
+    if (status >= HTTP_SERVER_ERROR || status === HTTP_TOO_MANY) return { ok: false, failure: 'not-sent' };
+    return answerOf({ ok: status >= HTTP_OK && status < HTTP_MULTIPLE, status }, answer.text, scopesOf);
+}
 
 /** The JSON of a 2xx answer, or null for anything else. */
 const jsonOf = (answer: GitlabResponse): unknown => {
@@ -57,6 +67,13 @@ export function createGitlabProvider({
         /** The application, or null when it cannot be read: a call that never reached GitLab is `not-sent`. */
         const application = (): Promise<GitlabApplication | null> => applicationOf(orgId, host).catch(() => null);
 
+        /**
+         * GitLab spends a refresh token the moment it processes the request, so an unconfirmed answer is split: refused
+         * before it could have been consumed (never connected, a 5xx or 429, which issue no token) is `not-sent` and
+         * retried; anything else after dispatch (a timeout, a cut or malformed answer) may have consumed it and is
+         * `ambiguous`, which the lineage ends in reconnect-required (`retryTransientRefresh` is off): the spent token is
+         * never replayed.
+         */
         async function tokenCall(grant: Record<string, string>, signal: AbortSignal): Promise<ExchangeResult> {
             if (signal.aborted) return { ok: false, failure: 'not-sent' };
             const app = await application();
@@ -70,29 +87,37 @@ export function createGitlabProvider({
                 caBundle: app.caBundle,
                 signal,
             });
-            if (!answer.ok) return { ok: false, failure: 'ambiguous' };
-            const { status } = answer;
-            return answerOf({ ok: status >= HTTP_OK && status < HTTP_MULTIPLE, status }, answer.text, scopesOf);
+            return tokenAnswer(answer);
         }
 
         return {
             id: provider,
-            supportsPkce: false,
-            // GitLab spends the refresh token on every use, and a refresh that is not confirmed did not spend it.
+            supportsPkce: true,
             rotatesRefreshToken: true,
-            retryTransientRefresh: true,
             revokeScope: 'none',
-            authorizeUrl: ({ clientId, redirectUri, state }) => {
+            authorizeUrl: ({ clientId, redirectUri, state, codeChallenge }) => {
                 const url = new URL('/oauth/authorize', originOf(host));
                 url.searchParams.set('client_id', clientId);
                 url.searchParams.set('redirect_uri', redirectUri);
                 url.searchParams.set('response_type', 'code');
                 url.searchParams.set('scope', GITLAB_OAUTH_SCOPE);
                 url.searchParams.set('state', state);
+                if (codeChallenge) {
+                    url.searchParams.set('code_challenge', codeChallenge);
+                    url.searchParams.set('code_challenge_method', 'S256');
+                }
                 return url.toString();
             },
-            exchangeCode: ({ code, redirectUri, signal }) =>
-                tokenCall({ grant_type: 'authorization_code', code, redirect_uri: redirectUri }, signal),
+            exchangeCode: ({ code, redirectUri, codeVerifier, signal }) =>
+                tokenCall(
+                    {
+                        grant_type: 'authorization_code',
+                        code,
+                        redirect_uri: redirectUri,
+                        ...(codeVerifier ? { code_verifier: codeVerifier } : {}),
+                    },
+                    signal
+                ),
             refresh: ({ refreshToken, signal }) =>
                 tokenCall({ grant_type: 'refresh_token', refresh_token: refreshToken }, signal),
             discoverIdentity: async ({ accessToken, signal }): Promise<DiscoveredIdentity | null> => {

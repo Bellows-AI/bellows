@@ -131,6 +131,13 @@ export const registerGitlab = (forge) => {
         pairs.delete(pair.refresh);
     };
 
+    /** A code issued without a challenge needs no verifier; with one, the verifier must produce it. */
+    const verifies = ({ challenge, method }, verifier) => {
+        if (challenge === null) return true;
+        if (typeof verifier !== 'string' || verifier === '') return false;
+        return (method === 'S256' ? createHash('sha256').update(verifier).digest('base64url') : verifier) === challenge;
+    };
+
     /** The registered client the request names, with the right secret; undefined otherwise. */
     const authenticated = ({ client_id: id, client_secret: secret }) => {
         const client = clients.get(id);
@@ -180,6 +187,9 @@ export const registerGitlab = (forge) => {
                 clientId: query.client_id ?? null,
                 redirectUri: query.redirect_uri,
                 scope,
+                // PKCE, as GitLab enforces it: a code issued with a challenge exchanges only with its verifier.
+                challenge: query.code_challenge ?? null,
+                method: query.code_challenge_method ?? 'plain',
                 expiresAt: forge.clock() + GITLAB_CODE_TTL_S * 1000,
             });
             redirect({ code });
@@ -215,7 +225,8 @@ export const registerGitlab = (forge) => {
                 issued === undefined ||
                 issued.expiresAt <= forge.clock() ||
                 issued.redirectUri !== body.redirect_uri ||
-                issued.clientId !== body.client_id;
+                issued.clientId !== body.client_id ||
+                !verifies(issued, body.code_verifier);
             if (refused) {
                 if (issued?.expiresAt <= forge.clock()) codes.delete(body.code);
                 return forge.json(response, 400, GRANT_ERROR);

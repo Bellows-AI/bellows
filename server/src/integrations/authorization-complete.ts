@@ -132,11 +132,11 @@ function accessOf(client: AuthorizationClient | undefined, granted: readonly str
 }
 
 /** The facts a completion keeps: the token's actual scope wins over what discovery listed, and a named site narrows. */
-function factsOf(
+async function factsOf(
     fc: FlowCtx,
     row: AuthorizationRow,
     found: { identity: DiscoveredIdentity; granted: readonly string[] }
-): StoredFacts | null {
+): Promise<StoredFacts | null> {
     const { identity, granted } = found;
     const resources = identity.resources
         .filter(({ label }) => row.expectedSite === null || label === row.expectedSite)
@@ -147,7 +147,7 @@ function factsOf(
         label: identity.label,
         resources,
         authority: { scopes: [...granted] },
-        access: accessOf(fc.clients(row.provider), granted),
+        access: accessOf(await Promise.resolve(fc.clients(row.provider)).catch(() => undefined), granted),
         interactionId: row.interactionId,
     };
 }
@@ -387,7 +387,7 @@ async function afterExchange(
         await release(fc, held);
         return fail(fc, row, 'interrupted');
     }
-    const facts = factsOf(fc, row, { identity, granted: tokens.authority?.scopes ?? identity.authority.scopes });
+    const facts = await factsOf(fc, row, { identity, granted: tokens.authority?.scopes ?? identity.authority.scopes });
     if (!facts) {
         // A named site this account cannot reach: nothing is stored, a held reconnect claim is released.
         await release(fc, held);

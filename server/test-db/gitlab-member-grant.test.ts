@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { gitlabForgeOf } from '@factory-ai/core';
 import type { FastifyInstance } from 'fastify';
 import type { Sql } from 'postgres';
@@ -8,14 +8,12 @@ import { hashToken } from '../src/auth/session.js';
 import { createAuthStore } from '../src/auth/store.js';
 import { createForgeConnectionStore, type ForgeConnectionStore } from '../src/db/forge-connections.js';
 import { createGitlabApi, type GitlabApi } from '../src/gitlab/gitlab-api.js';
-import { createGitlabLinks, GITLAB_CALLBACK_PATH } from '../src/integrations/gitlab-link.js';
-import { createIntegrationRuntime } from '../src/integrations/integration-recovery.js';
-import { createMemberForgeGrants, type MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
-import { createGitlabProvider } from '../src/integrations/providers/gitlab.js';
+import { GITLAB_CALLBACK_PATH } from '../src/integrations/gitlab-link.js';
+import { composeIntegrations } from '../src/integrations/compose.js';
+import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
+import { contextOfSession } from '../src/integrations/trusted-context.js';
 import { createOrgRegistry } from '../src/orgs.js';
-import type { SecretStore } from '../src/secrets/secret-store.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
-import { testSecretStore } from './env-secrets-harness.js';
 import { type FakeGitlab, startFakeGitlab } from './fake-gitlab.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
@@ -57,9 +55,7 @@ let sql: Sql;
 let fake: FakeGitlab;
 let fakeHost: string;
 let keyring: ReturnType<typeof lineageHarness>;
-let connectionSecrets: SecretStore;
 let app: FastifyInstance;
-let links: ReturnType<typeof createGitlabLinks>;
 let grants: MemberForgeGrants;
 let orgA: Org;
 let orgB: Org;
@@ -69,41 +65,53 @@ const gitlabApi = (wrap?: (api: GitlabApi) => GitlabApi): GitlabApi => {
     const api = createGitlabApi({ baseUrl, probeTimeoutMs: 400 });
     return wrap ? wrap(api) : api;
 };
+const noLog = () => {};
+const boardConfig = testConfig({
+    auth: githubAuth(),
+    integrations: { callbackOrigin: ORIGIN, jira: null, linear: null },
+});
+
+/** A store over the shared keyring, as every replica opens it: what an admin's connection create writes through. */
 const storeOf = (orgId: string) =>
     createForgeConnectionStore({
         sql,
         orgId,
-        secrets: connectionSecrets,
-        secretLog: () => {},
+        secrets: keyring.openWith(keyring.realRepo),
+        secretLog: noLog,
         gitlab: gitlabApi(),
     });
 
-/** One board replica: its own runtime and secret store over the shared database, hooks read from the connection rows. */
+/**
+ * One board replica, composed by the function `main.ts` boots with (`composeIntegrations`), over the shared database
+ * and keyring: nothing in memory, so a refresh through a fresh one is a recovery after a restart. The org registry
+ * reads each org's connection with its own secret store, as in production. `api` is the only boundary faked.
+ */
 function replica(options: { api?: GitlabApi; clock?: () => number } = {}) {
     const api = options.api ?? gitlabApi();
-    const provider = createGitlabProvider({
-        api,
-        applicationOf: async (orgId, host) => (await storeFor(orgId)).application(host),
-        originOf: baseUrl,
-    });
     const secrets = keyring.openWith(keyring.realRepo);
-    const runtime = createIntegrationRuntime({
+    const ready = Promise.resolve();
+    const composed = composeIntegrations({
+        config: boardConfig,
         sql,
-        crossOrgSql: sql,
+        crossOrg: { sql },
         secrets,
-        providers: (provider_, orgId) => (orgId === undefined ? undefined : provider.hooksFor(orgId, provider_)),
-        clients: () => undefined,
-        callbackOrigin: ORIGIN,
-        timing: { retryDelayMs: 0 },
+        ready,
+        gitlab: { api, originOf: baseUrl },
+        ...(options.clock ? { clock: options.clock } : {}),
     });
-    const memberGrants = createMemberForgeGrants({
+    const orgs = createOrgRegistry({
         sql,
-        crossOrgSql: sql,
+        ready,
+        config: boardConfig,
+        withStores: true,
         secrets,
-        lineageOf: runtime.lineageOf,
-        ...(options.clock ? { now: options.clock } : {}),
+        secretLog: noLog,
+        gitlabApi: api,
+        memberGrants: composed.memberGrants,
     });
-    return { provider, memberGrants, runtime, api };
+    const links = composed.gitlab.bindOrgs(orgs, composed.memberGrants);
+    if (!composed.memberGrants || !links) throw new Error('github mode composes the member grants');
+    return { ...composed, memberGrants: composed.memberGrants, orgs, links, ready };
 }
 /** GitLab issues two-hour tokens; a code exchange is answered with a one-second one, so the grant is due a refresh. */
 const shortLived = (api: GitlabApi): GitlabApi => ({
@@ -117,7 +125,6 @@ const shortLived = (api: GitlabApi): GitlabApi => ({
 /** The board's clock three hours on: every stored GitLab token (two hours) is then due a refresh. */
 const THREE_HOURS_MS = 3 * 3600 * 1000;
 const later = () => Date.now() + THREE_HOURS_MS;
-const storeFor = async (orgId: string) => storeOf(orgId);
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 
@@ -182,7 +189,7 @@ async function roundTrip(
     org: Org,
     start: { path: string; token: string },
     login: string,
-    options: { callbackToken?: string } = {}
+    options: { callbackToken?: string; challenge?: string } = {}
 ) {
     const started = await app.inject({ method: 'POST', url: start.path, headers: bearer(start.token), payload: {} });
     expect(started.statusCode).toBe(CREATED);
@@ -191,6 +198,10 @@ async function roundTrip(
     expect(url.searchParams.get('client_id')).toBe(org.clientId);
     expect(url.searchParams.get('scope')).toBe('api');
     url.searchParams.set('login', login);
+    // PKCE: the board sends the S256 challenge of a verifier it keeps with the link state.
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(url.searchParams.get('code_challenge')).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    if (options.challenge) url.searchParams.set('code_challenge', options.challenge);
     const authorized = await fetch(url, { redirect: 'manual' });
     const back = new URL(authorized.headers.get('location') as string);
     return callback(back.search, options.callbackToken ?? start.token);
@@ -231,41 +242,20 @@ beforeEach(async () => {
     if (!enabled) return;
     sql = db.sql;
     keyring = lineageHarness(sql);
-    connectionSecrets = testSecretStore(sql);
     await fake.control('gitlab/version', { version: '17.4.0' });
     await fake.control('gitlab/faults', { mode: 'none' });
     [orgA, orgB] = [await newOrg(), await newOrg()];
     const main = replica({ api: gitlabApi(shortLived) });
     grants = main.memberGrants;
-    links = createGitlabLinks({
-        sql,
-        connectionsOf: async (orgId) => storeOf(orgId),
-        provider: main.provider,
-        api: main.api,
-        memberGrants: main.memberGrants,
-        callbackOrigin: ORIGIN,
-    });
-    const config = testConfig({
-        auth: githubAuth(),
-        integrations: { callbackOrigin: ORIGIN, jira: null, linear: null },
-    });
-    const ready = Promise.resolve();
     app = await buildApp({
-        config,
-        orgs: createOrgRegistry({
-            sql,
-            ready,
-            config,
-            withStores: true,
-            secrets: connectionSecrets,
-            secretLog: () => {},
-            gitlabApi: gitlabApi(),
-        }),
+        config: boardConfig,
+        orgs: main.orgs,
         auth: createAuthStore({ sql }),
-        ready,
+        ready: main.ready,
         version: '0.0.0',
-        memberGrants: grants,
-        gitlabLinks: links,
+        memberGrants: main.memberGrants,
+        gitlabLinks: main.links,
+        integrations: { ...main.integrations, configured: main.registry.configured, ids: main.registry.ids },
     });
 });
 afterEach(async () => {
@@ -403,6 +393,44 @@ describe.skipIf(!enabled)('a member’s GitLab link', () => {
         expect(tokenCalls()).toBe(calls);
     });
 
+    it('proves possession with PKCE: a code issued for another challenge is refused at the exchange, and nothing is linked', async () => {
+        const id = await connect(orgA);
+        await activate(orgA, id);
+        const forged = createHash('sha256').update('not-the-boards-verifier').digest('base64url');
+        const refused = await roundTrip(orgA, { path: linkPath(id), token: orgA.member }, 'dev-one', {
+            challenge: forged,
+        });
+        expect(refused.result).toBe('exchange-failed');
+        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('missing');
+        const [row] = await sql`select pkce_verifier from forge_link where org_id = ${orgA.id} and purpose = 'link'`;
+        expect(row?.pkce_verifier).toBeNull();
+    });
+
+    it('resolves the org’s own GitLab client through the runtime, so the generic flow is configured, per org', async () => {
+        const [idA, idB] = [await connect(orgA), await connect(orgB)];
+        await Promise.all([activate(orgA, idA), activate(orgB, idB)]);
+        const main = replica();
+        const start = async (org: Org) => {
+            const result = await main.integrations
+                .flowOf(org.id)
+                .startAuthorization(contextOfSession({ user: { id: org.memberId } }, org.id), { provider: FORGE });
+            if (!result.ok) throw new Error(`start refused: ${result.reason}`);
+            return new URL(result.authorizeUrl);
+        };
+        const [a, b] = [await start(orgA), await start(orgB)];
+        expect(a.searchParams.get('client_id')).toBe(orgA.clientId);
+        expect(b.searchParams.get('client_id')).toBe(orgB.clientId);
+        expect(a.searchParams.get('code_challenge_method')).toBe('S256');
+        // An org with no connection to the host has no client: not configured, never another org's.
+        const stranger = await newOrg();
+        const none = await main.integrations
+            .flowOf(stranger.id)
+            .startAuthorization(contextOfSession({ user: { id: stranger.memberId } }, stranger.id), {
+                provider: FORGE,
+            });
+        expect(none).toEqual({ ok: false, reason: 'not-configured' });
+    });
+
     it('answers a denied authorization as denied and links nothing', async () => {
         const id = await connect(orgA);
         await activate(orgA, id);
@@ -490,21 +518,55 @@ describe.skipIf(!enabled)('the refresh of a GitLab grant', () => {
         expect(stillA.ok).toBe(true);
     });
 
-    it('does not break the grant on a refresh that got no answer: the next refresh succeeds', async () => {
-        await linked(orgA, 'dev-one');
-        let down = true;
-        const flaky = replica({
+    /** A fake whose token endpoint is wrapped: `mode` decides what a refresh call sees. */
+    const wrapped = (mode: () => 'pass' | 'refused' | 'lost' | 'five-hundred') =>
+        replica({
+            clock: later,
             api: gitlabApi((api) => ({
                 ...api,
-                request: async (req) =>
-                    down && req.path === '/oauth/token' ? { ok: false, reason: 'timeout' } : api.request(req),
+                request: async (req) => {
+                    const what = req.path === '/oauth/token' ? mode() : 'pass';
+                    if (what === 'refused') return { ok: false, reason: 'unreachable', sent: false };
+                    if (what === 'five-hundred') return { ok: true, status: 503, text: '{"message":"down"}' };
+                    const answer = await api.request(req);
+                    // The instance processed the call (the refresh token is spent); its answer never arrives.
+                    return what === 'lost' ? { ok: false, reason: 'timeout', sent: true } : answer;
+                },
             })),
         });
-        const failed = await asUserOf(flaky.memberGrants, orgA, orgA.memberId);
-        expect(failed.ok).toBe(false);
-        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('live');
-        down = false;
-        expect((await asUserOf(flaky.memberGrants, orgA, orgA.memberId)).ok).toBe(true);
+
+    it.each(['refused', 'five-hundred'] as const)(
+        'does not break the grant on a refresh GitLab provably did not consume (%s): the next refresh succeeds',
+        async (failure) => {
+            await linked(orgA, 'dev-one');
+            let down: 'pass' | typeof failure = failure;
+            const flaky = wrapped(() => down);
+            const calls = tokenCalls();
+            expect((await asUserOf(flaky.memberGrants, orgA, orgA.memberId)).ok).toBe(false);
+            expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('live');
+            down = 'pass';
+            const before = (await grantRows(orgA.id)).map((r) => r.secret_version);
+            await asUserOf(flaky.memberGrants, orgA, orgA.memberId);
+            // The clock runs three hours ahead, so the new token still reads as due; the stored credential moved.
+            expect((await grantRows(orgA.id)).map((r) => r.secret_version)).not.toEqual(before);
+            // The refused call never left the board and the 5xx issued nothing: only the retry reached the fake.
+            expect(tokenCalls()).toBe(calls + 1);
+        }
+    );
+
+    it('never replays a refresh token whose consumption is unknown: the lost answer ends in reconnect, once', async () => {
+        await linked(orgA, 'dev-one');
+        const calls = tokenCalls();
+        // GitLab rotates the token and the answer is lost on its way back.
+        const first = await asUserOf(wrapped(() => 'lost').memberGrants, orgA, orgA.memberId);
+        expect(first).toMatchObject({ ok: false, outcome: { outcome: 'integration_required', reason: 'reconnect' } });
+        expect(tokenCalls()).toBe(calls + 1);
+        // A caller on another replica finds the grant needing reconnect and sends nothing: the spent token is not reused.
+        const second = await asUserOf(replica({ clock: later }).memberGrants, orgA, orgA.memberId);
+        expect(second).toMatchObject({ ok: false, outcome: { outcome: 'integration_required', reason: 'reconnect' } });
+        expect(tokenCalls()).toBe(calls + 1);
+        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('broken');
+        expect((await grantRows(orgA.id)).filter((r) => r.status === 'revoked')).toHaveLength(0);
     });
 
     it('breaks the grant when GitLab revokes it, and a new link makes it live again', async () => {

@@ -28,7 +28,8 @@ export interface IntegrationRuntimeDeps {
     secrets: SecretStore;
     /** Asked with the org: a provider whose application belongs to the org (GitLab) answers per org. */
     providers: OAuthProviderLookup;
-    clients: (provider: string, orgId?: string) => ReturnType<AuthorizationFlowDeps['clients']>;
+    /** Asked with the org, like `providers`. */
+    clients: (provider: string, orgId: string) => ReturnType<AuthorizationFlowDeps['clients']>;
     callbackOrigin: string | null;
     timing?: Partial<LineageTiming>;
     /** Closed diagnostics only: event names and IDs, never a token, a state or a provider body. */
