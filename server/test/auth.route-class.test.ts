@@ -42,6 +42,7 @@ describe('the route classes (what a scoped caller may do)', () => {
             [
                 'DELETE /api/agent-default/org',
                 'PUT /api/agent-default/org',
+                'PUT /api/org/gitlab-connections/:id/tracked-repos',
                 'DELETE /api/org/executors/:id',
                 'DELETE /api/org/gitlab-connections/:id',
                 'DELETE /api/org/notification-subscriptions/:id',
@@ -52,6 +53,7 @@ describe('the route classes (what a scoped caller may do)', () => {
                 'GET /api/org/export',
                 'GET /api/org/gitlab-connections',
                 'GET /api/org/gitlab-connections/:id',
+                'GET /api/org/gitlab-connections/:id/projects',
                 'GET /api/org/members',
                 'GET /api/org/members/invitations',
                 'GET /api/org/members/removed',

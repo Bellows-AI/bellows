@@ -13,8 +13,8 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { BatchRecord } from '../../db/batches/batch-store-types.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from '../helpers.js';
-import { HTTP_CONFLICT } from '../jobs/job-limits.js';
-import { forgeOfRepo, refOfListed } from '../../forge/forges.js';
+import { HTTP_CONFLICT, HTTP_UNAVAILABLE } from '../jobs/job-limits.js';
+import { forgeOfRepo, isGithubRepo, refOfListed } from '../../forge/forges.js';
 import { refusedAsNoForgeGrant } from '../jobs/forge-usable.js';
 import { readBranchHead } from '../../forge/forge-client.js';
 import { defaultExecutorOf, executorTypeOf, refusedAsNoModel, refusedAsUnusable } from '../jobs/executor-usable.js';
@@ -63,6 +63,17 @@ async function defaultBranchesOf(
     }
     const missing = plan.targets.find((target) => defaults[formatRepoRef(target.repo)] === undefined);
     if (!missing) return defaults;
+    // A listing holds no default branch for another forge's repository because none was read, not because it has none:
+    // the board cannot say yet, which is no verdict about the repository.
+    if (!isGithubRepo(missing.repo)) {
+        bad(
+            reply,
+            ERROR_CODES.UNAVAILABLE,
+            `The default branch of ${missing.repo.forge} repositories cannot be read yet, so a branch cannot be resolved for "${missing.key}"`,
+            HTTP_UNAVAILABLE
+        );
+        return null;
+    }
     bad(
         reply,
         ERROR_CODES.BATCH_NO_DEFAULT_BRANCH,
@@ -184,7 +195,8 @@ export async function launchChecks(
 /**
  * The starter must hold a live grant for every forge the plan's targets live on (`refusedAsNoForgeGrant`), judged once
  * per forge over the whole plan before anything is written: 409 `FORGE_GRANT_REQUIRED`, or 503 when the standing cannot
- * be read. False once a refusal is sent.
+ * be read. A plan has one target (multi-target plans are refused first), so a GitLab project's access check is that
+ * one repo's. False once a refusal is sent.
  */
 async function forgeGrantsLive(
     ctx: Context,

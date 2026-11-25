@@ -2,12 +2,14 @@ import { ERROR_CODES, formatRepoRef, githubRepo, type RepoRef } from '@factory-a
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { PENDING_COOKIE, hashToken, pendingCookieOptions, unsign } from '../auth/session.js';
 import type { AuthStore, Caller, PendingSignIn } from '../auth/store.js';
+import { GITHUB_SCOPE, TrackedPathConflict } from '../db/tracked-repos.js';
 import type { InstallationRepo } from '../github/app-client.js';
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import type { OrgRegistry } from '../orgs.js';
 import { afterOnboarding } from './auth-member-grant.js';
 import {
     HTTP_BAD_REQUEST,
+    HTTP_CONFLICT,
     HTTP_OK,
     HTTP_SERVER_ERROR,
     HTTP_UNAUTHORIZED,
@@ -147,7 +149,7 @@ async function rollbackOnboarding(request: FastifyRequest, store: AuthStore, sta
     const { pending, orgIds, rewroteAllowlist, priorAllowlists, priorSelection, caller } = state;
     for (const orgId of rewroteAllowlist) {
         await store
-            .replaceTrackedRepos(orgId, priorAllowlists.get(orgId) ?? [])
+            .replaceTrackedRepos(orgId, GITHUB_SCOPE, priorAllowlists.get(orgId) ?? [])
             .catch((err: Error) => request.log.error({ err }, 'onboarding rollback failed'));
     }
     if (!caller) return;
@@ -230,7 +232,7 @@ async function materializeOnboarding(
     let priorSelection: string[] = [];
     try {
         for (const orgId of reposByOrg.keys()) {
-            priorAllowlists.set(orgId, await ctx.store.trackedRepos(orgId));
+            priorAllowlists.set(orgId, await ctx.store.trackedRepos(orgId, GITHUB_SCOPE));
         }
         priorSelection = await ctx.store.storedSelection(pending.identity.githubUserId);
 
@@ -252,7 +254,7 @@ async function materializeOnboarding(
         const admitted = new Set((await ctx.store.membershipsOf(caller.user.id)).map((org) => org.id));
         for (const [orgId, names] of reposByOrg) {
             if (!admitted.has(orgId)) continue;
-            await ctx.store.replaceTrackedRepos(orgId, names.map(githubRepo));
+            await ctx.store.replaceTrackedRepos(orgId, GITHUB_SCOPE, names.map(githubRepo));
             rewroteAllowlist.push(orgId);
         }
         await startSession(ctx.sessionDeps, reply, caller);
@@ -268,6 +270,13 @@ async function materializeOnboarding(
             priorSelection,
             caller,
         });
+        if (e instanceof TrackedPathConflict) {
+            reply.code(HTTP_CONFLICT).send({
+                error: `"${e.path}" is already tracked in this organization from another forge or host`,
+                code: ERROR_CODES.TRACKED_PATH_CONFLICT,
+            });
+            return null;
+        }
         reply
             .code(HTTP_SERVER_ERROR)
             .send({ error: 'Could not complete the sign-in', code: ERROR_CODES.COMPLETE_FAILED });
@@ -339,7 +348,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, deps: OnboardingD
             // screen and a reselect alike.
             installations: await Promise.all(
                 pending.installations.map(async (install): Promise<PendingInstallation> => {
-                    const narrowed = await store.trackedRepos(install.id);
+                    const narrowed = await store.trackedRepos(install.id, GITHUB_SCOPE);
                     // A narrowing whose every entry GitHub stopped reporting is reported as
                     // stored — the honest stale selection, kept fail-closed: this store reads
                     // an empty allowlist as track-everything, so retiring the rows here would

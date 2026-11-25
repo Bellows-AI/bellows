@@ -11,6 +11,7 @@ import { buildOrgStatusMethods, type OrgStatusStore } from '../db/org-status.js'
 import type { MembershipSetup, MembershipSetupStore, SetupRow } from './setup-store.js';
 import { buildSetupMethods, toSetup } from './setup-store.js';
 import { replaceTrackedRepos as replaceTrackedRepoRows, trackedRepos as trackedRepoRows } from '../db/tracked-repos.js';
+import type { TrackedScope } from '../db/tracked-repos.js';
 
 export interface AuthUser {
     id: string;
@@ -178,14 +179,14 @@ export interface AuthStore extends OrgStatusStore, MembershipSetupStore {
      * it. True when this call spent the row; false means it was already gone (single-use).
      */
     deletePendingSignIn(tokenHash: Buffer): Promise<boolean>;
-    /** The org's tracked-repo allowlist, as refs. Empty when everything is tracked. */
-    trackedRepos(orgId: string): Promise<RepoRef[]>;
+    /** The org's tracked-repo allowlist within one forge and host, as refs. Empty for GitHub when everything is tracked. */
+    trackedRepos(orgId: string, scope: TrackedScope): Promise<RepoRef[]>;
     /**
-     * Replaces an org's tracked-repo allowlist with `repos`. Empty means
-     * the org tracks everything its installation reports — the completion route runs this only
+     * Replaces an org's tracked-repo allowlist within `scope` with `repos`, leaving every other forge and host alone.
+     * Empty for GitHub means the org tracks everything its installation reports — the completion route runs this only
      * for orgs whose checkbox set was actually narrowed.
      */
-    replaceTrackedRepos(orgId: string, repos: readonly RepoRef[]): Promise<void>;
+    replaceTrackedRepos(orgId: string, scope: TrackedScope, repos: readonly RepoRef[], fence?: string): Promise<void>;
     /** A sign-in's session row, and its `auth.sign_in` audit row in the same transaction. */
     createSession(tokenHash: Buffer, userId: string, expiresAt: Date, orgId: string): Promise<void>;
     /**
@@ -572,14 +573,14 @@ function buildIdentityMethods(
 /** The org's tracked-repo allowlist: the onboarding screen's per-org narrowing. */
 function buildTrackedRepoMethods(sql: Sql, gate: Gate): Pick<AuthStore, 'trackedRepos' | 'replaceTrackedRepos'> {
     return {
-        async trackedRepos(orgId) {
+        async trackedRepos(orgId, scope) {
             await gate();
-            return trackedRepoRows({ sql, orgId });
+            return trackedRepoRows({ sql, orgId, scope });
         },
 
-        async replaceTrackedRepos(orgId, repos) {
+        async replaceTrackedRepos(orgId, scope, repos, fence) {
             await gate();
-            await replaceTrackedRepoRows({ sql, orgId, repos });
+            await replaceTrackedRepoRows({ sql, orgId, scope, repos, connectionId: fence });
         },
     };
 }

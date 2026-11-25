@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { OAUTH_COOKIE, PENDING_COOKIE } from '../src/auth/session.js';
 import { buildApp } from '../src/app.js';
+import { GITHUB_SCOPE } from '../src/db/tracked-repos.js';
 import { createRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
@@ -60,7 +61,7 @@ describe('completion and the org repo cache', () => {
         const repos = createRepoSource({
             stored: async () => ['acme/web', 'acme/other'],
             allowlist: async () => {
-                const tracked = await store.trackedRepos(ORG);
+                const tracked = await store.trackedRepos(ORG, GITHUB_SCOPE);
                 reads += 1;
                 if (reads === 1) await parked;
                 return tracked;
@@ -106,7 +107,7 @@ describe('completion and the org repo cache', () => {
         });
 
         // The allowlist write has landed while the produce is still parked on the old value.
-        while ((await store.trackedRepos(ORG)).length === 0) {
+        while ((await store.trackedRepos(ORG, GITHUB_SCOPE)).length === 0) {
             await new Promise((resolve) => setImmediate(resolve));
         }
         release();

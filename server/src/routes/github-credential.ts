@@ -4,6 +4,7 @@ import { JOB_ID_HEADER, LEASE_TOKEN_HEADER } from '../auth/plugin.js';
 import { UUID } from '../identifiers.js';
 import type { AttemptCheck, AttemptOfLease, PairMatches } from '../db/attempt-of-lease.js';
 import type { MintedToken, RevokeOutcome } from '../github/app-token.js';
+import { isGithubRepo } from '../forge/forges.js';
 import { bad, LEASE_PENDING_MESSAGE, leasePending } from './helpers.js';
 
 /**
@@ -41,6 +42,7 @@ const BODY_LIMIT = 1024;
 /** One sentence for every refusal of the attempt: which check failed is not the caller's to learn. */
 const ATTEMPT_REFUSED =
     'This attempt may not have a GitHub token: it is no longer running, or its task is no longer authorized. Do not retry.';
+const NOT_GITHUB = "This task's repository is not on GitHub, so it has no GitHub token. Do not retry.";
 const NO_APP = 'This board holds no GitHub App installation for the organization, so it issues no GitHub token.';
 /** The lease could not be read: not a verdict, so the helper may retry. */
 const LEASE_UNREADABLE = 'The attempt could not be checked just now. Retry shortly.';
@@ -99,6 +101,8 @@ async function attemptOf(
         return attempt.pending ? pending : refused;
     }
     if (attempt.repo === null) return { ...refused, message: NO_REPO };
+    // A path alone names a GitHub repository of the same name: the token is for the forge the repository lives on.
+    if (attempt.ref === null || !isGithubRepo(attempt.ref)) return { ...refused, message: NOT_GITHUB };
     // The token is narrowed to the attempt's own repository, which must be the thread root's.
     if (attempt.repo !== attempt.rootRepo) return refused;
     return { jobId, leaseToken, orgId: attempt.orgId, repo: attempt.repo };

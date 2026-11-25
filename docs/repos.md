@@ -6,7 +6,7 @@ Which repositories an organization sees, where that list comes from, and what it
 | --- | --- | --- |
 | The list itself: fetch, cache, `list()` / `snapshot()` | `server/src/github/repo-source.ts` | `server/test/repo-source.test.ts` |
 | Installation listing | `server/src/github/app-client.ts` | `server/test/github.app-client.test.ts` |
-| Per-org tracked-repo allowlist (`tracked_repo`) | `server/src/db/tracked-repos.ts`, `server/migrations/030_signin_selection.sql`, `server/migrations/168_repo_ref.sql`, `core/src/repo-ref.ts` | `server/test/repo-source.test.ts`, `server/test-db/repo-source.replicas.test.ts`, `core/test/repo-ref.test.ts` |
+| Per-org tracked-repo allowlist (`tracked_repo`): every write replaces one forge-and-host scope (GitHub's, or one GitLab host's) | `server/src/db/tracked-repos.ts`, `server/migrations/030_signin_selection.sql`, `server/migrations/168_repo_ref.sql`, `core/src/repo-ref.ts` | `server/test/repo-source.test.ts`, `server/test-db/repo-source.replicas.test.ts`, `server/test-db/gitlab-tracking.test.ts`, `core/test/repo-ref.test.ts` |
 | The forge boundary: `ForgeClient`, resolved per complete repo ref and acting credential (`resolveForgeClient`); the GitHub adapter over the installation reads and the PR writer | `server/src/forge/forge-client.ts`, `server/src/forge/github-client.ts`, `server/src/orgs.ts` (`OrgRuntime.forge`) | `server/test/forge-client.test.ts`, `server/test/skill-catalog.forge.test.ts` |
 | Credential-less fallback to `session_branch` | `server/src/db/stored-repos.ts` | `server/test/routes.repos.test.ts` |
 | Branch list and prefix search through the installation (a search is one unpaginated `matching-refs` response sliced into 100s) | `server/src/github/app-client.ts` (`listBranches`), `server/src/routes/repos.ts` | `server/test/github.app-client.test.ts`, `server/test/routes.repos.test.ts` |
@@ -20,7 +20,9 @@ Which repositories an organization sees, where that list comes from, and what it
   `tracked_repo` allowlist, computed inside `RepoSource` (`snapshotNames()`), is what scopes stats,
   `otherRepoSessions`, the picker, and the repo validation of task, batch and env writes. An empty allowlist
   means every reported repo, which is why the onboarding screen's all-checked confirm writes
-  nothing. `server/test/repo-source.test.ts`.
+  nothing. Only GitHub rows narrow GitHub: a GitLab row is an explicit selection, listed beside GitHub's with its own
+  `ref` by `list()`/`detail()` (never by `snapshot()`, which scopes stats). `server/test/repo-source.test.ts`,
+  `server/test-db/gitlab-tracking.test.ts`.
 - **Only the listing is cached; the allowlist is read on every `list()`**, so a selection written
   through one dashboard replica narrows every replica at once, and a failed allowlist read serves the
   last narrowed list, never the full listing. `server/test-db/repo-source.replicas.test.ts`.
@@ -51,3 +53,7 @@ Which repositories an organization sees, where that list comes from, and what it
   names a repo (`POST /api/jobs`, a batch, env) validates it against the tracked list: `400 UNKNOWN_REPO`,
   and `503 UNAVAILABLE` when the list cannot be read. `server/test/routes.jobs.test.ts`,
   `server/test/routes.batches.test.ts`, `server/test/routes.env.test.ts`.
+
+## Stated limits
+
+- **One owner/name is tracked once per org, whatever the forge or host**, until the contract migration retires the narrow key `tracked_repo_pk (org_id, owner, name)` (expand-only, `server/migrations/168_repo_ref.sql`: a previous-release pod still uses it). A save that collides is refused whole with `409 TRACKED_PATH_CONFLICT` naming the path (GitLab tracking, and GitHub onboarding completion after its rollback), never a raw database error. `server/src/db/tracked-repos.ts` (`TrackedPathConflict`), `server/test-db/gitlab-tracking.test.ts`.

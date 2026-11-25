@@ -86,6 +86,10 @@ Each entry reads symptom, cause, fix. For every failure badge, see [Task lifecyc
     **Cause.** Starting work on a repository needs your own live GitHub connection, and yours is missing or needs reconnecting (you revoked Bellows in GitHub, or it expired). The task, follow-up, retry, reopen or batch is refused before anything is queued, with a link to connect. A task already queued waits on the connection of the member who started it instead, and shows **Reconnect GitHub** on its page.
     **Fix.** Choose **Connect GitHub** (or open the link the CLI or MCP printed). It is the sign-in, so it needs no new consent if you already approved Bellows. Then start the task again; a waiting task starts by itself. See [Your GitHub connection](/guides/run-tasks#your-github-connection).
   </Accordion>
+  <Accordion title="GitLab access required (“FORGE_ACCESS_DENIED”)">
+    **Cause.** Your GitLab link is live, but GitLab says you do not hold Developer access or higher on that project, so Bellows refused the task, follow-up, retry, reopen or batch before anything was queued. A project you cannot see counts as no access. If GitLab did not answer the check, the start fails with a retryable `503` instead, never with this refusal.
+    **Fix.** Ask for Developer access on the project in GitLab, or link another GitLab account that has it, then start again. See [GitLab](/guides/connections#starting-work-on-a-gitlab-repository).
+  </Accordion>
   <Accordion title="The task says it needs a Jira or Linear connection">
     **Cause.** The task mentions a ticket, but you have not connected Jira or Linear, or the connection needs reconnecting.
     **Fix.** Choose **Connect Jira** (or **Connect Linear**), **Use selected connection** or **Continue without it** on the task page. If you turned on comments after the task started, start a new task. See [Connections](/guides/connections#using-jira-on-a-task).

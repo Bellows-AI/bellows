@@ -175,6 +175,8 @@ const PERSON_ROUTES: readonly (readonly [string, string])[] = [
     ['GET', '/api/org/gitlab-connections'],
     ['POST', '/api/org/gitlab-connections'],
     ['POST', `/api/org/gitlab-connections/${JOB_ID}/activation`],
+    ['GET', `/api/org/gitlab-connections/${JOB_ID}/projects`],
+    ['PUT', `/api/org/gitlab-connections/${JOB_ID}/tracked-repos`],
     ['GET', '/api/org/notification-subscriptions'],
     ['POST', '/api/org/notification-subscriptions'],
     ['GET', '/api/workspace/notification-subscriptions'],
@@ -329,6 +331,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/credentials/github', 'connector'],
     // Revoking that token at the end of the attempt: the same class, and a pair-only match on the board.
     ['/api/jobs/:id/credentials/github/revoke', 'connector'],
+    ['/api/jobs/:id/credentials/gitlab', 'connector'],
     // The managed-connection broker: the same class, one segment deeper.
     ['/api/jobs/:id/credentials/connections/:connectionId', 'connector'],
     // The runner seam: the helper's connection list and its durable operation receipts, the same class.
@@ -445,6 +448,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
         '/api/workspace/notification-subscriptions/:id/test',
         '/api/org/gitlab-connections/:id',
         '/api/org/gitlab-connections/:id/activation',
+        '/api/org/gitlab-connections/:id/projects',
+        '/api/org/gitlab-connections/:id/tracked-repos',
         '/api/org/notification-subscriptions/:id',
         '/api/org/notification-subscriptions/:id/test',
         '/api/org/members/:userId/role',

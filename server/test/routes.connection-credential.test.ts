@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import type { IntegrationOutcome } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
@@ -32,6 +33,8 @@ const LIVE: AttemptCheck = {
     rootJobId: ROOT_ID,
     repo: 'acme/widgets',
     rootRepo: 'acme/widgets',
+    ref: githubRepo('acme/widgets'),
+    rootRef: githubRepo('acme/widgets'),
     executionUserId: USER_ID,
     claimSeq: 3,
 };

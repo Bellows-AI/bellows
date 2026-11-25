@@ -257,6 +257,8 @@ export const registerGitlab = (forge) => {
     const faulted = ({ url, response }) => {
         const fault = faults.find((entry) => url.pathname.includes(entry.pathIncludes));
         if (!fault) return false;
+        // `after`: the first calls the fault matches are answered normally.
+        if (fault.skip > 0) return fault.skip--, false;
         if (fault.remaining !== null && --fault.remaining <= 0) faults.splice(faults.indexOf(fault), 1);
         if (fault.mode === 'lost') {
             // The handler runs (a refresh token is spent) and its answer never leaves: the board sees a timeout.
@@ -1164,7 +1166,7 @@ export const registerGitlab = (forge) => {
     });
     // `mode`: status (with `status`), malformed (a 200 whose body is not JSON), timeout (never answered), lost (handled, answer
     // dropped), none (clears
-    // every fault). `pathIncludes` limits it to API paths containing the text; `count` to that many calls.
+    // every fault). `pathIncludes` limits it to API paths containing the text; `count` to that many calls, `after` to the calls past that many.
     control('faults', ({ response, body }) => {
         if (body.mode === 'none') faults.length = 0;
         else if (['status', 'malformed', 'timeout', 'lost'].includes(body.mode)) {
@@ -1173,6 +1175,7 @@ export const registerGitlab = (forge) => {
                 status: Number(body.status ?? 500),
                 pathIncludes: body.pathIncludes ?? API,
                 remaining: body.count === undefined ? null : Number(body.count),
+                skip: Number(body.after ?? 0),
             });
         } else return badRequest(response, 'unknown fault mode');
         forge.json(response, 200, { faults: faults.length });

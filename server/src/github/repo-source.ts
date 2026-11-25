@@ -1,6 +1,7 @@
 import { githubRepo, type RepoRef, repoKey } from '@factory-ai/core';
 import { createCache } from '../cache.js';
 import type { Repo } from '../config.js';
+import { GITHUB_FORGE } from '../integrations/providers/github-user.js';
 import type { GitHubAppClient, Installation, InstallationRepo } from './app-client.js';
 
 /**
@@ -75,6 +76,10 @@ export interface RepoSourceDeps {
      * nothing. The intersection is applied to whatever the source produced (client listing or
      * stored fallback), so stats scoping, `otherRepoSessions` and the workspace/env writes all
      * follow one truth — a session on an unselected repo stays counted, in `otherRepoSessions`.
+     *
+     * Only the GitHub entries narrow, and an org with none tracks everything the installation reports. A GitLab
+     * entry is an explicit selection and is listed beside GitHub's (`list`, `detail`) with its own `ref`; the
+     * synchronous `snapshot`, which stats scope by "owner/name", stays GitHub's.
      */
     readonly allowlist?: (() => Promise<readonly RepoRef[]>) | undefined;
     readonly ttlMs?: number;
@@ -83,6 +88,22 @@ export interface RepoSourceDeps {
 
 /** The installation listing's "owner/name" spelling, the one telemetry scopes sessions by. */
 const ownerName = (repo: Repo): string => `${repo.owner}/${repo.name}`;
+
+/**
+ * A tracked repo of another forge as a listing entry: its group chain as the owner, its project as the name, and its
+ * complete ref. What the forge says of it (visibility, default branch, activity) is not read here, so it is unknown.
+ */
+function listedOf(ref: RepoRef): InstallationRepo {
+    const slash = ref.path.lastIndexOf('/');
+    return Object.freeze({
+        owner: ref.path.slice(0, slash),
+        name: ref.path.slice(slash + 1),
+        ref,
+        private: true,
+        defaultBranch: null,
+        pushedAt: null,
+    });
+}
 
 /** "owner/name" back to a Repo. A repo name cannot contain a slash, so the first one splits it. */
 function parseFullName(name: string): InstallationRepo | null {
@@ -139,18 +160,14 @@ export function createRepoSource({
             allowlistError = message;
             return { listing: narrowed ?? { repos: empty, installation: listing.installation }, error: message };
         }
-        const result =
-            tracked.length === 0
-                ? listing
-                : (() => {
-                      const allowed = new Set(tracked.map(repoKey));
-                      return {
-                          ...listing,
-                          repos: Object.freeze(
-                              listing.repos.filter((r) => allowed.has(repoKey(githubRepo(ownerName(r)))))
-                          ),
-                      };
-                  })();
+        const githubTracked = tracked.filter((ref) => ref.forge === GITHUB_FORGE);
+        const allowed = new Set(githubTracked.map(repoKey));
+        const github =
+            githubTracked.length === 0
+                ? listing.repos
+                : listing.repos.filter((r) => allowed.has(repoKey(githubRepo(ownerName(r)))));
+        const gitlab = tracked.filter((ref) => ref.forge !== GITHUB_FORGE).map(listedOf);
+        const result = { ...listing, repos: Object.freeze([...github, ...gitlab]) };
         // An older read resolving after a newer one never overwrites it.
         if (read > landed) {
             landed = read;
@@ -213,7 +230,7 @@ export function createRepoSource({
     };
 
     const current = (): readonly InstallationRepo[] =>
-        (allowlist ? narrowed?.repos : cache.peek()?.value.repos) ?? empty;
+        ((allowlist ? narrowed?.repos : cache.peek()?.value.repos) ?? empty).filter((repo) => repo.ref === undefined);
     return {
         snapshot: current,
         snapshotNames: () => current().map(ownerName),

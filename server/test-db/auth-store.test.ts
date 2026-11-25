@@ -4,7 +4,7 @@ import type { Sql } from 'postgres';
 import { hashToken } from '../src/auth/session.js';
 import { createAuthStore, type AuthStore } from '../src/auth/store.js';
 import { LOCAL_ORG_ID } from '../src/identifiers.js';
-import { trackedRepos } from '../src/db/tracked-repos.js';
+import { GITHUB_SCOPE, trackedRepos } from '../src/db/tracked-repos.js';
 import { LOCAL_LOGIN, migrate, reapPendingSignIns, reapSessions } from '../src/db/migrate.js';
 import { useTestDb } from './harness.js';
 import { randomGithubId, testOrg } from './fixtures.js';
@@ -453,21 +453,21 @@ const trackedPaths = async (orgId: string) => (await trackedRepos({ sql, orgId }
 
 describe.skipIf(!enabled)('the tracked-repo allowlist (issue 125)', () => {
     it('writes, replaces and clears the org allowlist wholesale', async () => {
-        await store.replaceTrackedRepos(ORG, ['acme/web', 'acme/other'].map(githubRepo));
+        await store.replaceTrackedRepos(ORG, GITHUB_SCOPE, ['acme/web', 'acme/other'].map(githubRepo));
         expect(await trackedPaths(ORG)).toEqual(['acme/other', 'acme/web']);
 
         // Replace, not append: the second narrowing is the whole truth, not a delta.
-        await store.replaceTrackedRepos(ORG, ['acme/web'].map(githubRepo));
+        await store.replaceTrackedRepos(ORG, GITHUB_SCOPE, ['acme/web'].map(githubRepo));
         expect(await trackedPaths(ORG)).toEqual(['acme/web']);
 
         // Empty means "track everything": the rows go, the narrowing with them.
-        await store.replaceTrackedRepos(ORG, [].map(githubRepo));
+        await store.replaceTrackedRepos(ORG, GITHUB_SCOPE, [].map(githubRepo));
         expect(await trackedPaths(ORG)).toEqual([]);
     });
 
     it('is per-org: one org allowlist never leaks into another', async () => {
-        await store.replaceTrackedRepos(ORG, ['acme/web'].map(githubRepo));
-        await store.replaceTrackedRepos(SECOND_ORG, ['other/one'].map(githubRepo));
+        await store.replaceTrackedRepos(ORG, GITHUB_SCOPE, ['acme/web'].map(githubRepo));
+        await store.replaceTrackedRepos(SECOND_ORG, GITHUB_SCOPE, ['other/one'].map(githubRepo));
 
         expect(await trackedPaths(ORG)).toEqual(['acme/web']);
         expect(await trackedPaths(SECOND_ORG)).toEqual(['other/one']);
@@ -475,7 +475,7 @@ describe.skipIf(!enabled)('the tracked-repo allowlist (issue 125)', () => {
     });
 
     it('takes the rows with the organization, whose repo scope they are', async () => {
-        await store.replaceTrackedRepos(ORG, ['acme/web'].map(githubRepo));
+        await store.replaceTrackedRepos(ORG, GITHUB_SCOPE, ['acme/web'].map(githubRepo));
         await sql`delete from organization where id = ${ORG}`;
 
         expect(await trackedPaths(ORG)).toEqual([]);
@@ -483,7 +483,8 @@ describe.skipIf(!enabled)('the tracked-repo allowlist (issue 125)', () => {
 
     it('keeps the forge, the host and a nested path through a write and a read', async () => {
         const gitlab: RepoRef = { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' };
-        await store.replaceTrackedRepos(ORG, [githubRepo('acme/web'), gitlab]);
+        await store.replaceTrackedRepos(ORG, GITHUB_SCOPE, [githubRepo('acme/web')]);
+        await store.replaceTrackedRepos(ORG, { forge: 'gitlab', host: 'gl.example' }, [gitlab]);
 
         const read = await trackedRepos({ sql, orgId: ORG });
         expect([...read].sort((a, b) => formatRepoRef(a).localeCompare(formatRepoRef(b)))).toEqual([
@@ -494,14 +495,26 @@ describe.skipIf(!enabled)('the tracked-repo allowlist (issue 125)', () => {
         expect(row).toEqual({ owner: 'g/sub', name: 'p' });
     });
 
+    it('a GitHub write and its rollback never touch the org’s GitLab rows', async () => {
+        const lab = { forge: 'gitlab', host: 'gl.example' } as const;
+        const gitlab: RepoRef = { forge: 'gitlab', host: 'gl.example', path: 'g/p' };
+        await store.replaceTrackedRepos(ORG, lab, [gitlab]);
+        await store.replaceTrackedRepos(ORG, GITHUB_SCOPE, ['acme/web'].map(githubRepo));
+        expect((await store.trackedRepos(ORG, GITHUB_SCOPE)).map(formatRepoRef)).toEqual(['acme/web']);
+        // The rollback of an onboarding completion restores the prior GitHub selection: here, none.
+        await store.replaceTrackedRepos(ORG, GITHUB_SCOPE, []);
+        expect(await store.trackedRepos(ORG, GITHUB_SCOPE)).toEqual([]);
+        expect(await store.trackedRepos(ORG, lab)).toEqual([gitlab]);
+    });
+
     it('refuses a path with no group instead of dropping it', async () => {
-        await expect(store.replaceTrackedRepos(ORG, [githubRepo('web')])).rejects.toThrow();
+        await expect(store.replaceTrackedRepos(ORG, GITHUB_SCOPE, [githubRepo('web')])).rejects.toThrow();
         expect(await trackedPaths(ORG)).toEqual([]);
     });
 
     it('reads a malformed row as inconclusive, never as an allowlist with the row dropped', async () => {
         // An empty answer means "track everything", so a dropped row would widen the org on a bad read.
-        await store.replaceTrackedRepos(ORG, [githubRepo('acme/web')]);
+        await store.replaceTrackedRepos(ORG, GITHUB_SCOPE, [githubRepo('acme/web')]);
         await sql`insert into tracked_repo (org_id, owner, name, forge, host) values (${ORG}, 'g', 'p', 'gitlab', '')`;
 
         await expect(trackedRepos({ sql, orgId: ORG })).rejects.toThrow(/tracked_repo/);

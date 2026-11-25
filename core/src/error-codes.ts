@@ -122,6 +122,8 @@ export const ERROR_CODES = {
     EXECUTOR_NAME_CONFLICT: 'EXECUTOR_NAME_CONFLICT',
     EXECUTOR_SUSPENDED: 'EXECUTOR_SUSPENDED',
     FORBIDDEN: 'FORBIDDEN',
+    /** The member's grant is live but the forge says they may not work on the repository: Developer access is needed (docs/gitlab.md). */
+    FORGE_ACCESS_DENIED: 'FORGE_ACCESS_DENIED',
     /** The acting member holds no live grant for the repo's forge: connect it (docs/connections.md). */
     FORGE_GRANT_REQUIRED: 'FORGE_GRANT_REQUIRED',
     /** The change request is on a forge the board cannot act on yet (a well-formed GitLab merge request URL). */
@@ -129,6 +131,8 @@ export const ERROR_CODES = {
     GITHUB_UNAVAILABLE: 'GITHUB_UNAVAILABLE',
     /** The organization already has a connection to that GitLab host (docs/connections.md). */
     GITLAB_CONNECTION_EXISTS: 'GITLAB_CONNECTION_EXISTS',
+    /** The GitLab connection a save was validated against was removed or replaced meanwhile (docs/gitlab.md). */
+    GITLAB_CONNECTION_CHANGED: 'GITLAB_CONNECTION_CHANGED',
     /** The GitLab connection is stored but no admin has activated it yet (docs/connections.md). */
     GITLAB_CONNECTION_PENDING: 'GITLAB_CONNECTION_PENDING',
     IDEMPOTENCY_KEY_REUSED: 'IDEMPOTENCY_KEY_REUSED',
@@ -186,6 +190,8 @@ export const ERROR_CODES = {
     TELEMETRY_DISABLED: 'TELEMETRY_DISABLED',
     TITLE_LIMIT: 'TITLE_LIMIT',
     TITLE_STALE: 'TITLE_STALE',
+    /** A tracked path is already tracked in the organization under another forge or host (docs/repos.md). */
+    TRACKED_PATH_CONFLICT: 'TRACKED_PATH_CONFLICT',
     TOO_LARGE: 'TOO_LARGE',
     TOO_MANY_ENV_VARS: 'TOO_MANY_ENV_VARS',
     TOO_MANY_EXECUTORS: 'TOO_MANY_EXECUTORS',

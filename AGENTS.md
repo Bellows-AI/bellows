@@ -62,7 +62,7 @@ commit message needs a force-push to fix.
 | `org_id`, `005_organizations.sql`, the org selector | [docs/organizations.md](docs/organizations.md) |
 | `server/src/auth/*`, `010_auth.sql`, session cookie, worker token, route credentials | [docs/auth.md](docs/auth.md) |
 | `server/src/db/connection-store.ts`, `routes/connections.ts`, `054_connections.sql`, `100_legacy_jira_tokens.sql`, `docker/skills/factory-jira/`, `web/src/panels/JiraConnections*` | [docs/connections.md](docs/connections.md), [docs/jira-app-runbook.md](docs/jira-app-runbook.md) |
-| `server/src/db/forge-connections.ts`, `server/src/gitlab/*`, `routes/gitlab-connections.ts`, `171_forge_connection.sql` | [docs/gitlab.md](docs/gitlab.md) |
+| `server/src/db/forge-connections.ts`, `server/src/gitlab/*`, `routes/gitlab-connections.ts`, `routes/gitlab-tracking.ts`, `routes/forge-credential.ts`, `171_forge_connection.sql` | [docs/gitlab.md](docs/gitlab.md) |
 | `config.ts`, `.env.example`, compose env blocks, `server/src/github/app-*`, `offline.ts` | [docs/configuration.md](docs/configuration.md) |
 | The repo list, `repo-source.ts`, `db/stored-repos.ts`, session scoping | [docs/repos.md](docs/repos.md) |
 | `server/src/workspace/*`, `server/src/routes/workspace.ts`, executor profiles, task volumes | [docs/workspace.md](docs/workspace.md) |

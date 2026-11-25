@@ -20,31 +20,30 @@ import { registerRouteSpanHook } from './otel-scrub.js';
 import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
 import type { AgentTitle } from './db/agent-title.js';
-import { agentTitleRoutes } from './routes/agent-title.js';
 import { errorHandler } from './routes/error-handler.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
 import type { GitlabLinks } from './integrations/gitlab-link.js';
 import type { MemberForgeGrants } from './integrations/member-forge-grant.js';
-import { combineRegistrations } from './integrations/provider-registry.js';
 import { batchRoutes } from './routes/batches/batches.js';
 import type { UploadCapabilityStore } from './attachments/upload-capability-store.js';
 import { attachmentRoutes } from './routes/attachments.js';
 import { connectionRoutes, type DestroyRevokedSecret } from './routes/connections.js';
-import { type ConnectionListing, connectionCredentialRoutes } from './routes/connection-credential.js';
+import type { ConnectionListing } from './routes/connection-credential.js';
 import type { OperationReceipts } from './db/operation-receipts.js';
-import { operationReceiptRoutes } from './routes/operation-receipts.js';
 import { integrationCatalogRoutes } from './routes/integration-catalog.js';
-import { integrationRoutes } from './routes/integrations.js';
 import { modelSetupRoutes } from './routes/model-setup.js';
 import { modelSetupVerifyRoutes } from './routes/model-setup-verify.js';
 import type { ProviderKeys } from './provider-keys/verify.js';
-import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
+import type { GithubMint, GithubRevoke } from './routes/github-credential.js';
+import { orgMint, registerRunnerCredentialRoutes } from './routes/runner-credentials.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
 import { createConnectorRegistry, type ConnectorRegistry } from './notifications/connector.js';
 import { gitlabConnectionRoutes } from './routes/gitlab-connections.js';
 import { gitlabLinkRoutes } from './routes/gitlab-links.js';
+import { gitlabTrackingRoutes } from './routes/gitlab-tracking.js';
+import { createGitlabApi, type GitlabApi } from './gitlab/gitlab-api.js';
 import { notificationSubscriptionRoutes } from './routes/notification-subscriptions.js';
 import { orgMemberRoutes } from './routes/org-members.js';
 import { auditRoutes } from './routes/audit.js';
@@ -52,7 +51,7 @@ import { operatorRoutes } from './routes/operator.js';
 import { operatorDriverCredentialRoutes } from './routes/operator-driver-credentials.js';
 import { orgExportRoutes } from './routes/org-export.js';
 import { authRoutes } from './routes/auth.js';
-import { createForgeGate, type ForgeGate } from './forge/forge-gate.js';
+import { createForgeGate, type ForgeGate, type GitlabAccess } from './forge/forge-gate.js';
 import { createPrTokenSource } from './forge/pr-token.js';
 import { createPrWriter, type PrWriter } from './github/pr-write.js';
 import { forgeGrantRoutes } from './routes/forge-grants.js';
@@ -183,6 +182,8 @@ export interface AppDeps {
     memberGrants?: MemberForgeGrants | undefined;
     /** A person's GitLab authorization (the member's link, the admin's activation); the routes exist with it and `memberGrants`. */
     gitlabLinks?: GitlabLinks | undefined;
+    /** The board's GitLab HTTP client: tracking lists projects through it, the start gate checks a member's access. */
+    gitlabApi?: GitlabApi | undefined;
     /** The GitHub REST writer behind the PR route; absent, it is built from the configured API URL, and with none the route answers GITHUB_UNAVAILABLE. */
     prWriter?: PrWriter | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
@@ -283,10 +284,11 @@ async function registerAccountRoutes(
         orgs,
         memberGrants,
         gitlabLinks,
+        gitlabApi = createGitlabApi(),
         oauth,
         version,
         metrics,
-    }: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'gitlabLinks' | 'oauth' | 'metrics'> & {
+    }: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'gitlabLinks' | 'gitlabApi' | 'oauth' | 'metrics'> & {
         auth: AuthStore;
         version: string;
     }
@@ -304,7 +306,11 @@ async function registerAccountRoutes(
         await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret, memberGrants }));
     }
     await app.register(forgeGrantRoutes({ memberGrants }));
-    if (memberGrants && gitlabLinks) await app.register(gitlabLinkRoutes({ orgs, links: gitlabLinks, memberGrants }));
+    if (memberGrants && gitlabLinks) {
+        await app.register(gitlabLinkRoutes({ orgs, links: gitlabLinks, memberGrants }));
+        const publicUrl = config.auth.mode === 'github' ? config.auth.publicUrl : '';
+        await app.register(gitlabTrackingRoutes({ orgs, auth, memberGrants, api: gitlabApi, publicUrl }));
+    }
     await registerMcp(app, { config, auth, oauth, version, metrics });
 }
 
@@ -318,14 +324,6 @@ function registerSecurityHeaders(app: FastifyInstance, config: AppConfig): void 
         reply.header('Referrer-Policy', 'no-referrer');
     });
 }
-
-/** Each org's own installation mints its runners' tokens; an org without one has none to give. */
-const orgMint =
-    (orgs: OrgRegistry): GithubMint =>
-    async (orgId, repo) => {
-        const tokens = (await orgs.for(orgId))?.githubToken;
-        return tokens ? tokens.fresh(repo) : null;
-    };
 
 /**
  * The job routes' deps. The board's PR write is the token source (the starter's grant, or the org's installation
@@ -350,79 +348,6 @@ const jobRouteDepsOf = (
         ...(metrics ? { claimPoll: metrics.claimPoll } : {}),
     };
 };
-
-/** Each org's own installation revokes its runners' tokens; null when the org holds none. */
-const orgRevoke =
-    (orgs: OrgRegistry): GithubRevoke =>
-    async (orgId, token) => {
-        const tokens = (await orgs.for(orgId))?.githubToken;
-        return tokens ? tokens.revoke(token) : null;
-    };
-
-/**
- * The routes a runner spends through with its attempt pair: the GitHub credential, the managed-connection broker and
- * the operation receipts, each existing exactly when its per-call check does.
- */
-async function registerRunnerCredentialRoutes(
-    app: FastifyInstance,
-    deps: Pick<
-        AppDeps,
-        | 'orgs'
-        | 'attemptOfLease'
-        | 'pairMatches'
-        | 'operationReceipts'
-        | 'agentTitle'
-        | 'connectionListing'
-        | 'integrations'
-        | 'githubMint'
-        | 'githubRevoke'
-    >
-): Promise<void> {
-    const {
-        orgs,
-        attemptOfLease,
-        pairMatches,
-        operationReceipts,
-        agentTitle,
-        connectionListing,
-        integrations,
-        githubMint,
-        githubRevoke,
-    } = deps;
-    if (attemptOfLease) {
-        await app.register(
-            githubCredentialRoutes({
-                attemptOfLease,
-                mint: githubMint ?? orgMint(orgs),
-                pairMatches,
-                revoke: githubRevoke ?? orgRevoke(orgs),
-            })
-        );
-        if (integrations) {
-            await app.register(
-                connectionCredentialRoutes({ attemptOfLease, integrations, listing: connectionListing })
-            );
-        }
-        if (pairMatches && operationReceipts) {
-            await app.register(operationReceiptRoutes({ attemptOfLease, pairMatches, receipts: operationReceipts }));
-        }
-        if (agentTitle) await app.register(agentTitleRoutes({ attemptOfLease, agentTitle }));
-    }
-    // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
-    if (integrations?.flowOf) {
-        // Absent, no provider is registered: a start is refused as not found and a refusal names the provider alone.
-        const none = combineRegistrations([]);
-        await app.register(
-            integrationRoutes({
-                flowOf: integrations.flowOf,
-                configured: integrations.configured,
-                catalog: integrations.catalog,
-                providers: integrations.ids ?? none.ids,
-                notConfiguredOf: integrations.notConfiguredOf ?? none.notConfiguredOf,
-            })
-        );
-    }
-}
 
 /**
  * The routes that exist only with their dependency — commerce (and COMMERCE_ENABLED), the provider key check — and
@@ -472,6 +397,7 @@ export async function buildApp({
     uploadCapabilities,
     identity,
     gitlabLinks,
+    gitlabApi,
     memberGrants,
     prWriter,
     appSlug,
@@ -494,7 +420,7 @@ export async function buildApp({
     });
     app.setErrorHandler(errorHandler);
     const publicUrl = config.auth.mode === 'github' ? config.auth.publicUrl : '';
-    const forgeGate = createForgeGate({ memberGrants, publicUrl });
+    const forgeGate = createForgeGate({ memberGrants, publicUrl, gitlab: gitlabAccessOf(orgs, gitlabApi) });
 
     // Aborted the moment `app.close()` begins, before it waits for the open requests: the long-polls (settle, batch
     // settle, the MCP waits) read it as `request.closing` and answer at once instead of holding the close up to
@@ -545,7 +471,17 @@ export async function buildApp({
         await app.register(
             authRoutes({ config, store: auth, orgs, identity, memberGrants, appSlug, installationListing, oauth })
         );
-        await registerAccountRoutes(app, { config, auth, orgs, memberGrants, gitlabLinks, oauth, version, metrics });
+        await registerAccountRoutes(app, {
+            config,
+            auth,
+            orgs,
+            memberGrants,
+            gitlabLinks,
+            gitlabApi,
+            oauth,
+            version,
+            metrics,
+        });
     }
     await app.register(skillRoutes(skillCatalog, orgs, { version }));
     await app.register(skillStoreRoutes({ orgs, builtin: skillCatalog }));
@@ -559,15 +495,7 @@ export async function buildApp({
     );
     registerTitleRoute(app, orgs);
     await app.register(preflightRoutes({ orgs, forgeGate }));
-    await app.register(
-        attachmentRoutes({
-            orgs,
-            maxInFlight: attachmentMaxInFlight,
-            uploads: uploadCapabilities,
-            requireBinding: config.auth.mode !== 'none',
-            origin: config.mcp.enabled ? new URL(config.mcp.resource).origin : null,
-        })
-    );
+    await registerAttachments(app, { config, orgs, attachmentMaxInFlight, uploadCapabilities });
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.
@@ -592,6 +520,8 @@ export async function buildApp({
         integrations,
         githubMint,
         githubRevoke,
+        memberGrants,
+        config,
     });
     await app.register(workspaceRoutes(executorRouteDeps(config, orgs)));
     // Plans and usage (like the webhook, only when the deployment turned commerce on) and the provider key check.
@@ -609,26 +539,68 @@ export async function buildApp({
             publicUrl: config.integrations.callbackOrigin,
         })
     );
-    // The member roster and its role writes (issue 410), the same person-shaped surface: the
-    // caller's role decides, the store has no role of its own to check.
-    // The organization's audit log export is an admin read beside the roster; the operator's org status surface
-    // is the same store's (OPERATOR_GITHUB_IDS decides in the auth hook).
-    if (auth) {
-        await app.register(orgMemberRoutes({ store: auth, roster: githubRoster, auth: config.auth }));
-        await app.register(auditRoutes({ store: auth }));
-        await app.register(operatorRoutes({ store: auth }));
-        await app.register(operatorDriverCredentialRoutes({ credentials: driverCredentials }));
-    }
+    if (auth) await registerRosterRoutes(app, { config, auth, githubRoster, driverCredentials });
 
-    if (config.webRoot) {
-        const { default: fastifyStatic } = await import('@fastify/static');
-        await app.register(fastifyStatic, { root: config.webRoot });
-        app.setNotFoundHandler(async (request, reply) => {
-            if (request.url.startsWith('/api/') || request.url.startsWith('/.well-known/'))
-                return reply.code(HTTP_NOT_FOUND).send({ error: 'Not found' });
-            return reply.sendFile('index.html');
-        });
-    }
+    await registerStaticWeb(app, config);
 
     return app;
+}
+
+/**
+ * The member roster and its role writes (issue 410), the same person-shaped surface: the caller's role decides, the
+ * store has no role of its own to check. The organization's audit log export is an admin read beside the roster; the
+ * operator's org status surface is the same store's (OPERATOR_GITHUB_IDS decides in the auth hook).
+ */
+async function registerRosterRoutes(
+    app: FastifyInstance,
+    {
+        config,
+        auth,
+        githubRoster,
+        driverCredentials,
+    }: Pick<AppDeps, 'config' | 'githubRoster' | 'driverCredentials'> & { auth: AuthStore }
+): Promise<void> {
+    await app.register(orgMemberRoutes({ store: auth, roster: githubRoster, auth: config.auth }));
+    await app.register(auditRoutes({ store: auth }));
+    await app.register(operatorRoutes({ store: auth }));
+    await app.register(operatorDriverCredentialRoutes({ credentials: driverCredentials }));
+}
+
+/** The attachment routes: uploads need a binding to a task whenever members sign in, and name the MCP origin when it is on. */
+async function registerAttachments(
+    app: FastifyInstance,
+    {
+        config,
+        orgs,
+        attachmentMaxInFlight,
+        uploadCapabilities,
+    }: Pick<AppDeps, 'config' | 'orgs' | 'attachmentMaxInFlight' | 'uploadCapabilities'>
+): Promise<void> {
+    await app.register(
+        attachmentRoutes({
+            orgs,
+            maxInFlight: attachmentMaxInFlight,
+            uploads: uploadCapabilities,
+            requireBinding: config.auth.mode !== 'none',
+            origin: config.mcp.enabled ? new URL(config.mcp.resource).origin : null,
+        })
+    );
+}
+
+/** What the start gate reads a GitLab member's project access through: the org's connection and the board's client. */
+const gitlabAccessOf = (orgs: OrgRegistry, api: GitlabApi = createGitlabApi()): GitlabAccess => ({
+    connectionsOf: async (orgId) => (await orgs.for(orgId))?.forgeConnections,
+    api,
+});
+
+/** The built SPA, when there is one: static files, and every non-API path falling through to `index.html`. */
+async function registerStaticWeb(app: FastifyInstance, config: AppConfig): Promise<void> {
+    if (!config.webRoot) return;
+    const { default: fastifyStatic } = await import('@fastify/static');
+    await app.register(fastifyStatic, { root: config.webRoot });
+    app.setNotFoundHandler(async (request, reply) => {
+        if (request.url.startsWith('/api/') || request.url.startsWith('/.well-known/'))
+            return reply.code(HTTP_NOT_FOUND).send({ error: 'Not found' });
+        return reply.sendFile('index.html');
+    });
 }

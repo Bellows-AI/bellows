@@ -1279,6 +1279,16 @@ describe('fake GitLab: fault controls', () => {
         expect((await gl.send('GET', '/api/v4/user', { token })).status).toBe(200);
     });
 
+    it('lets the first `after` matching calls through before the fault bites', async () => {
+        const { access_token: token } = await gl.signIn('dev');
+        await seed();
+        await faultOn({ pathIncludes: '/projects/', mode: 'status', status: 502, count: 1, after: 2 });
+        expect((await gl.send('GET', api(''), { token })).status).toBe(200);
+        expect((await gl.send('GET', api(''), { token })).status).toBe(200);
+        expect((await gl.send('GET', api(''), { token })).status).toBe(502);
+        expect((await gl.send('GET', api(''), { token })).status).toBe(200);
+    });
+
     it('answers a body that is not JSON with a 200', async () => {
         const { access_token: token } = await gl.signIn('dev');
         await faultOn({ pathIncludes: '/api/v4/version', mode: 'malformed' });

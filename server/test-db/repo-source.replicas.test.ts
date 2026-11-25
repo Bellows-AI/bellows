@@ -1,7 +1,7 @@
 import { githubRepo, type RepoRef } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { replaceTrackedRepos, trackedRepos } from '../src/db/tracked-repos.js';
+import { GITHUB_SCOPE, replaceTrackedRepos, trackedRepos } from '../src/db/tracked-repos.js';
 import { createRepoSource, type RepoSource } from '../src/github/repo-source.js';
 import { useTestDb } from './harness.js';
 import { testOrg } from './fixtures.js';
@@ -31,7 +31,7 @@ describe.skipIf(!enabled)('the repo list across dashboard replicas', () => {
         expect(await names(other)).toEqual(['acme/web', 'acme/other']);
 
         // The onboarding write lands on one replica, which invalidates only its own cache.
-        await replaceTrackedRepos({ sql, orgId: ORG, repos: [githubRepo('acme/web')] });
+        await replaceTrackedRepos({ sql, orgId: ORG, scope: GITHUB_SCOPE, repos: [githubRepo('acme/web')] });
         writer.invalidate();
 
         expect(await names(writer)).toEqual(['acme/web']);
@@ -40,7 +40,7 @@ describe.skipIf(!enabled)('the repo list across dashboard replicas', () => {
     });
 
     it('a failed allowlist read serves the last narrowed list, never the full listing', async () => {
-        await replaceTrackedRepos({ sql, orgId: ORG, repos: [githubRepo('acme/web')] });
+        await replaceTrackedRepos({ sql, orgId: ORG, scope: GITHUB_SCOPE, repos: [githubRepo('acme/web')] });
         let fail = false;
         const source = replica(async () => {
             if (fail) throw new Error('allowlist read failed');

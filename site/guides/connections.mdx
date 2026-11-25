@@ -92,17 +92,25 @@ If a task is bound to both Jira and Linear, a bare key such as `PROJ-123` could 
 ## GitLab
 
 <Note>
-GitLab support is being built in steps. Connecting an instance and linking accounts work through the API today; the **Settings** page for it, choosing repositories and starting tasks on GitLab repositories come later.
+GitLab support is being built in steps. Connecting an instance, linking accounts and choosing repositories work through the API today; the **Settings** page for them comes later. Bellows starts tasks on GitLab repositories, but cannot yet read their branches or skills, or open merge requests.
 </Note>
 
-An organization can connect a self-hosted GitLab instance, and each member then links their own GitLab account. Bellows acts as that member, never through a shared token. The calls below need a signed-in session or a personal access token, and the first three are admin-only.
+An organization can connect a self-hosted GitLab instance, and each member then links their own GitLab account. Bellows acts as that member, never through a shared token. The calls below need a signed-in session or a personal access token, and the connect, activate and choose-repositories calls are admin-only.
 
 1. **Register an OAuth application on GitLab** with scope `api` and the redirect URI `<your Bellows URL>/api/forge-grants/gitlab/callback`.
 2. **Connect the instance** (admin): `POST /api/org/gitlab-connections` with `host` (a bare host, optional port), `clientId`, `clientSecret`, `allowedGroups` (root group paths) and, for a private CA, `caBundle` (PEM). The secret and the bundle are stored encrypted and never shown again. The connection starts **pending**; Bellows only checks that the instance answers.
 3. **Activate it** (admin): `POST /api/org/gitlab-connections/{id}/activation` returns an `authorizeUrl`. Open it in your browser while signed in to Bellows and authorize on GitLab. Bellows then asks GitLab for its version with your authorization, and activates the connection only if it is **GitLab 17.0 or later**. On an older version the connection stays pending and `activationRefusal` says `version-too-old`. If GitLab cannot be reached or answers something unexpected, nothing changes and nothing is deleted: try again.
 4. **Link your account** (every member, once the connection is active): `POST /api/forge-grants/gitlab/{id}/link` returns an `authorizeUrl` to open the same way, and `GET /api/forge-grants/gitlab` lists the active connections and whether you are `live`, `broken` or `missing` on each. Bellows asks for scope `api` only.
 
+5. **Choose the repositories** (admin, once you have linked your own account): `GET /api/org/gitlab-connections/{id}/projects` lists the projects you can see under the allowed root groups, subgroups included, each with a `tracked` flag. A project that is tracked but not in your list (another admin's, archived or deleted) is still shown, with `listed: false`. `PUT /api/org/gitlab-connections/{id}/tracked-repos` with `{"paths": ["group/project", …]}` replaces the organization's tracked projects on that host with exactly those paths, and an empty list tracks none. For now a project path can be tracked only once per organization, across GitHub and every GitLab host: saving a path that is already tracked elsewhere is refused with `TRACKED_PATH_CONFLICT` naming it, and nothing is changed. If the connection is removed or replaced while you are choosing, the save is refused with `GITLAB_CONNECTION_CHANGED` and nothing is written: reload and choose again. Only projects in that listing, or already tracked, are accepted, and a tracked project is dropped only when you leave it out. It never touches your GitHub repositories, and removing the connection untracks its projects. If GitLab does not answer cleanly the list is not shown partly and nothing is saved: try again.
+
 After either authorization Bellows sends you back to **Settings → Integrations** with `integration=gitlab` and a `result` in the address: `activated` or `linked`, or the reason it did not finish (for example `denied`, `version-too-old` or `unconfirmed`). Each authorization link works once and only for the person who started it.
+
+### Starting work on a GitLab repository
+
+A task, follow-up, retry, reopen or batch on a tracked GitLab project needs your own live GitLab link, and GitLab must say you hold **Developer access or higher** on the project (your own role or one inherited from a group). Without a link the start is refused with `FORGE_GRANT_REQUIRED` and a link to **Settings → Integrations → GitLab**. With a link but less than Developer access it is refused with `FORGE_ACCESS_DENIED`, naming the project: ask for access on GitLab, or link another account. If GitLab does not answer the access check, the start fails with a retryable `503` and nothing is queued; start again. Preflight shows both as the `forge` check.
+
+A task that is already running when your GitLab link is revoked or needs reconnecting is not failed. Bellows finds out when the task next asks for your credential, stops the agent, and holds the task, keeping its session and checkout. It starts again by itself once you link again.
 
 ### When you need to reconnect
 
@@ -138,7 +146,7 @@ The webhook URL is stored encrypted and never shown again. When you edit a notif
 
 ## Coming later
 
-Slack and MCP servers are not connectable yet. For GitLab, the **Settings** page, choosing repositories and starting tasks come later.
+Slack and MCP servers are not connectable yet. For GitLab, the **Settings** page comes later.
 
 **Worked example:** [Fix a bug from a Jira ticket](/use-cases/fix-jira-bug).
 

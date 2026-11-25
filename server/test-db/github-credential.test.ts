@@ -96,6 +96,8 @@ describe.skipIf(!enabled)('github credential of lease — the per-call check', (
             rootJobId: id,
             repo: REPO,
             rootRepo: REPO,
+            ref: githubRepo(REPO),
+            rootRef: githubRepo(REPO),
             executionUserId: AUTHOR.id,
             claimSeq: 1,
         });

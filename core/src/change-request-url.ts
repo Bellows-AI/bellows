@@ -10,7 +10,7 @@ export interface ChangeRequestRef {
 const GITHUB_PULL = /^\/([^/]+\/[^/]+)\/pull\/([^/]+)\/?$/;
 const GITLAB_MERGE_REQUEST = /^\/(.+)\/-\/merge_requests\/([^/]+)\/?$/;
 const NUMBER_TEXT = /^[1-9][0-9]*$/;
-const HTTPS_URL = /^https:\/\/([A-Za-z0-9.:-]+)(\/[A-Za-z0-9._\/-]*)$/;
+const HTTPS_URL = /^https:\/\/([A-Za-z0-9.:-]+)(\/[A-Za-z0-9._/-]*)$/;
 
 /** PR and MR numbers are stored as INT4. */
 const MAX_NUMBER = 2147483647;

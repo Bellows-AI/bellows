@@ -8,9 +8,15 @@ import type { Sql, TransactionSql } from 'postgres';
 import { type DeploymentMode, requiredProviders } from '@factory-ai/core';
 import { forgeOfRepo } from '../../forge/forges.js';
 import { refOfNullableRow } from '../repo-ref-row.js';
-import type { ForgeStandingReader } from '../forge-grant-standing.js';
-import { closeForgeRequirement, openForgeRequirement } from '../forge-requirement.js';
+import { type ForgeStandingReader, readGrantStanding } from '../forge-grant-standing.js';
+import {
+    closeForgeRequirement,
+    type ForgeRequirementReason,
+    openForgeRequirement,
+    openRuntimeForgeRequirement,
+} from '../forge-requirement.js';
 import { orgActiveForClaim } from '../org-status.js';
+import { lockRunningAttempt } from './job-store-rows.js';
 import { skillCatalog } from '../../skills.js';
 import {
     addBindingsInTx,
@@ -20,6 +26,7 @@ import {
     dismissedProvidersInTx,
     dismissRequirementInTx,
     lockThreadInTx,
+    lockThreadRootInTx,
     recordMissingInTx,
     requirementMatches,
     requireAtRuntimeInTx,
@@ -377,4 +384,41 @@ export async function claimConnectionsInTx(
         dismissed: await dismissedProvidersInTx(tx, orgId, rootJobId),
         outcomes: await takeConnectionOutcomesInTx(tx, { orgId, jobId: job.id, claimSeq, takeover }),
     };
+}
+
+/**
+ * The running attempt's thread starter cannot serve the forge credential it asked for (a GitLab grant revoked or
+ * needing reconnect): opens the thread's `forge` requirement as a runtime wait, which holds the next claim and tells the
+ * attempt to hand the task back. Same lock order as `requireConnectionRow`: the asker's own running row, then the root
+ * and its lock, then the requirement; no grant row is locked. A row not running under that lease is `lost`, a thread
+ * the root of which is gone `missing`. A starter whose grant is live again by now (a re-link landed since the caller
+ * read it) opens nothing: `serving`.
+ */
+export async function holdOnForgeGrantRow(
+    sql: Sql,
+    args: { orgId: string; id: string; leaseToken: string; wait: { forge: string; reason: ForgeRequirementReason } }
+): Promise<{ result: 'ok' | 'serving' | 'lost' | 'missing' }> {
+    const { orgId, id, leaseToken, wait } = args;
+    return sql.begin(async (tx) => {
+        const held = await lockRunningAttempt(tx, orgId, id, leaseToken);
+        if ('result' in held) return held;
+        const [row] = await tx<{ root_job_id: string; execution_user_id: string | null }[]>`
+            select j.root_job_id, root.execution_user_id
+            from job j join job root on root.org_id = j.org_id and root.id = j.root_job_id
+            where j.org_id = ${orgId} and j.id = ${id}
+        `;
+        if (!row || !(await lockThreadRootInTx(tx, orgId, row.root_job_id))) return { result: 'missing' } as const;
+        const userId = row.execution_user_id;
+        if (userId !== null && (await readGrantStanding(tx, { orgId, userId, forge: wait.forge })) === 'live') {
+            return { result: 'serving' } as const;
+        }
+        await openRuntimeForgeRequirement(tx, {
+            orgId,
+            rootJobId: row.root_job_id,
+            askedJobId: id,
+            claimSeq: Number(held.claim_seq),
+            ...wait,
+        });
+        return { result: 'ok' } as const;
+    });
 }

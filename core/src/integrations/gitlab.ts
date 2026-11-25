@@ -11,6 +11,9 @@ export const GITLAB_FORGE = 'gitlab';
 export const GITLAB_OAUTH_SCOPE = 'api';
 export const GITLAB_SCOPES = [GITLAB_OAUTH_SCOPE] as const;
 
+/** Where a member links their GitLab account, and where a gate refusal sends them (the settings page's path). */
+export const GITLAB_SETTINGS_PATH = '/settings/integrations/gitlab';
+
 const PATH_PREFIX = '/api/v4';
 const FORGE_PREFIX = `${GITLAB_FORGE}:`;
 

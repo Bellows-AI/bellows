@@ -302,8 +302,8 @@ export function createForgeConnectionStore({
             // lock serializes with a grant being published, the tombstone and a set-based revocation of every grant
             // naming the connection commit together, and secret cleanup runs only after that commit.
             const rows = await sql.begin(async (tx): Promise<RetiringRow[]> => {
-                const locked = await tx<RetiringRow[]>`
-                    select org_id, id, secret_ref, ca_secret_ref from forge_connection
+                const locked = await tx<(RetiringRow & { removed_at: Date | null })[]>`
+                    select org_id, id, secret_ref, ca_secret_ref, removed_at from forge_connection
                     where org_id = ${orgId} and id = ${id}
                     for update
                 `;
@@ -316,6 +316,17 @@ export function createForgeConnectionStore({
                     update integration_grant set status = 'revoked', revoked_at = now(), updated_at = now()
                     where org_id = ${orgId} and forge_connection_id = ${id} and status <> 'revoked'
                 `;
+                // The instance's tracked repositories go with the connection, once, on the live-to-removed transition:
+                // a retry of a tombstoned removal runs after the host may have been connected anew, and tracking is
+                // keyed by host, so it must not touch the replacement's selection. (Grants are keyed by this
+                // connection's id, so their revocation is safe to repeat.)
+                if (locked[0].removed_at === null) {
+                    await tx`
+                        delete from tracked_repo
+                        where org_id = ${orgId} and forge = ${FORGE}
+                          and host = (select host from forge_connection where org_id = ${orgId} and id = ${id})
+                    `;
+                }
                 return locked;
             });
             if (!rows[0]) return false;

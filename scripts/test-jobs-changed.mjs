@@ -105,7 +105,7 @@ export const RULES = [
     [/^server\/src\/(provider-keys\/|net\/pinned-request\.ts$)/, FULL, 'the provider key check server/src/main.ts builds on every board'],
     [/^server\/src\/oauth\/(rate-limit|special-use-address)\.ts$/, FULL, 'the rate limiter every request passes'],
     [/^server\/src\/attachments\/(attachment-collector|attachment-store|attachment-rows)\.ts$/, FULL, 'the attachment sweep every board runs over the shared object store'],
-    [/^server\/src\/routes\/(auth|auth-onboarding|auth-shared|auth-member-grant|health|error-handler|executor-fields|helpers|route-guards|plan-limit|env|workspace|org-executors|github-credential|operation-receipts|ingest|stats|connections|agent-default|onboarding-setup)\.ts$/, FULL, 'routes the lane fixture, the driver or a runner calls in every phase'],
+    [/^server\/src\/routes\/(auth|auth-onboarding|auth-shared|auth-member-grant|health|error-handler|executor-fields|helpers|route-guards|plan-limit|env|workspace|org-executors|github-credential|forge-credential|gitlab-tracking|runner-credentials|operation-receipts|ingest|stats|connections|agent-default|onboarding-setup)\.ts$/, FULL, 'routes the lane fixture, the driver or a runner calls in every phase'],
     // Registration runs at boot: a route file whose plugin body calls something besides declaring routes (pinned by the test).
     [/^server\/src\/routes\/(skills|skills-store|version|webhook|attachments|notification-subscriptions|operator|org-export|repos|connection-credential|batches\/batches|model-setup-verify)\.ts$/, FULL, 'registration does work at every boot'],
     // Called by named phases only.
