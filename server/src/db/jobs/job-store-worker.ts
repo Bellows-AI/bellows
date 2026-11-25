@@ -19,6 +19,7 @@ import { recordReportedSession, type SessionEvidence } from './job-store-provena
 import { answeredQuestionsOf } from './job-store-questions.js';
 import { fingerprintOf, missedSettle, recordReceipt, type SettleKey } from './job-store-receipts.js';
 import { stagedFingerprint } from './job-store-staged.js';
+import { publicationOffTask, type WrongRepo } from './job-store-publication-repo.js';
 import { exists, insertWorkflowSuccessor, runtimePatch, stopReviewsOf } from './job-store-rows.js';
 import { issueVerdictReclaim, liveVerdictReclaim } from './job-store-reclaim-queue.js';
 import type {
@@ -187,7 +188,7 @@ export interface JobWorkerStore {
                 baseBranch: string;
             } | null;
         }
-    ): Promise<{ result: 'ok'; threadDone: boolean; reclaimId: string | null } | SettleRefusal>;
+    ): Promise<{ result: 'ok'; threadDone: boolean; reclaimId: string | null } | SettleRefusal | WrongRepo>;
 }
 
 export type HeartbeatResult = Awaited<ReturnType<JobStore['heartbeat']>>;
@@ -460,6 +461,12 @@ export async function completeInTx(
     const key: SettleKey = { orgId, jobId: id, leaseToken, operation: 'complete', fingerprint: fingerprintOf(result) };
     // Without a staged policy this is the driver's complete: a conclusion it staged binds it.
     if (!staged && (await stagedApart(tx, key))) return { result: 'conflict' };
+    // Before the update and after the receipt's route: a replay or a lost lease finds no running row here and falls
+    // through to its answer; only a live attempt reporting another repository's change request is refused. A staged
+    // commit was checked when it was staged.
+    if (!staged && (await publicationOffTask(tx, { orgId, id, leaseToken }, result.publication))) {
+        return { result: 'wrong_repo' };
+    }
     const rows = await tx<
         {
             id: string;

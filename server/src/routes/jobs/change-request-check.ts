@@ -1,6 +1,7 @@
-import { ERROR_CODES, parseChangeRequestUrl, type RepoRef } from '@factory-ai/core';
+import { ERROR_CODES, parseChangeRequestUrl } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { JobStore } from '../../db/jobs/job-store-types.js';
+import { changeRequestOnRepo } from '../../db/jobs/job-store-publication-repo.js';
 import { bad, guard } from '../helpers.js';
 import { leaseLost, notFoundJob, PR_URL_LIMIT } from './job-limits.js';
 
@@ -65,32 +66,11 @@ export async function refuseOffTaskChangeRequest(
         return true;
     }
     const task = context.value.repo;
-    const parsed = parseChangeRequestUrl(attempt.url);
-    if (task !== null && parsed !== null && sameTaskRepo(parsed.ref, task)) return false;
+    if (changeRequestOnRepo(attempt.url, task)) return false;
     await bad(reply, attempt.malformedCode, `${attempt.field} must be on the task's repository`);
     return true;
 }
 
-/** Forge and host exactly, path case-insensitively as GitHub treats it; only GitHub urls reach here. */
-const sameTaskRepo = (url: RepoRef, task: RepoRef): boolean =>
-    url.forge === task.forge && url.host === task.host && url.path.toLowerCase() === task.path.toLowerCase();
-
-/** {@link refuseOffTaskChangeRequest} for a verdict's optional publication: nothing to check without one. */
-export async function refuseOffTaskPublication(run: {
-    request: FastifyRequest;
-    reply: FastifyReply;
-    store: Pick<JobStore, 'prWriteContext'>;
-    id: string;
-    leaseToken: string;
-    publication: { prUrl: string } | null;
-}): Promise<boolean> {
-    const { request, reply, store, id, leaseToken, publication } = run;
-    if (publication === null) return false;
-    return refuseOffTaskChangeRequest(request, reply, store, {
-        id,
-        leaseToken,
-        field: 'publication.prUrl',
-        url: publication.prUrl,
-        malformedCode: ERROR_CODES.BAD_PUBLICATION,
-    });
-}
+/** The answer for a verdict or staged conclusion whose publication names another repository than the task's. */
+export const wrongRepo = (reply: FastifyReply) =>
+    bad(reply, ERROR_CODES.BAD_PUBLICATION, "publication.prUrl must be on the task's repository");

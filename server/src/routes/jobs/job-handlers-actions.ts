@@ -13,7 +13,7 @@ import {
     validateVerdictBody,
     validateWaitQuery,
 } from './job-field-validation.js';
-import { refuseOffTaskPublication } from './change-request-check.js';
+import { wrongRepo } from './change-request-check.js';
 import { bad, body, guard } from '../helpers.js';
 import { resolveLeasedRoute, resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
 import { UUID } from '../../identifiers.js';
@@ -466,16 +466,11 @@ const reclaimNotYours = (reply: FastifyReply) =>
 // thread that merely finished keeps its tree. `reclaimId` names the reclaim row a threadDone verdict
 // queued claimed by this worker: the driver acks it once the tree is gone.
 export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveLeasedRoute<keyof JobWorkerStore | 'prWriteContext'>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof JobWorkerStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id, fields, leaseToken } = route;
     const parsed = validateVerdictBody(fields);
     if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
-    if (
-        await refuseOffTaskPublication({ request, reply, store, id, leaseToken, publication: parsed.value.publication })
-    ) {
-        return reply;
-    }
 
     const result = await guard(
         reply,
@@ -487,6 +482,7 @@ export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyReque
         if (result.value.result === 'missing') return notFoundJob(reply);
         // A conclusion the attempt staged is its outcome: a different verdict is refused.
         if (result.value.result === 'conflict') return conclusionConflict(reply);
+        if (result.value.result === 'wrong_repo') return wrongRepo(reply);
         return leaseLost(reply);
     }
     return reply.code(HTTP_OK).send({

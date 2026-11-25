@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { githubRepo, type RepoRef } from '@factory-ai/core';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
@@ -25,21 +24,15 @@ type Staged = {
     result: Parameters<JobWorkerStore['complete']>[2];
     leaseSeconds: number;
 };
-type Answer = 'ok' | 'lost' | 'missing' | 'conflict';
+type Answer = 'ok' | 'lost' | 'missing' | 'conflict' | 'wrong_repo';
 
-function stubStore(
-    answer: Answer = 'ok',
-    task: RepoRef | null = githubRepo('acme/web')
-): JobStore & { staged: Staged[]; completed: Staged['result'][] } {
+function stubStore(answer: Answer = 'ok'): JobStore & { staged: Staged[]; completed: Staged['result'][] } {
     const staged: Staged[] = [];
     const completed: Staged['result'][] = [];
     const settled = async () =>
         answer === 'ok' ? { result: 'ok' as const, status: 'queued' as const } : { result: answer };
     return Object.assign(
-        jobStoreSlice<JobConclusionStore & JobWorkerStore & JobActionStore & Pick<JobStore, 'prWriteContext'>>({
-            async prWriteContext() {
-                return { result: 'ok', orgId: 'o', rootJobId: ID, repo: task, rootRepo: task, executionUserId: null };
-            },
+        jobStoreSlice<JobConclusionStore & JobWorkerStore & JobActionStore>({
             async stageConclusion(id: string, leaseToken: string, result: Staged['result'], leaseSeconds: number) {
                 staged.push({ id, leaseToken, result, leaseSeconds });
                 return { result: answer };
@@ -175,40 +168,15 @@ describe('POST /api/jobs/:id/conclusion', () => {
         expect(store.completed).toEqual([]);
     });
 
-    it.each<[string, RepoRef | null, string]>([
-        [
-            'the same path on a GitLab task',
-            { forge: 'gitlab', host: 'gl.example', path: 'acme/web' },
-            'https://github.com/acme/web/pull/7',
-        ],
-        [
-            'the same path on another GitHub host (task side)',
-            { ...githubRepo('acme/web'), host: 'ghe.example' },
-            'https://github.com/acme/web/pull/7',
-        ],
-        [
-            'the same path on another GitHub host (url side)',
-            githubRepo('acme/web'),
-            'https://ghe.example/acme/web/pull/7',
-        ],
-        ['a different path', githubRepo('acme/other'), 'https://github.com/acme/web/pull/7'],
-        ['a repo-less task', null, 'https://github.com/acme/web/pull/7'],
-    ])(
-        'refuses %s against the leased task on complete and conclusion, writing nothing',
-        async (_label, task, prUrl) => {
-            const store = stubStore('ok', task);
-            const instance = await harnessWith(store);
-            const fields = publicationOf(prUrl);
+    it('answers a publication the store refused as another repository’s with BAD_PUBLICATION, on complete and conclusion', async () => {
+        const instance = await harnessWith(stubStore('wrong_repo'));
+        const fields = publicationOf('https://github.com/acme/web/pull/7');
 
-            const staged = await post(instance, `/api/jobs/${ID}/conclusion`, { ...done, ...fields });
-            const completed = await post(instance, `/api/jobs/${ID}/complete`, { ...done, ...fields });
-
-            expect([staged.statusCode, staged.json().code]).toEqual([400, 'BAD_PUBLICATION']);
-            expect([completed.statusCode, completed.json().code]).toEqual([400, 'BAD_PUBLICATION']);
-            expect(store.staged).toEqual([]);
-            expect(store.completed).toEqual([]);
+        for (const route of ['conclusion', 'complete']) {
+            const res = await post(instance, `/api/jobs/${ID}/${route}`, { ...done, ...fields });
+            expect([res.statusCode, res.json().code]).toEqual([400, 'BAD_PUBLICATION']);
         }
-    );
+    });
 
     it.each<[Answer, number, string]>([
         ['lost', 409, 'LEASE_LOST'],

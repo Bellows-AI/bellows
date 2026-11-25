@@ -11,6 +11,7 @@ import { fingerprintOf } from './job-store-receipts.js';
 import { exists } from './job-store-rows.js';
 import { stagedUnderLease } from './job-store-staged.js';
 import type { JobStore, JobStoreContext } from './job-store-types.js';
+import { publicationOffTask } from './job-store-publication-repo.js';
 import { type CompleteOutcome, type CompleteResult, completeInTx } from './job-store-worker.js';
 import { logger } from '../../log.js';
 import { createTally, type OutcomeTally } from './job-store-outcome-tally.js';
@@ -26,7 +27,7 @@ export interface JobConclusionStore {
         leaseToken: string,
         result: Parameters<JobStore['complete']>[2],
         leaseSeconds: number
-    ): Promise<{ result: 'ok' | 'lost' | 'missing' | 'conflict' }>;
+    ): Promise<{ result: 'ok' | 'lost' | 'missing' | 'conflict' | 'wrong_repo' }>;
 }
 
 /** The interruption a board commit records: the lease ran out between the stage and the verdict. */
@@ -49,6 +50,8 @@ export async function stageConclusion(
             for update
         `;
         if (!row) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
+        if (await publicationOffTask(tx, { orgId, id, leaseToken }, result.publication))
+            return { result: 'wrong_repo' };
         await tx`
             insert into job_conclusion (org_id, job_id, lease_token, claim_seq, fingerprint, result, policy, reviewers)
             values (${orgId}, ${id}, ${leaseToken}, ${row.claim_seq}, ${fingerprint}, ${tx.json(result as never)},

@@ -1,4 +1,4 @@
-import { githubRepo } from '@factory-ai/core';
+import { formatChangeRequestUrl, githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -111,7 +111,7 @@ const finishPublishedOn = async (variant: RepoVariant, command: string): Promise
         publication: {
             repo: REPO,
             prNumber: PULL,
-            prUrl: `https://${variant.host}/${REPO}/-/merge_requests/${PULL}`,
+            prUrl: formatChangeRequestUrl(refOf(variant, REPO), PULL),
             headBranch: `factory/${id}`,
             baseBranch: 'main',
         },
@@ -716,7 +716,7 @@ describe.skipIf(!enabled).each(VARIANT_CASES)(
                 publication: {
                     repo: REPO,
                     prNumber: PULL,
-                    prUrl: `https://${variant.host}/${REPO}/-/merge_requests/${PULL}`,
+                    prUrl: formatChangeRequestUrl(refOf(variant, REPO), PULL),
                     headBranch: `factory/${id}`,
                     baseBranch: 'main',
                 },
@@ -754,7 +754,7 @@ describe.skipIf(!enabled).each(VARIANT_CASES)(
                 publication: {
                     repo: REPO,
                     prNumber: PULL,
-                    prUrl: `https://${variant.host}/${REPO}/-/merge_requests/${PULL}`,
+                    prUrl: formatChangeRequestUrl(refOf(variant, REPO), PULL),
                     headBranch: `factory/${id}`,
                     baseBranch: 'main',
                 },
