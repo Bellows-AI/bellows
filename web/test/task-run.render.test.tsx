@@ -504,6 +504,81 @@ describe('TaskRun close phase', () => {
         expect(renderDetail({ jobs: [job({ gates: passed })] })).not.toContain('run-spinner');
     });
 
+    it('a failed gate lists its failed tests, selection, slowest files and resources beside its output', () => {
+        const failed = {
+            name: 'test',
+            status: 'failed' as const,
+            exitCode: 124,
+            output: 'tail',
+            result: {
+                failures: [{ file: 'core/test/a.test.ts', test: 'adds two numbers', message: 'expected 3 to be 4' }],
+                inFlight: ['driver/test/supervisor.test.ts'],
+                selection: { mode: 'all', reason: 'a shared file changed' },
+                slowest: [{ file: 'driver/test/takeover-sim.test.ts', ms: 156_000 }],
+                resources: {
+                    samples: 4,
+                    seconds: 10,
+                    cpu: { user: 10, system: 29, iowait: 24, steal: 20, idle: 17 },
+                    throttledPeriods: 3,
+                    throttledMs: 120,
+                    load: { start: 1, max: 6.5, end: 2 },
+                    memAvailableMb: { min: 512, end: 900 },
+                    memTotalMb: 4000,
+                },
+            },
+        };
+        const html = renderDetail({ jobs: [job({ status: 'failed', gates: [failed] })] });
+        const panel = html.slice(html.indexOf('task-verification'));
+        expect(panel).toContain('1 failed test');
+        expect(panel).toContain('core/test/a.test.ts');
+        expect(panel).toContain('adds two numbers');
+        expect(panel).toContain('expected 3 to be 4');
+        expect(panel).toContain('Running when the deadline hit');
+        expect(panel).toContain('driver/test/supervisor.test.ts');
+        expect(panel).toContain('Selection: all');
+        expect(panel).toContain('a shared file changed');
+        expect(panel).toContain('driver/test/takeover-sim.test.ts');
+        expect(panel).toContain('156s');
+        expect(panel).toContain('steal 20%');
+        expect(panel).toContain('iowait 24%');
+        // A gate with nothing recorded shows none of it.
+        const plain = renderDetail({
+            jobs: [
+                job({
+                    status: 'failed',
+                    gates: [
+                        { name: failed.name, status: failed.status, exitCode: failed.exitCode, output: failed.output },
+                    ],
+                }),
+            ],
+        });
+        expect(plain).not.toContain('gate-result');
+    });
+
+    it('a settled gate shows its duration, a timed-out one its deadline, and the panel the total', () => {
+        const at = (minutes: number) => new Date(Date.UTC(2026, 10, 24, 10, minutes)).toISOString();
+        const gates = [
+            { name: 'lint', status: 'passed' as const, exitCode: 0, output: '', startedAt: at(0), finishedAt: at(2) },
+            {
+                name: 'slow',
+                status: 'failed' as const,
+                exitCode: 124,
+                output: '',
+                startedAt: at(2),
+                finishedAt: at(17),
+                timeoutMs: 15 * 60_000,
+            },
+            { name: 'reused', status: 'skipped' as const, exitCode: null, output: 'reused' },
+        ];
+        const html = renderDetail({ jobs: [job({ status: 'failed', gates })] });
+        const panel = html.slice(html.indexOf('task-verification'));
+        expect(panel).toContain('data-gate-duration="lint">2m 0s<');
+        expect(panel).toContain('data-gate-duration="slow">15m 0s<');
+        expect(panel).toContain('timed out at 15m 0s');
+        expect(panel).toContain('Total gate time 17m 0s');
+        expect(panel).not.toContain('data-gate-duration="reused"');
+    });
+
     it('a skipped gate renders a skipped pill and its "no changes" output', () => {
         const skipped = { name: 'test', status: 'skipped' as const, exitCode: null, output: 'no changes' };
         const html = renderDetail({ jobs: [job({ status: 'succeeded', gates: [skipped] })] });

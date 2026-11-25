@@ -91,14 +91,39 @@ describe('factory-gate', () => {
     /** The exit of a transport failure: retryable, apart from the gate's own failure (22), no gates (3) and usage (2). */
     const RETRYABLE = 75;
 
-    it('POSTs the gate name to /gate/run on the control socket, no bearer, and prints the answer unchanged', async () => {
-        const answer = '{"exitCode":0,"output":"ok","executionId":"e-1"}';
+    it('POSTs the gate tool to /tools/call on the control socket, no bearer, and prints the answer unchanged', async () => {
+        const answer = '{"verdict":"passed","exitCode":0,"output":"ok","artifacts":[],"executionId":"e-1"}';
         const gate = await serve(200, answer, true);
         const ran = await run(GATE, ['test'], env(gate.listen));
         expect(ran).toMatchObject({ code: 0, stdout: answer });
         expect(gate.seen).toEqual([
-            { method: 'POST', url: '/gate/run', authorization: undefined, body: '{"gate":"test"}' },
+            { method: 'POST', url: '/tools/call', authorization: undefined, body: '{"tool":"gate:test"}' },
         ]);
+    });
+
+    // A gate named exec is a gate: the prefix keeps it apart from the built-in exec tool.
+    it('sends a gate named exec as the tool gate:exec, never the built-in exec', async () => {
+        const gate = await serve(200, '{"exitCode":0}', true);
+        await run(GATE, ['exec'], env(gate.listen));
+        expect(gate.seen.map((seen) => seen.body)).toEqual(['{"tool":"gate:exec"}']);
+    });
+
+    it('--list GETs the manifest from /tools with no body and prints it unchanged', async () => {
+        const answer = '{"tools":[{"id":"gate:test"},{"id":"exec"}]}';
+        const gate = await serve(200, answer, true);
+        const ran = await run(GATE, ['--list'], env(gate.listen));
+        expect(ran).toMatchObject({ code: 0, stdout: answer });
+        expect(gate.seen).toEqual([{ method: 'GET', url: '/tools', authorization: undefined, body: '' }]);
+    });
+
+    it.each([
+        ['a 502 from the proxy', 502, '{"error":"control relay unavailable"}'],
+        ['a retryable 503 before the tools are open', 503, '{"error":"the tools are not open yet","retryable":true}'],
+        ['a 200 that is not JSON', 200, '<html>proxy error</html>'],
+    ])('--list reads %s as retryable, never as "no tools"', async (_name, status, body) => {
+        const gate = await serve(status, body, true);
+        const ran = await run(GATE, ['--list'], env(gate.listen));
+        expect(ran).toMatchObject({ code: RETRYABLE, stdout: '' });
     });
 
     it('never reads the gate pair from its environment: a stale BELLOWS_GATE_URL goes nowhere', async () => {
@@ -116,15 +141,23 @@ describe('factory-gate', () => {
     it('sends --filter as the filter field and nothing else', async () => {
         const gate = await serve(200, '{"exitCode":0}', true);
         await run(GATE, ['unit', '--filter', 'src/a.test.ts'], env(gate.listen));
-        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ gate: 'unit', filter: 'src/a.test.ts' });
+        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ tool: 'gate:unit', input: { filter: 'src/a.test.ts' } });
     });
 
     it('sends --last as the last field, and takes it with no filter', async () => {
         const gate = await serve(200, '{"exitCode":1,"last":true}', true);
         await run(GATE, ['test:db', '--last'], env(gate.listen));
-        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ gate: 'test:db', last: true });
+        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ tool: 'gate:test:db', input: { last: true } });
         const refused = await run(GATE, ['test:db', '--last', '--filter', 'x'], env(gate.listen));
         expect(refused.code).toBe(2);
+        expect(gate.seen).toHaveLength(1);
+    });
+
+    it('sends --last --full as last and full, and refuses --full alone', async () => {
+        const gate = await serve(200, '{"exitCode":1,"last":true,"full":true}', true);
+        await run(GATE, ['test', '--last', '--full'], env(gate.listen));
+        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ tool: 'gate:test', input: { last: true, full: true } });
+        expect((await run(GATE, ['test', '--full'], env(gate.listen))).code).toBe(2);
         expect(gate.seen).toHaveLength(1);
     });
 
@@ -139,7 +172,7 @@ describe('factory-gate', () => {
         const gate = await serve(200, '{}', true);
         const hostile = `a"}'; $(touch /tmp/pwned) \`id\` \\n`;
         await run(GATE, ['test', '--filter', hostile], env(gate.listen));
-        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ gate: 'test', filter: hostile });
+        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ tool: 'gate:test', input: { filter: hostile } });
     });
 
     it('keeps the answer of a refused run: the 503 body with its executionId, and the HTTP exit', async () => {
@@ -226,15 +259,20 @@ describe('factory-gate', () => {
         expect(ran.stdout).toBe('');
     });
 
-    it.each([[[]], [['--filter', 'x']], [['test', 'extra']], [['test', '--filter']], [['test', '--url', 'http://x']]])(
-        'refuses the arguments %j without sending anything',
-        async (args) => {
-            const gate = await serve(200, '{}', true);
-            const ran = await run(GATE, args, env(gate.listen));
-            expect(ran.code).toBe(2);
-            expect(gate.seen).toEqual([]);
-        }
-    );
+    it.each([
+        [[]],
+        [['--filter', 'x']],
+        [['test', 'extra']],
+        [['test', '--filter']],
+        [['test', '--url', 'http://x']],
+        [['--list', 'test']],
+        [['test', '--list']],
+    ])('refuses the arguments %j without sending anything', async (args) => {
+        const gate = await serve(200, '{}', true);
+        const ran = await run(GATE, args, env(gate.listen));
+        expect(ran.code).toBe(2);
+        expect(gate.seen).toEqual([]);
+    });
 });
 
 // `factory-exec '<command>'` runs one command in the environment image through the same relay.
@@ -242,20 +280,23 @@ describe('factory-exec', () => {
     const env = (socket: string) => ({ FACTORY_CONTROL_SOCKET: socket });
     const RETRYABLE = 75;
 
-    it('POSTs the one argument as {"exec"} to /gate/run and prints the answer unchanged', async () => {
-        const answer = '{"exitCode":0,"output":"hi"}';
+    it('POSTs the one argument as the exec tool to /tools/call and prints the answer unchanged', async () => {
+        const answer = '{"exitCode":0,"output":"hi","artifacts":[]}';
         const gate = await serve(200, answer, true);
         const ran = await run(EXEC, ['echo hi && ls "$HOME"'], env(gate.listen));
         expect(ran).toMatchObject({ code: 0, stdout: answer });
         expect(gate.seen).toEqual([
             {
                 method: 'POST',
-                url: '/gate/run',
+                url: '/tools/call',
                 authorization: undefined,
-                body: '{"exec":"echo hi && ls \\"$HOME\\""}',
+                body: '{"tool":"exec","input":{"command":"echo hi && ls \\"$HOME\\""}}',
             },
         ]);
-        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({ exec: 'echo hi && ls "$HOME"' });
+        expect(JSON.parse(gate.seen[0]?.body ?? '')).toEqual({
+            tool: 'exec',
+            input: { command: 'echo hi && ls "$HOME"' },
+        });
     });
 
     it('a command that exited nonzero is still a 2xx answer: exit 0, its exit code in the JSON', async () => {

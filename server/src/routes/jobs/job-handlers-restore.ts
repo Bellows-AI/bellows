@@ -31,14 +31,18 @@ const RAW_TRANSCRIPT_STREAM = 'transcript-raw';
 const CLAUDE_EXECUTOR = CLAUDE_CODE;
 const UNATTRIBUTED = 'unattributed';
 
-interface Resolved {
+export interface Resolved {
     scope: RestoreScope;
     artifacts: ArtifactStore;
     body: Record<string, unknown>;
 }
 
 /** The preamble: the live lease's scope and the org's artifact store. Null once a refusal has landed. */
-async function resolve(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply): Promise<Resolved | null> {
+export async function resolve(
+    orgs: OrgRegistry,
+    request: FastifyRequest,
+    reply: FastifyReply
+): Promise<Resolved | null> {
     const route = await resolveLeasedRoute<keyof JobReadStore>(orgs, request, reply);
     if (!route) return null;
     const { fields, leaseToken } = route;

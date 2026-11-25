@@ -205,22 +205,30 @@ describe('the service sidecars (issue #773)', () => {
         }
     });
 
-    it('adds the tmpfs total to the sidecar’s memory request and limit, never to cpu', () => {
+    it('adds the tmpfs total to the sidecar’s memory request and limit; cpu takes the service cap', () => {
         const config = classConfig({ requests: { cpu: '1', memory: '1Gi' }, limits: { cpu: '2', memory: '3Gi' } });
         const pod = podOf(inMemory, config);
         expect(sidecarIn(pod, 'db')?.resources).toEqual({
             requests: { cpu: '1', memory: '3221225472' },
-            limits: { cpu: '2', memory: '5368709120' },
+            limits: { cpu: '1', memory: '5368709120' },
         });
         expect(sidecarIn(pod, 'cache')?.resources).toEqual({
             requests: { cpu: '1', memory: '1Gi' },
-            limits: { cpu: '2', memory: '3Gi' },
+            limits: { cpu: '1', memory: '3Gi' },
         });
+    });
+
+    // The API server refuses a request above its limit: a pod with one never starts.
+    it('never renders a service cpu request above its cap', () => {
+        const pod = podOf(inMemory, classConfig({ requests: { cpu: '2' } }));
+        for (const name of ['db', 'cache']) {
+            expect(sidecarIn(pod, name)?.resources, name).toEqual({ requests: { cpu: '1' }, limits: { cpu: '1' } });
+        }
     });
 
     it('leaves an unset memory slot unset', () => {
         const pod = podOf(inMemory, classConfig({ requests: { cpu: '1' } }));
-        expect(sidecarIn(pod, 'db')?.resources).toEqual({ requests: { cpu: '1' } });
+        expect(sidecarIn(pod, 'db')?.resources).toEqual({ requests: { cpu: '1' }, limits: { cpu: '1' } });
     });
 });
 

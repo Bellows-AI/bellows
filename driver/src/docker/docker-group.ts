@@ -189,6 +189,10 @@ export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: strin
         ...gateEnv(job).flatMap((pair) => ['-e', pair.join('=')]),
         ...taskMountArgs(job),
         ...mailboxMountArgs(job, MAILBOXES.gate, 'rw'),
+        // The pod's gate /tmp twin: HOME and the suites' scratch in memory, executable
+        // because the suites run scripts from their temp dirs (docker's default tmpfs is noexec).
+        '--tmpfs',
+        '/tmp:rw,exec,nosuid,nodev,mode=1777',
         ...groupNetworkArgs(job),
         ...resourceArgs(jobClassOf(config, job).gateResources),
         '--entrypoint',

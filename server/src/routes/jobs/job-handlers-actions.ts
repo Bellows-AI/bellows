@@ -223,7 +223,7 @@ export async function handleStop(orgs: OrgRegistry, request: FastifyRequest, rep
     return reply.code(HTTP_OK).send({ id, status: 'stopped' });
 }
 
-// A thread that backs a batch task is the batch's history: remove and reopen refuse it (docs/batches.md).
+// A thread that backs a batch task is the batch's history: archive and reopen refuse it (docs/batches.md).
 const batchThreadRefusal = (reply: FastifyReply) =>
     reply.code(HTTP_CONFLICT).send({
         error: 'This task is part of a batch — cancel or retry it through the batch',
@@ -261,30 +261,44 @@ const liveBatchThreadRefusal = (reply: FastifyReply) =>
         code: ERROR_CODES.BATCH_TASK_THREAD,
     });
 
-// The user's remove: the thread is gone and a worktree reclaim is queued. Person-gated like every
-// job write here, not just because the driver has no use for it — a driver credential deleting the
-// audit rows of jobs it never held would be exactly the thread-read hole again.
-export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+// The user's archive: the thread leaves the active list and stays readable; a running task is stopped first.
+// Person-gated like every job write here — a driver credential has no use for it, and the actor
+// comes from the session, never a body, as on create.
+export async function handleArchive(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
     const result = await guard(
         reply,
-        (e) => request.log.error({ err: e }, 'job remove failed'),
-        // The actor comes from the session, never a body — the same rule as create. It rides the
-        // task_reclaim row: the thread rows are deleted in the same transaction.
-        () => store.removeThread(id, callerOf(request)?.user.id ?? null)
+        (e) => request.log.error({ err: e }, 'job archive failed'),
+        () => store.archiveThread(id, callerOf(request)?.user.id ?? null)
     );
     if (!result.ok) return reply;
     if (result.value === 'missing') return notFoundJob(reply);
-    if (result.value === 'conflict') {
+    if (result.value === 'batch') return batchThreadRefusal(reply);
+    return reply.code(HTTP_OK).send({ id, archived: true });
+}
+
+// Archive's inverse. Not idempotent, like reopen: a thread nobody archived answers the state it is in.
+export async function handleUnarchive(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+
+    const result = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job unarchive failed'),
+        () => store.unarchiveThread(id)
+    );
+    if (!result.ok) return reply;
+    if (result.value === 'missing') return notFoundJob(reply);
+    if (result.value === 'not_archived') {
         return reply
             .code(HTTP_CONFLICT)
-            .send({ error: 'The task is still running — stop it first', code: ERROR_CODES.TASK_RUNNING });
+            .send({ error: 'The task is not archived', code: ERROR_CODES.TASK_NOT_ARCHIVED });
     }
-    if (result.value === 'batch') return batchThreadRefusal(reply);
-    return reply.code(HTTP_OK).send({ id, removed: true });
+    return reply.code(HTTP_OK).send({ id, archived: false });
 }
 
 // The user's wait-cancel: ends the durable PR wait a thread is parked on, so a

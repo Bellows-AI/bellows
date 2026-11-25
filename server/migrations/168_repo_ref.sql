@@ -11,7 +11,7 @@
 -- defaults and tracked_repo.owner/name. Until then one path on two hosts still collides in them.
 --
 -- The wide indexes on tables that grow (job, pr_merge, pr_follow, batch_merge) are built outside this transaction:
--- migrations/concurrent/167_repo_ref_indexes.sql.
+-- migrations/concurrent/168_repo_ref_indexes.sql.
 --
 -- `path` stays in the existing `repo` column (tracked_repo: owner/name, env_var and workflow: repo_owner/repo_name)
 -- until then. Left out by design: session_branch, github_delivery, transcript_tool_event.pr_repo and

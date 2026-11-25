@@ -71,6 +71,7 @@ commit message needs a force-push to fix.
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
 | `server/src/log.ts`, `server/src/otel*.ts`, `server/src/pg-trace.ts`, `driver/src/otel*.ts`, `driver/src/log.ts` | [docs/observability.md](docs/observability.md) |
 | `server/src/routes/jobs/*`, `db/jobs/*`, `006_jobs.sql`, `driver/*`, `cli/*` | [docs/jobs.md](docs/jobs.md) |
+| `driver/src/gate-excerpt.ts`, the gate log stream, `--last --full`, `routes/jobs/job-handlers-gate-log.ts` | [docs/gate-output.md](docs/gate-output.md) |
 | `core/src/batch-plan.ts`, `059_batches.sql`, `db/batches/*`, `routes/batches/*` | [docs/batches.md](docs/batches.md) |
 | `workflow`, `027_workflows.sql`, `db/workflows/*`, `routes/workflows.ts` | [docs/workflows.md](docs/workflows.md) |
 | `env_var`, `routes/env.ts`, the claim's `env`, driver env forwarding | [docs/env.md](docs/env.md) |

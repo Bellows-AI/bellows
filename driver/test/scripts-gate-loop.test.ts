@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { gateGithubScript, gateLoopArgv, gateLoopScript, gateShellScript } from '../src/container-scripts.js';
-import { GATE_ASK_FILES, GATE_FILES, MAILBOXES } from '../src/supervisor-contract.js';
+import { GATE_ASK_FILES, GATE_FILES, GATE_REPORT_FILES, MAILBOXES } from '../src/supervisor-contract.js';
 
 /*
  * The gate container's loop (`scripts/gate-loop.sh`), pinned by its bytes. It is never executed here, nor
@@ -37,6 +37,19 @@ describe('the gate loop script', () => {
         ]) {
             expect(code, name).toContain(`/${name}`);
         }
+    });
+
+    it('keeps a report directory and the guest samples with each request, by the names the supervisor reads', () => {
+        expect(code).toContain(`/bin/mkdir -p "$1/${GATE_REPORT_FILES.dir}"`);
+        expect(code).toContain(`>> "$1/${GATE_REPORT_FILES.dir}/${GATE_REPORT_FILES.resources}"`);
+        // Sampled at the start, and again before the answer exists, so the answer holds the end of the run.
+        const finish = code.slice(code.indexOf('finish() {'), code.indexOf('\n}\n', code.indexOf('finish() {')));
+        expect(finish.indexOf('sample "$1"')).toBeGreaterThan(-1);
+        expect(finish.indexOf('sample "$1"')).toBeLessThan(finish.indexOf('/exit.tmp'));
+        // Builtins and /proc only: a request's PATH never reaches the sampler either.
+        expect(code.slice(code.indexOf('sample() {'), code.indexOf('sampler() {'))).not.toMatch(
+            /\b(date|awk|sed|grep|cat)\b/
+        );
     });
 
     it('kills what a gate left behind before it writes the exit, and settles a cancelled gate through the same path', () => {

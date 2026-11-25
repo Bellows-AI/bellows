@@ -96,7 +96,11 @@ function summary(n: number): TaskSummary {
 /** Two keyset pages; page two repeats page one's last row, the straddle the merge dedupes. */
 function inboxPages(url: string): TaskListResponse | undefined {
     if (!url.startsWith('/api/tasks')) return undefined;
-    const navigation = { counts: { running: 0, review: 0, past: PAGE_SIZE + SECOND_PAGE }, running: [], review: [] };
+    const navigation = {
+        counts: { running: 0, review: 0, past: PAGE_SIZE + SECOND_PAGE, archived: 0 },
+        running: [],
+        review: [],
+    };
     if (url.includes('cursor=')) {
         const items = Array.from({ length: SECOND_PAGE + 1 }, (_, i) => summary(PAGE_SIZE + i));
         return { navigation, page: { items, nextCursor: null } };

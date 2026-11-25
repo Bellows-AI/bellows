@@ -21,7 +21,7 @@ import type { AuthorRef, JobStatus, QueueResult } from './useJobs.js';
  * the shapes it renders — and camelCase as served. `status`/`author` reuse the job row's types:
  * the head run's status and the root's author are the same people and the same words.
  */
-export type TaskState = 'attention' | 'running' | 'review' | 'past';
+export type TaskState = 'attention' | 'running' | 'review' | 'past' | 'archived';
 export type TaskSort = 'newest' | 'oldest';
 
 export interface TaskSummary {
@@ -55,7 +55,7 @@ export interface TaskSummary {
 }
 
 export interface TaskNavigation {
-    counts: { running: number; review: number; past: number };
+    counts: { running: number; review: number; past: number; archived: number };
     /** Up to 3 running tasks, newest first — the sidenav's preview. */
     running: TaskSummary[];
     /** Up to 5 review tasks, newest first. */
@@ -86,7 +86,7 @@ export const DEFAULT_FILTERS: InboxFilters = {
     sort: 'newest',
 };
 
-const TASK_STATES: readonly TaskState[] = ['attention', 'running', 'review', 'past'];
+const TASK_STATES: readonly TaskState[] = ['attention', 'running', 'review', 'past', 'archived'];
 /** A login shape, the same rule the route enforces — copied, never imported from the server. */
 const AUTHOR_SHAPE = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,98}[a-zA-Z0-9])?$/;
 /** The search field's character cap — the same one `inboxFiltersFromSearch` clamps to, exported
@@ -160,7 +160,8 @@ export interface UseTasks {
         followUp: (id: string, command: string, files?: SubmittedFiles, model?: string) => Promise<QueueResult>;
         markDone: (id: string) => Promise<string | null>;
         stop: (id: string) => Promise<string | null>;
-        remove: (id: string) => Promise<string | null>;
+        archive: (id: string) => Promise<string | null>;
+        unarchive: (id: string) => Promise<string | null>;
         rename: (id: string, title: string, revision: number) => Promise<RenameOutcome>;
         answerQuestion: (jobId: string, questionId: string, answers: Record<string, string>) => Promise<AnswerOutcome>;
     };
@@ -438,8 +439,13 @@ function useTaskActions(start: () => void): UseTasks['actions'] {
                 if (error === null) start();
                 return error;
             },
-            async remove(id: string): Promise<string | null> {
-                const error = await postTaskAction(`/api/jobs/${id}/remove`, 'Could not remove the task');
+            async archive(id: string): Promise<string | null> {
+                const error = await postTaskAction(`/api/jobs/${id}/archive`, 'Could not archive the task');
+                if (error === null) start();
+                return error;
+            },
+            async unarchive(id: string): Promise<string | null> {
+                const error = await postTaskAction(`/api/jobs/${id}/unarchive`, 'Could not unarchive the task');
                 if (error === null) start();
                 return error;
             },

@@ -192,6 +192,21 @@ describe.skipIf(!enabled)('what never expires', () => {
         }
     });
 
+    it('keeps an archived thread past the window, and deletes it once unarchived', async () => {
+        await settle(org, 7);
+        const archived = await thread(org, 30 * DAY);
+        const plain = await thread(org, 30 * DAY);
+        await db.sql`update job set archived_at = now() where id = ${archived}`;
+
+        await pass();
+        expect(await present(archived)).toBe(true);
+        expect(await present(plain)).toBe(false);
+
+        await db.sql`update job set archived_at = null where id = ${archived}`;
+        await pass();
+        expect(await present(archived)).toBe(false);
+    });
+
     it('deletes nothing of a suspended org, its interrupted runs queued again included', async () => {
         await settle(org, 7);
         const settled = await thread(org, 30 * DAY);

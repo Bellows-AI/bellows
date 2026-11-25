@@ -5,7 +5,7 @@ The task page. `web/src/styles/regions/task-detail.css`; shared system:
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Page frame, grid, panel order, remove dialog | `web/src/pages/TaskDetailPage.tsx`, `web/src/panels/TaskDetail.tsx`, `web/src/components/TaskRemoveDialog.tsx` | `web/test/task-detail.render.test.tsx`, `web/test/task-detail.dom.test.tsx`, `e2e/task-detail.spec.ts` |
+| Page frame, grid, panel order, archive dialog | `web/src/pages/TaskDetailPage.tsx`, `web/src/panels/TaskDetail.tsx`, `web/src/components/TaskArchiveDialog.tsx` | `web/test/task-detail.render.test.tsx`, `web/test/task-detail.dom.test.tsx`, `e2e/task-detail.spec.ts` |
 | Deletion date under a finished task's header, from the newest finish and the org's retention window; nothing while a run is going, for an unlimited window or a failed read | `web/src/components/TaskDeletionNote.tsx`, `web/src/api/retention.ts` | `web/test/retention.render.test.tsx` |
 | Head (title, `#id · Opened`) and the rail's controls tile (wall clock, state pill, small actions, More menu with Rename); the title is clamped to two lines (`task-heading`, `web/src/styles/primitives.css`) and renamed by its author or an admin | `web/src/panels/TaskHeader.tsx`, `web/src/components/TaskRenameDialog.tsx`, `web/src/task-title.ts` | `web/test/task-header.render.test.tsx`, `web/test/task-rename.dom.test.tsx` |
 | Collapsible rail tiles; Outcome (published work only), Verification, and one run's exchange, output, close-phase progress strip | `web/src/panels/TaskSection.tsx`, `web/src/panels/TaskOutcome.tsx`, `web/src/panels/TaskRun.tsx` | `web/test/task-outcome.render.test.tsx`, `web/test/task-run.render.test.tsx`, `e2e/task-detail.spec.ts` |
@@ -32,7 +32,7 @@ Classes defined here: `task-layout`, `task-main`, `task-thread`, `task-conversat
 `task-copy`, `task-remove-title`, `task-remove-actions`, `task-rename-label`, `task-rename-field`, `msg-user`,
 `msg-meta`, `chat-exchange`, `chat-exit`, `chat-activity`, `chat-gate-list`,
 `chat-output`, `chat-resume`, `chat-done`, `chat-stop`, `chat-remove`, `run-summary`,
-`run-output`, `run-checking`, `run-spinner`, `run-well`, `gate-output-wrap`, `question`,
+`run-output`, `run-checking`, `run-spinner`, `run-well`, `gate-output-wrap`, `gate-result`, `question`,
 `question-set`,
 `question-chip`, `question-option`, `question-hint`, `question-other`, `question-error`,
 `question-status`, `question-answers`, `connect-actions`, `task-stats`, `task-stats-trigger`, `task-stats-scope`,

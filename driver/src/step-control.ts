@@ -6,6 +6,7 @@ import {
     STEP_ANSWER_GRACE_MS,
     STEP_OUTPUT_LIMIT_BYTES,
     STEP_PATH,
+    type GateReportFiles,
     type StepRequest,
     type StepResult,
     type SupervisorReport,
@@ -448,6 +449,15 @@ export async function serveStepPoll(
     return { status: HTTP_OK, body: next ? { step: next } : {} };
 }
 
+/** A gate's report as the supervisor sent it, or undefined when it is not the `{sections, resources}` shape. */
+const reportFilesOf = (raw: unknown): GateReportFiles | undefined => {
+    if (typeof raw !== 'object' || raw === null) return undefined;
+    const { sections, resources } = raw as { sections?: unknown; resources?: unknown };
+    if (typeof sections !== 'object' || sections === null || Array.isArray(sections)) return undefined;
+    if (typeof resources !== 'string') return undefined;
+    return { sections: sections as Record<string, unknown>, resources };
+};
+
 const parseResult = (raw: string): { invocation: string; result: StepResult } | null => {
     const parsed = parseJsonObject(raw);
     if (!parsed) return null;
@@ -457,7 +467,22 @@ const parseResult = (raw: string): { invocation: string; result: StepResult } | 
     if (typeof stdout !== 'string' || typeof stderr !== 'string' || typeof timedOut !== 'boolean') return null;
     // Only `true` is the supervisor's flag; anything else is dropped, never read as one.
     const unanswered = parsed.tokenAskUnanswered === true ? { tokenAskUnanswered: true as const } : {};
-    return { invocation, result: { exitCode, stdout, stderr, timedOut, ...unanswered } };
+    const report = reportFilesOf(parsed.report);
+    const failures = typeof parsed.failureLines === 'string' ? { failureLines: parsed.failureLines } : {};
+    const cut = parsed.outputCut === true ? { outputCut: true as const } : {};
+    return {
+        invocation,
+        result: {
+            exitCode,
+            stdout,
+            stderr,
+            timedOut,
+            ...unanswered,
+            ...failures,
+            ...cut,
+            ...(report ? { report } : {}),
+        },
+    };
 };
 
 /** `POST /step/:id`: the supervisor's answer to one call of a step. */

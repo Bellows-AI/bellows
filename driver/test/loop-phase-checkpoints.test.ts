@@ -521,10 +521,16 @@ describe('writing the phase checkpoints', () => {
                 runClaimSeq: 3,
                 phase: 'gates',
                 tree: TREE,
-                // A gate that ran carries the execution its record was written under.
+                // A gate that ran carries the execution its record was written under and when it ran.
                 result: {
                     ...gatesResult,
-                    reports: passedReports.map((report) => ({ ...report, executionId: expect.any(String) })),
+                    reports: passedReports.map((report) => ({
+                        ...report,
+                        executionId: expect.any(String),
+                        startedAt: expect.any(String),
+                        finishedAt: expect.any(String),
+                        timeoutMs: expect.any(Number),
+                    })),
                 },
             },
             {

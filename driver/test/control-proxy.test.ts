@@ -5,7 +5,14 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CONNECTION_PATH, FINISH_PATH, GATE_RUN_PATH, PUBLISH_PATH, REVIEW_PATH } from '../src/control-channel.js';
+import {
+    CONNECTION_PATH,
+    FINISH_PATH,
+    PUBLISH_PATH,
+    REVIEW_PATH,
+    TOOLS_CALL_PATH,
+    TOOLS_PATH,
+} from '../src/control-channel.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /**
@@ -20,7 +27,8 @@ const proxy = createRequire(import.meta.url)(PROXY) as {
     PUBLISH_PATH: string;
     REVIEW_PATH: string;
     CONNECTION_PATH: string;
-    GATE_RUN_PATH: string;
+    TOOLS_PATH: string;
+    TOOLS_CALL_PATH: string;
     FINISH_PATH: string;
 };
 
@@ -93,7 +101,8 @@ describe('the run-control proxy', () => {
         ['GET', '/review/security-1', undefined],
         ['GET', '/attempt', undefined],
         ['POST', '/connection', '{"provider":"jira"}'],
-        ['POST', '/gate/run', '{"gate":"verify","filter":"a-test"}'],
+        ['GET', '/tools', undefined],
+        ['POST', '/tools/call', '{"tool":"gate:verify","input":{"filter":"a-test"}}'],
         ['POST', '/gate/finish', '{}'],
     ])(
         'forwards %s %s to the relay with no credential, and the relay’s answer unchanged',
@@ -126,10 +135,15 @@ describe('the run-control proxy', () => {
         ['POST', '/attempt'],
         ['DELETE', '/review/security-1'],
         ['POST', '/export/chunk'],
-        ['GET', '/gate/run'],
-        ['PUT', '/gate/run'],
-        ['POST', '/gate/run?x=1'],
-        ['POST', '/gate/run/x'],
+        // An older runner's route: this proxy ships with the new helpers, which never call it.
+        ['POST', '/gate/run'],
+        ['GET', '/tools/call'],
+        ['PUT', '/tools/call'],
+        ['POST', '/tools/call?x=1'],
+        ['POST', '/tools/call/x'],
+        ['POST', '/tools'],
+        ['GET', '/tools?x=1'],
+        ['GET', '/tools/'],
         ['GET', '/gate/finish'],
         ['PUT', '/gate/finish'],
         ['POST', '/gate/finish?x=1'],
@@ -146,7 +160,8 @@ describe('the run-control proxy', () => {
     it('answers a relay that is missing, or refuses connections, with 502', async () => {
         const socket = await startProxy(join(tmpdir(), 'no-such-relay.sock'));
         expect((await call(socket, 'POST', '/publish', '{}')).status).toBe(502);
-        expect((await call(socket, 'POST', '/gate/run', '{"gate":"verify"}')).status).toBe(502);
+        expect((await call(socket, 'POST', '/tools/call', '{"tool":"gate:verify"}')).status).toBe(502);
+        expect((await call(socket, 'GET', '/tools')).status).toBe(502);
     });
 
     it('answers a relay that hangs up on the request with 502', async () => {
@@ -158,7 +173,8 @@ describe('the run-control proxy', () => {
         servers.push(hungUp);
         const socket = await startProxy(relay);
         expect((await call(socket, 'POST', '/publish', '{}')).status).toBe(502);
-        expect((await call(socket, 'POST', '/gate/run', '{"gate":"verify"}')).status).toBe(502);
+        expect((await call(socket, 'POST', '/tools/call', '{"tool":"gate:verify"}')).status).toBe(502);
+        expect((await call(socket, 'GET', '/tools')).status).toBe(502);
     });
 
     it('holds no credential: it reads no BELLOWS_CONTROL_* name and sets no authorization header', () => {
@@ -177,7 +193,8 @@ describe('the run-control proxy', () => {
         expect(proxy.PUBLISH_PATH).toBe(PUBLISH_PATH);
         expect(proxy.REVIEW_PATH).toBe(REVIEW_PATH);
         expect(proxy.CONNECTION_PATH).toBe(CONNECTION_PATH);
-        expect(proxy.GATE_RUN_PATH).toBe(GATE_RUN_PATH);
+        expect(proxy.TOOLS_PATH).toBe(TOOLS_PATH);
+        expect(proxy.TOOLS_CALL_PATH).toBe(TOOLS_CALL_PATH);
         expect(proxy.FINISH_PATH).toBe(FINISH_PATH);
     });
 });

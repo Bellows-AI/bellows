@@ -387,6 +387,14 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
         expect(wait?.cancelledAt).not.toBeNull();
     });
 
+    it('archiving the thread while parked cancels the wait — nothing wakes an archived thread', async () => {
+        const root = await publishAndTransition('archive-while-parked', 10);
+
+        expect(await store.archiveThread(root, null)).toMatchObject({ result: 'ok' });
+
+        expect((await prs.waitOf(root))?.cancelledAt).not.toBeNull();
+    });
+
     it('removing the thread while parked cancels the wait and drops the round — a later delivery wakes nothing', async () => {
         const root = await publishAndTransition('remove-while-parked', 10);
         const removed = await store.removeThread(root, null);

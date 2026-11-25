@@ -587,7 +587,7 @@ describe.skipIf(!enabled)('notification events — database', () => {
     });
 });
 
-/** An event copies its job's forge and host as well as its path (migration 169); the thread is turned GitLab by SQL. */
+/** An event copies its job's forge and host as well as its path (migration 170); the thread is turned GitLab by SQL. */
 describe.skipIf(!enabled).each(VARIANT_CASES)(
     'notification events carry the job forge and host (%s) — database',
     (_name, variant) => {

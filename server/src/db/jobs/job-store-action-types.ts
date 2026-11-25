@@ -1,12 +1,13 @@
 /**
  * The member-action half of the job store's interface: what `createJobStore` serves for create, follow up, retry,
- * edit, done, stop, suspend, interrupt, remove, the wait pair and reopen.
+ * edit, done, stop, suspend, interrupt, archive, remove, the wait pair and reopen.
  */
 
 import type { RepoRef } from '@factory-ai/core';
 import type { BindConnectionResult, DismissRequirementResult } from './job-store-connections.js';
 import type { IdempotencyInput } from './job-store-idempotency.js';
 import type {
+    ArchiveResult,
     CancelWaitResult,
     EditCommandResult,
     BatchesDisabledRefusal,
@@ -19,6 +20,7 @@ import type {
     RetryRefusal,
     StopResult,
     SuspendResult,
+    UnarchiveResult,
 } from './job-store-types.js';
 import type { ParamValues, WorkflowDefinition } from '../workflows/workflow-schema.js';
 import type { ExecutorScope, ExecutorType } from '@factory-ai/core';
@@ -228,14 +230,27 @@ export interface JobActionStore {
     stop(id: string, stoppedBy: string | null): Promise<StopResult>;
 
     /**
-     * The user's remove. Deletes the WHOLE thread — the root and every follow-up — in one
+     * The user's archive, which replaces the remove: the thread leaves the active list and its runs, logs, PR links
+     * and attachments stay readable. Every live member is stopped first (the stop a Stop does), then the stamp lands
+     * on the whole thread; the thread's open PR wait is cancelled, and a batch task's thread is refused. Idempotent.
+     * An archived thread takes no follow-up or retry until `unarchiveThread`, and plan retention skips it.
+     * `archivedBy` is the authenticated caller's id, passed by the route.
+     */
+    archiveThread(id: string, archivedBy: string | null): Promise<ArchiveResult>;
+
+    /** Archive's inverse: the thread returns to the bucket it left. `not_archived` for a thread no one archived. */
+    unarchiveThread(id: string): Promise<UnarchiveResult>;
+
+    /**
+     * Deletes the WHOLE thread — the root and every follow-up — in one
      * transaction and queues a task_reclaim row for the worktree, so the driver (which is the only
      * thing that can remove the tree and the only thing with a live lease to do work in) reclaims
      * it without the removed thread having any job left to hang the work on. Refuses while any
      * member of the thread is running, under the same per-thread lock the claim takes, so a claim
      * can never slip a running row between the refusal check and the delete.
      *
-     * `removedBy` is the authenticated caller's id, passed by the route. It rides the
+     * No route, CLI command or MCP tool reaches it (archive replaced the user's remove); retention's row step runs the same body.
+     * `removedBy` is the caller's id. It rides the
      * task_reclaim row, because the thread rows are deleted in the same transaction — a
      * removed_by on job would be written and immediately deleted.
      */

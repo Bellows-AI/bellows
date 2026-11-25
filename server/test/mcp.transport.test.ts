@@ -39,6 +39,7 @@ import { storeOutage } from './helpers-outage.js';
 const TOOL_NAMES = [
     'accept_batch_task',
     'answer_question',
+    'archive_task',
     'batch_report',
     'cancel_batch',
     'create_attachment_upload',
@@ -66,12 +67,12 @@ const TOOL_NAMES = [
     'mark_task_done',
     'preflight_task',
     'read_job_log',
-    'remove_task',
     'reopen_task',
     'retry_batch_task',
     'retry_task',
     'start_batch',
     'stop_task',
+    'unarchive_task',
     'update_batch',
     'validate_batch',
     'wait_batch',
@@ -252,8 +253,8 @@ describe('the endpoint, github mode', () => {
             new ModernTransport(board.url, { requestInit: { headers: bearer() }, fetch: fetchRecording })
         );
         expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
-        // The registry is 40 tools: create_attachment_upload is the last addition (docs/mcp.md).
-        expect(TOOL_NAMES).toHaveLength(40);
+        // The registry is 41 tools: archive_task and unarchive_task replaced remove_task, the last addition before (docs/mcp.md).
+        expect(TOOL_NAMES).toHaveLength(41);
         expect(client.getServerVersion()?.name).toBe('factory');
         // The request headers of the modern era name the revision on every call, so none went out as 2025-11-25.
         expect(new Set(versions.filter(Boolean))).toEqual(new Set([MODERN]));

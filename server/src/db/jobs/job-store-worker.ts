@@ -780,6 +780,12 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
     // mid-flight behavior — successors still insert — because the marker, not done_at, is the
     // discriminator.
     if (await mergeClosureMarkerSet(tx, orgId, rootJobId)) return;
+    // An archived thread walks no further either: archive stopped what it could, and a verdict landing after it
+    // rests instead of queueing a successor that would run, and surface the thread in an active bucket.
+    const [archived] = await tx`
+        select 1 from job where org_id = ${orgId} and root_job_id = ${rootJobId} and archived_at is not null limit 1
+    `;
+    if (archived) return;
 
     // The whole thread, oldest first — the audit trail the decision derives from: loop counts
     // are row counts per node (dead rows included), the halted node is the newest carried node,

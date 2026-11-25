@@ -17,7 +17,16 @@ import { lockThreadRootInTx } from '../connection-bindings.js';
 import { cancelWaitsWithEvent, insertAdminActionEvent } from './job-store-admin-event.js';
 import { addFollowUpBindings, bindOnCreate } from './job-store-connections.js';
 import { bindAttachmentsInTx, revokeThreadAttachmentsInTx } from './job-store-attachments.js';
-import { backsBatchTask, batchThreadState, exists, workspacePathFor, hasRunningMember } from './job-store-rows.js';
+import {
+    backsBatchTask,
+    batchThreadState,
+    exists,
+    hasRunningMember,
+    stopReviewsOf,
+    stopRows,
+    workspacePathFor,
+} from './job-store-rows.js';
+import { stopJob } from './job-store-run-control.js';
 import { refColumns } from '../repo-ref-row.js';
 import { queueReclaimIfThreadDone } from './job-store-reclaim-queue.js';
 import { recordCreateDecisionInTx, recordFollowUpDecisionInTx } from './job-store-skill-pin.js';
@@ -193,7 +202,7 @@ export interface FollowUpRowInput {
 const adminActs = (createdBy: string | null, admin: boolean | undefined): boolean =>
     admin === true && createdBy !== null;
 
-export type FollowUpRowResult = CreatedRef | 'missing' | 'task_done' | 'not_finished' | 'forbidden';
+export type FollowUpRowResult = CreatedRef | 'missing' | 'task_done' | 'task_archived' | 'not_finished' | 'forbidden';
 
 export async function createFollowUpRow(sql: Sql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
     return sql.begin((tx) => followUpInTx(tx, input));
@@ -227,7 +236,20 @@ async function threadBusyInTx(tx: TransactionSql, orgId: string, rootJobId: stri
     return row.busy;
 }
 
-type Admission = { rootJobId: string } | { answer: 'missing' | 'not_finished' | CreatedRef | 'forbidden' };
+/** Whether the thread is archived, read under its advisory lock: an archived thread takes no new work until unarchived. */
+async function threadArchivedInTx(tx: TransactionSql, orgId: string, rootJobId: string): Promise<boolean> {
+    const [row] = await tx<{ archived: boolean }[]>`
+        select exists (
+            select 1 from job m where m.org_id = ${orgId} and m.root_job_id = ${rootJobId} and m.archived_at is not null
+        ) as archived
+    `;
+    if (typeof row?.archived !== 'boolean') throw new Error('the thread archived read returned no answer');
+    return row.archived;
+}
+
+type Admission =
+    | { rootJobId: string }
+    | { answer: 'missing' | 'not_finished' | 'task_archived' | CreatedRef | 'forbidden' };
 
 /**
  * What a follow-up and a retry settle before their conditional insert: the named row's thread root, the replay of a
@@ -257,6 +279,7 @@ async function admitThreadInsert(
     if (replayed) return { answer: await replayedFor(tx, { orgId, parentId, createdBy, admin }, replayed) };
     if (!(await lockThreadRootInTx(tx, orgId, label.root_job_id))) return { answer: 'missing' };
     if (await threadBusyInTx(tx, orgId, label.root_job_id)) return { answer: 'not_finished' };
+    if (await threadArchivedInTx(tx, orgId, label.root_job_id)) return { answer: 'task_archived' };
     return { rootJobId: label.root_job_id };
 }
 
@@ -382,7 +405,7 @@ export interface RetryRowInput {
     admin?: boolean | undefined;
 }
 
-export type RetryRowResult = CreatedRef | 'missing' | 'not_finished' | 'task_done' | 'forbidden';
+export type RetryRowResult = CreatedRef | 'missing' | 'not_finished' | 'task_done' | 'task_archived' | 'forbidden';
 
 /** createRetryRow's body, for a caller that already holds a transaction (the batch scheduler). */
 export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promise<RetryRowResult> {
@@ -512,6 +535,70 @@ export async function markJobDone(
         }
         await queueReclaimIfThreadDone(tx, orgId, row.root_job_id);
         return { status: row.status, doneAt: row.done_at.toISOString() };
+    });
+}
+
+/**
+ * The user's archive: the thread leaves the active list and stays readable. A live member is stopped first (the
+ * stop the Stop button does, its reviews included — a running one settles on its next heartbeat), then the stamp
+ * lands on every member under the thread's root row and lock, so a follow-up racing it is refused one way or the
+ * other. First writer wins like done's stamp, which makes a repeat idempotent. The thread's open PR wait is
+ * cancelled: nothing may wake an archived thread. No worktree reclaim is queued — archive is orthogonal to Done,
+ * and an unarchive returns the thread to the bucket it left.
+ */
+export async function archiveJobThread(
+    ctx: JobStoreContext,
+    id: string,
+    archivedBy: string | null
+): ReturnType<JobStore['archiveThread']> {
+    const { sql, orgId, prs } = ctx;
+    const [named] = await sql<{ root_job_id: string }[]>`
+        select root_job_id from job where org_id = ${orgId} and id = ${id}
+    `;
+    if (!named) return 'missing';
+    if (await sql.begin((tx) => backsBatchTask(tx, orgId, named.root_job_id))) return 'batch';
+    const live = await sql<{ id: string }[]>`
+        select id from job
+        where org_id = ${orgId} and root_job_id = ${named.root_job_id} and review_of is null
+          and status in ('queued', 'running')
+    `;
+    for (const member of live) await stopJob(ctx, member.id, archivedBy);
+    return sql.begin(async (tx) => {
+        const rootJobId = await lockThreadOf(tx, orgId, id);
+        if (!rootJobId) return 'missing';
+        // Stop again under the lock every writer of this thread takes: a follow-up or retry that committed after the
+        // stop phase above must not survive the stamp as a queued row the driver would claim.
+        const stop = { orgId, wallTick: ctx.wallTick, stoppedBy: archivedBy };
+        const stopped = await stopRows(tx, {
+            ...stop,
+            where: tx`root_job_id = ${rootJobId} and review_of is null`,
+        });
+        await stopReviewsOf(
+            tx,
+            stop,
+            stopped.map((row) => row.id)
+        );
+        await tx`
+            update job set archived_at = coalesce(archived_at, now()), archived_by = coalesce(archived_by, ${archivedBy})
+            where org_id = ${orgId} and root_job_id = ${rootJobId}
+        `;
+        if (prs) await prs.cancelWaitsForRoot(rootJobId, 'task archived', tx);
+        return { result: 'ok', rootJobId };
+    });
+}
+
+/** Archive's inverse: clears the stamp on every member, so the thread is in the bucket it left and takes work again. */
+export async function unarchiveJobThread(ctx: JobStoreContext, id: string): ReturnType<JobStore['unarchiveThread']> {
+    const { sql, orgId } = ctx;
+    return sql.begin(async (tx) => {
+        const rootJobId = await lockThreadOf(tx, orgId, id);
+        if (!rootJobId) return 'missing';
+        if (!(await threadArchivedInTx(tx, orgId, rootJobId))) return 'not_archived';
+        await tx`
+            update job set archived_at = null, archived_by = null
+            where org_id = ${orgId} and root_job_id = ${rootJobId}
+        `;
+        return { result: 'ok' };
     });
 }
 

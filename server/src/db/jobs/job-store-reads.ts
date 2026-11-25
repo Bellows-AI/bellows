@@ -159,7 +159,7 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                session_id, exit_code, output, gates, runtime, forge, host, repo, executor, executor_scope, agent_type, agent_model, run_model,
-               parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+               parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, job.archived_at, cancel_requested_at, job.created_at, started_at, finished_at,
                -- The task's overall wall clock, summed over the thread the WHERE already
                -- scoped: every member carries the total, so the view reads it off any of
                -- them. A sum over all-null banks is null — nothing measurable, never zero.
@@ -261,7 +261,7 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                session_id, exit_code, output, gates, runtime, forge, host, repo, executor, executor_scope, agent_type, agent_model, run_model,
-               parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+               parent_job_id, root_job_id, workflow_node, workflow_name, job.mode, done_at, job.archived_at, cancel_requested_at, job.created_at, started_at, finished_at,
                summary, wall_clock_ms, agent_turns, setup_ms, interruptions, failure_kind, failure_cause,
                -- The thread's wait (036) and publication, served by the detail reads on
                -- the same thread-wide rule thread() follows — the per-run lists answer null.
@@ -640,7 +640,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
                    job.parent_job_id as parent_job_id, job.root_job_id as root_job_id,
                    job.workflow_node as workflow_node, job.workflow_name as workflow_name,
                    job.mode as mode,
-                   picked.done_at as done_at, head.cancel_requested_at as cancel_requested_at,
+                   picked.done_at as done_at, job.archived_at as archived_at, head.cancel_requested_at as cancel_requested_at,
                    job.created_at as created_at, head.started_at as started_at,
                    picked.finished_at as finished_at,
                    picked.task_wall_clock_ms as task_wall_clock_ms,
@@ -663,6 +663,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
             -- root's.
             left join app_user cu on cu.id = job.created_by
             left join app_user su on su.id = head.stopped_by
+            left join app_user au on au.id = job.archived_by
             left join app_user du on du.id = (
                 select d.done_by from job d
                 where d.org_id = ${orgId} and d.root_job_id = job.root_job_id
@@ -677,7 +678,7 @@ export async function listJobs(ctx: JobStoreContext, filter: ListFilter): Promis
     const rows = await sql<JobRow[]>`
         select job.id, command, status, attempts, max_attempts, claimed_by, created_by,
                session_id, exit_code, runtime, forge, host, repo, executor, executor_scope, agent_type, agent_model, run_model,
-               parent_job_id, root_job_id, workflow_name, job.mode, done_at, cancel_requested_at, job.created_at, started_at, finished_at,
+               parent_job_id, root_job_id, workflow_name, job.mode, done_at, job.archived_at, cancel_requested_at, job.created_at, started_at, finished_at,
                -- The close-time summary and the run's own banked clock ride beside the
                -- vitals, both bounded where output is not; the structured failure
                -- kind (044) is what a list badge or a query reads.
@@ -714,7 +715,7 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
 
     const [row] = await sql<
         {
-            counts: { running: number; review: number; past: number };
+            counts: { running: number; review: number; past: number; archived: number };
             running_preview: TaskRow[] | null;
             review_preview: TaskRow[] | null;
             page: TaskRow[] | null;
@@ -722,7 +723,7 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
     >`
         with head as (
             select distinct on (root_job_id)
-                   root_job_id, id, status, done_at, cancel_requested_at,
+                   root_job_id, id, status, done_at, archived_at, cancel_requested_at,
                    created_at, started_at, finished_at, summary, runtime
             from job
             -- A named-profile review is a thread of its own, linked to its caller: it is
@@ -736,7 +737,7 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
             -- the EXPLAIN-measured difference between touching every run and touching one
             -- row per thread.
             select h.root_job_id as id, h.id as head_id, r.command, r.title, r.title_origin, r.title_revision, r.forge, r.host, r.repo, r.executor, r.executor_scope, r.created_at,
-                   h.status, h.done_at, h.cancel_requested_at, h.summary, h.runtime,
+                   h.status, h.done_at, h.archived_at, h.cancel_requested_at, h.summary, h.runtime,
                    -- The sort key is truncated to milliseconds, the precision an ISO
                    -- stamp and a JS Date carry: the cursor's value round-trips EXACTLY,
                    -- so the exclusive keyset predicate cannot re-admit a row that only
@@ -780,22 +781,23 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
         select
             (
                 select json_build_object(
-                           'running', count(*) filter (where not terminal),
-                           'review', count(*) filter (where terminal and done_at is null),
-                           'past', count(*) filter (where terminal and ${doneFragment(sql)})
+                           'running', count(*) filter (where archived_at is null and not terminal),
+                           'review', count(*) filter (where archived_at is null and terminal and done_at is null),
+                           'past', count(*) filter (where archived_at is null and terminal and ${doneFragment(sql)}),
+                           'archived', count(*) filter (where archived_at is not null)
                        )
                 from task
             ) as counts,
             (
                 select coalesce(json_agg(p), '[]'::json)
                 from (select ${taskPreviewColumns} from task
-                      where not terminal
+                      where archived_at is null and not terminal
                       order by activity_at desc, id desc limit 3) p
             ) as running_preview,
             (
                 select coalesce(json_agg(p), '[]'::json)
                 from (select ${taskPreviewColumns} from task
-                      where terminal and done_at is null
+                      where archived_at is null and terminal and done_at is null
                       order by activity_at desc, id desc limit 5) p
             ) as review_preview,
             (
@@ -817,7 +819,7 @@ export async function listTasksOf(ctx: JobStoreContext, filters: TaskListFilters
     const items = pageRows.slice(0, filters.limit);
     return {
         navigation: {
-            counts: row?.counts ?? { running: 0, review: 0, past: 0 },
+            counts: row?.counts ?? { running: 0, review: 0, past: 0, archived: 0 },
             running: (row?.running_preview ?? []).map(toTask),
             review: (row?.review_preview ?? []).map(toTask),
         },
@@ -842,10 +844,11 @@ export function resolveTaskCursor(filters: TaskListFilters): TaskCursor | null {
 
 export function taskStateWhere(sql: Sql, state: TaskListFilters['state']): Fragment {
     return {
-        attention: sql`not (terminal and ${doneFragment(sql)})`,
-        running: sql`not terminal`,
-        review: sql`terminal and done_at is null`,
-        past: sql`terminal and ${doneFragment(sql)}`,
+        attention: sql`archived_at is null and not (terminal and ${doneFragment(sql)})`,
+        running: sql`archived_at is null and not terminal`,
+        review: sql`archived_at is null and terminal and done_at is null`,
+        past: sql`archived_at is null and terminal and ${doneFragment(sql)}`,
+        archived: sql`archived_at is not null`,
     }[state];
 }
 

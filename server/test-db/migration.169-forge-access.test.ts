@@ -9,7 +9,7 @@ const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);
 
-const VERSION = '168_forge_access.sql';
+const VERSION = '169_forge_access.sql';
 const DIR = new URL('../migrations/', import.meta.url);
 let admin: Sql;
 let pool: Sql;
@@ -35,7 +35,7 @@ const versioned = (filter: (name: string) => boolean): string[] =>
         .filter((name) => name.endsWith('.sql') && !name.endsWith('.repeatable.sql') && filter(name))
         .sort();
 
-describe.skipIf(!enabled)('168_forge_access', () => {
+describe.skipIf(!enabled)('169_forge_access', () => {
     it('accepts the new reason, keeps the old ones and refuses an unknown one', async () => {
         await pool`create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now())`;
         for (const name of versioned((n) => n < VERSION)) {
