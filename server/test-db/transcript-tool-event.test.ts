@@ -247,6 +247,15 @@ describe.skipIf(!enabled)('transcript tool events', () => {
         expect(rows.some((r) => r.operation === 'lookup')).toBe(false);
     });
 
+    it('PR events: a url on github.com is no evidence for a job of the same path on another host', async () => {
+        const c = await claimed();
+        await sql`update job set host = 'ghe.example' where id = ${c.id}`;
+        await owns(c, 'claude-session-1');
+        await ingest(c, CLAUDE_CODE, [{ offset: 0, text: fixture('claude-pr.jsonl') }]);
+        const created = (await rowsOf(c.id)).find((r) => r.tool_call_id === 'toolu_pr_create' && r.part === 'result');
+        expect(created).toMatchObject({ outcome: 'unknown', pr_repo: null, pr_number: null });
+    });
+
     it('joins the gate run by execution id and the PR operation by operation id; an id with no row stays an unlinked observation', async () => {
         const c = await claimed();
         await owns(c, 'claude-session-1');

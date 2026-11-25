@@ -28,7 +28,6 @@ import {
     validateRepoField,
     validateTitleField,
     validateSkillsField,
-    validateVerdictBody,
 } from './job-field-validation.js';
 import { validateGates } from './job-gate-validation.js';
 import { abortOnClose, effectiveCatalog, installedNames, standingOf, storedOf } from '../../skill-catalog.js';
@@ -61,7 +60,6 @@ import type { JobActionStore } from '../../db/jobs/job-store-action-types.js';
 import { type ForgeGatedDeps, refusedAsNoForgeGrant, TASK_COMPOSER_PATH } from './forge-usable.js';
 import type { JobAdmissionStore } from '../../db/jobs/job-store-admission.js';
 import type { JobClaimStore } from '../../db/jobs/job-store-claim.js';
-import type { JobConclusionStore } from '../../db/jobs/job-store-conclusions.js';
 import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
 import type { JobWorkerStore } from '../../db/jobs/job-store-worker.js';
 
@@ -517,33 +515,6 @@ export async function handleSuspend(orgs: OrgRegistry, request: FastifyRequest, 
     if (result.value.result === 'lost') return leaseLost(reply);
     if (result.value.result === 'conflict') return conclusionConflict(reply);
     return reply.code(HTTP_OK).send({ id, status: result.value.status });
-}
-
-// The attempt's final envelope, staged under its lease before its verdict and its teardown (issue
-// #821): the very body complete takes, parsed by the same validation so the staged fingerprint is
-// the receipt's, with the lease renewed by `leaseSeconds`. The board commits it should the lease
-// expire before the complete lands; a different one under the lease is a 409 of its own.
-export async function handleConclusion(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveLeasedRoute<keyof JobConclusionStore>(orgs, request, reply);
-    if (!route) return reply;
-    const { store, id, fields, leaseToken } = route;
-    const lease = leaseSeconds(fields.leaseSeconds);
-    if (lease === null) {
-        return bad(reply, ERROR_CODES.BAD_LEASE, `leaseSeconds must be an integer 1..${LEASE_SECONDS_MAX}`);
-    }
-    const parsed = validateVerdictBody(fields);
-    if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
-
-    const result = await guard(
-        reply,
-        (e) => request.log.error({ err: e }, 'job conclusion failed'),
-        () => store.stageConclusion(id, leaseToken, parsed.value, lease)
-    );
-    if (!result.ok) return reply;
-    if (result.value.result === 'missing') return notFoundJob(reply);
-    if (result.value.result === 'lost') return leaseLost(reply);
-    if (result.value.result === 'conflict') return conclusionConflict(reply);
-    return reply.code(HTTP_OK).send({ id, status: parsed.value.status });
 }
 
 // An attempt the infrastructure interrupted: handed back claimable at once with its

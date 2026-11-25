@@ -1,4 +1,4 @@
-import { CLAUDE_CODE, OPENCODE } from '@factory-ai/core';
+import { CLAUDE_CODE, OPENCODE, parseChangeRequestUrl, type RepoRef } from '@factory-ai/core';
 
 /**
  * Gate runs and pull-request operations read out of an executor's own transcript: the
@@ -83,7 +83,6 @@ export interface PendingResult {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const PR_URL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)$/;
 /** The wrappers the baked skills call (`docker/*-executor/factory-gate.cjs`, `factory-control.cjs`), #1061. */
 /** `factory-gate --list` reads the run's tool list: it runs no gate. */
 const GATE_RUN = /^\s*factory-gate(?!\s+--list(?:\s|$))(?:\s|$)/;
@@ -288,10 +287,19 @@ function classifyCall(command: string): Classified | null {
 const NO_FIELDS = { exitCode: null, executionId: null, operationId: null, repo: null, prNumber: null, prUrl: null };
 
 /** The PR a URL names, only when it is the job's own repository: anything else is no evidence about this job. */
-function prOfUrl(url: string | null, jobRepo: string | null): Pick<ToolResult, 'repo' | 'prNumber' | 'prUrl'> | null {
-    const match = url === null ? null : PR_URL.exec(url);
-    if (!match || jobRepo === null || match[1]!.toLowerCase() !== jobRepo.toLowerCase()) return null;
-    return { repo: match[1]!, prNumber: Number(match[2]), prUrl: url! };
+function prOfUrl(url: string | null, jobRepo: RepoRef | null): Pick<ToolResult, 'repo' | 'prNumber' | 'prUrl'> | null {
+    const parsed = url === null ? null : parseChangeRequestUrl(url);
+    if (parsed === null || jobRepo === null) return null;
+    const { ref } = parsed;
+    // Forge and host exactly, the path as GitHub treats it: the same path on another host is another repository.
+    if (
+        ref.forge !== jobRepo.forge ||
+        ref.host !== jobRepo.host ||
+        ref.path.toLowerCase() !== jobRepo.path.toLowerCase()
+    ) {
+        return null;
+    }
+    return { repo: ref.path, prNumber: parsed.number, prUrl: url! };
 }
 
 type Fields = Omit<ToolResult, 'offset' | 'startedAt' | 'endedAt'>;
@@ -308,20 +316,20 @@ function gateResult(found: PendingResult): Fields {
     };
 }
 
-function publishResult(found: PendingResult, jobRepo: string | null): Fields {
+function publishResult(found: PendingResult, jobRepo: RepoRef | null): Fields {
     const body = jsonObjectOf(found.text);
     const pr = body?.published === true ? prOfUrl(asString(body.prUrl), jobRepo) : null;
     return pr ? { ...NO_FIELDS, ...pr, outcome: 'passed', operationId: uuidOrNull(body?.operationId) } : UNKNOWN;
 }
 
-function createResult(found: PendingResult, jobRepo: string | null): Fields {
+function createResult(found: PendingResult, jobRepo: RepoRef | null): Fields {
     if (found.errored) return { outcome: 'failed', ...NO_FIELDS };
     const lines = found.text.split('\n').map((l) => l.trim());
     const pr = prOfUrl(lines.filter((l) => l !== '').at(-1) ?? null, jobRepo);
     return pr ? { ...NO_FIELDS, ...pr, outcome: 'passed' } : UNKNOWN;
 }
 
-function fieldsOf(call: Pick<ToolCall, 'operation' | 'lone'>, found: PendingResult, jobRepo: string | null): Fields {
+function fieldsOf(call: Pick<ToolCall, 'operation' | 'lone'>, found: PendingResult, jobRepo: RepoRef | null): Fields {
     if (!call.lone) return UNKNOWN;
     if (call.operation === 'run') return gateResult(found);
     if (call.operation === 'publish') return publishResult(found, jobRepo);
@@ -336,7 +344,7 @@ function fieldsOf(call: Pick<ToolCall, 'operation' | 'lone'>, found: PendingResu
 export function resolveResult(
     call: Pick<ToolCall, 'operation' | 'lone'>,
     found: PendingResult,
-    repo: string | null
+    repo: RepoRef | null
 ): ToolResult {
     const { startedAt, endedAt, offset } = found;
     return { ...fieldsOf(call, found, repo), startedAt, endedAt, offset };
@@ -392,7 +400,7 @@ export function readTranscript(input: { executor: string; chunks: readonly Trans
 export function classifyTranscript(input: {
     executor: string;
     chunks: readonly TranscriptChunk[];
-    repo: string | null;
+    repo: RepoRef | null;
 }): ToolActivity[] {
     const { calls, results } = readTranscript(input);
     const found = new Map(results.map((r) => [keyOf(r.session, r.toolCallId), r]));

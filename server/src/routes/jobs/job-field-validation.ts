@@ -32,8 +32,6 @@ import {
     LIST_LIMIT_DEFAULT,
     LIST_LIMIT_MAX,
     OUTPUT_LIMIT,
-    PR_URL,
-    PR_URL_LIMIT,
     STATUSES,
     SUMMARY_LIMIT,
     WAIT_TIMEOUT_DEFAULT_S,
@@ -42,6 +40,7 @@ import {
     executorReason,
     leaseSeconds,
 } from './job-limits.js';
+import { changeRequestProblem } from './change-request-check.js';
 import { repoFilterOf, repoReason, repoRefReason } from '../helpers.js';
 import { MS_PER_SECOND } from '../auth-shared.js';
 import { MAX_AGENT_MODEL_LENGTH } from '../agent-default.js';
@@ -495,26 +494,37 @@ export const isBranchField = (value: unknown): value is string =>
  */
 export function validatePublication(
     raw: unknown
-): { ok: true; value: Publication | null } | { ok: false; message: string } {
+): { ok: true; value: Publication | null } | { ok: false; code: string; message: string } {
+    const malformed = ERROR_CODES.BAD_PUBLICATION;
     if (raw === null || raw === undefined) return { ok: true, value: null };
-    if (typeof raw !== 'object') return { ok: false, message: 'publication must be an object or null' };
+    if (typeof raw !== 'object')
+        return { ok: false, code: malformed, message: 'publication must be an object or null' };
     const pub = raw as Record<string, unknown>;
     const { repo, prNumber, prUrl, headBranch, baseBranch } = pub;
     if (typeof repo !== 'string' || repoReason(repo) !== null) {
-        return { ok: false, message: 'publication.repo must be an owner/name' };
+        return { ok: false, code: malformed, message: 'publication.repo must be an owner/name' };
     }
     if (!Number.isInteger(prNumber) || (prNumber as number) < 1 || (prNumber as number) > INT4_MAX) {
-        return { ok: false, message: `publication.prNumber must be an integer 1..${INT4_MAX}` };
+        return { ok: false, code: malformed, message: `publication.prNumber must be an integer 1..${INT4_MAX}` };
     }
-    if (typeof prUrl !== 'string' || prUrl.length > PR_URL_LIMIT || !PR_URL.test(prUrl)) {
-        return { ok: false, message: 'publication.prUrl must be a github.com pull url' };
-    }
+    const problem = changeRequestProblem({
+        field: 'publication.prUrl',
+        url: prUrl,
+        repo,
+        number: prNumber as number,
+        malformedCode: malformed,
+    });
+    if (problem) return { ok: false, ...problem };
     for (const [key, value] of [
         ['headBranch', headBranch],
         ['baseBranch', baseBranch],
     ] as const) {
         if (!isBranchField(value)) {
-            return { ok: false, message: `publication.${key} must be a branch name (1..${BRANCH_LIMIT})` };
+            return {
+                ok: false,
+                code: malformed,
+                message: `publication.${key} must be a branch name (1..${BRANCH_LIMIT})`,
+            };
         }
     }
     return {
@@ -522,7 +532,7 @@ export function validatePublication(
         value: {
             repo,
             prNumber: prNumber as number,
-            prUrl,
+            prUrl: prUrl as string,
             headBranch: headBranch as string,
             baseBranch: baseBranch as string,
         },
@@ -541,7 +551,7 @@ export function validateVerdictBody(
     const parsed = validateCompleteFields(fields);
     if (!parsed.ok) return parsed;
     const publication = validatePublication(fields.publication ?? null);
-    if (!publication.ok) return { ok: false, code: ERROR_CODES.BAD_PUBLICATION, message: publication.message };
+    if (!publication.ok) return publication;
     return { ok: true, value: { ...parsed.value, publication: publication.value } };
 }
 

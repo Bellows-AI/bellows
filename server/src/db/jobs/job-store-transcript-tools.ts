@@ -5,7 +5,9 @@
  * export taken again or a resumed session replaying its history inserts nothing.
  */
 
+import type { RepoRef } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
+import { refOfNullableRow } from '../repo-ref-row.js';
 import {
     readTranscript,
     type PendingResult,
@@ -135,18 +137,19 @@ export async function ingestTranscriptTools(
     input: TranscriptIngest
 ): ReturnType<TranscriptToolStore['ingestTranscriptTools']> {
     return ctx.sql.begin(async (tx) => {
-        const [job] = await tx<{ repo: string | null }[]>`
-            select repo from job where org_id = ${ctx.orgId} and id = ${id}
+        const [job] = await tx<{ forge: string; host: string; repo: string | null }[]>`
+            select forge, host, repo from job where org_id = ${ctx.orgId} and id = ${id}
         `;
         if (!job) return { result: 'missing' } as const;
-        return { result: 'ok', written: await fileTools(tx, { orgId: ctx.orgId, id, repo: job.repo }, input) } as const;
+        const repo = refOfNullableRow(job);
+        return { result: 'ok', written: await fileTools(tx, { orgId: ctx.orgId, id, repo }, input) } as const;
     });
 }
 
 /** Files the calls of the chunks that are new, and the results of every call the job holds. */
 async function fileTools(
     tx: Tx,
-    job: { orgId: string; id: string; repo: string | null },
+    job: { orgId: string; id: string; repo: RepoRef | null },
     input: TranscriptIngest
 ): Promise<number> {
     const { executor, claimSeq } = input;
@@ -175,7 +178,7 @@ async function fileTools(
     return written;
 }
 
-const resolved = (call: Known, result: PendingResult, repo: string | null) => ({
+const resolved = (call: Known, result: PendingResult, repo: RepoRef | null) => ({
     ...result,
     ...resolveResult({ operation: call.operation, lone: !call.compound }, result, repo),
 });

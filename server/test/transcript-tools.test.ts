@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CLAUDE_CODE, OPENCODE } from '@factory-ai/core';
+import { CLAUDE_CODE, githubRepo, OPENCODE, type RepoRef } from '@factory-ai/core';
 import {
     classifyTranscript,
     readTranscript,
@@ -16,10 +16,11 @@ import { claudeCall, claudeResult, GATE } from './helpers-transcript-records.js'
  * The fixtures are synthetic: no real repository, host or task id.
  */
 const REPO = 'example-org/example-repo';
+const REPO_REF = githubRepo(REPO);
 const exec = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
 
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/transcripts/${name}`, import.meta.url), 'utf8');
-const read = (executor: string, name: string, repo: string | null = REPO): ToolActivity[] =>
+const read = (executor: string, name: string, repo: RepoRef | null = REPO_REF): ToolActivity[] =>
     classifyTranscript({ executor, chunks: [{ offset: 0, text: fixture(name) }], repo });
 const byId = (all: ToolActivity[], id: string) => all.filter((a) => a.toolCallId === id);
 
@@ -191,7 +192,7 @@ describe('provenance and boundaries', () => {
                 { offset: 0, text: first },
                 { offset: Buffer.byteLength(first), text: rest },
             ],
-            repo: REPO,
+            repo: REPO_REF,
         });
         const whole = read(CLAUDE_CODE, 'claude-gates.jsonl');
         expect(split).toEqual(whole);
@@ -208,7 +209,9 @@ describe('provenance and boundaries', () => {
                 message: { content: [{ type: 'tool_use', id: 'x', name: 'Bash', input: { command: 'gh pr create' } }] },
             }),
         ].join('\n');
-        expect(classifyTranscript({ executor: CLAUDE_CODE, chunks: [{ offset: 0, text }], repo: REPO })).toEqual([]);
+        expect(classifyTranscript({ executor: CLAUDE_CODE, chunks: [{ offset: 0, text }], repo: REPO_REF })).toEqual(
+            []
+        );
     });
 
     it('an executor it cannot read yields nothing', () => {
@@ -216,7 +219,7 @@ describe('provenance and boundaries', () => {
             classifyTranscript({
                 executor: 'unknown-agent',
                 chunks: [{ offset: 0, text: fixture('claude-gates.jsonl') }],
-                repo: REPO,
+                repo: REPO_REF,
             })
         ).toEqual([]);
     });
@@ -225,12 +228,46 @@ describe('provenance and boundaries', () => {
 const claudeText = (lines: string[]) => [{ offset: 0, text: `${lines.join('\n')}\n` }];
 const PR_URL = `https://github.com/${REPO}/pull/12`;
 
+describe('a change request is evidence only on the job repo forge, host and path', () => {
+    const publish = (prUrl: string, repo: RepoRef) =>
+        classifyTranscript({
+            executor: CLAUDE_CODE,
+            chunks: claudeText([
+                claudeCall('t1', 'factory-control publish'),
+                claudeResult('t1', JSON.stringify({ published: true, prUrl })),
+            ]),
+            repo,
+        })[0]?.result;
+
+    it('keeps a GitLab merge request on its GitLab repo, nested groups and all', () => {
+        const repo: RepoRef = { forge: 'gitlab', host: 'gl.example', path: 'acme/team/web' };
+        expect(publish('https://gl.example/acme/team/web/-/merge_requests/12', repo)).toMatchObject({
+            outcome: 'passed',
+            repo: 'acme/team/web',
+            prNumber: 12,
+        });
+    });
+
+    it.each([
+        ['the same path on another GitHub host', 'https://ghe.example/example-org/example-repo/pull/12'],
+        ['the same path on a GitLab host', 'https://gl.example/example-org/example-repo/-/merge_requests/12'],
+        ['another path', 'https://github.com/example-org/other/pull/12'],
+    ])('drops %s', (_name, prUrl) => {
+        expect(publish(prUrl, REPO_REF)).toMatchObject({ outcome: 'unknown', repo: null, prNumber: null, prUrl: null });
+    });
+
+    it('drops a github.com url for a job on another GitHub host', () => {
+        const repo: RepoRef = { forge: 'github', host: 'ghe.example', path: REPO };
+        expect(publish(PR_URL, repo)).toMatchObject({ outcome: 'unknown', prUrl: null });
+    });
+});
+
 describe('a command counts as the invocation it is, not a substring', () => {
     const only = (command: string, result?: string) =>
         classifyTranscript({
             executor: CLAUDE_CODE,
             chunks: claudeText([claudeCall('t1', command), ...(result ? [claudeResult('t1', result)] : [])]),
-            repo: REPO,
+            repo: REPO_REF,
         });
 
     it('gh pr create with a fallback that prints a URL is unknown, never a creation', () => {
@@ -402,7 +439,7 @@ describe('timing', () => {
                 claudeCall('t1', GATE, '2026-01-02T03:04:05.000Z'),
                 claudeResult('t1', '{"exitCode":0}', '2026-01-02T03:09:05.500Z'),
             ]),
-            repo: REPO,
+            repo: REPO_REF,
         });
         expect(a?.startedAt).toBe('2026-01-02T03:04:05.000Z');
         expect(a?.result).toMatchObject({ startedAt: null, endedAt: '2026-01-02T03:09:05.500Z' });
@@ -430,7 +467,7 @@ describe('timing', () => {
         const [a] = classifyTranscript({
             executor: OPENCODE,
             chunks: [{ offset: 0, text: `${JSON.stringify(part)}\n` }],
-            repo: REPO,
+            repo: REPO_REF,
         });
         expect(a?.startedAt).toBe('1970-01-01T00:00:01.000Z');
         expect(a?.result).toMatchObject({
@@ -443,7 +480,7 @@ describe('timing', () => {
         const [a] = classifyTranscript({
             executor: CLAUDE_CODE,
             chunks: claudeText([claudeCall('t1', GATE, 'not a time'), claudeResult('t1', '{"exitCode":0}')]),
-            repo: REPO,
+            repo: REPO_REF,
         });
         expect(a?.startedAt).toBeNull();
         expect(a?.result).toMatchObject({ startedAt: null, endedAt: null });
@@ -462,6 +499,6 @@ describe('halves read apart', () => {
         const [pending] = results.results;
         expect(call).toMatchObject({ toolCallId: 't1', operation: 'run', gate: 'test' });
         expect(pending).toMatchObject({ toolCallId: 't1', session: 'claude-session-1' });
-        expect(resolveResult(call!, pending!, REPO)).toMatchObject({ outcome: 'failed', exitCode: 2 });
+        expect(resolveResult(call!, pending!, REPO_REF)).toMatchObject({ outcome: 'failed', exitCode: 2 });
     });
 });

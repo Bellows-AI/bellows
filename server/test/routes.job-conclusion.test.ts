@@ -24,7 +24,7 @@ type Staged = {
     result: Parameters<JobWorkerStore['complete']>[2];
     leaseSeconds: number;
 };
-type Answer = 'ok' | 'lost' | 'missing' | 'conflict';
+type Answer = 'ok' | 'lost' | 'missing' | 'conflict' | 'wrong_repo';
 
 function stubStore(answer: Answer = 'ok'): JobStore & { staged: Staged[]; completed: Staged['result'][] } {
     const staged: Staged[] = [];
@@ -135,6 +135,47 @@ describe('POST /api/jobs/:id/conclusion', () => {
         expect([staged.statusCode, staged.json().code]).toEqual([400, code]);
         expect([completed.statusCode, completed.json().code]).toEqual([400, code]);
         expect(store.staged).toEqual([]);
+    });
+
+    const publicationOf = (prUrl: string, extra: Record<string, unknown> = {}) => ({
+        publication: { repo: 'acme/web', prNumber: 7, prUrl, headBranch: 'factory/x', baseBranch: 'main', ...extra },
+    });
+
+    it.each<[string, string, Record<string, unknown>]>([
+        [
+            'a GitLab merge request url',
+            'FORGE_UNSUPPORTED',
+            publicationOf('https://gitlab.example.com/acme/web/-/merge_requests/7'),
+        ],
+        [
+            'a nested GitLab merge request url',
+            'FORGE_UNSUPPORTED',
+            publicationOf('https://gitlab.example.com:8443/a/b/web/-/merge_requests/7'),
+        ],
+        ['a malformed url', 'BAD_PUBLICATION', publicationOf('https://gitlab.example.com/acme/web/-/merge_requests/x')],
+        ['a url for another repo', 'BAD_PUBLICATION', publicationOf('https://github.com/acme/other/pull/7')],
+        ['a url for another number', 'BAD_PUBLICATION', publicationOf('https://github.com/acme/web/pull/8')],
+    ])('refuses %s with %s on complete and conclusion, staging nothing', async (_label, code, fields) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const staged = await post(instance, `/api/jobs/${ID}/conclusion`, { ...done, ...fields });
+        const completed = await post(instance, `/api/jobs/${ID}/complete`, { ...done, ...fields });
+
+        expect([staged.statusCode, staged.json().code]).toEqual([400, code]);
+        expect([completed.statusCode, completed.json().code]).toEqual([400, code]);
+        expect(store.staged).toEqual([]);
+        expect(store.completed).toEqual([]);
+    });
+
+    it('answers a publication the store refused as another repository’s with BAD_PUBLICATION, on complete and conclusion', async () => {
+        const instance = await harnessWith(stubStore('wrong_repo'));
+        const fields = publicationOf('https://github.com/acme/web/pull/7');
+
+        for (const route of ['conclusion', 'complete']) {
+            const res = await post(instance, `/api/jobs/${ID}/${route}`, { ...done, ...fields });
+            expect([res.statusCode, res.json().code]).toEqual([400, 'BAD_PUBLICATION']);
+        }
     });
 
     it.each<[Answer, number, string]>([

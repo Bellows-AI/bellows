@@ -9,30 +9,37 @@ import {
 } from '../../db/jobs/job-store-pr-operations.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad, guard, repoReason } from '../helpers.js';
+import { changeRequestProblem, refuseOffTaskChangeRequest } from './change-request-check.js';
 import { isBranchField } from './job-field-validation.js';
-import { CONTROL_BODY_LIMIT, HTTP_OK, INT4_MAX, leaseLost, notFoundJob, PR_URL, PR_URL_LIMIT } from './job-limits.js';
+import { CONTROL_BODY_LIMIT, HTTP_OK, INT4_MAX, leaseLost, notFoundJob } from './job-limits.js';
 import { resolveLeasedRoute } from '../route-guards.js';
 
 /** The operation a write names, field by field, or the reason it is refused. */
 function validateOperation(
     fields: Record<string, unknown>
-): { ok: true; value: PrOperationWrite } | { ok: false; message: string } {
+): { ok: true; value: PrOperationWrite } | { ok: false; code: string; message: string } {
+    const malformed = ERROR_CODES.BAD_BODY;
     const { operationId, operation, repo, prNumber, prUrl, branch } = fields;
     if (typeof operationId !== 'string' || !UUID.test(operationId)) {
-        return { ok: false, message: 'operationId must be a uuid' };
+        return { ok: false, code: malformed, message: 'operationId must be a uuid' };
     }
     if (!PR_OPERATIONS.includes(operation as PrOperationKind)) {
-        return { ok: false, message: `operation must be one of ${PR_OPERATIONS.join(', ')}` };
+        return { ok: false, code: malformed, message: `operation must be one of ${PR_OPERATIONS.join(', ')}` };
     }
     if (typeof repo !== 'string' || repoReason(repo) !== null)
-        return { ok: false, message: 'repo must be an owner/name' };
+        return { ok: false, code: malformed, message: 'repo must be an owner/name' };
     if (!Number.isInteger(prNumber) || (prNumber as number) < 1 || (prNumber as number) > INT4_MAX) {
-        return { ok: false, message: `prNumber must be an integer 1..${INT4_MAX}` };
+        return { ok: false, code: malformed, message: `prNumber must be an integer 1..${INT4_MAX}` };
     }
-    if (typeof prUrl !== 'string' || prUrl.length > PR_URL_LIMIT || !PR_URL.test(prUrl)) {
-        return { ok: false, message: 'prUrl must be a github.com pull url' };
-    }
-    if (!isBranchField(branch)) return { ok: false, message: 'branch must be a branch name' };
+    const problem = changeRequestProblem({
+        field: 'prUrl',
+        url: prUrl,
+        repo,
+        number: prNumber as number,
+        malformedCode: malformed,
+    });
+    if (problem) return { ok: false, ...problem };
+    if (!isBranchField(branch)) return { ok: false, code: malformed, message: 'branch must be a branch name' };
     return {
         ok: true,
         value: {
@@ -40,7 +47,7 @@ function validateOperation(
             operation: operation as PrOperationKind,
             repo,
             prNumber: prNumber as number,
-            prUrl,
+            prUrl: prUrl as string,
             branch,
         },
     };
@@ -52,11 +59,19 @@ function validateOperation(
  * and the org comes from the job's own scope.
  */
 export async function handlePrOperation(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveLeasedRoute<keyof PrOperationStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof PrOperationStore | 'prWriteContext'>(orgs, request, reply);
     if (!route) return reply;
     const { store, id, fields, leaseToken } = route;
     const checked = validateOperation(fields);
-    if (!checked.ok) return bad(reply, ERROR_CODES.BAD_BODY, checked.message);
+    if (!checked.ok) return bad(reply, checked.code, checked.message);
+    const offTask = await refuseOffTaskChangeRequest(request, reply, store, {
+        id,
+        leaseToken,
+        field: 'prUrl',
+        url: checked.value.prUrl,
+        malformedCode: ERROR_CODES.BAD_BODY,
+    });
+    if (offTask) return reply;
 
     const written = await guard(
         reply,

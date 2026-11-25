@@ -13,6 +13,7 @@ import {
     validateVerdictBody,
     validateWaitQuery,
 } from './job-field-validation.js';
+import { wrongRepo } from './change-request-check.js';
 import { bad, body, guard } from '../helpers.js';
 import { resolveLeasedRoute, resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
 import { UUID } from '../../identifiers.js';
@@ -481,6 +482,7 @@ export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyReque
         if (result.value.result === 'missing') return notFoundJob(reply);
         // A conclusion the attempt staged is its outcome: a different verdict is refused.
         if (result.value.result === 'conflict') return conclusionConflict(reply);
+        if (result.value.result === 'wrong_repo') return wrongRepo(reply);
         return leaseLost(reply);
     }
     return reply.code(HTTP_OK).send({

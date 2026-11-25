@@ -1,4 +1,4 @@
-import { githubRepo } from '@factory-ai/core';
+import { formatChangeRequestUrl, githubRepo } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -618,7 +618,7 @@ describe.skipIf(!enabled).each(VARIANT_CASES)(
                 publication: {
                     repo: REPO,
                     prNumber: number,
-                    prUrl: `https://${GITLAB_HOST}/${REPO}/-/merge_requests/${number}`,
+                    prUrl: formatChangeRequestUrl(refOf(variant, REPO), number),
                     headBranch: `factory/${root}`,
                     baseBranch: 'main',
                 },
