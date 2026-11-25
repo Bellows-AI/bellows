@@ -3,7 +3,8 @@
 // statuses, project hooks. Plugged into server.mjs, which owns the token table, the clock and the call log.
 // Routes live under GitLab's own prefixes (`/oauth`, `/api/v4`), so GitHub's never collide with them.
 // The `/_control/gitlab/*` routes are the lane's door: seed projects, set member levels, set pipeline and merge
-// status, fire a hook event, register OAuth clients, set the instance version, inject faults. Repositories are gitlab-repo.mjs's: bare git repos that git smart-HTTP serves too,
+// status, fire a hook event, register OAuth clients (OAuth refuses every call until one is registered), set the
+// instance version, inject faults. Repositories are gitlab-repo.mjs's: bare git repos that git smart-HTTP serves too,
 // behind HTTP Basic `oauth2:<token>`.
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -81,7 +82,7 @@ export const registerGitlab = (forge) => {
     const projects = new Map(); // id -> project
     const userIds = new Map(); // login -> id
     const pipelines = [];
-    /** client id -> { secret, redirectUris, scopes }; empty means any client is accepted */
+    /** client id -> { secret, redirectUris, scopes }; OAuth refuses every request until a client is registered */
     const clients = new Map();
     /** group full path -> its stable id, minted with the first project under it */
     const groups = new Map();
@@ -107,7 +108,12 @@ export const registerGitlab = (forge) => {
     const issuePair = (login, clientId = null, scope = DEFAULT_SCOPE) => {
         const id = forge.nextId();
         const pair = { access: `gloas-fake${id}`, refresh: `glrt-fake${id}`, login, clientId, scope };
-        forge.tokens.set(pair.access, { kind: 'user', login, expiresAt: forge.clock() + GITLAB_TOKEN_TTL_S * 1000 });
+        forge.tokens.set(pair.access, {
+            kind: 'user',
+            login,
+            scopes: scope.split(' '),
+            expiresAt: forge.clock() + GITLAB_TOKEN_TTL_S * 1000,
+        });
         pairs.set(pair.access, pair);
         pairs.set(pair.refresh, pair);
         return {
@@ -125,6 +131,12 @@ export const registerGitlab = (forge) => {
         pairs.delete(pair.refresh);
     };
 
+    /** The registered client the request names, with the right secret; undefined otherwise. */
+    const authenticated = ({ client_id: id, client_secret: secret }) => {
+        const client = clients.get(id);
+        return client && client.secret === secret ? client : undefined;
+    };
+
     forge.route(
         'GET',
         '/oauth/authorize',
@@ -132,7 +144,7 @@ export const registerGitlab = (forge) => {
             // Doorkeeper's order: the client and the redirect URI first, with a plain error page when either is wrong
             // (nothing to redirect to safely); the rest come back on the redirect as `error=`.
             const client = clients.get(query.client_id);
-            if (clients.size > 0 && !client) return forge.json(response, 401, CLIENT_ERROR);
+            if (!client) return forge.json(response, 401, CLIENT_ERROR);
             let target;
             try {
                 target = new URL(query.redirect_uri);
@@ -158,7 +170,7 @@ export const registerGitlab = (forge) => {
                     : redirect(oauthError('unsupported_response_type', 'The authorization server does not support this response type.'));
             }
             const scope = query.scope ?? DEFAULT_SCOPE;
-            const allowed = client ? client.scopes : KNOWN_SCOPES;
+            const allowed = client.scopes;
             if (scope.split(' ').some((one) => !allowed.includes(one))) {
                 return redirect(oauthError('invalid_scope', 'The requested scope is invalid, unknown, or malformed.'));
             }
@@ -179,14 +191,12 @@ export const registerGitlab = (forge) => {
         'POST',
         '/oauth/token',
         ({ response, body }) => {
-            if (clients.size > 0 && !(clients.has(body.client_id) && clients.get(body.client_id).secret === body.client_secret)) {
-                return forge.json(response, 401, CLIENT_ERROR);
-            }
+            if (!authenticated(body)) return forge.json(response, 401, CLIENT_ERROR);
             const missing = (field) => forge.json(response, 400, oauthError('invalid_request', `The ${field} is missing.`));
             if (body.grant_type === 'refresh_token') {
                 if (!body.refresh_token) return missing('refresh_token');
                 const pair = pairs.get(body.refresh_token);
-                if (!pair || pair.refresh !== body.refresh_token || (clients.size > 0 && pair.clientId !== body.client_id)) {
+                if (!pair || pair.refresh !== body.refresh_token || pair.clientId !== body.client_id) {
                     return forge.json(response, 400, GRANT_ERROR);
                 }
                 killPair(pair);
@@ -205,7 +215,7 @@ export const registerGitlab = (forge) => {
                 issued === undefined ||
                 issued.expiresAt <= forge.clock() ||
                 issued.redirectUri !== body.redirect_uri ||
-                (clients.size > 0 && issued.clientId !== body.client_id);
+                issued.clientId !== body.client_id;
             if (refused) {
                 if (issued?.expiresAt <= forge.clock()) codes.delete(body.code);
                 return forge.json(response, 400, GRANT_ERROR);
@@ -219,7 +229,11 @@ export const registerGitlab = (forge) => {
         'POST',
         '/oauth/revoke',
         ({ response, body }) => {
+            if (!authenticated(body)) return forge.json(response, 401, CLIENT_ERROR);
             const pair = pairs.get(body.token);
+            if (pair && pair.clientId !== body.client_id) {
+                return forge.json(response, 403, oauthError('unauthorized_client', 'The token was issued to another client.'));
+            }
             if (pair) killPair(pair);
             forge.json(response, 200, {});
         },
@@ -240,12 +254,27 @@ export const registerGitlab = (forge) => {
         }
         return true; // timeout: the call is never answered
     };
-    const route = (method, pattern, handler, options = {}) =>
-        forge.route(method, `${API}${pattern}`, handler, {
+    /** The scopes whose holder may call a route: reads need `api` or `read_api`, writes `api`; `/user` also takes `read_user`. */
+    const scopesFor = (method, pattern) => {
+        if (pattern === '/user') return ['api', 'read_api', 'read_user'];
+        return method === 'GET' ? ['api', 'read_api'] : ['api'];
+    };
+    const insufficient = (response, needed) =>
+        forge.json(response, 403, {
+            error: 'insufficient_scope',
+            error_description: 'The request requires higher privileges than provided by the access token.',
+            scope: needed.join(' '),
+        });
+    const holds = (token, needed) => (token.scopes ?? [DEFAULT_SCOPE]).some((one) => needed.includes(one));
+    const route = (method, pattern, handler, options = {}) => {
+        const needed = scopesFor(method, pattern);
+        const scoped = (ctx) => (holds(ctx.token, needed) ? handler(ctx) : insufficient(ctx.response, needed));
+        return forge.route(method, `${API}${pattern}`, scoped, {
             deny: UNAUTHORIZED,
             before: faulted,
             ...options,
         });
+    };
     const control = (pattern, handler) =>
         forge.route('POST', `/_control/gitlab/${pattern}`, handler, { auth: false });
     const notFound = (response, what = 'Not found') => forge.json(response, 404, { message: `404 ${what}` });
@@ -979,6 +1008,8 @@ export const registerGitlab = (forge) => {
         const project = projectOf(rawPath.split('/').map(decodeURIComponent).join('/'));
         const push = service === 'git-receive-pack' || url.searchParams.get('service') === 'git-receive-pack';
         if (!ctx.token) return refuse(response, 401, 'HTTP Basic: Access denied', { 'www-authenticate': GIT_REALM });
+        const gitScopes = push ? ['api', 'write_repository'] : ['api', 'read_repository', 'write_repository'];
+        if (!holds(ctx.token, gitScopes)) return refuse(response, 403, 'The token lacks the scope git over HTTP needs.');
         const held = project ? levelOf(project, ctx.token.login) : 0;
         if (held < GUEST) return refuse(response, 404, 'Not Found');
         if (push && held < DEVELOPER) return refuse(response, 403, 'You are not allowed to push code to this project.');
@@ -1075,7 +1106,11 @@ export const registerGitlab = (forge) => {
         if (!project) notFound(ctx.response, 'Project Not Found');
         return project;
     };
-    control('sign-in', ({ response, body }) => forge.json(response, 200, issuePair(body.login ?? DEFAULT_MEMBER)));
+    // Mints a pair without the OAuth round trip. It belongs to `clientId` when given, and refreshes only for that
+    // registered client; without one it cannot be refreshed.
+    control('sign-in', ({ response, body }) =>
+        forge.json(response, 200, issuePair(body.login ?? DEFAULT_MEMBER, body.clientId ?? null, body.scope ?? DEFAULT_SCOPE))
+    );
     control('projects', async ({ response, body, request }) => {
         if (!body.path || projectOf(body.path)) return badRequest(response, 'a project path is required and must be new');
         const id = forge.nextId();
@@ -1106,6 +1141,7 @@ export const registerGitlab = (forge) => {
         if (!clientId || !clientSecret || !Array.isArray(redirectUris) || redirectUris.length === 0) {
             return badRequest(response, 'clientId, clientSecret and a non-empty redirectUris are required');
         }
+        if (scopes.some((one) => !KNOWN_SCOPES.includes(one))) return badRequest(response, 'unknown scope');
         clients.set(clientId, { secret: clientSecret, redirectUris, scopes });
         forge.json(response, 200, { clientId: body.clientId });
     });
