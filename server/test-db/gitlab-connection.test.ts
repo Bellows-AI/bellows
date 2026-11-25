@@ -10,12 +10,13 @@ import {
     createForgeConnectionStore,
     type ForgeConnectionStore,
     gitlabConnectionIdentity,
+    sweepRemovedConnections,
 } from '../src/db/forge-connections.js';
 import { createGitlabApi } from '../src/gitlab/gitlab-api.js';
 import { createOrgRegistry } from '../src/orgs.js';
-import type { SecretRef, SecretStore } from '../src/secrets/secret-store.js';
+import type { SecretIdentity, SecretRef, SecretStore } from '../src/secrets/secret-store.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
-import { faultySecrets, testSecretStore } from './env-secrets-harness.js';
+import { failingPoolQuery, faultySecrets, testSecretStore } from './env-secrets-harness.js';
 import { type FakeGitlab, startFakeGitlab } from './fake-gitlab.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
@@ -244,6 +245,131 @@ describe.skipIf(!enabled)('forge connection store', () => {
         );
         expect((await sql`select 1 from forge_connection where org_id = ${orgA}`).length).toBe(before);
     });
+
+    /** The store with every create recorded, and the faults a test scripts on top. */
+    const recording = (overrides: Partial<SecretStore> = {}) => {
+        const created: { ref: SecretRef; identity: SecretIdentity }[] = [];
+        const store = faultySecrets(secrets, {
+            create: (call) => {
+                created.push({ ref: call.ref, identity: call.identity });
+                return secrets.create(call);
+            },
+            ...overrides,
+        });
+        return { store, created };
+    };
+    const live = async (created: { ref: SecretRef; identity: SecretIdentity }[]) => {
+        const refs: string[] = [];
+        for (const { ref, identity } of created) {
+            if ((await secrets.readActive({ identity, ref })).ok) refs.push(ref);
+        }
+        return refs;
+    };
+    const unavailable = async () => ({
+        ok: false as const,
+        error: { code: 'unavailable' as const, reason: 'provider-unavailable' as const },
+    });
+    const tombstoned = async (id: string) =>
+        (await sql<{ removed_at: Date | null }[]>`select removed_at from forge_connection where id = ${id}`)[0];
+
+    it('leaves no secret behind when both are created and the row insert then fails', async () => {
+        const { store, created } = recording();
+        const failing = createForgeConnectionStore({
+            sql: failingPoolQuery(sql, 'insert into forge_connection'),
+            orgId: orgA,
+            secrets: store,
+            secretLog: () => {},
+            gitlab: gitlabApi(),
+        });
+        await expect(failing.create(input({ host: named('insertfail'), caBundle: CA_PEM }))).rejects.toThrow();
+        expect(created).toHaveLength(2);
+        expect(await live(created)).toEqual([]);
+        expect((await sql`select 1 from forge_connection where host = ${named('insertfail')}`).length).toBe(0);
+    });
+
+    it('leaves no secret behind when only one of the two is created', async () => {
+        const { store, created } = recording({
+            create: async (call) => {
+                if (call.identity.owningRecord.id.endsWith('/ca-bundle')) return unavailable();
+                created.push({ ref: call.ref, identity: call.identity });
+                return secrets.create(call);
+            },
+        });
+        const created_: typeof created = created;
+        await expect(
+            storeOf(orgA, store).create(input({ host: named('onesecret'), caBundle: CA_PEM }))
+        ).rejects.toBeInstanceOf(EnvSecretError);
+        expect(created_.map((c) => c.identity.owningRecord.id.split('/')[1])).toEqual(['client-secret']);
+        expect(await live(created_)).toEqual([]);
+        expect((await sql`select 1 from forge_connection where host = ${named('onesecret')}`).length).toBe(0);
+    });
+
+    it('keeps exactly one connection and its secrets when two creates for one org and host race', async () => {
+        const { store, created } = recording();
+        const host = named('race');
+        const results = await Promise.all([
+            storeOf(orgA, store).create(input({ host, caBundle: CA_PEM })),
+            storeOf(orgA, store).create(input({ host, caBundle: CA_PEM })),
+        ]);
+        expect(results.filter((r) => r.ok)).toHaveLength(1);
+        expect(results.filter((r) => !r.ok)).toEqual([{ ok: false, reason: 'exists' }]);
+        const winner = results.find((r) => r.ok);
+        const id = winner?.ok ? winner.connection.id : '';
+        const survivors = await live(created);
+        expect(survivors).toHaveLength(2);
+        const row = (await rowOf(id))!;
+        expect(survivors.sort()).toEqual([row.secret_ref, row.ca_secret_ref].sort());
+    });
+
+    it('keeps a tombstone and answers an error when the secret store is down during delete; the sweep then retires', async () => {
+        const made = await storeA.create(input({ host: named('rmdown'), caBundle: CA_PEM }));
+        if (!made.ok) throw new Error('create refused');
+        const { id } = made.connection;
+        const row = (await rowOf(id))!;
+        const down = faultySecrets(secrets, { delete: unavailable });
+        await expect(storeOf(orgA, down).remove(id)).rejects.toBeInstanceOf(EnvSecretError);
+        expect((await tombstoned(id))?.removed_at).not.toBeNull();
+        expect(await storeA.get(id)).toBeNull();
+        expect(await readSecret(orgA, id, 'client-secret', row.secret_ref)).toMatch(/^secret-/);
+        // The store is still down for this sweep: nothing is confirmed, nothing is dropped.
+        expect(await sweepRemovedConnections({ sql, secrets: down, secretLog: () => {} })).toBe(0);
+        expect(await tombstoned(id)).toBeDefined();
+        // Another process, the store back: the sweep finishes the removal.
+        expect(await sweepRemovedConnections({ sql, secrets, secretLog: () => {} })).toBeGreaterThanOrEqual(1);
+        expect(await tombstoned(id)).toBeUndefined();
+        expect(await readSecret(orgA, id, 'client-secret', row.secret_ref)).toMatch(/^not-found/);
+        expect(await readSecret(orgA, id, 'ca-bundle', row.ca_secret_ref!)).toMatch(/^not-found/);
+    });
+
+    it('finishes a removal the process stopped after the tombstone, whatever step it stopped at', async () => {
+        const made = await storeA.create(input({ host: named('rmcrash'), caBundle: CA_PEM }));
+        if (!made.ok) throw new Error('create refused');
+        const { id } = made.connection;
+        const row = (await rowOf(id))!;
+        // The process dies inside the first secret delete: the tombstone is written, nothing was retired.
+        const dying = faultySecrets(secrets, {
+            delete: () => {
+                throw new Error('process stopped');
+            },
+        });
+        await expect(storeOf(orgA, dying).remove(id)).rejects.toBeInstanceOf(EnvSecretError);
+        expect(await readSecret(orgA, id, 'ca-bundle', row.ca_secret_ref!)).toMatch(/^ca-bundle|^-----BEGIN/);
+        // A fresh store, as after a restart, retires from the tombstone alone, with no further admin action.
+        await sweepRemovedConnections({ sql, secrets, secretLog: () => {} });
+        expect(await tombstoned(id)).toBeUndefined();
+        expect(await readSecret(orgA, id, 'client-secret', row.secret_ref)).toMatch(/^not-found/);
+        expect(await readSecret(orgA, id, 'ca-bundle', row.ca_secret_ref!)).toMatch(/^not-found/);
+    });
+
+    it('lets the host be connected again while its removal awaits retirement', async () => {
+        const host = named('reconnect');
+        const first = await storeA.create(input({ host }));
+        if (!first.ok) throw new Error('create refused');
+        await expect(
+            storeOf(orgA, faultySecrets(secrets, { delete: unavailable })).remove(first.connection.id)
+        ).rejects.toBeInstanceOf(EnvSecretError);
+        expect((await storeA.create(input({ host }))).ok).toBe(true);
+    });
 });
 
 describe.skipIf(!enabled)('GitLab connection routes', () => {
@@ -270,6 +396,24 @@ describe.skipIf(!enabled)('GitLab connection routes', () => {
         expect(list.json.connections.map((c) => c.id)).toContain(created.json.id);
         expect((await call(adminA, 'DELETE', `${PATH}/${created.json.id}`)).status).toBe(OK);
         expect((await call(adminA, 'GET', `${PATH}/${created.json.id}`)).status).toBe(NOT_FOUND);
+    });
+
+    it('finishes a removal left pending by an unavailable secret store when the admin deletes again', async () => {
+        const created = await call(adminA, 'POST', PATH, input({ host: named('route503') }));
+        const down = faultySecrets(secrets, {
+            delete: async () => ({ ok: false, error: { code: 'unavailable', reason: 'provider-unavailable' } }),
+        });
+        const flaky = createForgeConnectionStore({
+            sql,
+            orgId: orgA,
+            secrets: down,
+            secretLog: () => {},
+            gitlab: gitlabApi(),
+        });
+        await expect(flaky.remove(created.json.id)).rejects.toBeInstanceOf(EnvSecretError);
+        // The admin's retry, the store back, completes it and answers success.
+        expect((await call(adminA, 'DELETE', `${PATH}/${created.json.id}`)).status).toBe(OK);
+        expect((await sql`select 1 from forge_connection where id = ${created.json.id}`).length).toBe(0);
     });
 
     it('refuses a member on every method and answers 404 for another org’s id', async () => {

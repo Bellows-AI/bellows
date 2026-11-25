@@ -50,6 +50,7 @@ import { startMetricPointOrgBackfill } from './telemetry/org-backfill.js';
 import type { SecretStore } from './secrets/secret-store.js';
 import type { CoordinatedSecretStore } from './secrets/postgres-secret-store.js';
 import { startOrgPurge } from './db/org-purge.js';
+import { startForgeConnectionSweep } from './db/forge-connection-sweep.js';
 import { startOrgRetention } from './db/org-retention.js';
 import { startCommerceDelivery } from './commerce/commerce-loop.js';
 import { startNotificationDelivery } from './notifications/delivery-loop.js';
@@ -155,6 +156,8 @@ function startCollectors({
             })
         )
     );
+    // A deleted GitLab connection's secrets: retired and the tombstone dropped once the store confirms (docs/gitlab.md).
+    void ready.then(() => track(() => startForgeConnectionSweep({ sql: crossOrg.sql, secrets })));
     // Each org's retention window (docs/retention.md): deletes settled threads, their objects and old telemetry.
     void ready.then(() =>
         track(() =>

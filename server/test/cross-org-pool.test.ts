@@ -32,6 +32,7 @@ const CROSS_ORG_CALLS = {
     startAttachmentSweep: 'deletes objects no row of any org references',
     startSkillSweep: 'deletes skill objects no row of any org references',
     startOrgPurge: "deletes a deleted org's rows and objects",
+    startForgeConnectionSweep: "retires a deleted GitLab connection's secrets and drops its tombstone",
     startOrgRetention: "deletes the threads, objects and telemetry each org's retention window passed",
     startMetricPointOrgBackfill: 'resolves the org of points stored before they carried one',
 } as const;

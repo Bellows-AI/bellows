@@ -2,7 +2,7 @@
 -- application's client id, the root groups members' projects may come from, and the references to the client secret
 -- and the optional CA bundle, both held in the secret store alone. A connection is stored PENDING (`active` false):
 -- an unauthenticated reachability probe ran and its outcome is recorded, nothing gates on the row yet. The host is
--- unique per organization, not globally: two organizations may connect the same instance with different applications.
+-- unique per organization (among live rows), not globally: two organizations may connect the same instance with different applications.
 -- New table, nothing to backfill: expand only (docs/persistence.md). This file must contain NO `create extension`,
 -- per 005's header.
 create table if not exists forge_connection (
@@ -21,11 +21,13 @@ create table if not exists forge_connection (
     probe_reason text,
     probed_at timestamptz not null default now(),
     created_at timestamptz not null default now(),
+    -- Set when an admin deletes the connection: the row stays, hidden, until the secret store confirmed both secrets
+    -- retired, then goes. A sweep on every replica finishes a removal a lost process or an unavailable store left.
+    removed_at timestamptz,
 
     primary key (org_id, id),
     constraint forge_connection_org_fk foreign key (org_id)
         references organization (id) on update cascade on delete cascade,
-    constraint forge_connection_host_uq unique (org_id, forge, host),
     constraint forge_connection_forge_ck check (forge in ('gitlab')),
     constraint forge_connection_host_ck check (host ~ '^[A-Za-z0-9.-]+(:[0-9]+)?$'),
     constraint forge_connection_client_ck check (client_id <> ''),
@@ -36,6 +38,10 @@ create table if not exists forge_connection (
         or (probe_status = 'unreachable' and probe_reason in ('timeout', 'unreachable', 'tls', 'server-error', 'malformed'))
     )
 );
+
+-- One live connection per host; a removed one awaiting its secrets' retirement does not hold it.
+create unique index if not exists forge_connection_host_live on forge_connection (org_id, forge, host)
+    where removed_at is null;
 
 -- The policy 151 gave every org table.
 alter table forge_connection enable row level security;

@@ -14,7 +14,7 @@ import {
     EnvSecretError,
     releaseEnvSecrets,
     type RetiredEnvSecret,
-    retireEnvSecrets,
+    retireEnvSecretsConfirmed,
 } from './env-secrets.js';
 
 /**
@@ -172,44 +172,20 @@ export function createForgeConnectionStore({
         return { secret: of('client-secret') as CreatedEnvSecret, ca: of('ca-bundle') };
     };
 
-    const retired = (
-        id: string,
-        row: {
-            secret_ref: string;
-            secret_version: string;
-            ca_secret_ref: string | null;
-            ca_secret_version: string | null;
-        }
-    ) => {
-        const targets: RetiredEnvSecret[] = [
-            {
-                ref: row.secret_ref as SecretRef,
-                version: row.secret_version as SecretVersion,
-                identity: gitlabConnectionIdentity(orgId, id, 'client-secret'),
-            },
-        ];
-        if (row.ca_secret_ref !== null && row.ca_secret_version !== null) {
-            targets.push({
-                ref: row.ca_secret_ref as SecretRef,
-                version: row.ca_secret_version as SecretVersion,
-                identity: gitlabConnectionIdentity(orgId, id, 'ca-bundle'),
-            });
-        }
-        return targets;
-    };
-
     return {
         async list() {
             await gate();
             const rows = await sql<Row[]>`
-                select ${COLUMNS(sql)} from forge_connection where org_id = ${orgId} order by created_at, id
+                select ${COLUMNS(sql)} from forge_connection
+                where org_id = ${orgId} and removed_at is null order by created_at, id
             `;
             return rows.map(toView);
         },
         async get(id) {
             await gate();
             const [row] = await sql<Row[]>`
-                select ${COLUMNS(sql)} from forge_connection where org_id = ${orgId} and id = ${id}
+                select ${COLUMNS(sql)} from forge_connection
+                where org_id = ${orgId} and id = ${id} and removed_at is null
             `;
             return row ? toView(row) : null;
         },
@@ -217,7 +193,8 @@ export function createForgeConnectionStore({
             await gate();
             const host = input.host.toLowerCase();
             const taken = await sql`
-                select 1 from forge_connection where org_id = ${orgId} and forge = ${FORGE} and host = ${host}
+                select 1 from forge_connection
+                where org_id = ${orgId} and forge = ${FORGE} and host = ${host} and removed_at is null
             `;
             if (taken.length > 0) return { ok: false, reason: 'exists' };
             const probe = await gitlab.probe({ host, caBundle: input.caBundle });
@@ -242,19 +219,87 @@ export function createForgeConnectionStore({
         },
         async remove(id) {
             await gate();
-            const rows = await sql<
-                {
-                    secret_ref: string;
-                    secret_version: string;
-                    ca_secret_ref: string | null;
-                    ca_secret_version: string | null;
-                }[]
-            >`
-                delete from forge_connection where org_id = ${orgId} and id = ${id}
-                returning secret_ref, secret_version, ca_secret_ref, ca_secret_version
+            // The tombstone is the durable record of the cleanup owed; a repeated delete of a tombstoned row retries it.
+            const rows = await sql<RetiringRow[]>`
+                update forge_connection set removed_at = coalesce(removed_at, now())
+                where org_id = ${orgId} and id = ${id}
+                returning org_id, id, secret_ref, secret_version, ca_secret_ref, ca_secret_version
             `;
-            if (rows[0]) await retireEnvSecrets(secrets, retired(id, rows[0]), cleanup());
-            return rows.length > 0;
+            if (!rows[0]) return false;
+            if (!(await finishRemoval(sql, secrets, rows[0], cleanup()))) {
+                throw new EnvSecretError(id, 'unavailable', 'provider-unavailable');
+            }
+            return true;
         },
     };
+}
+
+interface RetiringRow {
+    org_id: string;
+    id: string;
+    secret_ref: string;
+    secret_version: string;
+    ca_secret_ref: string | null;
+    ca_secret_version: string | null;
+}
+
+const retiredOf = (row: RetiringRow): RetiredEnvSecret[] => {
+    const targets: RetiredEnvSecret[] = [
+        {
+            ref: row.secret_ref as SecretRef,
+            version: row.secret_version as SecretVersion,
+            identity: gitlabConnectionIdentity(row.org_id, row.id, 'client-secret'),
+        },
+    ];
+    if (row.ca_secret_ref !== null && row.ca_secret_version !== null) {
+        targets.push({
+            ref: row.ca_secret_ref as SecretRef,
+            version: row.ca_secret_version as SecretVersion,
+            identity: gitlabConnectionIdentity(row.org_id, row.id, 'ca-bundle'),
+        });
+    }
+    return targets;
+};
+
+/**
+ * Retires a tombstoned connection's secrets and, only once the store confirmed every delete, drops the row. False
+ * leaves the tombstone for the next attempt: an unconfirmed delete is never a success.
+ */
+async function finishRemoval(
+    sql: Sql,
+    secrets: SecretStore,
+    row: RetiringRow,
+    cleanup: { signal: AbortSignal; diagnose: (diagnostic: SecretDiagnostic) => void }
+): Promise<boolean> {
+    if (!(await retireEnvSecretsConfirmed(secrets, retiredOf(row), cleanup))) return false;
+    await sql`delete from forge_connection where org_id = ${row.org_id} and id = ${row.id} and removed_at is not null`;
+    return true;
+}
+
+const SWEEP_BATCH = 100;
+const SWEEP_CLEANUP_MS = 10_000;
+
+/**
+ * One recovery pass over every org (cross-org pool): finishes each removal a lost process or an unavailable secret
+ * store left tombstoned. A row it cannot confirm stays for the next pass.
+ */
+export async function sweepRemovedConnections({
+    sql,
+    secrets,
+    secretLog,
+}: {
+    sql: Sql;
+    secrets: SecretStore;
+    secretLog: (diagnostic: SecretDiagnostic) => void;
+}): Promise<number> {
+    const rows = await sql<RetiringRow[]>`
+        select org_id, id, secret_ref, secret_version, ca_secret_ref, ca_secret_version
+        from forge_connection where removed_at is not null order by removed_at limit ${SWEEP_BATCH}
+    `;
+    let finished = 0;
+    for (const row of rows) {
+        const cleanup = { signal: AbortSignal.timeout(SWEEP_CLEANUP_MS), diagnose: secretLog };
+        if (await finishRemoval(sql, secrets, row, cleanup)) finished += 1;
+    }
+    return finished;
 }
