@@ -190,6 +190,8 @@ export const ERROR_CODES = {
     TELEMETRY_DISABLED: 'TELEMETRY_DISABLED',
     TITLE_LIMIT: 'TITLE_LIMIT',
     TITLE_STALE: 'TITLE_STALE',
+    /** A tracked path is already tracked in the organization under another forge or host (docs/repos.md). */
+    TRACKED_PATH_CONFLICT: 'TRACKED_PATH_CONFLICT',
     TOO_LARGE: 'TOO_LARGE',
     TOO_MANY_ENV_VARS: 'TOO_MANY_ENV_VARS',
     TOO_MANY_EXECUTORS: 'TOO_MANY_EXECUTORS',

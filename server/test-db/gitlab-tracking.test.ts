@@ -2,6 +2,8 @@ import { githubRepo, type RepoRef } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { orgSql, REQUEST_ROLE } from '../src/db/org-sql.js';
+import { boardPool } from '../src/db/pool.js';
 import { replaceTrackedRepos, trackedRepos } from '../src/db/tracked-repos.js';
 import { createRepoSource } from '../src/github/repo-source.js';
 import {
@@ -343,5 +345,99 @@ describe.skipIf(!enabled)('picking the projects to track', () => {
         });
         expect(removed.statusCode).toBe(OK);
         expect(await trackedRepos({ sql, orgId: org.id, scope: { forge: 'gitlab', host: HOST } })).toEqual([]);
+    });
+});
+
+describe.skipIf(!enabled)('a path another forge already tracks in the org', () => {
+    it('is a coded 409 naming the path: nothing is written and both selections are unchanged', async () => {
+        await project(`${grp}/app`);
+        await project(`${grp}/other`);
+        const id = await h.linked(org, 'dev-one', { groups: [grp] });
+        await track(id, [`${grp}/other`]);
+        // GitHub tracks the same owner/name the GitLab project has: the narrow key is (org, owner, name).
+        await replaceTrackedRepos({
+            sql,
+            orgId: org.id,
+            scope: { forge: 'github', host: 'github.com' },
+            repos: [githubRepo(`${grp}/app`)],
+        });
+        const res = await track(id, [`${grp}/app`, `${grp}/other`]);
+        expect(res.statusCode).toBe(CONFLICT);
+        expect(res.json()).toMatchObject({ code: 'TRACKED_PATH_CONFLICT' });
+        expect(res.json<{ error: string }>().error).toContain(`${grp}/app`);
+        expect(keys(await trackedRepos({ sql, orgId: org.id }))).toEqual([
+            `github:github.com/${grp}/app`,
+            `gitlab:${HOST}/${grp}/other`,
+        ]);
+        // A path no one else tracks saves fine.
+        expect((await track(id, [`${grp}/other`])).statusCode).toBe(OK);
+    });
+
+    it('the store refuses it from the GitHub side too, without a raw database error', async () => {
+        const orgId = org.id;
+        await replaceTrackedRepos({
+            sql,
+            orgId,
+            scope: { forge: 'gitlab', host: HOST },
+            repos: [gitlab(`${grp}/app`)],
+        });
+        await expect(
+            replaceTrackedRepos({
+                sql,
+                orgId,
+                scope: { forge: 'github', host: 'github.com' },
+                repos: [githubRepo(`${grp}/app`)],
+            })
+        ).rejects.toMatchObject({ name: 'TrackedPathConflict', path: `${grp}/app` });
+        expect(keys(await trackedRepos({ sql, orgId }))).toEqual([`gitlab:${HOST}/${grp}/app`]);
+    });
+});
+
+describe.skipIf(!enabled)('two organizations on one GitLab host', () => {
+    it('never see or alter each other’s selection through list, save or remove, and the request role reads only its own rows', async () => {
+        const other = await h.newOrg();
+        await project(`${grp}/a`);
+        await project(`${grp}/b`);
+        const mine = await h.linked(org, 'dev-one', { groups: [grp] });
+        const theirs = await h.linked(other, 'dev-two', { groups: [grp] });
+        expect((await track(mine, [`${grp}/a`])).statusCode).toBe(OK);
+        expect((await track(theirs, [`${grp}/b`], other.admin)).statusCode).toBe(OK);
+
+        const flags = async (id: string, token: string) =>
+            Object.fromEntries(
+                (await listProjects(id, token))
+                    .json<{ projects: { path: string; tracked: boolean }[] }>()
+                    .projects.map((p) => [p.path, p.tracked])
+            );
+        expect(await flags(mine, org.admin)).toEqual({ [`${grp}/a`]: true, [`${grp}/b`]: false });
+        expect(await flags(theirs, other.admin)).toEqual({ [`${grp}/a`]: false, [`${grp}/b`]: true });
+        // One org's admin cannot reach the other's connection, listing or save.
+        expect((await listProjects(theirs, org.admin)).statusCode).toBe(404);
+        expect((await track(theirs, [`${grp}/a`], org.admin)).statusCode).toBe(404);
+
+        const pool = boardPool(db.url as string, { max: 1, statementTimeoutMs: 10_000, role: REQUEST_ROLE });
+        try {
+            const visible = async (orgId: string) =>
+                (
+                    await orgSql(pool, orgId)<{ owner: string; name: string }[]>`select owner, name from tracked_repo`
+                ).map((row) => `${row.owner}/${row.name}`);
+            expect(await visible(org.id)).toEqual([`${grp}/a`]);
+            expect(await visible(other.id)).toEqual([`${grp}/b`]);
+        } finally {
+            await pool.end({ timeout: 5 });
+        }
+
+        // Saving and removing one org's connection leaves the other's selection as it was.
+        expect((await track(mine, [], org.admin)).statusCode).toBe(OK);
+        expect(keys(await trackedRepos({ sql, orgId: other.id }))).toEqual([`gitlab:${HOST}/${grp}/b`]);
+        expect((await track(mine, [`${grp}/a`])).statusCode).toBe(OK);
+        const removed = await board.app.inject({
+            method: 'DELETE',
+            url: `/api/org/gitlab-connections/${mine}`,
+            headers: bearer(org.admin),
+        });
+        expect(removed.statusCode).toBe(OK);
+        expect(keys(await trackedRepos({ sql, orgId: org.id }))).toEqual([]);
+        expect(keys(await trackedRepos({ sql, orgId: other.id }))).toEqual([`gitlab:${HOST}/${grp}/b`]);
     });
 });

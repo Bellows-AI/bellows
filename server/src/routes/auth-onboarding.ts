@@ -2,13 +2,14 @@ import { ERROR_CODES, formatRepoRef, githubRepo, type RepoRef } from '@factory-a
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { PENDING_COOKIE, hashToken, pendingCookieOptions, unsign } from '../auth/session.js';
 import type { AuthStore, Caller, PendingSignIn } from '../auth/store.js';
-import { GITHUB_SCOPE } from '../db/tracked-repos.js';
+import { GITHUB_SCOPE, TrackedPathConflict } from '../db/tracked-repos.js';
 import type { InstallationRepo } from '../github/app-client.js';
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import type { OrgRegistry } from '../orgs.js';
 import { afterOnboarding } from './auth-member-grant.js';
 import {
     HTTP_BAD_REQUEST,
+    HTTP_CONFLICT,
     HTTP_OK,
     HTTP_SERVER_ERROR,
     HTTP_UNAUTHORIZED,
@@ -269,6 +270,13 @@ async function materializeOnboarding(
             priorSelection,
             caller,
         });
+        if (e instanceof TrackedPathConflict) {
+            reply.code(HTTP_CONFLICT).send({
+                error: `"${e.path}" is already tracked in this organization from another forge or host`,
+                code: ERROR_CODES.TRACKED_PATH_CONFLICT,
+            });
+            return null;
+        }
         reply
             .code(HTTP_SERVER_ERROR)
             .send({ error: 'Could not complete the sign-in', code: ERROR_CODES.COMPLETE_FAILED });

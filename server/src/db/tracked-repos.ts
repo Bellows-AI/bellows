@@ -49,6 +49,20 @@ export async function trackedRepos({
     });
 }
 
+/**
+ * The path is already tracked in the org under another forge or host. The narrow key `tracked_repo_pk (org_id, owner,
+ * name)` stays until the contract migration (168_repo_ref.sql: a previous-release pod still uses it), so two refs that
+ * share owner and name cannot coexist yet; the write is refused whole, naming the path, never as a raw database error.
+ */
+export class TrackedPathConflict extends Error {
+    override readonly name = 'TrackedPathConflict';
+    constructor(readonly path: string) {
+        super(`${path} is already tracked in this organization under another forge or host`);
+    }
+}
+
+const UNIQUE_VIOLATION = '23505';
+
 /** The write was fenced to a connection that is no longer live: nothing was written. */
 export class TrackedConnectionChanged extends Error {
     constructor() {
@@ -87,18 +101,35 @@ export async function replaceTrackedRepos({
         if (slash <= 0 || slash === path.length - 1) throw new Error('a tracked repository path is group/name');
         return { org_id: orgId, forge, host, owner: path.slice(0, slash), name: path.slice(slash + 1) };
     });
-    await sql.begin(async (tx) => {
-        if (connectionId !== undefined) {
-            const live = await tx`
+    await sql
+        .begin(async (tx) => {
+            if (connectionId !== undefined) {
+                const live = await tx`
                 select 1 from forge_connection
                 where org_id = ${orgId} and id = ${connectionId} and removed_at is null and active
                 for update
             `;
-            if (live.length === 0) throw new TrackedConnectionChanged();
-        }
-        await tx`delete from tracked_repo where org_id = ${orgId} and forge = ${scope.forge} and host = ${scope.host}`;
-        // One multi-row insert, not one round trip per repo: a large App install's selection is
-        // hundreds of names and this sits on the onboarding click.
-        if (rows.length) await tx`insert into tracked_repo ${tx(rows)}`;
-    });
+                if (live.length === 0) throw new TrackedConnectionChanged();
+            }
+            // Refused before anything is deleted: another scope's row with the same owner and name holds the narrow key.
+            const taken = await tx<{ path: string }[]>`
+            select path from tracked_repo
+            where org_id = ${orgId} and path = any(${repos.map((repo) => repo.path)}::text[])
+              and not (forge = ${scope.forge} and host = ${scope.host})
+            order by path
+            limit 1
+        `;
+            if (taken[0]) throw new TrackedPathConflict(taken[0].path);
+            await tx`delete from tracked_repo where org_id = ${orgId} and forge = ${scope.forge} and host = ${scope.host}`;
+            // One multi-row insert, not one round trip per repo: a large App install's selection is
+            // hundreds of names and this sits on the onboarding click.
+            if (rows.length) await tx`insert into tracked_repo ${tx(rows)}`;
+        })
+        .catch((error: unknown) => {
+            // A concurrent writer took the narrow key between the check and the insert: the same refusal.
+            const { code, constraint_name: key } = error as { code?: string; constraint_name?: string };
+            if (code === UNIQUE_VIOLATION && key === 'tracked_repo_pk')
+                throw new TrackedPathConflict('a concurrently tracked path');
+            throw error;
+        });
 }

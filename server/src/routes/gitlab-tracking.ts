@@ -12,7 +12,7 @@ import type { AuthStore } from '../auth/store.js';
 import type { ConnectionView, GitlabApplication } from '../db/forge-connections.js';
 import { forgeConnectPath } from '../forge/forges.js';
 import type { GitlabApi, GitlabProject } from '../gitlab/gitlab-api.js';
-import { TrackedConnectionChanged } from '../db/tracked-repos.js';
+import { TrackedConnectionChanged, TrackedPathConflict } from '../db/tracked-repos.js';
 import { UUID } from '../identifiers.js';
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -171,20 +171,34 @@ const connectionChanged = (reply: FastifyReply) =>
         HTTP_CONFLICT
     );
 
+type SaveResult =
+    | { saved: true }
+    | { saved: false; reason: 'changed' }
+    | { saved: false; reason: 'conflict'; path: string };
+
+const pathConflict = (reply: FastifyReply, path: string) =>
+    bad(
+        reply,
+        ERROR_CODES.TRACKED_PATH_CONFLICT,
+        `"${path}" is already tracked in this organization under another forge or host, and one path cannot be tracked twice yet; untrack it there first`,
+        HTTP_CONFLICT
+    );
+
 /** The fenced replacement, then the repo list refreshed; false when the connection changed and nothing was written. */
 async function saveSelection(
     deps: GitlabTrackingDeps,
     save: { orgId: string; connectionId: string; host: string; refs: RepoRef[] }
-): Promise<boolean> {
+): Promise<SaveResult> {
     const { orgId, connectionId, host, refs } = save;
     try {
         await deps.auth.replaceTrackedRepos(orgId, scopeOf(host), refs, connectionId);
     } catch (error) {
-        if (error instanceof TrackedConnectionChanged) return false;
+        if (error instanceof TrackedConnectionChanged) return { saved: false, reason: 'changed' };
+        if (error instanceof TrackedPathConflict) return { saved: false, reason: 'conflict', path: error.path };
         throw error;
     }
     (await deps.orgs.for(orgId))?.repos.invalidate();
-    return true;
+    return { saved: true };
 }
 
 const putTracked = (deps: GitlabTrackingDeps) => async (request: FastifyRequest, reply: FastifyReply) => {
@@ -202,7 +216,9 @@ const putTracked = (deps: GitlabTrackingDeps) => async (request: FastifyRequest,
         saveSelection(deps, { orgId, connectionId: listing.connection.id, host, refs })
     );
     if (!saved.ok) return reply;
-    if (!saved.value) return connectionChanged(reply);
+    if (!saved.value.saved) {
+        return saved.value.reason === 'conflict' ? pathConflict(reply, saved.value.path) : connectionChanged(reply);
+    }
     return reply.code(HTTP_OK).send({ tracked: paths });
 };
 

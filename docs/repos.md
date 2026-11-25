@@ -53,3 +53,7 @@ Which repositories an organization sees, where that list comes from, and what it
   names a repo (`POST /api/jobs`, a batch, env) validates it against the tracked list: `400 UNKNOWN_REPO`,
   and `503 UNAVAILABLE` when the list cannot be read. `server/test/routes.jobs.test.ts`,
   `server/test/routes.batches.test.ts`, `server/test/routes.env.test.ts`.
+
+## Stated limits
+
+- **One owner/name is tracked once per org, whatever the forge or host**, until the contract migration retires the narrow key `tracked_repo_pk (org_id, owner, name)` (expand-only, `server/migrations/168_repo_ref.sql`: a previous-release pod still uses it). A save that collides is refused whole with `409 TRACKED_PATH_CONFLICT` naming the path (GitLab tracking, and GitHub onboarding completion after its rollback), never a raw database error. `server/src/db/tracked-repos.ts` (`TrackedPathConflict`), `server/test-db/gitlab-tracking.test.ts`.
