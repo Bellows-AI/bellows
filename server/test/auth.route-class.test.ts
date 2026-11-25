@@ -60,6 +60,7 @@ describe('the route classes (what a scoped caller may do)', () => {
                 'POST /api/org/executors/:id/scope',
                 'POST /api/org/executors/:id/suspension',
                 'POST /api/org/gitlab-connections',
+                'POST /api/org/gitlab-connections/:id/activation',
                 'POST /api/org/notification-subscriptions',
                 'POST /api/org/notification-subscriptions/:id/test',
                 'POST /api/org/skills',

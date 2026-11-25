@@ -119,7 +119,7 @@ export const RULES = [
     [/^server\/src\/(commerce\/|db\/commerce-|routes\/commerce\.ts$)/, NONE, 'commerce, off unless COMMERCE_ENABLED, which no lane sets; not called by any jobs phase'],
     [/^server\/src\/(db\/batches\/|routes\/batches\/|batch-merger\.ts$|batch-reconciler\.ts$)/, NONE, 'batches: their loops need BATCHES_ENABLED, which no lane sets, and no phase makes one; not called by any jobs phase'],
     [/^server\/src\/db\/forge-connection-sweep\.ts$/, FULL, 'a loop every board starts at boot (server/src/main.ts)'],
-    [/^server\/src\/(gitlab\/|db\/forge-connections\.ts$|routes\/gitlab-connections\.ts$)/, NONE, 'the org GitLab connection: admin routes and a probe, not called by any jobs phase'],
+    [/^server\/src\/(gitlab\/|db\/forge-connections\.ts$|db\/forge-links\.ts$|routes\/gitlab-connections\.ts$|routes\/gitlab-links\.ts$|integrations\/gitlab-link\.ts$|integrations\/providers\/gitlab\.ts$)/, NONE, 'the org GitLab connection and link: admin and member routes and a GitLab client, not called by any jobs phase'],
     [/^server\/src\/(routes\/(org-members|forge-grants|org-retention|audit|tokens|tasks|operator-driver-credentials|integrations|integration-catalog|attachment-uploads|attachment-ingest|model-setup|model-setup-save)\.ts|db\/org-export\.ts|attachments\/(name|sniff)\.ts)$/, NONE, 'settings, admin and dashboard routes; not called by any jobs phase'],
     [/^server\/src\/seed\//, NONE, 'synthetic data command line, not called by any jobs phase'],
 

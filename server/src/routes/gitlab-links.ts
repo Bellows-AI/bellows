@@ -105,20 +105,24 @@ async function listConnections(
     return reply.code(HTTP_OK).header('cache-control', 'no-store').send({ connections: read.value });
 }
 
-const startLink =
-    (links: GitlabLinks, purpose: 'link' | 'activate') => async (request: FastifyRequest, reply: FastifyReply) => {
-        const caller = callerOf(request);
-        if (!caller) return signInRequired(reply);
-        const { id } = request.params as { id?: string };
-        if (id === undefined || !UUID.test(id)) return noSuchConnection(reply);
-        const fields = jsonBody(request.body);
-        const returnTo = typeof fields.returnTo === 'string' ? fields.returnTo : undefined;
-        const orgId = orgOf(request);
-        const started = await guard(reply, log(request), () =>
-            links.start({ orgId, userId: caller.user.id, connectionId: id, purpose, returnTo })
-        );
-        return started.ok ? answerStart(reply, started.value) : reply;
-    };
+const startLink = async (
+    links: GitlabLinks,
+    purpose: 'link' | 'activate',
+    request: FastifyRequest,
+    reply: FastifyReply
+) => {
+    const caller = callerOf(request);
+    if (!caller) return signInRequired(reply);
+    const { id } = request.params as { id?: string };
+    if (id === undefined || !UUID.test(id)) return noSuchConnection(reply);
+    const fields = jsonBody(request.body);
+    const returnTo = typeof fields.returnTo === 'string' ? fields.returnTo : undefined;
+    const orgId = orgOf(request);
+    const started = await guard(reply, log(request), () =>
+        links.start({ orgId, userId: caller.user.id, connectionId: id, purpose, returnTo })
+    );
+    return started.ok ? answerStart(reply, started.value) : reply;
+};
 
 async function completeLink(links: GitlabLinks, request: FastifyRequest, reply: FastifyReply) {
     const caller = callerOf(request);
@@ -153,8 +157,12 @@ export const gitlabLinkRoutes =
         memberGrants: MemberForgeGrants;
     }): FastifyPluginAsync =>
     async (app) => {
-        app.post(`${PATH}/:id/link`, { bodyLimit: CONTROL_BODY_LIMIT }, startLink(links, 'link'));
-        app.post(GITLAB_ACTIVATION_PATH, { bodyLimit: CONTROL_BODY_LIMIT }, startLink(links, 'activate'));
+        app.post(`${PATH}/:id/link`, { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            startLink(links, 'link', request, reply)
+        );
+        app.post(GITLAB_ACTIVATION_PATH, { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            startLink(links, 'activate', request, reply)
+        );
 
         app.get(PATH, (request, reply) => listConnections({ orgs, memberGrants }, request, reply));
 

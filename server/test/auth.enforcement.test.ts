@@ -9,6 +9,8 @@ import { requirementFor } from '../src/auth/plugin.js';
 import { ROUTE_CLASSES, classOf } from '../src/auth/route-class.js';
 import { SESSION_COOKIE, hashToken } from '../src/auth/session.js';
 import type { OAuthStore } from '../src/auth/oauth-store.js';
+import type { GitlabLinks } from '../src/integrations/gitlab-link.js';
+import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import type { Caller } from '../src/auth/store.js';
 import type { AuthConfig } from '../src/config.js';
 import type { Job } from '../src/db/jobs/job-store-types.js';
@@ -172,6 +174,7 @@ const PERSON_ROUTES: readonly (readonly [string, string])[] = [
     ['POST', '/api/org/executors'],
     ['GET', '/api/org/gitlab-connections'],
     ['POST', '/api/org/gitlab-connections'],
+    ['POST', `/api/org/gitlab-connections/${JOB_ID}/activation`],
     ['GET', '/api/org/notification-subscriptions'],
     ['POST', '/api/org/notification-subscriptions'],
     ['GET', '/api/workspace/notification-subscriptions'],
@@ -345,6 +348,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/attachments/:id/content', 'user'],
     // Managing connections is a person's settings act; it falls through to 'user'.
     ['/api/forge-grants', 'user'],
+    ['/api/forge-grants/gitlab', 'user'],
+    ['/api/forge-grants/gitlab/callback', 'user'],
+    ['/api/forge-grants/gitlab/:id/link', 'user'],
     ['/api/connections', 'user'],
     ['/api/connections/:id', 'user'],
     // Starting and finishing an outbound OAuth connect is a person's act in their own browser session.
@@ -438,6 +444,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
         '/api/workspace/notification-subscriptions/:id',
         '/api/workspace/notification-subscriptions/:id/test',
         '/api/org/gitlab-connections/:id',
+        '/api/org/gitlab-connections/:id/activation',
         '/api/org/notification-subscriptions/:id',
         '/api/org/notification-subscriptions/:id/test',
         '/api/org/members/:userId/role',
@@ -498,6 +505,9 @@ describe('the route table', () => {
                     store: telemetryStoreStub(),
                     auth: store,
                     oauth: {} as OAuthStore,
+                    // The GitLab link routes exist exactly when both exist.
+                    memberGrants: {} as MemberForgeGrants,
+                    gitlabLinks: {} as GitlabLinks,
                     uploadCapabilities: memoryUploadCapabilities().store,
                     commercePlanWriter: { put: async () => ({ verdict: 'stored' }) },
                     providerKeys: { verify: async () => ({ ok: true }) },
