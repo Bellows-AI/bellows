@@ -122,6 +122,8 @@ export const ERROR_CODES = {
     EXECUTOR_NAME_CONFLICT: 'EXECUTOR_NAME_CONFLICT',
     EXECUTOR_SUSPENDED: 'EXECUTOR_SUSPENDED',
     FORBIDDEN: 'FORBIDDEN',
+    /** The member's grant is live but the forge says they may not work on the repository: Developer access is needed (docs/gitlab.md). */
+    FORGE_ACCESS_DENIED: 'FORGE_ACCESS_DENIED',
     /** The acting member holds no live grant for the repo's forge: connect it (docs/connections.md). */
     FORGE_GRANT_REQUIRED: 'FORGE_GRANT_REQUIRED',
     /** The change request is on a forge the board cannot act on yet (a well-formed GitLab merge request URL). */

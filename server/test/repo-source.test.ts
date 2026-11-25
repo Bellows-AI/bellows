@@ -41,7 +41,7 @@ describe('the tracked-repo allowlist (#125)', () => {
         expect((await source.detail()).repos.map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web']);
     });
 
-    it('matches the allowlist by repository identity: GitHub folds case, another forge never admits it', async () => {
+    it('matches the allowlist by repository identity: GitHub folds case, another forge never narrows or admits GitHub', async () => {
         const folded = createRepoSource({
             client: clientWith('acme/web', 'acme/other'),
             allowlist: async () => [githubRepo('Acme/Web')],
@@ -52,7 +52,13 @@ describe('the tracked-repo allowlist (#125)', () => {
             client: clientWith('acme/web', 'acme/other'),
             allowlist: async () => [{ forge: 'gitlab', host: 'gl.example', path: 'acme/web' }],
         });
-        expect(await elsewhere.list()).toEqual([]);
+        // A GitLab entry is its own selection, listed with its ref: it neither admits the GitHub repo of the same path
+        // nor narrows GitHub, which with no entry of its own keeps tracking everything the installation reports.
+        expect(
+            (await elsewhere.list()).map((r) =>
+                r.ref ? `${r.ref.forge}:${r.ref.host}/${r.ref.path}` : `${r.owner}/${r.name}`
+            )
+        ).toEqual(['acme/web', 'acme/other', 'gitlab:gl.example/acme/web']);
     });
 
     it('treats an empty allowlist as no narrowing — everything the installation reports', async () => {

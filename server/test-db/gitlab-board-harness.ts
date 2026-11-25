@@ -12,9 +12,14 @@ import { composeIntegrations } from '../src/integrations/compose.js';
 import { GITLAB_CALLBACK_PATH } from '../src/integrations/gitlab-link.js';
 import type { LineageTiming } from '../src/integrations/grant-lineage.js';
 import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
-import { createOrgRegistry } from '../src/orgs.js';
+import type { ForgeSource } from '../src/forge/forge-client.js';
+import { createOrgRegistry, type OrgRegistry } from '../src/orgs.js';
+import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
+import type { GithubMint } from '../src/routes/github-credential.js';
+import { createAttemptOfLease, createPairMatches } from '../src/db/attempt-of-lease.js';
+import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/jobs/job-store-org-resolvers.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
-import { githubAuth, testConfig } from '../test/helpers-config.js';
+import { githubAuth, TEST_DRIVER_CREDENTIAL, testConfig, testDriverCredentials } from '../test/helpers-config.js';
 import { type FakeGitlab, startFakeGitlab } from './fake-gitlab.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 import { lineageHarness } from './integration-store-faults.js';
@@ -46,10 +51,13 @@ export interface Org {
     store: ForgeConnectionStore;
 }
 
+/** What a driver presents on a worker route. */
+export const driverBearer = { authorization: `Bearer ${TEST_DRIVER_CREDENTIAL}` };
 export const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
 export const boardConfig = testConfig({
     auth: githubAuth(),
     integrations: { callbackOrigin: ORIGIN, jira: null, linear: null },
+    batches: { enabled: true },
 });
 
 export interface Harness {
@@ -70,6 +78,10 @@ export interface Harness {
 }
 
 export interface ReplicaOptions {
+    /** What the GitHub credential route mints with: a test hands the board a mint it can watch being asked. */
+    githubMint?: GithubMint;
+    /** Replaces every org runtime's forge source: a test hands the board a GitHub it can watch being reached. */
+    forge?: ForgeSource;
     api?: GitlabApi;
     clock?: () => number;
     secrets?: SecretStore;
@@ -81,6 +93,10 @@ export interface Board {
     grants: MemberForgeGrants;
     replica: ReturnType<typeof replicaOf>;
     roundTrip(start: { path: string; token: string }, login: string): Promise<{ location: URL; result: string | null }>;
+    /** The org's job store on this replica. */
+    jobs(org: Org): Promise<JobStore>;
+    /** The member queues a task on `repo` through the route, and a worker claims it: a running attempt. */
+    running(org: Org, repo: { forge: string; host: string; path: string }): Promise<{ id: string; claim: Claim }>;
     activate(org: Org, id: string): Promise<{ result: string | null }>;
     link(org: Org, id: string, login: string, token?: string): Promise<{ result: string | null }>;
     close(): Promise<void>;
@@ -190,15 +206,33 @@ export async function startHarness(sql: () => Sql): Promise<Harness & { stop(): 
         replica: (options = {}) => replicaOf(h, options),
         async board(options = {}) {
             const replica = replicaOf(h, options);
+            const { forge } = options;
+            const orgs: OrgRegistry = forge
+                ? {
+                      ...replica.orgs,
+                      for: async (orgId) => {
+                          const runtime = await replica.orgs.for(orgId);
+                          return runtime && { ...runtime, forge };
+                      },
+                  }
+                : replica.orgs;
             const app = await buildApp({
                 config: boardConfig,
-                orgs: replica.orgs,
+                orgs,
                 auth: createAuthStore({ sql: sql() }),
                 ready: replica.ready,
                 version: '0.0.0',
                 memberGrants: replica.memberGrants,
                 gitlabLinks: replica.links,
                 gitlabApi: replica.api,
+                // The worker and runner routes: a driver's credential and an attempt's pair name the org.
+                orgOfLease: createOrgOfLease({ sql: h.sql, ready: replica.ready }),
+                orgOfJob: createOrgOfJob({ sql: h.sql, ready: replica.ready }),
+                orgOfReclaim: createOrgOfReclaim({ sql: h.sql, ready: replica.ready }),
+                driverCredentials: testDriverCredentials,
+                attemptOfLease: createAttemptOfLease({ sql: h.sql, ready: replica.ready }),
+                pairMatches: createPairMatches({ sql: h.sql, ready: replica.ready }),
+                ...(options.githubMint ? { githubMint: options.githubMint } : {}),
                 integrations: {
                     ...replica.integrations,
                     configured: replica.registry.configured,
@@ -226,11 +260,29 @@ export async function startHarness(sql: () => Sql): Promise<Harness & { stop(): 
                 const location = new URL(done.headers.location as string, ORIGIN);
                 return { location, result: location.searchParams.get('result') };
             };
+            const jobs = async (org: Org) => {
+                const store = (await replica.orgs.for(org.id))?.jobs;
+                if (!store) throw new Error('the org has no job store');
+                return store;
+            };
             return {
                 app,
                 grants: replica.memberGrants,
                 replica,
                 roundTrip,
+                jobs,
+                running: async (org, repo) => {
+                    const created = await app.inject({
+                        method: 'POST',
+                        url: '/api/jobs',
+                        headers: bearer(org.member),
+                        payload: { repo, command: 'work' },
+                    });
+                    expect(created.statusCode, created.body).toBe(CREATED);
+                    const claim = (await (await jobs(org)).claim('worker-1', 60)) as Claim | null;
+                    expect(claim?.id).toBe(created.json<{ id: string }>().id);
+                    return { id: claim!.id, claim: claim! };
+                },
                 activate: (org, id) =>
                     roundTrip({ path: `/api/org/gitlab-connections/${id}/activation`, token: org.admin }, ADMIN_LOGIN),
                 link: (org, id, login, token = org.member) =>

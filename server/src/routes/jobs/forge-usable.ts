@@ -10,29 +10,39 @@ import { HTTP_CONFLICT, HTTP_UNAVAILABLE } from './job-limits.js';
 /** Where a member lands after connecting from a create: the composer. */
 export const TASK_COMPOSER_PATH = '/tasks/new';
 
+type Refusal = Extract<ForgeVerdict, { ok: false }>;
+
+/** The code a refusal answers with: a connection that is missing or broken, or a live one the forge does not let work here. */
+export const forgeRefusalCode = (verdict: Refusal) =>
+    verdict.standing === 'no-access' ? ERROR_CODES.FORGE_ACCESS_DENIED : ERROR_CODES.FORGE_GRANT_REQUIRED;
+
 /** What a refused member reads: the forge, and the one link that fixes it. */
-export const forgeRefusalMessage = (verdict: Extract<ForgeVerdict, { ok: false }>): string => {
+export const forgeRefusalMessage = (verdict: Refusal): string => {
     const label = forgeLabel(verdict.forge);
+    if (verdict.standing === 'no-access') {
+        return `Your ${label} account does not have Developer access to ${verdict.repo ?? 'this repository'}. Ask for access, or link another account: ${verdict.connectUrl}`;
+    }
     const state = verdict.standing === 'broken' ? 'needs reconnecting' : 'is missing';
     return `Your ${label} connection ${state}. Connect it to start work on this repository: ${verdict.connectUrl}`;
 };
 
-/** The 409 every entry point answers a member with no live grant. */
-export const forgeRefused = (reply: FastifyReply, verdict: Extract<ForgeVerdict, { ok: false }>) =>
+/** The 409 every entry point answers a member with no live grant, or with a live one the forge does not honor here. */
+export const forgeRefused = (reply: FastifyReply, verdict: Refusal) =>
     reply.code(HTTP_CONFLICT).send({
         error: forgeRefusalMessage(verdict),
-        code: ERROR_CODES.FORGE_GRANT_REQUIRED,
+        code: forgeRefusalCode(verdict),
         forge: verdict.forge,
         standing: verdict.standing,
         connectUrl: verdict.connectUrl,
+        ...(verdict.repo === undefined ? {} : { repo: verdict.repo }),
     });
 
-/** A standing read that failed is not a verdict: the answer is a 503 the caller retries, never a refusal. */
+/** A standing read or an access check that failed is not a verdict: the answer is a 503 the caller retries, never a refusal. */
 export const forgeReadFailed = (reply: FastifyReply, log: FastifyBaseLogger, err: unknown) => {
     log.error({ err }, 'forge grant standing read failed');
     return reply
         .code(HTTP_UNAVAILABLE)
-        .send({ error: 'The GitHub connection could not be read', code: ERROR_CODES.UNAVAILABLE });
+        .send({ error: 'The forge connection could not be read', code: ERROR_CODES.UNAVAILABLE });
 };
 
 /**
@@ -106,7 +116,7 @@ export async function forgeCheck(
             subject: 'forge',
             name: forge,
             status: 'blocked',
-            code: ERROR_CODES.FORGE_GRANT_REQUIRED,
+            code: forgeRefusalCode(verdict),
             detail: forgeRefusalMessage(verdict),
         };
     } catch (err) {

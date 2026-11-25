@@ -54,7 +54,7 @@ import { operatorRoutes } from './routes/operator.js';
 import { operatorDriverCredentialRoutes } from './routes/operator-driver-credentials.js';
 import { orgExportRoutes } from './routes/org-export.js';
 import { authRoutes } from './routes/auth.js';
-import { createForgeGate, type ForgeGate } from './forge/forge-gate.js';
+import { createForgeGate, type ForgeGate, type GitlabAccess } from './forge/forge-gate.js';
 import { createPrTokenSource } from './forge/pr-token.js';
 import { createPrWriter, type PrWriter } from './github/pr-write.js';
 import { forgeGrantRoutes } from './routes/forge-grants.js';
@@ -504,7 +504,7 @@ export async function buildApp({
     });
     app.setErrorHandler(errorHandler);
     const publicUrl = config.auth.mode === 'github' ? config.auth.publicUrl : '';
-    const forgeGate = createForgeGate({ memberGrants, publicUrl });
+    const forgeGate = createForgeGate({ memberGrants, publicUrl, gitlab: gitlabAccessOf(orgs, gitlabApi) });
 
     // Aborted the moment `app.close()` begins, before it waits for the open requests: the long-polls (settle, batch
     // settle, the MCP waits) read it as `request.closing` and answer at once instead of holding the close up to
@@ -655,6 +655,12 @@ async function registerRosterRoutes(
     await app.register(operatorRoutes({ store: auth }));
     await app.register(operatorDriverCredentialRoutes({ credentials: driverCredentials }));
 }
+
+/** What the start gate reads a GitLab member's project access through: the org's connection and the board's client. */
+const gitlabAccessOf = (orgs: OrgRegistry, api: GitlabApi = createGitlabApi()): GitlabAccess => ({
+    connectionsOf: async (orgId) => (await orgs.for(orgId))?.forgeConnections,
+    api,
+});
 
 /** The built SPA, when there is one: static files, and every non-API path falling through to `index.html`. */
 async function registerStaticWeb(app: FastifyInstance, config: AppConfig): Promise<void> {
