@@ -4,7 +4,8 @@
 
 Bellows gives your team a shared place to work with coding agents. Describe a change, let an
 agent work on it in a remote environment, and review the resulting pull request. You can follow
-the work, answer questions and ask for changes as the task progresses.
+the work, answer questions and ask for changes as the task progresses. Drive Bellows through
+its UI, CLI or built-in MCP server, including from the chat interface you already use.
 
 Getting an agent to write code is one part of the job. As more people on a team use agents,
 the surrounding work matters too: setting up environments, providing access to tools, agreeing
@@ -31,6 +32,28 @@ run or understand how agents are being used across the team.
 logs, agent transcripts and pull request operations. When you review a change or investigate
 a failure, you have the record of how the work unfolded. An organization audit log records
 administrative changes, and admins can export the organization's data.
+
+## Work from the tools you already use
+
+A typical workflow starts in a conversation with your usual assistant, such as Claude Code.
+Connect it to Bellows through the built-in MCP server, discuss what needs to change, and
+assign and orchestrate tasks directly from that conversation. Ask your assistant to start
+remote work, check progress, answer an agent's questions and send follow-ups as you review
+the results.
+
+For example: “Create a Bellows task to fix the flaky tests in this repository, then check
+the result.” You can keep planning and coordinating in your chat while Bellows runs the
+engineering work remotely.
+
+Choose the interface that fits the work:
+
+- **MCP:** Assign and coordinate tasks from Claude Code, Claude.ai or another compatible
+  assistant. [Connect your client](https://docs.bellows.cloud/mcp/connect).
+- **UI:** Create tasks, follow their progress and review results in the Bellows web app.
+- **CLI:** Start and manage tasks from your terminal, scripts or CI.
+
+All three work with the same tasks and shared process, so you can start from a conversation
+and open the web app when you want a closer look.
 
 ## From a task to a pull request
 
