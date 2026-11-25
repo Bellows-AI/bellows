@@ -19,9 +19,9 @@ skills give agents instructions for recurring work. Whether someone starts a tas
 web app, CLI or an MCP client, it follows the same process. The team's expectations travel
 with the repository.
 
-**Give agents the access they need.** Configure shared model credentials, environment variables
-and connections to tools such as Jira and Linear in your organization. Teammates can use that
-setup when they start work, with personal profiles and credentials available where needed.
+**Give agents the access they need.** Configure shared model credentials and environment variables
+in your organization for teammates to use when they start work. Each teammate connects their own
+Jira or Linear account, with personal model profiles and credentials available where needed.
 You choose the coding agent and model; Bellows supports Claude Code and OpenCode.
 
 **See how the work is going.** Built-in telemetry shows sessions and token usage across your
