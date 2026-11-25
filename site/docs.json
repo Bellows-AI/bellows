@@ -2,7 +2,7 @@
     "$schema": "https://mintlify.com/docs.json",
     "theme": "mint",
     "name": "Bellows",
-    "description": "Remote agentic engineering platform: coding agents run in a repository-defined environment and must pass its gates.",
+    "description": "Remote agentic engineering platform: coding agents run in a repository-defined environment, checked by its gates.",
     "colors": {
         "primary": "#4f6b52",
         "light": "#8fae92",

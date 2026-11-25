@@ -2,7 +2,8 @@
 
 Remote agentic engineering platform. Bellows runs a coding agent against a repository in a
 remote runner whose container, services and gates the repository defines in `.bellows.yaml`. A
-run publishes a pull request only when every gate passes.
+failing gate ships a draft pull request; `policy.gates: required` blocks publication until every
+gate passes.
 
 | Capability | What it is |
 | --- | --- |
@@ -10,7 +11,7 @@ run publishes a pull request only when every gate passes.
 | Gates | Build, test and lint commands every run must pass; the agent can run on-demand gates while it works |
 | Executors | Claude Code or OpenCode, with per-user or per-organization model profiles |
 | Tasks | A thread of jobs: questions, follow-ups and retries resume the same session and checkout |
-| Recovery | A lost node or runner interrupts a task; the next claim adopts what survived |
+| Recovery | A lost node or runner interrupts a task; the next claim resumes surviving state or a saved checkpoint when available |
 | Access | Web app, `bellows` CLI and an MCP endpoint |
 | Context | Skills, Jira/Linear connections, env vars and secrets, attachments |
 

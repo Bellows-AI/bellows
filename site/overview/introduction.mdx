@@ -1,14 +1,14 @@
 ---
 title: "Introduction"
-description: "Remote agentic engineering platform: a coding agent runs in an environment your repository defines and must pass your checks."
+description: "Remote agentic engineering platform: a coding agent runs in an environment your repository defines and is checked by your gates."
 ---
 
 Bellows is a remote agentic engineering platform. It runs a coding agent against your repository in a remote runner, so every run starts from the same environment:
 
 - **Defined environment.** The runner's image, setup commands, caches and services come from `.bellows.yaml` in your repo.
-- **Required checks.** Gates (build, test, lint) run at the end of every job; a pull request is published only when all of them pass.
+- **Required checks.** Gates (build, test, lint) run at the end of every job. By default a failing gate ships the work as a draft pull request; with `gates: required` in the repo's [policy](/guides/policy-and-reviewers), nothing is published until every gate passes.
 - **Reviewable result.** The output is a pull request you review. Questions, follow-ups and retries continue the same task.
-- **Recoverable runs.** If a node or runner is lost, the task resumes its session and checkout instead of starting over.
+- **Recoverable runs.** If a node or runner is lost, Bellows resumes surviving state or restores a saved checkpoint when available.
 
 ## Ways to use Bellows
 
@@ -30,7 +30,6 @@ Bellows is a remote agentic engineering platform. It runs a coding agent against
 | -------- | ------------------------------------------------ | -------------------------------------------- |
 | Setup    | Sign in with GitHub, pick repos, connect a model | Postgres, a GitHub App, Docker or Kubernetes |
 | Runners  | Managed                                          | Your cluster (Helm chart)                    |
-| Data     | Bellows Cloud database                           | Your Postgres                                |
 
 <Note>
   These docs follow the Cloud path. To run Bellows yourself, see [Self-hosting](/self-host/overview).
