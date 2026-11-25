@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { OAuthStore } from '../src/auth/oauth-store.js';
+import type { GitlabLinks } from '../src/integrations/gitlab-link.js';
+import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import { ROUTE_CLASSES } from '../src/auth/route-class.js';
 import { hashToken } from '../src/auth/session.js';
 import {
@@ -38,6 +40,9 @@ async function boot() {
         envVars: memoryEnvVarStore(),
         repos: [{ owner: 'acme', name: 'web' }],
         config: { auth: githubAuth() },
+        // The GitLab activation route exists exactly when both exist; the hook refuses a member before any handler.
+        memberGrants: {} as MemberForgeGrants,
+        gitlabLinks: {} as GitlabLinks,
     });
     track(instance);
     return {
@@ -148,7 +153,12 @@ describe('the route→role table for an API-audience OAuth token', () => {
                 githubAuth(),
                 auth,
                 { envVars: memoryEnvVarStore() },
-                { config, oauth: oauth as OAuthStore }
+                {
+                    config,
+                    oauth: oauth as OAuthStore,
+                    memberGrants: {} as MemberForgeGrants,
+                    gitlabLinks: {} as GitlabLinks,
+                }
             )
         );
         return { instance, headers: { authorization: `Bearer ${token}` } };
