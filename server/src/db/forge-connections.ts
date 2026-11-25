@@ -316,6 +316,12 @@ export function createForgeConnectionStore({
                     update integration_grant set status = 'revoked', revoked_at = now(), updated_at = now()
                     where org_id = ${orgId} and forge_connection_id = ${id} and status <> 'revoked'
                 `;
+                // The instance's tracked repositories go with the connection: nothing reads them without it.
+                await tx`
+                    delete from tracked_repo
+                    where org_id = ${orgId} and forge = ${FORGE}
+                      and host = (select host from forge_connection where org_id = ${orgId} and id = ${id})
+                `;
                 return locked;
             });
             if (!rows[0]) return false;

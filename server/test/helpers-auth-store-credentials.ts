@@ -1,5 +1,7 @@
 import { hashToken, mintToken } from '../src/auth/session.js';
+import type { RepoRef } from '@factory-ai/core';
 import type { OrgTokenIdentity, PendingSignIn } from '../src/auth/store.js';
+import type { TrackedScope } from '../src/db/tracked-repos.js';
 import {
     createAuthState,
     ensureOrg,
@@ -208,15 +210,17 @@ function pendingSignInMethods(
     };
 }
 
+const inScope = (scope: TrackedScope) => (repo: RepoRef) => repo.forge === scope.forge && repo.host === scope.host;
+
 function trackedRepoMethods(
     state: AuthState
 ): Pick<MemoryAuthStore, 'trackedRepos' | 'replaceTrackedRepos' | 'failNextTrackedRepoWrite'> {
     return {
-        async trackedRepos(orgId) {
-            return state.trackedRepoRows.get(orgId) ?? [];
+        async trackedRepos(orgId, scope) {
+            return (state.trackedRepoRows.get(orgId) ?? []).filter(inScope(scope));
         },
 
-        async replaceTrackedRepos(orgId, repos) {
+        async replaceTrackedRepos(orgId, scope, repos) {
             if (state.trackedRepoWritesUntilFailure !== null) {
                 if (state.trackedRepoWritesUntilFailure === 0) {
                     state.trackedRepoWritesUntilFailure = null;
@@ -224,7 +228,8 @@ function trackedRepoMethods(
                 }
                 state.trackedRepoWritesUntilFailure -= 1;
             }
-            state.trackedRepoRows.set(orgId, [...repos]);
+            const others = (state.trackedRepoRows.get(orgId) ?? []).filter((repo) => !inScope(scope)(repo));
+            state.trackedRepoRows.set(orgId, [...others, ...repos]);
         },
 
         failNextTrackedRepoWrite: (afterWrites = 0) => {

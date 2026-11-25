@@ -1,10 +1,11 @@
-import { JSON_CONTENT_TYPE } from '@factory-ai/core';
+import { JSON_CONTENT_TYPE, REPO_PATH_PATTERN } from '@factory-ai/core';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 
 /**
  * The board's GitLab HTTP client: the unauthenticated reachability probe, the authenticated version check that
- * activates a connection, and the bounded request the OAuth hooks call the token and user endpoints with
+ * activates a connection, the bounded request the OAuth hooks call the token and user endpoints with, the group
+ * project listing the admin picks tracked repos from and the member's project access check the start gate asks
  * (docs/connections.md). Every call is deadline-bound, reads at most 64 KiB and is CA-aware.
  */
 
@@ -36,6 +37,8 @@ export interface GitlabRequest {
     body?: string;
     caBundle?: string | undefined;
     signal?: AbortSignal | undefined;
+    /** The most the answer may carry; a longer one is `malformed`. Defaults to 64 KiB, a version document's size. */
+    maxBytes?: number;
 }
 
 /** An answer, whatever its status; or why no answer was had. Never throws. */
@@ -53,6 +56,39 @@ export type VersionCheck =
     | { ok: false; reason: 'too-old'; version: string }
     | { ok: false; reason: 'inconclusive' };
 
+/** The access level that may push to a project: GitLab's Developer. */
+export const GITLAB_DEVELOPER_LEVEL = 30;
+const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
+/** Projects asked per page, and the most pages one listing reads before it is called unconfirmed. */
+const DEFAULT_PAGE_SIZE = 100;
+/** A page of projects is far past a version document: 100 `simple` entries are tens of KiB. */
+const LIST_BODY_MIB = 2;
+const LIST_BODY_LIMIT = LIST_BODY_MIB * BYTES_PER_KIB * BYTES_PER_KIB;
+const MAX_LIST_PAGES = 100;
+
+export interface GitlabProject {
+    /** `path_with_namespace`: the group chain and the project. */
+    path: string;
+    defaultBranch: string | null;
+}
+
+/** Every project, or no listing at all: a page that did not answer cleanly leaves nothing partial to act on. */
+export type ProjectListing = { ok: true; projects: GitlabProject[] } | { ok: false };
+
+/**
+ * The most access the token's user holds on a project (its own and its groups', 0 for none): GitLab's answer, a
+ * 403 or a 404 (the project is invisible to them). Anything else, a 401 included, is `inconclusive`: no verdict.
+ */
+export type ProjectAccess = { ok: true; level: number } | { ok: false; reason: 'inconclusive' };
+
+interface Target {
+    host: string;
+    token: string;
+    caBundle?: string | undefined;
+    signal?: AbortSignal | undefined;
+}
+
 export interface GitlabApi {
     /** One bounded request; every failure is a reason, never a throw. */
     request(request: GitlabRequest): Promise<GitlabResponse>;
@@ -63,6 +99,13 @@ export interface GitlabApi {
         caBundle?: string | undefined;
         signal?: AbortSignal | undefined;
     }): Promise<VersionCheck>;
+    /**
+     * Every project the token's user sees under `group`, subgroups included, read page by page. A group the user
+     * cannot see lists nothing; a failed, malformed or over-long read is `ok: false`.
+     */
+    listGroupProjects(target: Target & { group: string }): Promise<ProjectListing>;
+    /** What the token's user holds on the project (`GET /api/v4/projects/:path`), as `ProjectAccess`. */
+    projectAccess(target: Target & { project: string }): Promise<ProjectAccess>;
     /**
      * `GET /api/v4/version` with no credential. GitLab answers 401 JSON to an anonymous caller, which proves the API
      * is there; a 200 also names the version. Never throws: every failure is a reason.
@@ -127,15 +170,96 @@ function versionVerdict(version: string): VersionCheck | null {
     return old ? { ok: false, reason: 'too-old', version } : { ok: true, version };
 }
 
+const levelOf = (access: unknown): number | null => {
+    if (access === null) return 0;
+    if (!isObject(access)) return null;
+    return Number.isInteger(access.access_level) ? (access.access_level as number) : null;
+};
+
+/** A project the listing may carry: a path the board can hold, and a default branch or none. */
+function projectOf(item: unknown): GitlabProject | null {
+    if (!isObject(item)) return null;
+    const { path_with_namespace: path, default_branch: branch } = item;
+    if (typeof path !== 'string' || !REPO_PATH_PATTERN.test(path)) return null;
+    if (branch !== null && branch !== undefined && typeof branch !== 'string') return null;
+    return { path, defaultBranch: branch ?? null };
+}
+
+type Send = (request: GitlabRequest) => Promise<GitlabResponse>;
+
+const authorized = (token: string) => ({ authorization: `Bearer ${token}` });
+
+/** One listing page's projects; `null` for an answer that is not a clean page (a 404 is an empty one: no such group). */
+function pageOf(answer: GitlabResponse): GitlabProject[] | null {
+    if (!answer.ok) return null;
+    if (answer.status === HTTP_NOT_FOUND) return [];
+    const body = answer.status === HTTP_OK ? jsonOf(answer.text) : undefined;
+    if (!Array.isArray(body)) return null;
+    const projects = body.map(projectOf);
+    return projects.every((project) => project !== null) ? projects : null;
+}
+
+async function listGroupProjects(
+    send: Send,
+    pageSize: number,
+    { host, token, caBundle, signal, group }: Target & { group: string }
+): Promise<ProjectListing> {
+    const projects = new Map<string, GitlabProject>();
+    for (let page = 1; page <= MAX_LIST_PAGES; page += 1) {
+        const query = new URLSearchParams({
+            include_subgroups: 'true',
+            simple: 'true',
+            archived: 'false',
+            per_page: String(pageSize),
+            page: String(page),
+        });
+        const path = `/api/v4/groups/${encodeURIComponent(group)}/projects?${query}`;
+        const read = pageOf(
+            await send({ host, path, headers: authorized(token), caBundle, signal, maxBytes: LIST_BODY_LIMIT })
+        );
+        if (read === null) return { ok: false };
+        for (const project of read) projects.set(project.path, project);
+        if (read.length < pageSize) return { ok: true, projects: [...projects.values()] };
+    }
+    return { ok: false };
+}
+
+async function projectAccess(
+    send: Send,
+    { host, token, caBundle, signal, project }: Target & { project: string }
+): Promise<ProjectAccess> {
+    const path = `/api/v4/projects/${encodeURIComponent(project)}`;
+    const answer = await send({ host, path, headers: authorized(token), caBundle, signal });
+    if (!answer.ok) return { ok: false, reason: 'inconclusive' };
+    if (answer.status === HTTP_FORBIDDEN || answer.status === HTTP_NOT_FOUND) return { ok: true, level: 0 };
+    const body = answer.status === HTTP_OK ? jsonOf(answer.text) : undefined;
+    const permissions = isObject(body) && isObject(body.permissions) ? body.permissions : null;
+    const levels = permissions && [levelOf(permissions.project_access), levelOf(permissions.group_access)];
+    if (!levels || levels.includes(null)) return { ok: false, reason: 'inconclusive' };
+    return { ok: true, level: Math.max(...(levels as number[])) };
+}
+
 export function createGitlabApi({
     baseUrl = (host) => `https://${host}`,
     probeTimeoutMs = GITLAB_PROBE_TIMEOUT_MS,
+    pageSize = DEFAULT_PAGE_SIZE,
 }: {
     /** The origin a host is reached at; `https` always, a test points it at the fake. */
     baseUrl?: (host: string) => string;
     probeTimeoutMs?: number;
+    /** Projects asked per listing page. */
+    pageSize?: number;
 } = {}): GitlabApi {
-    const request = ({ host, path, method = 'GET', headers = {}, body, caBundle, signal }: GitlabRequest) =>
+    const request = ({
+        host,
+        path,
+        method = 'GET',
+        headers = {},
+        body,
+        caBundle,
+        signal,
+        maxBytes = PROBE_BODY_LIMIT,
+    }: GitlabRequest) =>
         new Promise<GitlabResponse>((resolve) => {
             let url: URL;
             try {
@@ -189,7 +313,7 @@ export function createGitlabApi({
                 let size = 0;
                 response.on('data', (chunk: Buffer) => {
                     size += chunk.length;
-                    if (size > PROBE_BODY_LIMIT) return done({ ok: false, reason: 'malformed', sent: true });
+                    if (size > maxBytes) return done({ ok: false, reason: 'malformed', sent: true });
                     chunks.push(chunk);
                 });
                 response.on('end', () =>
@@ -205,6 +329,8 @@ export function createGitlabApi({
         });
     return {
         request,
+        listGroupProjects: (target) => listGroupProjects(request, pageSize, target),
+        projectAccess: (target) => projectAccess(request, target),
         probe: async ({ host, caBundle }) => {
             const answer = await request({ host, path: '/api/v4/version', caBundle });
             return answer.ok ? judge(answer.status, answer.text) : { reachable: false, reason: answer.reason };

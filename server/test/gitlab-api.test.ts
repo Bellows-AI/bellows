@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { createServer as createHttpsServer } from 'node:https';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -160,5 +160,139 @@ describe('createGitlabApi.request: no connection is reused', () => {
         expect(lost).toEqual({ ok: false, reason: 'timeout', sent: true });
         expect(received).toEqual(['GET /warm', 'POST /oauth/token']);
         expect(sockets.size).toBe(2);
+    });
+});
+
+/** The group project listing the admin picks tracked repos from, and the member's project access check. */
+const json = (res: ServerResponse, status: number, body: unknown) =>
+    void res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+const listed = (path: string, branch: string | null = 'main') => ({
+    path_with_namespace: path,
+    default_branch: branch,
+});
+
+describe('createGitlabApi.listGroupProjects', () => {
+    it('reads every page until a short one, subgroups included, with the token as a bearer and no repeats', async () => {
+        const seen: string[] = [];
+        const host = await serve((req, res) => {
+            const url = new URL(req.url ?? '', 'http://x');
+            seen.push(`${url.pathname}?${url.searchParams.get('page')}&${req.headers.authorization}`);
+            const page = Number(url.searchParams.get('page'));
+            const pages = [[listed('g/a'), listed('g/b')], [listed('g/b'), listed('g/sub/c')], [listed('g/d', null)]];
+            json(res, 200, pages[page - 1] ?? []);
+        });
+        const api = createGitlabApi({ baseUrl: (h) => `http://${h}`, probeTimeoutMs: 1000, pageSize: 2 });
+        const result = await api.listGroupProjects({ host, token: 'tok', group: 'g' });
+        expect(result).toEqual({
+            ok: true,
+            projects: [
+                { path: 'g/a', defaultBranch: 'main' },
+                { path: 'g/b', defaultBranch: 'main' },
+                { path: 'g/sub/c', defaultBranch: 'main' },
+                { path: 'g/d', defaultBranch: null },
+            ],
+        });
+        expect(seen).toEqual([
+            '/api/v4/groups/g/projects?1&Bearer tok',
+            '/api/v4/groups/g/projects?2&Bearer tok',
+            '/api/v4/groups/g/projects?3&Bearer tok',
+        ]);
+    });
+
+    it('lists nothing for a group the user cannot see, and no listing at all for any answer that is not a page', async () => {
+        const answer = (status: number, body: unknown) => serve((_req, res) => json(res, status, body));
+        const api = httpApi();
+        expect(
+            await api.listGroupProjects({
+                host: await answer(404, { message: '404 Group Not Found' }),
+                token: 't',
+                group: 'g',
+            })
+        ).toEqual({ ok: true, projects: [] });
+        for (const status of [401, 403, 500, 502]) {
+            expect(await api.listGroupProjects({ host: await answer(status, {}), token: 't', group: 'g' })).toEqual({
+                ok: false,
+            });
+        }
+        for (const body of [
+            { not: 'a list' },
+            [listed('no-slash')],
+            [{ default_branch: 'main' }],
+            [listed('g/a', 5 as never)],
+        ]) {
+            expect(await api.listGroupProjects({ host: await answer(200, body), token: 't', group: 'g' })).toEqual({
+                ok: false,
+            });
+        }
+        const lost = await serve((req) => void req.socket.destroy());
+        expect(await api.listGroupProjects({ host: lost, token: 't', group: 'g' })).toEqual({ ok: false });
+    });
+
+    it('is not complete after a failed later page, and never past its page cap', async () => {
+        const failing = await serve((req, res) => {
+            const page = Number(new URL(req.url ?? '', 'http://x').searchParams.get('page'));
+            if (page === 1) json(res, 200, [listed('g/a'), listed('g/b')]);
+            else json(res, 502, {});
+        });
+        const api = createGitlabApi({ baseUrl: (h) => `http://${h}`, probeTimeoutMs: 1000, pageSize: 2 });
+        expect(await api.listGroupProjects({ host: failing, token: 't', group: 'g' })).toEqual({ ok: false });
+        const endless = await serve((_req, res) => json(res, 200, [listed('g/a'), listed('g/b')]));
+        expect(await api.listGroupProjects({ host: endless, token: 't', group: 'g' })).toEqual({ ok: false });
+    });
+
+    it('encodes the group path', async () => {
+        const seen: string[] = [];
+        const host = await serve((req, res) => {
+            seen.push(req.url ?? '');
+            json(res, 200, []);
+        });
+        await httpApi().listGroupProjects({ host, token: 't', group: 'a b/c' });
+        expect(seen[0]).toContain('/api/v4/groups/a%20b%2Fc/projects?');
+    });
+});
+
+describe('createGitlabApi.projectAccess', () => {
+    const project = (permissions: unknown) => ({ id: 1, permissions });
+    const ask = async (status: number, body: unknown) => {
+        const host = await serve((_req, res) => json(res, status, body));
+        return httpApi().projectAccess({ host, token: 't', project: 'g/sub/p' });
+    };
+
+    it('is the most of the project and group levels, and none when the user holds neither', async () => {
+        expect(await ask(200, project({ project_access: { access_level: 30 }, group_access: null }))).toEqual({
+            ok: true,
+            level: 30,
+        });
+        expect(
+            await ask(200, project({ project_access: { access_level: 20 }, group_access: { access_level: 40 } }))
+        ).toEqual({ ok: true, level: 40 });
+        expect(await ask(200, project({ project_access: null, group_access: null }))).toEqual({ ok: true, level: 0 });
+    });
+
+    it('reads a 403 or a 404 as no access, and encodes the project path', async () => {
+        expect(await ask(404, { message: '404 Project Not Found' })).toEqual({ ok: true, level: 0 });
+        expect(await ask(403, { message: '403 Forbidden' })).toEqual({ ok: true, level: 0 });
+        const seen: string[] = [];
+        const host = await serve((req, res) => {
+            seen.push(req.url ?? '');
+            json(res, 404, {});
+        });
+        await httpApi().projectAccess({ host, token: 't', project: 'g/sub/p' });
+        expect(seen).toEqual(['/api/v4/projects/g%2Fsub%2Fp']);
+    });
+
+    it('is inconclusive for a 401, a 5xx, a malformed body, a missing permission, and no answer', async () => {
+        const inconclusive = { ok: false, reason: 'inconclusive' };
+        expect(await ask(401, { message: '401 Unauthorized' })).toEqual(inconclusive);
+        expect(await ask(500, {})).toEqual(inconclusive);
+        expect(await ask(503, {})).toEqual(inconclusive);
+        expect(await ask(200, [])).toEqual(inconclusive);
+        expect(await ask(200, { id: 1 })).toEqual(inconclusive);
+        expect(await ask(200, project({ project_access: { access_level: 'x' }, group_access: null }))).toEqual(
+            inconclusive
+        );
+        expect(await ask(200, project({ project_access: null }))).toEqual(inconclusive);
+        const lost = await serve((req) => void req.socket.destroy());
+        expect(await httpApi().projectAccess({ host: lost, token: 't', project: 'g/p' })).toEqual(inconclusive);
     });
 });

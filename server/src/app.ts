@@ -45,6 +45,8 @@ import { orgExecutorRoutes } from './routes/org-executors.js';
 import { createConnectorRegistry, type ConnectorRegistry } from './notifications/connector.js';
 import { gitlabConnectionRoutes } from './routes/gitlab-connections.js';
 import { gitlabLinkRoutes } from './routes/gitlab-links.js';
+import { gitlabTrackingRoutes } from './routes/gitlab-tracking.js';
+import { createGitlabApi, type GitlabApi } from './gitlab/gitlab-api.js';
 import { notificationSubscriptionRoutes } from './routes/notification-subscriptions.js';
 import { orgMemberRoutes } from './routes/org-members.js';
 import { auditRoutes } from './routes/audit.js';
@@ -183,6 +185,8 @@ export interface AppDeps {
     memberGrants?: MemberForgeGrants | undefined;
     /** A person's GitLab authorization (the member's link, the admin's activation); the routes exist with it and `memberGrants`. */
     gitlabLinks?: GitlabLinks | undefined;
+    /** The board's GitLab HTTP client: tracking lists projects through it, the start gate checks a member's access. */
+    gitlabApi?: GitlabApi | undefined;
     /** The GitHub REST writer behind the PR route; absent, it is built from the configured API URL, and with none the route answers GITHUB_UNAVAILABLE. */
     prWriter?: PrWriter | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
@@ -283,10 +287,11 @@ async function registerAccountRoutes(
         orgs,
         memberGrants,
         gitlabLinks,
+        gitlabApi = createGitlabApi(),
         oauth,
         version,
         metrics,
-    }: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'gitlabLinks' | 'oauth' | 'metrics'> & {
+    }: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'gitlabLinks' | 'gitlabApi' | 'oauth' | 'metrics'> & {
         auth: AuthStore;
         version: string;
     }
@@ -304,7 +309,11 @@ async function registerAccountRoutes(
         await app.register(webhookRoutes({ store: auth, orgs, secret: config.webhookSecret, memberGrants }));
     }
     await app.register(forgeGrantRoutes({ memberGrants }));
-    if (memberGrants && gitlabLinks) await app.register(gitlabLinkRoutes({ orgs, links: gitlabLinks, memberGrants }));
+    if (memberGrants && gitlabLinks) {
+        await app.register(gitlabLinkRoutes({ orgs, links: gitlabLinks, memberGrants }));
+        const publicUrl = config.auth.mode === 'github' ? config.auth.publicUrl : '';
+        await app.register(gitlabTrackingRoutes({ orgs, auth, memberGrants, api: gitlabApi, publicUrl }));
+    }
     await registerMcp(app, { config, auth, oauth, version, metrics });
 }
 
@@ -472,6 +481,7 @@ export async function buildApp({
     uploadCapabilities,
     identity,
     gitlabLinks,
+    gitlabApi,
     memberGrants,
     prWriter,
     appSlug,
@@ -545,7 +555,17 @@ export async function buildApp({
         await app.register(
             authRoutes({ config, store: auth, orgs, identity, memberGrants, appSlug, installationListing, oauth })
         );
-        await registerAccountRoutes(app, { config, auth, orgs, memberGrants, gitlabLinks, oauth, version, metrics });
+        await registerAccountRoutes(app, {
+            config,
+            auth,
+            orgs,
+            memberGrants,
+            gitlabLinks,
+            gitlabApi,
+            oauth,
+            version,
+            metrics,
+        });
     }
     await app.register(skillRoutes(skillCatalog, orgs, { version }));
     await app.register(skillStoreRoutes({ orgs, builtin: skillCatalog }));
@@ -609,26 +629,41 @@ export async function buildApp({
             publicUrl: config.integrations.callbackOrigin,
         })
     );
-    // The member roster and its role writes (issue 410), the same person-shaped surface: the
-    // caller's role decides, the store has no role of its own to check.
-    // The organization's audit log export is an admin read beside the roster; the operator's org status surface
-    // is the same store's (OPERATOR_GITHUB_IDS decides in the auth hook).
-    if (auth) {
-        await app.register(orgMemberRoutes({ store: auth, roster: githubRoster, auth: config.auth }));
-        await app.register(auditRoutes({ store: auth }));
-        await app.register(operatorRoutes({ store: auth }));
-        await app.register(operatorDriverCredentialRoutes({ credentials: driverCredentials }));
-    }
+    if (auth) await registerRosterRoutes(app, { config, auth, githubRoster, driverCredentials });
 
-    if (config.webRoot) {
-        const { default: fastifyStatic } = await import('@fastify/static');
-        await app.register(fastifyStatic, { root: config.webRoot });
-        app.setNotFoundHandler(async (request, reply) => {
-            if (request.url.startsWith('/api/') || request.url.startsWith('/.well-known/'))
-                return reply.code(HTTP_NOT_FOUND).send({ error: 'Not found' });
-            return reply.sendFile('index.html');
-        });
-    }
+    await registerStaticWeb(app, config);
 
     return app;
+}
+
+/**
+ * The member roster and its role writes (issue 410), the same person-shaped surface: the caller's role decides, the
+ * store has no role of its own to check. The organization's audit log export is an admin read beside the roster; the
+ * operator's org status surface is the same store's (OPERATOR_GITHUB_IDS decides in the auth hook).
+ */
+async function registerRosterRoutes(
+    app: FastifyInstance,
+    {
+        config,
+        auth,
+        githubRoster,
+        driverCredentials,
+    }: Pick<AppDeps, 'config' | 'githubRoster' | 'driverCredentials'> & { auth: AuthStore }
+): Promise<void> {
+    await app.register(orgMemberRoutes({ store: auth, roster: githubRoster, auth: config.auth }));
+    await app.register(auditRoutes({ store: auth }));
+    await app.register(operatorRoutes({ store: auth }));
+    await app.register(operatorDriverCredentialRoutes({ credentials: driverCredentials }));
+}
+
+/** The built SPA, when there is one: static files, and every non-API path falling through to `index.html`. */
+async function registerStaticWeb(app: FastifyInstance, config: AppConfig): Promise<void> {
+    if (!config.webRoot) return;
+    const { default: fastifyStatic } = await import('@fastify/static');
+    await app.register(fastifyStatic, { root: config.webRoot });
+    app.setNotFoundHandler(async (request, reply) => {
+        if (request.url.startsWith('/api/') || request.url.startsWith('/.well-known/'))
+            return reply.code(HTTP_NOT_FOUND).send({ error: 'Not found' });
+        return reply.sendFile('index.html');
+    });
 }

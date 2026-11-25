@@ -1,10 +1,11 @@
-import { githubRepo, sameRepo, type RepoRef } from '@factory-ai/core';
+import { GITLAB_SETTINGS_PATH, githubRepo, gitlabHostOf, sameRepo, type RepoRef } from '@factory-ai/core';
 import type { Repo } from '../config.js';
 import { GITHUB_FORGE } from '../integrations/providers/github-user.js';
 
 /**
  * The forges the board knows (docs/connections.md): a forge registers here once, and the gate, the claim's hold and the
- * refusal text all read it. `github` now; `gitlab:<host>` registers its own entry with its provider.
+ * refusal text all read it. `github` is one entry; every `gitlab:<host>` shares one shape (the settings page the member
+ * links the instance from), so no entry is kept per host.
  */
 interface ForgeEntry {
     /** What a member reads in a refusal. */
@@ -15,9 +16,14 @@ interface ForgeEntry {
 
 const FORGES = new Map<string, ForgeEntry>([[GITHUB_FORGE, { label: 'GitHub', signInPath: '/api/auth/github' }]]);
 
-export const forgeLabel = (forge: string): string => FORGES.get(forge)?.label ?? forge;
+const entryOf = (forge: string): ForgeEntry | undefined => {
+    const host = gitlabHostOf(forge);
+    return host === null ? FORGES.get(forge) : { label: `GitLab (${host})`, signInPath: GITLAB_SETTINGS_PATH };
+};
 
-export const forgeSignInPath = (forge: string): string | null => FORGES.get(forge)?.signInPath ?? null;
+export const forgeLabel = (forge: string): string => entryOf(forge)?.label ?? forge;
+
+export const forgeSignInPath = (forge: string): string | null => entryOf(forge)?.signInPath ?? null;
 
 /** Where a member reconnects the forge, relative to the board's origin: the sign-in, returning to `returnTo`. */
 export const forgeConnectPath = (forge: string, who: { orgId: string; returnTo: string }): string | null => {
