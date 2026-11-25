@@ -131,6 +131,13 @@ export const registerGitlab = (forge) => {
         pairs.delete(pair.refresh);
     };
 
+    /** A code issued without a challenge needs no verifier; with one, the verifier must produce it. */
+    const verifies = ({ challenge, method }, verifier) => {
+        if (challenge === null) return true;
+        if (typeof verifier !== 'string' || verifier === '') return false;
+        return (method === 'S256' ? createHash('sha256').update(verifier).digest('base64url') : verifier) === challenge;
+    };
+
     /** The registered client the request names, with the right secret; undefined otherwise. */
     const authenticated = ({ client_id: id, client_secret: secret }) => {
         const client = clients.get(id);
@@ -180,6 +187,9 @@ export const registerGitlab = (forge) => {
                 clientId: query.client_id ?? null,
                 redirectUri: query.redirect_uri,
                 scope,
+                // PKCE, as GitLab enforces it: a code issued with a challenge exchanges only with its verifier.
+                challenge: query.code_challenge ?? null,
+                method: query.code_challenge_method ?? 'plain',
                 expiresAt: forge.clock() + GITLAB_CODE_TTL_S * 1000,
             });
             redirect({ code });
@@ -215,7 +225,8 @@ export const registerGitlab = (forge) => {
                 issued === undefined ||
                 issued.expiresAt <= forge.clock() ||
                 issued.redirectUri !== body.redirect_uri ||
-                issued.clientId !== body.client_id;
+                issued.clientId !== body.client_id ||
+                !verifies(issued, body.code_verifier);
             if (refused) {
                 if (issued?.expiresAt <= forge.clock()) codes.delete(body.code);
                 return forge.json(response, 400, GRANT_ERROR);
@@ -223,7 +234,7 @@ export const registerGitlab = (forge) => {
             codes.delete(body.code);
             forge.json(response, 200, issuePair(issued.login, issued.clientId, issued.scope));
         },
-        { auth: false }
+        { auth: false, before: (ctx) => faulted(ctx) }
     );
     forge.route(
         'POST',
@@ -247,6 +258,12 @@ export const registerGitlab = (forge) => {
         const fault = faults.find((entry) => url.pathname.includes(entry.pathIncludes));
         if (!fault) return false;
         if (fault.remaining !== null && --fault.remaining <= 0) faults.splice(faults.indexOf(fault), 1);
+        if (fault.mode === 'lost') {
+            // The handler runs (a refresh token is spent) and its answer never leaves: the board sees a timeout.
+            response.writeHead = () => response;
+            response.end = () => response;
+            return false;
+        }
         if (fault.mode === 'status') forge.json(response, fault.status, { message: `${fault.status} injected fault` });
         else if (fault.mode === 'malformed') {
             response.writeHead(200, { 'content-type': 'application/json' });
@@ -1145,11 +1162,12 @@ export const registerGitlab = (forge) => {
         clients.set(clientId, { secret: clientSecret, redirectUris, scopes });
         forge.json(response, 200, { clientId: body.clientId });
     });
-    // `mode`: status (with `status`), malformed (a 200 whose body is not JSON), timeout (never answered), none (clears
+    // `mode`: status (with `status`), malformed (a 200 whose body is not JSON), timeout (never answered), lost (handled, answer
+    // dropped), none (clears
     // every fault). `pathIncludes` limits it to API paths containing the text; `count` to that many calls.
     control('faults', ({ response, body }) => {
         if (body.mode === 'none') faults.length = 0;
-        else if (['status', 'malformed', 'timeout'].includes(body.mode)) {
+        else if (['status', 'malformed', 'timeout', 'lost'].includes(body.mode)) {
             faults.push({
                 mode: body.mode,
                 status: Number(body.status ?? 500),

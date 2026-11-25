@@ -35,10 +35,15 @@ export interface StoreMemberGrantInput {
     /** The forge's identity of the member (the GitHub user id): what the grant's lineage is unique on in the org. */
     externalAccountId: string;
     tokens: MemberGrantTokens;
+    /**
+     * The forge connection the grant is published against (GitLab). The grant row is written, and the connection row
+     * locked, in one transaction; a connection that is gone (or not active, when `requireActive`) writes nothing.
+     */
+    connection?: { id: string; requireActive: boolean } | undefined;
 }
 
 /** Why a sign-in's tokens did not become the grant. The previous grant, if any, stands untouched. */
-export type StoreMemberGrantRefusal = 'conflict' | 'busy' | 'pending' | 'lost' | 'unavailable';
+export type StoreMemberGrantRefusal = 'conflict' | 'busy' | 'pending' | 'lost' | 'unavailable' | 'connection-changed';
 export type StoreMemberGrantResult = { ok: true } | { ok: false; reason: StoreMemberGrantRefusal };
 
 export type MemberTokenResult =
@@ -104,6 +109,11 @@ async function readMemberGrant(deps: Settings, orgId: string, userId: string, fo
     const rows = await orgSql(deps.sql, orgId)<GrantRow[]>`
         select id, status, secret_ref, secret_version, secret_wedged_at from integration_grant
         where org_id = ${orgId} and principal_user_id = ${userId} and provider = ${forge} and status <> 'revoked'
+          and (forge_connection_id is null or exists (
+              select 1 from forge_connection c
+              where c.org_id = integration_grant.org_id and c.id = integration_grant.forge_connection_id
+                and c.removed_at is null and c.active
+          ))
         order by updated_at desc
         limit 1
     `;
@@ -115,9 +125,10 @@ async function readMemberGrant(deps: Settings, orgId: string, userId: string, fo
  * usable until the lineage's `reconsent` commit has stored the secret and activated it, so a half-stored grant is never
  * live. A racing insert of the same account finds the other's row.
  */
-async function rowForSignIn(deps: Settings, input: StoreMemberGrantInput): Promise<string | 'conflict'> {
-    const { orgId, userId, forge, externalAccountId } = input;
+async function rowForSignIn(deps: Settings, input: StoreMemberGrantInput): Promise<string | 'conflict' | 'changed'> {
+    const { orgId, userId, forge, externalAccountId, connection } = input;
     const db = orgSql(deps.sql, orgId);
+    if (connection) return rowForConnection(deps, input, connection);
     const find = () => grantOfAccount({ sql: db, orgId }, forge, externalAccountId);
     let existing = await find();
     if (!existing) {
@@ -132,6 +143,59 @@ async function rowForSignIn(deps: Settings, input: StoreMemberGrantInput): Promi
     }
     if (!existing || existing.principalUserId !== userId) return 'conflict';
     return existing.id;
+}
+
+class ConnectionChanged extends Error {}
+const FOREIGN_KEY_VIOLATION = '23503';
+
+/**
+ * The same row, published against a connection in one transaction: the connection row is locked first (the order
+ * removal and activation take: connection, then grants), and a connection that is not live writes nothing.
+ * Nothing is left behind for a callback that lost the race.
+ */
+async function rowForConnection(
+    deps: Settings,
+    input: StoreMemberGrantInput,
+    connection: { id: string; requireActive: boolean }
+): Promise<string | 'conflict' | 'changed'> {
+    const { orgId, userId, forge, externalAccountId } = input;
+    try {
+        return await orgSql(deps.sql, orgId).begin(async (tx) => {
+            const live = await tx`
+                select 1 from forge_connection
+                where org_id = ${orgId} and id = ${connection.id} and removed_at is null
+                  and (active or not ${connection.requireActive}::boolean)
+                for update
+            `;
+            if (live.length === 0) throw new ConnectionChanged();
+            const find = () => grantOfAccount({ sql: tx as unknown as Sql, orgId }, forge, externalAccountId);
+            let existing = await find();
+            if (existing && existing.principalUserId !== userId) return 'conflict';
+            if (!existing) {
+                await tx`
+                    insert into integration_grant
+                        (org_id, principal_kind, principal_user_id, provider, external_account_id, authority, status,
+                         forge_connection_id)
+                    values (${orgId}, 'user', ${userId}, ${forge}, ${externalAccountId}, ${tx.json({ scopes: [] })},
+                            'reconnect_required', ${connection.id})
+                    on conflict do nothing
+                `;
+                existing = await find();
+            } else {
+                await tx`
+                    update integration_grant set forge_connection_id = ${connection.id}, updated_at = now()
+                    where id = ${existing.id} and org_id = ${orgId}
+                `;
+            }
+            if (!existing || existing.principalUserId !== userId) return 'conflict';
+            return existing.id;
+        });
+    } catch (error) {
+        if (error instanceof ConnectionChanged || (error as { code?: string }).code === FOREIGN_KEY_VIOLATION) {
+            return 'changed';
+        }
+        throw error;
+    }
 }
 
 const payloadOf = (deps: Settings, tokens: MemberGrantTokens): GrantPayload => ({
@@ -158,6 +222,7 @@ async function storeGrant(deps: Settings, input: StoreMemberGrantInput): Promise
     await deps.ready;
     const grantId = await rowForSignIn(deps, input);
     if (grantId === 'conflict') return { ok: false, reason: 'conflict' };
+    if (grantId === 'changed') return { ok: false, reason: 'connection-changed' };
     const lineage = deps.lineageOf(input.orgId);
     // The sign-in is a fresh consent: it replaces the lineage's credentials under the same claim a reconnect takes.
     const claimed = await lineage.claimLineage(grantId, 'reconsent', { rotates: true });

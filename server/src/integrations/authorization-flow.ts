@@ -84,7 +84,7 @@ async function start(
     const userId = ctx.principal.userId;
     const hooks = fc.providers(input.provider);
     if (!hooks) return refuse('unknown-provider');
-    const client = fc.clients(input.provider);
+    const client = await fc.clients(input.provider);
     const redirectUri = redirectUriOf(fc, input.provider);
     if (!client || !redirectUri) return refuse('not-configured');
     const asked = askedOf(input, hooks);

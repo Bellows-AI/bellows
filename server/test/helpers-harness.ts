@@ -2,6 +2,7 @@ import { modelKeyRequired } from '@factory-ai/core';
 import { type AppDeps, buildApp } from '../src/app.js';
 import type { GitHubIdentityClient } from '../src/auth/github.js';
 import type { AuthStore } from '../src/auth/store.js';
+import type { GitlabLinks } from '../src/integrations/gitlab-link.js';
 import type { MemberForgeGrants } from '../src/integrations/member-forge-grant.js';
 import type { AppConfig, AuthConfig } from '../src/config.js';
 import { LOCAL_ORG_ID } from '../src/identifiers.js';
@@ -125,6 +126,7 @@ export async function harness({
     auth,
     identity,
     memberGrants,
+    gitlabLinks,
     repos: repoList,
     userExecutors,
     envVars,
@@ -146,6 +148,8 @@ export async function harness({
     identity?: GitHubIdentityClient;
     /** The member forge grants a sign-in keeps; absent, sign-in keeps none (the offline shape). */
     memberGrants?: MemberForgeGrants;
+    /** The GitLab link service; with `memberGrants` the link and activation routes exist. */
+    gitlabLinks?: GitlabLinks;
     /** Which repos this org measures. Defaults to the one the fixture PRs are stamped with. */
     repos?: readonly { owner: string; name: string }[];
     /** Absent by default, which leaves the executor routes answering 503. */
@@ -198,6 +202,7 @@ export async function harness({
         auth,
         identity,
         memberGrants,
+        gitlabLinks,
         appSlug,
         installationListing,
         now: () => clock,

@@ -165,11 +165,18 @@ async function lose(ctx: LineageCtx, claim: LineageClaim, rotating: boolean): Pr
  * are revoked only for a CONFIRMED revoked grant: a holder that lost its claim may share its refresh token with the
  * claim's new holder (a non-rotating provider), and revoking it would kill the grant. An unconfirmed read revokes nothing.
  */
-async function dropped(ctx: LineageCtx, claim: LineageClaim, payload: GrantPayload): Promise<CommitResult> {
+async function dropped(
+    ctx: LineageCtx,
+    claim: LineageClaim,
+    payload: GrantPayload,
+    rotating: boolean
+): Promise<CommitResult> {
     const current = await readLineage(ctx, claim.grantId).catch(() => null);
     const revoked = current?.status === 'revoked';
     if (revoked) await dropTokens(ctx, claim, payload);
-    await endClaim(ctx, claim);
+    // A rotating refresh's token is spent and its replacement cannot be recorded (the lease lapsed, the grant was
+    // revoked): the person reconnects. Never an ordinary release, which would leave the spent token stored.
+    await endClaim(ctx, claim, { reconnect: rotating });
     return { ok: false, reason: revoked ? 'revoked' : 'claim-lost' };
 }
 
@@ -213,7 +220,7 @@ export async function commitLineage(
     const ref = (fresh ? createSecretRef() : claim.secretRef) as SecretRef;
     const operationId = await ctx.secrets.issueOperationId().catch(() => null);
     if (!operationId) return lose(ctx, claim, rotating);
-    if (!(await recordOperation(ctx, claim, operationId, ref))) return dropped(ctx, claim, payload);
+    if (!(await recordOperation(ctx, claim, operationId, ref))) return dropped(ctx, claim, payload, rotating);
 
     const persisted = await persist(ctx, claim, { fresh, ref, operationId, bytes: encodeGrantPayload(payload) });
     if (persisted.kind === 'pending') {

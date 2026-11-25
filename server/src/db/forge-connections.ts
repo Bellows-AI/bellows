@@ -3,7 +3,7 @@ import type { Sql } from 'postgres';
 import type { GitlabApi, ProbeReason, ProbeResult } from '../gitlab/gitlab-api.js';
 import type { SecretDiagnostic, SecretIdentity, SecretRef, SecretStore } from '../secrets/secret-store.js';
 import { createSecretRef } from '../secrets/secret-input.js';
-import { createEnvSecrets, EnvSecretError } from './env-secrets.js';
+import { createEnvSecrets, decodeEnvSecret, EnvSecretError } from './env-secrets.js';
 import { type OrgPurgeDeps, retireSecrets } from './org-purge.js';
 
 /**
@@ -54,8 +54,24 @@ export interface ConnectionView {
     allowedGroups: string[];
     hasCaBundle: boolean;
     active: boolean;
+    /** The instance version activation confirmed; null while pending. */
+    version: string | null;
+    /** Why the last authenticated check refused the instance: a version below the minimum. Null otherwise. */
+    activationRefusal: ActivationRefusal | null;
     probe: { status: 'reachable' | 'unreachable'; reason: ProbeReason | null; at: string };
     createdAt: string;
+}
+
+export type ActivationRefusal = 'version-too-old';
+
+/** What the OAuth hooks call GitLab as: the application the admin registered, read back from the secret store. */
+export interface GitlabApplication {
+    connectionId: string;
+    host: string;
+    clientId: string;
+    clientSecret: string;
+    caBundle: string | undefined;
+    active: boolean;
 }
 
 export type CreateConnectionResult = { ok: true; connection: ConnectionView } | { ok: false; reason: 'exists' };
@@ -71,6 +87,15 @@ export interface ForgeConnectionStore {
     create(input: ConnectionInput): Promise<CreateConnectionResult>;
     /** False when this organization has no such connection. Both secrets are retired with the row. */
     remove(id: string): Promise<boolean>;
+    /**
+     * The live connection's OAuth application by host, secrets read back; null for a confirmed absence. A failed or
+     * unconfirmed read throws: it is never "no connection".
+     */
+    application(host: string): Promise<GitlabApplication | null>;
+    /** The authenticated check confirmed the instance: the connection is active at `version`. False when gone. */
+    activate(id: string, version: string): Promise<boolean>;
+    /** The authenticated check refused the instance; the connection stays pending, with the reason. */
+    refuseActivation(id: string, reason: ActivationRefusal): Promise<boolean>;
 }
 
 interface Row {
@@ -81,6 +106,8 @@ interface Row {
     allowed_groups: string[];
     ca_secret_ref: string | null;
     active: boolean;
+    version: string | null;
+    activation_refusal: ActivationRefusal | null;
     probe_status: 'reachable' | 'unreachable';
     probe_reason: ProbeReason | null;
     probed_at: Date;
@@ -95,6 +122,8 @@ const toView = (row: Row): ConnectionView => ({
     allowedGroups: row.allowed_groups,
     hasCaBundle: row.ca_secret_ref !== null,
     active: row.active,
+    version: row.version,
+    activationRefusal: row.activation_refusal,
     probe: { status: row.probe_status, reason: row.probe_reason, at: row.probed_at.toISOString() },
     createdAt: row.created_at.toISOString(),
 });
@@ -103,7 +132,7 @@ const toView = (row: Row): ConnectionView => ({
 const reasonOf = (probe: ProbeResult): ProbeReason | null => (probe.reachable ? null : probe.reason);
 
 const COLUMNS = (sql: Sql) =>
-    sql`id, forge, host, client_id, allowed_groups, ca_secret_ref, active, probe_status, probe_reason, probed_at, created_at`;
+    sql`id, forge, host, client_id, allowed_groups, ca_secret_ref, active, version, activation_refusal, probe_status, probe_reason, probed_at, created_at`;
 
 export function createForgeConnectionStore({
     sql,
@@ -254,14 +283,41 @@ export function createForgeConnectionStore({
                 throw error;
             }
         },
+        async application(host) {
+            await gate();
+            return readApplication({ sql, orgId, secrets, host, deadlineMs: writeDeadlineMs });
+        },
+        async activate(id, version) {
+            await gate();
+            return markActivated(sql, orgId, id, version);
+        },
+        async refuseActivation(id, reason) {
+            await gate();
+            return markRefused(sql, orgId, id, reason);
+        },
         async remove(id) {
             await gate();
             // The tombstone is the durable record of the cleanup owed; a repeated delete of a tombstoned row retries it.
-            const rows = await sql<RetiringRow[]>`
-                update forge_connection set removed_at = coalesce(removed_at, now())
-                where org_id = ${orgId} and id = ${id}
-                returning org_id, id, secret_ref, ca_secret_ref
-            `;
+            // One transaction, the connection row first (the order publication takes: connection, then grants): the
+            // lock serializes with a grant being published, the tombstone and a set-based revocation of every grant
+            // naming the connection commit together, and secret cleanup runs only after that commit.
+            const rows = await sql.begin(async (tx): Promise<RetiringRow[]> => {
+                const locked = await tx<RetiringRow[]>`
+                    select org_id, id, secret_ref, ca_secret_ref from forge_connection
+                    where org_id = ${orgId} and id = ${id}
+                    for update
+                `;
+                if (!locked[0]) return [];
+                await tx`
+                    update forge_connection set removed_at = coalesce(removed_at, now()), active = false
+                    where org_id = ${orgId} and id = ${id}
+                `;
+                await tx`
+                    update integration_grant set status = 'revoked', revoked_at = now(), updated_at = now()
+                    where org_id = ${orgId} and forge_connection_id = ${id} and status <> 'revoked'
+                `;
+                return locked;
+            });
             if (!rows[0]) return false;
             if (!(await finishRemoval(sql, secrets, rows[0], cleanup()))) {
                 throw new EnvSecretError(id, 'unavailable', 'provider-unavailable');
@@ -269,6 +325,69 @@ export function createForgeConnectionStore({
             return true;
         },
     };
+}
+
+/** The live connection's application by host with its secrets read back; null for a confirmed absence. */
+async function readApplication({
+    sql,
+    orgId,
+    secrets,
+    host,
+    deadlineMs,
+}: {
+    sql: Sql;
+    orgId: string;
+    secrets: SecretStore;
+    host: string;
+    deadlineMs: number;
+}): Promise<GitlabApplication | null> {
+    const [row] = await sql<(Row & { secret_ref: string; secret_version: string; ca_secret_version: string | null })[]>`
+        select ${COLUMNS(sql)}, secret_ref, secret_version, ca_secret_version from forge_connection
+        where org_id = ${orgId} and forge = ${FORGE} and host = ${host.toLowerCase()} and removed_at is null
+    `;
+    if (!row) return null;
+    const read = async (part: ConnectionSecretPart, ref: string, version: string) => {
+        const stored = await secrets.readActive({
+            identity: gitlabConnectionIdentity(orgId, row.id, part),
+            ref: ref as SecretRef,
+            signal: AbortSignal.timeout(deadlineMs),
+        });
+        if (!stored.ok) throw new EnvSecretError(row.id, stored.error.code, stored.error.reason);
+        if (stored.version !== version) throw new EnvSecretError(row.id, 'version-mismatch', 'version-mismatch');
+        return decodeEnvSecret(stored.value);
+    };
+    const clientSecret = await read('client-secret', row.secret_ref, row.secret_version);
+    const caBundle =
+        row.ca_secret_ref === null || row.ca_secret_version === null
+            ? undefined
+            : await read('ca-bundle', row.ca_secret_ref, row.ca_secret_version);
+    return {
+        connectionId: row.id,
+        host: row.host,
+        clientId: row.client_id,
+        clientSecret,
+        caBundle,
+        active: row.active,
+    };
+}
+
+async function markActivated(sql: Sql, orgId: string, id: string, version: string): Promise<boolean> {
+    const rows = await sql`
+        update forge_connection
+        set active = true, version = ${version}, activated_at = now(), activation_refusal = null
+        where org_id = ${orgId} and id = ${id} and removed_at is null
+        returning id
+    `;
+    return rows.length > 0;
+}
+
+async function markRefused(sql: Sql, orgId: string, id: string, reason: ActivationRefusal): Promise<boolean> {
+    const rows = await sql`
+        update forge_connection set activation_refusal = ${reason}
+        where org_id = ${orgId} and id = ${id} and removed_at is null and not active
+        returning id
+    `;
+    return rows.length > 0;
 }
 
 /** What retiring a connection's secrets needs: the references, which exist from before the secrets do. */
@@ -311,7 +430,16 @@ async function finishRemoval(
         cleanup.diagnose({ event: 'cleanup-failed', kind: 'delete', ref: row.secret_ref as SecretRef });
         return false;
     }
-    await sql`delete from forge_connection where org_id = ${row.org_id} and id = ${row.id} and removed_at is not null`;
+    await sql.begin(async (tx) => {
+        // The connection row first, as everywhere; the grants were revoked at the tombstone. Detach them (the key is
+        // NO ACTION) so recovery can still destroy their secrets, then drop the row.
+        await tx`select 1 from forge_connection where org_id = ${row.org_id} and id = ${row.id} for update`;
+        await tx`
+            update integration_grant set forge_connection_id = null, status = 'revoked'
+            where org_id = ${row.org_id} and forge_connection_id = ${row.id}
+        `;
+        await tx`delete from forge_connection where org_id = ${row.org_id} and id = ${row.id} and removed_at is not null`;
+    });
     return true;
 }
 

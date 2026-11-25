@@ -164,14 +164,44 @@ export async function finalizeLineage(
     claim: { orgId: string; grantId: string; token: string },
     input: FinalizeInput
 ): Promise<FinalizeResult> {
+    // A grant published against a forge connection is written under that connection's row lock, taken FIRST (removal
+    // and publication take the connection, then its grants): one transaction for the lock and the write.
+    const run = (tx: Sql | TransactionSql) => finalizeIn(tx, claim, input);
+    return 'begin' in db ? db.begin((tx) => run(tx)) : run(db);
+}
+
+/** Whether the connection `grantId` was published against is live, under its row lock; null for a grant with none. */
+async function lockedConnectionLive(
+    tx: Sql | TransactionSql,
+    claim: { orgId: string; grantId: string }
+): Promise<boolean | null> {
+    const [grant] = await tx<{ forge_connection_id: string | null }[]>`
+        select forge_connection_id from integration_grant where id = ${claim.grantId} and org_id = ${claim.orgId}
+    `;
+    if (!grant?.forge_connection_id) return null;
+    const live = await tx`
+        select 1 from forge_connection
+        where org_id = ${claim.orgId} and id = ${grant.forge_connection_id} and removed_at is null
+        for update
+    `;
+    return live.length > 0;
+}
+
+async function finalizeIn(
+    db: Sql | TransactionSql,
+    claim: { orgId: string; grantId: string; token: string },
+    input: FinalizeInput
+): Promise<FinalizeResult> {
     const { orgId, grantId, token: claimToken } = claim;
+    const live = input.kind === 'destroy' ? null : await lockedConnectionLive(db, claim);
+    const gone = live === false;
     const rows =
         input.kind === 'destroy'
             ? await db<{ version: string }[]>`
                 update integration_grant
                 set secret_version = null, secret_destroyed_at = now(), updated_at = now(),
                     lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
-                    lineage_operation_id = null, lineage_secret_ref = null
+                    lineage_operation_id = null, lineage_secret_ref = null, lineage_sent_at = null
                 where id = ${grantId} and org_id = ${orgId} and lineage_claim = ${claimToken}
                   and lineage_claim_kind = 'destroy'
                 returning version
@@ -181,8 +211,9 @@ export async function finalizeLineage(
                 update integration_grant
                 set version = version + 1, secret_version = ${input.secretVersion},
                     authority = ${db.json(input.authority as never)}, updated_at = now(),
+                    status = case when ${gone}::boolean then 'revoked' else status end,
                     lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
-                    lineage_operation_id = null, lineage_secret_ref = null
+                    lineage_operation_id = null, lineage_secret_ref = null, lineage_sent_at = null
                 where id = ${grantId} and org_id = ${orgId} and lineage_claim = ${claimToken}
                   and lineage_claim_kind = 'refresh'
                 returning version
@@ -192,11 +223,11 @@ export async function finalizeLineage(
                 set version = version + 1, secret_version = ${input.secretVersion},
                     secret_ref = coalesce(lineage_secret_ref, secret_ref),
                     authority = ${db.json(input.authority as never)},
-                    status = case when status = 'revoked' then 'revoked' else 'active' end,
+                    status = case when status = 'revoked' or ${gone}::boolean then 'revoked' else 'active' end,
                     secret_wedged_at = null, secret_destroyed_at = null, updated_at = now(),
                     lineage_finalized_claim = ${claimToken},
                     lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
-                    lineage_operation_id = null, lineage_secret_ref = null
+                    lineage_operation_id = null, lineage_secret_ref = null, lineage_sent_at = null
                 where id = ${grantId} and org_id = ${orgId} and lineage_claim = ${claimToken}
                   and lineage_claim_kind = 'reconsent'
                 returning version

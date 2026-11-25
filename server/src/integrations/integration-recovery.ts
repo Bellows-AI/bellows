@@ -26,8 +26,10 @@ export interface IntegrationRuntimeDeps {
     /** The cross-org pool: the recovery pass enumerates every org's rows left mid-exchange. */
     crossOrgSql: Sql;
     secrets: SecretStore;
+    /** Asked with the org: a provider whose application belongs to the org (GitLab) answers per org. */
     providers: OAuthProviderLookup;
-    clients: AuthorizationFlowDeps['clients'];
+    /** Asked with the org, like `providers`. */
+    clients: (provider: string, orgId: string) => ReturnType<AuthorizationFlowDeps['clients']>;
     callbackOrigin: string | null;
     timing?: Partial<LineageTiming>;
     /** Closed diagnostics only: event names and IDs, never a token, a state or a provider body. */
@@ -59,7 +61,7 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
                 sql: orgSql(deps.sql, orgId),
                 orgId,
                 secrets: deps.secrets,
-                providers: deps.providers,
+                providers: (provider) => deps.providers(provider, orgId),
                 ...(deps.timing ? { timing: deps.timing } : {}),
                 log: (event) => log({ source: 'lineage', ...event }),
             });
@@ -75,8 +77,8 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
                 orgId,
                 secrets: deps.secrets,
                 lineage: lineageOf(orgId),
-                providers: deps.providers,
-                clients: deps.clients,
+                providers: (provider) => deps.providers(provider, orgId),
+                clients: (provider) => deps.clients(provider, orgId),
                 callbackOrigin: deps.callbackOrigin,
                 log: (event) => log({ source: 'authorization', ...event }),
             });
@@ -92,7 +94,7 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
                 orgId,
                 secrets: deps.secrets,
                 lineage: lineageOf(orgId),
-                providers: deps.providers,
+                providers: (provider) => deps.providers(provider, orgId),
             });
             resolvers.set(orgId, resolver);
         }

@@ -83,7 +83,8 @@ export interface AuthorizationFlowDeps {
     secrets: SecretStore;
     lineage: GrantLineage;
     providers: OAuthProviderLookup;
-    clients: (provider: string) => AuthorizationClient | undefined;
+    /** The OAuth client of a provider for this org; may read it (GitLab's is the org's own), so it may be async. */
+    clients: (provider: string) => AuthorizationClient | undefined | Promise<AuthorizationClient | undefined>;
     /** The public origin of the board, or null when none is configured (`startAuthorization` then refuses). */
     callbackOrigin: string | null;
     /** How long a started transaction waits for its callback. */

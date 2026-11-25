@@ -105,6 +105,8 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['GET', '/api/env', 'read', MEMBER_ROLE],
     // Where the caller stands on a forge's grant: credential-adjacent, so never reachable by a scoped grant.
     ['GET', '/api/forge-grants', 'none', MEMBER_ROLE],
+    ['GET', '/api/forge-grants/gitlab', 'none', MEMBER_ROLE],
+    ['GET', '/api/forge-grants/gitlab/callback', 'none', MEMBER_ROLE],
     ['GET', '/api/integrations', 'read', MEMBER_ROLE],
     ['GET', '/api/integrations/catalog', 'read', MEMBER_ROLE],
     ['GET', '/api/integrations/:provider/callback', 'none', MEMBER_ROLE],
@@ -186,6 +188,8 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['POST', '/api/org/skills', 'none', ADMIN_ROLE],
     ['POST', '/api/org/skills/:id/versions', 'none', ADMIN_ROLE],
     ['POST', '/api/org/gitlab-connections', 'none', ADMIN_ROLE],
+    ['POST', '/api/org/gitlab-connections/:id/activation', 'none', ADMIN_ROLE],
+    ['POST', '/api/forge-grants/gitlab/:id/link', 'none', MEMBER_ROLE],
     ['POST', '/api/org/notification-subscriptions', 'none', ADMIN_ROLE],
     ['POST', '/api/org/notification-subscriptions/:id/test', 'none', ADMIN_ROLE],
     ['POST', '/api/tokens', 'none', MEMBER_ROLE],

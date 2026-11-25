@@ -129,6 +129,8 @@ export const ERROR_CODES = {
     GITHUB_UNAVAILABLE: 'GITHUB_UNAVAILABLE',
     /** The organization already has a connection to that GitLab host (docs/connections.md). */
     GITLAB_CONNECTION_EXISTS: 'GITLAB_CONNECTION_EXISTS',
+    /** The GitLab connection is stored but no admin has activated it yet (docs/connections.md). */
+    GITLAB_CONNECTION_PENDING: 'GITLAB_CONNECTION_PENDING',
     IDEMPOTENCY_KEY_REUSED: 'IDEMPOTENCY_KEY_REUSED',
     INTEGRATION_NOT_CONFIGURED: 'INTEGRATION_NOT_CONFIGURED',
     INTEGRATION_REQUIRED: 'INTEGRATION_REQUIRED',

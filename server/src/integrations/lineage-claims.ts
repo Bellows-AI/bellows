@@ -33,6 +33,7 @@ export interface LineageRow {
     lineage_operation_id: string | null;
     lineage_secret_ref: string | null;
     lineage_finalized_claim: string | null;
+    lineage_sent_at: Date | null;
     expired: boolean | null;
 }
 
@@ -46,7 +47,7 @@ export async function readLineage(ctx: LineageCtx, grantId: string): Promise<Lin
     const rows = await ctx.sql<LineageRow[]>`
         select id, provider, principal_user_id, status, version, secret_ref, secret_version, authority,
                secret_wedged_at, lineage_claim, lineage_claim_kind, lineage_operation_id, lineage_secret_ref,
-               lineage_finalized_claim, (lineage_claim_expires_at < now()) as expired
+               lineage_finalized_claim, lineage_sent_at, (lineage_claim_expires_at < now()) as expired
         from integration_grant where id = ${grantId} and org_id = ${ctx.orgId}
     `;
     return rows[0] ?? null;
@@ -81,7 +82,7 @@ export async function claimLineage(
     const rows = await sql<ClaimRow[]>`
         update integration_grant
         set lineage_claim = ${token}, lineage_claim_kind = ${kind},
-            lineage_claim_expires_at = ${expiresAt},
+            lineage_claim_expires_at = ${expiresAt}, lineage_sent_at = null,
             updated_at = now()
         where id = ${grantId} and org_id = ${orgId} and status in ${sql(ALLOWED_STATUS[kind])}
           and (lineage_operation_id is null or (${reconsent}::boolean and secret_wedged_at is not null))
@@ -89,7 +90,7 @@ export async function claimLineage(
           and (not ${refresh}::boolean or (secret_ref is not null and secret_version is not null))
           and (not ${destroy}::boolean or secret_version is not null)
           and (lineage_claim is null
-               or (lineage_claim_expires_at < now() and lineage_operation_id is null
+               or (lineage_claim_expires_at < now() and lineage_operation_id is null and lineage_sent_at is null
                    and not (${rotates}::boolean and lineage_claim_kind = 'refresh')))
         returning provider, principal_user_id, version, secret_ref, secret_version, authority,
                   (secret_wedged_at is not null) as wedged,
@@ -131,7 +132,8 @@ function standingClaimRefusal(row: LineageRow, rotates: boolean): ClaimRefusal {
     if (row.lineage_claim === null) return row.secret_wedged_at === null ? 'held' : 'wedged';
     if (row.expired !== true) return 'held';
     if (row.lineage_operation_id !== null) return 'recovery-needed';
-    return rotates && row.lineage_claim_kind === 'refresh' ? 'abandoned' : 'held';
+    // A claim marked as sent may have spent the token, whatever the caller thinks of the provider.
+    return row.lineage_sent_at !== null || (rotates && row.lineage_claim_kind === 'refresh') ? 'abandoned' : 'held';
 }
 
 /** Zero rows is not an answer by itself: a re-read says why, and a thrown read propagates. */
@@ -155,9 +157,22 @@ export interface EndClaimOptions {
     wedged?: boolean;
     /** Only end a claim that has no recorded operation: a recorded one is recovery's. */
     unrecordedOnly?: boolean;
+    /**
+     * The request provably never spent the token (it never reached the provider, or the provider declares an
+     * unconfirmed answer retryable): the one way a claim marked in flight is released rather than committed or sent to
+     * reconnect. Without it, or `reconnect`, a marked claim is not ended.
+     */
+    provablyUnsent?: boolean;
 }
 
-/** Ends a claim by clearing every `lineage_*` column but, unless asked, the recorded operation. */
+/**
+ * Ends a claim by clearing every `lineage_*` column but, unless asked, the recorded operation.
+ *
+ * The one exit of a claim marked in flight (`lineage_sent_at`, see `markInFlight`) other than a commit
+ * (`finalizeLineage`): the statement itself refuses to end a marked claim unless the grant goes to reconnect
+ * (`reconnect`) or the request provably never left (`provablyUnsent`), so no caller, error path or lease loss can turn
+ * a possibly spent token into a free claim. A refused end is `false` and the claim stays, for recovery to read.
+ */
 export async function endClaim(
     ctx: LineageCtx,
     claim: { token: string; grantId: string },
@@ -167,16 +182,32 @@ export async function endClaim(
     const operation = options.operation === true;
     const wedged = options.wedged === true;
     const unrecordedOnly = options.unrecordedOnly === true;
+    const mayEndMarked = reconnect || options.provablyUnsent === true;
     const rows = await ctx.sql<{ id: string }[]>`
         update integration_grant
         set lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
-            lineage_secret_ref = null,
+            lineage_secret_ref = null, lineage_sent_at = null,
             lineage_operation_id = case when ${operation}::boolean then null else lineage_operation_id end,
             status = case when ${reconnect}::boolean and status <> 'revoked' then 'reconnect_required' else status end,
             secret_wedged_at = case when ${wedged}::boolean then now() else secret_wedged_at end,
             updated_at = now()
         where id = ${claim.grantId} and org_id = ${ctx.orgId} and lineage_claim = ${claim.token}
           and (not ${unrecordedOnly}::boolean or lineage_operation_id is null)
+          and (lineage_sent_at is null or ${mayEndMarked}::boolean)
+        returning id
+    `;
+    return rows.length > 0;
+}
+
+/**
+ * Marks the claim as about to send a refresh request that may spend a rotating token, durably and BEFORE the request
+ * is dispatched. False when the claim is no longer the holder's: nothing is sent then.
+ */
+export async function markInFlight(ctx: LineageCtx, claim: { token: string; grantId: string }): Promise<boolean> {
+    const rows = await ctx.sql<{ id: string }[]>`
+        update integration_grant set lineage_sent_at = now()
+        where id = ${claim.grantId} and org_id = ${ctx.orgId} and lineage_claim = ${claim.token}
+          and lineage_claim_kind = 'refresh' and lineage_claim_expires_at > now()
         returning id
     `;
     return rows.length > 0;
@@ -210,7 +241,7 @@ export async function abandonExpiredRefresh(ctx: LineageCtx, grantId: string): P
         update integration_grant
         set status = case when status <> 'revoked' then 'reconnect_required' else status end,
             lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
-            lineage_secret_ref = null, updated_at = now()
+            lineage_secret_ref = null, lineage_sent_at = null, updated_at = now()
         where id = ${grantId} and org_id = ${ctx.orgId} and lineage_claim_kind = 'refresh'
           and lineage_claim is not null and lineage_claim_expires_at < now() and lineage_operation_id is null
     `;

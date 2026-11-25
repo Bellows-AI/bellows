@@ -271,4 +271,15 @@ describe('site/self-host/monitoring.mdx', () => {
         );
         expect(read('guides/connections.mdx')).toContain('as the member who started it');
     });
+
+    it('describes GitLab as API-only: 17.0 activation, the api-scope member link, when reconnect is needed', () => {
+        const connections = read('guides/connections.mdx');
+        expect(connections).toContain('## GitLab');
+        expect(connections).toContain('GitLab 17.0 or later');
+        expect(connections).toContain('/api/org/gitlab-connections/{id}/activation');
+        expect(connections).toContain('/api/forge-grants/gitlab/{id}/link');
+        expect(connections).toContain('/api/forge-grants/gitlab/callback');
+        expect(connections).toContain('### When you need to reconnect');
+        expect(connections).not.toContain('GitLab and MCP servers are not connectable');
+    });
 });

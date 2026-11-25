@@ -18,6 +18,10 @@ export const grantStandingExpr = (sql: Db, who: { orgId: Operand; userId: Operan
     from integration_grant g
     where g.org_id = ${who.orgId} and g.principal_user_id = ${who.userId} and g.provider = ${who.forge}
       and g.status <> 'revoked'
+      and (g.forge_connection_id is null or exists (
+          select 1 from forge_connection c
+          where c.org_id = g.org_id and c.id = g.forge_connection_id and c.removed_at is null and c.active
+      ))
     order by g.updated_at desc
     limit 1
 )`;

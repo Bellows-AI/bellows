@@ -1,8 +1,9 @@
 # GitLab
 
-How an org reaches a self-hosted GitLab: an admin connects an instance, stored pending until a later step activates it
-(the admin's OAuth grant and the `/version` check; member grants, tracking and the start gate follow). Nothing gates on a
-connection yet, and `site/` does not document it until it is usable.
+How an org reaches a self-hosted GitLab: an admin connects an instance, stored pending until the admin's own OAuth grant
+passes an authenticated `/version` check and activates it; each member then links their own account (scope `api`). Tracking
+and the start gate follow; nothing gates on a connection or a grant yet. The link and activation routes are API-only until
+the settings page arrives, and `site/` does not document them until it does.
 
 | Concern | Code | Test |
 | --- | --- | --- |
@@ -12,6 +13,11 @@ connection yet, and `site/` does not document it until it is usable.
 | The recovery sweep on every replica (cross-org pool) finishes a tombstoned removal | `server/src/db/forge-connection-sweep.ts`, `server/src/db/forge-connections.ts` (`sweepRemovedConnections`), `server/src/main.ts` | `server/test-db/gitlab-connection.test.ts`, `server/test/cross-org-pool.test.ts` |
 | The unauthenticated, bounded, CA-aware reachability probe of `/api/v4/version` | `server/src/gitlab/gitlab-api.ts` | `server/test/gitlab-api.test.ts` |
 | Admin routes: `GET`/`POST /api/org/gitlab-connections`, `GET`/`DELETE .../:id` (400 `INVALID_GITLAB_CONNECTION`, 409 `GITLAB_CONNECTION_EXISTS`) | `server/src/routes/gitlab-connections.ts`, `server/src/auth/route-class.ts`, `core/src/error-codes.ts` | `server/test-db/gitlab-connection.test.ts`, `server/test/auth.route-class.test.ts` |
+| The org's OAuth hooks, one set per org and host (`gitlab:<host>`), reading the application back from the connection row at each call; the runtime asks its provider lookup with the org | `server/src/integrations/providers/gitlab.ts`, `server/src/integrations/compose.ts` (what `main.ts` boots; the runtime's `providers` and `clients` take the org, GitLab's client read from its connection), `server/src/integrations/integration-recovery.ts`, `core/src/integrations/gitlab.ts` | `server/test-db/gitlab-member-grant.test.ts`, `core/test/integrations.gitlab.test.ts` |
+| The link state: one `forge_link` row per started round trip (`link` or `activate`) with its PKCE verifier (S256, nulled when consumed), consumed once, for its own person and org | `server/migrations/172_forge_link.sql`, `server/migrations/173_grant_forge_connection.sql`, `server/src/db/forge-links.ts`, `server/src/db/org-tables.ts` | `server/test-db/gitlab-member-grant.test.ts`, `server/test-db/org-tables.test.ts` |
+| The link service: exchange, identity, the member forge grant keyed `gitlab:<host>` (`createMemberForgeGrants().store`: single-flight refresh, `retryTransientRefresh`), and activation | `server/src/integrations/gitlab-link.ts`, `server/src/integrations/member-forge-grant.ts` | `server/test-db/gitlab-member-grant.test.ts` |
+| The authenticated, bounded, CA-aware `/version` check (minimum 17.0) | `server/src/gitlab/gitlab-api.ts` (`checkVersion`) | `server/test/gitlab-api.test.ts` |
+| Routes: `POST /api/org/gitlab-connections/:id/activation` (admin), `POST /api/forge-grants/gitlab/:id/link`, `GET /api/forge-grants/gitlab` (active connections and the caller's standing), `GET /api/forge-grants/gitlab/callback`; 409 `GITLAB_CONNECTION_PENDING` | `server/src/routes/gitlab-links.ts`, `server/src/auth/route-class.ts`, `core/src/error-codes.ts` | `server/test-db/gitlab-member-grant.test.ts`, `server/test/auth.route-class.test.ts` |
 | The instance the probe reaches in tests | `scripts/fake-forge/gitlab.mjs`, `server/test-db/fake-gitlab.ts` | `server/test/fake-gitlab.test.ts` |
 
 ## Invariants
@@ -20,6 +26,11 @@ connection yet, and `site/` does not document it until it is usable.
 - **The host is unique per org, not globally**: two orgs may connect one instance with different applications. `server/test-db/gitlab-connection.test.ts`.
 - **No view, row dump or export carries a secret**: the row holds references, the views only `hasCaBundle`. `server/test-db/org-export.test.ts`.
 
+- **Activation judges only a confirmed answer**: below 17.0 the connection stays pending with `activationRefusal` and no grant is kept; an unreachable, 5xx, malformed or refused answer stays pending with nothing recorded and nothing deleted. `server/test-db/gitlab-member-grant.test.ts`.
+- **A link's state is single-use and its owner's**: a replayed, foreign or unknown callback exchanges nothing. The redirect URI is one path for every host (`/api/forge-grants/gitlab/callback`, registered on the application). `server/test-db/gitlab-member-grant.test.ts`.
+- **A refresh that may have been consumed is never replayed**: GitLab spends the token on processing, so only a refresh that never reached GitLab (refused, DNS, TLS handshake, connect timeout) is retried; any other status (a gateway's 502 or 504 included), a response timeout or a cut/malformed answer ends the grant in reconnect-required (the standing the start gate reads). A 2xx without a usable replacement is not a success: GitLab's refresh needs a bearer `token_type`, an access token, a positive `expires_in` and a non-empty `refresh_token` different from the one sent, and the code exchange the same (else no grant is stored); `grant-lineage.ts` (`rotationLost`) never keeps the old refresh token of a rotating provider. `server/test/gitlab-token-answer.test.ts`. A rotating refresh claim is marked in flight (`lineage_sent_at`, migration 174) before the request leaves and then ends only by a commit or by reconnect: `endClaim` refuses any other end in SQL, and an expired marked claim is read as abandoned (reconnect) by the next refresh and the recovery pass, never as free. `server/test/lineage-in-flight.test.ts`. `server/test-db/gitlab-member-grant.test.ts`.
+- **A grant is never live on a removed connection**: one lock order everywhere, the connection row then its grants. Removal is one transaction (`for update` on the connection, tombstone, set-based revocation of every grant naming it); secret cleanup runs after the commit and cannot leave a grant live. A grant row names its connection (`forge_connection_id`); publishing and `finalizeLineage` (link, activation, refresh, recovery) lock that row first and write nothing, or end revoked, when it is not live. Token reads and the standing ignore a grant whose connection is not active. `server/test-db/gitlab-member-grant.test.ts`.
+- **Two orgs on one host never mix tokens or refresh lineage**: hooks are built per org and read that org's client id and secret, also after a restart. A removed connection cannot refresh. `server/test-db/gitlab-member-grant.test.ts`.
 - **A removal is durable and an unconfirmed delete is not a success**: the tombstone outlives a failed or interrupted secret delete until the store confirms, and the host can be connected again meanwhile. A create records its row as a tombstone with both references before it writes a secret, and publishes it only when both exist; a failed or interrupted create is retired by the sweep (after a 5-minute grace for an unpublished one), whatever the database or secret store was doing at the time. `server/test-db/gitlab-connection.test.ts`.
 
 ## Stated limits

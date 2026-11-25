@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
@@ -98,6 +99,39 @@ describe('fake GitLab: OAuth', () => {
                 })
             ).status
         ).toBe(400);
+    });
+
+    it('enforces PKCE when a challenge was sent: a missing or wrong verifier is invalid_grant, the right one works', async () => {
+        const verifier = 'v'.repeat(43);
+        const challenge = createHash('sha256').update(verifier).digest('base64url');
+        const codeFor = async () => {
+            const query = new URLSearchParams({
+                redirect_uri: REDIRECT,
+                response_type: 'code',
+                state: 's',
+                client_id: FAKE_CLIENT.clientId,
+                code_challenge: challenge,
+                code_challenge_method: 'S256',
+            });
+            const authorize = await gl.send('GET', `/oauth/authorize?${query}`);
+            return new URL(authorize.location as string).searchParams.get('code') as string;
+        };
+        const exchange = async (extra: object) =>
+            gl.send('POST', '/oauth/token', {
+                body: {
+                    grant_type: 'authorization_code',
+                    code: await codeFor(),
+                    redirect_uri: REDIRECT,
+                    ...CLIENT_AUTH,
+                    ...extra,
+                },
+            });
+        for (const extra of [{}, { code_verifier: 'w'.repeat(43) }]) {
+            const refused = await exchange(extra);
+            expect(refused.status).toBe(400);
+            expect(refused.body.error).toBe('invalid_grant');
+        }
+        expect((await exchange({ code_verifier: verifier })).status).toBe(200);
     });
 
     it('rotates on every refresh: the used refresh token and the old access token die', async () => {

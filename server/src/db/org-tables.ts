@@ -29,6 +29,7 @@ export const ORG_TABLES = [
     'env_var',
     'executor_profile',
     'forge_connection',
+    'forge_link',
     'input_attachment',
     'integration_authorization',
     'integration_grant',

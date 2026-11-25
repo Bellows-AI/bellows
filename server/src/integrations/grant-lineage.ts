@@ -1,7 +1,13 @@
 import type { Sql } from 'postgres';
 import type { SecretStore } from '../secrets/secret-store.js';
 import { authorityScopes, type GrantPayload } from './grant-credentials.js';
-import { abandonExpiredRefresh, claimLineage as claimStatement, endClaim, readLineage } from './lineage-claims.js';
+import {
+    abandonExpiredRefresh,
+    claimLineage as claimStatement,
+    endClaim,
+    markInFlight,
+    readLineage,
+} from './lineage-claims.js';
 import { commitLineage as commit, readConfirmed, settleAttempts } from './lineage-commit.js';
 import { destroyRevokedSecret as destroy } from './lineage-destroy.js';
 import { recoverLineage as recover } from './lineage-recovery.js';
@@ -117,7 +123,8 @@ async function failedExchange(
         ctx.log('reconnect-required', claim.grantId);
         return { result: required('reconnect', claim.provider), settled: true };
     }
-    await endClaim(ctx, claim, {});
+    // Reached for a provider that rotates nothing, or one that declares an unconfirmed answer retryable.
+    await endClaim(ctx, claim, { provablyUnsent: true });
     return { result: unavailable(options.aborted ? 'aborted' : 'timeout'), settled: true };
 }
 
@@ -137,9 +144,50 @@ const payloadOf = (
 ): GrantPayload => ({
     accessToken: tokens.accessToken,
     accessExpiresAt: tokens.expiresAt,
+    // Only a provider that rotates nothing reaches the fallback: a rotating one without a replacement never commits.
     refreshToken: tokens.refreshToken ?? spent.refreshToken,
     authority: tokens.authority ?? { scopes: authorityScopes(claim.authority) ?? spent.authority.scopes },
 });
+
+/**
+ * Ends a claim whose holder settled nothing (an error, or an answer it could not act on). Nothing was spent, or the
+ * provider declares a retry safe: the claim is released (`provablyUnsent`). A rotating token that may have been spent
+ * is sent to reconnect, tried once more here; if the database refuses that too the claim STAYS (`endClaim` refuses any
+ * other end of a claim marked in flight), blocking every other caller until it lapses and recovery reads it as
+ * reconnect-needed.
+ */
+async function closeUnsettled(
+    ctx: LineageCtx,
+    claim: LineageClaim,
+    hooks: OAuthProviderHooks,
+    possiblySpent: boolean
+): Promise<void> {
+    const spent = possiblySpent && hooks.rotatesRefreshToken && hooks.retryTransientRefresh !== true;
+    const ended = await endClaim(ctx, claim, spent ? { reconnect: true } : { provablyUnsent: true }).catch(() => false);
+    if (ended && spent) ctx.log('reconnect-required', claim.grantId);
+}
+
+/**
+ * A rotating provider's success that does not carry a replacement refresh token (absent, empty, or the one just
+ * sent) spent the old token and gave nothing to store: it is never committed over the old token, which a later
+ * refresh would replay. The grant goes to reconnect through the guarded exit, whatever the provider says about retries.
+ * Null when the answer is usable (and always, for a provider that rotates nothing and keeps its token).
+ */
+async function rotationLost(
+    ctx: LineageCtx,
+    claim: LineageClaim,
+    hooks: OAuthProviderHooks,
+    found: { answer: Extract<ExchangeResult, { ok: true }>; sent: string }
+): Promise<{ result: RefreshResult; settled: boolean } | null> {
+    const next = found.answer.tokens.refreshToken;
+    if (!hooks.rotatesRefreshToken || (next && next !== found.sent)) return null;
+    return failedExchange(
+        ctx,
+        claim,
+        { ok: false, failure: 'ambiguous' },
+        { rotating: true, retryTransient: false, aborted: false }
+    );
+}
 
 /** Steps 2-6 under a held claim. The claim ends exactly one way: released here, ended by the failure, or committed. */
 async function exchangeUnderClaim(
@@ -150,6 +198,9 @@ async function exchangeUnderClaim(
 ): Promise<RefreshResult> {
     const { signal, observedVersion } = attempt;
     let settled = false;
+    // True from the moment a refresh request may reach the provider until its answer proves otherwise: a rotating
+    // provider may have spent the token, and then an error here must never turn into an ordinary release.
+    let possiblySpent = false;
     try {
         // 1. Under the claim, a version other than the one the caller saw expired is already a fresh credential.
         if (observedVersion !== undefined && claim.secretVersion !== observedVersion) return { ok: true };
@@ -166,9 +217,14 @@ async function exchangeUnderClaim(
 
         // 3. Exchange, under an absolute deadline combined with the caller's signal.
         const bound = AbortSignal.timeout(ctx.timing.exchangeDeadlineMs);
+        // Durable, and before the request can leave: from here the claim ends only by commit or by reconnect. A mark
+        // that fails or is refused sent nothing.
+        if (hooks.rotatesRefreshToken && !(await markInFlight(ctx, claim))) return unavailable('refresh-in-progress');
+        possiblySpent = true;
         const answer: ExchangeResult = await hooks
             .refresh({ refreshToken, signal: signal ? AbortSignal.any([signal, bound]) : bound })
             .catch((): ExchangeResult => ({ ok: false, failure: 'ambiguous' }));
+        if (!answer.ok && answer.failure === 'not-sent') possiblySpent = false;
         if (!answer.ok) {
             const failed = await failedExchange(ctx, claim, answer, {
                 rotating: hooks.rotatesRefreshToken,
@@ -179,11 +235,17 @@ async function exchangeUnderClaim(
             return failed.result;
         }
 
+        const unusable = await rotationLost(ctx, claim, hooks, { answer, sent: refreshToken });
+        if (unusable) {
+            settled = unusable.settled;
+            return unusable.result;
+        }
+
         // Success: from here the caller's signal is detached; only the lease governs persistence.
         settled = true;
         return commitOutcome(await commit(ctx, claim, payloadOf(answer.tokens, read.payload, claim)), claim.provider);
     } finally {
-        if (!settled) await endClaim(ctx, claim).catch(() => undefined);
+        if (!settled) await closeUnsettled(ctx, claim, hooks, possiblySpent);
     }
 }
 

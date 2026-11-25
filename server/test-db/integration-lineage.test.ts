@@ -1004,3 +1004,38 @@ describe.skipIf(!enabled)('grant lineage: review r2, a durable fence at the stor
         expect((await columns(r.grant.id)).lineage_operation_id).toBeNull();
     });
 });
+
+describe.skipIf(!enabled)('grant lineage: a rotating success without a replacement refresh token', () => {
+    /** The provider's own hooks, with the replacement refresh token removed from every successful refresh. */
+    const stripped = (fake: FakeOAuth): OAuthProviderHooks => ({
+        ...fake.hooks,
+        refresh: async (input) => {
+            const answer = await fake.hooks.refresh(input);
+            return answer.ok ? { ok: true, tokens: { ...answer.tokens, refreshToken: null } } : answer;
+        },
+    });
+
+    it('is never committed over the spent token: the grant goes to reconnect and a later caller sends nothing', async () => {
+        const r = await rig({ rotates: true });
+        const a = replica(r, r.secrets, { hooks: stripped(r.fake) });
+        expect(await resolve(a.resolver, r)).toMatchObject({
+            ok: false,
+            outcome: { outcome: 'integration_required', reason: 'reconnect' },
+        });
+        expect(r.fake.refreshCalls).toBe(1);
+        const row = await columns(r.grant.id);
+        expect(row.status).toBe('reconnect_required');
+        expect(row.secret_version).toBe(r.seededVersion);
+        expect(row.lineage_claim).toBeNull();
+        const b = replica(r, r.h.openWith(r.h.realRepo), { hooks: stripped(r.fake) });
+        expect(await resolve(b.resolver, r)).toMatchObject({ ok: false, outcome: { outcome: 'integration_required' } });
+        expect(r.fake.refreshCalls).toBe(1);
+    });
+
+    it('keeps the stored token for a provider that rotates nothing, as before', async () => {
+        const r = await rig({ rotates: false });
+        const a = replica(r, r.secrets, { hooks: stripped(r.fake) });
+        expect(tokenOf(await resolve(a.resolver, r))).toBe('access-1');
+        expect((await columns(r.grant.id)).status).toBe('active');
+    });
+});

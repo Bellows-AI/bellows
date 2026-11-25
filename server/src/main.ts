@@ -28,26 +28,22 @@ import { startBatchLoops } from './batch-loops.js';
 import { type ArtifactBackend, createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
 import { admissionOccupancy } from './db/jobs/job-store-admission.js';
 import { createServerMetrics, type ServerMetrics } from './metrics.js';
+import { composeIntegrations } from './integrations/compose.js';
+import type { ProviderRegistry } from './integrations/provider-registry.js';
 import { createOrgRegistry, type OrgRegistry } from './orgs.js';
 import type { GithubMint, GithubRevoke } from './routes/github-credential.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
 import {
-    createIntegrationRuntime,
+    type createIntegrationRuntime,
     recoverIntegrations,
     startIntegrationRecovery,
 } from './integrations/integration-recovery.js';
-import { combineRegistrations, type ProviderRegistry } from './integrations/provider-registry.js';
-import { createMemberForgeGrants } from './integrations/member-forge-grant.js';
-import { createGitHubUserHooks } from './integrations/providers/github-user.js';
-import { jiraProvider } from './integrations/providers/jira.js';
-import { linearProvider } from './integrations/providers/linear.js';
 import { startTempSweep } from './artifacts/fs-store.js';
 import { startAttachmentSweep } from './attachments/attachment-collector.js';
 import { startSkillSweep } from './skills/skill-collector.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
 import { startMetricPointOrgBackfill } from './telemetry/org-backfill.js';
-import type { SecretStore } from './secrets/secret-store.js';
 import type { CoordinatedSecretStore } from './secrets/postgres-secret-store.js';
 import { startOrgPurge } from './db/org-purge.js';
 import { startForgeConnectionSweep } from './db/forge-connection-sweep.js';
@@ -270,40 +266,6 @@ const fetchLog = logger('fetch');
 const migrateLog = logger('migrate');
 const orgLog = logger('org');
 
-/** Every outbound OAuth provider: Jira by ATLASSIAN_CLIENT_ID/SECRET, Linear by LINEAR_CLIENT_ID/SECRET. */
-const providerRegistry = ({ callbackOrigin, jira, linear }: AppConfig['integrations']): ProviderRegistry =>
-    combineRegistrations([jiraProvider(jira, callbackOrigin), linearProvider(linear, callbackOrigin)]);
-
-/**
- * The outbound OAuth runtime over every provider registration; with none configured it serves only the recovery of
- * rows and the destroy of a revoked grant's secret. In github mode it also looks up the refresh hooks of the member's
- * GitHub grant (never a provider a person can start) and builds the store a sign-in keeps that grant in.
- */
-function composeIntegrations(deps: {
-    config: AppConfig;
-    sql: Sql;
-    crossOrg: { sql: Sql };
-    secrets: SecretStore;
-    ready: Promise<unknown>;
-}) {
-    const { config, sql, crossOrg, secrets, ready } = deps;
-    const registry = providerRegistry(config.integrations);
-    const githubUser = config.auth.mode === 'github' ? createGitHubUserHooks(config.auth) : null;
-    const integrations = createIntegrationRuntime({
-        sql,
-        crossOrgSql: crossOrg.sql,
-        secrets,
-        providers: (provider) => (githubUser?.id === provider ? githubUser : registry.providers(provider)),
-        clients: registry.clients,
-        callbackOrigin: config.integrations.callbackOrigin,
-        log: (d) => logger('integrations').info(d, 'integration diagnostic'),
-    });
-    const memberGrants = githubUser
-        ? createMemberForgeGrants({ sql, crossOrgSql: crossOrg.sql, ready, secrets, lineageOf: integrations.lineageOf })
-        : undefined;
-    return { registry, integrations, memberGrants };
-}
-
 /**
  * The whole wiring, from config to `listen`. Every entry is this function plus one decision about
  * GitHub: `index.ts` reads the environment, which can only ever produce the App; `offline.ts`
@@ -386,7 +348,8 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         admission: config.admission,
         occupancy: (signal) => admissionOccupancy(sql, { signal }),
     });
-    const { registry, integrations, memberGrants } = composeIntegrations({ config, sql, crossOrg, secrets, ready });
+    const composed = composeIntegrations({ config, sql, crossOrg, secrets, ready });
+    const { registry, integrations, memberGrants } = composed;
     const orgs = createOrgRegistry({
         sql,
         ready,
@@ -463,6 +426,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,
         memberGrants,
+        gitlabLinks: composed.gitlab.bindOrgs(orgs, memberGrants),
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
         providerKeys: createProviderKeys({ deploymentMode: config.deploymentMode }),
         metrics,

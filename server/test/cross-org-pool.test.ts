@@ -26,8 +26,6 @@ const CROSS_ORG_CALLS = {
     createAttemptOfLease: 'a lease token resolves to its attempt and org',
     createPairMatches: 'a lease pair is checked before its org is known',
     composeIntegrations: 'builds the integration runtime and the member forge grants below',
-    createIntegrationRuntime: 'the recovery of every org’s authorizations left mid-exchange',
-    createMemberForgeGrants: 'a revoked GitHub authorization names an account, and breaks its grant in every org',
     startCollectors: 'carries the sweeps below',
     startAttachmentSweep: 'deletes objects no row of any org references',
     startSkillSweep: 'deletes skill objects no row of any org references',
@@ -35,6 +33,12 @@ const CROSS_ORG_CALLS = {
     startForgeConnectionSweep: "retires a deleted GitLab connection's secrets and drops its tombstone",
     startOrgRetention: "deletes the threads, objects and telemetry each org's retention window passed",
     startMetricPointOrgBackfill: 'resolves the org of points stored before they carried one',
+} as const;
+
+/** What `integrations/compose.ts` (the composition `main.ts` calls) hands `crossOrg` to. */
+const COMPOSED_CROSS_ORG_CALLS = {
+    createIntegrationRuntime: 'the recovery of every org’s authorizations left mid-exchange',
+    createMemberForgeGrants: 'a revoked GitHub authorization names an account, and breaks its grant in every org',
 } as const;
 
 /** The callee of each call `crossOrg` reaches as an argument, or inside one (spread, property, object). */
@@ -75,6 +79,11 @@ describe('the cross-org pool', () => {
         expect([...new Set(callees)].sort()).toEqual(Object.keys(CROSS_ORG_CALLS).sort());
     });
 
+    it('hands it, inside the integration composition, only to the listed calls', () => {
+        const callees = calleesOf('integrations/compose.ts', read('integrations/compose.ts'));
+        expect([...new Set(callees)].sort()).toEqual(Object.keys(COMPOSED_CROSS_ORG_CALLS).sort());
+    });
+
     it('leaves the owner to the migrations: main.ts hands the owner pool to nothing else', () => {
         // The policies exempt the owner until a later release forces them, so a request on it would bypass them.
         const callees = calleesOf('main.ts', read('main.ts'), 'ownerSql');
@@ -98,6 +107,10 @@ describe('the cross-org pool', () => {
 
     it('is listed, call for call, in docs/row-level-security.md', () => {
         const doc = readFileSync(new URL('../../docs/row-level-security.md', import.meta.url), 'utf8');
-        expect(Object.keys(CROSS_ORG_CALLS).filter((name) => !doc.includes(`\`${name}\``))).toEqual([]);
+        expect(
+            [...Object.keys(CROSS_ORG_CALLS), ...Object.keys(COMPOSED_CROSS_ORG_CALLS)].filter(
+                (name) => !doc.includes(`\`${name}\``)
+            )
+        ).toEqual([]);
     });
 });

@@ -102,7 +102,9 @@ async function reclaimUnrecorded(ctx: LineageCtx, row: LineageRow, token: string
         `;
         if (owners.length > 0) return 'left';
     }
-    const rotating = row.lineage_claim_kind === 'refresh' && (ctx.providers(row.provider)?.rotatesRefreshToken ?? true);
+    const rotating =
+        row.lineage_claim_kind === 'refresh' &&
+        (row.lineage_sent_at !== null || (ctx.providers(row.provider)?.rotatesRefreshToken ?? true));
     const ended = await endClaim(ctx, { token, grantId: row.id }, { unrecordedOnly: true, reconnect: rotating });
     if (!ended) return 'left';
     if (rotating) ctx.log('reconnect-required', row.id);
