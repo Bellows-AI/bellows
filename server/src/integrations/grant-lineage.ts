@@ -141,6 +141,29 @@ const payloadOf = (
     authority: tokens.authority ?? { scopes: authorityScopes(claim.authority) ?? spent.authority.scopes },
 });
 
+/**
+ * Ends a claim whose holder settled nothing (an error, or an answer it could not act on). Nothing was spent: an
+ * ordinary release, the next caller exchanges. A rotating token that may have been spent, whose provider does not say a
+ * retry is safe, is never released: the grant goes to reconnect (tried once more here), and if the database refuses
+ * that too the claim STAYS. A standing refresh claim blocks every other caller, and once it expires it is `abandoned`
+ * (the claim statement refuses it, `runRefresh` and `reclaimUnrecorded` send the grant to reconnect): the claim of a
+ * rotating refresh is the durable mark that its exchange may have been sent.
+ */
+async function closeUnsettled(
+    ctx: LineageCtx,
+    claim: LineageClaim,
+    hooks: OAuthProviderHooks,
+    possiblySpent: boolean
+): Promise<void> {
+    const replayable = possiblySpent && hooks.rotatesRefreshToken && hooks.retryTransientRefresh !== true;
+    if (!replayable) {
+        await endClaim(ctx, claim).catch(() => undefined);
+        return;
+    }
+    const ended = await endClaim(ctx, claim, { reconnect: true }).catch(() => false);
+    if (ended) ctx.log('reconnect-required', claim.grantId);
+}
+
 /** Steps 2-6 under a held claim. The claim ends exactly one way: released here, ended by the failure, or committed. */
 async function exchangeUnderClaim(
     ctx: LineageCtx,
@@ -150,6 +173,9 @@ async function exchangeUnderClaim(
 ): Promise<RefreshResult> {
     const { signal, observedVersion } = attempt;
     let settled = false;
+    // True from the moment a refresh request may reach the provider until its answer proves otherwise: a rotating
+    // provider may have spent the token, and then an error here must never turn into an ordinary release.
+    let possiblySpent = false;
     try {
         // 1. Under the claim, a version other than the one the caller saw expired is already a fresh credential.
         if (observedVersion !== undefined && claim.secretVersion !== observedVersion) return { ok: true };
@@ -166,9 +192,11 @@ async function exchangeUnderClaim(
 
         // 3. Exchange, under an absolute deadline combined with the caller's signal.
         const bound = AbortSignal.timeout(ctx.timing.exchangeDeadlineMs);
+        possiblySpent = true;
         const answer: ExchangeResult = await hooks
             .refresh({ refreshToken, signal: signal ? AbortSignal.any([signal, bound]) : bound })
             .catch((): ExchangeResult => ({ ok: false, failure: 'ambiguous' }));
+        if (!answer.ok && answer.failure === 'not-sent') possiblySpent = false;
         if (!answer.ok) {
             const failed = await failedExchange(ctx, claim, answer, {
                 rotating: hooks.rotatesRefreshToken,
@@ -183,7 +211,7 @@ async function exchangeUnderClaim(
         settled = true;
         return commitOutcome(await commit(ctx, claim, payloadOf(answer.tokens, read.payload, claim)), claim.provider);
     } finally {
-        if (!settled) await endClaim(ctx, claim).catch(() => undefined);
+        if (!settled) await closeUnsettled(ctx, claim, hooks, possiblySpent);
     }
 }
 

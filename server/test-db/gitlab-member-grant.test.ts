@@ -802,6 +802,61 @@ describe.skipIf(!enabled)('the refresh of a GitLab grant', () => {
         expect(tokenCalls()).toBe(calls + 1);
     });
 
+    it.each([
+        ['the next refresh', 'refresh'],
+        ['the recovery pass', 'recovery'],
+    ] as const)(
+        'an ambiguous refresh whose reconnect mark fails leaves the claim, and %s sends the spent token never',
+        async (_name, how) => {
+            await linked(orgA, 'dev-one');
+            const [grant] = await sql<{ id: string }[]>`
+                select id from integration_grant
+                where org_id = ${orgA.id} and provider = ${FORGE} and principal_user_id = ${orgA.memberId}
+            `;
+            if (!grant) throw new Error('no grant');
+            const name = `refuse_reconnect_${randomUUID().replaceAll('-', '')}`;
+            // The database refuses exactly this grant's move to reconnect_required, as a one-shot outage would.
+            await sql.unsafe(`
+                create or replace function ${name}() returns trigger language plpgsql as $$
+                begin raise exception 'simulated database failure'; end $$`);
+            await sql.unsafe(`
+                create trigger ${name} before update on integration_grant for each row
+                when (old.id = '${grant.id}' and old.status = 'active' and new.status = 'reconnect_required')
+                execute function ${name}()`);
+            const calls = tokenCalls();
+            try {
+                // GitLab processes the refresh (the token is spent) and the answer is lost.
+                const first = await asUserOf(wrapped(() => 'lost').memberGrants, orgA, orgA.memberId);
+                expect(first.ok).toBe(false);
+                expect(tokenCalls()).toBe(calls + 1);
+                // The claim stays: the grant is not released to the next caller as if nothing was spent.
+                const [held] = await sql`select lineage_claim, status from integration_grant where id = ${grant.id}`;
+                expect(held?.lineage_claim).not.toBeNull();
+                const blocked = await asUserOf(replica({ clock: later }).memberGrants, orgA, orgA.memberId);
+                expect(blocked).toMatchObject({
+                    ok: false,
+                    outcome: { outcome: 'unavailable', reason: 'refresh-in-progress' },
+                });
+                expect(tokenCalls()).toBe(calls + 1);
+            } finally {
+                await sql.unsafe(`drop trigger if exists ${name} on integration_grant`);
+                await sql.unsafe(`drop function if exists ${name}()`);
+            }
+            // The database is back and the lease lapses: the claim is read as "may have been sent", never as free.
+            await sql`update integration_grant set lineage_claim_expires_at = now() - interval '1 second' where id = ${grant.id}`;
+            if (how === 'recovery') await recoverIntegrations(replica().integrations);
+            else {
+                const next = await asUserOf(replica({ clock: later }).memberGrants, orgA, orgA.memberId);
+                expect(next).toMatchObject({
+                    ok: false,
+                    outcome: { outcome: 'integration_required', reason: 'reconnect' },
+                });
+            }
+            expect(tokenCalls()).toBe(calls + 1);
+            expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('broken');
+        }
+    );
+
     it.each(['bad-gateway', 'gateway-timeout'] as const)(
         'never replays a token after a %s: GitLab processed the refresh, so the grant needs reconnect and nobody resends',
         async (gateway) => {
