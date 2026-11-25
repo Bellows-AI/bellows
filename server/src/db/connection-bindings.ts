@@ -683,7 +683,7 @@ export async function takeConnectionOutcomesInTx(
         .sort((a, b) => a.provider.localeCompare(b.provider))
         .map((r) => ({
             provider: r.provider,
-            label: providerLabel(r.provider),
+            label: r.provider === FORGE_REQUIREMENT_PROVIDER ? forgeLabel(r.target ?? '') : providerLabel(r.provider),
             outcome: r.outcome,
             target: r.target,
         }));

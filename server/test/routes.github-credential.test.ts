@@ -1,3 +1,4 @@
+import { githubRepo } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { AttemptCheck, AttemptOfLease, PairCheck, PairMatches } from '../src/db/attempt-of-lease.js';
@@ -36,6 +37,8 @@ const LIVE: AttemptCheck = {
     rootJobId: JOB_ID,
     repo: 'acme/widgets',
     rootRepo: 'acme/widgets',
+    ref: githubRepo('acme/widgets'),
+    rootRef: githubRepo('acme/widgets'),
     executionUserId: '66666666-6666-4666-8666-666666666666',
     claimSeq: 1,
 };
@@ -192,6 +195,17 @@ describe('the runner GitHub credential route', () => {
         const res = await app.inject({ method: 'POST', url: URL_PATH, headers: PAIR });
         expect(res.statusCode).toBe(HTTP_FORBIDDEN);
         expect(res.json().code).toBe('CONNECTION_NOT_AUTHORIZED');
+        expect(mints).toEqual([]);
+    });
+
+    // The attempt's path alone would name a GitHub repository of the same name: the token is for the forge it lives on.
+    it('refuses an attempt on another forge before any mint, whatever its path is called on GitHub', async () => {
+        const gitlab = { forge: 'gitlab', host: 'gitlab.example.test', path: 'acme/widgets' } as const;
+        const { app, mints } = await boot({ answers: [{ ...LIVE, ref: gitlab, rootRef: gitlab }], fresh: minted });
+        const res = await app.inject({ method: 'POST', url: URL_PATH, headers: PAIR });
+        expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(res.json().code).toBe('CONNECTION_NOT_AUTHORIZED');
+        expect(res.json().error).toMatch(/not on GitHub/);
         expect(mints).toEqual([]);
     });
 

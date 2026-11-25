@@ -21,7 +21,12 @@
  */
 
 import { SELF_HOSTED } from '@factory-ai/core';
-import { bindConnectionRow, dismissRequirementRow, requireConnectionRow } from './job-store-connections.js';
+import {
+    bindConnectionRow,
+    dismissRequirementRow,
+    holdOnForgeGrantRow,
+    requireConnectionRow,
+} from './job-store-connections.js';
 import {
     createFollowUpRow,
     createRetryRow,
@@ -88,6 +93,7 @@ function workerMethods(
     | 'demand'
     | 'heartbeat'
     | 'requireConnection'
+    | 'holdOnForgeGrant'
     | 'session'
     | 'progress'
     | 'gates'
@@ -131,6 +137,10 @@ function workerMethods(
 
         async requireConnection(id, leaseToken, provider, target) {
             return requireConnectionRow(ctx.sql, { orgId: ctx.orgId, id, leaseToken, provider, target });
+        },
+
+        async holdOnForgeGrant(id, leaseToken, wait) {
+            return holdOnForgeGrantRow(ctx.sql, { orgId: ctx.orgId, id, leaseToken, wait });
         },
 
         async session(id, leaseToken, sessionId, evidence) {

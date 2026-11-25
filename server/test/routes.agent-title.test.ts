@@ -31,6 +31,8 @@ const LIVE: AttemptCheck = {
     rootJobId: ROOT_ID,
     repo: null,
     rootRepo: null,
+    ref: null,
+    rootRef: null,
     executionUserId: USER_ID,
     claimSeq: 2,
 };

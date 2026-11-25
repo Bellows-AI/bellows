@@ -12,6 +12,7 @@ import { lockRootRowsInTx, requirementWaitOf } from '../connection-bindings.js';
 import { orgRelease } from '../org-status.js';
 import { planLimits, type StopCause } from '../plan-limits.js';
 import type { EvidencePolicy } from '../evidence-policy.js';
+import type { ForgeRequirementReason } from '../forge-requirement.js';
 import type { RequireConnectionResult } from './job-store-connections.js';
 import { enforceCompletionPolicy } from './job-store-evidence.js';
 import { createTally, type OutcomeTally } from './job-store-outcome-tally.js';
@@ -83,6 +84,18 @@ export interface JobWorkerStore {
         provider: string,
         target?: string
     ): Promise<RequireConnectionResult>;
+
+    /**
+     * The running attempt's thread starter has no usable grant for `wait.forge` (a GitLab grant revoked or needing
+     * reconnect), found while serving its credential request: opens the thread's `forge` requirement as a runtime wait,
+     * so the heartbeat tells the attempt to hand the task back and the claim holds it until the member re-links.
+     * Lease-fenced: `lost` / `missing` as every lease-fenced write.
+     */
+    holdOnForgeGrant(
+        id: string,
+        leaseToken: string,
+        wait: { forge: string; reason: ForgeRequirementReason }
+    ): Promise<{ result: 'ok' | 'lost' | 'missing' }>;
 
     /**
      * Records the agent session the running attempt is using, so a reader can open it. Lease-guarded

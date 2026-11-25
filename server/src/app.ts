@@ -20,26 +20,23 @@ import { registerRouteSpanHook } from './otel-scrub.js';
 import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
 import type { AgentTitle } from './db/agent-title.js';
-import { agentTitleRoutes } from './routes/agent-title.js';
 import { errorHandler } from './routes/error-handler.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
 import type { GitlabLinks } from './integrations/gitlab-link.js';
 import type { MemberForgeGrants } from './integrations/member-forge-grant.js';
-import { combineRegistrations } from './integrations/provider-registry.js';
 import { batchRoutes } from './routes/batches/batches.js';
 import type { UploadCapabilityStore } from './attachments/upload-capability-store.js';
 import { attachmentRoutes } from './routes/attachments.js';
 import { connectionRoutes, type DestroyRevokedSecret } from './routes/connections.js';
-import { type ConnectionListing, connectionCredentialRoutes } from './routes/connection-credential.js';
+import type { ConnectionListing } from './routes/connection-credential.js';
 import type { OperationReceipts } from './db/operation-receipts.js';
-import { operationReceiptRoutes } from './routes/operation-receipts.js';
 import { integrationCatalogRoutes } from './routes/integration-catalog.js';
-import { integrationRoutes } from './routes/integrations.js';
 import { modelSetupRoutes } from './routes/model-setup.js';
 import { modelSetupVerifyRoutes } from './routes/model-setup-verify.js';
 import type { ProviderKeys } from './provider-keys/verify.js';
-import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
+import type { GithubMint, GithubRevoke } from './routes/github-credential.js';
+import { orgMint, registerRunnerCredentialRoutes } from './routes/runner-credentials.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
 import { createConnectorRegistry, type ConnectorRegistry } from './notifications/connector.js';
@@ -328,14 +325,6 @@ function registerSecurityHeaders(app: FastifyInstance, config: AppConfig): void 
     });
 }
 
-/** Each org's own installation mints its runners' tokens; an org without one has none to give. */
-const orgMint =
-    (orgs: OrgRegistry): GithubMint =>
-    async (orgId, repo) => {
-        const tokens = (await orgs.for(orgId))?.githubToken;
-        return tokens ? tokens.fresh(repo) : null;
-    };
-
 /**
  * The job routes' deps. The board's PR write is the token source (the starter's grant, or the org's installation
  * without member grants) and the REST writer over the API the board is configured for: the App's, or the sign-in's
@@ -359,79 +348,6 @@ const jobRouteDepsOf = (
         ...(metrics ? { claimPoll: metrics.claimPoll } : {}),
     };
 };
-
-/** Each org's own installation revokes its runners' tokens; null when the org holds none. */
-const orgRevoke =
-    (orgs: OrgRegistry): GithubRevoke =>
-    async (orgId, token) => {
-        const tokens = (await orgs.for(orgId))?.githubToken;
-        return tokens ? tokens.revoke(token) : null;
-    };
-
-/**
- * The routes a runner spends through with its attempt pair: the GitHub credential, the managed-connection broker and
- * the operation receipts, each existing exactly when its per-call check does.
- */
-async function registerRunnerCredentialRoutes(
-    app: FastifyInstance,
-    deps: Pick<
-        AppDeps,
-        | 'orgs'
-        | 'attemptOfLease'
-        | 'pairMatches'
-        | 'operationReceipts'
-        | 'agentTitle'
-        | 'connectionListing'
-        | 'integrations'
-        | 'githubMint'
-        | 'githubRevoke'
-    >
-): Promise<void> {
-    const {
-        orgs,
-        attemptOfLease,
-        pairMatches,
-        operationReceipts,
-        agentTitle,
-        connectionListing,
-        integrations,
-        githubMint,
-        githubRevoke,
-    } = deps;
-    if (attemptOfLease) {
-        await app.register(
-            githubCredentialRoutes({
-                attemptOfLease,
-                mint: githubMint ?? orgMint(orgs),
-                pairMatches,
-                revoke: githubRevoke ?? orgRevoke(orgs),
-            })
-        );
-        if (integrations) {
-            await app.register(
-                connectionCredentialRoutes({ attemptOfLease, integrations, listing: connectionListing })
-            );
-        }
-        if (pairMatches && operationReceipts) {
-            await app.register(operationReceiptRoutes({ attemptOfLease, pairMatches, receipts: operationReceipts }));
-        }
-        if (agentTitle) await app.register(agentTitleRoutes({ attemptOfLease, agentTitle }));
-    }
-    // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
-    if (integrations?.flowOf) {
-        // Absent, no provider is registered: a start is refused as not found and a refusal names the provider alone.
-        const none = combineRegistrations([]);
-        await app.register(
-            integrationRoutes({
-                flowOf: integrations.flowOf,
-                configured: integrations.configured,
-                catalog: integrations.catalog,
-                providers: integrations.ids ?? none.ids,
-                notConfiguredOf: integrations.notConfiguredOf ?? none.notConfiguredOf,
-            })
-        );
-    }
-}
 
 /**
  * The routes that exist only with their dependency — commerce (and COMMERCE_ENABLED), the provider key check — and
@@ -579,15 +495,7 @@ export async function buildApp({
     );
     registerTitleRoute(app, orgs);
     await app.register(preflightRoutes({ orgs, forgeGate }));
-    await app.register(
-        attachmentRoutes({
-            orgs,
-            maxInFlight: attachmentMaxInFlight,
-            uploads: uploadCapabilities,
-            requireBinding: config.auth.mode !== 'none',
-            origin: config.mcp.enabled ? new URL(config.mcp.resource).origin : null,
-        })
-    );
+    await registerAttachments(app, { config, orgs, attachmentMaxInFlight, uploadCapabilities });
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.
@@ -612,6 +520,8 @@ export async function buildApp({
         integrations,
         githubMint,
         githubRevoke,
+        memberGrants,
+        config,
     });
     await app.register(workspaceRoutes(executorRouteDeps(config, orgs)));
     // Plans and usage (like the webhook, only when the deployment turned commerce on) and the provider key check.
@@ -654,6 +564,27 @@ async function registerRosterRoutes(
     await app.register(auditRoutes({ store: auth }));
     await app.register(operatorRoutes({ store: auth }));
     await app.register(operatorDriverCredentialRoutes({ credentials: driverCredentials }));
+}
+
+/** The attachment routes: uploads need a binding to a task whenever members sign in, and name the MCP origin when it is on. */
+async function registerAttachments(
+    app: FastifyInstance,
+    {
+        config,
+        orgs,
+        attachmentMaxInFlight,
+        uploadCapabilities,
+    }: Pick<AppDeps, 'config' | 'orgs' | 'attachmentMaxInFlight' | 'uploadCapabilities'>
+): Promise<void> {
+    await app.register(
+        attachmentRoutes({
+            orgs,
+            maxInFlight: attachmentMaxInFlight,
+            uploads: uploadCapabilities,
+            requireBinding: config.auth.mode !== 'none',
+            origin: config.mcp.enabled ? new URL(config.mcp.resource).origin : null,
+        })
+    );
 }
 
 /** What the start gate reads a GitLab member's project access through: the org's connection and the board's client. */

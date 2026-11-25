@@ -1,4 +1,6 @@
+import type { RepoRef } from '@factory-ai/core';
 import type { Sql } from 'postgres';
+import { refOfNullableRow } from './repo-ref-row.js';
 
 /**
  * A live attempt a runner credential may be handed to: the org its pair names, the thread root whose bindings
@@ -13,6 +15,9 @@ export interface LiveAttempt {
     repo: string | null;
     /** The thread root's repository: what a GitHub token is narrowed to must be the attempt's own. */
     rootRepo: string | null;
+    /** The same two repositories as complete refs: the forge a credential is for is the repository's own. */
+    ref: RepoRef | null;
+    rootRef: RepoRef | null;
     executionUserId: string;
     claimSeq: number;
 }
@@ -25,7 +30,11 @@ export type AttemptOfLease = (jobId: string, leaseToken: string) => Promise<Atte
 interface Row {
     org_id: string;
     root_job_id: string;
+    forge: string;
+    host: string;
     repo: string | null;
+    root_forge: string;
+    root_host: string;
     root_repo: string | null;
     execution_user_id: string | null;
     claim_seq: string | number;
@@ -63,7 +72,8 @@ export function createAttemptOfLease({
     return async (jobId, leaseToken) => {
         if (ready) await ready;
         const rows = await sql<Row[]>`
-            select j.org_id, j.root_job_id, j.repo, root.repo as root_repo, root.execution_user_id, j.claim_seq,
+            select j.org_id, j.root_job_id, j.forge, j.host, j.repo, root.forge as root_forge, root.host as root_host,
+                   root.repo as root_repo, root.execution_user_id, j.claim_seq,
                    coalesce(j.lease_token = ${leaseToken}, false) as current,
                    (coalesce(j.prior_lease_token = ${leaseToken}, false)
                     or coalesce(${leaseToken} = any(j.superseded_lease_tokens), false)) as held,
@@ -103,6 +113,8 @@ export function createAttemptOfLease({
                 rootJobId: row.root_job_id,
                 repo: row.repo,
                 rootRepo: row.root_repo,
+                ref: refOfNullableRow(row),
+                rootRef: refOfNullableRow({ forge: row.root_forge, host: row.root_host, repo: row.root_repo }),
                 executionUserId: row.execution_user_id,
                 claimSeq: Number(row.claim_seq),
             };

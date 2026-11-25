@@ -37,6 +37,36 @@ export async function openForgeRequirement(
     `;
 }
 
+/**
+ * Opens the root's forge requirement as a RUNTIME wait of a running attempt: the attempt asked for the member's
+ * credential and the grant cannot serve (docs/gitlab.md). It is the same open row, with the asking attempt on it, so the
+ * heartbeat tells that attempt (and a takeover of it) to stop and hand the task back (`requirementWaitOf`). A re-link
+ * closes it bound; a `forge-access` reason already open is kept.
+ */
+export async function openRuntimeForgeRequirement(
+    db: Db,
+    args: {
+        orgId: string;
+        rootJobId: string;
+        askedJobId: string;
+        claimSeq: number;
+        forge: string;
+        reason: ForgeRequirementReason;
+    }
+): Promise<void> {
+    await db`
+        insert into job_integration_requirement
+            (org_id, root_job_id, provider, reason, target, source, asked_job_id, asked_claim_seq, hand_back_pending)
+        values (${args.orgId}, ${args.rootJobId}, ${FORGE_REQUIREMENT_PROVIDER}, ${args.reason}, ${args.forge}, 'runtime',
+                ${args.askedJobId}, ${args.claimSeq}, true)
+        on conflict (org_id, root_job_id, provider) where satisfied_at is null
+        do update set target = excluded.target, source = 'runtime', asked_job_id = excluded.asked_job_id,
+            asked_claim_seq = excluded.asked_claim_seq, hand_back_pending = true,
+            reason = case when job_integration_requirement.reason = ${FORGE_ACCESS_REASON}
+                          then job_integration_requirement.reason else excluded.reason end
+    `;
+}
+
 /** Closes the root's open grant wait as bound by its starter: the grant is live. A live grant is no evidence of write access. */
 export async function closeForgeRequirement(
     db: Db,

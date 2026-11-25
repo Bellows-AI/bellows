@@ -356,6 +356,10 @@ function stubStore(
             boom();
             return { result: 'ok' as const, answer: 'waiting' as const };
         },
+        async holdOnForgeGrant() {
+            boom();
+            return { result: 'ok' as const };
+        },
         async createRetry(id, createdBy, idempotency, admin) {
             boom();
             stub.adminFlags.push({ verb: 'retry', admin });

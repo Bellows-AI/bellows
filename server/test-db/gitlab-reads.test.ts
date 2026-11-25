@@ -8,6 +8,7 @@ import { testSecretDeps } from './env-secrets-harness.js';
 import {
     type Board,
     bearer,
+    driverBearer,
     type Harness,
     HOST,
     type Org,
@@ -34,6 +35,7 @@ let board: Board;
 let org: Org;
 let grp: string;
 let reached: string[];
+let mints: string[];
 
 /** A GitHub client that records every call and answers none: GitLab must never reach it. */
 const spyForge = (): ForgeSource => ({
@@ -64,7 +66,14 @@ beforeEach(async () => {
         config: {},
         createdBy: org.adminId,
     });
-    board = await h.board({ forge: spyForge() });
+    mints = [];
+    board = await h.board({
+        forge: spyForge(),
+        githubMint: async (...args) => {
+            mints.push(args.join(':'));
+            return null;
+        },
+    });
     await h.fake.control('gitlab/projects', { path: `${grp}/web` });
     const id = await h.connect(org, { groups: [grp] });
     expect((await board.activate(org, id)).result).toBe('activated');
@@ -172,6 +181,37 @@ describe.skipIf(!enabled)('reads of a tracked GitLab repository', () => {
         }
         const [jobs] = await sql<{ count: string }[]>`select count(*) from job where org_id = ${org.id}`;
         expect(Number(jobs?.count)).toBe(0);
+        expect(reached).toEqual([]);
+        expect(repositoryReads()).toEqual([]);
+    });
+
+    it('answers the runner’s GitHub token request for a GitLab attempt with a refusal, never a mint for a same-named GitHub repository', async () => {
+        const { id, claim } = await board.running(org, ref());
+        const res = await board.app.inject({
+            method: 'POST',
+            url: `/api/jobs/${id}/credentials/github`,
+            headers: { 'x-factory-job-id': id, 'x-factory-job-lease-token': claim.leaseToken },
+        });
+        expect(res.statusCode).toBe(403);
+        expect(res.json()).toMatchObject({ code: 'CONNECTION_NOT_AUTHORIZED' });
+        expect(mints).toEqual([]);
+        expect(reached).toEqual([]);
+    });
+
+    it('answers the driver’s pull request write for a GitLab attempt with 503: nothing is written, none is concluded, no wait is opened', async () => {
+        const { id, claim } = await board.running(org, ref());
+        const res = await board.app.inject({
+            method: 'POST',
+            url: `/api/jobs/${id}/pull-request`,
+            headers: { ...driverBearer, 'content-type': 'application/json' },
+            payload: { leaseToken: claim.leaseToken, branch: 'task/one', base: 'main' },
+        });
+        expect(res.statusCode).toBe(UNAVAILABLE);
+        expect(res.json()).toMatchObject({ code: 'UNAVAILABLE' });
+        const [waits] = await sql<
+            { count: string }[]
+        >`select count(*) from job_integration_requirement where root_job_id = ${id}`;
+        expect(Number(waits?.count)).toBe(0);
         expect(reached).toEqual([]);
         expect(repositoryReads()).toEqual([]);
     });

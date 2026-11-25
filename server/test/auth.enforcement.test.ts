@@ -331,6 +331,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/credentials/github', 'connector'],
     // Revoking that token at the end of the attempt: the same class, and a pair-only match on the board.
     ['/api/jobs/:id/credentials/github/revoke', 'connector'],
+    ['/api/jobs/:id/credentials/gitlab', 'connector'],
     // The managed-connection broker: the same class, one segment deeper.
     ['/api/jobs/:id/credentials/connections/:connectionId', 'connector'],
     // The runner seam: the helper's connection list and its durable operation receipts, the same class.

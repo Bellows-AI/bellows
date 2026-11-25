@@ -95,6 +95,8 @@ const BRANCH_ROUTES: readonly RegExp[] = [/^\/api\/sessions\/branch$/];
  */
 const CONNECTOR_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/[^/]+\/credentials\/github(\/revoke)?$/,
+    // A starter's GitLab grant, asked for by the attempt (docs/gitlab.md).
+    /^\/api\/jobs\/[^/]+\/credentials\/gitlab$/,
     /^\/api\/jobs\/[^/]+\/credentials\/connections\/[^/]+$/,
     // The runner seam: the helper's connection list and its operation receipts.
     /^\/api\/jobs\/[^/]+\/credentials\/connections$/,
