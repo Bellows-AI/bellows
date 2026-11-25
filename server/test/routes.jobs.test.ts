@@ -43,7 +43,9 @@ import type {
     ReadReviewResult,
     ReclaimClaim,
     ReclaimRenewal,
+    ArchiveResult,
     RemoveResult,
+    UnarchiveResult,
     ReopenResult,
     RequestReviewResult,
     RetryRefusal,
@@ -149,6 +151,8 @@ interface StoreStub extends JobStore {
     markedDone: { id: string; doneBy: string | null }[];
     gatesReported: { id: string; results: GateReport[] }[];
     stopped: { id: string; stoppedBy: string | null }[];
+    archived: { id: string; archivedBy: string | null }[];
+    unarchived: string[];
     removed: { id: string; removedBy: string | null }[];
     cancelledWaits: { id: string; cancelledBy: string | null }[];
     pokes: { id: string; pokedBy: string | null }[];
@@ -228,6 +232,8 @@ function stubStore(
         /** Where the board says the suspend landed, on the 'ok' path. */
         suspendStatus?: JobStatus;
         stop?: StopResult;
+        archive?: ArchiveResult;
+        unarchive?: UnarchiveResult;
         remove?: RemoveResult;
         cancelWait?: CancelWaitResult;
         pokeWait?: PokeWaitResult;
@@ -281,6 +287,8 @@ function stubStore(
         markedDone: [],
         gatesReported: [],
         stopped: [],
+        archived: [],
+        unarchived: [],
         removed: [],
         cancelledWaits: [],
         pokes: [],
@@ -413,6 +421,16 @@ function stubStore(
             boom();
             stub.stopped.push({ id, stoppedBy: stoppedBy ?? null });
             return options.stop ?? { result: 'stopped' };
+        },
+        async archiveThread(id, archivedBy) {
+            boom();
+            stub.archived.push({ id, archivedBy: archivedBy ?? null });
+            return options.archive ?? { result: 'ok', rootJobId: ID };
+        },
+        async unarchiveThread(id) {
+            boom();
+            stub.unarchived.push(id);
+            return options.unarchive ?? { result: 'ok' };
         },
         async removeThread(id, removedBy) {
             boom();
@@ -589,7 +607,7 @@ function stubStore(
         async listTasks() {
             boom();
             return {
-                navigation: { counts: { running: 0, review: 0, past: 0 }, running: [], review: [] },
+                navigation: { counts: { running: 0, review: 0, past: 0, archived: 0 }, running: [], review: [] },
                 page: { items: [], nextCursor: null },
             };
         },
@@ -2228,6 +2246,42 @@ describe('POST /api/jobs/:id/gates', () => {
         expect(store.gatesReported).toEqual([{ id: ID, results: gates }]);
     });
 
+    it("accepts a settled gate's finishedAt and timeoutMs, and stores both", async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const gates = [
+            {
+                name: 'test',
+                status: 'failed',
+                exitCode: 124,
+                output: null,
+                startedAt: '2026-10-30T10:00:00.000Z',
+                finishedAt: '2026-10-30T10:15:00.000Z',
+                timeoutMs: 900_000,
+            },
+        ];
+
+        const response = await post(instance, `/api/jobs/${ID}/gates`, { leaseToken: TOKEN, gates });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.gatesReported).toEqual([{ id: ID, results: gates }]);
+    });
+
+    it.each([
+        ['an unparseable finishedAt', { finishedAt: 'yesterday' }],
+        ['a fractional timeoutMs', { timeoutMs: 1.5 }],
+        ['a zero timeoutMs', { timeoutMs: 0 }],
+        ['a string timeoutMs', { timeoutMs: '900' }],
+    ])('refuses %s on a gate entry', async (_label, extra) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/gates`, {
+            leaseToken: TOKEN,
+            gates: [{ name: 'test', status: 'failed', exitCode: 1, output: null, ...extra }],
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_GATES');
+    });
+
     it('accepts a skipped gate entry and stores it', async () => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
@@ -2548,27 +2602,48 @@ describe('POST /api/jobs/:id/stop', () => {
     });
 });
 
-describe('POST /api/jobs/:id/remove', () => {
-    it('removes the thread', async () => {
-        const store = stubStore({
-            remove: { result: 'ok', rootJobId: ID, repo: 'acme/web', workspacePath: 'test-org/user-7' },
-        });
+describe('POST /api/jobs/:id/archive and /unarchive', () => {
+    it('archives the thread', async () => {
+        const store = stubStore({ archive: { result: 'ok', rootJobId: ID } });
         const instance = await harnessWith(store);
 
-        const response = await post(instance, `/api/jobs/${ID}/remove`, {});
+        const response = await post(instance, `/api/jobs/${ID}/archive`, {});
 
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ id: ID, removed: true });
-        expect(store.removed).toEqual([{ id: ID, removedBy: null }]);
+        expect(response.json()).toEqual({ id: ID, archived: true });
+        expect(store.archived).toEqual([{ id: ID, archivedBy: null }]);
     });
 
-    // The thread's worktree is a live runner's checkout; removal must not tear it out from under
-    // the container. The user stops the task first.
-    it('refuses while any member is running', async () => {
-        const instance = await harnessWith(stubStore({ remove: 'conflict' }));
-        const response = await post(instance, `/api/jobs/${ID}/remove`, {});
+    // A batch task's thread is the batch's history: the batch's own paths are the sanctioned ones.
+    it('refuses a batch task', async () => {
+        const instance = await harnessWith(stubStore({ archive: 'batch' }));
+        const response = await post(instance, `/api/jobs/${ID}/archive`, {});
         expect(response.statusCode).toBe(409);
-        expect(response.json().code).toBe('TASK_RUNNING');
+        expect(response.json().code).toBe('BATCH_TASK_THREAD');
+    });
+
+    it('unarchives the thread', async () => {
+        const store = stubStore({ unarchive: { result: 'ok' } });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/unarchive`, {});
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({ id: ID, archived: false });
+        expect(store.unarchived).toEqual([ID]);
+    });
+
+    it('refuses to unarchive a task that is not archived', async () => {
+        const instance = await harnessWith(stubStore({ unarchive: 'not_archived' }));
+        const response = await post(instance, `/api/jobs/${ID}/unarchive`, {});
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('TASK_NOT_ARCHIVED');
+    });
+
+    it('is gone: no route removes a task', async () => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/remove`, {});
+        expect(response.statusCode).toBe(404);
     });
 
     describe('POST /api/jobs/:id/reopen', () => {
@@ -2659,7 +2734,7 @@ describe('POST /api/jobs/:id/wait/poke', () => {
 });
 
 describe('lifecycle actor attribution', () => {
-    // Stop, done and remove are a person's verdict (docs/auth.md), and the actor comes off the
+    // Stop, done and archive are a person's verdict (docs/auth.md), and the actor comes off the
     // session — never a body — on the create route's exact rule. Without an auth store the actor
     // is null, the state every AUTH_MODE=none deployment is in; the captures above pin that.
 
@@ -2754,13 +2829,13 @@ describe('lifecycle actor attribution', () => {
         expect(store.markedDone).toEqual([{ id: ID, doneBy: caller.user.id }]);
     });
 
-    it('remove records the signed-in caller', async () => {
+    it('archive records the signed-in caller', async () => {
         const { instance, store, caller, cookie } = await signedInHarness();
 
-        const response = await postAs(instance, `/api/jobs/${ID}/remove`, cookie);
+        const response = await postAs(instance, `/api/jobs/${ID}/archive`, cookie);
 
         expect(response.statusCode).toBe(200);
-        expect(store.removed).toEqual([{ id: ID, removedBy: caller.user.id }]);
+        expect(store.archived).toEqual([{ id: ID, archivedBy: caller.user.id }]);
     });
 
     it('wait-cancel records the signed-in caller', async () => {
@@ -3509,6 +3584,8 @@ describe('GET /api/jobs', () => {
         author: null,
         stoppedBy: null,
         doneBy: null,
+        archivedAt: null,
+        archivedBy: null,
         sessionId: '33333333-3333-4333-8333-333333333333',
         exitCode: 0,
         output: 'hello',
@@ -3705,6 +3782,8 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         author: null,
         stoppedBy: null,
         doneBy: null,
+        archivedAt: null,
+        archivedBy: null,
         sessionId: null,
         exitCode: null,
         output: null,
@@ -3937,6 +4016,8 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         author: null,
         stoppedBy: null,
         doneBy: null,
+        archivedAt: null,
+        archivedBy: null,
         sessionId: '33333333-3333-4333-8333-333333333333',
         exitCode: null,
         output: 'killed after 7200000ms',
@@ -4712,7 +4793,8 @@ describe('error-path mapping', () => {
             [404, null],
         ],
         ['a stop of a missing task', POST(`${JOB}/stop`, {}), { stop: 'missing' }, [404, null]],
-        ['a removal of a missing task', POST(`${JOB}/remove`, {}), { remove: 'missing' }, [404, null]],
+        ['an archive of a missing task', POST(`${JOB}/archive`, {}), { archive: 'missing' }, [404, null]],
+        ['an unarchive of a missing task', POST(`${JOB}/unarchive`, {}), { unarchive: 'missing' }, [404, null]],
         ['a reopen of a missing task', POST(`${JOB}/reopen`, {}), { reopen: 'missing' }, [404, null]],
         ['a wait cancel on a missing task', POST(`${JOB}/wait/cancel`, {}), { cancelWait: 'missing' }, [404, null]],
         [
@@ -4759,7 +4841,8 @@ describe('error-path mapping', () => {
     it.each<[string, Request, string | null]>([
         ['a create', POST('/api/jobs', { command: 'echo hi', repo: githubRepo('acme/web') }), 'UNAVAILABLE'],
         ['a stop', POST(`${JOB}/stop`, {}), 'UNAVAILABLE'],
-        ['a removal', POST(`${JOB}/remove`, {}), 'UNAVAILABLE'],
+        ['an archive', POST(`${JOB}/archive`, {}), 'UNAVAILABLE'],
+        ['an unarchive', POST(`${JOB}/unarchive`, {}), 'UNAVAILABLE'],
         ['a reopen', POST(`${JOB}/reopen`, {}), 'UNAVAILABLE'],
         ['a wait cancel', POST(`${JOB}/wait/cancel`, {}), 'UNAVAILABLE'],
         ['a wait poke', POST(`${JOB}/wait/poke`, {}), 'UNAVAILABLE'],
@@ -4783,7 +4866,8 @@ describe('error-path mapping', () => {
         ['id on heartbeat', POST('/api/jobs/not-a-uuid/heartbeat', { leaseToken: TOKEN }), 'BAD_ID', null],
         ['id on suspend', POST('/api/jobs/nope/suspend', { leaseToken: TOKEN }), null, null],
         ['id on stop', POST('/api/jobs/nope/stop', {}), null, null],
-        ['id on remove', POST('/api/jobs/nope/remove', {}), null, null],
+        ['id on archive', POST('/api/jobs/nope/archive', {}), null, null],
+        ['id on unarchive', POST('/api/jobs/nope/unarchive', {}), null, null],
         ['id on reopen', POST('/api/jobs/nope/reopen', {}), null, null],
         ['id on wait cancel', POST('/api/jobs/nope/wait/cancel', {}), null, null],
         ['id on wait poke', POST('/api/jobs/nope/wait/poke', {}), null, null],

@@ -114,7 +114,7 @@ async function harness(options: Options = {}) {
         fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: 'Bearer tok' },
-            body: JSON.stringify({ gate, ...(filter === undefined ? {} : { filter }) }),
+            body: JSON.stringify({ tool: `gate:${gate}`, ...(filter === undefined ? {} : { input: { filter } }) }),
             ...(signal ? { signal } : {}),
         });
     return { server, run, rows, events, probeCalls, execs, infraLoss };
@@ -129,7 +129,13 @@ describe('the gate server: execution records', () => {
         expect(response.status).toBe(200);
         expect(h.events).toEqual(['write:running', 'exec', 'write:passed']);
         const [started, ended] = h.rows;
-        expect(body).toEqual({ exitCode: 0, output: '', executionId: started!.executionId });
+        expect(body).toEqual({
+            verdict: 'passed',
+            exitCode: 0,
+            output: '',
+            artifacts: [],
+            executionId: started!.executionId,
+        });
         expect(started).toMatchObject({
             gate: 'test',
             identity: 'id-test',
@@ -154,6 +160,32 @@ describe('the gate server: execution records', () => {
         expect(Date.parse(ended!.finishedAt!)).toBeGreaterThanOrEqual(Date.parse(started!.startedAt!));
         // The mutation guard asks "since the run started", the moment the running row names.
         expect(h.probeCalls).toEqual([undefined, Date.parse(started!.startedAt!)]);
+        await h.server.close();
+    });
+
+    it('answers the structured result beside the output: the failures, the selection, and the files in flight at a deadline', async () => {
+        const report = (inFlight: string[]) => ({
+            sections: {
+                tests: { failures: [{ file: 'a.test.ts', test: 'adds', message: 'boom' }], inFlight },
+                selection: { mode: 'all', reason: 'a shared file changed' },
+            },
+            resources: '',
+        });
+        const h = await harness({
+            answer: (_c, n) =>
+                n === 1
+                    ? answered(1, { stdout: 'tail', report: report(['slow.test.ts']) })
+                    : answered(null, { stdout: 'tail', timedOut: true, report: report(['slow.test.ts']) }),
+        });
+        const failed = (await (await h.run()).json()) as { verdict: string; result?: unknown };
+        expect(failed.verdict).toBe('failed');
+        expect(failed.result).toEqual({
+            failures: [{ file: 'a.test.ts', test: 'adds', message: 'boom' }],
+            selection: { mode: 'all', reason: 'a shared file changed' },
+        });
+        const timedOut = (await (await h.run()).json()) as { exitCode: number; result?: { inFlight?: string[] } };
+        expect(timedOut.exitCode).toBe(124);
+        expect(timedOut.result?.inFlight).toEqual(['slow.test.ts']);
         await h.server.close();
     });
 
@@ -234,7 +266,11 @@ describe('the gate server: execution records', () => {
     it('records a failed setup as setup_failed: one row, the gate never started', async () => {
         const h = await harness({ job: WITH_SETUP, answer: ({ gate }) => answered(gate.command === 'npm ci' ? 1 : 0) });
         const response = await h.run();
-        expect(await response.json()).toMatchObject({ setupFailed: true, executionId: expect.any(String) });
+        expect(await response.json()).toMatchObject({
+            verdict: 'failed',
+            setupFailed: true,
+            executionId: expect.any(String),
+        });
         expect(h.rows.map((r) => r.outcome)).toEqual(['setup_failed']);
         expect(h.rows[0]).toMatchObject({ exitCode: 1, treeBefore: null, treeAfter: null, mutatedSince: null });
         expect(h.execs.map((e) => e.command)).toEqual(['npm ci']);

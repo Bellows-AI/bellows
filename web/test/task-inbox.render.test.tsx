@@ -39,7 +39,7 @@ const taskSummary = (over: Partial<import('../src/api/useTasks.js').TaskSummary>
 });
 
 const navigation = (over: Partial<TaskNavigation['counts']> = {}): TaskNavigation => ({
-    counts: { running: 0, review: 0, past: 0, ...over },
+    counts: { running: 0, review: 0, past: 0, archived: 0, ...over },
     running: [],
     review: [],
 });
@@ -125,7 +125,7 @@ describe('TaskInboxPage header', () => {
 describe('TaskInboxPage tab counts', () => {
     it('puts each organization count on its tab, Needs attention as running plus review', () => {
         const html = renderInbox({
-            navigation: navigation({ review: 12, running: 3, past: 86 }),
+            navigation: navigation({ review: 12, running: 3, past: 86, archived: 7 }),
             items: [taskSummary()],
             nextCursor: null,
             initial: false,
@@ -133,7 +133,8 @@ describe('TaskInboxPage tab counts', () => {
         expect(html).toContain('aria-label="Needs attention, 15 across the organization"');
         expect(html).toContain('aria-label="Running, 3 across the organization"');
         expect(html).toContain('aria-label="Past, 86 across the organization"');
-        expect((html.match(/class="inbox-tab-count"/g) ?? []).length).toBe(3);
+        expect(html).toContain('aria-label="Archived, 7 across the organization"');
+        expect((html.match(/class="inbox-tab-count"/g) ?? []).length).toBe(4);
         // The old strip is gone: the tabs are the one place the counts live.
         expect(html).not.toContain('Organization total');
         expect(html).not.toContain('inbox-counts');
@@ -142,7 +143,7 @@ describe('TaskInboxPage tab counts', () => {
     it('reads the same counts whatever the filters', () => {
         const html = renderInbox(
             {
-                navigation: navigation({ review: 12, running: 3, past: 86 }),
+                navigation: navigation({ review: 12, running: 3, past: 86, archived: 7 }),
                 items: [],
                 nextCursor: null,
                 initial: false,
@@ -617,14 +618,15 @@ describe('TaskInboxPage pagination', () => {
 });
 
 describe('TaskInboxPage filters', () => {
-    it('renders three state tabs — Needs review is part of Needs attention — with the active one marked', () => {
+    it('renders four state tabs — Needs review is part of Needs attention — with the active one marked', () => {
         const html = renderInbox({ navigation: null, items: null, nextCursor: null, initial: true });
         const tabs = html.match(/<nav class="tabs inbox-tabs"[^>]*>.*?<\/nav>/)?.[0] ?? '';
         expect(tabs).toContain('Needs attention');
         expect(tabs).toContain('Running');
         expect(tabs).toContain('Past');
+        expect(tabs).toContain('Archived');
         expect(tabs).not.toContain('Needs review');
-        expect((tabs.match(/<a /g) ?? []).length).toBe(3);
+        expect((tabs.match(/<a /g) ?? []).length).toBe(4);
         expect((html.match(/inbox-tab is-active/g) ?? []).length).toBe(1);
     });
 

@@ -148,10 +148,11 @@ describe('the gate sidecar', () => {
         expect(gateOf(gated).workingDir).toBe(MAILBOXES.gate.path);
     });
 
-    it('mounts the task volume and the gate mailbox, and no other mailbox', () => {
+    it('mounts the task volume, the gate mailbox and its in-memory /tmp, and no other mailbox', () => {
         expect(gateOf(gated).volumeMounts).toEqual([
             { name: TASK_VOLUME, mountPath: TASK_MOUNT },
             { name: MAILBOXES.gate.name, mountPath: MAILBOXES.gate.path },
+            { name: 'gate-tmp', mountPath: '/tmp' },
         ]);
         expect(podOf(gated).volumes).toContainEqual({ name: MAILBOXES.gate.name, emptyDir: {} });
     });

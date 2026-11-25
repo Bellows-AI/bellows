@@ -368,12 +368,12 @@ test.describe('responsive and accessibility matrix (issue 287)', () => {
             await openSettled(page, SEEDED_DETAIL, 'dark');
             const more = page.locator('.task-actions').getByRole('button', { name: 'More task actions' });
             await containsAndReturns(page, {
-                name: 'task: remove',
+                name: 'task: archive',
                 trigger: more,
                 panel: page.locator('.task-remove'),
                 open: async () => {
                     await more.click();
-                    await page.getByRole('menuitem', { name: 'Remove task' }).click();
+                    await page.getByRole('menuitem', { name: 'Archive task' }).click();
                 },
             });
 

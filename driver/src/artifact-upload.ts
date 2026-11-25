@@ -46,7 +46,21 @@ export const ARTIFACT_STREAM = {
     rawTranscript: 'transcript-raw',
     /** The attempt's checkpoint: a header line, a git bundle and the OpenCode snapshot, binary. */
     checkpoint: 'checkpoint',
+    /** A gate run's whole output is the stream `gate-<name>-<execution id>`; the server's twin is `GATE_STREAM_PREFIX`. */
+    gatePrefix: 'gate-',
 } as const;
+
+/** The executor segment of a stream of a job that ran no agent. */
+export const NO_EXECUTOR = 'none';
+
+/** The most of a gate's name its stream carries; the execution id after it keeps the name unique. */
+const GATE_STREAM_NAME_MAX = 64;
+
+/** `gate-<name>-<execution id>`: the name folded to a key segment's characters, the id naming the one run. */
+export function gateStreamName(gate: string, executionId: string): string {
+    const folded = gate.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, GATE_STREAM_NAME_MAX);
+    return `${ARTIFACT_STREAM.gatePrefix}${folded}-${executionId}`;
+}
 
 /** Cuts `bytes` into chunks of about `max` bytes, ending at a newline where one allows. Offsets are the cut points. */
 export function cutChunks(bytes: Uint8Array, max = CHUNK_BYTES): { offset: number; body: Uint8Array }[] {
@@ -248,6 +262,26 @@ export async function uploadRunArtifacts(
                 io.log(`job ${job.id}: the ${source.stream} artifact upload failed: ${describeError(e)}`);
             }
         }
+    } finally {
+        deadline.release();
+    }
+}
+
+/** One gate run's whole output, stored as its own stream under the claim's authority; true when the manifest recorded it complete. */
+export async function uploadGateLog(
+    run: { board: UploadTarget['board']; job: BoardJob; stream: string },
+    log: { text: string; truncated: boolean },
+    io: Io,
+    bound: UploadBound
+): Promise<boolean> {
+    const { board, job, stream } = run;
+    const ref = { executor: job.executorType ?? NO_EXECUTOR, session: NO_SESSION, stream };
+    const deadline = startUploadDeadline(bound, io);
+    try {
+        return await uploadStream({ board, job, ref }, { stream, ...log }, io, deadline);
+    } catch (e) {
+        io.log(`job ${job.id}: the ${stream} artifact upload failed: ${describeError(e)}`);
+        return false;
     } finally {
         deadline.release();
     }

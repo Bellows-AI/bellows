@@ -7,6 +7,7 @@ import { tailBytes } from '../runner.js';
 import { stepLost } from '../step-control.js';
 import { GATE_RUNS_READ_MS } from './gate-reuse.js';
 import { down, raceStep, settling, updateRunDeadline } from './loop-attempt.js';
+import { describeResult } from '../gate-result.js';
 import { type GateFailure, type GateSession, probeTreeNow } from './loop-gates.js';
 import { type GatesPhase, runGatePass } from './loop-gate-pass.js';
 import { servicesLost } from './loop-services.js';
@@ -173,8 +174,10 @@ async function writeRound(
 /** The red answer: the gate, its output tail, the round it spent, and the text the agent is sent back with. */
 export function failAnswer(failure: GateFailure, round: number, limit: number): FinishAnswer {
     const output = tailBytes(failure.output, FINISH_OUTPUT_TAIL_BYTES);
+    const recorded = describeResult(failure.result);
     const message =
         `The "${failure.name}" gate failed (round ${round} of ${limit}). Fix the cause so the gate passes, ` +
-        `keeping the change as small as the fix allows, then finish again.\n\nGate output:\n${output}`;
+        `keeping the change as small as the fix allows, then finish again.\n\n` +
+        `${recorded ? `${recorded}\n\n` : ''}Gate output:\n${output}`;
     return { verdict: 'fail', gate: failure.name, exitCode: failure.exitCode, output, round, limit, message };
 }

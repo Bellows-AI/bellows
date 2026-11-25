@@ -85,7 +85,8 @@ export interface PendingResult {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PR_URL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)$/;
 /** The wrappers the baked skills call (`docker/*-executor/factory-gate.cjs`, `factory-control.cjs`), #1061. */
-const GATE_RUN = /^\s*factory-gate(?:\s|$)/;
+/** `factory-gate --list` reads the run's tool list: it runs no gate. */
+const GATE_RUN = /^\s*factory-gate(?!\s+--list(?:\s|$))(?:\s|$)/;
 const GATE_NAME = /^\s*factory-gate\s+([A-Za-z0-9_.:-]+)(?=\s|$)/;
 const GATE_FILTER = /\s--filter(?:\s|=|$)/;
 const PUBLISH = /^\s*factory-control\s+publish(?:\s|$)/;

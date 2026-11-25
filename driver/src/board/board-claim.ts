@@ -29,7 +29,8 @@ const isLastGateReport = (value: unknown): boolean =>
     typeof value.name === 'string' &&
     (value.status === 'passed' || value.status === 'failed') &&
     (value.exitCode === null || typeof value.exitCode === 'number') &&
-    (value.output === null || typeof value.output === 'string');
+    (value.output === null || typeof value.output === 'string') &&
+    (value.executionId === undefined || typeof value.executionId === 'string');
 
 /** A service entry of the claim's plan, as far as the driver's argv and pod specs rely on it. */
 const isServiceSpec = (value: unknown): value is ServiceSpec =>

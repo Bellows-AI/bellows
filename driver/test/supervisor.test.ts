@@ -33,6 +33,7 @@ import {
     AGENT_MAILBOX_DIR,
     GATE_CANCEL_GRACE_MS,
     GATE_ASK_FILES,
+    GATE_REPORT_FILES,
     GATE_FILES,
     GATE_TOKEN_PATH,
     REVIEW_FILES,
@@ -76,6 +77,7 @@ interface SupervisorModule {
     STEP_KINDS: string[];
     GATE_FILES: Record<string, string>;
     GATE_ASK_FILES: Record<string, string>;
+    GATE_REPORT_FILES: Record<string, string>;
     GATE_TOKEN_PATH: string;
     GATE_LOST_MS: number;
     GATE_CANCEL_MS: number;
@@ -159,6 +161,8 @@ interface StepAnswer {
     timedOut: boolean;
     replayed?: boolean;
     tokenAskUnanswered?: true;
+    failureLines?: string;
+    outputCut?: true;
 }
 
 interface Driver {
@@ -310,7 +314,7 @@ async function startDriver({
             };
             driver.calls += 1;
             if (driver.silent) return request.socket.destroy();
-            if (/^\/(publish|review|export|connection|gate\/(run|finish))(\/|\?|$)/.test(request.url ?? '')) {
+            if (/^\/(publish|review|export|connection|tools|gate\/finish)(\/|\?|$)/.test(request.url ?? '')) {
                 const entry = {
                     method: request.method ?? '',
                     url: request.url ?? '',
@@ -1187,6 +1191,8 @@ interface GatePlan {
     holdMs?: number;
     /** A latch in place of the clock: the answer waits for the test to release it. */
     heldUntil?: () => boolean;
+    /** Files the gate left in its report directory (name -> content), kept in the answer with a cancel too. */
+    report?: Record<string, string>;
 }
 
 /**
@@ -1217,6 +1223,13 @@ function fakeGateLoop(
     };
     const held = new Map<string, { plan: GatePlan; since: number }>();
     const answer = (id: string, exitCode: number, output: string) => {
+        const report = held.get(id)?.plan.report;
+        if (report) {
+            mkdirSync(at(GATE_FILES.running, id, 'report'), { recursive: true });
+            for (const [name, content] of Object.entries(report)) {
+                writeFileSync(at(GATE_FILES.running, id, 'report', name), content);
+            }
+        }
         writeFileSync(at(GATE_FILES.running, id, GATE_FILES.output), output);
         writeFileSync(at(GATE_FILES.running, id, 'exit.tmp'), `${exitCode}\n`);
         renameSync(at(GATE_FILES.running, id, 'exit.tmp'), at(GATE_FILES.running, id, GATE_FILES.exit));
@@ -1280,6 +1293,74 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
         ]);
         // The answer is read and gone: the mailbox keeps no finished request.
         expect(readdirSync(join(supervised.box.gate, GATE_FILES.done))).toEqual([]);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers the gate’s report beside its exit: each section it wrote, and the loop’s resource samples', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const report = {
+            'tests.json': '{"failures":[{"file":"a.test.ts","test":"adds","message":"boom"}]}',
+            'selection.json': '{"mode":"all","reason":"a shared file changed"}',
+            'broken.json': '{not json',
+            resources: 't=1 cpu=1,0,1,1,0,0,0,0 load=0.1 mem=1/2 throttled=0,0\n',
+            'stray.txt': 'ignored',
+        };
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 1, output: '1 failing', report }));
+        driver.order(gateStep('gate-1', 'npm test'));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({
+            exitCode: 1,
+            report: {
+                sections: {
+                    tests: { failures: [{ file: 'a.test.ts', test: 'adds', message: 'boom' }] },
+                    selection: { mode: 'all', reason: 'a shared file changed' },
+                },
+                resources: 't=1 cpu=1,0,1,1,0,0,0,0 load=0.1 mem=1/2 throttled=0,0\n',
+            },
+        });
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('keeps a section over the size cap, cut down, instead of dropping it whole', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const big = {
+            failures: Array.from({ length: 200 }, (_, i) => ({ file: `f${i}`, test: 't', message: 'm'.repeat(3000) })),
+            inFlight: ['slow.test.ts'],
+        };
+        fakeGateLoop(supervised.box.gate, () => ({
+            exitCode: 1,
+            output: '',
+            report: { 'tests.json': JSON.stringify(big) },
+        }));
+        driver.order(gateStep('gate-1', 'npm test'));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        const tests = (
+            driver.answers.get('gate-1') as { report?: { sections: { tests?: typeof big & { truncated?: true } } } }
+        ).report?.sections.tests;
+        expect(tests?.truncated).toBe(true);
+        expect(tests?.inFlight).toEqual(['slow.test.ts']);
+        expect(tests?.failures.length).toBeGreaterThan(0);
+        expect(JSON.stringify(tests).length).toBeLessThanOrEqual(65_536);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers a gate killed at its deadline with the report it had written', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const report = { 'tests.json': '{"inFlight":["slow.test.ts"]}' };
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: '', holdMs: 60_000, report }));
+        driver.order(gateStep('gate-1', 'sleep 60', { timeoutMs: 200 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({
+            exitCode: 124,
+            timedOut: true,
+            report: { sections: { tests: { inFlight: ['slow.test.ts'] } } },
+        });
         supervised.agentExits(0);
         await supervised.done;
     });
@@ -1407,6 +1488,97 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
         await supervised.done;
     });
 
+    // A failure list followed by more than the step output cap of stacks: the tail the answer keeps no longer holds
+    // the names, so the supervisor reads them off the whole file and carries them beside it.
+    it('carries the failure lines of a gate whose output outgrows the step cap past the cut', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const files = ['web/test/a.test.ts', 'core/test/b.test.ts', 'server/test/c.test.ts'];
+        const list = files.map((file) => ` FAIL  ${file} > suite > case\n × case 12ms\n`).join('');
+        const noise = 'Error: Timeout calling "onTaskUpdate"\n    at frame (node:internal/x:1:1)\n'.repeat(20_000);
+        const summary = ' Test Files  3 failed | 677 passed (717)\n      Tests  4 failed | 9000 passed\n';
+        expect(Buffer.byteLength(noise)).toBeGreaterThan(STEP_OUTPUT_LIMIT_BYTES);
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 1, output: `${list}${noise}${summary}` }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        const answer = driver.answers.get('gate-1');
+        expect(answer?.stdout).not.toContain(files[0]);
+        for (const file of files) expect(answer?.failureLines).toContain(file);
+        expect(answer?.failureLines).toContain('Test Files  3 failed | 677 passed (717)');
+        expect(Buffer.byteLength(answer?.failureLines ?? '')).toBeLessThan(64 * 1024);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    // The answer is cut by its JSON size, which quotes and backslashes inflate: a log under the cap in bytes can
+    // still lose its head to it.
+    it('carries the failure lines of a gate whose output fits the cap in bytes but not escaped', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const files = ['web/test/a.test.ts', 'core/test/b.test.ts'];
+        const list = files.map((file) => ` FAIL  ${file} > suite > case\n`).join('');
+        // 20 bytes a line, 40 escaped: quotes, a backslash and the newline all double in JSON.
+        const noise = `${'"'.repeat(18)}\\\n`.repeat(50_000);
+        const output = `${list}${noise} Test Files  2 failed | 9 passed (11)\n`;
+        expect(Buffer.byteLength(output)).toBeLessThan(STEP_OUTPUT_LIMIT_BYTES);
+        expect(Buffer.byteLength(JSON.stringify(output))).toBeGreaterThan(STEP_OUTPUT_LIMIT_BYTES);
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 1, output }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        const answer = driver.answers.get('gate-1');
+        expect(answer?.stdout).not.toContain(files[0]);
+        for (const file of files) expect(answer?.failureLines).toContain(file);
+        expect(answer?.failureLines).toContain('Test Files  2 failed');
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    // The answer's tail is cut by JSON size too: control bytes cost six in it, so a log well under the cap can lose its
+    // head. The step says so, so no downstream store takes the tail for the whole.
+    it('says its answer is cut when the escaped output outgrows the cap under the raw cap', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const output = `start\n${'\x1b[2K\r'.repeat(150_000)}done`;
+        expect(Buffer.byteLength(output)).toBeLessThan(STEP_OUTPUT_LIMIT_BYTES);
+        expect(Buffer.byteLength(JSON.stringify(output))).toBeGreaterThan(STEP_OUTPUT_LIMIT_BYTES);
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        const answer = driver.answers.get('gate-1');
+        expect(answer?.stdout.startsWith('start')).toBe(false);
+        expect(answer?.outputCut).toBe(true);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('says its answer is cut when the raw output outgrows the cap, and not when it holds the whole', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        fakeGateLoop(supervised.box.gate, (request) => ({
+            exitCode: 0,
+            output: request.id === 'gate-1' ? `${'x'.repeat(STEP_OUTPUT_LIMIT_BYTES)}tail` : 'small',
+        }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the first answer', () => driver.answers.has('gate-1'));
+        driver.order(gateStep('gate-2', 'npm test', { timeoutMs: 60_000 }));
+        await until('the second answer', () => driver.answers.has('gate-2'));
+        expect(driver.answers.get('gate-1')?.outputCut).toBe(true);
+        expect(driver.answers.get('gate-2')?.outputCut).toBeUndefined();
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('carries no failure lines for a gate whose whole output the answer holds', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 1, output: ' FAIL  a.test.ts\n' }));
+        driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')?.failureLines).toBeUndefined();
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
     it('answers a command step whose streams escape past their bytes within the driver bound', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);
@@ -1445,11 +1617,14 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
     it('answers another step while a gate runs: a gate never holds the step queue', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);
-        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', holdMs: 1_500 }));
+        // The gate answers when the test says so, never after a delay a loaded host can outrun.
+        let released = false;
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', heldUntil: () => released }));
         driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
         driver.order(step('draft-1', 'publish', ['node', '-e', 'console.log("drafted")']));
         await until('the publish answer', () => driver.answers.has('draft-1'));
         expect(driver.answers.has('gate-1')).toBe(false);
+        released = true;
         await until('the gate answer', () => driver.answers.has('gate-1'));
         expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 0, stdout: 'passed' });
         supervised.agentExits(0);
@@ -1561,10 +1736,17 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
     it('joins a delivery of a gate still running instead of running it twice', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);
-        const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', holdMs: 500 }));
+        let released = false;
+        const loop = fakeGateLoop(supervised.box.gate, () => ({
+            exitCode: 0,
+            output: 'passed',
+            heldUntil: () => released,
+        }));
         driver.order(gateStep('gate-1', 'npm test'));
         await until('the gate to be taken', () => loop.seen.length === 1);
         driver.order(gateStep('gate-1', 'npm test'));
+        await until('the second delivery to be taken', () => driver.queue.length === 0);
+        released = true;
         await until('the answer', () => driver.answers.has('gate-1'));
         expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: 0, stdout: 'passed' });
         expect(loop.seen).toHaveLength(1);
@@ -1726,6 +1908,7 @@ describe('what crosses the mailboxes', () => {
         expect(supervisor.STEP_KINDS).toEqual([...STEP_KINDS]);
         expect(supervisor.GATE_FILES).toEqual(GATE_FILES);
         expect(supervisor.GATE_ASK_FILES).toEqual(GATE_ASK_FILES);
+        expect(supervisor.GATE_REPORT_FILES).toEqual(GATE_REPORT_FILES);
         expect(supervisor.GATE_TOKEN_PATH).toBe(GATE_TOKEN_PATH);
         expect(supervisor.GATE_LOST_MS).toBe(GATE_LOST_MS);
         expect(supervisor.GATE_CANCEL_MS).toBe(GATE_CANCEL_GRACE_MS);
@@ -2218,14 +2401,18 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
             const driver = await startDriver();
             const supervised = run(driver, GATED);
             let holds = 0;
+            let released = false;
             const loop = fakeGateLoop(supervised.box.gate, () => ({
                 exitCode: 3,
                 output: 'failing',
-                holdMs: holds++ === 0 ? 300 : 3_000,
+                // The first run answers when the call has queued behind it; the second is held until the end.
+                heldUntil: holds++ === 0 ? () => released : () => false,
             }));
             driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
             await until('the gate to be taken', () => loop.seen.length === 1);
             driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000, invocation: 'i-2' }));
+            await until('the second call to be taken', () => driver.queue.length === 0);
+            released = true;
             await until('the second call to run the gate', () => loop.seen.length === 2);
             expect(supervised.ledger('gate-1').invocations['i-2']).toMatchObject({ state: 'running' });
             supervised.agentExits(0);
@@ -2236,10 +2423,17 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
         it('runs the second invocation of a gate whose first call failed', async () => {
             const driver = await startDriver();
             const supervised = run(driver, GATED);
-            const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 3, output: 'failing', holdMs: 300 }));
+            let released = false;
+            const loop = fakeGateLoop(supervised.box.gate, () => ({
+                exitCode: 3,
+                output: 'failing',
+                heldUntil: () => released,
+            }));
             driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
             await until('the gate to be taken', () => loop.seen.length === 1);
             driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000, invocation: 'i-2' }));
+            await until('the second call to be taken', () => driver.queue.length === 0);
+            released = true;
             await until('both answers', () => driver.answerBodies.length === 3);
             expect(loop.seen).toHaveLength(2);
             supervised.agentExits(0);
@@ -2425,7 +2619,8 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         ['POST', '/review', '{"profile":"a"}'],
         ['GET', '/review/key-1', undefined],
         ['POST', '/connection', '{"provider":"jira"}'],
-        ['POST', '/gate/run', '{"gate":"verify"}'],
+        ['GET', '/tools', undefined],
+        ['POST', '/tools/call', '{"tool":"gate:verify"}'],
         ['POST', '/gate/finish', '{}'],
     ])('relays the agent route %s %s under the agent token, the answer unchanged', async (method, url, body) => {
         const driver = await startDriver();
@@ -2469,11 +2664,16 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         ['agent', 'GET', '/review/../control'],
         ['agent', 'PUT', '/export/chunk?session=s&offset=0'],
         ['agent', 'POST', '/review?x=1'],
-        ['agent', 'GET', '/gate/run'],
-        ['agent', 'PUT', '/gate/run'],
-        ['agent', 'POST', '/gate/run?x=1'],
-        ['agent', 'POST', '/gate/run/../control'],
-        ['export', 'POST', '/gate/run'],
+        // An older runner's route: this relay ships with the new helpers, which never call it.
+        ['agent', 'POST', '/gate/run'],
+        ['agent', 'GET', '/tools/call'],
+        ['agent', 'PUT', '/tools/call'],
+        ['agent', 'POST', '/tools/call?x=1'],
+        ['agent', 'POST', '/tools/call/../control'],
+        ['agent', 'POST', '/tools'],
+        ['agent', 'GET', '/tools?x=1'],
+        ['export', 'POST', '/tools/call'],
+        ['export', 'GET', '/tools'],
         ['agent', 'GET', '/gate/finish'],
         ['agent', 'POST', '/gate/finish?x=1'],
         ['export', 'POST', '/gate/finish'],
@@ -2577,10 +2777,10 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         await finish(supervised);
     });
 
-    describe("POST /gate/run, the agent's ad-hoc gate run", () => {
-        const GATE = '{"gate":"verify"}';
+    describe("POST /tools/call, the agent's tool call", () => {
+        const GATE = '{"tool":"gate:verify"}';
         const gateRun = (socket: string, body: Buffer | string = GATE) =>
-            viaSocket(socket, 'POST', '/gate/run', { body });
+            viaSocket(socket, 'POST', '/tools/call', { body });
         /** A holder that answers after `ms` with `size` bytes of gate output. */
         const answersAfter = (driver: Driver, ms: number, size = 0) => {
             driver.relayAnswer = async (response) => {
@@ -2652,7 +2852,7 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
             await until('the rebind', rebound);
             expect(await outcome).toBeInstanceOf(Error);
             expect((await gateRun(sockets.agent)).status).toBe(200);
-            expect(next.seen).toEqual([expect.objectContaining({ url: '/gate/run' })]);
+            expect(next.seen).toEqual([expect.objectContaining({ url: '/tools/call' })]);
             old.relayAnswer = null;
             await finish(supervised);
         });

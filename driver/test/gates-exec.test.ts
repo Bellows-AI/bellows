@@ -8,7 +8,7 @@ import type { GateStepRequest } from '../src/supervised-steps.js';
 import type { StepResult } from '../src/supervisor-contract.js';
 
 /**
- * `{"exec": "<command>"}` on the ad-hoc endpoint runs an arbitrary command in the attempt's own
+ * `{"tool": "exec", "input": {"command": "<command>"}}` on the ad-hoc endpoint runs an arbitrary command in the attempt's own
  * gate container — unrecorded, tokenless, without the pending setup, under the ad-hoc 10-minute cap, and
  * one at a time with the checkout's gates. The server half over a real loopback socket; the manager half
  * against a stand-in runner, as `gates.test.ts` does.
@@ -113,7 +113,8 @@ async function serveExec(
             body,
             ...(signal ? { signal } : {}),
         });
-    const exec = (command: string, signal?: AbortSignal) => post(JSON.stringify({ exec: command }), signal);
+    const exec = (command: string, signal?: AbortSignal) =>
+        post(JSON.stringify({ tool: 'exec', input: { command } }), signal);
     return { server, post, exec };
 }
 
@@ -131,7 +132,7 @@ describe('an exec run on the gate server', () => {
         });
         const response = await exec('echo hi');
         expect(response.status).toBe(OK);
-        await expect(response.json()).resolves.toEqual({ exitCode: 0, output: 'hi' });
+        await expect(response.json()).resolves.toEqual({ exitCode: 0, output: 'hi', artifacts: [] });
         expect(seen).toHaveLength(1);
         expect(seen[0]?.key).toBe(KEY);
         expect(seen[0]?.command).toBe('echo hi');
@@ -146,8 +147,19 @@ describe('an exec run on the gate server', () => {
         const { server, exec } = await serveExec(manager, { gates: [] });
         const response = await exec('false');
         expect(response.status).toBe(OK);
-        await expect(response.json()).resolves.toEqual({ exitCode: 2, output: 'nope' });
+        await expect(response.json()).resolves.toEqual({ exitCode: 2, output: 'nope', artifacts: [] });
         expect(seen.map((call) => call.command)).toEqual(['false']);
+        await server.close();
+    });
+
+    it('an exec call answers the shared shape with no verdict and no executionId', async () => {
+        const { manager } = recordingManager(async () => ({ exitCode: 1, output: 'boom' }));
+        const { ledger } = countingLedger();
+        const { server, exec } = await serveExec(manager, { gates: [{ name: 'test', command: 'npm test' }], ledger });
+        const body = (await (await exec('false')).json()) as Record<string, unknown>;
+        expect(body).toEqual({ exitCode: 1, output: 'boom', artifacts: [] });
+        expect(body).not.toHaveProperty('verdict');
+        expect(body).not.toHaveProperty('executionId');
         await server.close();
     });
 
@@ -171,12 +183,15 @@ describe('an exec run on the gate server', () => {
     });
 
     it.each([
-        ['an empty command', '{"exec":""}'],
-        ['a blank command', '{"exec":"   "}'],
-        ['a NUL byte', JSON.stringify({ exec: 'a\u0000b' })],
-        ['a non-string', '{"exec":1}'],
-        ['both a gate and an exec', '{"gate":"test","exec":"x"}'],
-        ['a filter beside an exec', '{"exec":"x","filter":"y"}'],
+        ['an empty command', '{"tool":"exec","input":{"command":""}}'],
+        ['a blank command', '{"tool":"exec","input":{"command":"   "}}'],
+        ['a NUL byte', JSON.stringify({ tool: 'exec', input: { command: 'a\u0000b' } })],
+        ['a non-string', '{"tool":"exec","input":{"command":1}}'],
+        ['no input', '{"tool":"exec"}'],
+        ['an input that is not an object', '{"tool":"exec","input":"x"}'],
+        ['a key beside tool and input', '{"tool":"exec","input":{"command":"x"},"gate":"test"}'],
+        ['a filter beside the command', '{"tool":"exec","input":{"command":"x","filter":"y"}}'],
+        ['the old exec body', '{"exec":"x"}'],
     ])('refuses %s with 400 and runs nothing', async (_name, body) => {
         const { manager, seen } = recordingManager(async () => ({ exitCode: 0, output: '' }));
         const { server, post } = await serveExec(manager, { gates: [{ name: 'test', command: 'npm test' }] });
@@ -253,6 +268,7 @@ describe('an exec run on the gate server', () => {
         await expect(response.json()).resolves.toEqual({
             exitCode: 0,
             output: 'ok',
+            artifacts: [],
             deadServices: 'service "db" failed',
         });
         await server.close();

@@ -116,7 +116,8 @@ build) that run in a separate container sharing this workspace. Run one with `fa
 factory-gate test
 ```
 
-The answer is JSON, `{"exitCode":0,"output":"..."}`. `exitCode` 0 means the gate passed; otherwise read `output`, fix what it names, and run it again.
+The answer is JSON, `{"verdict":"passed","exitCode":0,"output":"...","artifacts":[]}`. `verdict` `passed` means the gate passed; otherwise read `output`, fix what it names, and run it again.
+`factory-gate --list` prints the gates you can run (`{"tools":[...]}`, one `gate:<name>` each).
 Only gates `.bellows.yaml` declares can run — the request carries a gate NAME, never a command.
 A gate that sets `on_demand: true` is skipped when you finish and never fails the task: it runs
 only when you call it, so call it when your change touches what it checks.
@@ -142,7 +143,7 @@ worktree — with `factory-exec`, the command as ONE quoted argument (it runs un
 factory-exec 'npx playwright test e2e/login.spec.ts'
 ```
 
-It prints `{"exitCode":N,"output":"..."}`. Use it for what only that image has: a browser, a toolchain
+It prints `{"exitCode":N,"output":"...","artifacts":[]}`. Use it for what only that image has: a browser, a toolchain
 or client the image provides, inspecting or finishing the environment's setup, reproducing a failed
 gate step. To check a change, prefer a declared gate. One run at a time, behind any gate already
 running, capped at 10 minutes; it gets no GitHub token and never runs the pending setup first. The

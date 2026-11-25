@@ -59,7 +59,8 @@ interface Recorded {
 interface Board {
     calls: Recorded[];
     stop?: unknown;
-    remove?: unknown;
+    archive?: unknown;
+    unarchive?: unknown;
     done?: unknown;
     /** The refusal createFollowUp / createRetry answer, when set. */
     created?: unknown;
@@ -119,7 +120,8 @@ const storeOf = (board: Board) => {
         editCommand: record('editCommand', (_id: string, command: string) => ({ result: 'edited', command })),
         markDone: record('markDone', () => board.done ?? { status: 'succeeded', doneAt: '2026-01-02T00:00:00.000Z' }),
         stop: record('stop', () => board.stop ?? { result: 'stopped' }),
-        removeThread: record('removeThread', () => board.remove ?? 'removed'),
+        archiveThread: record('archiveThread', () => board.archive ?? { result: 'ok', rootJobId: JOB }),
+        unarchiveThread: record('unarchiveThread', () => board.unarchive ?? { result: 'ok' }),
         reopen: record('reopen', () => 'reopened'),
         thread: async () => [{ ...RUN, questions: [{ ...QUESTION, questions: board.prompts ?? PROMPTS }] }],
         answerQuestion: record('answerQuestion', () => ({
@@ -222,7 +224,8 @@ const WRITE_CALLS: readonly (readonly [string, Record<string, unknown>])[] = [
     ['mark_task_done', { jobId: JOB }],
     ['force_close_task', { jobId: JOB, confirm: true }],
     ['reopen_task', { jobId: JOB }],
-    ['remove_task', { jobId: JOB, confirm: true }],
+    ['archive_task', { jobId: JOB, confirm: true }],
+    ['unarchive_task', { jobId: JOB }],
 ];
 
 describe('the task write tools', () => {
@@ -247,7 +250,7 @@ describe('the task write tools', () => {
         const tools = await listed(url);
         const byName = new Map(tools.map((tool) => [tool.name, tool]));
         for (const [name] of WRITE_CALLS) expect(byName.has(name), name).toBe(true);
-        for (const name of ['stop_task', 'force_close_task', 'remove_task']) {
+        for (const name of ['stop_task', 'force_close_task', 'archive_task']) {
             expect(byName.get(name)?.annotations, name).toMatchObject({ readOnlyHint: false, destructiveHint: true });
             expect(JSON.stringify(byName.get(name)?.inputSchema), name).toContain('confirm');
         }
@@ -383,7 +386,7 @@ describe('the task write tools', () => {
         expect(retry?.args[2]).toMatchObject({ key: 'retry-01234567' });
     });
 
-    it('marks done, reopens, stops and removes, each with its board answer', async () => {
+    it('marks done, reopens, stops, archives and unarchives, each with its board answer', async () => {
         const board: Board = { calls: [] };
         const { url } = await boot(board);
         expect((await call(url, 'writer', 'mark_task_done', { jobId: JOB })).data).toMatchObject({
@@ -396,13 +399,17 @@ describe('the task write tools', () => {
             id: JOB,
             status: 'stopped',
         });
-        expect((await call(url, 'writer', 'remove_task', { jobId: JOB, confirm: true })).data).toEqual({
+        expect((await call(url, 'writer', 'archive_task', { jobId: JOB, confirm: true })).data).toEqual({
             id: JOB,
-            removed: true,
+            archived: true,
+        });
+        expect((await call(url, 'writer', 'unarchive_task', { jobId: JOB })).data).toEqual({
+            id: JOB,
+            archived: false,
         });
     });
 
-    it.each(['stop_task', 'force_close_task', 'remove_task'])(
+    it.each(['stop_task', 'force_close_task', 'archive_task'])(
         '%s: without confirm:true it is refused confirmation_required and nothing reaches the board',
         async (name) => {
             const board: Board = { calls: [] };
@@ -448,14 +455,18 @@ describe('the task write tools', () => {
         expect(board.calls.map((c) => c.op)).not.toContain('closeTask');
     });
 
-    it('surfaces board refusals verbatim: a stop on a finished task, a remove on a running one', async () => {
-        const board: Board = { calls: [], stop: { result: 'conflict', status: 'succeeded' }, remove: 'conflict' };
+    it('surfaces board refusals verbatim: a stop on a finished task, an unarchive of a task that is not archived', async () => {
+        const board: Board = {
+            calls: [],
+            stop: { result: 'conflict', status: 'succeeded' },
+            unarchive: 'not_archived',
+        };
         const { url } = await boot(board);
         const stop = await call(url, 'writer', 'stop_task', { jobId: JOB, confirm: true });
         expect(stop.isError).toBe(true);
         expect(stop.data).toMatchObject({ outcome: 'refused', code: 'NOT_STOPPABLE', status: 409 });
-        const remove = await call(url, 'writer', 'remove_task', { jobId: JOB, confirm: true });
-        expect(remove.data).toMatchObject({ outcome: 'refused', code: 'TASK_RUNNING', status: 409 });
+        const unarchive = await call(url, 'writer', 'unarchive_task', { jobId: JOB });
+        expect(unarchive.data).toMatchObject({ outcome: 'refused', code: 'TASK_NOT_ARCHIVED', status: 409 });
     });
 
     it('answers a question by prompt order, naming each prompt for the board', async () => {

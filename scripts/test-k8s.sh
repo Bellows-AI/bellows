@@ -559,8 +559,8 @@ rendered="$(cat "$work/rendered.yaml")"
 expect_class 'the standard class declares one class on defaults' "$rendered" 'Object.keys(c)' '["standard"]'
 expect_class 'the runner requests render from the chart value' "$rendered" 'c.standard.resources.requests' \
     '{"cpu":"500m","memory":"1Gi"}'
-expect_class 'the runner limits default to 4 cpu / 8Gi (issue #454)' "$rendered" 'c.standard.resources.limits' \
-    '{"cpu":"4","memory":"8Gi"}'
+expect_class 'the runner limits default to 2 cpu / 8Gi' "$rendered" 'c.standard.resources.limits' \
+    '{"cpu":"2","memory":"8Gi"}'
 expect_class 'the standard class names no RuntimeClass' "$rendered" 'c.standard.runtimeClassName' '""'
 expect_class 'limits: null removes the runner limits' "$(render --set runner.classes.standard.resources.limits=null)" \
     'c.standard.resources.limits' 'undefined'
@@ -574,7 +574,8 @@ expect_not_contains 'limitRange.enabled=false renders no LimitRange' "$(render -
 # lowers the request to fit one node; the chart default is pinned on the EKS shape below.
 expect_class 'the local gate requests render from values-local' "$rendered" 'c.standard.gateResources.requests' \
     '{"cpu":"1","memory":"1Gi"}'
-expect_class 'gate limits default to the runner limits' "$rendered" 'c.standard.gateResources.limits' 'undefined'
+expect_class "the gate cpu limit defaults to 6, memory falls back to the runner's" "$rendered" \
+    'c.standard.gateResources.limits' '{"cpu":"6"}'
 expect_class 'a configured gate memory limit renders' \
     "$(render --set runner.classes.standard.gateResources.limits.memory=6Gi)" \
     'c.standard.gateResources.limits.memory' '"6Gi"'

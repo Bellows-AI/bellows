@@ -10,7 +10,7 @@ const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);
 
-const VERSION = '167_repo_ref.sql';
+const VERSION = '168_repo_ref.sql';
 const DIR = new URL('../migrations/', import.meta.url);
 /** Repo-bearing tables the migration leaves out on purpose (telemetry paths, GitHub-only dedupe, an API-shaped filter). */
 const EXCLUDED = ['session_branch', 'github_delivery', 'transcript_tool_event', 'notification_subscription'];
@@ -67,7 +67,7 @@ const columnsOf = async (table: string) =>
         select column_name, is_nullable, column_default from information_schema.columns
         where table_schema = ${schema} and table_name = ${table}`;
 
-describe.skipIf(!enabled)('167_repo_ref', () => {
+describe.skipIf(!enabled)('168_repo_ref', () => {
     it('carries every existing row over as GitHub on github.com', async () => {
         await pool`create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now())`;
         for (const name of versioned((n) => n < VERSION)) {

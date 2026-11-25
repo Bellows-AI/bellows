@@ -76,7 +76,7 @@ function groupRunner(answer: (signal: AbortSignal | undefined) => Promise<StepRe
 describe('gate ownership: ad-hoc cancel races', () => {
     /** A POST whose body is held back until `finish` — the agent's curl, mid-upload. */
     const slowPost = (port: number, token: string) => {
-        const body = JSON.stringify({ gate: 'test' });
+        const body = JSON.stringify({ tool: 'gate:test' });
         const req = httpRequest({
             host: '127.0.0.1',
             port,
@@ -154,7 +154,7 @@ describe('gate ownership: ad-hoc cancel races', () => {
         void fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: 'Bearer tok' },
-            body: JSON.stringify({ gate: 'test' }),
+            body: JSON.stringify({ tool: 'gate:test' }),
         }).catch(() => undefined);
         await running;
 
@@ -172,7 +172,7 @@ describe('gate ownership: ad-hoc cancel races', () => {
         void fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: 'Bearer tok' },
-            body: JSON.stringify({ gate: 'test' }),
+            body: JSON.stringify({ tool: 'gate:test' }),
             signal: client.signal,
         }).catch(() => undefined);
         await running;

@@ -270,7 +270,6 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         const gates = parseBellows(text)?.gates ?? [];
         expect(gates.map((gate) => gate.name)).toEqual([
-            'build:core',
             'test',
             'lint',
             'typecheck',
@@ -278,27 +277,35 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
             'test:executors',
             'ui',
         ]);
-        expect(gates.slice(0, 3)).toEqual([
-            { name: 'build:core', command: 'npm run build -w core' },
-            { name: 'test', command: 'sh scripts/gate-test-changed.sh', timeoutMinutes: 30 },
+        expect(gates.slice(0, 2)).toEqual([
+            {
+                name: 'test',
+                command: 'TEST_FORKS=3 sh scripts/gate-test-changed.sh',
+                timeoutMinutes: 10,
+                onDemand: true,
+            },
             { name: 'lint', command: 'npm run lint' },
         ]);
     });
 
-    // The end-of-run gates run one after another: side by side in one microVM they shared one gate
-    // container and its I/O, and every one hit its deadline. build:core runs first, so each
-    // later tsc -b of core is an up-to-date no-op. An on_demand gate is not part of that pass.
-    it('builds core first, then runs every other end-of-run gate one after another', async () => {
+    // Only lint and typecheck run at the finish, one after another: cheap, and what an agent most
+    // often leaves red. The test suites are on demand: the agent runs the ones its change needs while it
+    // works, and CI signs off. An on_demand gate runs only ad hoc, which waits at most 10 minutes
+    // (AD_HOC_MAX_MINUTES), so a longer timeout would make the gate unreachable.
+    it('runs lint and typecheck at the finish, and every test suite on demand within the ad-hoc limit', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
-        const [first, ...rest] = (parseBellows(text)?.gates ?? []).filter((gate) => !gate.onDemand);
-        expect(first).toEqual({ name: 'build:core', command: 'npm run build -w core' });
-        expect(rest.length).toBeGreaterThan(0);
-        for (const gate of rest) expect(gate.parallel, gate.name).toBeUndefined();
+        const gates = parseBellows(text)?.gates ?? [];
+        const finish = gates.filter((gate) => !gate.onDemand);
+        expect(finish.map((gate) => gate.name)).toEqual(['lint', 'typecheck']);
+        for (const gate of finish) expect(gate.parallel, gate.name).toBeUndefined();
+        for (const gate of gates.filter((g) => g.onDemand)) {
+            expect(gate.timeoutMinutes, gate.name).toBeLessThanOrEqual(10);
+        }
     });
 
     // The test and test:db gates run only the suites the change reaches; the full suites stay CI's merge
     // gate, and the file says so where the gates are declared.
-    it('names CI as the merge gate beside the changed-only gates', async () => {
+    it('names CI as the merge gate beside the on-demand gates', async () => {
         const text = await readFile(new URL('../../.bellows.yaml', import.meta.url), 'utf8');
         expect(text).toMatch(/# CI's npm test and npm run test:db stay the merge gate/);
     });
@@ -335,8 +342,9 @@ describe("parseBellows: this repository's own .bellows.yaml", () => {
         const gates = parseBellows(text)?.gates ?? [];
         expect(gates.find((g) => g.name === 'test:executors')).toEqual({
             name: 'test:executors',
-            command: 'npm run test:executors',
-            timeoutMinutes: 15,
+            command: 'TEST_FORKS=3 npm run test:executors',
+            timeoutMinutes: 10,
+            onDemand: true,
         });
         expect(gates.filter((g) => /test:jobs|make runners|docker/.test(`${g.name} ${g.command}`))).toEqual([]);
     });
