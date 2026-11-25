@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { emptyBlock, NO_MODEL_MESSAGE, noExecutorMessage, githubRepo } from '@factory-ai/core';
+import { describe, expect, it, vi } from 'vitest';
+import {
+    emptyBlock,
+    NO_MODEL_MESSAGE,
+    noExecutorMessage,
+    githubRepo,
+    parseRepoRef,
+    type RepoRef,
+} from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
@@ -38,6 +45,11 @@ const OTHER_ORG = 'other-org';
 const WEB = { owner: 'Bellows-AI', name: 'bellows.ai' };
 const API = { owner: 'Bellows-AI', name: 'api' };
 
+// A GitLab repo can be listed (`ref`) only through the mocked listing: the real one is GitHub-only.
+vi.mock('../src/forge/forges.js', async (importOriginal) =>
+    (await import('./helpers-listed-refs.js')).listedRefsMock(importOriginal as never)
+);
+
 const track = trackApps();
 
 const task = (key: string, extra: Record<string, unknown> = {}) => ({
@@ -71,7 +83,7 @@ const twoRepoPlan = () =>
 
 /** A repo source whose installation listing carries default branches, as the real one does. */
 function reposWithDefaults(
-    entries: { owner: string; name: string; defaultBranch: string | null }[],
+    entries: { owner: string; name: string; defaultBranch: string | null; ref?: RepoRef }[],
     error: string | null = null
 ) {
     const base = staticRepoSource(
@@ -90,7 +102,7 @@ function reposWithDefaults(
 
 async function setup(
     options: {
-        repos?: { owner: string; name: string; defaultBranch: string | null }[];
+        repos?: { owner: string; name: string; defaultBranch: string | null; ref?: RepoRef }[];
         userExecutors?: UserExecutorStore;
         /** The org's board holds an installation it can merge through. */
         canMerge?: boolean;
@@ -464,23 +476,25 @@ describe('launch checks: validate and start', () => {
         expect(batches.writes).toEqual(['create']);
     });
 
-    it('reads a github.com target by its own path and never reads another forge or host at the same path through GitHub', async () => {
-        const { call, create, branchReads } = await setup({ branches: ['main', 'batch-sandbox'] });
-        const github = await create(
+    it('reads a github.com target by its own path; a GitLab target at the same path is unchecked, GitHub unasked', async () => {
+        const gitlab = parseRepoRef('gitlab:gitlab.example.test/Bellows-AI/bellows.ai')!;
+        const { call, create, branchReads } = await setup({
+            branches: ['main'],
+            repos: [
+                { owner: 'Bellows-AI', name: 'bellows.ai', defaultBranch: 'main' },
+                { owner: 'Bellows-AI', name: 'bellows.ai', defaultBranch: 'main', ref: gitlab },
+            ],
+        });
+        const own = await create(
             plan({ targets: [{ key: 'web', repo: githubRepo('Bellows-AI/bellows.ai'), branch: 'batch-sandbox' }] })
         );
-        expect((await call('POST', `/api/batches/${github.id}/validate`, {})).statusCode).toBe(HTTP_OK);
+        // The github.com branch is absent: a confirmed absence, by the repo's own path.
+        expect((await call('POST', `/api/batches/${own.id}/validate`, {})).json().code).toBe('BATCH_UNKNOWN_BRANCH');
         expect(branchReads).toEqual(['Bellows-AI/bellows.ai@batch-sandbox']);
-        for (const repo of [
-            { forge: 'gitlab', host: 'gitlab.example.test', path: 'Bellows-AI/bellows.ai' },
-            { forge: 'github', host: 'ghe.example.test', path: 'Bellows-AI/bellows.ai' },
-        ]) {
-            const twin = await create(plan({ targets: [{ key: 'web', repo, branch: 'batch-sandbox' }] }));
-            const response = await call('POST', `/api/batches/${twin.id}/validate`, {});
-            // Refused as untracked, not answered from the github.com repo's branches.
-            expect(response.statusCode).not.toBe(HTTP_OK);
-            expect(response.json().code).not.toBe('BATCH_UNKNOWN_BRANCH');
-        }
+        const twin = await create(plan({ targets: [{ key: 'web', repo: gitlab, branch: 'batch-sandbox' }] }));
+        // No client answers for GitLab: the branch is unchecked (the checkout's refusal stands), not absent.
+        const response = await call('POST', `/api/batches/${twin.id}/validate`, {});
+        expect(response.statusCode).toBe(HTTP_OK);
         expect(branchReads).toEqual(['Bellows-AI/bellows.ai@batch-sandbox']);
     });
 
