@@ -112,6 +112,7 @@ async function setup(
     const batches = memoryBatchStore();
     const otherBatches = memoryBatchStore();
     const jobCreates: string[] = [];
+    const branchReads: string[] = [];
     const jobs = jobStoreSlice<JobActionStore>({
         async create(command: string) {
             jobCreates.push(command);
@@ -141,15 +142,18 @@ async function setup(
             ...(options.canMerge ? { batchMerger: { mergeDue: async () => 0 } } : {}),
             ...(options.branchReadFails
                 ? {
-                      branchHead: async () => {
+                      branchHead: async (repo: string, branch: string) => {
+                          branchReads.push(`${repo}@${branch}`);
                           throw options.branchReadFails;
                       },
                   }
                 : {}),
             ...(options.branches
                 ? {
-                      branchHead: async (_repo: string, branch: string) =>
-                          options.branches!.includes(branch) ? `sha-${branch}` : null,
+                      branchHead: async (repo: string, branch: string) => {
+                          branchReads.push(`${repo}@${branch}`);
+                          return options.branches!.includes(branch) ? `sha-${branch}` : null;
+                      },
                   }
                 : {}),
             ...(options.userExecutors ? { userExecutors: options.userExecutors } : {}),
@@ -178,7 +182,7 @@ async function setup(
         const response = await call('POST', '/api/batches', { plan: body });
         return response.json() as { id: string; version: number };
     };
-    return { call, create, batches, otherBatches, jobCreates, memberCookie, otherCookie };
+    return { call, create, batches, otherBatches, jobCreates, branchReads, memberCookie, otherCookie };
 }
 
 describe('POST /api/batches', () => {
@@ -458,6 +462,26 @@ describe('launch checks: validate and start', () => {
         }
         expect(jobCreates).toEqual([]);
         expect(batches.writes).toEqual(['create']);
+    });
+
+    it('reads a github.com target by its own path and never reads another forge or host at the same path through GitHub', async () => {
+        const { call, create, branchReads } = await setup({ branches: ['main', 'batch-sandbox'] });
+        const github = await create(
+            plan({ targets: [{ key: 'web', repo: githubRepo('Bellows-AI/bellows.ai'), branch: 'batch-sandbox' }] })
+        );
+        expect((await call('POST', `/api/batches/${github.id}/validate`, {})).statusCode).toBe(HTTP_OK);
+        expect(branchReads).toEqual(['Bellows-AI/bellows.ai@batch-sandbox']);
+        for (const repo of [
+            { forge: 'gitlab', host: 'gitlab.example.test', path: 'Bellows-AI/bellows.ai' },
+            { forge: 'github', host: 'ghe.example.test', path: 'Bellows-AI/bellows.ai' },
+        ]) {
+            const twin = await create(plan({ targets: [{ key: 'web', repo, branch: 'batch-sandbox' }] }));
+            const response = await call('POST', `/api/batches/${twin.id}/validate`, {});
+            // Refused as untracked, not answered from the github.com repo's branches.
+            expect(response.statusCode).not.toBe(HTTP_OK);
+            expect(response.json().code).not.toBe('BATCH_UNKNOWN_BRANCH');
+        }
+        expect(branchReads).toEqual(['Bellows-AI/bellows.ai@batch-sandbox']);
     });
 
     it('a target branch read that answers forbidden or malformed is not BATCH_UNKNOWN_BRANCH', async () => {

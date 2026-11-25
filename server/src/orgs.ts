@@ -1,7 +1,7 @@
 import { readGrantStanding } from './db/forge-grant-standing.js';
 import type { Sql } from 'postgres';
 import { modelKeyRequired, type RepoRef } from '@factory-ai/core';
-import { INSTALLATION_CREDENTIAL, resolveForgeClient, type ForgeSource } from './forge/forge-client.js';
+import { BRANCH_UNCHECKED, readBranchHead, type ForgeSource } from './forge/forge-client.js';
 import { orgSql } from './db/org-sql.js';
 import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
 import { createAttachmentRows } from './attachments/attachment-rows.js';
@@ -262,8 +262,8 @@ function buildOrgStores({
         ...(forge
             ? {
                   revisionOf: async (repo: RepoRef, branch: string) => {
-                      const resolution = resolveForgeClient(forge, repo, INSTALLATION_CREDENTIAL);
-                      return resolution.ok ? resolution.client.readBranchHead(branch) : null;
+                      const head = await readBranchHead(forge, repo, branch);
+                      return head === BRANCH_UNCHECKED ? null : head;
                   },
               }
             : {}),

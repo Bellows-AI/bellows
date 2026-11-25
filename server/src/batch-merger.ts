@@ -214,6 +214,8 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
  */
 async function admitMerge(run: Run, deps: BatchMergerDeps, candidate: MergeCandidate): Promise<boolean> {
     if (run.tokens.has(candidate.batchId)) return true;
+    // A forge no client answers for reads no credential: the dispatch records it as unbound, with no request made.
+    if (!resolveForgeClient(run.forge, candidate.repo, INSTALLATION_CREDENTIAL).ok) return true;
     const token = await deps.mergeToken(
         { orgId: deps.orgId, repo: candidate.repo, startedBy: candidate.startedBy },
         AbortSignal.timeout(MERGE_TOKEN_DEADLINE_MS)

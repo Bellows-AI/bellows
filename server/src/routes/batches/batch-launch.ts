@@ -16,7 +16,7 @@ import { bad, checkReposVisible, guard } from '../helpers.js';
 import { HTTP_CONFLICT } from '../jobs/job-limits.js';
 import { forgeOfRepo, refOfListed } from '../../forge/forges.js';
 import { refusedAsNoForgeGrant } from '../jobs/forge-usable.js';
-import { INSTALLATION_CREDENTIAL, resolveForgeClient } from '../../forge/forge-client.js';
+import { readBranchHead } from '../../forge/forge-client.js';
 import { defaultExecutorOf, executorTypeOf, refusedAsNoModel, refusedAsUnusable } from '../jobs/executor-usable.js';
 import { validateExecutorField } from '../jobs/job-field-validation.js';
 
@@ -92,12 +92,10 @@ async function targetBranchesExist(
 ) {
     for (const target of targets) {
         // A board with no client for the target's forge cannot say the branch is absent: the checkout's refusal stands.
-        const resolution = resolveForgeClient(ctx.runtime.forge, target.repo, INSTALLATION_CREDENTIAL);
-        if (!resolution.ok) continue;
         const head = await guard(
             reply,
             (e) => request.log.error({ err: e }, 'batch target branch read failed'),
-            () => resolution.client.readBranchHead(target.branch)
+            () => readBranchHead(ctx.runtime.forge, target.repo, target.branch)
         );
         if (!head.ok) return false;
         if (head.value !== null) continue;

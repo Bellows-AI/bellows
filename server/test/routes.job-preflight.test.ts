@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NO_MODEL_MESSAGE, noExecutorMessage, githubRepo } from '@factory-ai/core';
+import { NO_MODEL_MESSAGE, noExecutorMessage, githubRepo, parseRepoRef } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { ConnectionStore, ConnectionView } from '../src/db/connection-store.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
@@ -444,6 +444,30 @@ describe('POST /api/jobs/preflight skills', () => {
         const { check } = await verdict(await boot(), { ...base, skills: ['repo-only'] }, 'skill');
         expect(check).toMatchObject({ status: 'unverified' });
     });
+
+    it.each(['gitlab:gitlab.example.test/acme/web', 'github:ghe.example.test/acme/web'])(
+        'reads no skills of %s through GitHub: the name is unverified, never blocked as absent',
+        async (twin) => {
+            const asked: string[] = [];
+            const booted = await boot({
+                repoSkills: async (repo) => {
+                    asked.push(repo);
+                    return reads('another')();
+                },
+            });
+            const ref = parseRepoRef(twin)!;
+            const { check } = await verdict(
+                booted,
+                { repo: ref, executor: 'main', skills: ['no-such-skill'] },
+                'skill'
+            );
+            expect(check).toMatchObject({ name: 'no-such-skill', status: 'unverified' });
+            // The github.com repo at the same path is read, by its own path, and only it.
+            const own = await verdict(booted, { ...base, skills: ['no-such-skill'] }, 'skill');
+            expect(own.check).toMatchObject({ status: 'blocked' });
+            expect(asked).toEqual(['acme/web']);
+        }
+    );
 
     it('is unverified, not blocked, for a name missing from a cut listing', async () => {
         const booted = await boot({

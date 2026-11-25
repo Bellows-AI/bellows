@@ -4,6 +4,7 @@ import { FORGE_ACCESS_REASON, type ForgeRequirementReason } from '../../db/forge
 import {
     FORGE_UNCONFIGURED,
     resolveForgeClient,
+    writeGap,
     type ForgeClient,
     type ForgeSource,
 } from '../../forge/forge-client.js';
@@ -224,14 +225,22 @@ async function write(
 }
 
 /**
- * The client the PR is written through under `token`; null when the board holds no API to write through. A forge no
- * client answers for yet throws: nothing was written and nothing is concluded.
+ * Whether the board can write on this repo's forge at all, decided before any credential is read or wait opened:
+ * false when it holds no API to write through (the 409), a throw for a forge no client answers for yet (nothing is
+ * written, nothing concluded: a 503).
  */
-function writerFor(forge: ForgeSource, repo: RepoRef, token: string): ForgeClient | null {
+function canWrite(forge: ForgeSource, repo: RepoRef): boolean {
+    const gap = writeGap(forge, repo);
+    if (gap === null) return true;
+    if (gap.reason === FORGE_UNCONFIGURED) return false;
+    throw new Error(`no client answers for ${gap.forge} repositories`);
+}
+
+/** The client the PR is written through under the confirmed `token`; the forge was checked by `canWrite`. */
+function writerFor(forge: ForgeSource, repo: RepoRef, token: string): ForgeClient {
     const resolution = resolveForgeClient(forge, repo, { kind: 'token', token });
-    if (resolution.ok) return resolution.client;
-    if (resolution.reason === FORGE_UNCONFIGURED) return null;
-    throw new Error(`no client answers for ${resolution.forge} repositories`);
+    if (!resolution.ok) throw new Error(`no client answers for ${resolution.forge} repositories`);
+    return resolution.client;
 }
 
 export async function handlePullRequest(
@@ -255,6 +264,7 @@ export async function handlePullRequest(
     try {
         const who = await contextOf(store, reply, attempt);
         if (!who) return reply;
+        if (!canWrite(deps.forge, who.repo)) return bad(reply, ERROR_CODES.GITHUB_UNAVAILABLE, NO_FORGE, HTTP_CONFLICT);
         const signal = AbortSignal.any([AbortSignal.timeout(PR_WRITE_DEADLINE_MS), request.closing, closedBy(reply)]);
         const token = await deps.tokens(who, signal);
         if (!token.ok) {
@@ -263,7 +273,6 @@ export async function handlePullRequest(
             return await openWait(store, reply, attempt, { forge: token.forge, reason: token.reason });
         }
         const client = writerFor(deps.forge, who.repo, token.token);
-        if (!client) return bad(reply, ERROR_CODES.GITHUB_UNAVAILABLE, NO_FORGE, HTTP_CONFLICT);
         const done = await write(client, { store, who, token, ask: asked.value, signal });
         if (done.answer === 'no-access') {
             return await openWait(store, reply, attempt, { forge: done.forge, reason: FORGE_ACCESS_REASON });

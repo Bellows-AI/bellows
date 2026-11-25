@@ -78,6 +78,34 @@ export type ForgeResolution =
     | { ok: false; reason: typeof FORGE_UNSUPPORTED; forge: RepoRef['forge']; host: string }
     | { ok: false; reason: typeof FORGE_UNCONFIGURED; forge: RepoRef['forge'] };
 
+/** `readBranchHead`'s answer when no client answers for the ref: the branch was not checked, which is no verdict. */
+export const BRANCH_UNCHECKED = 'unchecked';
+
+/**
+ * A branch's tip through the installation: the commit, null when the forge says it cannot be read, or `unchecked` when no
+ * client answers for `ref` (another forge or host, or a board with none). Only null is evidence of absence.
+ */
+export async function readBranchHead(
+    source: ForgeSource | undefined,
+    ref: RepoRef,
+    branch: string
+): Promise<string | null | typeof BRANCH_UNCHECKED> {
+    const resolution = resolveForgeClient(source, ref, INSTALLATION_CREDENTIAL);
+    return resolution.ok ? resolution.client.readBranchHead(branch) : BRANCH_UNCHECKED;
+}
+
+/**
+ * Whether a change request can be written on `ref` at all, before any credential is looked up: null when it can, else
+ * the named failure. The same answer `resolveForgeClient` gives a token credential, without needing the token.
+ */
+export function writeGap(
+    source: ForgeSource | undefined,
+    ref: RepoRef
+): Extract<ForgeResolution, { ok: false }> | null {
+    if (!isGithubRepo(ref)) return { ok: false, reason: FORGE_UNSUPPORTED, forge: ref.forge, host: ref.host };
+    return source?.github?.writer === undefined ? { ok: false, reason: FORGE_UNCONFIGURED, forge: ref.forge } : null;
+}
+
 /** `resolveForgeClient`'s client, or an error whose message names why a `subject` read has none: for a caller whose failure is "unconfirmed". */
 export function forgeClientOrThrow(
     source: ForgeSource | undefined,
