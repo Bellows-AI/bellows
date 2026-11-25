@@ -104,6 +104,8 @@ async function discover(tx: TransactionSql, orgId: string): Promise<{ ref: strin
             union select lineage_secret_ref from integration_grant where org_id = ${orgId}
             union select secret_ref from integration_authorization where org_id = ${orgId}
             union select secret_ref from notification_subscription where org_id = ${orgId}
+            union select secret_ref from forge_connection where org_id = ${orgId}
+            union select ca_secret_ref from forge_connection where org_id = ${orgId}
             union select entry ->> 'ref' from executor_profile, jsonb_array_elements(secret_refs) as entry
                   where org_id = ${orgId}
         )

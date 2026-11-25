@@ -28,6 +28,7 @@ export const ORG_TABLES = [
     'driver_credential_org',
     'env_var',
     'executor_profile',
+    'forge_connection',
     'input_attachment',
     'integration_authorization',
     'integration_grant',

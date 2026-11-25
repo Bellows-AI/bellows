@@ -16,8 +16,13 @@ export function testSecretDeps(sql: Sql) {
 }
 
 /** The store with some calls replaced, to script a fault on exactly one of them. */
-export function faultySecrets(store: SecretStore, overrides: Partial<SecretStore>): SecretStore {
+export function faultySecrets(
+    store: SecretStore,
+    overrides: Partial<SecretStore>
+): SecretStore & { collect(): Promise<unknown> } {
     return {
+        // The coordinated store's collector, which a retirement confirms a delete by.
+        collect: () => (store as unknown as { collect(): Promise<unknown> }).collect(),
         issueOperationId: (...args) => store.issueOperationId(...args),
         create: (...args) => store.create(...args),
         readActive: (...args) => store.readActive(...args),

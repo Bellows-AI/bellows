@@ -221,7 +221,13 @@ async function eachLimited<T>(items: readonly T[], concurrency: number, fn: (ite
  */
 export async function createEnvSecrets(
     store: SecretStore,
-    items: readonly { name: string; identity: SecretIdentity; value: string }[],
+    items: readonly {
+        name: string;
+        identity: SecretIdentity;
+        value: string;
+        /** A reference the caller already recorded durably; minted here when absent. */
+        ref?: SecretRef;
+    }[],
     { signal, concurrency = 4 }: { signal: AbortSignal; concurrency?: number }
 ): Promise<{ created: CreatedEnvSecret[]; unknown: UnknownEnvSecret[]; failure?: EnvSecretError }> {
     const created: CreatedEnvSecret[] = [];
@@ -229,8 +235,8 @@ export async function createEnvSecrets(
     let failure: EnvSecretError | undefined;
     let next = 0;
 
-    const createOne = async ({ name, identity, value }: (typeof items)[number]): Promise<void> => {
-        const ref = createSecretRef();
+    const createOne = async ({ name, identity, value, ref: given }: (typeof items)[number]): Promise<void> => {
+        const ref = given ?? createSecretRef();
         let operationId: OperationId;
         try {
             const issued = await untilAborted(store.issueOperationId(), signal);
