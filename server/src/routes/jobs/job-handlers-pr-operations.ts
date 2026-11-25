@@ -9,7 +9,7 @@ import {
 } from '../../db/jobs/job-store-pr-operations.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad, guard, repoReason } from '../helpers.js';
-import { changeRequestProblem } from './change-request-check.js';
+import { changeRequestProblem, refuseOffTaskChangeRequest } from './change-request-check.js';
 import { isBranchField } from './job-field-validation.js';
 import { CONTROL_BODY_LIMIT, HTTP_OK, INT4_MAX, leaseLost, notFoundJob } from './job-limits.js';
 import { resolveLeasedRoute } from '../route-guards.js';
@@ -59,11 +59,19 @@ function validateOperation(
  * and the org comes from the job's own scope.
  */
 export async function handlePrOperation(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveLeasedRoute<keyof PrOperationStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof PrOperationStore | 'prWriteContext'>(orgs, request, reply);
     if (!route) return reply;
     const { store, id, fields, leaseToken } = route;
     const checked = validateOperation(fields);
     if (!checked.ok) return bad(reply, checked.code, checked.message);
+    const offTask = await refuseOffTaskChangeRequest(request, reply, store, {
+        id,
+        leaseToken,
+        field: 'prUrl',
+        url: checked.value.prUrl,
+        malformedCode: ERROR_CODES.BAD_BODY,
+    });
+    if (offTask) return reply;
 
     const written = await guard(
         reply,

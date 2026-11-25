@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { githubRepo, type RepoRef } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import type { PrOperationStore } from '../src/db/jobs/job-store-pr-operations.js';
@@ -22,16 +23,21 @@ type Answer = 'ok' | 'lost' | 'missing';
 const FIELDS = {
     operationId: OPERATION,
     operation: 'created' as const,
-    repo: 'Bellows-AI/bellows',
+    repo: 'acme/web',
     prNumber: 42,
-    prUrl: 'https://github.com/Bellows-AI/bellows/pull/42',
+    prUrl: 'https://github.com/acme/web/pull/42',
     branch: 'fix/10',
 };
 const good = { leaseToken: TOKEN, ...FIELDS };
 
-function stubStore(answer: Answer = 'ok') {
+const GITHUB_TASK: RepoRef = githubRepo('acme/web');
+
+function stubStore(answer: Answer = 'ok', task: RepoRef | null = GITHUB_TASK) {
     const written: Written[] = [];
-    const store = jobStoreSlice<PrOperationStore>({
+    const store = jobStoreSlice<PrOperationStore & Pick<JobStore, 'prWriteContext'>>({
+        async prWriteContext() {
+            return { result: 'ok', orgId: 'o', rootJobId: ID, repo: task, rootRepo: task, executionUserId: null };
+        },
         async writePrOperation(...args: Written) {
             written.push(args);
             return { result: answer };
@@ -91,14 +97,11 @@ describe('POST /api/jobs/:id/pr-operation', () => {
     });
 
     it.each([
-        ['a url for another repo', { prUrl: 'https://github.com/Bellows-AI/other/pull/42' }],
-        ['a url for another number', { prUrl: 'https://github.com/Bellows-AI/bellows/pull/43' }],
-        ['a url on another github host', { prUrl: 'https://github.example.com/Bellows-AI/bellows/pull/42' }],
-        ['a url with a suffix', { prUrl: 'https://github.com/Bellows-AI/bellows/pull/42/files' }],
-        [
-            'a number past int4',
-            { prNumber: 2_147_483_648, prUrl: 'https://github.com/Bellows-AI/bellows/pull/2147483648' },
-        ],
+        ['a url for another repo', { prUrl: 'https://github.com/acme/other/pull/42' }],
+        ['a url for another number', { prUrl: 'https://github.com/acme/web/pull/43' }],
+        ['a url on another github host', { prUrl: 'https://ghe.example/acme/web/pull/42' }],
+        ['a url with a suffix', { prUrl: 'https://github.com/acme/web/pull/42/files' }],
+        ['a number past int4', { prNumber: 2_147_483_648, prUrl: 'https://github.com/acme/web/pull/2147483648' }],
     ])('refuses %s with BAD_BODY and stores nothing', async (_label, patch) => {
         const { store, written } = stubStore();
         const res = await post(await harnessWith(store), { ...good, ...patch });
@@ -106,9 +109,22 @@ describe('POST /api/jobs/:id/pr-operation', () => {
         expect(written).toEqual([]);
     });
 
+    it.each<[string, RepoRef | null, string]>([
+        ['the same path on a GitLab task', { forge: 'gitlab', host: 'gl.example', path: 'acme/web' }, FIELDS.prUrl],
+        ['the same path on another GitHub host (task side)', { ...GITHUB_TASK, host: 'ghe.example' }, FIELDS.prUrl],
+        ['the same path on another GitHub host (url side)', GITHUB_TASK, 'https://ghe.example/acme/web/pull/42'],
+        ['a different path', githubRepo('acme/other'), FIELDS.prUrl],
+        ['a repo-less task', null, FIELDS.prUrl],
+    ])('refuses %s against the leased task and stores nothing', async (_label, task, prUrl) => {
+        const { store, written } = stubStore('ok', task);
+        const res = await post(await harnessWith(store), { ...good, prUrl });
+        expect([res.statusCode, res.json().code]).toEqual([400, 'BAD_BODY']);
+        expect(written).toEqual([]);
+    });
+
     it('refuses a well-formed GitLab merge request url as FORGE_UNSUPPORTED and stores nothing', async () => {
         const { store, written } = stubStore();
-        const prUrl = 'https://gitlab.example.com/Bellows-AI/bellows/-/merge_requests/42';
+        const prUrl = 'https://gl.example/acme/web/-/merge_requests/42';
         const res = await post(await harnessWith(store), { ...good, prUrl });
         expect([res.statusCode, res.json().code]).toEqual([400, 'FORGE_UNSUPPORTED']);
         expect(written).toEqual([]);

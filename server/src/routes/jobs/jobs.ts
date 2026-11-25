@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
+import { handleConclusion } from './job-handlers-conclusion.js';
 import { boardScan, fairBoardScan } from './job-context.js';
 import {
     handleClaimJob,
@@ -10,7 +11,6 @@ import {
     handleSession,
     handleSuspend,
     handleInterrupt,
-    handleConclusion,
 } from './job-handlers-worker.js';
 import type { ForgeGatedDeps } from './forge-usable.js';
 import { handleFollowUp } from './job-handlers-follow-up.js';
