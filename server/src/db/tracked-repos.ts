@@ -49,21 +49,33 @@ export async function trackedRepos({
     });
 }
 
+/** The write was fenced to a connection that is no longer live: nothing was written. */
+export class TrackedConnectionChanged extends Error {
+    constructor() {
+        super('the connection this selection was made against is no longer live');
+    }
+}
+
 /**
  * Replaces the org's selection within `scope` in one transaction, leaving every other forge and host as it is. A ref
- * outside the scope throws before anything is written.
+ * outside the scope throws before anything is written. With `connectionId` the write is fenced to that connection: its
+ * row is locked first (the order removal takes) and must still be active and not removed, else `TrackedConnectionChanged`
+ * and nothing is written, so a selection validated against a connection that was since removed (and the host perhaps
+ * connected anew) never lands.
  */
 export async function replaceTrackedRepos({
     sql,
     orgId,
     scope,
     repos,
+    connectionId,
     ready,
 }: {
     sql: Sql;
     orgId: string;
     scope: TrackedScope;
     repos: readonly RepoRef[];
+    connectionId?: string | undefined;
     ready?: Promise<unknown>;
 }): Promise<void> {
     if (ready) await ready;
@@ -76,6 +88,14 @@ export async function replaceTrackedRepos({
         return { org_id: orgId, forge, host, owner: path.slice(0, slash), name: path.slice(slash + 1) };
     });
     await sql.begin(async (tx) => {
+        if (connectionId !== undefined) {
+            const live = await tx`
+                select 1 from forge_connection
+                where org_id = ${orgId} and id = ${connectionId} and removed_at is null and active
+                for update
+            `;
+            if (live.length === 0) throw new TrackedConnectionChanged();
+        }
         await tx`delete from tracked_repo where org_id = ${orgId} and forge = ${scope.forge} and host = ${scope.host}`;
         // One multi-row insert, not one round trip per repo: a large App install's selection is
         // hundreds of names and this sits on the onboarding click.

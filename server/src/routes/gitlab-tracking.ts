@@ -12,6 +12,7 @@ import type { AuthStore } from '../auth/store.js';
 import type { ConnectionView, GitlabApplication } from '../db/forge-connections.js';
 import { forgeConnectPath } from '../forge/forges.js';
 import type { GitlabApi, GitlabProject } from '../gitlab/gitlab-api.js';
+import { TrackedConnectionChanged } from '../db/tracked-repos.js';
 import { UUID } from '../identifiers.js';
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -142,6 +143,69 @@ const pathsOf = (raw: unknown): string[] | null => {
         : null;
 };
 
+/** The first path neither in the admin's listing nor already tracked; `answered` once a store failure was sent. */
+async function firstUnknown(
+    deps: GitlabTrackingDeps,
+    ask: { orgId: string; listing: Listing; paths: string[]; request: FastifyRequest; reply: FastifyReply }
+): Promise<string | 'answered' | null> {
+    const { orgId, listing, paths, request, reply } = ask;
+    const scope = scopeOf(listing.connection.host);
+    const current = await guard(reply, log(request), () => deps.auth.trackedRepos(orgId, scope));
+    if (!current.ok) return 'answered';
+    const allowed = new Set([...listing.projects.map((p) => p.path), ...current.value.map((ref) => ref.path)]);
+    return paths.find((path) => !allowed.has(path)) ?? null;
+}
+
+const unknownProject = (reply: FastifyReply, path: string) =>
+    bad(
+        reply,
+        ERROR_CODES.UNKNOWN_REPO,
+        `"${path}" is not a project you can see under this connection's allowed groups`
+    );
+
+const connectionChanged = (reply: FastifyReply) =>
+    bad(
+        reply,
+        ERROR_CODES.GITLAB_CONNECTION_CHANGED,
+        'The GitLab connection was removed or replaced while you were choosing; reload and choose again',
+        HTTP_CONFLICT
+    );
+
+/** The fenced replacement, then the repo list refreshed; false when the connection changed and nothing was written. */
+async function saveSelection(
+    deps: GitlabTrackingDeps,
+    save: { orgId: string; connectionId: string; host: string; refs: RepoRef[] }
+): Promise<boolean> {
+    const { orgId, connectionId, host, refs } = save;
+    try {
+        await deps.auth.replaceTrackedRepos(orgId, scopeOf(host), refs, connectionId);
+    } catch (error) {
+        if (error instanceof TrackedConnectionChanged) return false;
+        throw error;
+    }
+    (await deps.orgs.for(orgId))?.repos.invalidate();
+    return true;
+}
+
+const putTracked = (deps: GitlabTrackingDeps) => async (request: FastifyRequest, reply: FastifyReply) => {
+    const paths = pathsOf(request.body);
+    if (!paths) return bad(reply, ERROR_CODES.BAD_BODY, 'paths must list project paths, group/name');
+    const listing = await listingFor(deps, request, reply);
+    if (!listing) return reply;
+    const { host } = listing.connection;
+    const orgId = orgOf(request);
+    const unknown = await firstUnknown(deps, { orgId, listing, paths, request, reply });
+    if (unknown === 'answered') return reply;
+    if (unknown !== null) return unknownProject(reply, unknown);
+    const refs: RepoRef[] = paths.map((path) => ({ forge: GITLAB_FORGE, host, path }));
+    const saved = await guard(reply, log(request), () =>
+        saveSelection(deps, { orgId, connectionId: listing.connection.id, host, refs })
+    );
+    if (!saved.ok) return reply;
+    if (!saved.value) return connectionChanged(reply);
+    return reply.code(HTTP_OK).send({ tracked: paths });
+};
+
 export const gitlabTrackingRoutes =
     (deps: GitlabTrackingDeps): FastifyPluginAsync =>
     async (app) => {
@@ -168,33 +232,5 @@ export const gitlabTrackingRoutes =
             return reply.code(HTTP_OK).header('cache-control', 'no-store').send({ projects: entries });
         });
 
-        app.put(`${PATH}/tracked-repos`, { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
-            const paths = pathsOf(request.body);
-            if (!paths) return bad(reply, ERROR_CODES.BAD_BODY, 'paths must list project paths, group/name');
-            const listing = await listingFor(deps, request, reply);
-            if (!listing) return reply;
-            const { host } = listing.connection;
-            const orgId = orgOf(request);
-            const current = await guard(reply, log(request), () => deps.auth.trackedRepos(orgId, scopeOf(host)));
-            if (!current.ok) return reply;
-            const allowed = new Set([
-                ...listing.projects.map((project) => project.path),
-                ...current.value.map((ref) => ref.path),
-            ]);
-            const unknown = paths.find((path) => !allowed.has(path));
-            if (unknown !== undefined) {
-                return bad(
-                    reply,
-                    ERROR_CODES.UNKNOWN_REPO,
-                    `"${unknown}" is not a project you can see under this connection's allowed groups`
-                );
-            }
-            const refs: RepoRef[] = paths.map((path) => ({ forge: GITLAB_FORGE, host, path }));
-            const saved = await guard(reply, log(request), async () => {
-                await deps.auth.replaceTrackedRepos(orgId, scopeOf(host), refs);
-                (await deps.orgs.for(orgId))?.repos.invalidate();
-            });
-            if (!saved.ok) return reply;
-            return reply.code(HTTP_OK).send({ tracked: paths });
-        });
+        app.put(`${PATH}/tracked-repos`, { bodyLimit: CONTROL_BODY_LIMIT }, putTracked(deps));
     };

@@ -321,6 +321,77 @@ describe.skipIf(!enabled)('a running task whose starter’s GitLab grant is lost
         expect(await waits(id)).toHaveLength(1);
     });
 
+    it('another member relinking does not release the starter’s waiting task: it stays held on forge:gitlab:<host>', async () => {
+        const board = await boot();
+        await setUp(board);
+        const { id, claim } = await board.running(org, repo());
+        await sql`update integration_grant set status = 'reconnect_required' where org_id = ${org.id}
+                  and principal_user_id = ${org.memberId}`;
+        expect((await credential(board, id, claim.leaseToken)).statusCode).toBe(CONFLICT);
+        expect(await handBack(board, id, claim.leaseToken)).toEqual({ result: 'ok', status: 'queued' });
+        // The admin (not the starter) links their own account again.
+        expect((await board.link(org, connectionId, 'admin-login', org.admin)).result).toBe('linked');
+        const store = await board.jobs(org);
+        expect(await store.claim('worker-2', LEASE_SECONDS)).toBeNull();
+        expect(await waits(id)).toMatchObject([
+            { provider: 'forge', target: FORGE, satisfied_at: null, outcome: null },
+        ]);
+        expect(await store.get(id)).toMatchObject({ status: 'queued', failureKind: null });
+        // The starter's own link releases it.
+        expect((await board.link(org, connectionId, 'dev-one')).result).toBe('linked');
+        expect(await store.claim('worker-2', LEASE_SECONDS)).toMatchObject({ id });
+    });
+
+    it('the connection removed during a running task is a runtime wait, never a failed or dead task', async () => {
+        const board = await boot();
+        await setUp(board);
+        const { id, claim } = await board.running(org, repo());
+        const removed = await board.app.inject({
+            method: 'DELETE',
+            url: `/api/org/gitlab-connections/${connectionId}`,
+            headers: bearer(org.admin),
+        });
+        expect(removed.statusCode).toBe(OK);
+        const res = await credential(board, id, claim.leaseToken);
+        expect(res.statusCode).toBe(CONFLICT);
+        expect(res.json()).toMatchObject({ code: 'FORGE_GRANT_REQUIRED', waiting: true });
+        expect(await waits(id)).toMatchObject([{ provider: 'forge', target: FORGE, source: 'runtime' }]);
+        expect(await statusOf(id)).toBe('running');
+        expect(await heartbeat(board, id, claim.leaseToken)).toMatchObject({ requirementWait: true });
+        expect(await handBack(board, id, claim.leaseToken)).toEqual({ result: 'ok', status: 'queued' });
+        expect(await (await board.jobs(org)).claim('worker-2', LEASE_SECONDS)).toBeNull();
+        expect(await (await board.jobs(org)).get(id)).toMatchObject({ status: 'queued', failureKind: null });
+    });
+
+    it('the connection recreated and the starter linked to the replacement resumes the task in its session', async () => {
+        const board = await boot();
+        await setUp(board);
+        const { id, claim } = await board.running(org, repo());
+        const session = randomUUID();
+        await (await board.jobs(org)).session(id, claim.leaseToken, session);
+        const removed = await board.app.inject({
+            method: 'DELETE',
+            url: `/api/org/gitlab-connections/${connectionId}`,
+            headers: bearer(org.admin),
+        });
+        expect(removed.statusCode).toBe(OK);
+        expect((await credential(board, id, claim.leaseToken)).statusCode).toBe(CONFLICT);
+        expect(await handBack(board, id, claim.leaseToken)).toEqual({ result: 'ok', status: 'queued' });
+        const store = await board.jobs(org);
+        expect(await store.claim('worker-2', LEASE_SECONDS)).toBeNull();
+
+        const replacement = await h.connect(org, { groups: [grp] });
+        expect(replacement).not.toBe(connectionId);
+        // Linking waits for the admin's activation of the replacement, and the starter links to it.
+        expect((await board.activate(org, replacement)).result).toBe('activated');
+        expect(await store.claim('worker-2', LEASE_SECONDS)).toBeNull();
+        expect((await board.link(org, replacement, 'dev-one')).result).toBe('linked');
+        expect(await waits(id)).toMatchObject([{ outcome: 'bound' }]);
+        const resumed = await store.claim('worker-2', LEASE_SECONDS);
+        expect(resumed).toMatchObject({ id, resumeSessionId: session, continuesInterrupted: true });
+        expect((await credential(board, id, resumed!.leaseToken)).statusCode).toBe(OK);
+    });
+
     it('refuses a pair that is not the live attempt’s, and a GitHub task', async () => {
         const board = await boot();
         await setUp(board);

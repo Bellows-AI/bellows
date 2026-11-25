@@ -186,7 +186,7 @@ export interface AuthStore extends OrgStatusStore, MembershipSetupStore {
      * Empty for GitHub means the org tracks everything its installation reports — the completion route runs this only
      * for orgs whose checkbox set was actually narrowed.
      */
-    replaceTrackedRepos(orgId: string, scope: TrackedScope, repos: readonly RepoRef[]): Promise<void>;
+    replaceTrackedRepos(orgId: string, scope: TrackedScope, repos: readonly RepoRef[], fence?: string): Promise<void>;
     /** A sign-in's session row, and its `auth.sign_in` audit row in the same transaction. */
     createSession(tokenHash: Buffer, userId: string, expiresAt: Date, orgId: string): Promise<void>;
     /**
@@ -578,9 +578,9 @@ function buildTrackedRepoMethods(sql: Sql, gate: Gate): Pick<AuthStore, 'tracked
             return trackedRepoRows({ sql, orgId, scope });
         },
 
-        async replaceTrackedRepos(orgId, scope, repos) {
+        async replaceTrackedRepos(orgId, scope, repos, fence) {
             await gate();
-            await replaceTrackedRepoRows({ sql, orgId, scope, repos });
+            await replaceTrackedRepoRows({ sql, orgId, scope, repos, connectionId: fence });
         },
     };
 }

@@ -220,7 +220,7 @@ function trackedRepoMethods(
             return (state.trackedRepoRows.get(orgId) ?? []).filter(inScope(scope));
         },
 
-        async replaceTrackedRepos(orgId, scope, repos) {
+        async replaceTrackedRepos(orgId, scope, repos, _connectionId) {
             if (state.trackedRepoWritesUntilFailure !== null) {
                 if (state.trackedRepoWritesUntilFailure === 0) {
                     state.trackedRepoWritesUntilFailure = null;

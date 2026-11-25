@@ -283,6 +283,53 @@ describe.skipIf(!enabled)('picking the projects to track', () => {
         expect(keys(await trackedRepos({ sql, orgId: org.id }))).toEqual([`gitlab:${HOST}/${grp}/a`]);
     });
 
+    it('refuses a save whose connection was removed and the host reconnected while its listing was in flight', async () => {
+        await project(`${grp}/a`);
+        await project(`${grp}/b`);
+        await board.close();
+        let release: () => void = () => undefined;
+        let parked: () => void = () => undefined;
+        const reached = new Promise<void>((resolve) => {
+            parked = resolve;
+        });
+        let armed = false;
+        board = await h.board({
+            api: h.gitlabApi((api) => ({
+                ...api,
+                listGroupProjects: async (target) => {
+                    const listed = await api.listGroupProjects(target);
+                    if (armed) {
+                        armed = false;
+                        parked();
+                        await new Promise<void>((resume) => {
+                            release = resume;
+                        });
+                    }
+                    return listed;
+                },
+            })),
+        });
+        const first = await h.linked(org, 'dev-one', { groups: [grp] });
+        armed = true;
+        const saving = track(first, [`${grp}/a`]);
+        await reached;
+        // The connection is removed and the host connected anew with its own selection, while the old save waits.
+        const removed = await board.app.inject({
+            method: 'DELETE',
+            url: `/api/org/gitlab-connections/${first}`,
+            headers: bearer(org.admin),
+        });
+        expect(removed.statusCode).toBe(OK);
+        const second = await h.connect(org, { groups: [grp] });
+        await sql`insert into tracked_repo (org_id, owner, name, forge, host) values (${org.id}, ${grp}, 'b', 'gitlab', ${HOST})`;
+        release();
+        const res = await saving;
+        expect(res.statusCode).toBe(CONFLICT);
+        expect(res.json()).toMatchObject({ code: 'GITLAB_CONNECTION_CHANGED' });
+        expect(keys(await trackedRepos({ sql, orgId: org.id }))).toEqual([`gitlab:${HOST}/${grp}/b`]);
+        expect(second).not.toBe(first);
+    });
+
     it('lists the tracked GitLab repos in GET /api/repos, and drops them with the connection', async () => {
         await project(`${grp}/a`);
         const id = await h.linked(org, 'dev-one', { groups: [grp] });
