@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { TOOL_UID } from '../src/claim.js';
 import { withoutGateEnv } from './fixtures/gate-env.js';
+import { trackedFilesContaining } from './fixtures/tracked-files.js';
 import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
 
 const STAGED = new Map<string, string>();
@@ -1276,9 +1277,7 @@ describe('the shared executor skills', () => {
     // Without the flag `COPY --from=skills` resolves `skills` as an image to pull, and the
     // build fails far from the missing argument.
     it('every executor image build passes the skills context', () => {
-        const files = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' })
-            .split('\0')
-            .filter((file) => file && existsSync(join(ROOT, file)) && read(file).includes('docker build'));
+        const files = trackedFilesContaining(ROOT, 'docker build');
         let builds = 0;
         for (const file of files) {
             // Unwrap comment and prose line breaks so a command split across lines reads whole.

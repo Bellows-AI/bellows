@@ -84,6 +84,7 @@
         "driver/test/takeover-sim.test.ts",
         "driver/test/telemetry-shipping.test.ts",
         "driver/test/tool-broker.test.ts",
+        "driver/test/tracked-files.test.ts",
         "driver/test/tree-fingerprint.test.ts",
         "driver/test/turn-context-hook.test.ts",
         "server/test/bench-summary.test.ts",
