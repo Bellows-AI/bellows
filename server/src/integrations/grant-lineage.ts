@@ -1,7 +1,13 @@
 import type { Sql } from 'postgres';
 import type { SecretStore } from '../secrets/secret-store.js';
 import { authorityScopes, type GrantPayload } from './grant-credentials.js';
-import { abandonExpiredRefresh, claimLineage as claimStatement, endClaim, readLineage } from './lineage-claims.js';
+import {
+    abandonExpiredRefresh,
+    claimLineage as claimStatement,
+    endClaim,
+    markInFlight,
+    readLineage,
+} from './lineage-claims.js';
 import { commitLineage as commit, readConfirmed, settleAttempts } from './lineage-commit.js';
 import { destroyRevokedSecret as destroy } from './lineage-destroy.js';
 import { recoverLineage as recover } from './lineage-recovery.js';
@@ -117,7 +123,8 @@ async function failedExchange(
         ctx.log('reconnect-required', claim.grantId);
         return { result: required('reconnect', claim.provider), settled: true };
     }
-    await endClaim(ctx, claim, {});
+    // Reached for a provider that rotates nothing, or one that declares an unconfirmed answer retryable.
+    await endClaim(ctx, claim, { provablyUnsent: true });
     return { result: unavailable(options.aborted ? 'aborted' : 'timeout'), settled: true };
 }
 
@@ -142,12 +149,11 @@ const payloadOf = (
 });
 
 /**
- * Ends a claim whose holder settled nothing (an error, or an answer it could not act on). Nothing was spent: an
- * ordinary release, the next caller exchanges. A rotating token that may have been spent, whose provider does not say a
- * retry is safe, is never released: the grant goes to reconnect (tried once more here), and if the database refuses
- * that too the claim STAYS. A standing refresh claim blocks every other caller, and once it expires it is `abandoned`
- * (the claim statement refuses it, `runRefresh` and `reclaimUnrecorded` send the grant to reconnect): the claim of a
- * rotating refresh is the durable mark that its exchange may have been sent.
+ * Ends a claim whose holder settled nothing (an error, or an answer it could not act on). Nothing was spent, or the
+ * provider declares a retry safe: the claim is released (`provablyUnsent`). A rotating token that may have been spent
+ * is sent to reconnect, tried once more here; if the database refuses that too the claim STAYS (`endClaim` refuses any
+ * other end of a claim marked in flight), blocking every other caller until it lapses and recovery reads it as
+ * reconnect-needed.
  */
 async function closeUnsettled(
     ctx: LineageCtx,
@@ -155,13 +161,9 @@ async function closeUnsettled(
     hooks: OAuthProviderHooks,
     possiblySpent: boolean
 ): Promise<void> {
-    const replayable = possiblySpent && hooks.rotatesRefreshToken && hooks.retryTransientRefresh !== true;
-    if (!replayable) {
-        await endClaim(ctx, claim).catch(() => undefined);
-        return;
-    }
-    const ended = await endClaim(ctx, claim, { reconnect: true }).catch(() => false);
-    if (ended) ctx.log('reconnect-required', claim.grantId);
+    const spent = possiblySpent && hooks.rotatesRefreshToken && hooks.retryTransientRefresh !== true;
+    const ended = await endClaim(ctx, claim, spent ? { reconnect: true } : { provablyUnsent: true }).catch(() => false);
+    if (ended && spent) ctx.log('reconnect-required', claim.grantId);
 }
 
 /** Steps 2-6 under a held claim. The claim ends exactly one way: released here, ended by the failure, or committed. */
@@ -192,6 +194,9 @@ async function exchangeUnderClaim(
 
         // 3. Exchange, under an absolute deadline combined with the caller's signal.
         const bound = AbortSignal.timeout(ctx.timing.exchangeDeadlineMs);
+        // Durable, and before the request can leave: from here the claim ends only by commit or by reconnect. A mark
+        // that fails or is refused sent nothing.
+        if (hooks.rotatesRefreshToken && !(await markInFlight(ctx, claim))) return unavailable('refresh-in-progress');
         possiblySpent = true;
         const answer: ExchangeResult = await hooks
             .refresh({ refreshToken, signal: signal ? AbortSignal.any([signal, bound]) : bound })

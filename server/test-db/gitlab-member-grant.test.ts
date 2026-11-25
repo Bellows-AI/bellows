@@ -857,6 +857,65 @@ describe.skipIf(!enabled)('the refresh of a GitLab grant', () => {
         }
     );
 
+    it('a claim marked in flight refuses an ordinary release and ends only by reconnect', async () => {
+        await linked(orgA, 'dev-one');
+        const [grant] = await sql<{ id: string }[]>`
+            select id from integration_grant
+            where org_id = ${orgA.id} and provider = ${FORGE} and principal_user_id = ${orgA.memberId}
+        `;
+        if (!grant) throw new Error('no grant');
+        const lineage = replica().integrations.lineageOf(orgA.id);
+        const claimed = await lineage.claimLineage(grant.id, 'refresh', { rotates: true });
+        if (!claimed.ok) throw new Error('no claim');
+        const marked = () =>
+            sql`select lineage_claim, lineage_sent_at, status from integration_grant where id = ${grant.id}`;
+        // Unmarked: an ordinary release works.
+        expect(await lineage.releaseClaim(claimed.claim)).toBe(true);
+        const again = await lineage.claimLineage(grant.id, 'refresh', { rotates: true });
+        if (!again.ok) throw new Error('no claim');
+        await sql`update integration_grant set lineage_sent_at = now() where id = ${grant.id}`;
+        // Marked: the statement refuses every end but reconnect, whoever asks and however.
+        expect(await lineage.releaseClaim(again.claim)).toBe(false);
+        expect(await lineage.releaseClaim(again.claim, { operation: true })).toBe(false);
+        expect((await marked())[0]).toMatchObject({ lineage_claim: again.claim.token, status: 'active' });
+        // An expired marked claim is not takeable, whatever the caller believes about the provider.
+        await sql`update integration_grant set lineage_claim_expires_at = now() - interval '1 second' where id = ${grant.id}`;
+        expect(await lineage.claimLineage(grant.id, 'refresh', { rotates: false })).toMatchObject({
+            ok: false,
+            reason: 'abandoned',
+        });
+        expect(await lineage.releaseClaim(again.claim, { reconnect: true })).toBe(true);
+        expect((await marked())[0]).toMatchObject({
+            lineage_claim: null,
+            lineage_sent_at: null,
+            status: 'reconnect_required',
+        });
+    });
+
+    it('a holder paused until its lease lapsed, after GitLab rotated the token, sends the grant to reconnect and nobody resends', async () => {
+        await linked(orgA, 'dev-one');
+        const calls = tokenCalls();
+        const real = keyring.openWith(keyring.realRepo);
+        // The holder stalls inside issueOperationId() until its lease has expired: the new token cannot be recorded.
+        const stalled = faultySecrets(real, {
+            issueOperationId: async () => {
+                await sql`
+                    update integration_grant set lineage_claim_expires_at = now() - interval '1 second'
+                    where org_id = ${orgA.id} and provider = ${FORGE} and principal_user_id = ${orgA.memberId}
+                `;
+                return real.issueOperationId();
+            },
+        });
+        const first = await asUserOf(replica({ clock: later, secrets: stalled }).memberGrants, orgA, orgA.memberId);
+        expect(first.ok).toBe(false);
+        expect(tokenCalls()).toBe(calls + 1);
+        // GitLab spent the stored refresh token and the replacement was dropped: the grant needs the person.
+        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('broken');
+        const second = await asUserOf(replica({ clock: later }).memberGrants, orgA, orgA.memberId);
+        expect(second).toMatchObject({ ok: false, outcome: { outcome: 'integration_required', reason: 'reconnect' } });
+        expect(tokenCalls()).toBe(calls + 1);
+    });
+
     it.each(['bad-gateway', 'gateway-timeout'] as const)(
         'never replays a token after a %s: GitLab processed the refresh, so the grant needs reconnect and nobody resends',
         async (gateway) => {

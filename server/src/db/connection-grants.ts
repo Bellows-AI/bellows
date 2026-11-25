@@ -201,7 +201,7 @@ async function finalizeIn(
                 update integration_grant
                 set secret_version = null, secret_destroyed_at = now(), updated_at = now(),
                     lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
-                    lineage_operation_id = null, lineage_secret_ref = null
+                    lineage_operation_id = null, lineage_secret_ref = null, lineage_sent_at = null
                 where id = ${grantId} and org_id = ${orgId} and lineage_claim = ${claimToken}
                   and lineage_claim_kind = 'destroy'
                 returning version
@@ -213,7 +213,7 @@ async function finalizeIn(
                     authority = ${db.json(input.authority as never)}, updated_at = now(),
                     status = case when ${gone}::boolean then 'revoked' else status end,
                     lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
-                    lineage_operation_id = null, lineage_secret_ref = null
+                    lineage_operation_id = null, lineage_secret_ref = null, lineage_sent_at = null
                 where id = ${grantId} and org_id = ${orgId} and lineage_claim = ${claimToken}
                   and lineage_claim_kind = 'refresh'
                 returning version
@@ -227,7 +227,7 @@ async function finalizeIn(
                     secret_wedged_at = null, secret_destroyed_at = null, updated_at = now(),
                     lineage_finalized_claim = ${claimToken},
                     lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
-                    lineage_operation_id = null, lineage_secret_ref = null
+                    lineage_operation_id = null, lineage_secret_ref = null, lineage_sent_at = null
                 where id = ${grantId} and org_id = ${orgId} and lineage_claim = ${claimToken}
                   and lineage_claim_kind = 'reconsent'
                 returning version
