@@ -71,6 +71,8 @@ const WORKER_ROUTES: readonly RegExp[] = [
     // The restore reads: the thread's checkpoint and raw transcripts, authorized by the
     // job's live lease in the body (job-handlers-restore.ts) — the lease is the credential.
     /^\/api\/jobs\/[^/]+\/(checkpoint|transcripts)(\/chunk)?$/,
+    // One gate run's whole output, the same lease credential (job-handlers-gate-log.ts).
+    /^\/api\/jobs\/[^/]+\/gate-log$/,
     // A task's input files, fetched by the runner under the job's live lease (job-handlers-attachment-content.ts).
     /^\/api\/jobs\/[^/]+\/attachments\/[^/]+\/content$/,
     // A task's pinned org and workspace skill bundles, fetched the same way (job-handlers-skill-content.ts).

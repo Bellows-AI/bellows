@@ -35,7 +35,7 @@ const summary = (id: string, login: string): TaskSummary => ({
 });
 
 const tasksAnswer: TaskListResponse = {
-    navigation: { counts: { running: 0, review: 2, past: 0 }, running: [], review: [] },
+    navigation: { counts: { running: 0, review: 2, past: 0, archived: 0 }, running: [], review: [] },
     page: {
         items: [
             summary('11111111-1111-4111-8111-111111111111', 'octocat'),

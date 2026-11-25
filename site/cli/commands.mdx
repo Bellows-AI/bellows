@@ -98,7 +98,7 @@ bellows job create --repo acme/notes-api -- npm test --watch
 
 | Flag | Meaning |
 | --- | --- |
-| `--state attention\|running\|review\|past` | Filter by state. |
+| `--state attention\|running\|review\|past\|archived` | Filter by state. `archived` lists archived tasks; every other state leaves them out. |
 | `--q <text>` | Search text. |
 | `--author <login>` | Filter by author. |
 | `--repo <repo>` | Filter by repository: `owner/name` on GitHub, `forge:host/path` otherwise. A malformed value is refused before any request. |
@@ -112,7 +112,7 @@ bellows job create --repo acme/notes-api -- npm test --watch
 
 | Flag | Meaning |
 | --- | --- |
-| `--stream <name>` | Pick a stream. |
+| `--stream <name>` | Pick a stream: `log`, `transcript`, or a gate run's whole output, `gate-<gate name>-<run id>` ([Gates](/guides/gates)). |
 | `--attempt <n>` | Pick an attempt. |
 | `--session <id>` | Pick a session. |
 | `--executor <name>` | Pick an executor. |
@@ -137,7 +137,8 @@ bellows job create --repo acme/notes-api -- npm test --watch
 | `bellows job stop <id>` | Stop the run. |
 | `bellows job done <id> [--force]` | Mark the task done. |
 | `bellows job reopen <id>` | Undo done. |
-| `bellows job remove <id> --yes` | Remove the task. `--yes` is required. |
+| `bellows job archive <id>` | Archive the task: it leaves the active list and stays readable. A running task is stopped first. |
+| `bellows job unarchive <id>` | Bring an archived task back to the active list. |
 
 `retry` re-runs the old command. `follow-up` sends new instructions.
 

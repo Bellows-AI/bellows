@@ -317,7 +317,7 @@ describe('the executor isolation record (#382)', () => {
             'is taken over: the next claim rebinds the supervisor (`rebind`), the supervisor must poll the new endpoint within `SUPERVISOR_REBIND_DELIVERY_MS`, and no sync, setup or `go` follows; one never released is swept'
         );
         expect(prose(kubernetesDocs)).toContain(
-            "A taken-over run's agent (publish, review and ad-hoc gate runs, `POST /gate/run`) and exporter reach the new holder through the supervisor's relay (`serveRelay`); a request in flight across the rebind is hung up on (the exporter retries it; the agent's proxy answers 502), and the transcript continues under the new claim from its first unacknowledged byte. `driver/test/supervisor.test.ts`, `driver/test/control-proxy.test.ts`."
+            "A taken-over run's agent (publish, review and its tool calls, `GET /tools` and `POST /tools/call`) and exporter reach the new holder through the supervisor's relay (`serveRelay`); a request in flight across the rebind is hung up on (the exporter retries it; the agent's proxy answers 502), and the transcript continues under the new claim from its first unacknowledged byte. `driver/test/supervisor.test.ts`, `driver/test/control-proxy.test.ts`."
         );
         expect(prose(kubernetesDocs)).toContain(
             "A taken-over run's agent gate requests reach the new holder the same way, and the agent holds no gate URL or token (`factory-gate` asks the control socket); an ad-hoc gate or exec run in flight across the rebind is hung up on and re-asked, so it may run on both holders, never exactly once. `driver/src/loop/loop-gates.ts`."
@@ -455,5 +455,20 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(limitsDocs)).toContain('the shared-worktree alternative is unmeasured and its code is gone');
         expect(prose(testingDocs)).toContain('--phase bench');
         expect(prose(testingDocs)).toContain('.bench.tsv');
+    });
+});
+
+describe('the runner pod sizing record', () => {
+    // A microVM guest is the sum of the pod's limits: each container is sized by its role, and the
+    // shapes the chart-default budget does not cover are stated, not pinned.
+    it('states the runner pod sizing rule and the reviewer limit', () => {
+        const map = prose(readFileSync(join(ROOT, 'docs/kubernetes.md'), 'utf8'));
+        expect(map).toContain(
+            "Every runner-pod container is sized by its role: the gate takes the largest CPU limit (`gateResources`), the agent and reviewer the class's `resources`, each service a fixed 1 CPU cap with the class's memory plus its tmpfs, the supervisor and the helpers fixed pairs"
+        );
+        const limits = prose(readFileSync(join(ROOT, 'docs/kubernetes-limits.md'), 'utf8'));
+        expect(limits).toContain(
+            "a reviewing pod adds a `reviewer` at the runner's CPU limit (+2 on chart defaults), and each further service adds 1 CPU"
+        );
     });
 });

@@ -4,8 +4,9 @@
  * each across a timing matrix of lease, rebind grace and the kubelet's Secret refresh. A scenario
  * names the lane case it mirrors; its expectations are the lane's.
  */
-import { existsSync, mkdtempSync } from 'node:fs';
-import { request } from 'node:http';
+import { execFile } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { createServer, request } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -58,13 +59,13 @@ const attemptOf = (g: Group) =>
         req.end();
     });
 
-/** `POST /gate/run` on a group's agent relay, the way the agent's gate and exec tools reach their driver. */
+/** `POST /tools/call` on a group's agent relay, the way the agent's gate and exec tools reach their driver. */
 const gateRunOf = (g: Group, gate: string | { exec: string }) =>
     new Promise<{ status: number; body: string }>((resolve, reject) => {
         const req = request(
             {
                 socketPath: join(g.root, 'out', AGENT_MAILBOX_DIR, MAILBOX_FILES.relay),
-                path: '/gate/run',
+                path: '/tools/call',
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
             },
@@ -75,7 +76,90 @@ const gateRunOf = (g: Group, gate: string | { exec: string }) =>
             }
         );
         req.on('error', reject);
-        req.end(JSON.stringify(typeof gate === 'string' ? { gate } : gate));
+        req.end(
+            JSON.stringify(
+                typeof gate === 'string' ? { tool: `gate:${gate}` } : { tool: 'exec', input: { command: gate.exec } }
+            )
+        );
+    });
+
+/** The base helpers' transport, as an older runner image ships it: `controlCall` and its exit rules. */
+const LEGACY_CONTROL_CALL = join(REPO_ROOT, 'driver/test/fixtures/legacy-control-call.cjs');
+
+/**
+ * An older runner's agent socket in front of the group's current holder: the base relay forwards the agent's
+ * `POST /gate/run` to the binding's url unchanged, adding the agent token, and hands status and body back as they
+ * came (its proxy too). Resolves with the socket path.
+ */
+async function legacyRelay(g: Group): Promise<string> {
+    const { url, agentToken } = holderOf(g);
+    const server = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('end', () => {
+            void fetch(`${url}${req.url ?? ''}`, {
+                method: req.method ?? 'POST',
+                headers: { authorization: `Bearer ${agentToken}`, 'content-type': 'application/json' },
+                body: Buffer.concat(chunks),
+            }).then(async (answer) => {
+                res.writeHead(answer.status, { 'content-type': 'application/json' });
+                res.end(await answer.text());
+            });
+        });
+    });
+    const socket = join(mkdtempSync(join(tmpdir(), 'skew-')), 'control.sock');
+    await new Promise<void>((resolve) => server.listen(socket, resolve));
+    legacyServers.push(server);
+    return socket;
+}
+const legacyServers: import('node:http').Server[] = [];
+
+/** The holder the group's supervisor follows now: its control url and the agent token it relays under. */
+const holderOf = (g: Group) => JSON.parse(readFileSync(g.file, 'utf8')) as { url: string; agentToken: string };
+
+/** The base relay's `POST /gate/run {"gate":"verify"}` at the current holder: its status and error. */
+const legacyAsk = async (g: Group): Promise<{ status: number; error: string }> => {
+    const { url, agentToken } = holderOf(g);
+    const answer = await fetch(`${url}/gate/run`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${agentToken}`, 'content-type': 'application/json' },
+        body: '{"gate":"verify"}',
+    });
+    const body = (await answer.json().catch(() => ({}))) as { error?: string };
+    return { status: answer.status, error: body.error ?? '' };
+};
+afterAll(() => {
+    for (const server of legacyServers.splice(0)) server.close();
+});
+
+/** The base `factory-gate verify` and `factory-exec 'echo hi'`: the old body to the old path, the old exit rules. */
+const legacyHelper = (socket: string, call: 'gate' | 'exec') =>
+    new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
+        const options =
+            call === 'gate'
+                ? {
+                      name: 'factory-gate',
+                      body: { gate: 'verify' },
+                      what: 'gate run',
+                      retryNote: 'this says nothing about the gate',
+                      noGates: 'the job declares no gates',
+                  }
+                : {
+                      name: 'factory-exec',
+                      body: { exec: 'echo hi' },
+                      what: 'exec run',
+                      retryNote: 'the command may or may not have run',
+                      noGates: 'there is no environment image here',
+                  };
+        const script = `require(${JSON.stringify(LEGACY_CONTROL_CALL)}).controlCall(${JSON.stringify(options)});`;
+        execFile(
+            process.execPath,
+            ['-e', script],
+            { env: { PATH: process.env.PATH ?? '', FACTORY_CONTROL_SOCKET: socket } },
+            (error, stdout, stderr) => {
+                resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr });
+            }
+        );
     });
 
 const scenarios: Record<string, (s: Sim) => Promise<void>> = {
@@ -413,7 +497,12 @@ describe("takeover simulation, the agent's gate request", () => {
                 answer = await gateRunOf(g, 'verify');
             }
             expect(answer.status).toBe(200);
-            expect(JSON.parse(answer.body)).toMatchObject({ exitCode: 0, output: 'ran on driver B' });
+            expect(JSON.parse(answer.body)).toMatchObject({
+                verdict: 'passed',
+                exitCode: 0,
+                output: 'ran on driver B',
+                artifacts: [],
+            });
             expect(s.gateRuns).toEqual([{ driver: 'B', command: 'verify-it' }]);
             // The agent never held a gate URL or token to go stale: nothing in its env names the lost driver's endpoint.
             expect(s.runnerEnvs.length).toBeGreaterThan(0);
@@ -443,8 +532,54 @@ describe("takeover simulation, the agent's gate request", () => {
                 answer = await gateRunOf(g, { exec: 'echo hi' });
             }
             expect(answer.status).toBe(200);
-            expect(JSON.parse(answer.body)).toEqual({ exitCode: 0, output: 'ran on driver B' });
+            expect(JSON.parse(answer.body)).toEqual({ exitCode: 0, output: 'ran on driver B', artifacts: [] });
             expect(s.gateRuns).toEqual([{ driver: 'B', command: 'echo hi' }]);
+            s.agentExits(g, 0);
+            await settled(s);
+        } finally {
+            await s.teardown();
+        }
+    }, 40_000);
+
+    // A takeover keeps the runner image and its supervisor: an older runner's helpers still POST `/gate/run`, which its
+    // relay forwards unchanged. The new holder refuses it retryably and runs nothing, so those helpers exit 75 — never 3
+    // ("no gates") and never a verdict — while the run's own tool calls reach the new holder.
+    it("a taken-over older runner's gate and exec requests exit 75 and run nothing on the new holder", async () => {
+        const s = new Sim(scaled(15), { gated: true });
+        try {
+            s.release();
+            const a = await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            await s.kill(a);
+            s.expireLease();
+            await s.start('B');
+            await until('the rebind', s, () => g.logs.some((l) => l.startsWith('supervisor: rebound to claim 2')));
+            const socket = await legacyRelay(g);
+            const helpersExit75 = async () => {
+                for (const call of ['gate', 'exec'] as const) {
+                    const helper = await legacyHelper(socket, call);
+                    expect(helper, call).toMatchObject({ code: 75, stdout: '' });
+                    expect(helper.stderr).toContain('not open yet');
+                }
+            };
+            // Once the new holder answers the old route at all (its gate claim registered or not), the answer is final.
+            let legacy = await legacyAsk(g);
+            for (let tries = 0; legacy.status === 503 && /not open yet/.test(legacy.error) && tries < 200; tries++) {
+                await nap(20);
+                legacy = await legacyAsk(g);
+            }
+            await helpersExit75();
+            // The run's own tool call reaches the new holder; the old route stays refused with the door open.
+            let answer = await gateRunOf(g, 'verify');
+            for (let tries = 0; answer.status === 503 && tries < 200; tries++) {
+                await nap(20);
+                answer = await gateRunOf(g, 'verify');
+            }
+            expect(answer.status).toBe(200);
+            await helpersExit75();
+            // The one run is the current runner's own call: the older requests ran nothing.
+            expect(s.gateRuns).toEqual([{ driver: 'B', command: 'verify-it' }]);
             s.agentExits(g, 0);
             await settled(s);
         } finally {

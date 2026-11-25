@@ -26,7 +26,8 @@ import type { ConnectionRelay } from '../../src/connection-control.js';
 import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
 import type { GateManager, GateRun, GateRunOptions } from '../../src/gate-manager.js';
-import type { GateServer } from '../../src/gates.js';
+import type { GateResult } from '../../src/gate-result.js';
+import type { GateClaim, GateServer } from '../../src/gates.js';
 import type { FinishRelay } from '../../src/control-channel.js';
 import { measuredRun } from '../../src/gate-record.js';
 import type { HelperResult } from '../../src/helpers.js';
@@ -51,6 +52,8 @@ import type {
     Runner,
     RuntimeSample,
 } from '../../src/runner.js';
+import { failureExcerpt } from '../../src/gate-excerpt.js';
+import { ARTIFACT_LIMIT, REPORT_BYTE_LIMIT, tailKept } from '../../src/runner.js';
 import type { StepResult, SupervisorBinding } from '../../src/supervisor-contract.js';
 import { githubRef } from './repo-ref.js';
 
@@ -138,6 +141,8 @@ export interface BoardStub extends Board {
     /** Every artifact chunk and manifest the loop sent, with the claim sequence each rode under. */
     artifactChunks: { id: string; claimSeq: number; stream: string; offset: number; text: string }[];
     artifactManifests: { id: string; claimSeq: number; stream: string; state: ArtifactManifest['state'] }[];
+    /** The terminal cause each finalized stream's manifest carried, by stream name. */
+    artifactCauses: Record<string, string | null>;
 }
 
 /** The board's durable gate-run and finish-round records, outliving one claim: what a takeover reads back. */
@@ -254,6 +259,7 @@ export function stubBoard(
         questionsReported: [],
         artifactChunks: [],
         artifactManifests: [],
+        artifactCauses: {},
         async checkpoint() {
             return { state: 'none' };
         },
@@ -280,6 +286,7 @@ export function stubBoard(
         },
         async finalizeArtifact(claimed, ref, manifest) {
             if (artifactsAreDown()) throw new Error('board unreachable');
+            board.artifactCauses[ref.stream] = manifest.terminalCause;
             board.artifactManifests.push({
                 id: claimed.id,
                 claimSeq: claimed.claimSeq,
@@ -412,6 +419,20 @@ export function stubBoard(
             if (options.ledger && options.gateRuns === undefined) return structuredClone(options.ledger.gateRuns);
             const answer = options.gateRuns ?? null;
             return typeof answer === 'function' ? answer(signal) : answer;
+        },
+        async gateLog(_claimed, executionId) {
+            const chunks = board.artifactChunks
+                .filter((chunk) => chunk.stream.startsWith('gate-') && chunk.stream.endsWith(`-${executionId}`))
+                .sort((a, b) => a.offset - b.offset);
+            if (chunks.length === 0) return null;
+            // As the board's read: a stream finalized short of `complete` is a cut log, and says why.
+            const stream = chunks[0]!.stream;
+            const state = board.artifactManifests.find((manifest) => manifest.stream === stream)?.state;
+            return {
+                text: chunks.map((chunk) => chunk.text).join(''),
+                truncated: state !== 'complete',
+                cause: board.artifactCauses[stream] ?? null,
+            };
         },
         async finishPass(_claimed, write) {
             board.finishPassesWritten.push(structuredClone(write));
@@ -759,6 +780,12 @@ export function stubGateStack(
         hold?: (name: string, signal?: AbortSignal) => Promise<void>;
         /** Runs each declared gate through the real record measurement: a running row, and trees probed around it. */
         measure?: boolean;
+        /** The structured result each named gate answers beside its output, on every run. */
+        results?: Record<string, GateResult>;
+        /** The whole output each named gate prints when it fails: the run answers its report tail beside it, as the manager does. */
+        fullOutputs?: Record<string, string>;
+        /** The gates whose output the supervisor cut before the driver saw it: their run says its log is a tail. */
+        cutOutputs?: string[];
     } = {}
 ) {
     const runs = new Map<string, number>();
@@ -789,6 +816,8 @@ export function stubGateStack(
         registered: 0,
         /** Each token the gate server registered, in order. */
         registeredTokens: [] as string[],
+        /** Each claim the gate server registered, in order: what the ad-hoc endpoint reads of the run. */
+        claims: [] as GateClaim[],
         unregistered: 0,
         cancelled: [] as string[],
         /** Each token the gate server closed to ad-hoc runs, in order. */
@@ -819,7 +848,22 @@ export function stubGateStack(
                     options.onRun?.(name);
                     await options.hold?.(name, runOptions.signal);
                     const code = nextCode(name);
-                    return { exitCode: code, output: code === 0 ? `${name} ok` : `${name} failed badly` };
+                    const result = options.results?.[name];
+                    const full = code === 0 ? undefined : options.fullOutputs?.[name];
+                    return {
+                        exitCode: code,
+                        output:
+                            full === undefined
+                                ? code === 0
+                                    ? `${name} ok`
+                                    : `${name} failed badly`
+                                : failureExcerpt(full, REPORT_BYTE_LIMIT),
+                        ...(full === undefined ? {} : { fullOutput: tailKept(full, ARTIFACT_LIMIT).content }),
+                        ...(full !== undefined && options.cutOutputs?.includes(name)
+                            ? { fullTruncated: true as const }
+                            : {}),
+                        ...(result ? { result } : {}),
+                    };
                 };
                 if (!options.measure || !runOptions.execution) return execute();
                 const measured = await measuredRun(
@@ -835,9 +879,10 @@ export function stubGateStack(
             stop: async () => {},
         } as GateManager,
         server: {
-            register: (token: string) => {
+            register: (token: string, claim: GateClaim) => {
                 stack.registered += 1;
                 stack.registeredTokens.push(token);
+                stack.claims.push(claim);
             },
             unregister: () => {
                 stack.unregistered += 1;
@@ -891,6 +936,7 @@ export function stubGateStack(
                 if (control) control.gateToken.relay = gateToken;
             },
             attachGateRun: () => {},
+            attachTools: () => {},
             attachInputs: () => {},
             controlPolled: () => options.polled ?? true,
             raiseKill: (token: string) => {

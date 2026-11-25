@@ -37,7 +37,7 @@ async function adHoc(exitCode: number, reads: Read<DaemonState>[]) {
         const response = await fetch(`http://127.0.0.1:${port}/run`, {
             method: 'POST',
             headers: { authorization: 'Bearer tok-d' },
-            body: JSON.stringify({ gate: 'test' }),
+            body: JSON.stringify({ tool: 'gate:test' }),
         });
         return { status: response.status, body: (await response.json()) as Record<string, unknown>, losses };
     } finally {

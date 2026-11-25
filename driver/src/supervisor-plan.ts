@@ -9,6 +9,7 @@ import { baseBranchOf } from './publish/publish-base.js';
 import { GATE_IMAGE, checkoutDir, checkoutKey, worktreeBranch } from './publish/publish.js';
 import { SERVICE_RESTART_TIMEOUT_MS } from './runner.js';
 import { CHECKPOINT_DIR } from './task-volume.js';
+import { finishGates } from './tools.js';
 import {
     AGENT_IN,
     AGENT_OUT,
@@ -81,7 +82,7 @@ export const FINISH_RELAY_MARGIN_MS = 120_000;
  * None for a job that declares no end-of-run gate: its finish answers at once.
  */
 export function finishRelayBoundMs(config: DriverConfig, job: BoardJob): number | null {
-    const declared = (job.gates?.gates ?? []).filter((gate) => !gate.onDemand);
+    const declared = finishGates(job.gates?.gates ?? []);
     if (declared.length === 0) return null;
     const gatesMs = declared.reduce(
         (sum, gate) => sum + gateDeadlineMs(config, config.gateTimeoutMs, declaredTimeoutMs(gate)),

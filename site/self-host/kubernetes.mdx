@@ -190,8 +190,8 @@ Tune the runners:
 | `runner.defaultClass` | `standard` | The class a task runs in when it names none. It must be one of `runner.classes`. The volume export after a task ends runs here too. |
 | `runner.classes.<name>.runtimeClassName` | empty | RuntimeClass the class's pods run under, such as `kata` on a Kata Containers node pool. The admission policy refuses a pod that runs outside its class's RuntimeClass. |
 | `runner.classes.<name>.nodeSelector`, `.tolerations`, `.affinity` | empty | Where the class's agent code runs. Use a tainted node group so it never shares a node with the dashboard. |
-| `runner.classes.standard.resources` | requests `500m` / `1Gi`, limits `4` / `8Gi` | Applies to the runner, services and helpers. A new class starts with no resources: it inherits nothing from `standard`. |
-| `runner.classes.standard.gateResources` | requests `2` / `2Gi` | Gate pods. Unset slots fall back to the class's `resources`. |
+| `runner.classes.standard.resources` | requests `500m` / `1Gi`, limits `2` / `8Gi` | Applies to the agent, the reviewer and the helper Jobs, and gives services their memory. Services take a fixed 1 CPU limit, and the supervisor and exporter a fixed CPU and memory size. A new class starts with no resources: it inherits nothing from `standard`. |
+| `runner.classes.standard.gateResources` | requests `2` / `2Gi`, limit CPU `6` | Gate pods. Unset slots fall back to the class's `resources`. Keep the gate's CPU limit the largest in the pod: it runs the gates. The gate's `/tmp` (its home, the suites' temp files) is in memory and counts against the gate's memory limit. |
 | `runner.classes.<name>.docker` | `false` | Gives the class's tasks a Docker daemon: a `dockerd` sidecar in the task pod that gates reach through `DOCKER_HOST`, over a unix socket. Requires a `runtimeClassName` whose handler is `kata` or `kata-<variant>`, CPU and memory limits on `resources` and `dockerResources`, and `dockerStorage`, or the render or the driver's startup fails. The Docker executor refuses a class with `docker: true`. |
 | `runner.classes.<name>.dockerStorage` | unset | Size of the daemon's data root: images, layers and containers. It is held in memory and counts against the pod's memory. Required for a Docker class, at most `dockerResources.limits.memory`. |
 | `runner.classes.<name>.dockerResources` | unset | Requests and limits of the `dockerd` sidecar, in the same shape as `resources`. A Docker class sets both CPU and memory limits. |
@@ -248,7 +248,7 @@ A Kata node pool needs:
 
 - Nodes with nested virtualization: a machine type that supports it, not a shared-core one.
 - The RuntimeClass's `overhead.podFixed`, the VM's own CPU and memory (about 250m and 130Mi on the pool we measured), added to every pod.
-- CPU and memory limits on every container, since the VM is sized from their sum. Bellows sizes its own helpers in a Docker class: the supervisor at 1 CPU and 1Gi, the volume setup and exporter at 500m and 512Mi.
+- CPU and memory limits on every container, since the VM is sized from their sum. Bellows sizes its own helpers in every class: the supervisor at 500m and 1Gi, the volume setup and exporter at 250m and 512Mi, each service at 1 CPU.
 
 The daemon's data root is held in memory because a plain `emptyDir` is a shared filesystem inside the VM that Docker's overlay storage cannot use.
 

@@ -297,20 +297,37 @@ export const reopenTask = defineTool({
         ctx.call({ method: 'POST', url: `${jobPath(jobId)}/reopen` }, ReopenedSchema, (data) => `reopened ${data.id}`),
 });
 
-const RemovedSchema = z.object({ id: z.string(), removed: z.boolean() });
+const ArchivedSchema = z.object({ id: z.string(), archived: z.boolean() });
 
-export const removeTask = defineTool({
-    name: 'remove_task',
+export const archiveTask = defineTool({
+    name: 'archive_task',
     description:
-        'Delete a task and its whole thread, and queue its worktree for reclaim. Cannot be undone. The board refuses a task that is still running (stop it first) and a batch task. Destructive: requires confirm: true.',
+        'Archive a task: it leaves the active list, and its thread, runs, logs, PR links and attachments stay readable (list_tasks with state archived). A queued or running task is stopped first, and its open PR wait is cancelled. Archived tasks are not subject to plan retention, and take no follow-up or retry until unarchived (unarchive_task). A repeat changes nothing. The board refuses a batch task. Requires confirm: true because it stops a running task.',
     scope: 'factory:write',
-    routes: [['POST', '/api/jobs/:id/remove']],
-    annotations: DESTRUCTIVE,
+    routes: [['POST', '/api/jobs/:id/archive']],
+    annotations: { ...DESTRUCTIVE, idempotentHint: true },
     confirm: true,
     input: JobIdInput,
-    output: RemovedSchema,
+    output: ArchivedSchema,
     run: ({ jobId }, ctx) =>
-        ctx.call({ method: 'POST', url: `${jobPath(jobId)}/remove` }, RemovedSchema, (data) => `removed ${data.id}`),
+        ctx.call({ method: 'POST', url: `${jobPath(jobId)}/archive` }, ArchivedSchema, (data) => `archived ${data.id}`),
+});
+
+export const unarchiveTask = defineTool({
+    name: 'unarchive_task',
+    description:
+        'Bring an archived task back to the active list, in the bucket it left. The board refuses a task that is not archived (TASK_NOT_ARCHIVED, so a second call answers that).',
+    scope: 'factory:write',
+    routes: [['POST', '/api/jobs/:id/unarchive']],
+    annotations: WRITES,
+    input: JobIdInput,
+    output: ArchivedSchema,
+    run: ({ jobId }, ctx) =>
+        ctx.call(
+            { method: 'POST', url: `${jobPath(jobId)}/unarchive` },
+            ArchivedSchema,
+            (data) => `unarchived ${data.id}`
+        ),
 });
 
 export const TASK_WRITE_TOOLS = [
@@ -323,5 +340,6 @@ export const TASK_WRITE_TOOLS = [
     markTaskDone,
     forceCloseTask,
     reopenTask,
-    removeTask,
+    archiveTask,
+    unarchiveTask,
 ];

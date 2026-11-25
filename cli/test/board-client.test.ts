@@ -187,14 +187,16 @@ describe('the board client', () => {
                 [
                     json({ id: 'job-1', status: 'running', cancelRequestedAt: '2026-09-29T13:01:00.000Z' }, 202),
                     json({ id: 'job-1', status: 'succeeded', doneAt: '2026-09-29T13:02:00.000Z' }),
-                    json({ id: 'job-1', removed: true }),
+                    json({ id: 'job-1', archived: true }),
+                    json({ id: 'job-1', archived: false }),
                 ][index]!
         );
         const board = client(fetch);
 
         const stopped = await board.stopJob('job-1');
         const done = await board.markDone('job-1');
-        const removed = await board.removeJob('job-1');
+        const archived = await board.archiveJob('job-1');
+        const unarchived = await board.unarchiveJob('job-1');
 
         expect(stopped).toEqual({
             id: 'job-1',
@@ -202,14 +204,16 @@ describe('the board client', () => {
             cancelRequestedAt: '2026-09-29T13:01:00.000Z',
         });
         expect(done).toEqual({ id: 'job-1', status: 'succeeded', doneAt: '2026-09-29T13:02:00.000Z' });
-        expect(removed).toEqual({ id: 'job-1', removed: true });
+        expect(archived).toEqual({ id: 'job-1', archived: true });
+        expect(unarchived).toEqual({ id: 'job-1', archived: false });
         expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
             'POST http://board/api/jobs/job-1/stop',
             'POST http://board/api/jobs/job-1/done',
-            'POST http://board/api/jobs/job-1/remove',
+            'POST http://board/api/jobs/job-1/archive',
+            'POST http://board/api/jobs/job-1/unarchive',
         ]);
-        // No body at all, so no content-type either: these three routes take none.
-        expect(calls.map((call) => call.body)).toEqual([undefined, undefined, undefined]);
+        // No body at all, so no content-type either: these routes take none.
+        expect(calls.map((call) => call.body)).toEqual([undefined, undefined, undefined, undefined]);
     });
 
     it('encodes the id into every path, so a typo cannot become a different route', async () => {
@@ -226,7 +230,8 @@ describe('the board client', () => {
         await board.followUp(id, 'again');
         await board.stopJob(id);
         await board.markDone(id);
-        await board.removeJob(id);
+        await board.archiveJob(id);
+        await board.unarchiveJob(id);
 
         const encoded = 'a%2F..%2Fb%3Fx';
         expect(calls.map((call) => call.url)).toEqual([
@@ -236,7 +241,8 @@ describe('the board client', () => {
             `http://board/api/jobs/${encoded}/follow-up`,
             `http://board/api/jobs/${encoded}/stop`,
             `http://board/api/jobs/${encoded}/done`,
-            `http://board/api/jobs/${encoded}/remove`,
+            `http://board/api/jobs/${encoded}/archive`,
+            `http://board/api/jobs/${encoded}/unarchive`,
         ]);
     });
 

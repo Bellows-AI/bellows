@@ -48,6 +48,7 @@ const STATES: readonly { value: InboxFilters['state']; label: string }[] = [
     { value: 'attention', label: 'Needs attention' },
     { value: 'running', label: 'Running' },
     { value: 'past', label: 'Past' },
+    { value: 'archived', label: 'Archived' },
 ];
 
 const SORTS: readonly { value: InboxFilters['sort']; label: string; short: string }[] = [
@@ -65,7 +66,13 @@ const CHIPS: readonly { key: 'q' | 'repo' | 'author'; label: string }[] = [
 /** A tab's organization-wide count. Needs attention is every unclosed task — running plus
  * review, the server's own `attention` predicate — so it adds the two counts the poll carries. */
 const tabCount = (state: InboxFilters['state'], counts: TaskNavigation['counts']): number =>
-    state === 'attention' ? counts.running + counts.review : state === 'running' ? counts.running : counts.past;
+    state === 'attention'
+        ? counts.running + counts.review
+        : state === 'running'
+          ? counts.running
+          : state === 'past'
+            ? counts.past
+            : counts.archived;
 
 /**
  * Each tone's pill, per the status table in `docs/design-system.md`: the pill class, then the
@@ -675,7 +682,12 @@ export function TaskInboxPage() {
     const authorOptions = authorOptionsFor(tasks.items, filters.author);
     const counts = tasks.navigation?.counts ?? null;
     const noTasksAtAll =
-        tasks.items !== null && counts !== null && counts.running === 0 && counts.review === 0 && counts.past === 0;
+        tasks.items !== null &&
+        counts !== null &&
+        counts.running === 0 &&
+        counts.review === 0 &&
+        counts.past === 0 &&
+        counts.archived === 0;
 
     return (
         <section className="inbox">

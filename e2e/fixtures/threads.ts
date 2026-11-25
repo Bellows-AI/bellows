@@ -91,6 +91,8 @@ export interface ThreadJob {
     author: ThreadUser | null;
     stoppedBy: ThreadUser | null;
     doneBy: ThreadUser | null;
+    archivedAt: string | null;
+    archivedBy: ThreadUser | null;
     sessionId: string | null;
     exitCode: number | null;
     output: string | null;
@@ -245,6 +247,8 @@ function run(fields: RunFields): ThreadJob {
         claimedBy: WORKER,
         stoppedBy: null,
         doneBy: null,
+        archivedAt: null,
+        archivedBy: null,
         sessionId: null,
         exitCode: 0,
         output: null,

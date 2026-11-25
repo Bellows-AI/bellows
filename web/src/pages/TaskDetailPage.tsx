@@ -11,7 +11,7 @@ import type { UseTasks } from '../api/useTasks.js';
 import { useComposerDraftStore } from '../composer-draft.js';
 import { BatchBacklink } from '../components/BatchBacklink.js';
 import { TaskDeletionNote } from '../components/TaskDeletionNote.js';
-import { TaskRemoveDialog } from '../components/TaskRemoveDialog.js';
+import { TaskArchiveDialog } from '../components/TaskArchiveDialog.js';
 import { TaskRenameDialog } from '../components/TaskRenameDialog.js';
 import { TaskControls, TaskHeader } from '../panels/TaskHeader.js';
 import { taskTitleText } from '../task-title.js';
@@ -130,12 +130,16 @@ function useTaskConversationActions(
     return { sending, actionError, followUpError, followUpConnect, stoppingId, doneId, followUp, doneTask, stopTask };
 }
 
+/** The first of the messages that is set: one banner, whichever action failed. */
+const firstMessage = (...messages: (string | null)[]): string | null => messages.find((m) => m !== null) ?? null;
+
 /**
- * The remove confirmation's own state: the header's menu item only opens the dialog, the
- * dialog's Remove task is the one thing that mutates, and a refusal stays inside it. Success is
- * the one navigation — the rows are gone, the page has nothing left to render, and the inbox is
- * where the task list lives. Split out of `TaskDetailPage` for the same reason as
- * `useTaskConversationActions`.
+ * The archive confirmation's own state: the header's menu item only opens the dialog, the
+ * dialog's Archive task is the one thing that mutates (it stops a running task first), and a refusal
+ * stays inside it. Success is the one navigation — the task left the active list, and the inbox is
+ * where the task list lives. Unarchive undoes it from the archived task's own page, with no
+ * confirmation: it stops nothing, and its failure is the page's action error. Split out of
+ * `TaskDetailPage` for the same reason as `useTaskConversationActions`.
  *
  * One page instance serves every `/tasks/:id`, so a refusal earned on task A would sit above
  * task B after a sidenav jump — the generation counter is what keeps a RETIRED request from
@@ -144,50 +148,83 @@ function useTaskConversationActions(
  * current. Monotonic, so navigating back to A still counts as a new question, and the effect's
  * cleanup invalidates in-flight actions again on unmount.
  */
-function useTaskRemoval(id: string | null, tasks: UseTasks, latest: Job | null, navigate: NavigateFunction) {
-    const [removingId, setRemovingId] = useState<string | null>(null);
-    const [removeOpen, setRemoveOpen] = useState(false);
-    const [removeError, setRemoveError] = useState<string | null>(null);
+function useTaskArchive({
+    id,
+    tasks,
+    latest,
+    navigate,
+    refresh,
+}: {
+    id: string | null;
+    tasks: UseTasks;
+    latest: Job | null;
+    navigate: NavigateFunction;
+    refresh: () => void;
+}) {
+    const [archivingId, setArchivingId] = useState<string | null>(null);
+    const [archiveOpen, setArchiveOpen] = useState(false);
+    const [archiveError, setArchiveError] = useState<string | null>(null);
+    const [unarchiveError, setUnarchiveError] = useState<string | null>(null);
     const generation = useRef(0);
     useEffect(() => {
         generation.current += 1;
-        setRemovingId(null);
-        setRemoveOpen(false);
-        setRemoveError(null);
+        setArchivingId(null);
+        setArchiveOpen(false);
+        setArchiveError(null);
+        setUnarchiveError(null);
         return () => {
             generation.current += 1;
         };
     }, [id]);
 
-    const openRemove = () => {
-        setRemoveError(null);
-        setRemoveOpen(true);
+    const openArchive = () => {
+        setArchiveError(null);
+        setArchiveOpen(true);
     };
-    const closeRemove = () => setRemoveOpen(false);
+    const closeArchive = () => setArchiveOpen(false);
 
-    const removeTask = async () => {
-        if (latest === null || removingId !== null) return;
+    const archiveTask = async () => {
+        if (latest === null || archivingId !== null) return;
         const taskId = latest.id;
         const atStart = generation.current;
-        setRemovingId(taskId);
+        setArchivingId(taskId);
         try {
-            setRemoveError(null);
-            const message = await tasks.actions.remove(taskId);
-            // A retired remove must not yank the reader off the task they navigated to.
+            setArchiveError(null);
+            const message = await tasks.actions.archive(taskId);
+            // A retired archive must not yank the reader off the task they navigated to.
             if (generation.current !== atStart) return;
             if (message !== null) {
-                setRemoveError(message);
+                setArchiveError(message);
                 return;
             }
             // Discarded on purpose: the route change is the last thing this does, and the
             // `finally` below must not wait on the transition to clear the pending flag.
             void navigate('/tasks');
         } finally {
-            if (generation.current === atStart) setRemovingId(null);
+            if (generation.current === atStart) setArchivingId(null);
         }
     };
 
-    return { removingId, removeOpen, removeError, openRemove, closeRemove, removeTask };
+    const unarchiveTask = async () => {
+        if (latest === null) return;
+        const atStart = generation.current;
+        setUnarchiveError(null);
+        const message = await tasks.actions.unarchive(latest.id);
+        if (generation.current !== atStart) return;
+        if (message !== null) setUnarchiveError(message);
+        else refresh();
+    };
+
+    return {
+        archivingId,
+        archiveOpen,
+        archiveError,
+        unarchiveError,
+        openArchive,
+        closeArchive,
+        archiveTask,
+        unarchiveTask,
+    };
 }
 
 /**
@@ -296,12 +333,16 @@ export function TaskDetailPage() {
         useTaskConversationActions(id, tasks, detail, latest);
     // Who is looking: the task owner or an org admin may follow it up (the board checks the same).
     const viewer = { loading: sessionLoading, id: session?.user.id ?? null, admin: session?.role === ADMIN_ROLE };
-    const { removingId, removeOpen, removeError, openRemove, closeRemove, removeTask } = useTaskRemoval(
-        id,
-        tasks,
-        latest,
-        navigate
-    );
+    const {
+        archivingId,
+        archiveOpen,
+        archiveError,
+        unarchiveError,
+        openArchive,
+        closeArchive,
+        archiveTask,
+        unarchiveTask,
+    } = useTaskArchive({ id, tasks, latest, navigate, refresh: detail.refresh });
     const rename = useTaskRename(id, tasks, detail.jobs?.[0] ?? null, detail.refresh);
     // A settled answer — ours, or the 409 that says what the board already holds — re-arms the
     // thread poll, so the stored answer, its author and its time replace the local overlay.
@@ -332,7 +373,8 @@ export function TaskDetailPage() {
                             doneId={doneId}
                             onStop={stopTask}
                             onDone={doneTask}
-                            onRemoveRequest={openRemove}
+                            onArchiveRequest={openArchive}
+                            onUnarchive={() => void unarchiveTask()}
                             onRenameRequest={rename.openRename}
                         />
                     ) : null
@@ -341,7 +383,7 @@ export function TaskDetailPage() {
                 viewer={viewer}
                 error={detail.error}
                 onRetry={detail.refresh}
-                actionError={actionError}
+                actionError={firstMessage(actionError, unarchiveError)}
                 followUpError={followUpError}
                 followUpConnect={followUpConnect}
                 sending={sending}
@@ -353,14 +395,14 @@ export function TaskDetailPage() {
                 agent={threadAgentOf(latest, workspace.data)}
             />
             {detail.jobs !== null && detail.jobs.length > 0 ? (
-                <TaskRemoveDialog
-                    open={removeOpen}
+                <TaskArchiveDialog
+                    open={archiveOpen}
                     name={taskTitleText(detail.jobs[0]!)}
-                    runCount={detail.jobs.length}
-                    removing={removingId !== null}
-                    error={removeError}
-                    onClose={closeRemove}
-                    onConfirm={() => void removeTask()}
+                    running={detail.jobs.some((job) => job.status === 'running')}
+                    archiving={archivingId !== null}
+                    error={archiveError}
+                    onClose={closeArchive}
+                    onConfirm={() => void archiveTask()}
                 />
             ) : null}
             {detail.jobs !== null && detail.jobs.length > 0 ? (

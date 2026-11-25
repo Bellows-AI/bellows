@@ -222,6 +222,7 @@ const call = async (url: URL, who: Who, name: string, args: Record<string, unkno
 const WRITE_TOOL_NAMES = [
     'accept_batch_task',
     'answer_question',
+    'archive_task',
     'cancel_batch',
     'create_attachment_upload',
     'create_task',
@@ -230,12 +231,12 @@ const WRITE_TOOL_NAMES = [
     'force_close_task',
     'import_batch',
     'mark_task_done',
-    'remove_task',
     'reopen_task',
     'retry_batch_task',
     'retry_task',
     'start_batch',
     'stop_task',
+    'unarchive_task',
     'update_batch',
 ];
 
