@@ -25,6 +25,7 @@ export const EXPORT_OMITTED_COLUMNS: Readonly<Partial<Record<string, readonly st
     access_token: ['token_hash'],
     attachment_upload: ['session_hash', 'capability_hash'],
     connector_connection: ['api_token'],
+    forge_link: ['state_hash'],
     integration_authorization: ['state_hash', 'pkce_verifier'],
     job: ['lease_token', 'prior_lease_token', 'superseded_lease_tokens', 'ingest_token'],
     job_conclusion: ['lease_token'],
