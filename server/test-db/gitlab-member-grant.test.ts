@@ -113,6 +113,34 @@ function replica(options: { api?: GitlabApi; clock?: () => number } = {}) {
     if (!composed.memberGrants || !links) throw new Error('github mode composes the member grants');
     return { ...composed, memberGrants: composed.memberGrants, orgs, links, ready };
 }
+/** Holds the identity lookup (`/user`) of the main replica until released: the window a removal can fall into. */
+const userGate: { reached: Promise<void>; release: () => void; armed: boolean } = {
+    reached: Promise.resolve(),
+    release: () => undefined,
+    armed: false,
+};
+const pausable = (api: GitlabApi): GitlabApi => ({
+    ...api,
+    request: async (req) => {
+        if (userGate.armed && req.path === '/api/v4/user') {
+            userGate.armed = false;
+            await new Promise<void>((resume) => {
+                userGate.release = resume;
+                markReached();
+            });
+        }
+        return api.request(req);
+    },
+});
+let markReached: () => void = () => undefined;
+/** Arms the gate: the next `/user` call parks until `release()`; `reached` resolves once one is parked. */
+const pauseNextUser = () => {
+    userGate.reached = new Promise<void>((resolve) => {
+        markReached = resolve;
+    });
+    userGate.armed = true;
+};
+
 /** GitLab issues two-hour tokens; a code exchange is answered with a one-second one, so the grant is due a refresh. */
 const shortLived = (api: GitlabApi): GitlabApi => ({
     ...api,
@@ -245,7 +273,7 @@ beforeEach(async () => {
     await fake.control('gitlab/version', { version: '17.4.0' });
     await fake.control('gitlab/faults', { mode: 'none' });
     [orgA, orgB] = [await newOrg(), await newOrg()];
-    const main = replica({ api: gitlabApi(shortLived) });
+    const main = replica({ api: gitlabApi((api) => pausable(shortLived(api))) });
     grants = main.memberGrants;
     app = await buildApp({
         config: boardConfig,
@@ -451,6 +479,66 @@ describe.skipIf(!enabled)('a member’s GitLab link', () => {
         await activate(orgA, id);
         expect((await link(orgA, id, 'shared-dev')).result).toBe('linked');
         expect((await link(orgA, id, 'shared-dev', orgA.admin)).result).toBe('grant-conflict');
+    });
+});
+
+describe.skipIf(!enabled)('removing a connection while a callback is in flight', () => {
+    /** Starts a round trip and runs it to the identity lookup, where it parks; resolves with the pending callback. */
+    async function parkedAt(start: { path: string; token: string }, login: string) {
+        const started = await app.inject({
+            method: 'POST',
+            url: start.path,
+            headers: bearer(start.token),
+            payload: {},
+        });
+        expect(started.statusCode).toBe(CREATED);
+        const url = new URL(started.json<{ authorizeUrl: string }>().authorizeUrl);
+        url.searchParams.set('login', login);
+        const authorized = await fetch(url, { redirect: 'manual' });
+        const back = new URL(authorized.headers.get('location') as string);
+        pauseNextUser();
+        const pending = callback(back.search, start.token);
+        await userGate.reached;
+        return { pending };
+    }
+    const removeAndRecreate = async (org: Org, id: string) => {
+        expect(await org.store.remove(id)).toBe(true);
+        return connect(org);
+    };
+
+    it('a member’s link finished after the connection was removed and re-created stores no live grant and is not linked', async () => {
+        const id = await connect(orgA);
+        await activate(orgA, id);
+        const { pending } = await parkedAt({ path: linkPath(id), token: orgA.member }, 'dev-one');
+        const recreated = await removeAndRecreate(orgA, id);
+        userGate.release();
+        const done = await pending;
+        expect(done.result).toBe('connection-gone');
+        expect((await grantRows(orgA.id)).filter((r) => r.status !== 'revoked')).toHaveLength(0);
+        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('missing');
+        expect(await orgA.store.get(recreated)).toMatchObject({ active: false });
+    });
+
+    it('an admin’s activation finished after the connection was removed and re-created leaves the new connection pending and stores no live grant', async () => {
+        const id = await connect(orgA);
+        const { pending } = await parkedAt({ path: activationPath(id), token: orgA.admin }, 'admin-login');
+        const recreated = await removeAndRecreate(orgA, id);
+        userGate.release();
+        const done = await pending;
+        expect(done.result).toBe('connection-gone');
+        expect(await orgA.store.get(recreated)).toMatchObject({ active: false, version: null });
+        expect(await grants.standing(orgA.id, orgA.adminId, FORGE)).toBe('missing');
+    });
+
+    it('removing a connection revokes the grants made through it', async () => {
+        const id = await connect(orgA);
+        await activate(orgA, id);
+        expect((await link(orgA, id, 'dev-one')).result).toBe('linked');
+        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('live');
+        await orgA.store.remove(id);
+        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('missing');
+        expect(await grants.standing(orgA.id, orgA.adminId, FORGE)).toBe('missing');
+        expect((await grantRows(orgA.id)).every((r) => r.status === 'revoked')).toBe(true);
     });
 });
 

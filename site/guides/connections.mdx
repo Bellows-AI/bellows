@@ -111,7 +111,7 @@ A link is `broken` and you must link again (run the link step once more) when:
 - GitLab no longer accepts the grant: you revoked the application on GitLab, or it was rotated away.
 - A token refresh got no clear answer. GitLab replaces a refresh token each time it is used, so after a lost, timed-out or gateway-error answer Bellows cannot tell whether the old token is already spent. It never tries it again; it asks you to reconnect instead.
 
-Nothing is deleted when this happens, and linking again makes the grant live. Two organizations connecting the same GitLab host keep separate applications and separate links.
+Nothing is deleted when this happens, and linking again makes the grant live. Removing a GitLab connection revokes everyone's links to it, so they link again once the host is connected anew. Two organizations connecting the same GitLab host keep separate applications and separate links.
 
 ## Discord notifications
 

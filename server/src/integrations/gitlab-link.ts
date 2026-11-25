@@ -174,10 +174,14 @@ async function complete(deps: GitlabLinksDeps, input: CompleteInput): Promise<Li
         tokens: issued.tokens,
     });
     if (!stored.ok) return refuse(returnTo, storeFailureOf(stored.reason));
-    if (!checked) return { ok: true, returnTo, result: 'linked' };
-    if (!(await target.store.activate(target.connection.id, checked.version)))
+    // The grant is written outside any lock a removal could take, so the connection the link started from is checked
+    // after it: removal marks the row before it revokes, so a grant it did not revoke is seen here and revoked.
+    const activated = checked ? await target.store.activate(target.connection.id, checked.version) : true;
+    if (!activated || !(await target.store.holds(target.connection.id, { active: checked === null }))) {
+        await target.store.revokeMemberGrant(target.connection.host, input.userId);
         return refuse(returnTo, 'connection-gone');
-    return { ok: true, returnTo, result: 'activated' };
+    }
+    return { ok: true, returnTo, result: checked ? 'activated' : 'linked' };
 }
 
 interface Target {
