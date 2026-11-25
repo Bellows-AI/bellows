@@ -1,9 +1,14 @@
 ---
 title: "Introduction"
-description: "Product teams drive change. Engineers define the guardrails. Bellows does the work."
+description: "Remote agentic engineering platform: a coding agent runs in an environment your repository defines and must pass your checks."
 ---
 
-Bellows runs a coding agent against your repository on a cluster. Every run happens inside a container you define. It must pass the checks you define. Its result is a pull request you review.
+Bellows is a remote agentic engineering platform. It runs a coding agent against your repository in a remote runner, so every run starts from the same environment:
+
+- **Defined environment.** The runner's image, setup commands, caches and services come from `.bellows.yaml` in your repo.
+- **Required checks.** Gates (build, test, lint) run at the end of every job; a pull request is published only when all of them pass.
+- **Reviewable result.** The output is a pull request you review. Questions, follow-ups and retries continue the same task.
+- **Recoverable runs.** If a node or runner is lost, the task resumes its session and checkout instead of starting over.
 
 ## Ways to use Bellows
 
@@ -25,7 +30,7 @@ Bellows runs a coding agent against your repository on a cluster. Every run happ
 | -------- | ------------------------------------------------ | -------------------------------------------- |
 | Setup    | Sign in with GitHub, pick repos, connect a model | Postgres, a GitHub App, Docker or Kubernetes |
 | Runners  | Managed                                          | Your cluster (Helm chart)                    |
-| Best for | Trying Bellows, most teams                       | Strict data residency, custom infra          |
+| Data     | Bellows Cloud database                           | Your Postgres                                |
 
 <Note>
   These docs follow the Cloud path. To run Bellows yourself, see [Self-hosting](/self-host/overview).
@@ -44,7 +49,7 @@ Bellows runs a coding agent against your repository on a cluster. Every run happ
 
 <CardGroup cols={2}>
   <Card title="Quickstart" icon="rocket" href="/overview/quickstart">
-    From a repo to your first pull request in about 10 minutes.
+    From a repo to your first pull request.
   </Card>
   <Card title="Core concepts" icon="book-open" href="/overview/concepts">
     Tasks, jobs, gates, skills: the words you'll meet.

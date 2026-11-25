@@ -1,8 +1,20 @@
 # Bellows
 
-**Product teams drive change. Engineers define the guardrails. Bellows does the work.**
+Remote agentic engineering platform. Bellows runs a coding agent against a repository in a
+remote runner whose container, services and gates the repository defines in `.bellows.yaml`. A
+run publishes a pull request only when every gate passes.
 
-**[See the docs](https://docs.bellows.cloud)** — using Bellows, self-hosting, and reference.
+| Capability | What it is |
+| --- | --- |
+| Runner | The container image, setup, caches and services from `.bellows.yaml`; Kubernetes in production, Docker for development |
+| Gates | Build, test and lint commands every run must pass; the agent can run on-demand gates while it works |
+| Executors | Claude Code or OpenCode, with per-user or per-organization model profiles |
+| Tasks | A thread of jobs: questions, follow-ups and retries resume the same session and checkout |
+| Recovery | A lost node or runner interrupts a task; the next claim adopts what survived |
+| Access | Web app, `bellows` CLI and an MCP endpoint |
+| Context | Skills, Jira/Linear connections, env vars and secrets, attachments |
+
+Docs: [docs.bellows.cloud](https://docs.bellows.cloud) — usage, self-hosting, reference.
 
 ## Development
 
