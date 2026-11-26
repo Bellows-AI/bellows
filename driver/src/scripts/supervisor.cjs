@@ -1839,14 +1839,15 @@ function redactedResult(step, result, served = []) {
         [...['GITHUB_TOKEN', 'GH_TOKEN'].map((name) => step.env?.[name]), ...served].filter((value) => value)
     );
     if (secrets.length === 0) return result;
+    /** @param {string} text */
+    const redactText = (text) => secrets.reduce((kept, secret) => kept.split(secret).join('[redacted]'), text);
     /** @param {unknown} value @returns {unknown} */
     const redact = (value) => {
-        if (typeof value === 'string') {
-            return secrets.reduce((kept, secret) => kept.split(secret).join('[redacted]'), value);
-        }
+        if (typeof value === 'string') return redactText(value);
         if (Array.isArray(value)) return value.map(redact);
         if (value !== null && typeof value === 'object') {
-            return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, redact(inner)]));
+            // A report is any JSON the gate wrote: its keys are text it chose too.
+            return Object.fromEntries(Object.entries(value).map(([key, inner]) => [redactText(key), redact(inner)]));
         }
         return value;
     };

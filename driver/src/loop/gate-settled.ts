@@ -137,7 +137,8 @@ export function settledGate(
             ...(running.startedAt === undefined ? {} : { startedAt: running.startedAt }),
             finishedAt: new Date().toISOString(),
             timeoutMs: gateDeadlineMs(config, config.gateTimeoutMs, declaredTimeoutMs(gate)),
-            ...(outcome.timedOut ? { timedOut: true as const } : {}),
+            // A setup killed at its own deadline is not this gate timing out: the gate never ran.
+            ...(outcome.timedOut && !outcome.setupFailed ? { timedOut: true as const } : {}),
         },
         text,
     };

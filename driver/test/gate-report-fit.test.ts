@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { DeclaredGate } from '../src/board/board.js';
 import { compactResult, type GateResult, MAX_FAILURES } from '../src/gate-result.js';
-import { fitReport, outputBudgets } from '../src/loop/gate-settled.js';
+import { fitReport, outputBudgets, settledGate } from '../src/loop/gate-settled.js';
+import { replayGates } from '../src/loop/loop-phase-checkpoints.js';
 import type { GateReport } from '../src/loop/loop-gates.js';
 
 /** The board's body limit on POST /api/jobs/:id/gates (server/src/routes/jobs/job-limits.ts). */
@@ -56,5 +57,47 @@ describe('the gate report a run sends the board', () => {
             { name: 'test', status: 'failed', exitCode: 1, output: 'boom', result: fullResult() },
         ];
         expect(fitReport(results)).toEqual(results);
+    });
+
+    // A phase served from its checkpoint posts the reports it kept; a checkpoint written before they were
+    // fitted (or a list that outgrew the body) must not be refused on replay.
+    it('replays a checkpointed report cut to the board body', async () => {
+        const reports: GateReport[] = Array.from({ length: GATES }, (_, i) => ({
+            name: `g${i}`,
+            status: 'failed',
+            exitCode: 1,
+            output: 'x'.repeat(1024),
+            result: fullResult(),
+        }));
+        const posted: GateReport[][] = [];
+        const ctx = {
+            rt: { board: { gates: async (_job: unknown, gates: GateReport[]) => posted.push(gates) }, log: () => {} },
+            job: { id: 'j', setupFailure: null },
+        };
+        await replayGates(ctx as never, { reports } as never);
+        expect(posted).toHaveLength(1);
+        expect(body(posted[0] ?? [])).toBeLessThanOrEqual(BOARD_BODY_LIMIT_BYTES);
+    });
+});
+
+describe('a settled gate entry', () => {
+    // Setup runs to the platform default, not the gate's own deadline, and the gate never ran: the
+    // entry must not read "timed out at" the gate's deadline.
+    it('carries no timeout outcome for a setup that timed out', () => {
+        const gate: DeclaredGate = { name: 'test', command: 'npm test', timeoutMinutes: 30 };
+        const config = { jobTimeoutMs: 28_800_000, gateTimeoutMs: 1_200_000 };
+        const budgets = { passed: 512, failed: 4096 };
+        const setup = settledGate(
+            gate,
+            { exitCode: 124, output: 'setup killed', setupFailed: true, timedOut: true },
+            budgets,
+            { running: {}, config }
+        );
+        expect(setup.entry).not.toHaveProperty('timedOut');
+        const own = settledGate(gate, { exitCode: 124, output: 'killed', timedOut: true }, budgets, {
+            running: {},
+            config,
+        });
+        expect(own.entry.timedOut).toBe(true);
     });
 });

@@ -3394,6 +3394,7 @@ describe('the supervisor run: a gate step’s injected GitHub token in its outpu
             report: {
                 'tests.json': JSON.stringify({
                     failures: [{ file: 'a.test.ts', test: 'auth', message: `got ${token}` }],
+                    [`by-${token}`]: 'a report keyed by the token',
                 }),
                 resources: `t=1 cpu=1 load=0.1 mem=1/2 throttled=0,0 ${token}\n`,
             },
