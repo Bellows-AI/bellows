@@ -85,12 +85,30 @@ anything you could not do.
 An overgrown session triggers compaction, which costs minutes per cycle.
 
 - **Search order for codebase questions: `grep` → `read`.** Find the place with `grep` first.
-  `read` is for a file you are about to edit — not for open-ended investigation, and never re-read
-  a file you have not changed.
+  Read targeted sections to understand failures and callers, or before editing. Avoid repeated
+  reads of unchanged files unless needed for diagnosis.
 - **Bound what a shell search can print.** When you shell out, narrow it (`--include`, a path
   prefix, `| head`) rather than running a bare `grep -rn` over the whole tree.
 - **Trim what you print.** Summarize test and gate output (the summary lines, the failing files,
   `tail`) rather than pasting a full suite run into the session.
+- **Run tests through the gates, not around them.** When the repository declares gates, a test
+  run goes through `factory-gate` — filtered to your tests when the gate accepts a filter —
+  because its answer is a bounded, failure-first excerpt. A bare shell sweep of a suite the
+  gates own floods the session and proves nothing. When an excerpt is not enough, redirect the
+  whole answer to a file and grep it, never print it whole. `factory-gate <name> --last --full`
+  reads the thread's last stored report — a finish gate's log, or an earlier attempt's; a run
+  you made ad hoc this attempt is not in it. Your own shell only runs what no gate can — a
+  repository with no gates at all (exit 3), a gate too long to run ad hoc (422) — and then the
+  full output goes to a file you grep, never pasted into the session.
+- **Iterate a failing test in a subagent.** A test↔fix loop you expect to take more than two
+  runs — a failure whose cause you do not already know, a broad suite to verify — runs in a
+  subagent (the `general` agent): the subagent runs the loop under the same rule — its test runs
+  through the gates where the repository declares them — and returns only the verdict per test,
+  the remaining failing names with a one-line cause each, and the files it changed. The main
+  session never carries the loop's raw output.
+- **Three identical failures is a stop.** If the same test fails the same way three times, stop
+  editing: re-read the failing assertion and the code under test, state the diagnosis in one
+  line, then make one reasoned edit. Never blind string-replace a file you have not re-read.
 
 ## Infrastructure access
 
