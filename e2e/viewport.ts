@@ -18,9 +18,10 @@ export async function pageOverflow(page: Page): Promise<{ inner: number; documen
 }
 
 /** No page renders wider than its own viewport — shared by every spec that walks narrow widths,
-    so a fix to the check applies everywhere at once instead of drifting between copies. */
-export async function noHorizontalOverflow(page: Page): Promise<void> {
-    await shellSettled(page);
+    so a fix to the check applies everywhere at once instead of drifting between copies. `settle: false`
+    measures a shell whose banner read is held on purpose, which never leaves `pending`. */
+export async function noHorizontalOverflow(page: Page, { settle = true }: { settle?: boolean } = {}): Promise<void> {
+    if (settle) await shellSettled(page);
     const overflow = await pageOverflow(page);
     expect(overflow.inner, 'document is wider than the viewport').toBeLessThanOrEqual(0);
     expect(overflow.document, 'document overflows horizontally').toBeLessThanOrEqual(0);

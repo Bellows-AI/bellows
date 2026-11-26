@@ -99,7 +99,8 @@ test.describe('component-state specimen', () => {
                 // Every row is on the page; the column headers too, except where the narrow
                 // reflow labels each cell instead.
                 for (const row of ROWS) {
-                    await expect(page.locator('tbody th', { hasText: row })).toBeVisible();
+                    // Exact: `hasText` is a substring match, and the token table's `--pill-radius` holds "pill".
+                    await expect(page.getByRole('rowheader', { name: row, exact: true })).toBeVisible();
                 }
                 for (const column of COLUMNS) {
                     await expect(page.locator('thead th', { hasText: column })).toBeAttached();
