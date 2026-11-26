@@ -16,6 +16,8 @@ if (!Number.isInteger(PORT_BASE) || PORT_BASE <= 0) {
 }
 const AUTH_PORT_OFFSET = 1;
 const IDP_PORT_OFFSET = 2;
+const GITLAB_PORT_OFFSET = 4;
+const GITLAB_CONTROL_PORT_OFFSET = 5;
 const PORT = PORT_BASE;
 
 /**
@@ -30,6 +32,11 @@ const PORT = PORT_BASE;
 export const AUTH_PORT = PORT_BASE + AUTH_PORT_OFFSET;
 /** Exported for jira-connections.spec.ts, which tells the stub's Atlassian side which account consents. */
 export const IDP_PORT = PORT_BASE + IDP_PORT_OFFSET;
+/** The stub GitLab's https port (the board and the browser) and the plain-http door of the fake behind it (a spec's controls). */
+export const GITLAB_PORT = PORT_BASE + GITLAB_PORT_OFFSET;
+export const GITLAB_CONTROL_PORT = PORT_BASE + GITLAB_CONTROL_PORT_OFFSET;
+/** Where the stub writes its throwaway certificate: the CA bundle a spec gives the GitLab connection. */
+export const GITLAB_CA_PATH = `${root}artifacts/ui/stub-gitlab-ca.pem`;
 /** Exported with the auth database below: org-executors.spec.ts promotes exactly this member. */
 export const E2E_LOGIN = 'e2e-user';
 
@@ -80,7 +87,7 @@ export const AUTH_DATABASE_URL = databaseUrl(`${DB_PREFIX}_auth_e2e`);
 
 /** The specs that need a signed-in member. */
 const AUTH_SPECS =
-    /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|linear-connections|task-connect-auth|oauth-consent|attachment-upload|mcp-connect|skills|members|audit-log|onboarding|github-grant|forge-gate)\.spec\.ts$/;
+    /\/(auth|workspace|follow-up-auth|org-executors|jira-connections|linear-connections|task-connect-auth|oauth-consent|attachment-upload|mcp-connect|skills|members|audit-log|onboarding|github-grant|forge-gate|gitlab-connections)\.spec\.ts$/;
 /**
  * Heavy captures that gate nothing — the baseline gallery, the fixed-seed gremlins — carry this tag
  * and run only under playwright.nightly.config.ts (`npm run verify:ui:nightly`), with the specimen.
@@ -167,6 +174,21 @@ export default defineConfig({
                 STUB_IDP_LOGIN: E2E_LOGIN,
                 STUB_IDP_USER_ID: String(E2E_USER_ID),
                 STUB_IDP_INSTALLATIONS: '999999,888888',
+            },
+            reuseExistingServer: false,
+            stdout: 'ignore',
+            stderr: 'pipe',
+        },
+        {
+            // The self-hosted GitLab gitlab-connections.spec.ts connects: the lanes' fake behind a TLS front.
+            command: 'node e2e/stub-gitlab.mjs',
+            // The fake answers an unauthenticated version call 401, which counts as up.
+            url: `http://127.0.0.1:${GITLAB_CONTROL_PORT}/api/v4/version`,
+            cwd: root,
+            env: {
+                STUB_GITLAB_PORT: String(GITLAB_PORT),
+                STUB_GITLAB_CONTROL_PORT: String(GITLAB_CONTROL_PORT),
+                STUB_GITLAB_CA: GITLAB_CA_PATH,
             },
             reuseExistingServer: false,
             stdout: 'ignore',

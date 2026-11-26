@@ -3,7 +3,7 @@
 How an org reaches a self-hosted GitLab: an admin connects an instance, stored pending until the admin's own OAuth grant
 passes an authenticated `/version` check and activates it; each member then links their own account (scope `api`). The admin
 then picks the projects the org tracks, and no task starts on one without the acting member's grant and Developer access.
-The link, activation and tracking routes are API-only until the settings page arrives; `site/` documents the refusal.
+Settings → Integrations → GitLab drives all of it; `site/` documents it.
 
 | Concern | Code | Test |
 | --- | --- | --- |
@@ -23,7 +23,9 @@ The link, activation and tracking routes are API-only until the settings page ar
 | The start gate: a live grant, then `GET /projects/:path` with the member's token; the maximum of project and group access must be 30 (Developer), else 409 `FORGE_ACCESS_DENIED` linking to the settings page | `server/src/forge/forge-gate.ts`, `server/src/gitlab/gitlab-api.ts` (`projectAccess`), `server/src/forge/forges.ts`, `server/src/routes/jobs/forge-usable.ts` | `server/test-db/gitlab-gate.test.ts`, `server/test/gitlab-api.test.ts` |
 | Reads of a GitLab repo (branches, skills, create-time checks, preflight, batch launch, the PR and GitHub credential routes): unsupported, so inconclusive, with no GitHub call | `server/src/forge/forge-client.ts`, `server/src/routes/batches/batch-launch.ts`, `server/src/routes/github-credential.ts`, `server/src/db/attempt-of-lease.ts` | `server/test-db/gitlab-reads.test.ts`, `server/test/routes.github-credential.test.ts` |
 | Mid-run loss: the attempt's credential request reads the starter's grant; a lost one opens the runtime wait (`forge`, target `gitlab:<host>`), the claim holds the task, a re-link resumes its session | `server/src/routes/forge-credential.ts`, `server/src/db/jobs/job-store-connections.ts` (`holdOnForgeGrantRow`), `server/src/db/forge-requirement.ts` | `server/test-db/gitlab-loss.test.ts`, `server/test-db/gitlab-credential.test.ts`, `server/test/routes.forge-credential.test.ts` |
-| The instance the probe reaches in tests | `scripts/fake-forge/gitlab.mjs`, `server/test-db/fake-gitlab.ts` | `server/test/fake-gitlab.test.ts` |
+| The settings page (`/settings/integrations/gitlab`): an admin's connect form, Activate, Remove and tracking picker (a 503 listing is an error with Retry, `listed: false` rows stay shown, the coded 409 is worded); a member's link and reconnect | `web/src/pages/SettingsGitlabPage.tsx`, `web/src/panels/GitlabConnectForm.tsx`, `web/src/panels/GitlabTracking.tsx`, `web/src/api/gitlab.ts`, `web/src/api/forgeGrants.ts` | `web/test/gitlab-settings.dom.test.tsx`, `web/test/gitlab-api.test.ts`, `e2e/gitlab-connections.spec.ts` |
+| The denial and the wait on the task page: `FORGE_ACCESS_DENIED` words the denial and links the page; a runtime wait reads as paused | `web/src/api/taskWrites.ts`, `web/src/panels/TaskForgeWait.tsx` | `web/test/task-writes-forge.test.ts`, `web/test/task-connect.dom.test.tsx` |
+| The instance the probe reaches in tests | `scripts/fake-forge/gitlab.mjs`, `server/test-db/fake-gitlab.ts`, `e2e/stub-gitlab.mjs` (the fake behind TLS, its CA given to the connection) | `server/test/fake-gitlab.test.ts` |
 
 ## Invariants
 

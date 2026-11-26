@@ -243,4 +243,26 @@ describe('the forge wait on the task page', () => {
         expect(await screen.findByText(/starter was removed.*stop or remove it/i)).toBeTruthy();
         expect(screen.queryByRole('link', { name: /GitHub/ })).toBeNull();
     });
+
+    it('a GitLab grant lost mid-run says the task paused, resumes after re-link, and links the GitLab settings page', async () => {
+        const settings = '/settings/integrations/gitlab?returnTo=%2Ftasks%2Fx&org=o1';
+        const jobs = held(
+            forge({
+                label: 'GitLab (gitlab.example.test)',
+                target: 'gitlab:gitlab.example.test',
+                source: 'runtime',
+                connectPath: settings,
+            })
+        );
+        board({ jobs });
+        open(jobs);
+        const wait = await screen.findByRole('region', { name: 'GitLab (gitlab.example.test) connection needed' });
+        expect(wait.textContent).toMatch(
+            /task is paused.*connection needs to be reconnected.*picks up where it left off/i
+        );
+        expect(wait.textContent).not.toMatch(/has not started/i);
+        expect(screen.getByRole('link', { name: 'Reconnect GitLab (gitlab.example.test)' }).getAttribute('href')).toBe(
+            settings
+        );
+    });
 });

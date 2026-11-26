@@ -18,6 +18,7 @@ import { SetupRedirect } from './onboarding/SetupRedirect.js';
 import { SettingsSkillsPage } from './pages/SettingsSkillsPage.js';
 import { SettingsExecutorsPage } from './pages/SettingsExecutorsPage.js';
 import { SettingsIntegrationsCatalogPage } from './pages/SettingsIntegrationsCatalogPage.js';
+import { SettingsGitlabPage } from './pages/SettingsGitlabPage.js';
 import { SettingsIntegrationDetailPage } from './pages/SettingsIntegrationDetailPage.js';
 import { SettingsIntegrationsPage } from './pages/SettingsIntegrationsPage.js';
 import { SettingsLayout } from './pages/SettingsLayout.js';
@@ -89,6 +90,7 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
                 <Route path="integrations">
                     <Route index element={<SettingsIntegrationsPage />} />
                     <Route path="available" element={<SettingsIntegrationsCatalogPage />} />
+                    <Route path="gitlab" element={<SettingsGitlabPage />} />
                     <Route path=":provider/:connectionId" element={<SettingsIntegrationDetailPage />} />
                 </Route>
                 <Route path="repos" element={<SettingsRepositoriesPage />} />

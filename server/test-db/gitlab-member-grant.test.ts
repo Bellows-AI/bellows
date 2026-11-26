@@ -382,6 +382,29 @@ describe.skipIf(!enabled)('a member’s GitLab link', () => {
         expect(await grants.standing(orgB.id, orgA.memberId, FORGE)).toBe('missing');
     });
 
+    it('relinking a live grant through the same route replaces it: another account, then the same one again', async () => {
+        const id = await connect(orgA);
+        await activate(orgA, id);
+        await link(orgA, id, 'dev-one');
+        const first = await asUserOf(grants, orgA, orgA.memberId);
+        if (!first.ok) throw new Error('no token');
+
+        // The link route does not refuse a live grant: a different GitLab account takes over.
+        expect((await link(orgA, id, 'dev-two')).result).toBe('linked');
+        expect(await grants.standing(orgA.id, orgA.memberId, FORGE)).toBe('live');
+        const second = await asUserOf(grants, orgA, orgA.memberId);
+        if (!second.ok) throw new Error('no token');
+        expect(second.accessToken).not.toBe(first.accessToken);
+        expect((await fake.send('GET', '/api/v4/user', { token: second.accessToken })).body.username).toBe('dev-two');
+
+        // And the same account again replaces its own credentials.
+        expect((await link(orgA, id, 'dev-two')).result).toBe('linked');
+        const third = await asUserOf(grants, orgA, orgA.memberId);
+        if (!third.ok) throw new Error('no token');
+        expect(third.accessToken).not.toBe(second.accessToken);
+        expect((await fake.send('GET', '/api/v4/user', { token: third.accessToken })).body.username).toBe('dev-two');
+    });
+
     it('lists the active connections with the caller’s standing', async () => {
         const id = await connect(orgA);
         const before = await app.inject({ method: 'GET', url: LINK_PATH, headers: bearer(orgA.member) });

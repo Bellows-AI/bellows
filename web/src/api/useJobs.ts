@@ -338,6 +338,8 @@ export function isTerminal(status: JobStatus): boolean {
 export interface ConnectPrompt {
     url: string;
     label: string;
+    /** The link's own words when "Connect <label>" is not what it does (a denial opens the settings page). */
+    text?: string;
 }
 
 /**
