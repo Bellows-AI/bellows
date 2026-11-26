@@ -35,10 +35,11 @@ them** — the commands in this skill are placeholders, not literals.
   repository has them (filtered when a gate accepts a filter — their answers are bounded, the
   full log stored out of your context); your own shell only runs what no gate can, and then its
   full output goes to a file you grep, never pasted into the session. A red-green loop you expect
-  to take more than two runs is delegated to a subagent that returns only the verdicts, the
-  remaining failures with a one-line cause each, and the files it changed; the same test failing
-  the same way three times is a stop-and-diagnose (re-read the assertion and the code, state the
-  cause, one reasoned edit) — never a fourth blind scripted replacement.
+  to take more than two runs is delegated to a subagent that runs the loop under the same rule —
+  its test runs through the gates where the repository declares them — and returns only the
+  verdicts, the remaining failures with a one-line cause each, and the files it changed; the same
+  test failing the same way three times is a stop-and-diagnose (re-read the assertion and the
+  code, state the cause, one reasoned edit) — never a fourth blind scripted replacement.
 - **No coverage means build the harness first, then fix.** Never attempt a fix in a module with no
   test harness; Step 4 builds it in the same run.
 - **Business correctness, not shape smoke.** Every list/filter/scope/guard test must assert

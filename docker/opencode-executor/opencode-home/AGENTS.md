@@ -85,8 +85,8 @@ anything you could not do.
 An overgrown session triggers compaction, which costs minutes per cycle.
 
 - **Search order for codebase questions: `grep` → `read`.** Find the place with `grep` first.
-  `read` is for a file you are about to edit — not for open-ended investigation, and never re-read
-  a file you have not changed.
+  Read targeted sections to understand failures and callers, or before editing. Avoid repeated
+  reads of unchanged files unless needed for diagnosis.
 - **Bound what a shell search can print.** When you shell out, narrow it (`--include`, a path
   prefix, `| head`) rather than running a bare `grep -rn` over the whole tree.
 - **Trim what you print.** Summarize test and gate output (the summary lines, the failing files,
@@ -100,9 +100,10 @@ An overgrown session triggers compaction, which costs minutes per cycle.
   and then the full output goes to a file you grep, never pasted into the session.
 - **Iterate a failing test in a subagent.** A test↔fix loop you expect to take more than two
   runs — a failure whose cause you do not already know, a broad suite to verify — runs in a
-  subagent (the `general` agent): the subagent runs the loop, suites into files as above, and
-  returns only the verdict per test, the remaining failing names with a one-line cause each, and
-  the files it changed. The main session never carries the loop's raw output.
+  subagent (the `general` agent): the subagent runs the loop under the same rule — its test runs
+  through the gates where the repository declares them — and returns only the verdict per test,
+  the remaining failing names with a one-line cause each, and the files it changed. The main
+  session never carries the loop's raw output.
 - **Three identical failures is a stop.** If the same test fails the same way three times, stop
   editing: re-read the failing assertion and the code under test, state the diagnosis in one
   line, then make one reasoned edit. Never blind string-replace a file you have not re-read.

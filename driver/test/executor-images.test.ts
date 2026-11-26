@@ -2050,6 +2050,7 @@ describe('the test-iteration discipline in the agent instructions', () => {
             expect(text).toMatch(/a repository with no gates at all \(exit 3\), a gate too long to run ad hoc \(422\)/);
             expect(text).toMatch(/the full output goes to a file you grep, never pasted into the session/);
             expect(text).toContain('Iterate a failing test in a subagent.');
+            expect(text).toMatch(/its test runs through the gates where the repository declares them/);
             expect(text).toMatch(/returns only the verdict per test/);
             expect(text).toContain('Three identical failures is a stop.');
             expect(text).toMatch(/Never blind string-replace a file you have not re-read/);
@@ -2074,6 +2075,7 @@ describe('the test-iteration discipline in the agent instructions', () => {
         const text = read('docker/skills/factory-fix/SKILL.md').replace(/\s+/g, ' ');
         expect(text).toContain('Iterate tests out of your context.');
         expect(text).toMatch(/go through the declared gates whenever the repository has them/);
+        expect(text).toMatch(/its test runs through the gates where the repository declares them/);
         expect(text).toMatch(/its full output goes to a file you grep/);
         expect(text).toMatch(/delegated to a subagent/);
         expect(text).toMatch(/stop-and-diagnose/);
