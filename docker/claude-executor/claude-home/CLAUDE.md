@@ -126,8 +126,8 @@ MCP server or API key.
 An overgrown session triggers compaction, which costs minutes per cycle.
 
 - **Search order for codebase questions: `grep` → `read`.** Find the place with `grep` first.
-  `read` is for a file you are about to edit — not for open-ended investigation, and never re-read
-  a file you have not changed.
+  Read targeted sections to understand failures and callers, or before editing. Avoid repeated
+  reads of unchanged files unless needed for diagnosis.
 - **Bound what a shell search can print.** When you shell out, narrow it (`--include`, a path
   prefix, `| head`) rather than running a bare `grep -rn` over the whole tree.
 - **Trim what you print.** Summarize test and gate output (the summary lines, the failing files,
