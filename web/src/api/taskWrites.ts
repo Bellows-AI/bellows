@@ -69,7 +69,7 @@ function forgeGateRefusal(body: RefusalBody | undefined): { error: string; conne
         // The board names the repo by its ref text (`gitlab:host/path`); the page says the path, the host being in the label.
         const repo = typeof body.repo === 'string' ? (parseRepoRef(body.repo)?.path ?? body.repo) : 'this repository';
         return {
-            error: `Your ${label} account does not have Developer access to ${repo}. Ask for access, or link another account.`,
+            error: `Your ${label} account does not have Developer access to ${repo}. Ask for access, or link a different account in GitLab settings.`,
             connect: { url: body.connectUrl, label, text: OPEN_GITLAB_SETTINGS },
         };
     }

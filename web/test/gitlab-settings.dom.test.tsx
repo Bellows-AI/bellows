@@ -276,12 +276,23 @@ describe('the member link', () => {
         expect(within(row).getByRole('button', { name: 'Reconnect GitLab account' })).toBeTruthy();
     });
 
-    it('a live grant says Linked and offers no link', async () => {
-        board({ role: MEMBER_ROLE, standings: [standing('live')] });
+    it('a live grant says Linked and offers Link a different account, which starts the same link flow', async () => {
+        const assign = spyNavigation();
+        const calls = board({
+            role: MEMBER_ROLE,
+            standings: [standing('live')],
+            reply: (call) =>
+                call.method === 'POST' && call.url === `/api/forge-grants/gitlab/${ID}/link`
+                    ? { status: 201, body: { authorizeUrl: AUTHORIZE, expiresAt: 't' } }
+                    : undefined,
+        });
         renderApp(PATH);
         const row = await screen.findByRole('region', { name: 'Your account on gitlab.example.test' });
         expect(within(row).getByText('Linked')).toBeTruthy();
-        expect(within(row).queryByRole('button')).toBeNull();
+        expect(within(row).queryByRole('button', { name: /unlink|disconnect/i })).toBeNull();
+        await userEvent.setup().click(within(row).getByRole('button', { name: 'Link a different account' }));
+        await waitFor(() => expect(assign).toHaveBeenCalledWith(AUTHORIZE));
+        expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ returnTo: PATH });
     });
 
     it('a failed read is an alert, never "no connections"', async () => {
@@ -301,5 +312,108 @@ describe('the member link', () => {
         board({ role: MEMBER_ROLE, standings: [standing('live')] });
         renderApp(`${PATH}?integration=gitlab&result=linked`);
         expect(await screen.findByText('GitLab account linked.')).toBeTruthy();
+    });
+});
+
+describe('one page, one source of truth after a mutation', () => {
+    it('removing the instance drops the admin card and the member account card together', async () => {
+        let removed = false;
+        board({
+            connections: [],
+            reply: (call) => {
+                if (call.method === 'GET' && call.url === '/api/org/gitlab-connections') {
+                    return { connections: removed ? [] : [connection({ active: true, version: '17.2.0' })] };
+                }
+                if (call.method === 'GET' && call.url === '/api/forge-grants/gitlab') {
+                    return { connections: removed ? [] : [{ id: ID, host: 'gitlab.example.test', standing: 'live' }] };
+                }
+                if (call.method === 'DELETE') {
+                    removed = true;
+                    return { ok: true };
+                }
+            },
+        });
+        renderApp(PATH);
+        const user = userEvent.setup();
+        expect(await screen.findByRole('region', { name: 'Your account on gitlab.example.test' })).toBeTruthy();
+        await user.click(await screen.findByRole('button', { name: 'Remove' }));
+        await user.click(await screen.findByRole('button', { name: 'Remove connection' }));
+        await waitFor(() => expect(screen.queryByRole('region', { name: 'gitlab.example.test' })).toBeNull());
+        await waitFor(() =>
+            expect(screen.queryByRole('region', { name: 'Your account on gitlab.example.test' })).toBeNull()
+        );
+    });
+});
+
+describe('the tracking guard, in each failure order', () => {
+    const active = connection({ active: true, version: '17.2.0' });
+    const listing = [project('acme/api', { tracked: true }), project('acme/web')];
+    const isProjects = (call: FetchCall) => call.url.endsWith('/projects');
+
+    it('a failed reload after a good selection leaves no way to save, and sends no PUT', async () => {
+        let reads = 0;
+        const calls = board({
+            connections: [active],
+            reply: (call) => {
+                if (!isProjects(call)) return;
+                reads += 1;
+                return reads === 1
+                    ? { projects: listing }
+                    : { status: 503, body: { error: 'raw', code: 'UNAVAILABLE' } };
+            },
+        });
+        renderApp(PATH);
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole('button', { name: 'Load projects' }));
+        await user.click(await screen.findByRole('checkbox', { name: 'acme/web' }));
+        await user.click(screen.getByRole('button', { name: 'Reload' }));
+        expect((await screen.findByRole('alert')).textContent).toMatch(/could not list/i);
+        const save = screen.queryByRole('button', { name: 'Save tracked projects' });
+        expect(save === null || (save as HTMLButtonElement).disabled).toBe(true);
+        expect(calls.some((c) => c.method === 'PUT')).toBe(false);
+    });
+
+    it('a failed save keeps the selection, shows the error and never says Saved', async () => {
+        board({
+            connections: [active],
+            reply: (call) => {
+                if (isProjects(call)) return { projects: listing };
+                if (call.method === 'PUT') return { status: 500, body: { error: 'database is down' } };
+            },
+        });
+        renderApp(PATH);
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole('button', { name: 'Load projects' }));
+        await user.click(await screen.findByRole('checkbox', { name: 'acme/web' }));
+        await user.click(screen.getByRole('button', { name: 'Save tracked projects' }));
+        expect((await screen.findByRole('alert')).textContent).toContain('database is down');
+        expect((screen.getByRole('checkbox', { name: 'acme/web' }) as HTMLInputElement).checked).toBe(true);
+        expect((screen.getByRole('checkbox', { name: 'acme/api' }) as HTMLInputElement).checked).toBe(true);
+        expect(screen.queryByText('Saved.')).toBeNull();
+    });
+
+    it.each([
+        ['the shared-path refusal', 'TRACKED_PATH_CONFLICT', '"acme/web" is already tracked under another forge'],
+        [
+            'the fenced-save refusal',
+            'GITLAB_CONNECTION_CHANGED',
+            'The GitLab connection was removed or replaced while you were choosing; reload and choose again',
+        ],
+    ])('%s shows its message, keeps the selection and never says Saved', async (_name, code, message) => {
+        board({
+            connections: [active],
+            reply: (call) => {
+                if (isProjects(call)) return { projects: listing };
+                if (call.method === 'PUT') return { status: 409, body: { error: message, code } };
+            },
+        });
+        renderApp(PATH);
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole('button', { name: 'Load projects' }));
+        await user.click(await screen.findByRole('checkbox', { name: 'acme/web' }));
+        await user.click(screen.getByRole('button', { name: 'Save tracked projects' }));
+        expect((await screen.findByRole('alert')).textContent).toContain(message);
+        expect((screen.getByRole('checkbox', { name: 'acme/web' }) as HTMLInputElement).checked).toBe(true);
+        expect(screen.queryByText('Saved.')).toBeNull();
     });
 });

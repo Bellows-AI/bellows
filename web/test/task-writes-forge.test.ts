@@ -62,7 +62,7 @@ describe('a start the forge gate refused', () => {
         const result = await queueTask(START);
         expect(result.id).toBeNull();
         expect(result.error).toBe(
-            'Your GitLab (gitlab.example.test) account does not have Developer access to acme/api. Ask for access, or link another account.'
+            'Your GitLab (gitlab.example.test) account does not have Developer access to acme/api. Ask for access, or link a different account in GitLab settings.'
         );
         expect(result.connect).toEqual({
             url: 'https://board.example.test/settings/integrations/gitlab?org=o',

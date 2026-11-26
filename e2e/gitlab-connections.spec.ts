@@ -126,6 +126,13 @@ test('a member links their account and reconnects it once the grant broke', asyn
     await expect(page.getByText('GitLab account linked.')).toBeVisible();
     await expect(account(page).getByText('Linked')).toBeVisible();
 
+    // A live grant offers no unlink, only the same link flow, which replaces it.
+    await expect(account(page).getByRole('button', { name: /unlink|disconnect/i })).toHaveCount(0);
+    await page.screenshot({ path: `${SHOTS}/gitlab-member-linked.png`, fullPage: true });
+    await account(page).getByRole('button', { name: 'Link a different account' }).click();
+    await expect(page.getByText('GitLab account linked.')).toBeVisible();
+    await expect(account(page).getByText('Linked')).toBeVisible();
+
     await spoilGrant('broken');
     await page.reload();
     await expect(account(page).getByText('Needs reconnect')).toBeVisible();
@@ -149,6 +156,7 @@ test('a start below Developer access is refused with a link to the GitLab settin
 
     const alert = page.locator('.composer').getByRole('alert');
     await expect(alert).toContainText(`does not have Developer access to ${TRACKED}`);
+    await expect(alert).toContainText('link a different account');
     await page.screenshot({ path: `${SHOTS}/gitlab-access-denied.png`, fullPage: true });
     await alert.getByRole('link', { name: 'Open GitLab settings' }).click();
     await expect(page).toHaveURL(new RegExp(`${PAGE}`));

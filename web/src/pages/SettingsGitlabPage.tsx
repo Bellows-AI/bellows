@@ -7,6 +7,7 @@ import {
     type GitlabConnectionView,
     startGitlabActivation,
     startGitlabLink,
+    type UseGitlabConnections,
     useGitlabConnections,
 } from '../api/gitlab.js';
 import { ConfirmDialog } from '../components/ConfirmDialog.js';
@@ -43,8 +44,9 @@ const noticeOf = (integration: string | null, result: string | null): Integratio
     return RESULT_NOTICE[result] ?? { message: `GitLab sign-in failed (${result}).`, tone: 'bad' };
 };
 
-const STANDING: Record<ForgeStanding, { pill: { text: string; className: string }; action: string | null }> = {
-    live: { pill: { text: 'Linked', className: 'pill pill-ok' }, action: null },
+const STANDING: Record<ForgeStanding, { pill: { text: string; className: string }; action: string }> = {
+    // The same link round trip replaces a live grant, so a member may switch to another GitLab account.
+    live: { pill: { text: 'Linked', className: 'pill pill-ok' }, action: 'Link a different account' },
     broken: { pill: { text: 'Needs reconnect', className: 'pill pill-accent' }, action: 'Reconnect GitLab account' },
     missing: { pill: { text: 'Not linked', className: 'pill' }, action: 'Link GitLab account' },
 };
@@ -78,13 +80,11 @@ function AccountRow({ grant, onError }: { grant: GitlabGrantView; onError: (mess
                         ? 'GitLab needs you to sign in again before tasks can act as you here.'
                         : grant.standing === 'missing'
                           ? 'Link your GitLab account to let tasks act as you here.'
-                          : 'Tasks act as your GitLab account here.'}
+                          : 'Tasks act as your GitLab account here. To use another account, sign in to it on GitLab first.'}
                 </span>
-                {words.action ? (
-                    <button type="button" disabled={busy} onClick={() => void act()}>
-                        {words.action}
-                    </button>
-                ) : null}
+                <button type="button" disabled={busy} onClick={() => void act()}>
+                    {words.action}
+                </button>
             </span>
             <span className={words.pill.className}>{words.pill.text}</span>
         </section>
@@ -150,8 +150,16 @@ function ConnectionCard({
     );
 }
 
-function AdminSection({ onError }: { onError: (message: string) => void }) {
-    const read = useGitlabConnections(true);
+function AdminSection({
+    read,
+    refresh,
+    onError,
+}: {
+    read: UseGitlabConnections;
+    /** Reloads every read the page shows: removing or connecting an instance changes the member's cards too. */
+    refresh: () => Promise<void>;
+    onError: (message: string) => void;
+}) {
     const [removing, setRemoving] = useState<GitlabConnectionView | null>(null);
     const [busy, setBusy] = useState(false);
     const remove = async () => {
@@ -161,7 +169,7 @@ function AdminSection({ onError }: { onError: (message: string) => void }) {
         setBusy(false);
         setRemoving(null);
         if (message !== null) onError(message);
-        await read.reload();
+        await refresh();
     };
     return (
         <>
@@ -178,7 +186,7 @@ function AdminSection({ onError }: { onError: (message: string) => void }) {
                 : null}
             <GitlabConnectForm
                 redirectUri={`${window.location.origin}${CALLBACK_PATH}`}
-                onConnected={() => void read.reload()}
+                onConnected={() => void refresh()}
             />
             <ConfirmDialog
                 open={removing !== null}
@@ -206,6 +214,11 @@ function AdminSection({ onError }: { onError: (message: string) => void }) {
 export function SettingsGitlabPage() {
     const { session } = useSettingsPage();
     const grants = useGitlabGrants();
+    const isAdmin = session?.role === ADMIN_ROLE;
+    const connections = useGitlabConnections(isAdmin);
+    const refresh = async () => {
+        await Promise.all([grants.reload(), connections.reload()]);
+    };
     const [params] = useSearchParams();
     const [error, setError] = useState<string | null>(null);
     const notice = noticeOf(params.get('integration'), params.get('result'));
@@ -234,7 +247,7 @@ export function SettingsGitlabPage() {
                     ? grants.connections.map((grant) => <AccountRow key={grant.id} grant={grant} onError={setError} />)
                     : null}
             </section>
-            {session?.role === ADMIN_ROLE ? <AdminSection onError={setError} /> : null}
+            {isAdmin ? <AdminSection read={connections} refresh={refresh} onError={setError} /> : null}
         </>
     );
 }
