@@ -279,7 +279,7 @@ describe.skipIf(!enabled)('the provider connection store', () => {
         expect(await store.forUser(ALICE, made.id)).not.toBeNull();
         expect((await store.credentialFor(ALICE, made.id)).key).toBe(KEY);
 
-        expect(await broken.remove(BOB, made.id)).toBe(false);
+        expect(await store.remove(BOB, made.id)).toBe(false);
         expect(await store.remove(ALICE, made.id)).toBe(true);
         expect(await store.forUser(ALICE, made.id)).toBeNull();
         const row = (await rowOf(made.id)) ?? { secret_ref: '', secret_version: '' };

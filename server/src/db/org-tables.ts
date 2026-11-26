@@ -61,6 +61,7 @@ export const ORG_TABLES = [
     'org_token_usage',
     'pr_follow',
     'pr_merge',
+    'provider_connection',
     'session',
     'session_branch',
     'skill',
