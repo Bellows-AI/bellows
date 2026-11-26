@@ -509,7 +509,10 @@ async function claimConfigRow(
     exec: Sql | TransactionSql
 ): Promise<UserExecutorConfig | null> {
     const rows = await (exec as Sql)<
-        (Pick<ConfiguredRow, 'type' | 'config' | 'gate_fix_rounds' | 'suspended' | 'runner_class' | 'provider_connection_id'> & {
+        (Pick<
+            ConfiguredRow,
+            'type' | 'config' | 'gate_fix_rounds' | 'suspended' | 'runner_class' | 'provider_connection_id'
+        > & {
             secret_refs: StoredCredential[];
         })[]
     >`

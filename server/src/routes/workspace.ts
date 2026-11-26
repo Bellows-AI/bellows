@@ -6,6 +6,8 @@ import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import {
     executorFieldRefusal,
     executorFieldStatus,
+    HTTP_CONNECTION_REFUSED,
+    isConnectionRefusal,
     MAX_EXECUTORS_PER_USER,
     parseExecutorFields,
     personalRunnerClassRefusal,
@@ -91,6 +93,7 @@ type ExecutorEntry = {
     config: Record<string, unknown>;
     gateFixRounds: number;
     suspended?: boolean;
+    providerConnectionId?: string | null;
 };
 
 /** A personal row as the poll and the PUT answer it — never `config`, which may hold credentials. */
@@ -102,6 +105,7 @@ function personalRow(row: ExecutorProfile) {
         createdAt: row.createdAt,
         gateFixRounds: row.gateFixRounds,
         suspended: row.suspended,
+        providerConnectionId: row.providerConnectionId,
     };
 }
 
@@ -196,6 +200,7 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
             createdAt: row.createdAt,
             suspended: row.suspended,
             runnerClass: row.runnerClass,
+            providerConnectionId: row.providerConnectionId,
         })),
         // The member's resolved default: their stored preference while it still resolves, else the
         // deterministic fallback the store computes — what a new task draft autoselects. When an agent default wins,
@@ -252,12 +257,20 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
         reply,
         (e) => request.log.error({ err: e }),
         async () => {
-            await executors.replace(userId, list);
+            try {
+                await executors.replace(userId, list);
+            } catch (error) {
+                if (isConnectionRefusal(error)) return error;
+                throw error;
+            }
             // Answered from the store, not echoed from the body: created_at is the database's.
             return executors.list(userId);
         }
     );
     if (!saved.ok) return reply;
+    if (isConnectionRefusal(saved.value)) {
+        return bad(reply, ERROR_CODES.PROVIDER_CONNECTION_REFUSED, saved.value.message, HTTP_CONNECTION_REFUSED);
+    }
 
     // 200, not 202: nothing runs in the background — the rows are written by the time this returns.
     return reply.code(HTTP_OK).send({ executors: saved.value.map(personalRow) });

@@ -12,7 +12,11 @@ import {
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { Caller } from '../auth/store.js';
-import { ProviderConnectionCapError, type ProviderConnectionStore } from '../db/provider-connection-store.js';
+import {
+    ProviderConnectionCapError,
+    ProviderConnectionReferencedError,
+    type ProviderConnectionStore,
+} from '../db/provider-connection-store.js';
 import { createRateLimiter } from '../oauth/rate-limit.js';
 import type { OrgRegistry } from '../orgs.js';
 import type { ProviderKeys, VerifyAnswer } from '../provider-keys/verify.js';
@@ -323,9 +327,29 @@ async function handleDelete(orgs: OrgRegistry, request: FastifyRequest, reply: F
     const removed = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => ctx.store.remove(existing.value!.scope === 'org' ? null : ctx.caller.user.id, id)
+        async (): Promise<boolean | ProviderConnectionReferencedError> => {
+            try {
+                return await ctx.store.remove(
+                    existing.value!.scope === 'org' ? null : ctx.caller.user.id,
+                    id,
+                    ctx.caller.user.id
+                );
+            } catch (error) {
+                if (error instanceof ProviderConnectionReferencedError) return error;
+                throw error;
+            }
+        }
     );
     if (!removed.ok) return reply;
+    // Refused, never cleared: the executors still selecting it are named only as far as the caller can see them.
+    if (removed.value instanceof ProviderConnectionReferencedError) {
+        return reply.code(HTTP_CONFLICT).send({
+            error: removed.value.message,
+            code: ERROR_CODES.PROVIDER_CONNECTION_IN_USE,
+            executors: removed.value.executors,
+            otherReferences: removed.value.otherReferences,
+        });
+    }
     if (!removed.value) return noSuchConnection(reply);
     return reply.code(HTTP_OK).send({ id, removed: true });
 }

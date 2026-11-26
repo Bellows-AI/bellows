@@ -274,7 +274,13 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     });
     if (!selection) return reply;
     const { executor, scope: executorScope, type: executorType, agent } = selection;
-    const subject = { userId: createdBy, repo, type: executorType, config: selection.config };
+    const subject = {
+        userId: createdBy,
+        repo,
+        type: executorType,
+        config: selection.config,
+        connection: selection.connection,
+    };
     if (await refusedAsNoModel(request, reply, await orgs.for(orgOf(request)), subject)) return reply;
     const baseBranch = await checkedTarget(orgs, request, reply, { repo, rawBaseBranch: fields.baseBranch });
     if (baseBranch === undefined) return reply;

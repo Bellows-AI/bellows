@@ -17,6 +17,8 @@ import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import {
     executorFieldRefusal,
     executorFieldStatus,
+    HTTP_CONNECTION_REFUSED,
+    isConnectionRefusal,
     MAX_EXECUTORS_PER_ORG,
     MAX_EXECUTORS_PER_USER,
     orgRunnerClassRefusal,
@@ -86,21 +88,29 @@ function idParam(request: FastifyRequest, reply: FastifyReply): string | null {
     return id;
 }
 
-/** Runs a write, answering `{ taken: true }` for the unique-name violation and `{ ok }` otherwise. */
+/**
+ * Runs a write, answering `{ taken: true }` for the unique-name violation, `{ refused }` for a provider connection
+ * selection the store refused and `{ ok }` otherwise.
+ */
 function saveOrTaken<T>(request: FastifyRequest, reply: FastifyReply, write: () => Promise<T>) {
     return guard(
         reply,
         (e) => request.log.error({ err: e }),
-        async (): Promise<{ ok: T } | { taken: true }> => {
+        async (): Promise<{ ok: T } | { taken: true } | { refused: string }> => {
             try {
                 return { ok: await write() };
             } catch (error) {
+                if (isConnectionRefusal(error)) return { refused: error.message };
                 if (isNameTaken(error)) return { taken: true };
                 throw error;
             }
         }
     );
 }
+
+/** The 409 a refused connection selection answers, once the write's answer says so. */
+const connectionRefused = (reply: FastifyReply, message: string) =>
+    bad(reply, ERROR_CODES.PROVIDER_CONNECTION_REFUSED, message, HTTP_CONNECTION_REFUSED);
 
 /**
  * The route-level name rules for an org profile, restating the row check the way the personal PUT
@@ -119,6 +129,7 @@ function selectionMetadata(row: {
     createdAt: string;
     suspended: boolean;
     runnerClass: string | null;
+    providerConnectionId: string | null;
 }): Record<string, unknown> {
     return {
         id: row.id,
@@ -127,6 +138,7 @@ function selectionMetadata(row: {
         createdAt: row.createdAt,
         suspended: row.suspended,
         runnerClass: row.runnerClass,
+        providerConnectionId: row.providerConnectionId,
     };
 }
 
@@ -168,6 +180,7 @@ function adminRow(row: {
     createdBy: string | null;
     suspended: boolean;
     runnerClass: string | null;
+    providerConnectionId: string | null;
     config: Record<string, unknown>;
 }): Record<string, unknown> {
     return {
@@ -180,6 +193,7 @@ function adminRow(row: {
         gateFixRounds: row.gateFixRounds,
         createdBy: row.createdBy,
         runnerClass: row.runnerClass,
+        providerConnectionId: row.providerConnectionId,
         config: row.config,
     };
 }
@@ -235,6 +249,7 @@ async function handleCreateOrgExecutor(deps: OrgExecutorRoutesDeps, request: Fas
 
     const saved = await saveOrTaken(request, reply, () => store.createOrg({ ...fields, createdBy: caller.user.id }));
     if (!saved.ok) return reply;
+    if ('refused' in saved.value) return connectionRefused(reply, saved.value.refused);
     if ('taken' in saved.value) {
         return bad(
             reply,
@@ -264,6 +279,7 @@ async function handleUpdateOrgExecutor(deps: OrgExecutorRoutesDeps, request: Fas
 
     const saved = await saveOrTaken(request, reply, () => store.updateOrg(id, fields));
     if (!saved.ok) return reply;
+    if ('refused' in saved.value) return connectionRefused(reply, saved.value.refused);
     if ('taken' in saved.value) {
         return bad(
             reply,
@@ -359,6 +375,7 @@ async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyR
 
     const moved = await saveOrTaken(request, reply, () => store.changeScope(id, scope, caller.user.id));
     if (!moved.ok) return reply;
+    if ('refused' in moved.value) return connectionRefused(reply, moved.value.refused);
     if ('taken' in moved.value) {
         return bad(
             reply,

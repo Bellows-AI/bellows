@@ -1,12 +1,16 @@
 import {
     CLAUDE_CODE,
+    type ConnectionSelectionRefusal,
+    connectionSelectionRefusal,
     ERROR_CODES,
     EXECUTOR_TYPES,
     executorMissingMessage,
     executorSuspendedMessage,
     type ExecutorScope,
     hasModelKey,
+    type ModelProvider,
     NO_MODEL_MESSAGE,
+    ORG_SCOPE,
     noExecutorMessage,
 } from '@factory-ai/core';
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from 'fastify';
@@ -52,10 +56,23 @@ export async function readExecutorType(
     }
 }
 
-/** A usable selection's executor type, and the profile config it runs (null when no profile does). */
+/**
+ * The provider connection a resolved profile selects, with the scope the profile was read in: an organization
+ * profile may use organization connections only, a personal one its owner's or the organization's.
+ */
+export interface SelectedProfileConnection {
+    id: string;
+    scope: ExecutorScope;
+}
+
+const selectedOf = (id: string | undefined, scope: ExecutorScope): SelectedProfileConnection | null =>
+    id === undefined ? null : { id, scope };
+
+/** A usable selection's executor type, the profile config it runs and the connection it selects (null when no profile does). */
 export interface UsableProfile {
     type: ExecutorTypeRead;
     config: Record<string, unknown> | null;
+    connection: SelectedProfileConnection | null;
 }
 
 /**
@@ -79,7 +96,9 @@ export async function refusedAsUnusable(
     }
 ): Promise<'refused' | UsableProfile> {
     const { executors, createdBy, executor, scope } = opts;
-    if (!executors || !createdBy || !executor) return { type: { state: 'known', type: null }, config: null };
+    if (!executors || !createdBy || !executor) {
+        return { type: { state: 'known', type: null }, config: null, connection: null };
+    }
     const row = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'executor row read failed'),
@@ -90,7 +109,13 @@ export async function refusedAsUnusable(
         bad(reply, ERROR_CODES.UNKNOWN_EXECUTOR, executorMissingMessage(scope, executor), HTTP_NOT_FOUND);
         return 'refused';
     }
-    if (!row.value.suspended) return { type: executorTypeOf(row.value.type), config: row.value.config };
+    if (!row.value.suspended) {
+        return {
+            type: executorTypeOf(row.value.type),
+            config: row.value.config,
+            connection: selectedOf(row.value.providerConnectionId, scope),
+        };
+    }
     bad(reply, ERROR_CODES.EXECUTOR_SUSPENDED, executorSuspendedMessage(scope, executor), HTTP_CONFLICT);
     return 'refused';
 }
@@ -141,6 +166,7 @@ export async function usableSelection(
     scope: ExecutorScope;
     type: ExecutorTypeRead;
     config: Record<string, unknown> | null;
+    connection: SelectedProfileConnection | null;
     agent: AgentDefault | null;
 } | null> {
     let { executor, scope } = opts;
@@ -149,7 +175,14 @@ export async function usableSelection(
         if (fallback === 'refused') return null;
         if (fallback?.kind === 'agent') {
             const agent = { agentType: fallback.agentType, model: fallback.model };
-            return { executor: null, scope, type: executorTypeOf(agent.agentType), config: null, agent };
+            return {
+                executor: null,
+                scope,
+                type: executorTypeOf(agent.agentType),
+                config: null,
+                connection: null,
+                agent,
+            };
         }
         if (fallback !== null) ({ name: executor, scope } = fallback);
     }
@@ -158,43 +191,79 @@ export async function usableSelection(
     return { executor, scope, ...usable, agent: null };
 }
 
-/** What a task's model credential is judged on: whose env and which repository's, the agent and its profile config. */
+/** What a task's model credential is judged on: whose env and which repository's, the agent, its profile config and its connection. */
 export interface ModelSubject {
     userId: string | null;
     repo: string | null;
     type: ExecutorTypeRead;
     config: unknown;
+    /** The provider connection the profile selects; absent or null when it selects none. */
+    connection?: SelectedProfileConnection | null;
+}
+
+/** A model standing the selected connection refused: stale, foreign or unable to run the agent. */
+export interface ConnectionRefused {
+    refused: ConnectionSelectionRefusal;
+}
+
+/**
+ * The selected connection judged by the shared rules (`connectionSelectionRefusal`) on its metadata alone — no key is
+ * read, none copied into an answer: its provider, `null` when none is selected, `unverified` when it cannot be read.
+ * A failed read rejects, for the caller to answer.
+ */
+async function connectionStanding(
+    rt: Pick<OrgRuntime, 'providerConnections'>,
+    subject: ModelSubject,
+    agentType: ExecutorTypeRead & { state: 'known' }
+): Promise<ModelProvider | null | 'unverified' | ConnectionRefused> {
+    const { connection, userId } = subject;
+    if (!connection) return null;
+    if (!rt.providerConnections || userId === null) return 'unverified';
+    const meta = await rt.providerConnections.forUser(userId, connection.id);
+    const refusal = connectionSelectionRefusal({
+        connection: meta
+            ? { provider: meta.provider, scope: meta.scope, ownerId: meta.scope === 'personal' ? userId : null }
+            : null,
+        owner: connection.scope === ORG_SCOPE ? null : userId,
+        agentType: agentType.type ?? CLAUDE_CODE,
+    });
+    return refusal ? { refused: refusal } : meta!.provider;
 }
 
 /**
  * Whether a task's agent has a model credential, where the board requires one (`modelKeyRequired`): `not-required`
- * elsewhere; `ok` or `missing` by `hasModelKey` over the env names it would get and its profile config; `unverified`
- * when the agent is not known or the names cannot be read — never `missing` (docs/jobs.md). No resolved agent runs
- * Claude Code. A read failure rejects, for the caller to answer.
+ * elsewhere; `ok` or `missing` by `hasModelKey` over the env names it would get, its profile config and its selected
+ * connection, which counts as a key of its own; `unverified` when the agent is not known or the names or connection
+ * cannot be read — never `missing` (docs/jobs.md). A selected connection the shared rules refuse is `{ refused }`
+ * wherever the board requires a key or not. No resolved agent runs Claude Code. A read failure rejects, for the
+ * caller to answer.
  */
 export async function modelStanding(
-    rt: Pick<OrgRuntime, 'envVars' | 'modelRequired'>,
+    rt: Pick<OrgRuntime, 'envVars' | 'modelRequired' | 'providerConnections'>,
     subject: ModelSubject
-): Promise<'not-required' | 'ok' | 'missing' | 'unverified'> {
+): Promise<'not-required' | 'ok' | 'missing' | 'unverified' | ConnectionRefused> {
+    const connection = subject.type.state === 'known' ? await connectionStanding(rt, subject, subject.type) : null;
+    if (connection !== null && typeof connection === 'object') return connection;
     if (!rt.modelRequired) return 'not-required';
-    if (subject.type.state !== 'known' || !rt.envVars) return 'unverified';
+    if (subject.type.state !== 'known' || !rt.envVars || connection === 'unverified') return 'unverified';
     const agentType = subject.type.type ?? CLAUDE_CODE;
     const names = await rt.envVars.namesFor({ userId: subject.userId, repo: subject.repo }, { agentType });
-    return hasModelKey(names, subject.config, agentType) ? 'ok' : 'missing';
+    return hasModelKey(names, subject.config, agentType, connection) ? 'ok' : 'missing';
 }
 
 /**
- * Create's and a batch launch's model check: 409 `NO_MODEL` when the task's agent has no model credential, the
- * failure's 503 when the names cannot be read. True once a refusal is on `reply`. An agent the board does not know
- * passes, as create lets it through; the claim judges it again on the env that travels.
+ * Create's and a batch launch's model check: 409 `NO_MODEL` when the task's agent has no model credential, 409
+ * `PROVIDER_CONNECTION_REFUSED` when the profile's connection cannot be used, the failure's 503 when the names cannot
+ * be read. True once a refusal is on `reply`. An agent the board does not know passes, as create lets it through; the
+ * claim judges it again on the env that travels.
  */
 export async function refusedAsNoModel(
     request: FastifyRequest,
     reply: FastifyReply,
-    rt: Pick<OrgRuntime, 'envVars' | 'modelRequired'> | null,
+    rt: Pick<OrgRuntime, 'envVars' | 'modelRequired' | 'providerConnections'> | null,
     subject: ModelSubject
 ): Promise<boolean> {
-    if (!rt?.modelRequired || subject.type.state !== 'known') return false;
+    if (!rt || subject.type.state !== 'known' || (!rt.modelRequired && !subject.connection)) return false;
     const standing = await guard(
         reply,
         (e) => modelReadFailed(request.log, e),
@@ -204,6 +273,10 @@ export async function refusedAsNoModel(
     // A known agent is unverified only on a board with no env store: nothing to judge on, so never `NO_MODEL`.
     if (standing.value === 'unverified') {
         bad(reply, ERROR_CODES.ENV_UNAVAILABLE, 'No environment store for this organization', HTTP_UNAVAILABLE);
+        return true;
+    }
+    if (typeof standing.value === 'object') {
+        bad(reply, ERROR_CODES.PROVIDER_CONNECTION_REFUSED, standing.value.refused.message, HTTP_CONFLICT);
         return true;
     }
     if (standing.value !== 'missing') return false;

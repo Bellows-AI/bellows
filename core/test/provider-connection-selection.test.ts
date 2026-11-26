@@ -96,7 +96,9 @@ describe('applyConnectionLayer', () => {
         );
         expect(env).toEqual({ ANTHROPIC_API_KEY: 'conn-key' });
         // Driver-forwarded names the board cannot see are blanked, so the claim wins over RUNNER_ENV.
-        expect(blanks).toEqual(expect.arrayContaining(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'OPENROUTER_API_KEY']));
+        expect(blanks).toEqual(
+            expect.arrayContaining(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'OPENROUTER_API_KEY'])
+        );
         expect(blanks).not.toContain('ANTHROPIC_API_KEY');
     });
 
