@@ -2033,21 +2033,35 @@ describe('the exec directive in every prompt surface', () => {
 });
 
 // A task spent its whole run budget circling on one failing test, its piped filters hiding the very
-// error it was chasing, until the driver killed the run idle. The guides now say: a suite's full
-// output goes to a file, the red-green loop goes to a subagent, and three identical failures stop
-// the loop dead instead of feeding it a fourth blind edit.
+// error it was chasing, until the driver killed the run idle. The guides now say: tests run through
+// the declared gates (their excerpt is bounded, the full log stored), the red-green loop goes to a
+// subagent, and three identical failures stop the loop dead instead of feeding it a fourth blind
+// edit. The discipline names no test runner: the guides ship to any stack.
 describe('the test-iteration discipline in the agent instructions', () => {
     it.each(['docker/claude-executor/claude-home/CLAUDE.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
-        '%s sends suites to a file, the loop to a subagent, and stops on three identical failures',
+        '%s sends tests through the gates, the loop to a subagent, and stops on three identical failures',
         (path) => {
             const text = read(path).replace(/\s+/g, ' ');
             expect(text).toContain('## Context discipline');
-            expect(text).toContain('Run a suite into a file, read the file.');
-            expect(text).toMatch(/never re-run a suite to see what a filter hid/);
+            expect(text).toContain('Run tests through the gates, not around them.');
+            expect(text).toMatch(/goes through `factory-gate` — filtered to your tests when the gate accepts a filter/);
+            expect(text).toMatch(/the full log is stored, out of your context/);
+            expect(text).toMatch(/A bare shell sweep of a suite the gates own floods the session and proves nothing/);
+            expect(text).toMatch(/a repository with no gates at all \(exit 3\), a gate too long to run ad hoc \(422\)/);
+            expect(text).toMatch(/the full output goes to a file you grep, never pasted into the session/);
             expect(text).toContain('Iterate a failing test in a subagent.');
             expect(text).toMatch(/returns only the verdict per test/);
             expect(text).toContain('Three identical failures is a stop.');
             expect(text).toMatch(/Never blind string-replace a file you have not re-read/);
+        }
+    );
+
+    it.each(['docker/claude-executor/claude-home/CLAUDE.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+        '%s keeps the discipline stack-agnostic: the section names no test runner',
+        (path) => {
+            const text = read(path);
+            const section = text.slice(text.indexOf('## Context discipline'), text.indexOf('## Infrastructure access'));
+            expect(section).not.toMatch(/vitest|jest|pytest|npx|go test|cargo test|mvn|gradle/i);
         }
     );
 
@@ -2059,7 +2073,8 @@ describe('the test-iteration discipline in the agent instructions', () => {
     it('the factory-fix skill carries the discipline itself, never a pointer at the guide', () => {
         const text = read('docker/skills/factory-fix/SKILL.md').replace(/\s+/g, ' ');
         expect(text).toContain('Iterate tests out of your context.');
-        expect(text).toMatch(/goes to a file you grep/);
+        expect(text).toMatch(/go through the declared gates whenever the repository has them/);
+        expect(text).toMatch(/its full output goes to a file you grep/);
         expect(text).toMatch(/delegated to a subagent/);
         expect(text).toMatch(/stop-and-diagnose/);
         expect(text).not.toContain('agent guide');

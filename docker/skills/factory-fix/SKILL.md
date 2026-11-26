@@ -31,12 +31,14 @@ them** — the commands in this skill are placeholders, not literals.
   (controller→service→store flow, query scope/filter, permission gate, cross-service side effect)
   the failing **integration** test is the repro. Most backend bugs are integration-level; default
   there unless the fault is provably pure.
-- **Iterate tests out of your context.** A suite's full output goes to a file you grep, never
-  pasted into the session; a red-green loop you expect to take more than two runs is delegated to
-  a subagent that returns only the verdicts, the remaining failures with a one-line cause each,
-  and the files it changed; the same test failing the same way three times is a stop-and-diagnose
-  (re-read the assertion and the code, state the cause, one reasoned edit) — never a fourth blind
-  scripted replacement.
+- **Iterate tests out of your context.** Test runs go through the declared gates whenever the
+  repository has them (filtered when a gate accepts a filter — their answers are bounded, the
+  full log stored out of your context); your own shell only runs what no gate can, and then its
+  full output goes to a file you grep, never pasted into the session. A red-green loop you expect
+  to take more than two runs is delegated to a subagent that returns only the verdicts, the
+  remaining failures with a one-line cause each, and the files it changed; the same test failing
+  the same way three times is a stop-and-diagnose (re-read the assertion and the code, state the
+  cause, one reasoned edit) — never a fourth blind scripted replacement.
 - **No coverage means build the harness first, then fix.** Never attempt a fix in a module with no
   test harness; Step 4 builds it in the same run.
 - **Business correctness, not shape smoke.** Every list/filter/scope/guard test must assert
