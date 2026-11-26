@@ -53,6 +53,8 @@ export function staticRegistry(
         /** The org's own runtime store, when a test needs two orgs that do not share one. */
         batchesByOrg?: Readonly<Record<string, NonNullable<OrgRuntime['batches']>>>;
         connections?: OrgRuntime['connections'];
+        /** Present when the org's board lists provider connections. */
+        providerConnections?: OrgRuntime['providerConnections'];
         /** The org's installation mint, behind the runner GitHub credential route. */
         githubToken?: OrgRuntime['githubToken'];
         userExecutors?: OrgRuntime['userExecutors'];
@@ -82,6 +84,7 @@ export function staticRegistry(
         listBranches: parts.listBranches,
         repoSkills: parts.repoSkills,
         connections: parts.connections,
+        providerConnections: parts.providerConnections,
         githubToken: parts.githubToken,
         userExecutors: parts.userExecutors,
         skills: parts.skills,

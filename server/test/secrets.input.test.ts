@@ -105,6 +105,25 @@ describe('identity', () => {
         ).toBeNull();
     });
 
+    it('accepts the provider-credential purpose on the provider-connection scope, personal owner included', () => {
+        expect(
+            validateIdentity({
+                owner: { kind: 'organization', orgId: 'org-1' },
+                scope: { type: 'provider-connection', id: 'org-1' },
+                purpose: 'provider-credential',
+                owningRecord: { type: 'provider-connection', id: 'conn-1' },
+            })
+        ).toBeNull();
+        expect(
+            validateIdentity({
+                owner: { kind: 'user', userId: 'u-1', orgId: 'org-1' },
+                scope: { type: 'provider-connection', id: 'org-1' },
+                purpose: 'provider-credential',
+                owningRecord: { type: 'provider-connection', id: 'conn-2' },
+            })
+        ).toBeNull();
+    });
+
     it('treats every field as part of the identity', () => {
         expect(sameIdentity(base, structuredClone(base))).toBe(true);
         const variants: SecretIdentity[] = [

@@ -17,6 +17,7 @@ import type { BatchStore } from './db/batches/batch-store-types.js';
 import { createConnectionGrants, type ConnectionGrants } from './db/connection-grants.js';
 import { createConnectionStore, type ConnectionStore } from './db/connection-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
+import { createProviderConnectionStore, type ProviderConnectionStore } from './db/provider-connection-store.js';
 import type { SecretDiagnostic, SecretStore } from './secrets/secret-store.js';
 import { createJobStore } from './db/jobs/job-store.js';
 import type { ClaimObserver } from './db/jobs/job-store-admission.js';
@@ -97,6 +98,8 @@ export interface OrgRuntime {
     retention?: (() => Promise<RetentionView>) | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
+    /** The provider connections (167) a member may bring and an executor may reference; present with the other stores. */
+    providerConnections?: ProviderConnectionStore | undefined;
     /** The integration grants (094) connections hang off: the refresh lineage store; present with the other stores. */
     connectionGrants?: ConnectionGrants | undefined;
     /** The org's installation mint, behind the runner GitHub credential route; absent offline or uninstalled. */
@@ -193,6 +196,7 @@ function buildOrgStores({
     batchMerger: BatchMerger | undefined;
     connections: ConnectionStore;
     connectionGrants: ConnectionGrants;
+    providerConnections: ProviderConnectionStore;
     userExecutors: UserExecutorStore;
     notificationSubscriptions: NotificationSubscriptionStore;
     notificationOutbox: NotificationOutboxStore;
@@ -205,6 +209,7 @@ function buildOrgStores({
     const envVars = createEnvVarStore({ sql, orgId, ready, secrets, secretLog });
     const connections = createConnectionStore({ sql, orgId, ready });
     const connectionGrants = createConnectionGrants({ sql, orgId, ready });
+    const providerConnections = createProviderConnectionStore({ sql, orgId, ready, secrets, secretLog });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready, secrets, secretLog });
     const notificationSubscriptions = createNotificationSubscriptionStore({ sql, orgId, ready, secrets, secretLog });
     const notificationOutbox = createNotificationOutboxStore({ sql, orgId, ready, secrets });
@@ -298,6 +303,7 @@ function buildOrgStores({
         batchMerger,
         connections,
         connectionGrants,
+        providerConnections,
         userExecutors,
         notificationSubscriptions,
         notificationOutbox,
@@ -318,6 +324,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.batchMerger = stores.batchMerger;
     runtime.connections = stores.connections;
     runtime.connectionGrants = stores.connectionGrants;
+    runtime.providerConnections = stores.providerConnections;
     runtime.userExecutors = stores.userExecutors;
     runtime.notificationSubscriptions = stores.notificationSubscriptions;
     runtime.notificationOutbox = stores.notificationOutbox;

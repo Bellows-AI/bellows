@@ -276,6 +276,12 @@ export {
     isExecutorProvider,
     OPENAI_COMPATIBLE_NPM,
 } from './executor-providers.js';
+export type {
+    ProviderConnectionMeta,
+    ProviderConnectionModels,
+    ProviderConnectionScope,
+} from './provider-connections.js';
+export { MAX_PROVIDER_CONNECTIONS_PER_SCOPE } from './provider-connections.js';
 export type { JobMode } from './job-mode.js';
 export { JOB_MODES, OBJECTIVE_MODE, WORKFLOW_MODE } from './job-mode.js';
 export type { ExecutorScope, ExecutorType } from './executors.js';

@@ -395,6 +395,10 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/model-setup/verify', 'user'],
     // Reading and saving the member's model setup: a person's act, the org scope's admin check in the handler.
     ['/api/model-setup', 'user'],
+    // Provider connections: the named model-provider credentials, the org writes admin-gated in the handler.
+    ['/api/provider-connections', 'user'],
+    ['/api/provider-connections/:id', 'user'],
+    ['/api/provider-connections/:id/models', 'user'],
     // Batches are a person's: no batch path is a worker route or on the organization-token allowlist.
     ...BATCH_PATHS.map(
         ([, path]) => [path.replace(JOB_ID, ':id').replace('/tasks/a/', '/tasks/:key/'), 'user'] as [string, string]

@@ -53,11 +53,19 @@ function parseVerify(raw: unknown): VerifyInput | null {
     return { provider, key, baseUrl };
 }
 
-/** A body the parser refused (malformed, too large) answers fixed text: the parser's message may quote the key. */
-const refuseUnparsed = (error: FastifyError, request: FastifyRequest, reply: FastifyReply) =>
-    error.statusCode !== undefined && error.statusCode < HTTP_FIRST_SERVER_ERROR
-        ? bad(reply, ERROR_CODES.BAD_BODY, BAD_BODY_MESSAGE, error.statusCode)
-        : errorHandler(error, request, reply);
+/**
+ * A body the parser refused (malformed, too large) answers fixed text: the parser's message may
+ * quote the key. The routes that accept a key — this check, the model setup's save and the provider
+ * connections — share it.
+ */
+export const refuseUnparsedBody =
+    (message: string) =>
+    (error: FastifyError, request: FastifyRequest, reply: FastifyReply): FastifyReply =>
+        error.statusCode !== undefined && error.statusCode < HTTP_FIRST_SERVER_ERROR
+            ? bad(reply, ERROR_CODES.BAD_BODY, message, error.statusCode)
+            : errorHandler(error, request, reply);
+
+const refuseUnparsed = refuseUnparsedBody(BAD_BODY_MESSAGE);
 
 export function modelSetupVerifyRoutes({
     providerKeys,
