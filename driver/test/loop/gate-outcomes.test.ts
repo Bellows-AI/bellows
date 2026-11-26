@@ -14,7 +14,7 @@ describe('the gate environment’s GitHub token (docs/connections.md)', () => {
     it('is a gate environment that carries no GitHub token, the sync’s ask the only start-time mint', async () => {
         const board = stubBoard([{ ...gatedJob(1), publish: false }]);
         let minted = 0;
-        board.board.githubCredential = async () => {
+        board.board.forgeCredential = async () => {
             minted += 1;
             return `ghs_${minted}`;
         };

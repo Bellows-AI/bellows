@@ -1,4 +1,4 @@
-import { pause } from '../github-credential-call.js';
+import { pause } from '../forge-credential-call.js';
 import { FORGE_GRANT_REQUIRED_CODE, GITHUB_UNAVAILABLE_CODE, LEASE_LOST_CODE, NOT_FOUND_CODE } from '../http.js';
 import type { BoardJob } from './board.js';
 import { boardCodeOf } from './board-retry.js';

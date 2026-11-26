@@ -11,7 +11,7 @@ import { claimOf, parseClaim } from './board-claim.js';
 import { type ClaimSkills, skillCalls } from './board-skills.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError, uncodedAnswer } from './board-retry.js';
-import { type GithubGrant, githubCredentialCall } from '../github-credential-call.js';
+import { type ForgeGrant, forgeCredentialCall } from '../forge-credential-call.js';
 import { type Reclaim, reclaimCalls } from '../reclaim-calls.js';
 import { recordCalls, type RecordBoard } from './board-pr-operations.js';
 import { phaseCheckpointCalls, type PhaseCheckpointBoard } from './board-phase-checkpoints.js';
@@ -635,16 +635,16 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
      */
     session(job: BoardJob, sessionId: string | null, observed?: boolean): Promise<LeaseState>;
     /**
-     * A GitHub token for this attempt, minted now by the board's credential endpoint
-     * (`POST /api/jobs/:id/credentials/github`, docs/connections.md) — asked right before each
+     * A forge token for this attempt from the board's credential endpoint (`POST /api/jobs/:id/credentials/github`,
+     * `/credentials/gitlab` for a GitLab repo, docs/connections.md) — asked right before each
      * supervised step that reaches GitHub (the sync's fetch, a publish, a github-writing helper)
      * and at gate start, so no step runs on an hour-old token. The attempt pair is its credential,
      * never the driver credential. Null — no App installation (409), a refused attempt, a failed ask —
      * runs the step without one; the step then fails honestly on a private repository.
      */
-    githubCredential(job: BoardJob): Promise<string | null>;
-    /** The same ask answered as what the board said (token and expiry, `refused`, or `unanswered` at `signal`'s deadline). */
-    githubGrant(job: BoardJob, signal: AbortSignal): Promise<GithubGrant>;
+    forgeCredential(job: BoardJob): Promise<string | null>;
+    /** The same ask answered as what the board said (token and expiry, `refused`, `waiting`, or `unanswered` at `signal`'s deadline). */
+    forgeGrant(job: BoardJob, signal: AbortSignal): Promise<ForgeGrant>;
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
     /**
@@ -976,7 +976,7 @@ export function createBoard({
         ...checkpointCalls(post),
         ...attachmentCalls(post),
         ...skillCalls(post),
-        ...githubCredentialCall({ url, fetch }),
+        ...forgeCredentialCall({ url, fetch }),
         ...connectionCalls(post),
         ...pullRequestCalls(post),
 

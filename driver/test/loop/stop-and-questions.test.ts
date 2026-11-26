@@ -84,7 +84,7 @@ describe('a stand-down after the gates (issue #427)', () => {
         const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows') }]);
         const fire = armHeartbeat(board.board, 'stop');
         let asks = 0;
-        board.board.githubCredential = async () => {
+        board.board.forgeCredential = async () => {
             // The first ask is the sync's; the stop lands during the publish's.
             asks += 1;
             if (asks < 2) return null;
@@ -215,7 +215,7 @@ describe('a stand-down after the gates (issue #427)', () => {
         const board = stubBoard([{ ...job(1), repo: githubRef('Bellows-AI/bellows') }]);
         const fire = armHeartbeat(board.board, 'stop');
         let asks = 0;
-        board.board.githubCredential = async () => {
+        board.board.forgeCredential = async () => {
             // Ask 1 is the sync's, 2 the first publish's, 3 the retry's: the stop lands during it.
             asks += 1;
             if (asks === 3) {

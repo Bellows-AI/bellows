@@ -76,6 +76,8 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'FACTORY_STATS_URL',
     'RUNNER_JOB_ID',
     'RUNNER_LEASE_TOKEN',
+    // The hosts the runner's forge helper answers (driver/src/claim.ts FORGE_HOSTS_ENV): the driver names them.
+    'RUNNER_FORGE_HOSTS',
     // The runner's telemetry export credential (driver/src/telemetry-config.ts), under every OTLP header name.
     'OTEL_EXPORTER_OTLP_HEADERS',
     'OTEL_EXPORTER_OTLP_METRICS_HEADERS',

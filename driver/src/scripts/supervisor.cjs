@@ -29,7 +29,11 @@
 // that landed never runs again, a call already taken is answered as it ended and never runs twice,
 // and only a new call of an effect that has not landed runs. The step environment (the claim env, a
 // publish token) reaches only these child processes; the agent container has no route to the
-// endpoint and no copy of it.
+// endpoint and no copy of it. A step that names a `forgeHost` (a GitLab repository's sync, publish,
+// probe or helper) carries no token at all: its git asks for one through a mailbox the supervisor
+// opens in its own tmpdir for the step's lifetime, relayed to the driver as a gate's asks are. Every
+// token handed to a step, and every one its env carried, is redacted from what the ledger keeps, the
+// driver is answered and the log says.
 //
 // Once the agent is over and the exporter drained, the report goes to the driver under one id,
 // redelivered until acknowledged and kept on the supervisor's own volume. It says whether the group
@@ -77,7 +81,10 @@
 //   SUPERVISOR_REVIEWER       — `1` when a reviewer container serves the review mailbox; absent, a review step is refused.
 //   SUPERVISOR_GATE_LOST_MS   — a gate loop heartbeat older than this is a lost gate container (default 30000).
 //   SUPERVISOR_GATE_CANCEL_MS — how long a cancelled gate may take to answer (default 10000).
-//   SUPERVISOR_GATE_ASK_MS    — how long one GitHub token ask of a running gate is retried before `none unanswered` (default 40000).
+//   SUPERVISOR_GATE_ASK_MS    — how long one forge token ask (a running gate's, or a forge step's) is retried against the
+//                               driver — a 5xx, a `waiting` grant, no answer — before `none unanswered` (default 40000).
+//   SUPERVISOR_FORGE_HELPER   — scripts/gate-forge.sh by content: written into the mailbox a step carrying `forgeHost`
+//                               gets in this container's own tmpdir; absent, such a step is refused.
 //
 // Exit status: 0 finalized, 124 finalized after the run budget ended the agent, 70 the supervisor
 // itself failed, 75 the driver was lost before the agent was released (nothing ran to adopt). The
@@ -102,7 +109,7 @@ const { pipeline, Transform } = require('node:stream');
 /** @typedef {'gate' | 'review'} LaneKind */
 /** @typedef {'sync' | 'reclaim' | 'probe' | 'snapshot' | 'publish' | 'helper' | 'gate' | 'review' | 'restart' | 'go' | 'finish'} StepKind */
 /** @typedef {{ argv: string[], cwd?: string, env?: Record<string, string>, timeoutMs: number, parallel?: boolean }} SpawnSpec */
-/** @typedef {SpawnSpec & { id: string, invocation: string, kind: StepKind }} Step */
+/** @typedef {SpawnSpec & { id: string, invocation: string, kind: StepKind, forgeHost?: string }} Step */
 /** @typedef {Step & { kind: LaneKind }} GateStep */
 /** @typedef {{ sections: Record<string, unknown>, resources: string }} GateReportFiles */
 /** @typedef {{ exitCode: number | null, stdout: string, stderr: string, timedOut: boolean, replayed?: boolean, tokenAskUnanswered?: boolean, failureLines?: string, outputCut?: true, report?: GateReportFiles }} StepResult */
@@ -111,7 +118,8 @@ const { pipeline, Transform } = require('node:stream');
 /** @typedef {{ id: string, kind: string, effect: StepResult | null, invocations: Record<string, Call> }} Entry */
 /** @typedef {{ token?: string, none?: string }} GateAnswer */
 /** @typedef {{ token: string, expiresAt: number | null }} Grant */
-/** @typedef {{ startedAt: number, why: string | null, stoppedAt: number, over: boolean, abort: AbortController, asking: Promise<GateAnswer> | null, cache: Grant | null, tokens: Set<string>, answering: Set<string>, unanswered: boolean, readFailed: boolean }} Flight */
+/** @typedef {{ startedAt: number, why: string | null, stoppedAt: number, over: boolean, abort: AbortController, asking: Map<string, Promise<GateAnswer>>, cache: Map<string, Grant>, tokens: Set<string>, answering: Set<string>, unanswered: boolean, readFailed: boolean }} Flight */
+/** @typedef {{ step: Step, dir: string, hosts: string[] }} AskBox */
 /** @typedef {{ exitCode: number | null, how: string }} AgentEnd */
 /** @typedef {{ outcome: string, cause: string | null }} Intent */
 /** @typedef {{ claimSeq: number | null, url: string | null, token: string | null, agentToken: string | null, exportToken: string | null, leaseToken: string | null }} Binding */
@@ -252,8 +260,26 @@ const REPORT_FIT_ROUNDS = 32;
 const REPORT_STRING_FLOOR = 64;
 /** The most the loop's resource samples answer: their tail, which holds the end sample. */
 const REPORT_RESOURCES_LIMIT = 32_768;
-/** A gate request's GitHub token mailbox (`GATE_ASK_FILES` of supervisor-contract.ts; scripts/gate-github.sh spells the same). */
+/** A gate request's or forge step's token mailbox (`GATE_ASK_FILES` of supervisor-contract.ts; gate-forge.sh spells the same). */
 const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', bin: 'bin' };
+/** What a forge step's child gets in its env (`FORGE_STEP_ENV` of supervisor-contract.ts). */
+const FORGE_STEP_ENV = { run: 'FACTORY_GATE_RUN', helper: 'FACTORY_FORGE_HELPER', hosts: 'FACTORY_FORGE_HOSTS' };
+/** The forge helper's name in a forge step's mailbox. */
+const FORGE_HELPER_FILE = 'gate-forge.sh';
+/** A forge step's mailbox and helper: this container's uid alone. */
+const FORGE_BOX_MODE = 0o700;
+/** A normalized forge host: a lowercase DNS name, an optional port (gate-token-control.ts `normalizeForgeHost`). */
+const FORGE_HOST =
+    /^(?=.{1,253}(:|$))[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/;
+/** The host every gate may ask for: GitHub's. */
+const GITHUB_HOST = 'github.com';
+/** An ask's whole content, as scripts/gate-forge.sh writes it. */
+const FORGE_ASK = /^ask (\S+)\n?$/;
+/**
+ * The env names a token rides under (core's reserved forge names): a forge step's child never inherits one, and
+ * every step's output is redacted of their values.
+ */
+const TOKEN_ENV_NAMES = ['GITHUB_TOKEN', 'GH_TOKEN', 'GITLAB_TOKEN', 'GL_TOKEN', 'CI_JOB_TOKEN'];
 /** A name `sh` can export: the gate loop applies the env with `export "$line"`. */
 const GATE_ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** How much of a refused env name its refusal quotes. */
@@ -311,7 +337,7 @@ const RELEASED_LINE = 'supervisor: released the agent';
 /** Logged once when the group stops serving the driver's steps: a newer claim reads its absence as "still serving". */
 const SERVED_LINE = 'supervisor: stopped serving the steps';
 const STEP_PATH = '/step';
-/** The driver route a gate's GitHub token ask is relayed to (`GATE_TOKEN_PATH` of supervisor-contract.ts). */
+/** The driver route a gate's or forge step's token ask is relayed to (`GATE_TOKEN_PATH` of supervisor-contract.ts). */
 const GATE_TOKEN_PATH = '/gate-token';
 const REPORT_PATH = '/report';
 
@@ -328,9 +354,9 @@ const CHECKPOINT_CHUNK_BYTES = 1_048_576;
 const CHECKPOINT_UPLOAD_FAILED = 'upload_failed';
 const DEFAULT_GATE_LOST_MS = 30_000;
 const DEFAULT_GATE_CANCEL_MS = 10_000;
-/** One gate token ask, every try and backoff of it: under the helper's 60s wait, over the driver's 30s budget. */
+/** One forge token ask, every try and backoff of it: under the helper's 60s wait, over the driver's 30s budget. */
 const DEFAULT_GATE_ASK_MS = 40_000;
-/** A token this close to its expiry is renewed, not served from the gate run's cache. */
+/** A token this close to its expiry is renewed, not served from the flight's cache. */
 const GATE_RENEW_SKEW_MS = 300_000;
 /** The only ask names the supervisor answers: the helper's pid. A dot-prefixed name is its staging file. */
 const GATE_ASK_NAME = /^[0-9]{1,10}$/;
@@ -511,6 +537,8 @@ function settingsOf(env) {
         checkpoint: checkpointOf(env),
         // The hardened git every step's `git` resolves to (scripts/git-harden.cjs), by content.
         gitHarden: env.SUPERVISOR_GIT_HARDEN_SCRIPT || null,
+        // The forge helper a forge step's mailbox holds (scripts/gate-forge.sh), by content; null refuses such a step.
+        forgeHelper: env.SUPERVISOR_FORGE_HELPER || null,
         gate: env.SUPERVISOR_GATE === '1',
         review: env.SUPERVISOR_REVIEWER === '1',
         gateLostMs: positive(env, 'SUPERVISOR_GATE_LOST_MS', DEFAULT_GATE_LOST_MS),
@@ -974,6 +1002,98 @@ function spawnStep(run, step) {
 }
 
 /**
+ * Why a step that names a `forgeHost` is refused before it runs, or null: a host that is not a normalized
+ * host name, or a supervisor with no helper to write or no driver to relay an ask to.
+ * @param {Run} run
+ * @param {Step} step
+ * @returns {string | null}
+ */
+function forgeStepRefusal(run, step) {
+    if (typeof step.forgeHost !== 'string' || !FORGE_HOST.test(step.forgeHost)) {
+        return 'refusing a forge step: its forgeHost is not a host name';
+    }
+    if (!run.settings.forgeHelper) {
+        return 'refusing a forge step: this supervisor has no forge helper (SUPERVISOR_FORGE_HELPER) to ask through';
+    }
+    if (!run.settings.url) return 'refusing a forge step: this supervisor has no driver to relay its token ask to';
+    return null;
+}
+
+/**
+ * A forge step's mailbox in this container's own tmpdir — never the task volume — private to this uid:
+ * `asks/`, `answers/` and the forge helper. Removed by the caller when the step ends.
+ * @param {Run} run
+ * @returns {string}
+ */
+function openForgeBox(run) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-forge-'));
+    try {
+        fs.chmodSync(dir, FORGE_BOX_MODE);
+        for (const name of [GATE_ASK_FILES.asks, GATE_ASK_FILES.answers]) {
+            fs.mkdirSync(path.join(dir, name), { mode: FORGE_BOX_MODE });
+        }
+        fs.writeFileSync(path.join(dir, FORGE_HELPER_FILE), /** @type {string} */ (run.settings.forgeHelper), {
+            mode: FORGE_BOX_MODE,
+        });
+        return dir;
+    } catch (error) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        throw error;
+    }
+}
+
+/**
+ * A step that names a `forgeHost`: a child of this container like any step, whose git asks for the host's
+ * token through a mailbox of its own (`FORGE_STEP_ENV` in its env, no token there), served every tick on the
+ * gates' machinery while it runs and removed however it ends. An ask still unanswered at its end, or one that
+ * went unanswered, leaves the step no verdict (`tokenAskUnanswered`), never a failure by exit status alone.
+ * @param {Run} run
+ * @param {Step} step
+ * @returns {Promise<Outcome>}
+ */
+async function spawnForgeStep(run, step) {
+    const host = /** @type {string} */ (step.forgeHost);
+    let dir;
+    try {
+        dir = openForgeBox(run);
+    } catch (error) {
+        const why = `could not open the forge mailbox: ${/** @type {NodeJS.ErrnoException} */ (error)?.code ?? error}`;
+        return { result: stepResult(STEP_REFUSED_EXIT, '', why), interrupted: false };
+    }
+    const flight = newFlight(run);
+    const env = Object.fromEntries(Object.entries(step.env ?? {}).filter(([name]) => !TOKEN_ENV_NAMES.includes(name)));
+    const child = spawnStep(run, {
+        ...step,
+        env: {
+            ...env,
+            [FORGE_STEP_ENV.run]: dir,
+            [FORGE_STEP_ENV.helper]: path.join(dir, FORGE_HELPER_FILE),
+            [FORGE_STEP_ENV.hosts]: host,
+        },
+    });
+    /** @type {Outcome | null} */
+    let outcome = null;
+    void child.then((ended) => {
+        outcome = ended;
+    });
+    try {
+        while (!outcome) {
+            serveAsks(run, { step, dir, hosts: [host] }, flight);
+            await Promise.race([child, sleep(run.settings.tickMs, run)]);
+        }
+    } finally {
+        flight.over = true;
+        flight.abort.abort();
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+    const ended = /** @type {Outcome} */ (/** @type {unknown} */ (outcome));
+    const tokens = [...flight.tokens];
+    const unanswered = unansweredGateResult(flight, ended.result.stdout, ended.result.stderr);
+    if (unanswered) return { ...unanswered, interrupted: ended.interrupted, tokens };
+    return { ...ended, tokens };
+}
+
+/**
  * One lane's state: its steps one at a time (`turn`), each call joined by a redelivery of it while it
  * runs (`calls`), the ones the driver cancelled (`cancels`, read off the control poll), their
  * answers still being delivered (`answers`), and the order to stop them all.
@@ -1312,7 +1432,7 @@ function postGateRequest(run, step, name) {
     fs.mkdirSync(staged, { recursive: true });
     const reviewing = lane === 'review';
     if (reviewing) fs.chmodSync(staged, REVIEW_DIR_MODE);
-    // The gate's GitHub token mailbox (scripts/gate-github.sh); a review holds no token and has none.
+    // The gate's token mailbox (scripts/gate-forge.sh); a review holds no token and has none.
     if (!reviewing) {
         for (const name of [GATE_ASK_FILES.asks, GATE_ASK_FILES.answers]) fs.mkdirSync(path.join(staged, name));
     }
@@ -1366,16 +1486,18 @@ function stoppedGateResult(why, step, output) {
 }
 
 /**
- * A gate run that asked for a GitHub token and never got an answer — one that went unanswered, was in
- * flight when the gate was stopped, or is still pending when the gate ends: whatever the gate then exited
- * with, it ran without a token it needed. No verdict, the next claim reruns it (the driver reads the flag).
+ * A run that asked for a forge token and never got an answer — one that went unanswered, was in flight
+ * when the run was stopped, or is still pending when it ends: whatever it then exited with, it ran without
+ * a token it needed. No verdict, the next claim reruns it (the driver reads the flag). A gate's output, or
+ * a forge step's two streams, are kept beside the reason.
  * @param {Flight} flight
  * @param {string} output
+ * @param {string} [stderr]
  * @returns {Outcome | null}
  */
-function unansweredGateResult(flight, output) {
-    if (!flight.unanswered && !flight.asking) return null;
-    const result = stepResult(null, output, 'a GitHub token ask went unanswered: no verdict');
+function unansweredGateResult(flight, output, stderr = '') {
+    if (!flight.unanswered && flight.asking.size === 0) return null;
+    const result = stepResult(null, output, `${stderr}a forge token ask went unanswered: no verdict`);
     return { result: { ...result, tokenAskUnanswered: true }, interrupted: false };
 }
 
@@ -1472,7 +1594,7 @@ function gateTick(run, step, flight) {
         flight.stoppedAt = run.now();
         // Decided at the stop, not at the settle: an ask the driver answers during the cancel grace never
         // reaches the gate, so a gate stopped with an ask in flight ran without its answer.
-        if (flight.why && flight.asking) flight.unanswered = true;
+        if (flight.why && flight.asking.size > 0) flight.unanswered = true;
         // Withdrawn before the loop took it: it never ran, and answers at once.
         if (flight.why && cancelGate(run, step.kind, step.id)) return stoppedGateResult(flight.why, step, '');
     }
@@ -1498,29 +1620,32 @@ function gateAskEnded(run, flight, left) {
 }
 
 /**
- * One GitHub token ask of a running gate, tried against the driver until the absolute per-ask deadline
- * (`gateAskMs`): a token is cached on the gate run's `flight` while it is not near its expiry, a refusal
- * (the driver does not hold the step) is final, and anything unconfirmed — no answer, a 5xx, a malformed
- * body — is retried, then `unanswered`, which taints the run: no verdict. Never an empty token.
+ * One token ask for `host` of a running gate or forge step, tried against the driver until the absolute
+ * per-ask deadline (`gateAskMs`): a token is cached per host on the run's `flight` while it is not near its
+ * expiry, a refusal (the driver does not hold the step for that host) is final, and anything unconfirmed —
+ * no answer, a 5xx, a `waiting` grant, a malformed body — is retried, then `unanswered`, which taints the run:
+ * no verdict. Never an empty token.
  * @param {Run} run
- * @param {GateStep} step
+ * @param {Step} step
  * @param {Flight} flight
+ * @param {string} host
  * @returns {Promise<GateAnswer>}
  */
-async function fetchGateToken(run, step, flight) {
+async function fetchGateToken(run, step, flight, host) {
     const deadline = run.now() + run.settings.gateAskMs;
     for (;;) {
         const left = deadline - run.now();
         if (gateAskEnded(run, flight, left)) return { none: 'unanswered' };
         const answer = await ask(run, 'POST', GATE_TOKEN_PATH, {
-            body: { step: step.id },
+            body: { step: step.id, host },
             holdMs: left,
             abort: AbortSignal.any([flight.abort.signal, AbortSignal.timeout(left)]),
         });
         const grant = grantOf(answer);
         if (grant) {
             flight.tokens.add(grant.token);
-            flight.cache = grant.expiresAt === null ? null : grant;
+            if (grant.expiresAt === null) flight.cache.delete(host);
+            else flight.cache.set(host, grant);
             return { token: grant.token };
         }
         if (answer && GATE_TOKEN_REFUSALS.includes(answer.status)) return { none: 'refused' };
@@ -1541,66 +1666,131 @@ function grantOf(answer) {
 }
 
 /**
- * The token for an ask: the cache while it is fresh, else the one driver call every concurrent ask shares.
+ * The token for an ask for `host`: its cache while fresh, else the one driver call every concurrent ask for it shares.
  * @param {Run} run
- * @param {GateStep} step
+ * @param {Step} step
  * @param {Flight} flight
+ * @param {string} host
  * @returns {Promise<GateAnswer>}
  */
-function gateToken(run, step, flight) {
-    const cached = flight.cache;
+function gateToken(run, step, flight, host) {
+    const cached = flight.cache.get(host);
     if (cached && run.now() < /** @type {number} */ (cached.expiresAt) - GATE_RENEW_SKEW_MS)
         return Promise.resolve({ token: cached.token });
-    flight.asking ??= fetchGateToken(run, step, flight).finally(() => {
-        flight.asking = null;
-    });
-    return flight.asking;
+    let asking = flight.asking.get(host);
+    if (!asking) {
+        asking = fetchGateToken(run, step, flight, host).finally(() => flight.asking.delete(host));
+        flight.asking.set(host, asking);
+    }
+    return asking;
 }
 
 /**
- * Answers one ask of the running gate, unless the gate was stopped, rebound or ended meanwhile: then nobody asked.
+ * A new flight: the token asks of one gate run or forge step, their per-host cache and every token handed out.
  * @param {Run} run
- * @param {GateStep} step
- * @param {Flight} flight
- * @param {string} name
- * @returns {Promise<void>}
+ * @returns {Flight}
  */
-async function answerGateAsk(run, step, flight, name) {
-    const gen = run.bindingGen;
-    const running = path.join(run.file.gate.running, step.id);
-    const got = await gateToken(run, step, flight);
-    if (flight.over || flight.why || run.bindingGen !== gen || !fs.existsSync(running)) return;
-    const answers = path.join(running, GATE_ASK_FILES.answers);
+const newFlight = (run) => ({
+    startedAt: run.now(),
+    why: null,
+    stoppedAt: 0,
+    over: false,
+    abort: new AbortController(),
+    asking: new Map(),
+    cache: new Map(),
+    tokens: new Set(),
+    answering: new Set(),
+    unanswered: false,
+    readFailed: false,
+});
+
+/**
+ * `text` with every token the flight handed out replaced: what the supervisor itself writes never holds one.
+ * @param {Flight} flight
+ * @param {string} text
+ */
+const redactedBy = (flight, text) =>
+    [...flight.tokens].reduce((kept, token) => kept.split(token).join('[redacted]'), text);
+
+/**
+ * Writes one answer into the mailbox, staged and renamed whole, and withdraws the ask it answers.
+ * @param {Run} run
+ * @param {AskBox} box
+ * @param {string} name
+ * @param {GateAnswer} got
+ */
+function writeAskAnswer(run, box, name, got) {
+    const answers = path.join(box.dir, GATE_ASK_FILES.answers);
     const staged = path.join(answers, `${name}.tmp`);
     try {
         fs.writeFileSync(staged, got.token ? `token ${got.token}\n` : `none ${got.none}\n`, { mode: GATE_ENV_MODE });
         fs.renameSync(staged, path.join(answers, name));
-        fs.rmSync(path.join(running, GATE_ASK_FILES.asks, name), { force: true });
+        fs.rmSync(path.join(box.dir, GATE_ASK_FILES.asks, name), { force: true });
     } catch (error) {
-        // The request ended under the write: nobody is left to read the answer. Anything else is logged once.
+        // The run ended under the write: nobody is left to read the answer. Anything else is logged once.
         fs.rmSync(staged, { force: true });
         if (
             /** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT' &&
             /** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOTDIR'
         )
             run.log(
-                `supervisor: gate ${step.id} ask not answered: ${/** @type {NodeJS.ErrnoException} */ (error).code}`
+                `supervisor: ${box.step.kind} ${box.step.id} ask not answered: ${/** @type {NodeJS.ErrnoException} */ (error).code}`
             );
     }
 }
 
 /**
- * The asks of one running gate, once a tick: `running/<id>/asks/<pid>` is answered with a token or a
- * reason. Only a request the loop took is served (a request still in `requests/` ran nothing), and only
- * while the gate is not being stopped. A directory that cannot be read is skipped this tick, never read as
- * "no asks"; a dot-prefixed name is the helper's staging file, left alone; any other name is not an ask.
+ * The host an ask names (`ask <host>`), or null for an ask that names none this box may ask for.
+ * @param {AskBox} box
+ * @param {string} name
+ * @returns {string | null | undefined} undefined: the ask is gone (the helper withdrew it).
+ */
+function askedHost(box, name) {
+    let text;
+    try {
+        text = fs.readFileSync(path.join(box.dir, GATE_ASK_FILES.asks, name), 'utf8');
+    } catch {
+        return;
+    }
+    const host = FORGE_ASK.exec(text)?.[1] ?? '';
+    return FORGE_HOST.test(host) && box.hosts.includes(host) ? host : null;
+}
+
+/**
+ * Answers one ask, unless the run was stopped, rebound or ended meanwhile: then nobody asked. A host the box
+ * may not ask for (a foreign one, a malformed ask) is refused here and never reaches the driver. An ask a
+ * rebind overtook is answered nothing, and taints the run: it ran without the token it asked for.
  * @param {Run} run
- * @param {GateStep} step
+ * @param {AskBox} box
+ * @param {Flight} flight
+ * @param {string} name
+ * @returns {Promise<void>}
+ */
+async function answerAsk(run, box, flight, name) {
+    const host = askedHost(box, name);
+    if (host === undefined) return;
+    if (host === null) return writeAskAnswer(run, box, name, { none: 'refused' });
+    const gen = run.bindingGen;
+    const got = await gateToken(run, box.step, flight, host);
+    if (flight.over || flight.why || !fs.existsSync(box.dir)) return;
+    if (run.bindingGen !== gen) {
+        flight.unanswered = true;
+        return;
+    }
+    writeAskAnswer(run, box, name, got);
+}
+
+/**
+ * The asks of one mailbox, once a tick: `asks/<pid>` is answered in `answers/<pid>` with a token or a reason.
+ * A directory that cannot be read is skipped this tick, never read as "no asks"; a dot-prefixed name is the
+ * helper's staging file, left alone; any other name is not an ask.
+ * @param {Run} run
+ * @param {AskBox} box
  * @param {Flight} flight
  */
-function serveGateAsks(run, step, flight) {
-    if (step.kind !== 'gate' || flight.why || !run.settings.url) return;
-    const dir = path.join(run.file.gate.running, step.id, GATE_ASK_FILES.asks);
+function serveAsks(run, box, flight) {
+    const dir = path.join(box.dir, GATE_ASK_FILES.asks);
+    const what = `${box.step.kind} ${box.step.id}`;
     let names;
     try {
         names = fs.readdirSync(dir);
@@ -1611,9 +1801,7 @@ function serveGateAsks(run, step, flight) {
             !flight.readFailed
         ) {
             flight.readFailed = true;
-            run.log(
-                `supervisor: gate ${step.id} asks unreadable: ${/** @type {NodeJS.ErrnoException} */ (error).code}`
-            );
+            run.log(`supervisor: ${what} asks unreadable: ${/** @type {NodeJS.ErrnoException} */ (error).code}`);
         }
         return;
     }
@@ -1624,10 +1812,34 @@ function serveGateAsks(run, step, flight) {
             continue;
         }
         flight.answering.add(name);
-        answerGateAsk(run, step, flight, name)
-            .catch((error) => run.log(`supervisor: gate ${step.id} ask failed: ${error?.message ?? error}`))
+        answerAsk(run, box, flight, name)
+            .catch((error) =>
+                run.log(`supervisor: ${what} ask failed: ${redactedBy(flight, String(error?.message ?? error))}`)
+            )
             .finally(() => flight.answering.delete(name));
     }
+}
+
+/**
+ * The hosts a gate may ask for: github.com, and each the driver named in its env (a GitLab job's host).
+ * @param {Step} step
+ * @returns {string[]}
+ */
+const gateHosts = (step) => [
+    GITHUB_HOST,
+    ...(step.env?.[FORGE_STEP_ENV.hosts] ?? '').split(',').filter((host) => FORGE_HOST.test(host)),
+];
+
+/**
+ * The asks of one running gate: its request's mailbox (`running/<id>/`). Only a request the loop took is
+ * served (a request still in `requests/` ran nothing), and only while the gate is not being stopped.
+ * @param {Run} run
+ * @param {GateStep} step
+ * @param {Flight} flight
+ */
+function serveGateAsks(run, step, flight) {
+    if (step.kind !== 'gate' || flight.why || !run.settings.url) return;
+    serveAsks(run, { step, dir: path.join(run.file.gate.running, step.id), hosts: gateHosts(step) }, flight);
 }
 
 /**
@@ -1642,20 +1854,7 @@ function serveGateAsks(run, step, flight) {
  */
 async function execGate(run, step) {
     postGateRequest(run, step, step.id);
-    /** @type {Flight} */
-    const flight = {
-        startedAt: run.now(),
-        why: null,
-        stoppedAt: 0,
-        over: false,
-        abort: new AbortController(),
-        asking: null,
-        cache: null,
-        tokens: new Set(),
-        answering: new Set(),
-        unanswered: false,
-        readFailed: false,
-    };
+    const flight = newFlight(run);
     try {
         for (;;) {
             serveGateAsks(run, step, flight);
@@ -1796,6 +1995,9 @@ async function performStep(run, step) {
     const gateRefused =
         LANES.includes(/** @type {LaneKind} */ (kind)) && gateRefusal(run, /** @type {GateStep} */ (step));
     if (gateRefused) return stepResult(STEP_REFUSED_EXIT, '', gateRefused);
+    const forgeRefused =
+        !LANES.includes(/** @type {LaneKind} */ (kind)) && step.forgeHost !== undefined && forgeStepRefusal(run, step);
+    if (forgeRefused) return stepResult(STEP_REFUSED_EXIT, '', forgeRefused);
     // An effect that landed is never run again, whoever asks: that is the harm the ledger prevents. A
     // call already taken is answered as it ended — a failure or a timeout too, which may have half
     // landed — and one taken but never answered is unknown; either way it never runs twice. Only a
@@ -1821,26 +2023,31 @@ async function performStep(run, step) {
 async function runCall(run, entry, step) {
     recordCall(run, entry, step.invocation, { state: 'running' });
     if (LANES.includes(/** @type {LaneKind} */ (step.kind))) return runGate(run, /** @type {GateStep} */ (step), entry);
-    return settleCall(run, entry, step, await spawnStep(run, step));
+    const outcome = step.forgeHost === undefined ? await spawnStep(run, step) : await spawnForgeStep(run, step);
+    return settleCall(run, entry, step, outcome);
 }
 
 /**
- * A gate or review step's output with its injected GitHub token values replaced: the command may echo them,
- * and what the ledger keeps and the driver is answered must never hold one. The one choke point of both executors.
+ * Any step's output with its token values replaced — every token served to it (each one a rotation handed out,
+ * a gate's, a forge step's) and every one its env carried: the command may echo them, and what the ledger keeps
+ * and the driver is answered must never hold one. The one choke point of both executors, applied before either
+ * write. A step that was served none and carried none passes through unchanged.
  * @param {Step} step
  * @param {StepResult} result
  * @param {string[]} [served]
  * @returns {StepResult}
  */
 function redactedResult(step, result, served = []) {
-    if (!LANES.includes(/** @type {LaneKind} */ (step.kind))) return result;
     const secrets = /** @type {string[]} */ (
-        [...['GITHUB_TOKEN', 'GH_TOKEN'].map((name) => step.env?.[name]), ...served].filter((value) => value)
+        [...TOKEN_ENV_NAMES.map((name) => step.env?.[name]), ...served].filter((value) => value)
     );
     if (secrets.length === 0) return result;
     /** @param {string} text */
     const redact = (text) => secrets.reduce((kept, secret) => kept.split(secret).join('[redacted]'), text);
-    return { ...result, stdout: redact(result.stdout), stderr: redact(result.stderr) };
+    const redacted = { ...result, stdout: redact(result.stdout), stderr: redact(result.stderr) };
+    if (typeof result.failureLines === 'string') redacted.failureLines = redact(result.failureLines);
+    if (result.report) redacted.report = JSON.parse(redact(JSON.stringify(result.report)));
+    return redacted;
 }
 
 /**

@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { makeOrigin } from './fixtures/git-worktree-support.js';
 import { hasGit, hasOpenssl } from './fixtures/scripts-support.js';
+import { FORGE_STEP_CREDENTIAL_HELPER } from '../src/publish/publish-base.js';
 
 const execFile = promisify(execFileCb);
 
@@ -210,5 +211,41 @@ describe.skipIf(!hasGit() || !hasOpenssl())('the checkout sync credential helper
         const marker = join(fx.dir(), 'helper-invoked');
         expect((await fx.sync({ REMOTE: `file://${fx.bare()}` })).ok).toBe(true);
         expect(existsSync(marker)).toBe(false);
+    });
+});
+
+/**
+ * The forge step's credential helper: CODE that names the supervisor's mailbox helper by its env var, so no
+ * token rides the step. git runs a `!` helper through the shell, so `$FACTORY_FORGE_HELPER` expands there, and
+ * the helper runs in credential mode with git's operation as its argument.
+ */
+describe.skipIf(!hasGit())('the forge step credential helper', () => {
+    it('is exactly the mailbox helper in credential mode, by its env var', () => {
+        expect(FORGE_STEP_CREDENTIAL_HELPER).toBe('!FACTORY_GATE_MODE=credential /bin/sh "$FACTORY_FORGE_HELPER"');
+    });
+
+    it('runs the step’s mailbox helper through real git, in credential mode, with the operation', () => {
+        const dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-forge-cred-')));
+        const helper = join(dir, 'forge-helper.sh');
+        writeFileSync(
+            helper,
+            '#!/bin/sh\nwhile IFS= read -r l && [ -n "$l" ]; do :; done\nprintf "username=oauth2\\npassword=%s-%s\\n" "$FACTORY_GATE_MODE" "$1"\n'
+        );
+        const stdout = execFileSync(
+            'git',
+            ['-c', `credential.helper=${FORGE_STEP_CREDENTIAL_HELPER}`, 'credential', 'fill'],
+            {
+                env: {
+                    ...process.env,
+                    GIT_CONFIG_GLOBAL: '/dev/null',
+                    GIT_CONFIG_SYSTEM: '/dev/null',
+                    GIT_TERMINAL_PROMPT: '0',
+                    FACTORY_FORGE_HELPER: helper,
+                },
+                encoding: 'utf8',
+                input: 'protocol=https\nhost=gitlab.example.com\n\n',
+            }
+        );
+        expect(stdout).toContain('password=credential-get');
     });
 });

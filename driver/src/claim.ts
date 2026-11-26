@@ -168,6 +168,23 @@ export const CREDENTIAL_CACHE_DIR = '/run/factory-credentials';
 /** The cache's ceiling, one small JSON file: the kubernetes quantity and the docker tmpfs size. */
 export const CREDENTIAL_CACHE_SIZE = { k8s: '1Mi', docker: '1m' } as const;
 
+/**
+ * The hosts beside github.com the agent's forge helper answers (`RUNNER_FORGE_HOSTS` in the images'
+ * forge-credential.cjs), comma-separated: a GitLab task's host. Set by the driver alone, on both
+ * executors (runner-plan.ts); a claim or RUNNER_ENV value under it is refused.
+ */
+export const FORGE_HOSTS_ENV = 'RUNNER_FORGE_HOSTS';
+
+/** The GitLab hosts the task's repository lives on, lowercased: none for a GitHub task. */
+export const forgeHostsOf = (job: Pick<BoardJob, 'repo'>): string[] =>
+    job.repo?.forge === 'gitlab' ? [job.repo.host.toLowerCase()] : [];
+
+/** `RUNNER_FORGE_HOSTS` for the agent, only where the task has a GitLab host. */
+export function forgeHostsEnv(job: Pick<BoardJob, 'repo'>): [string, string][] {
+    const hosts = forgeHostsOf(job);
+    return hosts.length ? [[FORGE_HOSTS_ENV, hosts.join(',')]] : [];
+}
+
 /** The env names the loop mints for a launched attempt's run-control channel. */
 export const CONTROL_URL_ENV = 'BELLOWS_CONTROL_URL';
 export const CONTROL_TOKEN_ENV = 'BELLOWS_CONTROL_TOKEN';
@@ -224,6 +241,8 @@ export const RESERVED_ENV_NAMES = [
     'FACTORY_STATS_URL',
     'RUNNER_JOB_ID',
     'RUNNER_LEASE_TOKEN',
+    // The hosts the agent's forge helper sends the attempt pair for: the driver's to name from the repository.
+    FORGE_HOSTS_ENV,
     // The attempt's telemetry export credential (telemetry-config.ts), under every OTLP header name.
     ...OTLP_HEADER_ENV_NAMES,
     'BELLOWS_SESSION_ID',

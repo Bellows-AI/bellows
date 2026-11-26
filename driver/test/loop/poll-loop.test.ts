@@ -597,7 +597,6 @@ describe('the poll loop', () => {
     });
 
     it.each([
-        ['a GitLab repository', { forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' } as const, 'gl.example'],
         [
             'a GitHub repository on another host',
             { forge: 'github', host: 'ghe.example', path: 'o/n' } as const,

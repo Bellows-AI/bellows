@@ -292,6 +292,27 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
         expect(result.error).toContain('non-https origin');
     });
 
+    it('takes the mailbox-credentialed fetch when its step names the forge helper, refusing a non-https origin', () => {
+        expect(fx.sync()).toMatchObject({ ok: true, reason: null });
+
+        const result = probe({ publication: publication() }, { FACTORY_FORGE_HELPER: '/run/forge/helper.sh' });
+
+        expect(result).toMatchObject({ ok: false, reason: 'auth_failed' });
+        expect(result.error).toContain('non-https origin');
+    });
+
+    it('embeds the exact forge credential-helper snippet the mailbox steps carry', () => {
+        const src = readFileSync(SCRIPT_PATH, 'utf8');
+        const match = /const FORGE_CREDENTIAL_HELPER =\s*(.+);/.exec(src);
+        expect(match).not.toBeNull();
+        const embedded = new Function(`return (${match![1]})`)() as string;
+        const fileContent = readFileSync(
+            join(import.meta.dirname, '..', 'src', 'scripts', 'credential-helper-forge.sh'),
+            'utf8'
+        ).trim();
+        expect(embedded).toBe(fileContent);
+    });
+
     it('embeds the exact credential-helper snippet the push flow also carries', () => {
         const src = readFileSync(SCRIPT_PATH, 'utf8');
         const match = /const CREDENTIAL_HELPER =\s*(.+);/.exec(src);

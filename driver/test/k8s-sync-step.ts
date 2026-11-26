@@ -4,7 +4,7 @@ import { createKubernetesRunner } from '../src/k8s/k8s-runner.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s/k8s-transport.js';
 import type { StepSink } from '../src/step-control.js';
 import { taskVolumeServer } from './fixtures/k8s-apiserver.js';
-import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
+import { type StepRequest, type StepResult, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 
 /**
  * The sync step the kubernetes runner submits to the attempt's supervisor for `job`,
@@ -22,7 +22,7 @@ export async function k8sSyncStep(job: BoardJob, githubToken?: string): Promise<
 /**
  * The whole `syncCheckout` of `job` over the same fake apiserver: every step submitted (answered by
  * `answer`, a clean sync by default), every apiserver call in order, and the result the runner returned
- * or the error it threw. `claims` seeds the task volume claims the apiserver already holds (a PVC
+ * or the error it threw. `result` answers a step whole where `answer` gives only its stdout. `claims` seeds the task volume claims the apiserver already holds (a PVC
  * manifest each); `checkpoints` is the board's checkpoint read.
  */
 export async function k8sSyncRun(
@@ -30,11 +30,14 @@ export async function k8sSyncRun(
     {
         githubToken,
         answer = () => '{"ok":true,"reason":null}',
+        result: whole,
         volumes = [],
         checkpoints,
     }: {
         githubToken?: string | undefined;
         answer?: (step: StepRequest) => string;
+        /** The whole step result, in place of `answer`'s clean exit: a flagged or failed answer. */
+        result?: (step: StepRequest) => StepResult;
         volumes?: unknown[];
         checkpoints?: Pick<Board, 'checkpoint'>;
     } = {}
@@ -71,7 +74,7 @@ export async function k8sSyncRun(
     const sink: StepSink = {
         submit: async (_token, step) => {
             steps.push(step);
-            return { exitCode: 0, stdout: answer(step), stderr: '', timedOut: false };
+            return whole ? whole(step) : { exitCode: 0, stdout: answer(step), stderr: '', timedOut: false };
         },
         awaitReport: () => new Promise(() => undefined),
         agentEnded: () => undefined,

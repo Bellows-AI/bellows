@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { createBoard, type VerdictEvidence } from '../src/board/board.js';
+import { type BoardJob, createBoard, type VerdictEvidence } from '../src/board/board.js';
 import { PullRequestUnanswered } from '../src/board/board-pull-request.js';
 import { BoardHttpError } from '../src/board/board-retry.js';
 import { COMPLETE_BODY_LIMIT_BYTES } from '../src/verdict-budget.js';
@@ -371,7 +371,7 @@ describe('asking for the attempt’s GitHub token (docs/connections.md)', () => 
         );
         const board = boardOn(fetch, 'fwt_abc');
 
-        const token = await board.githubCredential(job);
+        const token = await board.forgeCredential(job);
 
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/credentials/github');
         expect(calls[0]!.headers).toEqual({ 'x-factory-job-id': 'job-1', 'x-factory-job-lease-token': 'token-1' });
@@ -381,18 +381,18 @@ describe('asking for the attempt’s GitHub token (docs/connections.md)', () => 
 
     it('answers null when the board has no App, refuses the attempt, or fails', async () => {
         const noApp = recorder(() => Response.json({ code: 'GITHUB_UNAVAILABLE' }, { status: 409 }));
-        expect(await boardOn(noApp.fetch).githubCredential(job)).toBeNull();
+        expect(await boardOn(noApp.fetch).forgeCredential(job)).toBeNull();
 
         const refused = recorder(() => Response.json({ code: 'CONNECTION_NOT_AUTHORIZED' }, { status: 403 }));
-        expect(await boardOn(refused.fetch).githubCredential(job)).toBeNull();
+        expect(await boardOn(refused.fetch).forgeCredential(job)).toBeNull();
 
         const empty = recorder(() => Response.json({ token: '' }, { status: 200 }));
-        expect(await boardOn(empty.fetch).githubCredential(job)).toBeNull();
+        expect(await boardOn(empty.fetch).forgeCredential(job)).toBeNull();
 
         const broken = recorder(() => {
             throw new Error('board unreachable');
         });
-        expect(await boardOn(broken.fetch).githubCredential(job)).toBeNull();
+        expect(await boardOn(broken.fetch).forgeCredential(job)).toBeNull();
     });
 
     // A push with no token is a lost PR on a private repository: a transient board failure is retried.
@@ -404,39 +404,39 @@ describe('asking for the attempt’s GitHub token (docs/connections.md)', () => 
             if (n === 2) return Response.json({}, { status: 502 });
             return Response.json({ token: 'ghs_after_retry' }, { status: 200 });
         });
-        expect(await boardOn(flaky.fetch).githubCredential(job)).toBe('ghs_after_retry');
+        expect(await boardOn(flaky.fetch).forgeCredential(job)).toBe('ghs_after_retry');
         expect(flaky.calls).toHaveLength(3);
 
         const busy = recorder(() => Response.json({}, { status: 429 }));
-        expect(await boardOn(busy.fetch).githubCredential(job)).toBeNull();
+        expect(await boardOn(busy.fetch).forgeCredential(job)).toBeNull();
         expect(busy.calls).toHaveLength(3);
     });
 
-    it('githubGrant answers the token with its expiry, and a confirmed no as refused', async () => {
+    it('forgeGrant answers the token with its expiry, and a confirmed no as refused', async () => {
         const granted = recorder(() =>
             Response.json({ token: 'ghs_fresh', expiresAt: '2026-10-16T13:00:00.000Z' }, { status: 200 })
         );
-        expect(await boardOn(granted.fetch).githubGrant(job, AbortSignal.timeout(5_000))).toEqual({
+        expect(await boardOn(granted.fetch).forgeGrant(job, AbortSignal.timeout(5_000))).toEqual({
             kind: 'token',
             token: 'ghs_fresh',
             expiresAt: '2026-10-16T13:00:00.000Z',
         });
         const noExpiry = recorder(() => Response.json({ token: 'ghs_x' }, { status: 200 }));
-        expect(await boardOn(noExpiry.fetch).githubGrant(job, AbortSignal.timeout(5_000))).toEqual({
+        expect(await boardOn(noExpiry.fetch).forgeGrant(job, AbortSignal.timeout(5_000))).toEqual({
             kind: 'token',
             token: 'ghs_x',
             expiresAt: null,
         });
         for (const status of [403, 409]) {
             const answered = recorder(() => Response.json({ code: 'CONNECTION_NOT_AUTHORIZED' }, { status }));
-            expect(await boardOn(answered.fetch).githubGrant(job, AbortSignal.timeout(5_000))).toEqual({
+            expect(await boardOn(answered.fetch).forgeGrant(job, AbortSignal.timeout(5_000))).toEqual({
                 kind: 'refused',
             });
             expect(answered.calls).toHaveLength(1);
         }
     });
 
-    it('githubGrant retries a board that did not answer until its deadline, then is unanswered, never refused', async () => {
+    it('forgeGrant retries a board that did not answer until its deadline, then is unanswered, never refused', async () => {
         for (const respond of [
             () => Response.json({}, { status: 503 }),
             () => Response.json({}, { status: 429 }),
@@ -445,7 +445,7 @@ describe('asking for the attempt’s GitHub token (docs/connections.md)', () => 
         ]) {
             const busy = recorder(respond);
             const started = Date.now();
-            expect(await boardOn(busy.fetch).githubGrant(job, AbortSignal.timeout(900))).toEqual({
+            expect(await boardOn(busy.fetch).forgeGrant(job, AbortSignal.timeout(900))).toEqual({
                 kind: 'unanswered',
             });
             expect(Date.now() - started).toBeLessThan(2_500);
@@ -454,19 +454,57 @@ describe('asking for the attempt’s GitHub token (docs/connections.md)', () => 
         const down = recorder(() => {
             throw new Error('board unreachable');
         });
-        expect(await boardOn(down.fetch).githubGrant(job, AbortSignal.timeout(600))).toEqual({ kind: 'unanswered' });
+        expect(await boardOn(down.fetch).forgeGrant(job, AbortSignal.timeout(600))).toEqual({ kind: 'unanswered' });
     });
 
-    it('githubGrant stops asking at once for a signal that is already aborted', async () => {
+    it('forgeGrant stops asking at once for a signal that is already aborted', async () => {
         const never = recorder(() => Response.json({ token: 'ghs_x' }, { status: 200 }));
-        expect(await boardOn(never.fetch).githubGrant(job, AbortSignal.abort())).toEqual({ kind: 'unanswered' });
+        expect(await boardOn(never.fetch).forgeGrant(job, AbortSignal.abort())).toEqual({ kind: 'unanswered' });
         expect(never.calls).toHaveLength(0);
+    });
+
+    it('asks the GitLab route for a gitlab job, and reads a FORGE_GRANT_REQUIRED 409 as waiting, asked once', async () => {
+        const gitlabJob: BoardJob = {
+            ...job,
+            repo: { forge: 'gitlab', host: 'gitlab.example.com', path: 'group/project' },
+        };
+        const granted = recorder(() => Response.json({ forge: 'gitlab', standing: 'live', token: 'glpat_x' }));
+        expect(await boardOn(granted.fetch).forgeGrant(gitlabJob, AbortSignal.timeout(5_000))).toEqual({
+            kind: 'token',
+            token: 'glpat_x',
+            expiresAt: null,
+        });
+        expect(granted.calls[0]!.url).toBe('http://board/api/jobs/job-1/credentials/gitlab');
+        expect(granted.calls[0]!.headers).toEqual({
+            'x-factory-job-id': 'job-1',
+            'x-factory-job-lease-token': 'token-1',
+        });
+
+        const waiting = recorder(() =>
+            Response.json({ code: 'FORGE_GRANT_REQUIRED', waiting: true, standing: 'broken' }, { status: 409 })
+        );
+        expect(await boardOn(waiting.fetch).forgeGrant(gitlabJob, AbortSignal.timeout(5_000))).toEqual({
+            kind: 'waiting',
+        });
+        expect(waiting.calls).toHaveLength(1);
+        expect(await boardOn(waiting.fetch).forgeCredential(gitlabJob)).toBeNull();
+        expect(waiting.calls).toHaveLength(2);
+
+        // A board still taking over the lease is no answer: asked again.
+        let n = 0;
+        const pending = recorder(() => {
+            n += 1;
+            return n === 1
+                ? Response.json({ code: 'LEASE_PENDING' }, { status: 503 })
+                : Response.json({ token: 'glpat_after' });
+        });
+        expect(await boardOn(pending.fetch).forgeCredential(gitlabJob)).toBe('glpat_after');
     });
 
     it('never retries an answer: a refused attempt or no App is asked once', async () => {
         for (const status of [403, 409]) {
             const answered = recorder(() => Response.json({ code: 'CONNECTION_NOT_AUTHORIZED' }, { status }));
-            expect(await boardOn(answered.fetch).githubCredential(job)).toBeNull();
+            expect(await boardOn(answered.fetch).forgeCredential(job)).toBeNull();
             expect(answered.calls).toHaveLength(1);
         }
     });

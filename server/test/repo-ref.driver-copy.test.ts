@@ -28,12 +28,10 @@ describe('the driver copy of the repo ref', () => {
         expect(isRepoRef(value)).toBe(false);
     });
 
-    it('cloneHostRefusal refuses every host but github.com', () => {
+    it('cloneHostRefusal refuses every GitHub host but github.com, and no GitLab host', () => {
         expect(cloneHostRefusal({ forge: 'github', host: 'github.com', path: 'o/n' })).toBeNull();
         expect(cloneHostRefusal({ forge: 'github', host: 'GitHub.com', path: 'o/n' })).toBeNull();
-        expect(cloneHostRefusal({ forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' })).toContain(
-            'gitlab:gl.example/g/sub/p'
-        );
+        expect(cloneHostRefusal({ forge: 'gitlab', host: 'gl.example', path: 'g/sub/p' })).toBeNull();
         expect(cloneHostRefusal({ forge: 'github', host: 'ghe.example', path: 'o/n' })).toContain('ghe.example');
     });
 });

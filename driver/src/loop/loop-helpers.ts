@@ -1,4 +1,4 @@
-import type { FailureKind } from '../board/board.js';
+import type { BoardJob, FailureKind } from '../board/board.js';
 import { helperEffectId } from '../helper-receipts.js';
 import type { HelperFailureReport, HelperPlan, HelperResult, InvokeChild } from '../helpers.js';
 import { formatConcludeOutput, runHelperPlan } from '../helpers.js';
@@ -9,6 +9,10 @@ import { helperCauseOf } from './loop-ledger.js';
 import type { AttemptCtx, SetupConclusion, SetupHalt } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import { stepLost } from '../step-control.js';
+import { usesForgeMailbox } from '../repo-ref.js';
+
+/** Whether a helper is handed a token the loop asks for: a github-writing one, unless its job asks through the forge mailbox. */
+const asksToken = (job: BoardJob, plan: HelperPlan): boolean => plan.githubWriting && !usesForgeMailbox(job);
 
 /**
  * The loop's own two ends of the block-helper transport (extended by #230's conclude
@@ -45,7 +49,7 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | 
     const invokeChild =
         (planIndex: number): InvokeChild =>
         async (childPlan, childIndex) => {
-            const token = childPlan.githubWriting
+            const token = asksToken(job, childPlan)
                 ? ((await askGithubToken(rt, job, `the helper ${childPlan.helperId}`)) ?? undefined)
                 : undefined;
             if (down(state)) return null;
@@ -115,7 +119,7 @@ export async function runPostHelperPhase(
         (planIndex: number): InvokeChild =>
         async (childPlan, childIndex) => {
             if (down(state)) return null;
-            const token = childPlan.githubWriting
+            const token = asksToken(job, childPlan)
                 ? ((await askGithubToken(rt, job, `the helper ${childPlan.helperId}`)) ?? undefined)
                 : undefined;
             if (down(state)) return null;

@@ -159,6 +159,17 @@ describe('the docker runner and the gates', () => {
         expect(daemon.calls.some((args) => args[0] === 'network')).toBe(false);
     });
 
+    // The kubernetes counterpart: gates-and-reviewer.test.ts. The gate manager names the host; no token rides along.
+    it('carries a GitLab gate’s FACTORY_FORGE_HOSTS to the gate step, and no token', async () => {
+        const supervised = fakeSteps(() => ok('passed'));
+        const runner = dockerRunner(recording().exec, { steps: supervised.sink });
+        const gitlab: BoardJob = { ...gated, repo: { forge: 'gitlab', host: 'gitlab.example.com', path: 'group/app' } };
+        await runner.runGate(gitlab, { ...gate, env: { FACTORY_FORGE_HOSTS: 'gitlab.example.com' } });
+        const [step] = supervised.ofKind('gate');
+        expect(step?.env).toEqual({ FACTORY_FORGE_HOSTS: 'gitlab.example.com' });
+        expect(JSON.stringify(step)).not.toMatch(/GITLAB_TOKEN|GL_TOKEN|GITHUB_TOKEN|GH_TOKEN|CI_JOB_TOKEN/);
+    });
+
     // Issue #774: a review is steps of the CALLER's group — the reviewer's home, its restored
     // worktree, the executor in the reviewer container — made on demand like a gate's.
     it('runs a review as steps of the caller’s group, made on demand, with the reviewer container in it', async () => {

@@ -1,7 +1,7 @@
 import type { BoardJob } from './board/board.js';
 import { opencodeDbPath, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
-import { checkpointScript, gitHardenScript } from './container-scripts.js';
+import { checkpointScript, gateForgeScript, gitHardenScript } from './container-scripts.js';
 import { OPENCODE } from './executors.js';
 import { gateDeadlineMs } from './gate-manager.js';
 import { declaredTimeoutMs } from './gates.js';
@@ -105,6 +105,7 @@ export function supervisorLiterals(
 ): [string, string][] {
     return [
         [SUPERVISOR_ENV.gitHardenScript, gitHardenScript],
+        [SUPERVISOR_ENV.forgeHelper, gateForgeScript],
         [SUPERVISOR_ENV.controlMs, String(RUN_CONTROL_POLL_MS)],
         [SUPERVISOR_ENV.deadlineMs, String(runTimeoutMs(config, job))],
         [SUPERVISOR_ENV.drainMs, String(SUPERVISOR_DRAIN_MS)],
