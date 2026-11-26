@@ -1,6 +1,6 @@
+import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-selection.js';
 import {
     type AgentDefault,
-    ExecutorConnectionRefusedError,
     ExecutorDefaultNotFoundError,
     ExecutorSuspendedError,
     type ExecutorDefault,
@@ -134,7 +134,9 @@ export function memoryUserExecutorStore(
 
         async replace(userId, executors) {
             const suspendedNames = new Set(rows.filter((r) => r.userId === userId && r.suspended).map((r) => r.name));
-            const previous = new Map(rows.filter((r) => r.userId === userId).map((r) => [r.name, r.providerConnectionId]));
+            const previous = new Map(
+                rows.filter((r) => r.userId === userId).map((r) => [r.name, r.providerConnectionId])
+            );
             const connectionOf = (executor: (typeof executors)[number]) =>
                 executor.providerConnectionId === undefined
                     ? (previous.get(executor.name) ?? null)

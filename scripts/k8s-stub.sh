@@ -3,6 +3,14 @@
 set -eu
 echo "${CLAUDE_CODE_CONFIG_CONTENT:-none}"
 echo "$@"
+# `factory-stub-model-env`: the model credential names the pod's env carries — the key itself (a lane-made value)
+# and the endpoint, `unset` when absent and empty when the claim blanked it — so a lane proves what a selected provider
+# connection delivered through the per-attempt Secret.
+case "$*" in
+*factory-stub-model-env*)
+    echo "model-env key=${ANTHROPIC_API_KEY-unset} base=${ANTHROPIC_BASE_URL-unset} bearer=${ANTHROPIC_AUTH_TOKEN-unset}"
+    ;;
+esac
 # `factory-stub-mark`: the first run marks the worktree's git-ignored .factory/ and goes
 # on; a run that finds the mark — a replacement on the tree a lost runner left — says so and ends.
 case "$*" in

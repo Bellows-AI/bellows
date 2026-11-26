@@ -2998,6 +2998,56 @@ expect_contains 'the org-scoped job ran to completion' "$org_result" 'succeeded'
 expect_contains 'the org scope is stamped on the read' "$org_result" "$(printf 'succeeded\torg\t')"
 expect_contains 'the org config reached the pod' "$org_result" 'org-team-model'
 
+# --- A selected provider connection (BEL-606) ---------------------------------------------------
+#
+# An executor that selects a provider connection: its key rides the claim env, so it reaches the runner pod through
+# the per-attempt Secret exactly like a stacked env value — no driver change. The connection is made through the API
+# (its key sealed in the secret store), the executor selects it by id, and the stub prints the model names its pod env
+# carries. An ambient endpoint name the connection replaced arrives EMPTY, and no Job manifest holds the key.
+
+echo
+echo '# provider connection'
+
+CONNECTION_KEY='sk-ant-lane-connection-key'
+connection_id="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ scope: "personal", name: "lane-connection", provider: "anthropic", key: process.argv[2] }) })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
+    .catch(() => {});
+' "$BASE/api/provider-connections" "$CONNECTION_KEY")"
+case "$connection_id" in
+*-*) ok 'a provider connection was created' ;;
+*) bad 'a provider connection was created' 'POST /api/provider-connections did not answer 201 with an id' ;;
+esac
+connection_put="$(http_status PUT "$BASE/api/workspace/executors" \
+    "{\"executors\":[{\"name\":\"claude\",\"type\":\"claude-code\",\"config\":{}},{\"name\":\"connected\",\"type\":\"claude-code\",\"config\":{},\"providerConnectionId\":\"$connection_id\"}]}")"
+[ "$connection_put" = '200' ] && ok 'an executor selecting the connection is stored' ||
+    bad 'an executor selecting the connection is stored' "PUT /api/workspace/executors answered $connection_put"
+connection_task="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: "factory-stub-model-env", executor: "connected", repo: process.argv[2] }) })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
+    .catch(() => {});
+' "$BASE/api/jobs" "$SMOKE_REPO")"
+connection_result=""
+for _ in $(seq 1 120); do
+    connection_result="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
+    .then(async (r) => { const j = await r.json(); process.stdout.write(j.status + "\t" + String(j.output ?? "")); })
+    .catch(() => process.stdout.write("queued\t"));
+' "$BASE/api/jobs/$connection_task")"
+    case "$connection_result" in
+    queued* | running*) sleep 1 ;;
+    *) break ;;
+    esac
+done
+expect_contains 'the connection task ran to completion' "$connection_result" 'succeeded'
+expect_contains "the connection's key reached the runner pod env" "$connection_result" "model-env key=$CONNECTION_KEY"
+expect_contains 'the default endpoint left the replaced names empty' "$connection_result" 'base= bearer='
+connection_jobs="$(kubectl get jobs -n "$NAMESPACE" -o json 2>&1 || true)"
+case "$connection_jobs" in
+*"$CONNECTION_KEY"*) bad 'no Job manifest holds the connection key' 'the key appears in a Job manifest' ;;
+*) ok 'no Job manifest holds the connection key' ;;
+esac
+
 # --- The runner's GitHub token (docs/connections.md) --------------------------------------------
 #
 # The cluster's board is the offline entry, which holds no App: the runner pod's image helper asks

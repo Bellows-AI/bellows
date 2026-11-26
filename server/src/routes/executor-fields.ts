@@ -11,7 +11,7 @@ import {
     redirectsPlatformCredential,
 } from '@factory-ai/core';
 import type { DeploymentMode, ErrorCode } from '@factory-ai/core';
-import { ExecutorConnectionRefusedError } from '../db/user-executor-store.js';
+import { ExecutorConnectionRefusedError } from '../db/executor-connection-selection.js';
 
 /**
  * A ceiling on how many executors one person can configure, and (issue 391) on how many
@@ -80,6 +80,35 @@ function parseGateFixRounds(item: { name?: unknown; gateFixRounds?: unknown }): 
     return rounds;
 }
 
+/** One entry's connection id: absent keeps the row's, null clears it, else a connection id; or the refusal. */
+function parseConnectionId(item: {
+    name?: unknown;
+    providerConnectionId?: unknown;
+}): string | null | undefined | { refusal: string } {
+    const id = item.providerConnectionId;
+    if (id === undefined || id === null) return id;
+    if (typeof id === 'string' && UUID.test(id)) return id;
+    return { refusal: `providerConnectionId for "${item.name}" must be a connection id or null` };
+}
+
+/**
+ * The optional fields: the runner class (absent meaning null, the driver's default class; the route decides which
+ * names it takes) and the provider connection id, or the refusal message.
+ */
+function parseOptionalFields(item: {
+    name?: unknown;
+    runnerClass?: unknown;
+    providerConnectionId?: unknown;
+}): Pick<ExecutorFields, 'runnerClass' | 'providerConnectionId'> | string {
+    const runnerClass = item.runnerClass ?? null;
+    if (runnerClass !== null && typeof runnerClass !== 'string') {
+        return `runnerClass for "${item.name}" must be a runner class name or null`;
+    }
+    const connection = parseConnectionId(item);
+    if (typeof connection === 'object' && connection !== null) return connection.refusal;
+    return { runnerClass, ...(connection === undefined ? {} : { providerConnectionId: connection }) };
+}
+
 /** The status a `parseExecutorFields` refusal answers with: 422 for a runner class, 400 otherwise. */
 export function executorFieldStatus(message: string): number | undefined {
     return message.startsWith('runnerClass') ? HTTP_UNPROCESSABLE : undefined;
@@ -136,21 +165,13 @@ export function parseExecutorFields(entry: unknown, deploymentMode: DeploymentMo
     if (redirect !== null) return credentialRedirectMessage(redirect);
     const gateFixRounds = parseGateFixRounds(item);
     if (typeof gateFixRounds === 'string') return gateFixRounds;
-    // Optional, absent meaning null: the driver's default class. The route decides which names it takes.
-    const runnerClass = item.runnerClass ?? null;
-    if (runnerClass !== null && typeof runnerClass !== 'string') {
-        return `runnerClass for "${item.name}" must be a runner class name or null`;
-    }
-    const connection = item.providerConnectionId;
-    if (connection !== undefined && connection !== null && (typeof connection !== 'string' || !UUID.test(connection))) {
-        return `providerConnectionId for "${item.name}" must be a connection id or null`;
-    }
+    const optional = parseOptionalFields(item);
+    if (typeof optional === 'string') return optional;
     return {
         name: item.name,
         type: item.type,
         config: item.config as Record<string, unknown>,
         gateFixRounds,
-        runnerClass,
-        ...(connection === undefined ? {} : { providerConnectionId: connection }),
+        ...optional,
     };
 }

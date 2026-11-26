@@ -52,6 +52,7 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 - **Credentials go by reference, never by value**, **runner pods hold no ServiceAccount token**
   (`automountServiceAccountToken: false`; pinned in `driver/test/k8s/`), and **the driver never reads a Secret back**: the Role grants no `get`/`list`.
   A credentials-Secret name the claim also carries is not referenced: the per-attempt Secret's value, empty included, wins (`credentialsSecretEnv`; `driver/test/k8s/pod-spec.test.ts`).
+- **A selected provider connection needs no driver change**: its key rides the claim env into the per-attempt Secret, and the names it replaced travel empty, which win over the credentials Secret on both executors. `scripts/test-k8s.sh` (`# provider connection`), `driver/test/k8s/pod-spec.test.ts`, `driver/test/docker/args-and-env.test.ts`.
 - **Every driver-owned object carries `factory.job`**, every Secret follows `factory-job-…-env`, every
   task volume mount is whole or at the reviewer's home (`REVIEWER_TREE_DIR`), `hostAliases` map only to
   `127.0.0.1` and only the `gate`, `reviewer`, `svc-` and a docker class's `dockerd` sidecars restart — or admission refuses it;

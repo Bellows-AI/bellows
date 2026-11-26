@@ -180,7 +180,9 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
     it('a connection with an endpoint supplies it with its key', async () => {
         const { executors, connections, jobs } = stores();
         const conn = await connect(connections, { provider: 'litellm', baseUrl: CONN_URL });
-        await executors.replace(ALICE, [{ name: 'cc', type: 'claude-code', config: {}, providerConnectionId: conn.id }]);
+        await executors.replace(ALICE, [
+            { name: 'cc', type: 'claude-code', config: {}, providerConnectionId: conn.id },
+        ]);
         await queue(jobs, 'cc');
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);
@@ -196,7 +198,9 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
             { name: 'OPENROUTER_API_KEY', value: 'ambient-or', isSecret: true },
         ]);
         const conn = await connect(connections);
-        await executors.replace(ALICE, [{ name: 'cc', type: 'claude-code', config: {}, providerConnectionId: conn.id }]);
+        await executors.replace(ALICE, [
+            { name: 'cc', type: 'claude-code', config: {}, providerConnectionId: conn.id },
+        ]);
         await queue(jobs, 'cc');
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);
@@ -224,7 +228,11 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
             {
                 name: 'oc',
                 type: 'opencode',
-                config: { provider: { openai: { options: { baseURL: 'https://deliberate.example.test', apiKey: 'pasted-literal' } } } },
+                config: {
+                    provider: {
+                        openai: { options: { baseURL: 'https://deliberate.example.test', apiKey: 'pasted-literal' } },
+                    },
+                },
                 providerConnectionId: openai.id,
             },
         ]);
@@ -248,7 +256,9 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
         const { executors, connections, env, jobs } = stores();
         await env.replaceOrg('admin', [{ name: 'ANTHROPIC_API_KEY', value: 'sk-ant-org', isSecret: true }]);
         const conn = await connect(connections, { provider: 'openrouter', key: 'sk-or-conn' });
-        await executors.replace(ALICE, [{ name: 'cc', type: 'claude-code', config: {}, providerConnectionId: conn.id }]);
+        await executors.replace(ALICE, [
+            { name: 'cc', type: 'claude-code', config: {}, providerConnectionId: conn.id },
+        ]);
         await queue(jobs, 'cc');
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);
@@ -270,7 +280,9 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
                 name: 'oc',
                 type: 'opencode',
                 config: {
-                    provider: { gw: { options: { baseURL: 'https://gw.example.test', apiKey: '{env:OPENAI_API_KEY}' } } },
+                    provider: {
+                        gw: { options: { baseURL: 'https://gw.example.test', apiKey: '{env:OPENAI_API_KEY}' } },
+                    },
                 },
                 providerConnectionId: conn.id,
             },
@@ -280,7 +292,9 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
         const claim = await jobs.claim('w1', LEASE_SECONDS);
 
         expect(claim?.executorRefusal ?? null).toBeNull();
-        expect(JSON.parse(claim?.env?.OPENCODE_CONFIG_CONTENT ?? '{}').provider.gw.options.apiKey).toBe('sk-openai-ref');
+        expect(JSON.parse(claim?.env?.OPENCODE_CONFIG_CONTENT ?? '{}').provider.gw.options.apiKey).toBe(
+            'sk-openai-ref'
+        );
     });
 
     it('renders an OpenCode endpoint option beneath the pasted config for a custom endpoint', async () => {
@@ -355,7 +369,9 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
         const { executors, connections, env, jobs } = stores();
         await env.replaceOrg('admin', [{ name: 'ANTHROPIC_API_KEY', value: 'sk-ant-ambient', isSecret: true }]);
         const conn = await connect(connections);
-        await executors.replace(ALICE, [{ name: 'cc', type: 'claude-code', config: {}, providerConnectionId: conn.id }]);
+        await executors.replace(ALICE, [
+            { name: 'cc', type: 'claude-code', config: {}, providerConnectionId: conn.id },
+        ]);
         await mustCreate(
             jobs.create('echo hi', ALICE, { repo: null, executor: null, agentType: 'claude-code', agentModel: 'm-1' })
         );

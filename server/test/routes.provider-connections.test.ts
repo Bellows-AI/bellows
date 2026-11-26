@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { MAX_PROVIDER_CONNECTIONS_PER_SCOPE, type ProviderConnectionMeta } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { ProviderKeys } from '../src/provider-keys/verify.js';
-import { ProviderConnectionCapError,
-    ProviderConnectionReferencedError, type ProviderConnectionStore } from '../src/db/provider-connection-store.js';
+import {
+    ProviderConnectionCapError,
+    ProviderConnectionReferencedError,
+    type ProviderConnectionStore,
+} from '../src/db/provider-connection-store.js';
 import type { AppConfig } from '../src/config.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, testConfig } from './helpers.js';
 import {

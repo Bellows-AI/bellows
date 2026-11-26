@@ -65,7 +65,7 @@ export interface SelectedProfileConnection {
     scope: ExecutorScope;
 }
 
-const selectedOf = (id: string | undefined, scope: ExecutorScope): SelectedProfileConnection | null =>
+export const selectedConnectionOf = (id: string | undefined, scope: ExecutorScope): SelectedProfileConnection | null =>
     id === undefined ? null : { id, scope };
 
 /** A usable selection's executor type, the profile config it runs and the connection it selects (null when no profile does). */
@@ -113,7 +113,7 @@ export async function refusedAsUnusable(
         return {
             type: executorTypeOf(row.value.type),
             config: row.value.config,
-            connection: selectedOf(row.value.providerConnectionId, scope),
+            connection: selectedConnectionOf(row.value.providerConnectionId, scope),
         };
     }
     bad(reply, ERROR_CODES.EXECUTOR_SUSPENDED, executorSuspendedMessage(scope, executor), HTTP_CONFLICT);

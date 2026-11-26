@@ -10,6 +10,8 @@ import {
     applyConnectionLayer,
     claimCredentialEnv,
     CLOUD,
+    type ConnectionCredential,
+    type ConnectionSelectionRefusal,
     connectionOpenCodeProvider,
     connectionSelectionRefusal,
     CLOUD_CREDENTIAL_MESSAGE,
@@ -30,8 +32,9 @@ import {
     redirectsPlatformCredential,
     resolveProviderReferences,
     RUNNER_MANAGED_KEYS,
+    type SelectedConnection,
 } from '@factory-ai/core';
-import type { TransactionSql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import type { CreateJobStoreDeps } from './job-store-types.js';
 
 /** What a profile naming a connection is refused with on a board that wired no connection reader. */
@@ -49,6 +52,19 @@ function mergeUnder(base: Record<string, unknown>, over: Record<string, unknown>
 
 /** The env name Claude Code reads its model from, over its settings' `model`; OpenCode reads none. */
 const CLAUDE_MODEL_ENV = 'ANTHROPIC_MODEL';
+
+/**
+ * The provider connection store's claim-time reader, declared here like `executorConfig`: a profile's selected
+ * connection is judged by the shared rules and its CURRENT key read on the claim's transaction, fail-closed (an
+ * unconfirmed read throws and the claim rolls back).
+ */
+export interface ClaimConnectionReader {
+    claimCredentialFor(
+        exec: Sql | TransactionSql,
+        id: string,
+        check: (connection: SelectedConnection | null) => ConnectionSelectionRefusal | null
+    ): Promise<{ refusal: ConnectionSelectionRefusal } | { credential: ConnectionCredential }>;
+}
 
 export interface ResolvedClaimExecutor {
     claimEnv: Record<string, string> | undefined;
@@ -112,6 +128,64 @@ function grantedEnv(
 }
 
 /**
+ * The selected provider connection as the highest scope of the env: above the stacked scopes (explicit beats ambient)
+ * and below the pasted config merged next. A reviewer's grant filtered the ambient env before and does not filter this:
+ * the executor's own model credential is not a member secret the grant withholds. A stale, foreign or incompatible
+ * reference is a refusal — never recovered from by ambient credentials — and a failed secret read throws, rolling the
+ * claim back. A custom OpenCode endpoint's provider options go BENEATH the pasted config (`mergeUnder`).
+ */
+async function layerConnection(
+    tx: TransactionSql,
+    reader: ClaimConnectionReader | undefined,
+    input: {
+        id: string | null;
+        owner: string | null;
+        executorType: ExecutorType | null;
+        claimEnv: Record<string, string> | undefined;
+        source: { type: string; config: Record<string, unknown> } | null;
+    }
+): Promise<
+    | { refusal: string }
+    | {
+          claimEnv: Record<string, string> | undefined;
+          source: { type: string; config: Record<string, unknown> } | null;
+          blanks: string[];
+      }
+> {
+    const { id, owner, executorType, source } = input;
+    // No selection (a frozen agent default never has one, nor an unknown agent): the env is the stacked scopes' alone.
+    if (id === null || executorType === null) return { claimEnv: input.claimEnv, source, blanks: [] };
+    if (!reader) return { refusal: CONNECTIONS_UNAVAILABLE_MESSAGE };
+    const selected = await reader.claimCredentialFor(tx, id, (connection) =>
+        connectionSelectionRefusal({ connection, owner, agentType: executorType })
+    );
+    if ('refusal' in selected) return { refusal: selected.refusal.message };
+    const { credential } = selected;
+    const layered = applyConnectionLayer(input.claimEnv, executorType, credential);
+    const block =
+        executorType === OPENCODE ? connectionOpenCodeProvider(credential.provider, credential.baseUrl) : null;
+    return {
+        claimEnv: layered.env,
+        blanks: layered.blanks,
+        source: block !== null && source !== null ? { ...source, config: mergeUnder(block, source.config) } : source,
+    };
+}
+
+/** The profile's `{env:NAME}` provider keys resolved from the env that travels (`resolveProviderReferences`); the names it lacks. */
+function withResolvedReferences<T extends { config: Record<string, unknown> }>(
+    source: T | null,
+    env: Record<string, string> | undefined
+): { source: T | null; missing: string[] } {
+    if (source === null) return { source, missing: [] };
+    const resolved = resolveProviderReferences(source.config, env ?? {});
+    return { source: { ...source, config: resolved.config }, missing: resolved.missing };
+}
+
+/** What a connection replaced, carried empty beneath the env's own names (`applyConnectionLayer`). */
+const withBlanks = (env: Record<string, string> | undefined, blanks: readonly string[]) =>
+    blanks.length === 0 ? env : { ...Object.fromEntries(blanks.map((name) => [name, ''])), ...env };
+
+/**
  * claim()'s env + executor resolution: the stacked env and the author's executor row merged over
  * the runner's config env name. Resolved ON THE TRANSACTION, so a claim holds one connection rather
  * than two, and a resolver failure rolls the whole claim back (docs/env.md).
@@ -121,7 +195,7 @@ export async function resolveClaimExecutor(
     deps: {
         env: CreateJobStoreDeps['env'];
         executorConfig: CreateJobStoreDeps['executorConfig'];
-        providerConnections?: CreateJobStoreDeps['providerConnections'];
+        providerConnections?: ClaimConnectionReader | undefined;
         deploymentMode: DeploymentMode;
         /** The operator supplies the model: cloud claims need no member model credential. */
         platformModelProvided?: boolean;
@@ -147,58 +221,33 @@ export async function resolveClaimExecutor(
             : undefined
     );
     let claimEnv = grant !== undefined ? grantedEnv(resolvedEnv, grant) : resolvedEnv;
-    // The selected provider connection is the highest scope of the env: above the stacked scopes (explicit beats
-    // ambient) and below the pasted config merged next. A reviewer's grant filtered the ambient env above and does not
-    // filter this: the executor's own model credential is not a member secret the grant withholds. A stale, foreign or
-    // incompatible reference is refused here — never recovered from by ambient credentials — and a failed secret read
-    // throws, rolling the claim back.
-    let blanks: string[] = [];
-    if (providerConnectionId !== null && executorType !== null) {
-        const selected = providerConnections
-            ? await providerConnections.claimCredentialFor(tx, providerConnectionId, (connection) =>
-                  connectionSelectionRefusal({
-                      connection,
-                      owner,
-                      agentType: executorType,
-                  })
-              )
-            : { refusal: { message: CONNECTIONS_UNAVAILABLE_MESSAGE } };
-        if ('refusal' in selected) {
-            return {
-                claimEnv: undefined,
-                executorType,
-                executorRefusal: selected.refusal.message,
-                runModel: null,
-                runnerClass,
-            };
-        }
-        const layered = applyConnectionLayer(claimEnv, executorType, selected.credential);
-        ({ env: claimEnv, blanks } = layered);
-        // A custom endpoint's OpenCode provider options sit BENEATH the pasted config (`mergeUnder`).
-        const block =
-            executorType === OPENCODE
-                ? connectionOpenCodeProvider(selected.credential.provider, selected.credential.baseUrl)
-                : null;
-        if (block !== null && source !== null) source = { ...source, config: mergeUnder(block, source.config) };
+    const layered = await layerConnection(tx, providerConnections, {
+        id: providerConnectionId,
+        owner,
+        executorType,
+        claimEnv,
+        source,
+    });
+    if ('refusal' in layered) {
+        return { claimEnv: undefined, executorType, executorRefusal: layered.refusal, runModel: null, runnerClass };
     }
+    const { blanks } = layered;
+    ({ claimEnv, source } = layered);
     // A custom provider's `{env:NAME}` key is the board's to resolve: the value comes from the scopes
     // the claim merged — the env that travels, a reviewer's grant applied — never from the runner's
     // own environment, so a deployment `RUNNER_ENV` value cannot be named into a member endpoint. An
     // unresolved reference fails the task before the agent starts, naming the missing secret.
-    let profileConfig: unknown = source?.config;
-    if (source !== null) {
-        const resolved = resolveProviderReferences(source.config, claimEnv ?? {});
-        source = { ...source, config: resolved.config };
-        profileConfig = resolved.config;
-        if (resolved.missing.length > 0) {
-            return {
-                claimEnv: undefined,
-                executorType,
-                executorRefusal: missingProviderSecretMessage(resolved.missing),
-                runModel: null,
-                runnerClass,
-            };
-        }
+    const resolved = withResolvedReferences(source, claimEnv);
+    ({ source } = resolved);
+    const profileConfig: unknown = source?.config;
+    if (resolved.missing.length > 0) {
+        return {
+            claimEnv: undefined,
+            executorType,
+            executorRefusal: missingProviderSecretMessage(resolved.missing),
+            runModel: null,
+            runnerClass,
+        };
     }
     if (source !== null) claimEnv = mergeExecutorConfigEnv(claimEnv, source);
     claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType, deploymentMode);
@@ -227,11 +276,7 @@ export async function resolveClaimExecutor(
         };
     // What the connection replaced travels EMPTY, judged only now so the checks above never see a blank as a member's
     // credential: the driver forwards its own `RUNNER_ENV` under these names, and the claim's name wins over it.
-    if (blanks.length > 0)
-        claimEnv = {
-            ...Object.fromEntries(blanks.map((name) => [name, ''])),
-            ...claimEnv,
-        };
+    claimEnv = withBlanks(claimEnv, blanks);
     const runModel = runModelOf(source, executorType, claimEnv);
     // And whatever resolved is pinned there, so the model recorded is the one the CLI runs: the claim env wins over an
     // `ANTHROPIC_MODEL` the driver forwards (RUNNER_ENV), which the board cannot see. Nothing resolved sends nothing.

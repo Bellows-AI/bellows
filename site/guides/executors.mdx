@@ -81,6 +81,35 @@ here**. A name no scope holds fails the task before the agent starts, with a mes
 missing variable. The deployment's own model credential is never a source for it: a reference
 resolves only from your own scopes.
 
+### Run an executor on a provider connection
+
+A profile can select one **provider connection** — a named model key with its endpoint, set up under
+**Settings → Model** — instead of relying on keys set in the environment. Several profiles can share
+one connection, and each profile picks its own connection and model, so one connection's key
+rotation reaches every profile that selects it on its next task, while a task already running keeps
+the key it started with. Switching one profile to another connection changes nothing about the other
+profiles or the connection itself.
+
+- An organization profile can use organization connections only. A personal profile can use your own
+  connections or the organization's. Promoting a personal profile to the organization is refused while
+  it selects a personal connection.
+- The connection's provider must be able to run the profile's agent: Anthropic, OpenRouter and LiteLLM
+  run Claude Code and OpenCode, OpenAI runs OpenCode, and a Claude subscription runs Claude Code.
+  A save, a task preflight and the task's start all refuse a pair that does not fit, and a connection
+  that was deleted or is no longer yours is refused the same way — a task never falls back to a key from
+  the environment.
+- Switching a profile to another connection checks its model: a model that clearly belongs to another
+  provider (for example `anthropic/…` on an OpenAI connection) is refused until you choose a model for
+  the new connection. A model Bellows cannot place is kept; an unreachable model list never rejects one.
+- A connection alone is a model credential: a profile that selects one needs no model key in the
+  environment, in Bellows Cloud too.
+- A connection's key and endpoint travel together. A connection on its provider's default endpoint
+  never picks up a custom endpoint set elsewhere, and the keys, endpoints and routing settings it
+  replaces are not passed to the task. Settings you paste into the profile's configuration are applied
+  last and still win; that is deliberate, so a pasted endpoint or key overrides the connection.
+- A connection that executors still select cannot be deleted. The refusal names the executors you can
+  see and says only that others exist when you can't see them; remove or switch the executors first.
+
 ### Advanced configuration
 
 Open **Advanced configuration** to edit the **Configuration JSON** directly. It must be a JSON object up to 32 KiB. A blank configuration is the same as `{}`. **Format JSON** tidies it.

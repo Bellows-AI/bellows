@@ -280,6 +280,37 @@ describe("the board's environment", () => {
         expect(envFileBody(blanked, configured).split('\n')).toContain('ANTHROPIC_API_KEY=');
     });
 
+    it('suppresses every provider endpoint and key the driver forwards that a selected connection replaced', () => {
+        // A connection on its provider's default endpoint: the claim carries its key and BLANKS the names it
+        // replaced, so a RUNNER_ENV endpoint or token never rides beside the connection's key.
+        const configured = loadDriverConfig({
+            RUNNER_ENV: 'ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,OPENROUTER_API_KEY,KEEP_ME',
+        });
+        const selected: BoardJob = {
+            ...job,
+            env: {
+                ANTHROPIC_API_KEY: 'connection-key',
+                ANTHROPIC_BASE_URL: '',
+                ANTHROPIC_AUTH_TOKEN: '',
+                OPENROUTER_API_KEY: '',
+            },
+        };
+        const line = dockerArgs(configured, selected, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' });
+        expect(line).toEqual(expect.arrayContaining(['-e', 'KEEP_ME']));
+        for (const name of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'OPENROUTER_API_KEY']) {
+            expect(line).not.toContain(name);
+        }
+        const body = envFileBody(selected, configured).split('\n');
+        expect(body).toEqual(
+            expect.arrayContaining([
+                'ANTHROPIC_API_KEY=connection-key',
+                'ANTHROPIC_BASE_URL=',
+                'ANTHROPIC_AUTH_TOKEN=',
+                'OPENROUTER_API_KEY=',
+            ])
+        );
+    });
+
     it('lets the model a claim pins win over an ANTHROPIC_MODEL the driver forwards, not only a credential', () => {
         const configured = loadDriverConfig({ RUNNER_ENV: 'ANTHROPIC_API_KEY,ANTHROPIC_MODEL' });
         const pinned: BoardJob = { ...job, env: { ANTHROPIC_MODEL: 'P' } };

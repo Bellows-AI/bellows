@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-selection.js';
 import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import {
     createUserExecutorStore,
-    ExecutorConnectionRefusedError,
     ExecutorSuspendedError,
     type ExecutorDefault,
     type ResolvedDefault,
@@ -651,7 +651,9 @@ describe.skipIf(!enabled)('executor writes and the provider connection they sele
         });
         expect(created.providerConnectionId).toBe(org.id);
         expect(
-            await refusal(() => store.updateOrg(created.id, { type: 'claude-code', providerConnectionId: personalOpenai.id }))
+            await refusal(() =>
+                store.updateOrg(created.id, { type: 'claude-code', providerConnectionId: personalOpenai.id })
+            )
         ).toBe('scope');
         expect(await refusal(() => store.updateOrg(created.id, { providerConnectionId: openai.id }))).toBe(
             'incompatible'

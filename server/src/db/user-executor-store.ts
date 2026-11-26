@@ -1,17 +1,14 @@
 import type { Sql, TransactionSql } from 'postgres';
-import {
-    type ConnectionRefusalReason,
-    connectionModelRefusal,
-    connectionSelectionRefusal,
-    DEFAULT_GATE_FIX_ROUNDS,
-    type ExecutorType,
-    type ModelProvider,
-    ORG_SCOPE,
-    USER_SCOPE,
-    type ExecutorScope,
-} from '@factory-ai/core';
+import { DEFAULT_GATE_FIX_ROUNDS, ORG_SCOPE, USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
 import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
 import { type AgentDefault, type AgentDefaults, agentDefaultMethods } from './agent-default-sql.js';
+import {
+    assertConnectionSelection,
+    assertMovedSelection,
+    lockOrgRowForUpdate,
+    modelOf,
+    selectedOf,
+} from './executor-connection-selection.js';
 import {
     convertedGate,
     type ExecutorCredentialDeps,
@@ -250,21 +247,6 @@ export class ExecutorDefaultNotFoundError extends Error {}
 /** `setDefault`'s other refusal (issue 440): the preference names a suspended profile. The route maps it to a 409. */
 export class ExecutorSuspendedError extends Error {}
 
-/**
- * A write selecting a provider connection the profile may not use: another member's or a missing one (`missing`), a
- * personal one on an organization profile (`scope`), a provider that cannot run the executor type (`incompatible`)
- * or a model known to belong to another provider (`model`). The routes map it to a 409.
- */
-export class ExecutorConnectionRefusedError extends Error {
-    constructor(
-        readonly reason: ConnectionRefusalReason,
-        message: string
-    ) {
-        super(message);
-        this.name = 'ExecutorConnectionRefusedError';
-    }
-}
-
 interface Row {
     id: string;
     name: string;
@@ -278,9 +260,6 @@ interface Row {
     provider_connection_id: string | null;
 }
 
-const selectedOf = (id: string | null): { providerConnectionId?: string } =>
-    id === null ? {} : { providerConnectionId: id };
-
 const toExecutorProfile = (row: Row): ExecutorProfile => ({
     id: row.id,
     name: row.name,
@@ -293,70 +272,6 @@ const toExecutorProfile = (row: Row): ExecutorProfile => ({
     runnerClass: row.runner_class,
     providerConnectionId: row.provider_connection_id,
 });
-
-/**
- * The shared selection rule, run inside the write's transaction: the connection must be visible to the profile's
- * owner (`owner` null: the organization), its provider must run the executor type, and a connection that CHANGED
- * must not carry a model known to belong to another provider. The row is read `for share`, so a concurrent deletion
- * waits for this transaction — with the foreign key, no write can leave a reference dangling.
- */
-async function assertConnectionSelection(
-    tx: TransactionSql,
-    orgId: string,
-    selection: {
-        owner: string | null;
-        connectionId: string | null;
-        type: string;
-        model: unknown;
-        previousConnectionId: string | null;
-    }
-): Promise<void> {
-    const { owner, connectionId, type, model, previousConnectionId } = selection;
-    if (connectionId === null) return;
-    const [row] = await tx<{ provider: ModelProvider; user_id: string | null }[]>`
-        select provider, user_id from provider_connection
-        where org_id = ${orgId} and id = ${connectionId}
-        for share
-    `;
-    const agentType = type as ExecutorType;
-    const refusal =
-        connectionSelectionRefusal({
-            connection: row
-                ? { provider: row.provider, scope: row.user_id === null ? 'org' : 'personal', ownerId: row.user_id }
-                : null,
-            owner,
-            agentType,
-        }) ??
-        (row && connectionId !== previousConnectionId ? connectionModelRefusal(row.provider, agentType, model) : null);
-    if (refusal) throw new ExecutorConnectionRefusedError(refusal.reason, refusal.message);
-}
-
-/**
- * A scope transfer is a selection write: the row's connection must be visible to its NEW owner, so a promotion
- * cannot carry a personal connection into the organization. The model is unchanged, so it is not re-judged.
- */
-async function assertMovedSelection(
-    tx: TransactionSql,
-    orgId: string,
-    { id, from, to }: { id: string; from: string | null; to: string | null }
-): Promise<void> {
-    const [row] = await tx<{ type: string; provider_connection_id: string | null }[]>`
-        select type, provider_connection_id from executor_profile
-        where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${from}
-        for update
-    `;
-    if (!row) return;
-    await assertConnectionSelection(tx, orgId, {
-        owner: to,
-        connectionId: row.provider_connection_id,
-        type: row.type,
-        model: undefined,
-        previousConnectionId: row.provider_connection_id,
-    });
-}
-
-const modelOf = (config: unknown): unknown =>
-    typeof config === 'object' && config !== null ? (config as { model?: unknown }).model : undefined;
 
 /**
  * `replace()`'s transaction body: the member's personal list, delete-then-insert. `sealedOf` turns the
@@ -577,30 +492,9 @@ async function updateOrgRow(
     const { orgId } = deps;
     const { config } = patch;
     const rows = await writeSealed(deps, config ? [config] : [], async (tx, sealedOf) => {
-        const previous = await tx<
-            {
-                type: string;
-                config: Record<string, unknown>;
-                secret_refs: StoredCredential[];
-                provider_connection_id: string | null;
-            }[]
-        >`
-            select type, config, secret_refs, provider_connection_id from executor_profile
-            where org_id = ${orgId} and id = ${id} and user_id is null
-            for update
-        `;
-        if (!previous[0]) return [];
-        // The effective selection is judged whatever field changed: a type change alone can break the pair.
-        const connectionId =
-            patch.providerConnectionId === undefined ? previous[0].provider_connection_id : patch.providerConnectionId;
-        await assertConnectionSelection(tx, orgId, {
-            owner: null,
-            connectionId,
-            type: patch.type ?? previous[0].type,
-            model: modelOf(config ?? previous[0].config),
-            previousConnectionId: previous[0].provider_connection_id,
-        });
-        const [sealed] = config ? sealedOf(storedOf(previous)) : [];
+        const previous = await lockOrgRowForUpdate(tx, orgId, { id, patch });
+        if (!previous) return [];
+        const [sealed] = config ? sealedOf(storedOf([previous])) : [];
         return tx<ConfiguredRow[]>`
             update executor_profile set
                 name = coalesce(${patch.name ?? null}, name),
@@ -610,7 +504,7 @@ async function updateOrgRow(
                 gate_fix_rounds = coalesce(${patch.gateFixRounds ?? null}, gate_fix_rounds),
                 runner_class = case when ${patch.runnerClass !== undefined} then ${patch.runnerClass ?? null}
                                     else runner_class end,
-                provider_connection_id = ${connectionId},
+                provider_connection_id = ${previous.connectionId},
                 updated_at = now()
             where org_id = ${orgId} and id = ${id} and user_id is null
             returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config

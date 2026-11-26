@@ -368,7 +368,9 @@ describe.skipIf(!enabled)('deleting a connection executors reference', () => {
             { name: 'bob-secret-name', type: 'claude-code', config: {}, providerConnectionId: org.id },
         ]);
 
-        const error = (await store.remove(null, org.id, ALICE).catch((e: unknown) => e)) as ProviderConnectionReferencedError;
+        const error = (await store
+            .remove(null, org.id, ALICE)
+            .catch((e: unknown) => e)) as ProviderConnectionReferencedError;
 
         expect(error.executors).toEqual([]);
         expect(error.otherReferences).toBe(true);

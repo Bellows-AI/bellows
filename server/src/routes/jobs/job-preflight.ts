@@ -20,7 +20,12 @@ import {
     type EffectiveCatalog,
     type ExecutorTypeRead,
 } from '../../skill-catalog.js';
-import { executorTypeOf, modelStanding, type SelectedProfileConnection } from './executor-usable.js';
+import {
+    executorTypeOf,
+    modelStanding,
+    type SelectedProfileConnection,
+    selectedConnectionOf,
+} from './executor-usable.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body } from '../helpers.js';
 import { parseConnectionIds } from '../connections.js';
@@ -228,8 +233,7 @@ async function executorCheck(
         check: { subject: 'executor', name, status: 'ok', detail },
         type: executorTypeOf(row.value.type),
         config: row.value.config,
-        connection:
-            row.value.providerConnectionId === undefined ? null : { id: row.value.providerConnectionId, scope: at },
+        connection: selectedConnectionOf(row.value.providerConnectionId, at),
     };
 }
 
