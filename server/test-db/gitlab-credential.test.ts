@@ -121,6 +121,31 @@ const statusOf = async (id: string) =>
 const heartbeat = async (board: Board, id: string, leaseToken: string) =>
     (await board.jobs(org)).heartbeat(id, leaseToken, LEASE_SECONDS);
 
+/** A secret store whose first read waits for `release()`: the window between the grant check and the token. */
+function pausedRead() {
+    let release = () => {};
+    let reached = () => {};
+    const gate = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    const inRead = new Promise<void>((resolve) => {
+        reached = resolve;
+    });
+    let paused = false;
+    const secrets = faultySecrets(h.keyring.openWith(h.keyring.realRepo), {
+        readActive: async (input) => {
+            const read = await h.keyring.openWith(h.keyring.realRepo).readActive(input);
+            if (!paused) {
+                paused = true;
+                reached();
+                await gate;
+            }
+            return read;
+        },
+    });
+    return { secrets, release, inRead };
+}
+
 describe.skipIf(!enabled)('the attempt’s GitLab credential', () => {
     it('answers the starter’s own access token with its expiry, never cached', async () => {
         const board = await boot();
@@ -274,5 +299,45 @@ describe.skipIf(!enabled)('the attempt’s GitLab credential', () => {
         const back = await credential(await boot(), id, claim.leaseToken);
         expect(back.statusCode).toBe(OK);
         expect(back.json()).toMatchObject({ token: expect.any(String) });
+    });
+    it('serves no token when the connection is removed while the secret is being read: the wait, never a 200', async () => {
+        const board = await boot();
+        await setUp(board);
+        const { id, claim } = await board.running(org, repo());
+        const own = await board.grants.accessToken(org.id, org.memberId, FORGE);
+        if (!own.ok) throw new Error('the starter holds no token');
+        const read = pausedRead();
+        const slow = await boot({ secrets: read.secrets });
+        const pending = credential(slow, id, claim.leaseToken);
+        await read.inRead;
+        const removed = await board.app.inject({
+            method: 'DELETE',
+            url: `/api/org/gitlab-connections/${connectionId}`,
+            headers: bearer(org.admin),
+        });
+        expect(removed.statusCode).toBe(OK);
+        read.release();
+        const res = await pending;
+        expect(res.statusCode, res.body).toBe(CONFLICT);
+        expect(res.json()).toMatchObject({ code: 'FORGE_GRANT_REQUIRED', waiting: true });
+        expect(res.body).not.toContain(own.accessToken);
+        expect(await heartbeat(board, id, claim.leaseToken)).toMatchObject({ requirementWait: true });
+    });
+
+    it('does not serve the old read’s token when the member re-links while it is being read', async () => {
+        const board = await boot();
+        await setUp(board);
+        const { id, claim } = await board.running(org, repo());
+        const old = await board.grants.accessToken(org.id, org.memberId, FORGE);
+        if (!old.ok) throw new Error('the starter holds no token');
+        const read = pausedRead();
+        const slow = await boot({ secrets: read.secrets });
+        const pending = credential(slow, id, claim.leaseToken);
+        await read.inRead;
+        expect((await board.link(org, connectionId, 'dev-one')).result).toBe('linked');
+        read.release();
+        const res = await pending;
+        expect(res.body).not.toContain(old.accessToken);
+        expect([OK, UNAVAILABLE]).toContain(res.statusCode);
     });
 });
