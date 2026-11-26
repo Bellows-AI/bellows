@@ -185,12 +185,26 @@ const ANTHROPIC_CHOICE = ['ANTHROPIC_API_KEY', CLAUDE_CODE_OAUTH_TOKEN, 'ANTHROP
 
 const nonEmpty = (value: unknown): value is string => typeof value === 'string' && value !== '';
 
+/**
+ * Where Claude Code reaches OpenRouter through a selected connection's endpoint: that endpoint with the OpenAI-style
+ * `/v1` suffix and trailing slashes dropped, since Claude Code appends `/v1/messages` itself. Null (the public
+ * endpoint) when the connection has no custom one.
+ */
+function openRouterAnthropicBase(baseUrl: string | null): string {
+    if (baseUrl === null) return OPENROUTER_ANTHROPIC_BASE_URL;
+    return baseUrl.replace(/\/+$/, '').replace(/\/v1$/, '');
+}
+
 /** Claude Code's route to OpenRouter on the member's key alone, before the platform-key blank. */
-function openRouterRoute(env: Readonly<Record<string, unknown>>, agentType: string): Record<string, string> | null {
+function openRouterRoute(
+    env: Readonly<Record<string, unknown>>,
+    agentType: string,
+    baseUrl: string | null
+): Record<string, string> | null {
     const key = env.OPENROUTER_API_KEY;
     if (agentType !== CLAUDE_CODE || !nonEmpty(key)) return null;
     if (ANTHROPIC_CHOICE.some((name) => nonEmpty(env[name]))) return null;
-    return { ANTHROPIC_BASE_URL: OPENROUTER_ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN: key };
+    return { ANTHROPIC_BASE_URL: openRouterAnthropicBase(baseUrl), ANTHROPIC_AUTH_TOKEN: key };
 }
 
 /**
@@ -201,9 +215,11 @@ function openRouterRoute(env: Readonly<Record<string, unknown>>, agentType: stri
  */
 export function openRouterClaudeWiring(
     env: Readonly<Record<string, unknown>>,
-    agentType: string
+    agentType: string,
+    /** The selected OpenRouter connection's endpoint; null or absent routes to OpenRouter's own. */
+    baseUrl: string | null = null
 ): Record<string, string> | null {
-    const route = openRouterRoute(env, agentType);
+    const route = openRouterRoute(env, agentType, baseUrl);
     return route === null ? null : { ...route, ...platformCredentialBlanks({ ...env, ...route }) };
 }
 
@@ -216,9 +232,13 @@ export function openRouterClaudeWiring(
 export function claimCredentialEnv(
     env: Readonly<Record<string, unknown>>,
     agentType: string,
-    mode: DeploymentMode
+    mode: DeploymentMode,
+    openRouterBaseUrl: string | null = null
 ): Record<string, string> {
-    return openRouterClaudeWiring(env, agentType) ?? (mode === CLOUD ? platformCredentialBlanks(env) : {});
+    return (
+        openRouterClaudeWiring(env, agentType, openRouterBaseUrl) ??
+        (mode === CLOUD ? platformCredentialBlanks(env) : {})
+    );
 }
 
 /** What a connection supplies a claim: its provider, the unsealed key and the plain endpoint (null: the provider's default). */
@@ -324,9 +344,19 @@ export function hasModelKey(
     agentType: ExecutorType,
     connection: ModelProvider | null = null
 ): boolean {
-    const present = new Set(names);
-    // A selected connection that can run this agent supplies its key — before the settings, which may still clear it.
-    if (connection !== null && providerSupportsAgent(connection, agentType)) present.add(PROVIDER_ENV[connection]);
+    // A selected connection that can run this agent is judged on the names the claim leaves (`applyConnectionLayer`:
+    // what it replaces dropped, its key added) — before the settings, which may still clear it.
+    const present = new Set(
+        connection !== null && providerSupportsAgent(connection, agentType)
+            ? Object.keys(
+                  applyConnectionLayer(Object.fromEntries(names.map((name) => [name, ''])), agentType, {
+                      provider: connection,
+                      key: '',
+                      baseUrl: null,
+                  }).env
+              )
+            : names
+    );
     const settings = isRecord(config) ? config : {};
     if (agentType === CLAUDE_CODE && isRecord(settings.env)) {
         for (const [name, value] of Object.entries(settings.env)) {

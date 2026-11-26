@@ -150,11 +150,14 @@ async function layerConnection(
           claimEnv: Record<string, string> | undefined;
           source: { type: string; config: Record<string, unknown> } | null;
           blanks: string[];
+          /** The selected OpenRouter connection's endpoint, which Claude Code's route to OpenRouter must use. */
+          openRouterBaseUrl: string | null;
       }
 > {
     const { id, owner, executorType, source } = input;
     // No selection (a frozen agent default never has one, nor an unknown agent): the env is the stacked scopes' alone.
-    if (id === null || executorType === null) return { claimEnv: input.claimEnv, source, blanks: [] };
+    if (id === null || executorType === null)
+        return { claimEnv: input.claimEnv, source, blanks: [], openRouterBaseUrl: null };
     if (!reader) return { refusal: CONNECTIONS_UNAVAILABLE_MESSAGE };
     const selected = await reader.claimCredentialFor(tx, id, (connection) =>
         connectionSelectionRefusal({ connection, owner, agentType: executorType })
@@ -167,6 +170,7 @@ async function layerConnection(
     return {
         claimEnv: layered.env,
         blanks: layered.blanks,
+        openRouterBaseUrl: credential.provider === 'openrouter' ? credential.baseUrl : null,
         source: block !== null && source !== null ? { ...source, config: mergeUnder(block, source.config) } : source,
     };
 }
@@ -231,7 +235,7 @@ export async function resolveClaimExecutor(
     if ('refusal' in layered) {
         return { claimEnv: undefined, executorType, executorRefusal: layered.refusal, runModel: null, runnerClass };
     }
-    const { blanks } = layered;
+    const { blanks, openRouterBaseUrl } = layered;
     ({ claimEnv, source } = layered);
     // A custom provider's `{env:NAME}` key is the board's to resolve: the value comes from the scopes
     // the claim merged — the env that travels, a reviewer's grant applied — never from the runner's
@@ -250,7 +254,11 @@ export async function resolveClaimExecutor(
         };
     }
     if (source !== null) claimEnv = mergeExecutorConfigEnv(claimEnv, source);
-    claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType, deploymentMode);
+    claimEnv = withClaimCredentials(claimEnv, profileConfig, {
+        type: executorType,
+        mode: deploymentMode,
+        openRouterBaseUrl,
+    });
     // Claude Code takes `$ANTHROPIC_MODEL` over its settings' `model`: a chosen model rides under that name too, so no
     // member value outranks it.
     if (executorType === CLAUDE_CODE && row.agent_model !== null) {
@@ -442,17 +450,21 @@ function frozenAgentOf(row: ClaimExecutorRow): { type: ExecutorType; config: Rec
  * a member's OpenRouter key alone (both modes), and in cloud mode an empty platform key beside any
  * member redirect without its member key, so the driver's own key never follows it. Judged on the env that TRAVELS (after a
  * reviewer's grant) with a claude-code config's `env` applied last, as `redirectsPlatformCredential`
- * reads it. Recomputed on every claim; nothing is stored.
+ * reads it. A selected OpenRouter connection's endpoint is the route's, never the public one. Recomputed on every
+ * claim; nothing is stored.
  */
 function withClaimCredentials(
     claimEnv: Record<string, string> | undefined,
     config: unknown,
-    type: ExecutorType | null,
-    mode: DeploymentMode
+    {
+        type,
+        mode,
+        openRouterBaseUrl,
+    }: { type: ExecutorType | null; mode: DeploymentMode; openRouterBaseUrl: string | null }
 ): Record<string, string> | undefined {
     if (type === null) return claimEnv;
     const configEnv = type === CLAUDE_CODE && isRecord(config) && isRecord(config.env) ? config.env : {};
-    const added = claimCredentialEnv({ ...claimEnv, ...configEnv }, type, mode);
+    const added = claimCredentialEnv({ ...claimEnv, ...configEnv }, type, mode, openRouterBaseUrl);
     return Object.keys(added).length === 0 ? claimEnv : { ...claimEnv, ...added };
 }
 

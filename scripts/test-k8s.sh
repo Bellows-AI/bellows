@@ -2998,7 +2998,7 @@ expect_contains 'the org-scoped job ran to completion' "$org_result" 'succeeded'
 expect_contains 'the org scope is stamped on the read' "$org_result" "$(printf 'succeeded\torg\t')"
 expect_contains 'the org config reached the pod' "$org_result" 'org-team-model'
 
-# --- A selected provider connection (BEL-606) ---------------------------------------------------
+# --- A selected provider connection ---------------------------------------------------------------
 #
 # An executor that selects a provider connection: its key rides the claim env, so it reaches the runner pod through
 # the per-attempt Secret exactly like a stacked env value — no driver change. The connection is made through the API
