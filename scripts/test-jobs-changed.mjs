@@ -80,7 +80,7 @@ export const RULES = [
     [/^server\/src\/auth\/driver-credential-(cli|command)\.ts$/, NONE, 'the driver credential command line, not called by any jobs phase'],
     [/^driver\/src\/change-request-url\.ts$/, NONE, 'a copied URL parser nothing in the driver calls yet; pinned by server/test/change-request-url-parity.test.ts'],
     // Asked before every sync, publish and gate (driver/src/board/board.ts), and installed in every task.
-    [/^driver\/src\/(forge-credential-call\.ts|loop\/loop-github\.ts|scripts\/credential-helper(-forge)?\.sh)$/, FULL, 'the GitHub token ask every task makes'],
+    [/^driver\/src\/(forge-credential-call\.ts|forge-ca\.ts|loop\/loop-github\.ts|scripts\/credential-helper(-forge)?\.sh)$/, FULL, 'the GitHub token ask and the forge CA every task makes'],
 
     // --- the board (server/src, core/src, server/migrations) ----------------------------------------
     // Derived from what the lane calls: the routes in scripts/test-jobs.sh, scripts/lanes/jobs/*.sh and the helpers they
