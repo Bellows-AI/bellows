@@ -223,6 +223,7 @@ function buildOrgStores({
         ready,
         env: envVars,
         executorConfig: userExecutors,
+        providerConnections,
         // The execution plan is read per claim through the org's installation, at the tip of the
         // thread's base branch — never from a checkout on disk. The code-only `none` arm has no
         // client: with `REPO_CLONE_BASE` it reads the plan from the origin by git instead.

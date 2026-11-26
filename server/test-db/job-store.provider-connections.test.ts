@@ -6,7 +6,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import { createProviderConnectionStore, type ProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
-import { expireLease, mustCreate, testOrg, testUser } from './fixtures.js';
+import { expireLease, lapseDeferral, mustCreate, testOrg, testUser } from './fixtures.js';
 import { faultySecrets, testSecretStore } from './env-secrets-harness.js';
 import { useTestDb } from './harness.js';
 
@@ -317,7 +317,9 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
 
         await expect(broken.jobs.claim('w1', LEASE_SECONDS)).rejects.toThrow();
 
-        expect((await healthy.jobs.get(id))?.status).toBe('queued');
+        expect(await healthy.jobs.get(id)).toMatchObject({ status: 'queued', attempts: 0 });
+        // The failed claim defers the retry; once it lapses the task claims normally.
+        await lapseDeferral(sql, id);
         expect((await healthy.jobs.claim('w2', LEASE_SECONDS))?.id).toBe(id);
     });
 

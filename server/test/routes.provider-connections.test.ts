@@ -95,6 +95,10 @@ function memoryProviderConnectionStore(): ProviderConnectionStore {
             if (!row) return null;
             return { connection: metaOf(row), key: row.key };
         },
+        async claimCredentialFor() {
+            // The route contract never claims; the claim's read is covered against PostgreSQL.
+            throw new Error('claimCredentialFor is not part of the route contract');
+        },
     };
 }
 

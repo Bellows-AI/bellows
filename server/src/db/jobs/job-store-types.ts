@@ -22,7 +22,17 @@ import type { JobReclaimStore } from './job-store-reclaims.js';
 import type { JobReadStore } from './job-store-reads.js';
 import type { JobWorkerStore } from './job-store-worker.js';
 import type { JobConclusionStore } from './job-store-conclusions.js';
-import type { DeploymentMode, UserRef, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
+import type {
+    ConnectionCredential,
+    ConnectionSelectionRefusal,
+    DeploymentMode,
+    UserRef,
+    ExecutorScope,
+    ExecutorType,
+    JobMode,
+    SelectedConnection,
+    TaskTitleOrigin,
+} from '@factory-ai/core';
 import type { AdmissionBudgets, ClaimObserver, JobAdmissionStore } from './job-store-admission.js';
 import type { PlanLimits } from '../plan-limits.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
@@ -1212,7 +1222,22 @@ export interface CreateJobStoreDeps {
             config: Record<string, unknown>;
             suspended: boolean;
             runnerClass: string | null;
+            /** The provider connection the profile selects (docs/env.md), or null. */
+            providerConnectionId?: string;
         } | null>;
+    };
+    /**
+     * The provider connection store's claim-time reader, declared inline like `executorConfig`: a profile's
+     * selected connection is judged by the shared rules and its CURRENT key read on the claim's transaction
+     * (fail-closed: an unconfirmed read throws and the claim rolls back). Absent, a profile naming a connection
+     * is refused at claim — never run on ambient credentials.
+     */
+    providerConnections?: {
+        claimCredentialFor(
+            exec: Sql | TransactionSql,
+            id: string,
+            check: (connection: SelectedConnection | null) => ConnectionSelectionRefusal | null
+        ): Promise<{ refusal: ConnectionSelectionRefusal } | { credential: ConnectionCredential }>;
     };
     /**
      * The PR lifecycle store, when the deployment records publications and PR waits (036).
@@ -1314,6 +1339,7 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     githubApp: boolean;
     planReader: CreateJobStoreDeps['plan'];
     executorConfig: CreateJobStoreDeps['executorConfig'];
+    providerConnections: CreateJobStoreDeps['providerConnections'];
     prs: JobStorePrs | undefined;
     metrics: ClaimObserver | undefined;
     orgKey: string | undefined;

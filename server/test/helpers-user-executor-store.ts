@@ -1,12 +1,18 @@
 import {
     type AgentDefault,
+    ExecutorConnectionRefusedError,
     ExecutorDefaultNotFoundError,
     ExecutorSuspendedError,
     type ExecutorDefault,
     type ExecutorProfile,
     type UserExecutorStore,
 } from '../src/db/user-executor-store.js';
-import { DEFAULT_GATE_FIX_ROUNDS, USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
+import {
+    type ConnectionSelectionRefusal,
+    DEFAULT_GATE_FIX_ROUNDS,
+    USER_SCOPE,
+    type ExecutorScope,
+} from '@factory-ai/core';
 
 export interface MemoryUserExecutorStore extends UserExecutorStore {
     /**
@@ -34,7 +40,21 @@ export interface MemoryUserExecutorStore extends UserExecutorStore {
  * NULL owner is the org scope, personal rows key on their owner, and a name may exist once per
  * ownership — the coalesce index's shape, simulated with a keyed lookup.
  */
-export function memoryUserExecutorStore(): MemoryUserExecutorStore {
+export function memoryUserExecutorStore(
+    /** The selection rule the SQL store runs in its transaction; a refusal it returns is thrown. Absent: every id passes. */
+    refuseSelection: (selection: {
+        owner: string | null;
+        connectionId: string;
+        type: string;
+        model: unknown;
+    }) => ConnectionSelectionRefusal | null = () => null
+): MemoryUserExecutorStore {
+    const judge = (owner: string | null, connectionId: string | null, type: string, config: unknown) => {
+        if (connectionId === null) return;
+        const model = typeof config === 'object' && config !== null ? (config as { model?: unknown }).model : undefined;
+        const refusal = refuseSelection({ owner, connectionId, type, model });
+        if (refusal) throw new ExecutorConnectionRefusedError(refusal.reason, refusal.message);
+    };
     interface Row {
         id: string;
         userId: string | null;
@@ -45,6 +65,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
         createdBy: string | null;
         suspended: boolean;
         runnerClass: string | null;
+        providerConnectionId: string | null;
         position: number;
         createdAt: string;
         updatedAt: string;
@@ -92,6 +113,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
         createdBy: r.createdBy,
         suspended: r.suspended,
         runnerClass: r.runnerClass,
+        providerConnectionId: r.providerConnectionId,
     });
 
     return {
@@ -112,6 +134,12 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
 
         async replace(userId, executors) {
             const suspendedNames = new Set(rows.filter((r) => r.userId === userId && r.suspended).map((r) => r.name));
+            const previous = new Map(rows.filter((r) => r.userId === userId).map((r) => [r.name, r.providerConnectionId]));
+            const connectionOf = (executor: (typeof executors)[number]) =>
+                executor.providerConnectionId === undefined
+                    ? (previous.get(executor.name) ?? null)
+                    : executor.providerConnectionId;
+            for (const executor of executors) judge(userId, connectionOf(executor), executor.type, executor.config);
             for (let i = rows.length - 1; i >= 0; i -= 1) {
                 if (rows[i]!.userId === userId) rows.splice(i, 1);
             }
@@ -126,6 +154,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                     createdBy: null,
                     suspended: executor.suspended ?? suspendedNames.has(executor.name),
                     runnerClass: null,
+                    providerConnectionId: connectionOf(executor),
                     position: rows.filter((r) => r.userId === userId).length,
                     createdAt: at(),
                     updatedAt: at(),
@@ -174,6 +203,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                 gateFixRounds: row.gateFixRounds,
                 suspended: row.suspended,
                 runnerClass: row.runnerClass,
+                ...(row.providerConnectionId === null ? {} : { providerConnectionId: row.providerConnectionId }),
             };
         },
 
@@ -194,6 +224,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
 
         async createOrg(input) {
             assertFree(null, input.name);
+            judge(null, input.providerConnectionId ?? null, input.type, input.config);
             const row: Row = {
                 id: uuid(),
                 userId: null,
@@ -204,6 +235,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
                 createdBy: input.createdBy,
                 suspended: false,
                 runnerClass: input.runnerClass ?? null,
+                providerConnectionId: input.providerConnectionId ?? null,
                 position: byScope(null).length,
                 createdAt: at(),
                 updatedAt: at(),
@@ -215,6 +247,12 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
         async updateOrg(id, patch) {
             const row = rows.find((r) => r.id === id && r.userId === null);
             if (!row) return null;
+            judge(
+                null,
+                patch.providerConnectionId === undefined ? row.providerConnectionId : patch.providerConnectionId,
+                patch.type ?? row.type,
+                patch.config ?? row.config
+            );
             if (patch.name !== undefined && patch.name !== row.name) {
                 assertFree(null, patch.name);
                 row.name = patch.name;
@@ -223,6 +261,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
             if (patch.config !== undefined) row.config = structuredClone(patch.config);
             if (patch.gateFixRounds !== undefined) row.gateFixRounds = patch.gateFixRounds;
             if (patch.runnerClass !== undefined) row.runnerClass = patch.runnerClass;
+            if (patch.providerConnectionId !== undefined) row.providerConnectionId = patch.providerConnectionId;
             row.updatedAt = at();
             return { ...toProfile(row), config: structuredClone(row.config) };
         },
@@ -239,6 +278,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
             if (!row) return null;
             if (to === USER_SCOPE) {
                 if (row.userId !== null) return null;
+                judge(userId, row.providerConnectionId, row.type, undefined);
                 assertFree(userId, row.name);
                 row.userId = userId;
                 row.createdBy = null;
@@ -248,6 +288,7 @@ export function memoryUserExecutorStore(): MemoryUserExecutorStore {
             } else {
                 // Only the caller's OWN personal row promotes.
                 if (row.userId !== userId) return null;
+                judge(null, row.providerConnectionId, row.type, undefined);
                 assertFree(null, row.name);
                 row.userId = null;
                 row.createdBy = userId;

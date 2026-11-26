@@ -724,6 +724,7 @@ describe.skipIf(!enabled)('executor writes and the provider connection they sele
     it('a row with no connection is unchanged', async () => {
         await store.replace(ALICE, [{ name: 'plain', type: 'claude-code', config: { model: 'm' } }]);
         expect((await store.list(ALICE))[0]?.providerConnectionId).toBeNull();
-        expect((await store.configFor(ALICE, 'plain'))?.providerConnectionId).toBeNull();
+        // The claim-time read omits the key entirely, so a profile without a connection reads exactly as it always did.
+        expect(await store.configFor(ALICE, 'plain')).not.toHaveProperty('providerConnectionId');
     });
 });
