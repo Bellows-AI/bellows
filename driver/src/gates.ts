@@ -15,7 +15,7 @@ import { attachersOf, createControlChannel, type FinishRelay } from './control-c
 import { gateRunAttacher } from './tool-control.js';
 import type { DaemonState, Read } from './runner.js';
 import { withDaemonNote } from './dockerd-loss.js';
-import { stepLost, type StepBroker } from './step-control.js';
+import { credentialWait, stepLost, type StepBroker } from './step-control.js';
 import { respondJson } from './http.js';
 import type { PublishRelay } from './publish/publish-control.js';
 import type { ReviewRelay } from './review/review-control.js';
@@ -62,10 +62,11 @@ export interface GateClaim {
     /** The dead-service note the loop's sampler last set; set on the stored claim, never at register. */
     deadServices?: string | undefined;
     /**
-     * Told when an ad-hoc gate found the attempt's supervisor lost (`stepLost`): the
-     * agent's call answers incomplete, and the attempt is the loop's to interrupt.
+     * Told when an ad-hoc gate found the attempt's supervisor lost (`stepLost`), with the error, a credential ask left
+     * unanswered among them (`credentialWait`): the agent's call answers incomplete, and the attempt is the loop's to
+     * interrupt — or, for a credential wait, to hand back outside the budget.
      */
-    onInfraLoss?: (reason: string) => void;
+    onInfraLoss?: (reason: string, error?: unknown) => void;
     /** The attempt's docker daemon restart read (`Runner.dockerdRestarts`): a failed run it moved under gets a note. */
     dockerdRestarts?: (signal: AbortSignal) => Promise<Read<DaemonState>>;
     /** The claim's gate-run record; absent, an ad-hoc run is not recorded. */
@@ -330,8 +331,10 @@ const failedRunAnswer = (e: unknown, claim: GateClaim, signal: AbortSignal): { s
         return { status: HTTP_SERVICE_UNAVAILABLE, body: { error: e.message, retryable: true } };
     }
     if (stepLost(e)) {
-        const reason = `the task supervisor running the gate was lost: ${(e as Error).message}`;
-        claim.onInfraLoss?.(reason);
+        const reason = credentialWait(e)
+            ? `the gate's forge credential could not be confirmed: ${(e as Error).message}`
+            : `the task supervisor running the gate was lost: ${(e as Error).message}`;
+        claim.onInfraLoss?.(reason, e);
         return { status: HTTP_SERVICE_UNAVAILABLE, body: { error: reason, incomplete: true } };
     }
     if ((e as { code?: number }).code === CONTAINER_GONE) {

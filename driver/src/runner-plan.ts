@@ -3,6 +3,7 @@ import type { BoardJob } from './board/board.js';
 import type { DriverConfig } from './config.js';
 import { formatRepoRef } from './repo-ref.js';
 import {
+    forgeHostsEnv,
     npmQuietEnv,
     opencodeDataDir,
     RESUME_MAY_BE_UNWRITTEN_ENV,
@@ -15,6 +16,7 @@ import {
     transcriptDir,
 } from './claim.js';
 import { agentPrompt } from './continuation.js';
+import { forgeCaEnv } from './forge-ca.js';
 import { OPENCODE } from './executors.js';
 import {
     claudeSystemPromptArgs,
@@ -173,6 +175,8 @@ function opencodePlan(
         ...workspaceSkillsEnv(job),
         ...hiddenSkillsEnv(job),
         ...finishRetryEnv(config),
+        ...forgeHostsEnv(job),
+        ...forgeCaEnv(job),
     ];
     const cliArgs = ['run', ...opencodeAgentArgs()];
     if (session) {
@@ -227,6 +231,8 @@ function claudePlan(
         ...workspaceSkillsEnv(job),
         ...hiddenSkillsEnv(job),
         ...finishRetryEnv(config),
+        ...forgeHostsEnv(job),
+        ...forgeCaEnv(job),
     ];
     const cliArgs = [
         session.resume ? '--resume' : '--session-id',

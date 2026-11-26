@@ -325,7 +325,7 @@ const serveDraftPublish = (control: ControlEntry, request: IncomingMessage, stal
 const serveConnectionAsk = (control: ControlEntry, request: IncomingMessage, stale: Stale) =>
     afterBody(request, CONNECTION_BODY_LIMIT, stale, (raw) => serveConnection(control.connecting, raw));
 
-/** `POST /gate-token`: a running gate step's token ask, answered only while the supervisor still holds that step. */
+/** `POST /gate-token`: a running step's forge token ask, answered only while the supervisor still holds that step. */
 const serveGateTokenAsk = (
     control: ControlEntry,
     call: { request: IncomingMessage; reply: ServerResponse; stale: Stale },
@@ -341,7 +341,7 @@ const serveGateTokenAsk = (
             if (!call.reply.writableFinished) gone.abort();
         });
         return serveGateToken(control.gateToken, raw, {
-            holds: (step) => steps.holdsGate(token, step),
+            holds: (step, host) => steps.holdsForgeAsk(token, step, host),
             open: () => call.stale() === null,
             signal: gone.signal,
         });

@@ -151,7 +151,7 @@ for arg in "$@"; do
         ;;
     *factory-stub-github*)
         github_exit=0
-        node /usr/local/bin/github-credential.cjs token >/dev/null 2>/tmp/github.err || github_exit=$?
+        node /usr/local/bin/forge-credential.cjs token >/dev/null 2>/tmp/github.err || github_exit=$?
         echo "github exit $github_exit"
         cat /tmp/github.err
         grep -q ' /run/factory-credentials tmpfs ' /proc/mounts && echo 'github cache tmpfs'

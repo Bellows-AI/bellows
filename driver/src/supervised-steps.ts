@@ -19,7 +19,7 @@ import { parseLastJsonLine } from './json-parse.js';
 import { type Bound, pollFor, type Sleep, timeLeft } from './poll.js';
 import {
     baseBranchOf,
-    CREDENTIAL_HELPER,
+    credentialHelperOf,
     probeNoChange,
     probeGateTree,
     probeTreeFingerprint,
@@ -36,7 +36,8 @@ import {
 } from './publish/publish.js';
 import { snapshotTree } from './review/review-snapshot.js';
 import type { Runner } from './runner.js';
-import { noStepChannel, StepTimedOut, type StepSink, stepLost } from './step-control.js';
+import { normalizeForgeHost, usesForgeMailbox } from './repo-ref.js';
+import { noStepChannel, StepTimedOut, StepTokenUnanswered, type StepSink, stepLost } from './step-control.js';
 import { SUPERVISOR_ENV, type StepKind, type StepRequest, type StepResult } from './supervisor-contract.js';
 
 /**
@@ -90,12 +91,36 @@ export function controlTokenOf(job: BoardJob): string {
 /**
  * The claim env as a step's environment, with the board's GitHub token for this step laid over it
  * as `GITHUB_TOKEN` when the loop got one (docs/connections.md). The claim env itself never carries
- * one: the name is reserved, so `claimEnv` drops any a board sent.
+ * one: the name is reserved, so `claimEnv` drops any a board sent. A job whose git asks through the forge
+ * mailbox (`usesForgeMailbox`) gets no token here whatever it was handed: its step names the host instead.
  */
 export const claimStepEnv = (job: BoardJob, githubToken?: string): Record<string, string> => ({
     ...claimEnv(job),
-    ...(githubToken ? { GITHUB_TOKEN: githubToken } : {}),
+    ...(githubToken && !usesForgeMailbox(job) ? { GITHUB_TOKEN: githubToken } : {}),
 });
+
+/**
+ * The `forgeHost` of a step of `job` that reaches its remote: the normalized host (`normalizeForgeHost`, the one the
+ * helper asks for and `holdsForgeAsk` compares) for a job that asks through the forge mailbox, nothing otherwise. The
+ * supervisor serves that step the member's token on demand.
+ */
+export const forgeHostOf = (job: BoardJob): { forgeHost?: string } => {
+    const host = usesForgeMailbox(job) && job.repo ? normalizeForgeHost(job.repo.host) : null;
+    return host === null ? {} : { forgeHost: host };
+};
+
+/**
+ * A step whose credential ask the supervisor could not get answered — the board left it unanswered or holds
+ * the task for the member's connection: the step ran without the credential it needed, so its exit is no
+ * verdict. A lost step (`stepLost`): the attempt is handed back as an interruption, never failed.
+ */
+export class ForgeWait extends StepTokenUnanswered {
+    constructor(what: string) {
+        super();
+        this.name = 'ForgeWait';
+        this.message = `the forge credential ask of ${what} went unanswered: no verdict, the attempt waits`;
+    }
+}
 
 const slug = (label: string): string => label.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
@@ -193,6 +218,7 @@ export const stepRequest = (
         timeoutMs: number;
         parallel?: true;
         tokenless?: true;
+        forgeHost?: string;
     }
 ): StepRequest => ({
     id: `${kind}-${attemptKey(job)}-${parts.id}`,
@@ -205,6 +231,7 @@ export const stepRequest = (
     timeoutMs: parts.timeoutMs,
     ...(parts.parallel ? { parallel: true as const } : {}),
     ...(parts.tokenless ? { tokenless: true as const } : {}),
+    ...(parts.forgeHost ? { forgeHost: parts.forgeHost } : {}),
 });
 
 /**
@@ -239,15 +266,18 @@ export function supervisedStepRunner(
                 id,
                 argv: [publish.entrypoint, ...publish.args],
                 cwd: publish.inRepo ? repo : null,
-                // The literals are paths and code; the claim env only for a step that reads it.
+                // The literals are paths and code; the claim env only for a step that reads it — the one that
+                // reaches the remote, which names the forge host when its git asks through the mailbox.
                 env: {
                     ...(publish.env ? claimStepEnv(job, options.githubToken) : {}),
                     ...(publish.envLiterals ?? {}),
                 },
+                ...(publish.env ? forgeHostOf(job) : {}),
                 timeoutMs: PUBLISH_STEP_TIMEOUT_MS,
             }),
             options.signal
         );
+        if (result.tokenAskUnanswered) throw new ForgeWait(publish.label);
         if (result.exitCode !== 0 || result.timedOut) throw new Error(detailOf(result, PUBLISH_STEP_TIMEOUT_MS));
         return { stdout: result.stdout };
     };
@@ -256,9 +286,10 @@ export function supervisedStepRunner(
 /**
  * The startup sync (or, for a claim that continues a session, the restore) as one supervised step:
  * a starting claim gets fetch + create-or-rebase, with the board's GitHub token for the fetch when
- * the loop got one; a continuing claim gets RESTORE=1 and no env at all — nothing that touches the
- * remote. The step is never abandoned mid-write: a stand-down kills the group instead,
- * which rejects it.
+ * the loop got one — or, for a job that asks through the forge mailbox, the host and the mailbox helper
+ * and never a token; a continuing claim gets RESTORE=1 and no env at all — nothing that touches the
+ * remote. A credential ask left unanswered is a `forge_wait`, never a failed sync. The step is never
+ * abandoned mid-write: a stand-down kills the group instead, which rejects it.
  */
 export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: string): Promise<SyncResult> {
     const { config } = host;
@@ -268,6 +299,7 @@ export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: s
     // A restored tree is the conversation's tree like any continuing claim's: nothing fetched, nothing rebased.
     const restore = claimContinuesSession(job) || job.taskRestore?.restored === true;
     const base = baseBranchOf(job);
+    const mailbox = !restore && usesForgeMailbox(job);
     const result = await submitStep(
         host,
         job,
@@ -284,12 +316,14 @@ export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: s
                 ...(base ? { BASE_BRANCH: base } : {}),
                 // The fetch's credential helper CODE, only beside a token: a public repo with none
                 // keeps its plain unauthenticated fetch, which a helper answering an empty password
-                // would break. The token itself is the step env above.
-                ...(!restore && githubToken ? { CRED_HELPER: CREDENTIAL_HELPER } : {}),
+                // would break. The token itself is the step env above. A mailbox job's helper asks on demand.
+                ...(mailbox || (!restore && githubToken) ? { CRED_HELPER: credentialHelperOf(job) } : {}),
             },
+            ...(mailbox ? forgeHostOf(job) : {}),
             timeoutMs: SYNC_DEADLINE_MS,
         })
     );
+    if (result.tokenAskUnanswered) return forgeWaitResult('the checkout sync');
     if (result.timedOut) {
         return { ok: false, reason: `the worktree sync failed: ${detailOf(result, SYNC_DEADLINE_MS)}` };
     }
@@ -303,6 +337,13 @@ export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: s
 }
 
 const ERROR_PREVIEW_CHARS = 200;
+
+/** The sync or restore result of a step whose credential ask went unanswered: a wait, never a failure. */
+export const forgeWaitResult = (what: string): SyncResult => ({
+    ok: false,
+    reason: new ForgeWait(what).message,
+    kind: 'forge_wait',
+});
 
 /** How long a close-time readout step may run: the scripts read one database or one transcript. */
 export const READOUT_STEP_TIMEOUT_MS = 120_000;
@@ -379,10 +420,12 @@ async function submitHelper(
                     ...(plan.githubWriting ? claimStepEnv(job, token) : {}),
                     HELPER_INPUT: helperInputValue(plan),
                 },
+                ...(plan.githubWriting ? forgeHostOf(job) : {}),
                 timeoutMs: HELPER_TIMEOUT_MS,
             }),
             signal
         );
+        if (result.tokenAskUnanswered) throw new ForgeWait(`the helper ${plan.helperId}`);
         if (result.timedOut) {
             return { ok: false, reason: 'timeout', message: `the helper exceeded its ${HELPER_TIMEOUT_MS}ms bound` };
         }
@@ -404,7 +447,7 @@ export interface GateStepRequest {
     timeoutMs: number;
     /** Runs beside the other parallel gates in the gate container instead of waiting its turn (`StepRequest.parallel`). */
     parallel?: true;
-    /** An agent's exec: the step gets no GitHub token (`StepRequest.tokenless`). */
+    /** An agent's exec: the step gets no forge token, GitHub's or GitLab's (`StepRequest.tokenless`). */
     tokenless?: true;
 }
 

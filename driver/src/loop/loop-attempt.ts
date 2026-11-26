@@ -14,6 +14,7 @@ import { heartbeatPeriodMs } from '../supervisor-plan.js';
 import type { KillRecord } from '../termination.js';
 import type { TimeoutActivity } from '../timeout-note.js';
 import { describeError } from '../log.js';
+import { credentialWait } from '../step-control.js';
 
 /** How often freshly arrived output is flushed to the board — the pace the dashboard polls at. */
 const PROGRESS_MS = 2_000;
@@ -116,6 +117,8 @@ export interface JobState {
      * attempt is interrupted once its run is over, never given a verdict. Null while none did.
      */
     gateLoss: string | null;
+    /** `gateLoss` was a credential ask left unanswered (`credentialWait`): a wait handed back outside the budget. */
+    gateLossWait: boolean;
     /**
      * The attempt's run-control token (`BELLOWS_CONTROL_TOKEN`), set once the control endpoint is
      * open for it; null until then, and for a driver with no endpoint at all.
@@ -232,6 +235,7 @@ export function newJobState(): JobState {
         probingLaunch: false,
         gateToken: null,
         gateLoss: null,
+        gateLossWait: false,
         control: null,
         transcriptExport: null,
         running: false,
@@ -283,6 +287,16 @@ export async function killAgent(
 
 /** The verdicts that end an attempt where it stands: a stop, a lost lease, a removed thread. */
 export const down = (state: JobState): boolean => state.ending !== null;
+
+/**
+ * Records the first gate loss of the attempt (`gateLoss`) and whether `error` was a credential ask left unanswered
+ * (`gateLossWait`); a later loss changes neither.
+ */
+export function noteGateLoss(state: JobState, reason: string, error?: unknown): void {
+    if (state.gateLoss !== null) return;
+    state.gateLoss = reason;
+    state.gateLossWait = credentialWait(error);
+}
 
 /** Forget pending questions when the attempt ends or Stop cancels them. */
 export function clearPendingQuestions(state: JobState): void {

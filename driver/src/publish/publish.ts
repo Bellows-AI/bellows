@@ -5,7 +5,7 @@ import { containerScript as script } from '../container-scripts.js';
 import { TASK_MOUNT, UUID } from '../task-volume.js';
 import { parseLastJsonLine } from '../json-parse.js';
 import { stepLost } from '../step-control.js';
-import { baseBranchOf, isBranchName } from './publish-base.js';
+import { baseBranchOf, credentialHelperOf, isBranchName } from './publish-base.js';
 import { headSha, publicationOp, recordOperation } from './publish-reconcile.js';
 import {
     type PrOperationRecorder,
@@ -23,6 +23,8 @@ import {
 export {
     baseBranchOf,
     CREDENTIAL_HELPER,
+    credentialHelperOf,
+    FORGE_STEP_CREDENTIAL_HELPER,
     isBranchName,
     type PrSummary,
     parsePrSummary,
@@ -194,12 +196,17 @@ export interface PublishOptions {
  * the script too, which driver/test/docker/ pins.
  */
 export const SYNC_FAILURE_KINDS = ['branch_unrestorable', 'missing_base_branch'] as const;
-/** What a refused sync names: a config kind above, or the thread's lost checkpoint (`task-restore.ts`), which is its own failure kind. */
+/**
+ * What a refused sync names: a config kind above, or the thread's lost checkpoint (`task-restore.ts`), which is its own
+ * failure kind — or `forge_wait`, the driver's own: a credential ask through the forge mailbox went unanswered, which
+ * is a wait the loop hands back as an interruption (`syncFailureHalt`), never a failure.
+ */
 export type SyncFailureKind =
     | (typeof SYNC_FAILURE_KINDS)[number]
     | 'checkpoint_unrestorable'
     | 'attachment_unavailable'
-    | 'skill_unavailable';
+    | 'skill_unavailable'
+    | 'forge_wait';
 
 /**
  * The turn context a conflict handed over by the sync adds: the paths, and what the
@@ -807,7 +814,7 @@ export async function publishCheckout(
         const sha = await headSha(runStep);
         if (sha === null) throw new Error('git rev-parse HEAD: the checkout has no readable HEAD');
         const op = publicationOp(branch, sha);
-        await pushRecorded(runStep, step, { repo, branch, op, sha });
+        await pushRecorded(runStep, step, { repo, branch, op, sha, credentialHelper: credentialHelperOf(job) });
 
         // Reuse the branch's PR when one exists, or open one — see resolveOrCreatePr.
         const landed = await resolveOrCreatePr(runStep, {

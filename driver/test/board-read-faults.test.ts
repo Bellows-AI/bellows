@@ -88,7 +88,7 @@ describe.each(FAULTS)('%s answering a board call', (_name, respond) => {
     });
 
     it('the github credential ask is unanswered, never refused', async () => {
-        const grant = await board.githubGrant(job, AbortSignal.timeout(300));
+        const grant = await board.forgeGrant(job, AbortSignal.timeout(300));
         expect(grant.kind).toBe('unanswered');
     });
 });
@@ -109,11 +109,11 @@ describe('the board answering with its own code', () => {
     it('a coded refusal is still the github ask refused; 408 and 425 are never', async () => {
         const refused = boardAnswering(() => json(403, { error: 'no', code: 'CONNECTION_NOT_AUTHORIZED' }));
         const noApp = boardAnswering(() => json(409, { error: 'no app', code: 'GITHUB_UNAVAILABLE' }));
-        expect((await refused.githubGrant(job, AbortSignal.timeout(300))).kind).toBe('refused');
-        expect((await noApp.githubGrant(job, AbortSignal.timeout(300))).kind).toBe('refused');
+        expect((await refused.forgeGrant(job, AbortSignal.timeout(300))).kind).toBe('refused');
+        expect((await noApp.forgeGrant(job, AbortSignal.timeout(300))).kind).toBe('refused');
         for (const status of [408, 425]) {
             const board = boardAnswering(() => json(status, { error: 'later', code: 'X' }));
-            expect((await board.githubGrant(job, AbortSignal.timeout(300))).kind).toBe('unanswered');
+            expect((await board.forgeGrant(job, AbortSignal.timeout(300))).kind).toBe('unanswered');
         }
     });
 });

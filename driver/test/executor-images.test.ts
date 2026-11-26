@@ -1,4 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
@@ -657,10 +658,10 @@ describe('the entrypoint Jira variables', () => {
 });
 
 /*
- * GitHub over https (docs/connections.md): no token rides the runner's env. With the attempt pair
- * present the entrypoint points git at the image's helper, which asks the board, so `git push`
- * answers github.com with the attempt's token — and the git config holds the helper's path, never
- * a token.
+ * GitHub and a GitLab task's host over https (docs/connections.md): no token rides the runner's env.
+ * With the attempt pair present the entrypoint points git at the image's helper for github.com and
+ * each host RUNNER_FORGE_HOSTS names, which asks the board, so `git push` answers with the attempt's
+ * token — and the git config holds the helper's path, never a token.
  */
 describe('the entrypoint git credential', () => {
     const ENTRYPOINTS = ['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'];
@@ -669,7 +670,7 @@ describe('the entrypoint git credential', () => {
      * Asks git for a github.com credential as `git push` would, in the agent's environment (the
      * helper reads the pair at call time); the host's system helpers stay out.
      */
-    const fill = (home: string, env: Record<string, string>) =>
+    const fill = (home: string, env: Record<string, string>, host = 'github.com') =>
         new Promise<string>((resolve, reject) => {
             const child = spawn('git', ['credential', 'fill'], {
                 env: {
@@ -686,7 +687,7 @@ describe('the entrypoint git credential', () => {
             });
             child.on('error', reject);
             child.on('exit', () => resolve(out));
-            child.stdin.end('protocol=https\nhost=github.com\n\n');
+            child.stdin.end(`protocol=https\nhost=${host}\n\n`);
         });
 
     it.each(ENTRYPOINTS)(
@@ -715,8 +716,51 @@ describe('the entrypoint git credential', () => {
                     /username=x-access-token\npassword=ghs_entrypoint_\d+\n/
                 );
                 const gitconfig = readFileSync(join(home, '.gitconfig'), 'utf8');
-                expect(gitconfig).toContain('github-credential.cjs');
+                expect(gitconfig).toContain('forge-credential.cjs');
                 expect(gitconfig).not.toContain('ghs_entrypoint');
+            } finally {
+                sandbox.cleanup();
+                await new Promise((resolve) => board.close(resolve));
+            }
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    it.each(ENTRYPOINTS)(
+        '%s answers the GitLab host RUNNER_FORGE_HOSTS names as oauth2, and no other host',
+        async (entrypoint) => {
+            const asked: string[] = [];
+            const board = createServer((request, response) => {
+                asked.push(String(request.url));
+                request.resume();
+                response.writeHead(200, { 'content-type': 'application/json' });
+                response.end(JSON.stringify({ token: 'glpat_entrypoint', expiresAt: null }));
+            });
+            await new Promise<void>((resolve) => board.listen(0, '127.0.0.1', resolve));
+            const sandbox = makeSandbox();
+            try {
+                const url = `http://127.0.0.1:${(board.address() as AddressInfo).port}`;
+                // A fresh job id: inside a runner the helper's cache path is real, and an entry would answer a rerun.
+                const env = {
+                    FACTORY_STATS_URL: url,
+                    ...PAIR,
+                    RUNNER_JOB_ID: randomUUID(),
+                    RUNNER_FORGE_HOSTS: 'GitLab.Example.com,not a host',
+                };
+                const child = runEntrypoint(entrypoint, sandbox, env);
+                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
+                const home = sandbox.env.HOME!;
+                const gitconfig = readFileSync(join(home, '.gitconfig'), 'utf8');
+                expect(gitconfig).toContain('[credential "https://github.com"]');
+                expect(gitconfig).toContain('[credential "https://gitlab.example.com"]');
+                expect(gitconfig.match(/\[credential /g)).toHaveLength(2);
+                expect(await fill(home, env, 'gitlab.example.com')).toMatch(
+                    /username=oauth2\npassword=glpat_entrypoint\n/
+                );
+                expect(asked.at(-1)).toMatch(/\/credentials\/gitlab$/);
+                const before = asked.length;
+                expect(await fill(home, env, 'gitlab.other.example')).not.toContain('glpat_entrypoint');
+                expect(asked).toHaveLength(before);
             } finally {
                 sandbox.cleanup();
                 await new Promise((resolve) => board.close(resolve));
@@ -743,10 +787,11 @@ describe('the entrypoint git credential', () => {
 
     it.each(ENTRYPOINTS)('%s clears the cached token as the run ends', (entrypoint) => {
         const entry = read(entrypoint);
-        expect(entry).toContain('GITHUB_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/github-credential.cjs"');
+        expect(entry).toContain('FORGE_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/forge-credential.cjs"');
+        expect(entry).not.toContain('github-credential');
         // As the tool uid, which owns the cache: through the tool shell.
         expect(entry).toMatch(
-            /"\$\{SHELL:-\/bin\/sh\}" -c 'node "\$1" clear' clear "\$GITHUB_CREDENTIAL" 2>\/dev\/null \|\| true\nexit "\$STATUS"\n$/
+            /"\$\{SHELL:-\/bin\/sh\}" -c 'node "\$1" clear' clear "\$FORGE_CREDENTIAL" 2>\/dev\/null \|\| true\nexit "\$STATUS"\n$/
         );
         expect(entry).not.toContain('$GITHUB_TOKEN');
     });

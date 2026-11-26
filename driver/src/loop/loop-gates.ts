@@ -12,7 +12,7 @@ import { gateIdentity, orgKeyOf } from '../gate-identity.js';
 import { recordGateRun, type GateEnd } from '../gate-record.js';
 import { SETUP_FAILED_PREFIX } from '../gate-cause.js';
 import { GATE_RUNS_READ_MS, reusableRun, reusedReport } from './gate-reuse.js';
-import { down, raceStep } from './loop-attempt.js';
+import { down, noteGateLoss, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from '../supervisor-contract.js';
 import type { JobState } from './loop-attempt.js';
 import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
@@ -151,9 +151,7 @@ export async function beginGates(
             ledger,
             readGateLog: (executionId, signal) => rt.board.gateLog(job, executionId, signal),
             // The agent's ad-hoc gate found the supervisor lost: the attempt's, once its run is over.
-            onInfraLoss: (reason) => {
-                state.gateLoss ??= reason;
-            },
+            onInfraLoss: (reason, error) => noteGateLoss(state, reason, error),
             // A docker class's daemon restarting under an ad-hoc run is a note in its answer, never a loss.
             dockerdRestarts: (signal) => readDaemon(rt.runner, job, signal),
         });

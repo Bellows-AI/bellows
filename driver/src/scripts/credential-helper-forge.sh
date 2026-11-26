@@ -1,0 +1,1 @@
+!FACTORY_GATE_MODE=credential /bin/sh "$FACTORY_FORGE_HELPER"

@@ -12,18 +12,59 @@ if [ -n "${FACTORY_GATE_SETUP:-}" ]; then
         -exec sh -c 'for f; do t="$f.owned.$$"; cp -p "$f" "$t" && chmod g+w "$t" && mv -f "$t" "$f" || rm -f "$t"; done' sh {} + \
         >/dev/null 2>&1
 fi
-# A gate holds no GitHub token: with a mailbox to ask through (scripts/gate-github.sh, installed at
-# FACTORY_GATE_BIN/gh by the loop), `gh` resolves to the shim and git's github.com helper to it, the
-# request env's own GIT_CONFIG_* pairs kept. Without one (setup, other users of this shell) nothing changes.
+# A gate holds no forge token: with a mailbox to ask through (scripts/gate-forge.sh, installed at
+# FACTORY_GATE_BIN/gh by the loop), `gh` resolves to the shim and git's helper for github.com and for each
+# host in the comma-separated FACTORY_FORGE_HOSTS to it, the request env's own GIT_CONFIG_* pairs kept (git
+# 2.31 and later read them; an older git runs tokenless). Without one (setup, other users of this shell)
+# nothing changes.
 if [ -n "${FACTORY_GATE_RUN:-}" ] && [ -n "${FACTORY_GATE_BIN:-}" ] && [ -d "$FACTORY_GATE_RUN/asks" ]; then
     PATH="$FACTORY_GATE_BIN:$PATH"
     export PATH
     n=${GIT_CONFIG_COUNT:-0}
     case $n in '' | *[!0-9]*) n=0 ;; esac
-    m=$((n + 1))
-    export "GIT_CONFIG_KEY_$n=credential.https://github.com.helper" "GIT_CONFIG_VALUE_$n="
-    export "GIT_CONFIG_KEY_$m=credential.https://github.com.helper"
-    export "GIT_CONFIG_VALUE_$m=!FACTORY_GATE_MODE=credential /bin/sh '$FACTORY_GATE_BIN/gh'"
-    export GIT_CONFIG_COUNT=$((m + 1))
+    seen=,
+    set -f
+    oldifs=$IFS
+    IFS=,
+    for host in github.com ${FACTORY_FORGE_HOSTS:-}; do
+        case $host in '' | *[!a-z0-9.:-]*) continue ;; esac
+        case $seen in *",$host,"*) continue ;; esac
+        seen="$seen$host,"
+        m=$((n + 1))
+        export "GIT_CONFIG_KEY_$n=credential.https://$host.helper" "GIT_CONFIG_VALUE_$n="
+        export "GIT_CONFIG_KEY_$m=credential.https://$host.helper"
+        export "GIT_CONFIG_VALUE_$m=!FACTORY_GATE_MODE=credential /bin/sh '$FACTORY_GATE_BIN/gh'"
+        n=$((m + 1))
+    done
+    IFS=$oldifs
+    set +f
+    export GIT_CONFIG_COUNT=$n
 fi
+# A GitLab behind a private CA: FACTORY_FORGE_CA is the connection's certificate chain, each PEM line a
+# comma-separated field (a request's env is one line per name). It is written to a file in this gate's own
+# tmp and trusted for each host of FACTORY_FORGE_HOSTS alone (`http.https://<host>/.sslCAInfo`, appended to
+# the GIT_CONFIG_* pairs like the helpers above), never by turning verification off; the chain is not left
+# in the command's env, and never printed.
+if [ -n "${FACTORY_FORGE_CA:-}" ] && [ -n "${FACTORY_FORGE_HOSTS:-}" ]; then
+    ca_dir="${TMPDIR:-/tmp}/factory-forge-ca"
+    set -f
+    oldifs=$IFS
+    IFS=,
+    if mkdir -p "$ca_dir" && for line in $FACTORY_FORGE_CA; do printf '%s\n' "$line"; done > "$ca_dir/ca.pem.$$" &&
+        chmod 0644 "$ca_dir/ca.pem.$$" && mv -f "$ca_dir/ca.pem.$$" "$ca_dir/ca.pem"; then
+        n=${GIT_CONFIG_COUNT:-0}
+        case $n in '' | *[!0-9]*) n=0 ;; esac
+        for host in $FACTORY_FORGE_HOSTS; do
+            case $host in '' | github.com | *[!a-z0-9.:-]*) continue ;; esac
+            export "GIT_CONFIG_KEY_$n=http.https://$host/.sslCAInfo" "GIT_CONFIG_VALUE_$n=$ca_dir/ca.pem"
+            n=$((n + 1))
+        done
+        export GIT_CONFIG_COUNT=$n
+    else
+        echo "[gate] could not write the forge CA to $ca_dir: git will not trust the forge's private CA" >&2
+    fi
+    IFS=$oldifs
+    set +f
+fi
+unset FACTORY_FORGE_CA
 exec sh -c "$1"

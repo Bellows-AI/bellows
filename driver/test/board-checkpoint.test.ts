@@ -159,22 +159,26 @@ describe('the board transcript reads', () => {
 });
 
 describe('syncFailureHalt', () => {
+    const repoJob = { repo: { forge: 'github', host: 'github.com', path: 'acme/widgets' } } as const;
+
     it('ends an unrestorable thread with its own failure kind', () => {
-        expect(syncFailureHalt({ ok: false, reason: 'no checkpoint', kind: 'checkpoint_unrestorable' })).toMatchObject({
+        expect(
+            syncFailureHalt({ ok: false, reason: 'no checkpoint', kind: 'checkpoint_unrestorable' }, repoJob)
+        ).toMatchObject({
             halt: 'fault',
             verdict: { status: 'failed', failureKind: 'checkpoint_unrestorable' },
         });
     });
 
     it('ends a thread whose attachment is gone with its own failure kind', () => {
-        expect(syncFailureHalt({ ok: false, reason: 'gone', kind: 'attachment_unavailable' })).toMatchObject({
+        expect(syncFailureHalt({ ok: false, reason: 'gone', kind: 'attachment_unavailable' }, repoJob)).toMatchObject({
             halt: 'fault',
             verdict: { status: 'failed', failureKind: 'attachment_unavailable' },
         });
     });
 
     it('keeps an unnamed failure a runner error', () => {
-        expect(syncFailureHalt({ ok: false, reason: 'boom' })).toMatchObject({
+        expect(syncFailureHalt({ ok: false, reason: 'boom' }, repoJob)).toMatchObject({
             verdict: { failureKind: 'runner_error' },
         });
     });

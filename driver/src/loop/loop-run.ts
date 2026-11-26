@@ -5,6 +5,7 @@ import { evidencePolicyActive, type GatesOutcome } from '../evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from '../runner.js';
 import { adoptStep, recordAdopted, runnerClassStep } from './loop-adopt.js';
 import { askGithubToken } from './loop-github.js';
+import { usesForgeMailbox } from '../repo-ref.js';
 import { preHelperStep } from './loop-helpers.js';
 import { probeTreeNow, type GateFailure, type GateSession } from './loop-gates.js';
 import { beginGates, mintGateCredentials, probeDeadServices } from './loop-gates.js';
@@ -30,6 +31,7 @@ import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclu
 import type { GateRunNote } from '../timeout-note.js';
 import {
     faultHalt,
+    credentialWaitReason,
     gateLossReason,
     syncFailureHalt,
     handBackFence,
@@ -42,7 +44,7 @@ import {
     thrownRunDecision,
     unreportedDecision,
 } from './loop-fence.js';
-import type { AdoptedRecord, AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
+import type { AdoptedRecord, AttemptCtx, EndDecision, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { SyncResult } from '../publish/publish.js';
 import { agentFaults, gatesEligible, skipWhyOf } from './loop-ledger.js';
@@ -114,8 +116,9 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     const { runner } = rt;
     // An adopted run's tree is its result, and a taken-over run is still writing it: nothing rewrites it.
     if (ctx.adopted || ctx.takeover) return null;
-    // A starting claim's fetch reaches GitHub; a restore and a repo-less job do not.
-    const fetches = Boolean(job.repo) && !claimContinuesSession(job);
+    // A starting claim's fetch reaches GitHub; a restore and a repo-less job do not. A job whose git asks through the
+    // forge mailbox is handed no token: its sync step asks for its own.
+    const fetches = Boolean(job.repo) && !claimContinuesSession(job) && !usesForgeMailbox(job);
     const githubToken = fetches ? await askGithubToken(rt, job, 'the checkout sync') : null;
     const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken ?? undefined);
     let syncedOut: { value: SyncResult } | null;
@@ -140,7 +143,7 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
         handOverConflict(job, synced);
         return null;
     }
-    return syncFailureHalt(synced);
+    return syncFailureHalt(synced, job);
 }
 
 /**
@@ -186,7 +189,9 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
         return gateOut.value;
     } catch (e) {
         // The setup's supervisor was lost: the attempt's loss, never a config verdict.
-        if (stepLost(e)) return { halt: 'interrupt', reason: gateLossReason(e), ...(await supervisorLossFlag(ctx, e)) };
+        if (stepLost(e)) {
+            return { halt: 'interrupt', reason: gateLossReason(job, e), ...(await supervisorLossFlag(ctx, e)) };
+        }
         return faultHalt(
             'gate environment failed, failing with a reason',
             `The gate environment declared in .bellows.yaml could not be started: ${(e as Error).message}`,
@@ -510,20 +515,27 @@ function gatesOutcomeOf(declared: boolean, gated: GatesPhase): GatesOutcome {
 
 /**
  * The run's end with no verdict of its own, answering whether the attempt was concluded here: an
- * ad-hoc gate that found the supervisor lost while the agent ran interrupts it, and a
+ * ad-hoc gate that found the supervisor lost while the agent ran interrupts it — one whose credential ask went
+ * unanswered hands it back outside the budget (`gateLossWait`) — and a
  * run the platform refused or took away is concluded by `unreportedDecision`.
  */
 async function concludeRunEnd(ctx: AttemptCtx, outcome: RunOutcome): Promise<boolean> {
-    const { gateLoss } = ctx.state;
-    const decision =
-        gateLoss === null
-            ? unreportedDecision(outcome)
-            : interruptDecision(`infrastructure loss: ${gateLoss}`, outcome.exitCode, false, {
-                  nodeLoss: outcome.infraNodeLoss === true,
-              });
+    const decision = runEndDecision(ctx, outcome);
     if (decision === null) return false;
     await end(ctx, decision);
     return true;
+}
+
+/** `concludeRunEnd`'s decision: the ad-hoc gate's loss or credential wait first, else the run's own ending. */
+function runEndDecision(ctx: AttemptCtx, outcome: RunOutcome): EndDecision | null {
+    const { gateLoss, gateLossWait } = ctx.state;
+    if (gateLoss === null) return unreportedDecision(outcome);
+    if (gateLossWait) {
+        return interruptDecision(credentialWaitReason(ctx.job, gateLoss), outcome.exitCode, false, { blocked: true });
+    }
+    return interruptDecision(`infrastructure loss: ${gateLoss}`, outcome.exitCode, false, {
+        nodeLoss: outcome.infraNodeLoss === true,
+    });
 }
 
 /**
@@ -542,7 +554,7 @@ async function gatesOrLoss(
         return await withLifecycleSpan('gate', attemptAttributes(ctx), () => runGatesPhase(ctx, gateSession, outcome));
     } catch (e) {
         if (!servicesLost(e) && !(e instanceof DaemonLost)) throw e;
-        const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
+        const reason = stepLost(e) ? gateLossReason(ctx.job, e) : `infrastructure loss: ${(e as Error).message}`;
         await end(ctx, interruptDecision(reason, null, false, await supervisorLossFlag(ctx, e)));
         return STOOD_DOWN;
     }

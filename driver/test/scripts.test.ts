@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CREDENTIAL_HELPER, gitProbeScript, prSummaryScript, taskCheckoutScript } from '../src/publish/publish.js';
+import { FORGE_STEP_CREDENTIAL_HELPER } from '../src/publish/publish-base.js';
 import { taskInitScript } from '../src/task-volume.js';
 import {
     BODY_MAX,
@@ -29,7 +30,7 @@ import {
     checkpointScript,
     gitHardenScript,
     claudeTurnsScript,
-    gateGithubScript,
+    gateForgeScript,
     gateLoopScript,
     reviewLoopScript,
     gateShellScript,
@@ -76,8 +77,9 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['skill-install.cjs', 'node'],
     ['opencode-cache-probe.cjs', 'node'],
     ['credential-helper.sh', 'sh'],
+    ['credential-helper-forge.sh', 'sh'],
     ['gate-shell.sh', 'sh'],
-    ['gate-github.sh', 'sh'],
+    ['gate-forge.sh', 'sh'],
     ['dockerd-start.sh', 'sh'],
     // `sh -n` below only parses it: the gate loop is never run outside its container
     // (scripts-gate-loop.test.ts says why).
@@ -114,7 +116,7 @@ describe('the container scripts', () => {
         if (runtime === 'node') {
             // --check parses only; it executes nothing, so a script here is safe to compile-check.
             execFileSync('node', ['--check', path], { stdio: 'ignore' });
-        } else if (name === 'credential-helper.sh') {
+        } else if (name === 'credential-helper.sh' || name === 'credential-helper-forge.sh') {
             // A gitcredentials(7) snippet, not a standalone script: the driver passes the whole
             // file as `git -c credential.helper=<content>`, and the leading `!` is what tells git
             // to run it as a shell snippet rather than look up a command. A pipeline negation is
@@ -146,9 +148,10 @@ describe('the container scripts', () => {
         expect(attachmentExtractScript).toBe(readFileSync(pathOf('attachment-extract.cjs'), 'utf8'));
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));
         expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8').trim());
+        expect(FORGE_STEP_CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper-forge.sh'), 'utf8').trim());
         expect(gateShellScript).toBe(readFileSync(pathOf('gate-shell.sh'), 'utf8'));
         expect(gateLoopScript).toBe(readFileSync(pathOf('gate-loop.sh'), 'utf8'));
-        expect(gateGithubScript).toBe(readFileSync(pathOf('gate-github.sh'), 'utf8'));
+        expect(gateForgeScript).toBe(readFileSync(pathOf('gate-forge.sh'), 'utf8'));
         expect(reviewLoopScript).toBe(readFileSync(pathOf('review-loop.sh'), 'utf8'));
         expect(serviceGenerationProbeScript).toBe(readFileSync(pathOf('service-generation-probe.sh'), 'utf8'));
         expect(serviceGenerationBumpScript).toBe(readFileSync(pathOf('service-generation-bump.sh'), 'utf8'));

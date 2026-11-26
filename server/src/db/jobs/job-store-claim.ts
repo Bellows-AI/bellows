@@ -58,6 +58,7 @@ import {
 } from '../workflows/workflow-schema.js';
 import { logger } from '../../log.js';
 import { claimAuthorFor } from './job-store-claim-author.js';
+import { claimForgeCa } from './job-store-claim-forge-ca.js';
 
 /** The worker claim of the next queued job. */
 export interface JobClaimStore {
@@ -595,7 +596,7 @@ async function assembleClaim(
     const outcomes = connections.outcomes.length > 0 ? { connectionOutcomes: connections.outcomes } : {};
     // Read on every claim, takeover and resume included, so a recovered runner gets the same author.
     const author = commitAuthor ? await claimAuthorFor(tx, row.run_as) : null;
-    return { ...claim, lastGateReports, ...outcomes, ...(author ? { author } : {}) };
+    return { ...claim, lastGateReports, ...outcomes, ...(author ? { author } : {}), ...(await claimForgeCa(ctx, row)) };
 }
 
 /** The settle passes a claim runs before it looks for a candidate, each committed on its own. */

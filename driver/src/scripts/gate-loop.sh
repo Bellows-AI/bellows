@@ -10,8 +10,9 @@
 #   done/<id>/{output,exit}          the answer: `exit` written atomically, then the rename
 #   alive                            this loop's heartbeat, touched every iteration
 #   parallel                         present while the loop can run requests side by side (`setsid` exists)
-#   bin/gh                           the GitHub helper ($2, scripts/gate-github.sh), installed at start
-#   running/<id>/{asks,answers}      a GitHub token ask of the running request and the supervisor's answer
+#   bin/gh                           the forge helper ($2, scripts/gate-forge.sh), installed at start
+#   running/<id>/{asks,answers}      a forge token ask (`ask <host>`) of the running request and the supervisor's answer
+#   running/<id>/faults/armed        the supervisor's pre-made slot the helper removes when an ask could not be written; moved to done/<id> with the rest
 #   running/<id>/report/             what the gate and this loop record for the answer, moved to done/<id>/report/
 #                                    with it, so a gate killed at its deadline is answered with what it had written:
 #                                    the gate's own files (`$FACTORY_GATE_RUN/report/<section>.json`) and `resources`,
@@ -34,7 +35,7 @@
 # Without `setsid` the loop takes a request only when none is running, and says nothing is parallel.
 box=${FACTORY_GATE_DIR:-/factory/gate}
 shell=$1
-github=$2
+forge=$2
 interval=${FACTORY_GATE_SAMPLE_SECONDS:-30}
 case $interval in '' | *[!0-9]* | 0) interval=30 ;; esac
 
@@ -157,7 +158,7 @@ finish() {
 /bin/rm -f "$box/parallel"
 [ -n "$setsid" ] && : > "$box/parallel"
 # The helper is `gh` on the gate's PATH and git's credential helper; no chmod in the image = no gh shim.
-printf '%s\n' "$github" > "$box/bin/gh"
+printf '%s\n' "$forge" > "$box/bin/gh"
 /bin/chmod 0700 "$box/bin/gh" 2>/dev/null
 # A request this loop held when its container restarted ran, and its answer is lost: done, no exit.
 for held in "$box/running"/*; do

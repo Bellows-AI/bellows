@@ -319,6 +319,44 @@ describe('an exec run in the supervised gate manager', () => {
         expect(calls[0]?.gate).not.toHaveProperty('parallel');
     });
 
+    it('names a GitLab job’s host in FACTORY_FORGE_HOSTS for a gate, never for an exec nor a GitHub job', async () => {
+        const { runner, calls } = gateRunner(() => answered(0));
+        const manager = createSupervisedGateManager({ config, runner });
+        const gitlab: BoardJob = { ...JOB, repo: { forge: 'gitlab', host: 'GitLab.Example.com', path: 'group/app' } };
+        await manager.acquire(KEY, 'node:24', 'FACTORY_FORGE_HOSTS=evil.example.com\n', { job: gitlab });
+        await manager.runGate(KEY, 'test', 'npm test');
+        await manager.runGate(KEY, 'exec', 'ls', { exec: true });
+        expect(calls[0]?.gate.env.FACTORY_FORGE_HOSTS).toBe('gitlab.example.com');
+        expect(calls[1]?.gate.env).not.toHaveProperty('FACTORY_FORGE_HOSTS');
+        const github = gateRunner(() => answered(0));
+        const plain = createSupervisedGateManager({ config, runner: github.runner });
+        await plain.acquire(KEY, 'node:24', '', { job: JOB });
+        await plain.runGate(KEY, 'test', 'npm test');
+        expect(github.calls[0]?.gate.env).not.toHaveProperty('FACTORY_FORGE_HOSTS');
+    });
+
+    it('hands a gate of a GitLab job with a private CA its chain as FACTORY_FORGE_CA, one line, never a claimed one', async () => {
+        const { runner, calls } = gateRunner(() => answered(0));
+        const manager = createSupervisedGateManager({ config, runner });
+        const pem = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n';
+        const gitlab: BoardJob = {
+            ...JOB,
+            repo: { forge: 'gitlab', host: 'gitlab.example.com', path: 'group/app' },
+            forgeCa: pem,
+        };
+        await manager.acquire(KEY, 'node:24', 'FACTORY_FORGE_CA=claimed\n', { job: gitlab });
+        await manager.runGate(KEY, 'test', 'npm test');
+        await manager.runGate(KEY, 'exec', 'ls', { exec: true });
+        expect(calls[0]?.gate.env.FACTORY_FORGE_CA).toBe('-----BEGIN CERTIFICATE-----,AAAA,-----END CERTIFICATE-----');
+        expect(calls[1]?.gate.env).not.toHaveProperty('FACTORY_FORGE_CA');
+        const plain = gateRunner(() => answered(0));
+        const caless = createSupervisedGateManager({ config, runner: plain.runner });
+        const { forgeCa: _ca, ...withoutCa } = gitlab;
+        await caless.acquire(KEY, 'node:24', 'FACTORY_FORGE_CA=claimed\n', { job: withoutCa });
+        await caless.runGate(KEY, 'test', 'npm test');
+        expect(plain.calls[0]?.gate.env).not.toHaveProperty('FACTORY_FORGE_CA');
+    });
+
     it('is capped at 10 minutes, even when the gate default is longer', async () => {
         const { runner, calls } = gateRunner(() => answered(0));
         const manager = createSupervisedGateManager({ config, runner, gateTimeoutMs: 3 * TEN_MINUTES_MS });

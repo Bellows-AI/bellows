@@ -5,10 +5,10 @@
 #   docker run ... -e WORKDIR=/workspace/server opencode-executor run '...'
 set -eu
 
-# The GitHub helper beside this script (/usr/local/bin in the image), resolved before any `cd`.
-GITHUB_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/github-credential.cjs"
-# The agent's GitHub token is that helper's alone, renewed ahead of expiry: a value injected into
-# this container would shadow it in gh and git, and outlive its hour.
+# The forge helper beside this script (/usr/local/bin in the image), resolved before any `cd`.
+FORGE_CREDENTIAL="$(cd "$(dirname "$0")" && pwd)/forge-credential.cjs"
+# The agent's GitHub and GitLab tokens are that helper's alone, renewed ahead of expiry: a value injected
+# into this container would shadow it in gh and git, and outlive its hour.
 unset GITHUB_TOKEN GH_TOKEN GITLAB_TOKEN GL_TOKEN CI_JOB_TOKEN
 # The branch reporter beside it, resolved the same way.
 BRANCH_REPORTER="$(cd "$(dirname "$0")" && pwd)/branch-reporter.cjs"
@@ -49,14 +49,43 @@ if [ -e "$WORKDIR/.git" ]; then
     git config --global --add safe.directory "$WORKDIR" 2>/dev/null || true
 fi
 
-# GitHub (docs/connections.md): no token rides this container's env. git asks the image's helper
-# for github.com, and the helper obtains the attempt's token from the board with the attempt pair,
-# caches it on the memory-backed /run/factory-credentials and renews it ahead of expiry; gh is the
-# wrapper over the same helper. Only the helper's path lands in the git config, never a token.
+# GitHub and a GitLab task's host (docs/connections.md): no token rides this container's env. git asks
+# the image's helper for github.com and for each host RUNNER_FORGE_HOSTS names (the driver's, from the
+# task's repository), as the helper lists them, normalized and validated; the helper obtains the
+# attempt's token from the board with the attempt pair, caches it per host on the memory-backed
+# /run/factory-credentials and renews it ahead of expiry; gh is the wrapper over the same helper. Only
+# the helper's path lands in the git config, never a token.
 if [ -n "${FACTORY_STATS_URL:-}" ] && [ -n "${RUNNER_JOB_ID:-}" ] && [ -n "${RUNNER_LEASE_TOKEN:-}" ]; then
-    git config --global credential.https://github.com.helper "!node '$GITHUB_CREDENTIAL' git" \
-        2>/dev/null || echo "opencode-executor: could not configure the git credential helper" >&2
+    for host in $(node "$FORGE_CREDENTIAL" hosts 2>/dev/null); do
+        git config --global "credential.https://$host.helper" "!node '$FORGE_CREDENTIAL' git" \
+            2>/dev/null || echo "opencode-executor: could not configure the git credential helper for $host" >&2
+    done
 fi
+
+# A GitLab behind a private CA (docs/connections.md): RUNNER_FORGE_CA is the connection's certificate
+# chain, the driver's, validated from the claim. It is written to a 0644 file per forge host the helper
+# lists (github.com keeps the system bundle) in a directory of this container that the tool uid can read,
+# and git trusts it for that host alone (`http.https://<host>/.sslCAInfo`), never by turning verification
+# off. A directory that is not ours is left alone: git then fails its TLS verify and says so. The chain
+# is not left in the agent's env.
+FORGE_CA_DIR=/tmp/.factory-forge-ca
+if [ -n "${RUNNER_FORGE_CA:-}" ]; then
+    if [ -L "$FORGE_CA_DIR" ] || { [ -e "$FORGE_CA_DIR" ] && { [ ! -d "$FORGE_CA_DIR" ] || [ ! -O "$FORGE_CA_DIR" ]; }; }; then
+        echo "opencode-executor: $FORGE_CA_DIR is not a directory of ours: the forge CA is not installed" >&2
+    elif rm -rf "$FORGE_CA_DIR" && mkdir -m 0755 "$FORGE_CA_DIR"; then
+        for host in $(node "$FORGE_CREDENTIAL" hosts 2>/dev/null); do
+            [ "$host" = github.com ] && continue
+            ca="$FORGE_CA_DIR/$host.pem"
+            if printf '%s' "$RUNNER_FORGE_CA" > "$ca" && chmod 0644 "$ca" &&
+                git config --global "http.https://$host/.sslCAInfo" "$ca" 2>/dev/null; then :; else
+                echo "opencode-executor: could not install the forge CA for $host" >&2
+            fi
+        done
+    else
+        echo "opencode-executor: could not create $FORGE_CA_DIR: the forge CA is not installed" >&2
+    fi
+fi
+unset RUNNER_FORGE_CA
 
 # The tool uid shares node's group and the tree's umask, and reads this file through its own:
 # readable, never writable, by the commands the agent runs.
@@ -444,7 +473,7 @@ if [ -n "${FACTORY_CTL_OUT:-}" ]; then
     printf '%s\n' "$STATUS" > "$FACTORY_CTL_OUT/agent.exit.tmp" 2>/dev/null \
         && mv "$FACTORY_CTL_OUT/agent.exit.tmp" "$FACTORY_CTL_OUT/agent.exit" 2>/dev/null || true
 fi
-# The cached GitHub token goes with the run; the memory-backed mount goes with the container. The
+# The cached forge tokens go with the run; the memory-backed mount goes with the container. The
 # tool uid owns the cache (git and gh run as it), so the clear runs through the tool shell too.
-"${SHELL:-/bin/sh}" -c 'node "$1" clear' clear "$GITHUB_CREDENTIAL" 2>/dev/null || true
+"${SHELL:-/bin/sh}" -c 'node "$1" clear' clear "$FORGE_CREDENTIAL" 2>/dev/null || true
 exit "$STATUS"

@@ -6,7 +6,7 @@ import { describeError } from '../log.js';
 import { tailBytes } from '../runner.js';
 import { stepLost } from '../step-control.js';
 import { GATE_RUNS_READ_MS } from './gate-reuse.js';
-import { down, raceStep, settling, updateRunDeadline } from './loop-attempt.js';
+import { down, noteGateLoss, raceStep, settling, updateRunDeadline } from './loop-attempt.js';
 import { describeResult } from '../gate-result.js';
 import { type GateFailure, type GateSession, probeTreeNow } from './loop-gates.js';
 import { type GatesPhase, runGatePass } from './loop-gate-pass.js';
@@ -130,7 +130,11 @@ async function gatesOf(ctx: AttemptCtx, gateSession: GateSession): Promise<Gates
     } catch (e) {
         if (!servicesLost(e) && !(e instanceof DaemonLost)) throw e;
         const message = (e as Error).message;
-        state.gateLoss ??= stepLost(e) ? `the task supervisor running the finish pass was lost: ${message}` : message;
+        noteGateLoss(
+            state,
+            stepLost(e) ? `the task supervisor running the finish pass was lost: ${message}` : message,
+            e
+        );
         rt.log(`job ${job.id}: the finish pass lost its infrastructure: ${describeError(e)}`);
         return null;
     }

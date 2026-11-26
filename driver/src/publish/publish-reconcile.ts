@@ -1,4 +1,5 @@
 import { type Ledger, readLedger, writeLedger } from '../operation-ledger.js';
+import { stepLost } from '../step-control.js';
 import type { RunPublishStep } from './publish.js';
 
 /**
@@ -32,7 +33,16 @@ export const publicationOp = (branch: string, sha: string): string => `${branch}
 
 const SHA = /^[0-9a-f]{40,64}$/;
 
-/** The commit HEAD names, or null when it cannot be read as one. */
+/**
+ * A failed read as null, except a lost step or a credential wait (`stepLost`): that is no answer at all, so it is
+ * thrown, and the caller's attempt is interrupted instead of deciding anything from it.
+ */
+const unlessLost = (e: unknown): null => {
+    if (stepLost(e)) throw e;
+    return null;
+};
+
+/** The commit HEAD names, or null when it cannot be read as one; a lost read is thrown (`stepLost`). */
 export async function headSha(step: RunPublishStep): Promise<string | null> {
     const read = await step({
         label: 'git rev-parse HEAD',
@@ -40,17 +50,20 @@ export async function headSha(step: RunPublishStep): Promise<string | null> {
         args: ['rev-parse', 'HEAD'],
         env: false,
         inRepo: true,
-    }).catch(() => null);
+    }).catch(unlessLost);
     const sha = read?.stdout.trim() ?? '';
     return SHA.test(sha) ? sha : null;
 }
 
-/** What the ledger says about an operation; unreadable reads as "never recorded", never as progress. */
+/**
+ * What the ledger says about an operation; unreadable reads as "never recorded", never as progress. A read the
+ * supervisor lost is thrown (`stepLost`): "never recorded" would let a clean tree read as nothing to publish.
+ */
 export async function readOperation(step: RunPublishStep, repo: string, op: string): Promise<OperationRecord> {
-    // A read the supervisor lost reads as never recorded here too: the remote read reconciles it.
-    const record = (await readLedger({ step, repo, ledger: PUBLICATION_LEDGER }, op).catch(
-        () => ({})
-    )) as OperationRecord;
+    const record = (await readLedger({ step, repo, ledger: PUBLICATION_LEDGER }, op).catch((e: unknown) => {
+        if (stepLost(e)) throw e;
+        return {};
+    })) as OperationRecord;
     return { ...(record.state ? { state: record.state } : {}), ...(record.prUrl ? { prUrl: record.prUrl } : {}) };
 }
 
@@ -68,7 +81,10 @@ export async function recordOperation(
     await writeLedger({ step, repo, ledger: PUBLICATION_LEDGER }, op, progress.state, data);
 }
 
-/** The commit the remote holds for `branch`, or null when it has none or cannot be asked. */
+/**
+ * The commit the remote holds for `branch`, or null when it has none or the ask failed. A credential ask left
+ * unanswered (`ForgeWait`) or a lost step is thrown (`stepLost`): the remote was never asked.
+ */
 export async function remoteHeadOf(
     step: RunPublishStep,
     branch: string,
@@ -80,7 +96,7 @@ export async function remoteHeadOf(
         args: ['-c', `credential.helper=${credentialHelper}`, 'ls-remote', 'origin', `refs/heads/${branch}`],
         env: true,
         inRepo: true,
-    }).catch(() => null);
+    }).catch(unlessLost);
     const sha = read?.stdout.trim().split(/\s+/)[0] ?? '';
     return SHA.test(sha) ? sha : null;
 }
@@ -88,13 +104,15 @@ export async function remoteHeadOf(
 /**
  * Runs one effect and, when it fails, asks `landed` whether it happened anyway: a landed effect is
  * a success whatever the answer said, and one that did not is the original failure, rethrown. This
- * is the whole "uncertain response" rule — nothing is repeated before the remote has been asked.
+ * is the whole "uncertain response" rule — nothing is repeated before the remote has been asked. A
+ * `landed` that could not ask at all — its step lost or its credential wait unanswered (`stepLost`) — throws
+ * that instead: the effect's failure is no verdict while the reconcile is inconclusive.
  */
 export async function reconciled<T>(effect: () => Promise<T>, landed: () => Promise<T | null>): Promise<T> {
     try {
         return await effect();
     } catch (error) {
-        const found = await landed().catch(() => null);
+        const found = await landed().catch(unlessLost);
         if (found !== null) return found;
         throw error;
     }

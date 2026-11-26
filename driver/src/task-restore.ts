@@ -4,8 +4,17 @@ import { claimContinuesSession, opencodeDbPath, runWorkingDir, transcriptDir } f
 import { checkpointRestoreScript } from './container-scripts.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { parseLastJsonLine } from './json-parse.js';
-import { checkoutDir, CREDENTIAL_HELPER, remoteUrl, type SyncResult, worktreeBranch } from './publish/publish.js';
-import { claimStepEnv, detailOf, type StepHost, stepRequest, submitStep } from './supervised-steps.js';
+import { checkoutDir, credentialHelperOf, remoteUrl, type SyncResult, worktreeBranch } from './publish/publish.js';
+import { usesForgeMailbox } from './repo-ref.js';
+import {
+    claimStepEnv,
+    detailOf,
+    forgeHostOf,
+    forgeWaitResult,
+    type StepHost,
+    stepRequest,
+    submitStep,
+} from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
 import { FIRST_GENERATION } from './task-volume.js';
 
@@ -236,6 +245,21 @@ function verdictOf(job: BoardJob, result: StepResult): RestoreVerdict {
 }
 
 /**
+ * The restore fetch's credential: for a tree fetched from a forge that asks through the mailbox, the mailbox helper
+ * and the host on the step (never a token); otherwise the token helper beside a token, and nothing without one.
+ */
+function restoreCredentialOf(
+    job: BoardJob,
+    fetchesTree: boolean,
+    githubToken: string | undefined
+): { env: Record<string, string>; step: { forgeHost?: string } } {
+    if (fetchesTree && usesForgeMailbox(job)) {
+        return { env: { CRED_HELPER: credentialHelperOf(job) }, step: forgeHostOf(job) };
+    }
+    return { env: githubToken ? { CRED_HELPER: credentialHelperOf(job) } : {}, step: {} };
+}
+
+/**
  * Runs the owed restore as a supervised step, then deletes the older generations through `removeOlder`.
  * Null when nothing is owed. A restore that fails leaves everything where it was.
  */
@@ -253,6 +277,8 @@ export async function restoreTaskTree(
     const remote = remoteUrl(host.config, job);
     if (!pending || pending.restored) return null;
     if (!pending.sessionsOnly && (!checkout || !remote)) return null;
+    const fetchesTree = !pending.sessionsOnly && checkout !== null && remote !== null;
+    const credential = restoreCredentialOf(job, fetchesTree, options.githubToken);
     const result = await submitStep(
         host,
         job,
@@ -268,12 +294,15 @@ export async function restoreTaskTree(
                 ...sessionEnv(job),
                 // The supervisor lays its control endpoint and token over this one step only.
                 RESTORE_FEED: '1',
-                ...(options.githubToken ? { CRED_HELPER: CREDENTIAL_HELPER } : {}),
+                ...credential.env,
             },
+            ...credential.step,
             timeoutMs: RESTORE_DEADLINE_MS,
         }),
         options.signal
     );
+    // Its fetch ran without the credential it asked for: a wait, never a lost checkpoint, and the restore still owed.
+    if (result.tokenAskUnanswered) return forgeWaitResult('the checkpoint restore');
     const verdict = verdictOf(job, result);
     if (
         verdict.ok === false &&

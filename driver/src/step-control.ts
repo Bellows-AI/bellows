@@ -52,23 +52,30 @@ export class StepTimedOut extends Error {
 }
 
 /**
- * Thrown for a gate whose GitHub token ask the supervisor could not get answered: it ran without a
- * token it needed, so its exit is no verdict, the same as a lost supervisor's (`stepLost`).
+ * Thrown for a gate whose forge token ask (GitHub's or GitLab's) the supervisor could not get answered: it ran
+ * without a token it needed, so its exit is no verdict, the same as a lost supervisor's (`stepLost`).
  */
 export class StepTokenUnanswered extends Error {
     constructor() {
-        super('a GitHub token ask of the gate went unanswered: no verdict');
+        super('a forge token ask of the gate went unanswered: no verdict');
         this.name = 'StepTokenUnanswered';
     }
 }
 
 /**
  * Whether a step failed because its supervisor was lost — the channel closed, or the answer never
- * came, or a gate's GitHub token ask went unanswered — which is no verdict on the step itself: the
+ * came, or a gate's or forge step's token ask went unanswered — which is no verdict on the step itself: the
  * attempt was interrupted.
  */
 export const stepLost = (error: unknown): boolean =>
     error instanceof StepChannelClosed || error instanceof StepTimedOut || error instanceof StepTokenUnanswered;
+
+/**
+ * Whether a lost step (`stepLost`) is a credential ask left unanswered — a gate's, or a forge step's (`ForgeWait`):
+ * the board did not confirm the credential or holds it for the starter. A wait, not a loss of anything: the attempt is
+ * handed back outside the interruption budget (`blocked`), its session and checkout kept, however often it repeats.
+ */
+export const credentialWait = (error: unknown): error is StepTokenUnanswered => error instanceof StepTokenUnanswered;
 
 /** What the runners and the loop use: submit a step, read the supervisor's report. */
 export interface StepSink {
@@ -121,10 +128,12 @@ export interface StepBroker extends StepSink {
     /** Whether the runner read the agent container over on this token, which the supervisor's control poll reads. */
     agentWasEnded(token: string): boolean;
     /**
-     * Whether a gate step of this id is running under the token: pulled by the supervisor (not still queued)
-     * and not settled, cancelled-while-queued or released. The gate token route serves only such a step.
+     * Whether a step of this id running under the token may ask for `host`'s forge token: pulled by the supervisor
+     * (not still queued) and not settled, cancelled-while-queued or released, and either a gate that is not
+     * `tokenless` or a sync, publish, probe or helper step whose `forgeHost` is `host`. The gate token route
+     * serves only such a step.
      */
-    holdsGate(token: string, id: string): boolean;
+    holdsForgeAsk(token: string, id: string, host: string): boolean;
     /**
      * Takes the supervisor's report: `accepted` the first time, or a serving report's departure under
      * the same id; `duplicate` for a redelivery; `conflict` for another report than the one taken.
@@ -206,14 +215,18 @@ function cancelStep(slot: Slot, id: string): void {
     }
 }
 
-/**
- * Whether a gate step of this id is pulled and unsettled on the slot (`StepBroker.holdsGate`). A tokenless step
- * (an agent's exec) never holds one: its GitHub token ask is refused.
- */
-function holdsGateStep(slot: Slot | undefined, id: string): boolean {
+/** The step kinds that carry a `forgeHost` and ask for its token through their own mailbox. */
+const FORGE_STEP_KINDS: readonly StepRequest['kind'][] = ['sync', 'publish', 'probe', 'helper'];
+
+/** Whether `step` may ask for `host`'s token: a gate that is not tokenless (an agent's exec), or a forge step for its own host. */
+const asksFor = (step: StepRequest, host: string): boolean =>
+    step.kind === 'gate' ? !step.tokenless : FORGE_STEP_KINDS.includes(step.kind) && step.forgeHost === host;
+
+/** Whether a step of this id is pulled, unsettled on the slot and may ask for `host` (`StepBroker.holdsForgeAsk`). */
+function holdsForgeAskStep(slot: Slot | undefined, id: string, host: string): boolean {
     if (!slot) return false;
     return [...slot.waiters.values()].some(
-        ({ step }) => step.id === id && step.kind === 'gate' && !step.tokenless && !slot.queue.includes(step)
+        ({ step }) => step.id === id && asksFor(step, host) && !slot.queue.includes(step)
     );
 }
 
@@ -393,7 +406,7 @@ export function createStepBroker(observe?: StepObserver): StepBroker {
         cancels: (token) => [...(slots.get(token)?.cancelled ?? [])],
         agentEnded: (token) => markAgentEnded(slots.get(token)),
         agentWasEnded: (token) => slots.get(token)?.agentEnded ?? false,
-        holdsGate: (token, id) => holdsGateStep(slots.get(token), id),
+        holdsForgeAsk: (token, id, host) => holdsForgeAskStep(slots.get(token), id, host),
         report(token, report) {
             const slot = slots.get(token);
             return slot ? takeReport(slot, report) : 'conflict';

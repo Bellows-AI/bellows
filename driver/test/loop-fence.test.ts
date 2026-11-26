@@ -20,6 +20,7 @@ import {
     unreportedDecision,
 } from '../src/loop/loop-fence.js';
 import { StepChannelClosed, StepTimedOut, StepTokenUnanswered } from '../src/step-control.js';
+import { ForgeWait } from '../src/supervised-steps.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import type { GroupTakenAway, RunOutcome } from '../src/runner.js';
 import { LeftoverTerminating } from '../src/runner.js';
@@ -530,13 +531,22 @@ describe('node loss is flagged on structured evidence only', () => {
             expect(await flagged).toEqual({});
         });
 
-        it.each([
-            ['a step answered too late', () => new StepTimedOut('step-1')],
-            ['an unanswered token ask', () => new StepTokenUnanswered()],
-        ])('is never flagged for %s, and the executor is not asked', async (_name, make) => {
+        it('is never flagged for a step answered too late, and the executor is not asked', async () => {
             const { ctx, read } = withRunner(async () => 'taken');
 
-            expect(await supervisorLossFlag(ctx, make())).toEqual({});
+            expect(await supervisorLossFlag(ctx, new StepTimedOut('step-1'))).toEqual({});
+            expect(read).not.toHaveBeenCalled();
+        });
+
+        // A credential ask left unanswered is a wait, never node evidence and never a counted interruption: the
+        // hand-back spends no budget however often it repeats.
+        it.each([
+            ['a gate token ask', () => new StepTokenUnanswered()],
+            ['a forge mailbox ask', () => new ForgeWait('git push')],
+        ])('flags %s left unanswered blocked, and the executor is not asked', async (_name, make) => {
+            const { ctx, read } = withRunner(async () => 'taken');
+
+            expect(await supervisorLossFlag(ctx, make())).toEqual({ blocked: true });
             expect(read).not.toHaveBeenCalled();
         });
     });

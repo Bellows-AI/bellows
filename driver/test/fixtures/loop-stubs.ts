@@ -371,12 +371,12 @@ export function stubBoard(
             board.reclaimRenewals.push({ id, token });
             return options.renewReclaim ? options.renewReclaim(id, token, signal) : 'held';
         },
-        async githubCredential(claimed) {
+        async forgeCredential(claimed) {
             board.githubAsks.push(claimed.id);
             const queued = githubTokenQueue.shift();
             return queued === undefined ? (options.githubToken ?? null) : queued;
         },
-        async githubGrant(claimed) {
+        async forgeGrant(claimed) {
             board.githubAsks.push(claimed.id);
             const queued = githubTokenQueue.shift();
             const token = queued === undefined ? (options.githubToken ?? null) : queued;

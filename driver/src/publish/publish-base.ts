@@ -1,6 +1,7 @@
 import type { BoardJob } from '../board/board.js';
 import { containerScript as script } from '../container-scripts.js';
 import { parseLastJsonLine } from '../json-parse.js';
+import { usesForgeMailbox } from '../repo-ref.js';
 
 /**
  * The values of the publish workflow that stand alone — the PR summary's script and parse, the
@@ -57,3 +58,13 @@ export const isBranchName = (name: string): boolean =>
  * The scripts suite pins the exact spawn shape and its exit status.
  */
 export const CREDENTIAL_HELPER = script('credential-helper.sh').trim();
+/**
+ * The credential helper CODE of a step that asks its forge through the supervisor's mailbox
+ * (`StepRequest.forgeHost`): git runs the `!` snippet through the shell, so `$FACTORY_FORGE_HELPER` — the
+ * helper the supervisor wrote into the step's mailbox (`FORGE_STEP_ENV.helper`) — expands there and answers
+ * in credential mode. It names no token: the helper asks for one per operation. Trimmed like `CREDENTIAL_HELPER`.
+ */
+export const FORGE_STEP_CREDENTIAL_HELPER = script('credential-helper-forge.sh').trim();
+/** The credential helper code a job's git steps run: the mailbox helper for a GitLab job, the token helper otherwise. */
+export const credentialHelperOf = (job: Pick<BoardJob, 'repo'>): string =>
+    usesForgeMailbox(job) ? FORGE_STEP_CREDENTIAL_HELPER : CREDENTIAL_HELPER;

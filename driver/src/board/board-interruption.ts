@@ -5,7 +5,10 @@ export interface Interruption {
     claimSeq?: number;
     /** The runner never started: the released claim's launch is `refused`, not merely unproven. */
     refused?: boolean;
-    /** A claim held back by a leftover that will not go away: released outside the interruption budget, its retry deferred. */
+    /**
+     * Nothing proven against the attempt — a leftover that will not go away, an unconfirmed group read, a credential
+     * left unconfirmed (`credentialWait`): released outside the interruption budget, its retry deferred.
+     */
     blocked?: boolean;
     /**
      * The agent's helper asked for a connection the task lacks: released outside the interruption

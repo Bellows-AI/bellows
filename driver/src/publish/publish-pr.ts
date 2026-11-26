@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { BoardJob } from '../board/board.js';
 import type { PrOperationKind, PrOperationWrite } from '../board/board-pr-operations.js';
 import type { PullRequestAnswer, PullRequestAsk } from '../board/board-pull-request.js';
-import { baseBranchOf, CREDENTIAL_HELPER, isBranchName, parsePrSummary, prSummaryScript } from './publish-base.js';
+import { baseBranchOf, isBranchName, parsePrSummary, prSummaryScript } from './publish-base.js';
 import type { GitState, PublishPlan, PublishResult, RunPublishStep } from './publish.js';
 import { pushWithLease } from './publish-stale.js';
 import {
@@ -218,14 +218,15 @@ export async function resolveOrCreatePr(
 /**
  * Lands the branch's commit on the remote and records how far it got. The push is asked about
  * before it is repeated: one that failed may still have landed, and the remote's own head — not the
- * answer — decides. `pushing` is recorded before the effect, `pushed` after it.
+ * answer — decides. `pushing` is recorded before the effect, `pushed` after it. Every remote call runs the
+ * job's own `credentialHelper` (`credentialHelperOf`): the push, its stale-lease fetch and the remote-head read.
  */
 export async function pushRecorded(
     runStep: RunPublishStep,
     step: RunPublishStep,
-    publication: { repo: string; branch: string; op: string; sha: string }
+    publication: { repo: string; branch: string; op: string; sha: string; credentialHelper: string }
 ): Promise<void> {
-    const { repo, branch, op, sha } = publication;
+    const { repo, branch, op, sha, credentialHelper } = publication;
     await recordOperation(step, repo, op, { state: 'pushing' });
     await reconciled(
         () =>
@@ -236,7 +237,7 @@ export async function pushRecorded(
                     entrypoint: 'git',
                     args: [
                         '-c',
-                        `credential.helper=${CREDENTIAL_HELPER}`,
+                        `credential.helper=${credentialHelper}`,
                         'push',
                         '-u',
                         '--force-with-lease',
@@ -247,9 +248,9 @@ export async function pushRecorded(
                     inRepo: true,
                     op,
                 },
-                { branch, credentialHelper: CREDENTIAL_HELPER, sha }
+                { branch, credentialHelper, sha }
             ),
-        async () => ((await remoteHeadOf(runStep, branch, CREDENTIAL_HELPER)) === sha ? undefined : null)
+        async () => ((await remoteHeadOf(runStep, branch, credentialHelper)) === sha ? undefined : null)
     );
     await recordOperation(step, repo, op, { state: 'pushed' });
 }

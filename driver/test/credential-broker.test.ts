@@ -16,14 +16,14 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 import { githubRef } from './fixtures/repo-ref.js';
 
 /**
- * The runner's credential broker client (docs/connections.md), shared by the GitHub front end and
+ * The runner's credential broker client (docs/connections.md), shared by the forge front end and
  * the library export a connection helper calls: the per-attempt, per-key memory cache, one
  * wall-clock deadline over every retry, the typed stops, and the revoking `clear`. Driven in process
- * with a fake clock and a fake board; the process-level channel pins live in github-credential.test.ts.
+ * with a fake clock and a fake board; the process-level channel pins live in forge-credential.test.ts.
  */
 
 const BROKER = join(ROOT, 'docker/executor-common/credential-broker.cjs');
-const FRONT_END = join(ROOT, 'docker/executor-common/github-credential.cjs');
+const FRONT_END = join(ROOT, 'docker/executor-common/forge-credential.cjs');
 const BOARD_CALL = join(ROOT, 'docker/executor-common/board-call.cjs');
 
 interface Pair {
@@ -50,6 +50,7 @@ type Result = {
     resource?: unknown;
     reason?: string;
     outcome?: unknown;
+    connectUrl?: string;
 };
 const require_ = createRequire(import.meta.url);
 const broker = require_(BROKER) as {
@@ -60,6 +61,7 @@ const broker = require_(BROKER) as {
     exitCodeOf: (result: Result) => number;
     GITHUB_KEY: string;
     connectionKey: (id: string) => string;
+    forgeKey: (host: string) => string | null;
     CACHE_DIR: string;
     RENEW_SKEW_MS: number;
     DEADLINE_MS: number;
@@ -67,6 +69,7 @@ const broker = require_(BROKER) as {
     NULL_EXPIRY_CAP_MS: number;
     REVOKE_DEADLINE_MS: number;
     EXIT_INTEGRATION_REQUIRED: number;
+    EXIT_WAITING: number;
 };
 const { createBudget } = require_(BOARD_CALL) as {
     createBudget: (options: { now: () => number; baseMs: number }) => unknown;
@@ -108,6 +111,7 @@ interface Call {
     method: string;
     headers: Record<string, string>;
     body: string | undefined;
+    redirect: RequestInit['redirect'];
     timeoutMs: number;
 }
 
@@ -133,6 +137,7 @@ function rig(answer: (call: Call, n: number) => Answer, env: Record<string, stri
                 method: init.method ?? 'GET',
                 headers: init.headers as Record<string, string>,
                 body: init.body as string | undefined,
+                redirect: init.redirect,
                 timeoutMs,
             };
             calls.push(call);
@@ -456,6 +461,101 @@ describe('typed stops', () => {
     });
 });
 
+describe('a GitLab host key: forge:<host>', () => {
+    const HOST = 'gitlab.example.com';
+    const CONNECT_URL = 'https://board.test/connect/gitlab';
+    const grantRequired: Answer = {
+        status: 409,
+        body: {
+            code: 'FORGE_GRANT_REQUIRED',
+            forge: `gitlab:${HOST}`,
+            standing: 'broken',
+            waiting: true,
+            connectUrl: CONNECT_URL,
+        },
+    };
+    const served = (token: string): Answer => ({
+        status: 200,
+        body: { forge: `gitlab:${HOST}`, standing: 'live', token, expiresAt: new Date(START + HOUR_MS).toISOString() },
+    });
+
+    it('normalizes the host: lowercase, a default :443 stripped, another port kept; no host is no key', () => {
+        expect(broker.forgeKey('GitLab.Example.com:443')).toBe(`forge:${HOST}`);
+        expect(broker.forgeKey(`${HOST}:8443`)).toBe(`forge:${HOST}:8443`);
+        for (const bad of ['', 'gitlab example.com', 'a/b', 'host:', ':443', 'gitlab.example.com:99999x']) {
+            expect(broker.forgeKey(bad), bad).toBeNull();
+        }
+    });
+
+    it('asks POST /credentials/gitlab with the pair and no body, and caches per host', async () => {
+        const r = rig((_call, n) => served(`glpat_${n}_secret`));
+        expect(await broker.obtain(r.deps, broker.forgeKey(HOST)!)).toMatchObject({
+            ok: true,
+            token: 'glpat_1_secret',
+        });
+        expect(r.calls).toEqual([
+            expect.objectContaining({
+                url: `http://board.test/api/jobs/${JOB}/credentials/gitlab`,
+                method: 'POST',
+                headers: { 'x-factory-job-id': JOB, 'x-factory-job-lease-token': LEASE },
+                body: undefined,
+            }),
+        ]);
+        expect(await broker.obtain(r.deps, broker.forgeKey('GITLAB.example.com:443')!)).toMatchObject({
+            token: 'glpat_1_secret',
+        });
+        expect(r.calls).toHaveLength(1);
+        // Another host is another entry: never served this host's token.
+        expect(await broker.obtain(r.deps, broker.forgeKey(`${HOST}:8443`)!)).toMatchObject({
+            token: 'glpat_2_secret',
+        });
+        expect(entries(r.deps.dir)).toHaveLength(2);
+    });
+
+    it('stops at 409 FORGE_GRANT_REQUIRED as waiting: one call, no cache, its own exit status, no link printed', async () => {
+        const r = rig(() => grantRequired);
+        const result = await broker.obtain(r.deps, broker.forgeKey(HOST)!);
+        expect(result).toEqual({ ok: false, reason: 'waiting', outcome: 'waiting', connectUrl: CONNECT_URL });
+        expect(r.calls).toHaveLength(1);
+        expect(entries(r.deps.dir)).toEqual([]);
+        expect(broker.exitCodeOf(result)).toBe(broker.EXIT_WAITING);
+        expect(broker.EXIT_WAITING).not.toBe(0);
+        expect(broker.EXIT_WAITING).not.toBe(1);
+        expect(broker.EXIT_WAITING).not.toBe(broker.EXIT_INTEGRATION_REQUIRED);
+        const said = r.stderr.join('\n');
+        expect(said).toContain('links their GitLab account again');
+        expect(said).not.toContain('GitHub App');
+        expect(said).not.toContain(CONNECT_URL);
+    });
+
+    it.each([401, 403])('stops at a GitLab %s as refused, never retried', async (status) => {
+        const r = rig(() => ({ status, body: { code: 'CONNECTION_NOT_AUTHORIZED' } }));
+        expect(await broker.obtain(r.deps, broker.forgeKey(HOST)!)).toEqual({ ok: false, reason: 'refused' });
+        expect(r.calls).toHaveLength(1);
+    });
+
+    it('rides out a 503 UNAVAILABLE and answers the token the retry brings', async () => {
+        const r = rig((_call, n) =>
+            n === 1
+                ? { status: 503, headers: { 'retry-after': '1' }, body: { code: 'UNAVAILABLE' } }
+                : served('glpat_secret')
+        );
+        expect(await broker.obtain(r.deps, broker.forgeKey(HOST)!)).toMatchObject({ ok: true, token: 'glpat_secret' });
+        expect(r.sleeps).toEqual([SECOND_MS]);
+    });
+
+    it('never follows a redirect: the pair is sent to the board alone, and a 3xx is retried as no answer', async () => {
+        for (const key of [broker.GITHUB_KEY, broker.forgeKey(HOST)!]) {
+            const r = rig((_call, n) =>
+                n === 1 ? { status: 302, headers: { location: 'https://elsewhere.test/steal' } } : served('tok_secret')
+            );
+            expect(await broker.obtain(r.deps, key)).toMatchObject({ ok: true, token: 'tok_secret' });
+            expect(r.calls.map((call) => call.redirect)).toEqual(['manual', 'manual']);
+            expect(r.calls.every((call) => call.url.startsWith('http://board.test/'))).toBe(true);
+        }
+    });
+});
+
 describe('clear revokes the cached GitHub token, then removes every entry', () => {
     const revokes = (r: ReturnType<typeof rig>) =>
         r.calls.filter((call) => call.url.endsWith('/credentials/github/revoke'));
@@ -479,6 +579,19 @@ describe('clear revokes the cached GitHub token, then removes every entry', () =
             headers: expect.objectContaining({ 'x-factory-job-id': JOB, 'x-factory-job-lease-token': LEASE }),
         });
         expect(JSON.parse(revoke!.body!)).toEqual({ token: 'ghs_cached_secret' });
+        expect(entries(r.deps.dir)).toEqual([]);
+    });
+
+    it('removes a GitLab entry without any board call: the member grant is shared, never revoked', async () => {
+        const r = rig((call) =>
+            call.url.endsWith('/gitlab')
+                ? { status: 200, body: { token: 'glpat_secret', expiresAt: null } }
+                : { status: 204 }
+        );
+        await broker.obtain(r.deps, broker.forgeKey('gitlab.example.com')!);
+        r.calls.length = 0;
+        expect(await broker.clear(r.deps)).toBe(0);
+        expect(r.calls).toEqual([]);
         expect(entries(r.deps.dir)).toEqual([]);
     });
 
@@ -568,14 +681,16 @@ describe('no token on stdout or stderr, in any mode', () => {
         }
     });
 
-    it('offers no connection mode on the command line: the usage lists git, token and clear only', async () => {
+    it('offers no connection mode on the command line: the usage lists git, token, hosts and clear only', async () => {
         const r = rig(() => connectionAnswer(SECRETS[1]!));
         const f = front(r);
         expect(await frontEnd.main(['connection', CONNECTION], f.deps)).toBe(2);
         expect(await frontEnd.main(['connections', CONNECTION], f.deps)).toBe(2);
         expect(r.calls).toEqual([]);
         expect(f.stdout).toEqual([]);
-        expect(r.stderr.join('\n')).toContain('usage: github-credential.cjs git <get|store|erase> | token | clear');
+        expect(r.stderr.join('\n')).toContain(
+            'usage: forge-credential.cjs git <get|store|erase> | token [host] | hosts | clear'
+        );
         expect(r.stderr.join('\n')).not.toMatch(/connection/i);
     });
 

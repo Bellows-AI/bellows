@@ -5,13 +5,15 @@ import type { GateOutcome } from './driver-metrics.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import { type GateResources, type GateResult, gateResultOf } from './gate-result.js';
 import { type GateExecution, type GateMeasure, measuredRun } from './gate-record.js';
+import { gitlabForgeHost } from './gate-token-control.js';
 import { annotateActiveSpan, withChildSpan } from './lifecycle-span.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
 import { failureExcerpt } from './gate-excerpt.js';
+import { GATE_FORGE_CA_ENV, gateForgeCa } from './forge-ca.js';
 import { ARTIFACT_LIMIT, REPORT_BYTE_LIMIT, tailKept } from './runner.js';
 import { StepTokenUnanswered } from './step-control.js';
 import type { GateStepRequest } from './supervised-steps.js';
-import type { StepResult } from './supervisor-contract.js';
+import { FORGE_STEP_ENV, type StepResult } from './supervisor-contract.js';
 import { TASK_MOUNT } from './task-volume.js';
 
 /**
@@ -183,10 +185,23 @@ export function envBodyRecord(body: string): Record<string, string> {
 }
 
 /**
+ * A gate step's env: the claim's, which never names the forge hosts nor their CA itself, and a GitLab job's host for
+ * a gate that may ask for its token (scripts/gate-forge.sh answers it beside github.com), with the connection's
+ * private CA chain when it has one (scripts/gate-shell.sh trusts it for that host); an exec asks for none.
+ */
+function gateStepEnv(envBody: string, job: BoardJob, tokenless: boolean | undefined): Record<string, string> {
+    const { [FORGE_STEP_ENV.hosts]: _claimed, [GATE_FORGE_CA_ENV]: _claimedCa, ...env } = envBodyRecord(envBody);
+    const forgeHost = tokenless ? null : gitlabForgeHost(job);
+    if (!forgeHost) return env;
+    const ca = gateForgeCa(job);
+    return { ...env, [FORGE_STEP_ENV.hosts]: forgeHost, ...(ca ? { [GATE_FORGE_CA_ENV]: ca } : {}) };
+}
+
+/**
  * A step's answer as a gate verdict: its status and its output's tail, trimmed like a terminal's —
  * or, for a gate the supervisor killed at its deadline, 124 with the deadline named when it said
  * nothing. No exit at all is a harness failure (the gate container never took the request, or was
- * lost mid-run), which rejects: never a verdict. A gate whose GitHub token ask went unanswered rejects
+ * lost mid-run), which rejects: never a verdict. A gate whose forge token ask went unanswered rejects
  * as a lost step (`stepLost`) whatever it exited with.
  */
 function gateRunOf(result: StepResult, deadlineMs: number): GateRun {
@@ -287,7 +302,7 @@ export function createSupervisedGateManager({
             command: run.command,
             cwd: `${TASK_MOUNT}/${entry.key.split('/')[1]}`,
             env: {
-                ...envBodyRecord(entry.envBody),
+                ...gateStepEnv(entry.envBody, entry.job, run.tokenless),
                 ...(run.filter === undefined ? {} : { [GATE_FILTER_ENV]: run.filter }),
                 ...(setup ? { [GATE_SETUP_ENV]: '1' } : {}),
             },

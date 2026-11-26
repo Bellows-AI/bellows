@@ -204,7 +204,7 @@ describe('the publish relay: what an attempt may publish', () => {
         const rt = {
             runner,
             board: {
-                githubCredential: async () => {
+                forgeCredential: async () => {
                     calls.asks += 1;
                     onAsk();
                     const queued = tokens.shift();
@@ -375,7 +375,7 @@ describe('a revision-bound publish across retries', () => {
                     return publishes.shift() ?? LANDED;
                 },
             },
-            board: { githubCredential: async () => 'ghs' },
+            board: { forgeCredential: async () => 'ghs' },
             log: () => {},
             sleep: async () => {},
         } as unknown as LoopRuntime;
@@ -418,7 +418,7 @@ describe('a revision-bound publish across retries', () => {
                 },
                 publishGit: async () => LANDED,
             },
-            board: { githubCredential: async () => 'ghs' },
+            board: { forgeCredential: async () => 'ghs' },
             log: () => {},
             sleep: async () => {},
         } as unknown as LoopRuntime;

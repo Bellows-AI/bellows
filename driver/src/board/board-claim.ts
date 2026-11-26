@@ -5,6 +5,9 @@ import type { ServiceSpec } from '../services.js';
 import { connectionOutcomesOf } from './board-connection.js';
 import { skillHiddenFields, skillPinFields } from './board-skills.js';
 import { isExecutorType } from '../executors.js';
+import { forgeCaField } from '../forge-ca.js';
+
+export type { ClaimForgeCa } from '../forge-ca.js';
 
 /** The claim off the wire: every optional field read defensively, defaulted or dropped (reviewer profiles, the plan, the skill pin). */
 
@@ -141,6 +144,7 @@ export function claimOf(wire: Partial<BoardJob>): BoardJob {
         orgKey,
         finishRounds,
         author,
+        forgeCa,
         ...claimed
     } = wire;
     const plan = servicePlanOf(services);
@@ -154,6 +158,7 @@ export function claimOf(wire: Partial<BoardJob>): BoardJob {
         ...connectionOutcomesOf(connectionOutcomes),
         ...knownTurnContext(turnContext),
         ...authorField(author),
+        ...forgeCaField(forgeCa, claimed),
         ...(typeof orgKey === 'string' && orgKey.length > 0 ? { orgKey } : {}),
         // The round cap: a non-negative integer or absent (unknown), never defaulted to 0.
         ...(typeof finishRounds === 'number' && Number.isSafeInteger(finishRounds) && finishRounds >= 0

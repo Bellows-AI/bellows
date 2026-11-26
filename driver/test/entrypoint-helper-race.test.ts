@@ -88,7 +88,7 @@ const stage = async (image: 'claude' | 'opencode') => {
         write(join(bin, `${helper}.cjs`), IDLE_HELPER);
     }
     write(join(bin, 'ctl-agent.cjs'), SWALLOWING_CTL_AGENT);
-    write(join(entry, 'github-credential.cjs'), 'process.exit(0);\n');
+    write(join(entry, 'forge-credential.cjs'), 'process.exit(0);\n');
     if (image === 'claude') {
         write(join(entry, 'claude-bridge.cjs'), CLI);
         write(join(entry, 'claude-progress.cjs'), IDLE_HELPER);

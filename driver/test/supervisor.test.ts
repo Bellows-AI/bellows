@@ -731,17 +731,20 @@ describe('the supervisor run: supervised steps', () => {
         await supervised.done;
     });
 
-    it('gives a step its own environment and never the supervisor’s credential', async () => {
+    it('gives a step its own environment and never the supervisor’s credential, its token redacted from the answer', async () => {
         const driver = await startDriver();
+        const script =
+            'const t = process.env.GITHUB_TOKEN; console.log(JSON.stringify({ ...process.env, HAS: String(t === "publish-token-value") }))';
         driver.order(
-            step('env-1', 'helper', ['node', '-e', 'console.log(JSON.stringify(process.env))'], {
+            step('env-1', 'helper', ['node', '-e', script], {
                 env: { GITHUB_TOKEN: 'publish-token-value', PLAIN: 'literal' },
             })
         );
         const supervised = run(driver, { SUPERVISOR_EXPORTS: '' });
         await until('the answer', () => driver.answers.has('env-1'));
         const seen = JSON.parse(driver.answers.get('env-1')!.stdout) as Record<string, string>;
-        expect(seen.GITHUB_TOKEN).toBe('publish-token-value');
+        expect(seen.HAS).toBe('true');
+        expect(seen.GITHUB_TOKEN).toBe('[redacted]');
         expect(seen.PLAIN).toBe('literal');
         expect(Object.keys(seen).filter((name) => name.startsWith('SUPERVISOR_'))).toEqual([]);
         expect(JSON.stringify(seen)).not.toContain(TOKEN);
@@ -3119,7 +3122,7 @@ function askingGate(
         const running = join(gateDir, GATE_FILES.running, request.id);
         state.dirs = readdirSync(running).sort();
         state.askedAt = Date.now();
-        writeFileSync(join(running, 'asks', ask), 'ask\n');
+        writeFileSync(join(running, 'asks', ask), 'ask github.com\n');
         onTaken?.(running);
         return {
             exitCode,
@@ -3132,6 +3135,10 @@ function askingGate(
                 if (!existsSync(file)) return false;
                 state.answer = readFileSync(file, 'utf8');
                 state.answeredAt = Date.now();
+                // The helper takes its answer: it reads it, then removes the answer and its ask, which is how the
+                // supervisor knows it was read.
+                rmSync(file);
+                rmSync(join(running, 'asks', ask));
                 return true;
             },
         };
@@ -3267,7 +3274,7 @@ describe('the supervisor run: a gate’s GitHub token asks', () => {
         const running = join(supervised.box.gate, GATE_FILES.running, 'gate-1');
         driver.cancel = ['gate-1'];
         await until('the cancel order', () => existsSync(join(running, GATE_FILES.cancel)));
-        writeFileSync(join(running, 'asks', ASK), 'ask\n');
+        writeFileSync(join(running, 'asks', ASK), 'ask github.com\n');
         await new Promise((resolve) => setTimeout(resolve, 200));
         expect(existsSync(join(running, 'answers', ASK))).toBe(false);
         expect(driver.gateAsks).toEqual([]);
@@ -3284,7 +3291,7 @@ describe('the supervisor run: a gate’s GitHub token asks', () => {
         driver.order(gateStep('gate-1', 'gh', { timeoutMs: 60_000 }));
         const requested = join(supervised.box.gate, GATE_FILES.requests, 'gate-1');
         await until('the request', () => existsSync(join(requested, 'asks')));
-        writeFileSync(join(requested, 'asks', ASK), 'ask\n');
+        writeFileSync(join(requested, 'asks', ASK), 'ask github.com\n');
         await new Promise((resolve) => setTimeout(resolve, 200));
         expect(existsSync(join(requested, 'answers', ASK))).toBe(false);
         expect(driver.gateAsks).toEqual([]);
@@ -3318,25 +3325,25 @@ describe('the supervisor run: a gate’s GitHub token asks', () => {
         }
     );
 
-    it('ignores and removes an ask whose name is not a pid, and leaves the helper’s staging file alone', async () => {
+    it('answers nothing to an ask whose name is not a pid or to the helper’s staging file, and leaves both as evidence', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);
         let latch = false;
         let asks = '';
         fakeGateLoop(supervised.box.gate, (request) => {
             asks = join(supervised.box.gate, GATE_FILES.running, request.id, 'asks');
-            for (const name of ['abc', 'x y', '.4242.tmp']) writeFileSync(join(asks, name), 'ask\n');
+            for (const name of ['abc', 'x y', '.4242.tmp']) writeFileSync(join(asks, name), 'ask github.com\n');
             return { exitCode: 0, output: '', heldUntil: () => latch };
         });
         driver.order(gateStep('gate-1', 'gh'));
-        await until(
-            'the junk to be removed',
-            () => asks !== '' && !existsSync(join(asks, 'abc')) && !existsSync(join(asks, 'x y'))
-        );
-        expect(existsSync(join(asks, '.4242.tmp'))).toBe(true);
+        await until('the junk to be written', () => asks !== '' && existsSync(join(asks, 'x y')));
+        // Nothing is answered, and nothing is removed: an ask nobody confirmed read is what the gate's end finds.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        for (const name of ['abc', 'x y', '.4242.tmp']) expect(existsSync(join(asks, name))).toBe(true);
         expect(driver.gateAsks).toEqual([]);
         latch = true;
         await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: null, tokenAskUnanswered: true });
         supervised.agentExits(0);
         await supervised.done;
     });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gateGithubScript, gateLoopArgv, gateLoopScript, gateShellScript } from '../src/container-scripts.js';
+import { gateForgeScript, gateLoopArgv, gateLoopScript, gateShellScript } from '../src/container-scripts.js';
 import { GATE_ASK_FILES, GATE_FILES, GATE_REPORT_FILES, MAILBOXES } from '../src/supervisor-contract.js';
 
 /*
@@ -18,7 +18,7 @@ const code = gateLoopScript
 
 describe('the gate loop script', () => {
     it('is the container command, with the gate shell passed by content beside it', () => {
-        expect(gateLoopArgv()).toEqual(['sh', '-c', gateLoopScript, 'gate-loop', gateShellScript, gateGithubScript]);
+        expect(gateLoopArgv()).toEqual(['sh', '-c', gateLoopScript, 'gate-loop', gateShellScript, gateForgeScript]);
     });
 
     it('serves the gate mailbox the contract names, by the file names the supervisor spells', () => {
@@ -91,10 +91,10 @@ describe('the gate loop script', () => {
         expect(subshell).toContain('exit 126');
     });
 
-    it('installs the GitHub helper it is handed at bin/gh, and gives each request its mailbox and that bin', () => {
-        expect(code).toContain('github=$2');
+    it('installs the forge helper it is handed at bin/gh, and gives each request its mailbox and that bin', () => {
+        expect(code).toContain('forge=$2');
         expect(code).toContain(`"$box/${GATE_ASK_FILES.bin}"`);
-        expect(code).toContain('printf \'%s\\n\' "$github" > "$box/bin/gh"');
+        expect(code).toContain('printf \'%s\\n\' "$forge" > "$box/bin/gh"');
         expect(code).toContain('/bin/chmod 0700 "$box/bin/gh"');
         // Given to the gate shell alone, as the assignments of its own `exec`.
         const subshell = code.slice(code.indexOf('start() {'), code.indexOf('\n}\n', code.indexOf('start() {')));
