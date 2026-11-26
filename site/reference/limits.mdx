@@ -84,7 +84,7 @@ The schema is in [.bellows.yaml reference](/reference/bellows-yaml).
 | Gate name | 64 characters, unique, no `/` or `\`, not starting with `-` or `.` | Configuration error |
 | Gate command | 4,096 characters, one line | Configuration error |
 | Gate `timeout` | 1 to 120 whole minutes | Configuration error |
-| Default gate time | 10 minutes. Set by the operator | The gate fails with exit code 124, and counts as an environment failure |
+| Default gate time | 20 minutes. Set by the operator. 10 minutes when the agent runs a gate without its own `timeout` | The gate fails with exit code 124, and counts as an environment failure |
 | Longest gate the agent can start itself | 10 minutes | The call is refused. The gate runs only when the agent finishes |
 | Filter value (`$GATE_FILTER`) | 256 printable characters, one line | The agent's request is refused |
 | Agent command in the environment image (`factory-exec`) | 10 minutes | The command is killed with exit code 124 |
@@ -207,8 +207,8 @@ Exit codes: `0` ok, `1` refused, `2` usage, `3` wait ran out, `4` failed, `5` st
 
 | Limit | Value | When exceeded |
 | --- | --- | --- |
-| Run time | 2 hours by default. Set by the operator | The run is killed and shows <span className="status status-failed">timed out</span>. Gates still run on what the agent left |
-| Gate | 10 minutes by default, or the gate's `timeout` up to 120 | Exit code 124 |
+| Run time | 8 hours by default. Set by the operator | The run is killed and shows <span className="status status-failed">timed out</span>. Gates still run on what the agent left |
+| Gate | 20 minutes by default, or the gate's `timeout` up to 120 | Exit code 124 |
 | Reviewer | 15 minutes by default, or its `timeout` | The review run is stopped |
 | API wait (`?waitFor=terminal`) | 30 seconds by default, up to 60 | Capped at 60. Call again |
 | MCP wait | 55 seconds | Call again |
