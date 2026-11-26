@@ -378,10 +378,10 @@ describe('env var validation', () => {
         ['workspace', '/api/env/workspace', {}],
         ['repo', '/api/env/repo', { repo: { forge: 'github', host: 'github.com', path: 'acme/web' } }],
     ] as const)(
-        'refuses GITHUB_TOKEN and GH_TOKEN in the %s scope: GitHub is the App’s alone',
+        'refuses every forge credential name in the %s scope: GitHub is the App’s, GitLab the member’s grant',
         async (_scope, url, extra) => {
             const { app, adminCookie } = await boot();
-            for (const name of ['GITHUB_TOKEN', 'GH_TOKEN']) {
+            for (const name of ['GITHUB_TOKEN', 'GH_TOKEN', 'GITLAB_TOKEN', 'GL_TOKEN', 'CI_JOB_TOKEN']) {
                 const response = await app.inject({
                     method: 'PUT',
                     url,

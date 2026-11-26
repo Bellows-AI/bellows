@@ -23,6 +23,7 @@ const ALICE = ALICE_USER.id;
 const REPO = { owner: 'Bellows-AI', name: 'bellows.ai' };
 
 const RESERVE_GITHUB = new URL('../migrations/072_github_env_reserved.sql', import.meta.url);
+const RESERVE_GITLAB = new URL('../migrations/175_gitlab_env_reserved.sql', import.meta.url);
 
 // Two racing writers, the barrier that holds them and the poll that watches them each need a connection.
 const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE_USER], max: 6 });
@@ -199,6 +200,24 @@ describe.skipIf(!enabled)('the GitHub reservation migration (072)', () => {
         ]);
 
         await sql.unsafe(readFileSync(RESERVE_GITHUB, 'utf8'));
+
+        const names = await sql<{ name: string }[]>`select name from env_var where org_id = ${ORG} order by name`;
+        expect(names.map((row) => row.name)).toEqual(['KEEP_ORG']);
+    });
+});
+
+describe.skipIf(!enabled)('the GitLab reservation migration (175)', () => {
+    it('deletes stored GitLab credential rows in every scope and keeps the rest', async () => {
+        await store.replaceOrg('env-admin', [
+            { name: 'GITLAB_TOKEN', value: 'glpat_org', isSecret: true },
+            { name: 'KEEP_ORG', value: '1', isSecret: false },
+        ]);
+        await store.replaceWorkspace(ALICE, [{ name: 'GL_TOKEN', value: 'glpat_mine', isSecret: true }]);
+        await store.replaceRepo('env-admin', githubRepo(`${REPO.owner}/${REPO.name}`), [
+            { name: 'CI_JOB_TOKEN', value: 'job', isSecret: true },
+        ]);
+
+        await sql.unsafe(readFileSync(RESERVE_GITLAB, 'utf8'));
 
         const names = await sql<{ name: string }[]>`select name from env_var where org_id = ${ORG} order by name`;
         expect(names.map((row) => row.name)).toEqual(['KEEP_ORG']);
