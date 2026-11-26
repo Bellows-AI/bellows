@@ -6,8 +6,10 @@
 # by the supervisor in `answers/<pid>` as `token <value>` or `none <reason>`. It answers https only, for
 # github.com (user x-access-token) and each host in the comma-separated FACTORY_FORGE_HOSTS (user oauth2);
 # any other host gets no output and no ask. An ask never printed or kept a token on any stream but its
-# caller's, and a token is never empty: no grant is a non-zero exit. An ask that cannot be written removes the
-# supervisor's pre-made `$FACTORY_GATE_RUN/faults/armed`, which the supervisor reads as a credential wait.
+# caller's, and a token is never empty: no grant is a non-zero exit. An ask is unresolved from the moment the
+# helper writes it until the helper has read its answer and removed it: what an ask leaves behind (the ask, its
+# staging file, a missing `$FACTORY_GATE_RUN/faults/armed`, a word on stderr) is read by the supervisor as a credential
+# wait, so no timeout, failed removal or stalled supervisor can turn it into git's own auth failure.
 # Only absolute paths for the tools: the request's PATH is the gate command's.
 box=${FACTORY_GATE_RUN:-}
 limit=${FACTORY_GATE_ASK_SECONDS:-60}
@@ -31,12 +33,11 @@ ask() {
     /bin/rm -f "$box/answers/$me"
     # Staged under a dot name the supervisor skips, then renamed whole: it never reads half an ask.
     if ! { printf 'ask %s\n' "$1" > "$box/asks/.$me.tmp" && /bin/mv -f "$box/asks/.$me.tmp" "$box/asks/$me"; }; then
-        /bin/rm -f "$box/asks/.$me.tmp" 2>/dev/null
-        # The ask never got written, so the supervisor cannot know a credential was wanted. The signal must not need
-        # storage the fault may have taken: the supervisor made `faults/armed` before this request started, and
-        # removing it frees an entry and allocates nothing. Without it the step ends with no verdict and is run
-        # again; anyone able to remove it can only cause that, never a pass.
+        # Whatever the ask left (a staging file) stays: it is the evidence. Nothing here creates anything, because
+        # the fault may have taken the storage to: the supervisor's pre-made `faults/armed` is removed (an entry freed),
+        # and a word on stderr says it where not even that can be done (a read-only mailbox).
         /bin/rm -f "$box/faults/armed" 2>/dev/null
+        unresolved 'could not write the ask'
         reason='could not write the ask'
         return 1
     fi
@@ -50,7 +51,7 @@ ask() {
             case $line in
                 'token '?*)
                     token=${line#token }
-                    /bin/rm -f "$box/answers/$me"
+                    consumed
                     case $token in
                         *[' 	']*) token= ;;
                         *) return 0 ;;
@@ -58,7 +59,7 @@ ask() {
                     ;;
                 'none '?*)
                     reason=${line#none }
-                    /bin/rm -f "$box/answers/$me"
+                    consumed
                     return 1
                     ;;
             esac
@@ -74,9 +75,22 @@ ask() {
         [ -z "$start" ] && [ "$tries" -ge $((limit * 5)) ] && break
         pause
     done
-    /bin/rm -f "$box/asks/$me"
+    # The ask stays where it is: an ask nobody answered is the evidence the supervisor finds, however late it looks.
+    unresolved 'the ask went unanswered'
     reason=unanswered
     return 1
+}
+
+# The one act that clears an ask: the answer has been read. The answer goes first, the ask last, so an ask left
+# behind (a removal that failed, a helper killed in between) is never read as resolved.
+consumed() {
+    /bin/rm -f "$box/answers/$me"
+    /bin/rm -f "$box/asks/$me"
+}
+
+# The helper's word, on stderr, that an ask is unresolved (supervisor.cjs `UNRESOLVED_MARK`).
+unresolved() {
+    echo "factory-credential-unresolved: $1" >&2
 }
 
 refused() {

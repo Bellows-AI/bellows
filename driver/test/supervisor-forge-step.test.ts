@@ -610,7 +610,7 @@ describe('mailbox I/O whose outcome is unconfirmed ends the step as a credential
         const run = `"$${FORGE_STEP_ENV.run}"`;
         sup.order(
             'sync-1',
-            `printf '${content}' > ${run}/asks/.9.tmp && mv ${run}/asks/.9.tmp ${run}/asks/9; i=0; while [ ! -f ${run}/answers/9 ] && [ $i -lt 200 ]; do sleep 0.02; i=$((i+1)); done; echo "answer=$(cat ${run}/answers/9)"; rm -f ${run}/answers/9`
+            `printf '${content}' > ${run}/asks/.9.tmp && mv ${run}/asks/.9.tmp ${run}/asks/9; i=0; while [ ! -f ${run}/answers/9 ] && [ $i -lt 200 ]; do sleep 0.02; i=$((i+1)); done; echo "answer=$(cat ${run}/answers/9)"; rm -f ${run}/answers/9 ${run}/asks/9`
         );
         const answer = await sup.answerOf('sync-1');
         expect(answer.tokenAskUnanswered).toBeUndefined();
@@ -618,14 +618,14 @@ describe('mailbox I/O whose outcome is unconfirmed ends the step as a credential
         expect(driver.asks).toEqual([]);
     });
 
-    it('a name that is no ask that cannot be removed does not stop the real ask being answered', async () => {
+    it('a stray name in the asks directory is left alone and is evidence: the real ask is still answered, and the step ends as a wait', async () => {
         const driver = await startDriver(minted(3_600_000));
         const sup = startSupervisor(driver);
-        fail('rmSync', /\/asks\/junk$/, 'EIO');
         sup.order('sync-1', `: > "$${FORGE_STEP_ENV.run}/asks/junk"; ${fill()}; exit 0`);
         const answer = await sup.answerOf('sync-1');
-        expect(answer.tokenAskUnanswered).toBeUndefined();
-        expect(answer.stdout).toContain('password=[redacted]');
+        expect(driver.asks).toHaveLength(1);
+        expect(answer.tokenAskUnanswered).toBe(true);
+        expect(answer.exitCode).toBeNull();
     });
 
     it('a mailbox that cannot be removed when the step ends is no failure of the step', async () => {
@@ -693,6 +693,30 @@ describe('a helper that cannot get its ask written reports the transport fault',
             .replaceAll('2>/dev/null', '');
         expect(branch).toContain('/bin/rm -f "$box/faults/armed"');
         expect(branch).not.toMatch(/mkdir|touch|mktemp|ln |printf|>|\bmv\b|cp /);
+    });
+
+    it.each(FAULTS)(
+        'a failed ask %s whose fault slot cannot be removed either (a read-only mailbox) is a wait',
+        async (_name, step) => {
+            const driver = await startDriver(minted(3_600_000));
+            const readOnly = faulted(step).replace('/bin/rm -f "$box/faults/armed"', '/bin/false "$box/faults/armed"');
+            expect(readOnly).not.toBe(faulted(step));
+            const sup = startSupervisor(driver, { [SUPERVISOR_ENV.forgeHelper]: readOnly });
+            sup.order('sync-1', `${fill()}; exit 128`);
+            const answer = await sup.answerOf('sync-1');
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+        }
+    );
+
+    it('an ask the supervisor never saw, its helper having timed out across the supervisor’s stall, is a wait', async () => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver, { SUPERVISOR_TICK_MS: '4000' });
+        sup.order('sync-1', `export FACTORY_GATE_ASK_SECONDS=1; ${fill()}; exit 128`);
+        const answer = await sup.answerOf('sync-1');
+        expect(driver.asks).toEqual([]);
+        expect(answer.tokenAskUnanswered).toBe(true);
+        expect(answer.exitCode).toBeNull();
     });
 
     it('a real EACCES on the asks directory is the same wait', async () => {

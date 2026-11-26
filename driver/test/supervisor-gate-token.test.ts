@@ -55,7 +55,10 @@ const timers: NodeJS.Timeout[] = [];
 const closes: Promise<void>[] = [];
 const gates: ChildProcess[] = [];
 let tearingDown = false;
+/** Set by a case that lands the loop's `running` to `done` move itself: the played loop leaves it here. */
+let heldMoves: Map<string, () => void> | null = null;
 afterEach(async () => {
+    heldMoves = null;
     vi.restoreAllMocks();
     tearingDown = true;
     try {
@@ -267,7 +270,10 @@ function startGate(
             writeFileSync(join(running, GATE_FILES.output), output);
             writeFileSync(join(running, 'exit.tmp'), `${code ?? 137}\n`);
             renameSync(join(running, 'exit.tmp'), join(running, GATE_FILES.exit));
-            renameSync(running, join(gate, GATE_FILES.done, id));
+            const move = () => renameSync(running, join(gate, GATE_FILES.done, id));
+            // A test may take the move itself, to land it between two reads of the supervisor's.
+            if (heldMoves) heldMoves.set(id, move);
+            else move();
         });
     };
     const seen = new Set<string>();
@@ -477,6 +483,61 @@ describe('a gate asks for its GitHub token through its mailbox', () => {
             expect(answer.exitCode).toBeNull();
         });
 
+        it('an answer unread under done/ stays a credential wait when the move lands between two of the supervisor’s reads', async () => {
+            const driver = await startDriver({ lifeMs: 3_600_000 });
+            heldMoves = new Map();
+            const gate = startGate(driver);
+            const nodeFs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs');
+            const real = nodeFs.readdirSync;
+            let moved = false;
+            vi.spyOn(nodeFs, 'readdirSync').mockImplementation(((dir: unknown, ...rest: unknown[]) => {
+                const held = heldMoves?.get('gate-1');
+                if (!moved && held && typeof dir === 'string' && /\/running\/gate-1\/(asks|answers)$/.test(dir)) {
+                    moved = true;
+                    held();
+                }
+                return (real as (...args: unknown[]) => unknown)(dir, ...rest);
+            }) as never);
+            gate.order('gate-1', `${HANDS('github.com')}; exit 1`);
+            const answer = await gate.answerOf('gate-1');
+            expect(moved).toBe(true);
+            expect(driver.asks).toHaveLength(1);
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+        });
+
+        it('an ask the supervisor never saw, its helper having timed out across the supervisor’s stall, is a credential wait', async () => {
+            const driver = await startDriver({ lifeMs: 3_600_000 });
+            // One tick far past the helper's whole wait: the supervisor lists the asks before the helper writes one
+            // and next after the gate is over.
+            const gate = startGate(driver, { SUPERVISOR_TICK_MS: '4000', FACTORY_GATE_ASK_SECONDS: '1' });
+            gate.order('gate-1', 'gh; exit 1');
+            const answer = await gate.answerOf('gate-1');
+            expect(driver.asks).toEqual([]);
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+        });
+
+        it.each([
+            ['write', WRITE],
+            ['rename', RENAME],
+        ])(
+            'a failed ask %s whose fault slot cannot be removed either (a read-only mailbox) is a wait',
+            async (_name, step) => {
+                const driver = await startDriver({ lifeMs: 3_600_000 });
+                const readOnly = faulted(step).replace(
+                    '/bin/rm -f "$box/faults/armed"',
+                    '/bin/false "$box/faults/armed"'
+                );
+                expect(readOnly).not.toBe(faulted(step));
+                const gate = startGate(driver, {}, undefined, readOnly);
+                gate.order('gate-1', 'gh; exit 1');
+                const answer = await gate.answerOf('gate-1');
+                expect(answer.tokenAskUnanswered).toBe(true);
+                expect(answer.exitCode).toBeNull();
+            }
+        );
+
         it('a gate that forges the marker is rerun, never passed', async () => {
             const driver = await startDriver({ lifeMs: 3_600_000 });
             const gate = startGate(driver);
@@ -510,7 +571,7 @@ describe('a gate asks for its GitHub token through its mailbox', () => {
             const gate = startGate(driver);
             gate.order(
                 'gate-1',
-                `${HANDS('github.com')}; cat "$FACTORY_GATE_RUN/answers/9" >/dev/null; rm -f "$FACTORY_GATE_RUN/answers/9"; exit 1`
+                `${HANDS('github.com')}; cat "$FACTORY_GATE_RUN/answers/9" >/dev/null; rm -f "$FACTORY_GATE_RUN/answers/9" "$FACTORY_GATE_RUN/asks/9"; exit 1`
             );
             const answer = await gate.answerOf('gate-1');
             expect(answer.tokenAskUnanswered).toBeUndefined();

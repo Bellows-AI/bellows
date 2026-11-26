@@ -3135,8 +3135,10 @@ function askingGate(
                 if (!existsSync(file)) return false;
                 state.answer = readFileSync(file, 'utf8');
                 state.answeredAt = Date.now();
-                // The helper takes its answer: it reads it and removes it, which is how the supervisor knows it was read.
+                // The helper takes its answer: it reads it, then removes the answer and its ask, which is how the
+                // supervisor knows it was read.
                 rmSync(file);
+                rmSync(join(running, 'asks', ask));
                 return true;
             },
         };
@@ -3323,7 +3325,7 @@ describe('the supervisor run: a gate’s GitHub token asks', () => {
         }
     );
 
-    it('ignores and removes an ask whose name is not a pid, and leaves the helper’s staging file alone', async () => {
+    it('answers nothing to an ask whose name is not a pid or to the helper’s staging file, and leaves both as evidence', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);
         let latch = false;
@@ -3334,14 +3336,14 @@ describe('the supervisor run: a gate’s GitHub token asks', () => {
             return { exitCode: 0, output: '', heldUntil: () => latch };
         });
         driver.order(gateStep('gate-1', 'gh'));
-        await until(
-            'the junk to be removed',
-            () => asks !== '' && !existsSync(join(asks, 'abc')) && !existsSync(join(asks, 'x y'))
-        );
-        expect(existsSync(join(asks, '.4242.tmp'))).toBe(true);
+        await until('the junk to be written', () => asks !== '' && existsSync(join(asks, 'x y')));
+        // Nothing is answered, and nothing is removed: an ask nobody confirmed read is what the gate's end finds.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        for (const name of ['abc', 'x y', '.4242.tmp']) expect(existsSync(join(asks, name))).toBe(true);
         expect(driver.gateAsks).toEqual([]);
         latch = true;
         await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')).toMatchObject({ exitCode: null, tokenAskUnanswered: true });
         supervised.agentExits(0);
         await supervised.done;
     });
