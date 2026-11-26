@@ -1,4 +1,5 @@
-import type { ModelProvider } from './model-providers.js';
+import type { ExecutorType } from './executors.js';
+import { type ModelProvider, modelFitsProvider, providerSupportsAgent } from './model-providers.js';
 
 /**
  * Provider connections (docs/api.md): a model-provider credential as a first-class, named row an
@@ -41,3 +42,64 @@ export type ProviderConnectionModels =
           readonly budget?: { readonly limitUsd: number; readonly usedUsd: number };
       }
     | { readonly state: 'failed'; readonly code: string; readonly message: string };
+
+/** Why a selection of a connection by an executor is refused. */
+export type ConnectionRefusalReason = 'missing' | 'scope' | 'incompatible' | 'model';
+
+export interface ConnectionSelectionRefusal {
+    readonly reason: ConnectionRefusalReason;
+    readonly message: string;
+}
+
+/** The connection a selection names, as the shared rules read it: provider, scope and the personal owner. */
+export interface SelectedConnection {
+    readonly provider: ModelProvider;
+    readonly scope: ProviderConnectionScope;
+    readonly ownerId: string | null;
+}
+
+/**
+ * The one rule save, preflight and claim share (docs/workspace.md): whether an executor may use a connection. `owner` is the
+ * profile's owner — a member's id, or null for an organization profile. An organization profile uses organization
+ * connections only; a personal one its owner's own or the organization's; another member's row is not visible at all,
+ * so it reads as missing. Visibility alone is not enough: the provider must run the executor's type.
+ */
+export function connectionSelectionRefusal(input: {
+    connection: SelectedConnection | null;
+    owner: string | null;
+    agentType: ExecutorType;
+}): ConnectionSelectionRefusal | null {
+    const { connection, owner, agentType } = input;
+    if (connection === null || (connection.scope === 'personal' && owner !== null && connection.ownerId !== owner)) {
+        return { reason: 'missing', message: 'The provider connection does not exist or is not available to you.' };
+    }
+    if (connection.scope === 'personal' && owner === null) {
+        return {
+            reason: 'scope',
+            message: 'An organization executor can only use an organization provider connection.',
+        };
+    }
+    if (!providerSupportsAgent(connection.provider, agentType)) {
+        return {
+            reason: 'incompatible',
+            message: `A ${connection.provider} connection cannot run a ${agentType} executor.`,
+        };
+    }
+    return null;
+}
+
+/**
+ * The model transition rule: a model the board knows belongs to another provider is refused when the connection
+ * changes, leaving the member to reselect. Local prefix knowledge only — a discovery failure never invalidates one.
+ */
+export function connectionModelRefusal(
+    provider: ModelProvider,
+    agentType: ExecutorType,
+    model: unknown
+): ConnectionSelectionRefusal | null {
+    if (typeof model !== 'string' || model === '' || modelFitsProvider(provider, agentType, model)) return null;
+    return {
+        reason: 'model',
+        message: `The model "${model}" does not belong to a ${provider} connection; choose a model for it.`,
+    };
+}

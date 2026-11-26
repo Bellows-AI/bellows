@@ -240,11 +240,13 @@ export {
 } from './deployment-mode.js';
 export type { ErrorCode } from './error-codes.js';
 export { ERROR_CODES } from './error-codes.js';
-export type { AgentProvider, ModelProvider } from './model-providers.js';
+export type { AgentProvider, ConnectionCredential, ModelProvider } from './model-providers.js';
 export {
     AGENT_PROVIDERS,
+    applyConnectionLayer,
     CLAUDE_CODE_CREDENTIAL_NAMES,
     claimCredentialEnv,
+    connectionOpenCodeProvider,
     claudeCodeCredentialScope,
     currentProvider,
     hasModelKey,
@@ -253,6 +255,7 @@ export {
     isModelProvider,
     missingProviderSecretMessage,
     MODEL_PROVIDERS,
+    modelFitsProvider,
     modelKeyRequired,
     NO_MODEL_MESSAGE,
     normalizeModelId,
@@ -264,6 +267,7 @@ export {
     PROVIDER_ENV,
     providerAvailable,
     providerEnvNames,
+    providerSupportsAgent,
     resolveProviderReferences,
     stackClaudeCodeEnv,
 } from './model-providers.js';
@@ -277,11 +281,18 @@ export {
     OPENAI_COMPATIBLE_NPM,
 } from './executor-providers.js';
 export type {
+    ConnectionRefusalReason,
+    ConnectionSelectionRefusal,
     ProviderConnectionMeta,
+    SelectedConnection,
     ProviderConnectionModels,
     ProviderConnectionScope,
 } from './provider-connections.js';
-export { MAX_PROVIDER_CONNECTIONS_PER_SCOPE } from './provider-connections.js';
+export {
+    connectionModelRefusal,
+    connectionSelectionRefusal,
+    MAX_PROVIDER_CONNECTIONS_PER_SCOPE,
+} from './provider-connections.js';
 export type { JobMode } from './job-mode.js';
 export { JOB_MODES, OBJECTIVE_MODE, WORKFLOW_MODE } from './job-mode.js';
 export type { ExecutorScope, ExecutorType } from './executors.js';

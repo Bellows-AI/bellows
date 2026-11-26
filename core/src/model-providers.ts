@@ -56,6 +56,10 @@ export const PROVIDER_AGENTS: Readonly<Record<ModelProvider, readonly ExecutorTy
     subscription: [CLAUDE_CODE],
 };
 
+/** Whether a provider's key can run an executor type: the one capability matrix (`PROVIDER_AGENTS`) every save, preflight and claim reads. */
+export const providerSupportsAgent = (provider: ModelProvider, agent: ExecutorType): boolean =>
+    PROVIDER_AGENTS[provider].includes(agent);
+
 /** Every name a provider's setup writes: its key, then its base URL where it has one. */
 export const providerEnvNames = (provider: ModelProvider): string[] => {
     const base = PROVIDER_BASE_URL_ENV[provider];
@@ -155,6 +159,24 @@ export function normalizeModelId(provider: AgentProvider, agentType: ExecutorTyp
     return `${prefix}/${model}`;
 }
 
+/** The OpenCode provider ids the board knows; a model id starting with another one's is known to belong elsewhere. */
+const KNOWN_MODEL_PREFIXES: readonly string[] = ['anthropic', 'openrouter', 'openai'];
+
+/**
+ * Whether a model id is not KNOWN to belong to another provider, judged locally on its prefix. OpenCode names a model
+ * `<provider>/<model>`, so a known foreign prefix is incompatible; Claude Code's ids carry none, except OpenRouter's
+ * `vendor/model`, which any prefix may open. An unprefixed or unknown-prefix id is accepted: only a discovery that
+ * lists the model can prove more, and a discovery outage proves nothing.
+ */
+export function modelFitsProvider(provider: ModelProvider, agentType: ExecutorType, model: string): boolean {
+    const slash = model.indexOf('/');
+    if (slash < 0) return true;
+    const prefix = model.slice(0, slash);
+    if (!KNOWN_MODEL_PREFIXES.includes(prefix)) return true;
+    if (agentType === OPENCODE) return prefix === OPENCODE_PREFIX[provider];
+    return provider === 'openrouter' || prefix === OPENCODE_PREFIX[provider];
+}
+
 /** Where Claude Code reaches OpenRouter's Anthropic-compatible API (it appends `/v1/messages`). */
 export const OPENROUTER_ANTHROPIC_BASE_URL = 'https://openrouter.ai/api';
 
@@ -199,6 +221,69 @@ export function claimCredentialEnv(
     return openRouterClaudeWiring(env, agentType) ?? (mode === CLOUD ? platformCredentialBlanks(env) : {});
 }
 
+/** What a connection supplies a claim: its provider, the unsealed key and the plain endpoint (null: the provider's default). */
+export interface ConnectionCredential {
+    readonly provider: ModelProvider;
+    readonly key: string;
+    readonly baseUrl: string | null;
+}
+
+/** Claude Code's provider routing selectors: they send the run to another cloud than the selected key's. */
+const CLAUDE_ROUTING_NAMES = [
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_USE_VERTEX',
+    'CLAUDE_CODE_USE_FOUNDRY',
+    'ANTHROPIC_BEDROCK_BASE_URL',
+    'ANTHROPIC_VERTEX_BASE_URL',
+];
+
+/** Every name a connection replaces for an agent: it supplies its own key and endpoint as ONE unit. */
+function connectionNames(provider: ModelProvider, agentType: ExecutorType): string[] {
+    if (agentType === OPENCODE) return providerEnvNames(provider);
+    return [...CLAUDE_CODE_CREDENTIAL_NAMES, ...CLAUDE_ROUTING_NAMES, 'OPENROUTER_BASE_URL'];
+}
+
+/**
+ * The selected connection as the highest scope of a claim's env: every name it replaces is dropped from the
+ * ambient env — a lower scope's custom endpoint or competing key never rides beside the connection's key — and its
+ * key (and endpoint, when it has one) is set. `blanks` are the dropped names the connection does not set: the claim
+ * carries them EMPTY, because the driver forwards its own `RUNNER_ENV` under the same names and a claim's name wins
+ * over it, empty included — on both executors. Claude Code replaces all its credential names (the one-scope rule
+ * with the connection as the highest scope); OpenCode only the provider's own key and endpoint, since its other
+ * providers' keys reach other hosts.
+ */
+export function applyConnectionLayer(
+    env: Readonly<Record<string, string>> | undefined,
+    agentType: ExecutorType,
+    connection: ConnectionCredential
+): { env: Record<string, string>; blanks: string[] } {
+    const replaced = new Set(connectionNames(connection.provider, agentType));
+    const kept = Object.fromEntries(Object.entries(env ?? {}).filter(([name]) => !replaced.has(name)));
+    const baseName = PROVIDER_BASE_URL_ENV[connection.provider];
+    const supplied: Record<string, string> = { [PROVIDER_ENV[connection.provider]]: connection.key };
+    if (baseName !== null && connection.baseUrl !== null) supplied[baseName] = connection.baseUrl;
+    const next = { ...kept, ...supplied };
+    return { env: next, blanks: [...replaced].filter((name) => !Object.hasOwn(next, name)) };
+}
+
+/**
+ * The OpenCode provider block a connection with a custom endpoint adds beneath the pasted config: `baseURL` and the
+ * key by `{env:NAME}`, which the claim resolves from the connection's own key (`resolveProviderReferences`). Null for
+ * a provider's default endpoint, which the key's env name already reaches.
+ */
+export function connectionOpenCodeProvider(
+    provider: ModelProvider,
+    baseUrl: string | null
+): { provider: Record<string, unknown> } | null {
+    const id = OPENCODE_PREFIX[provider];
+    if (id === null || baseUrl === null) return null;
+    return {
+        provider: {
+            [id]: { options: { [PROVIDER_BASE_URL]: baseUrl, [PROVIDER_API_KEY]: `{env:${PROVIDER_ENV[provider]}}` } },
+        },
+    };
+}
+
 /** What a task with no model credential is refused with (`NO_MODEL`), at create, in preflight and at claim. */
 export const NO_MODEL_MESSAGE =
     'Connect a model in Settings → Model, or ask an admin to connect one for the organization.';
@@ -231,10 +316,17 @@ function providerKeyPresent(value: unknown, names: ReadonlySet<string>): boolean
  * Whether a task's agent has a model credential the run will actually have, judged on the names its env carries (names
  * only at create; the non-empty names at claim) and its executor profile's config. Claude Code: its settings' `env`
  * applies over the env, a non-empty value adding the name and an empty one removing it. OpenCode: a key name in the
- * env, or a provider `options.apiKey` (`providerKeyPresent`).
+ * env, or a provider `options.apiKey` (`providerKeyPresent`). A selected provider connection counts as its key.
  */
-export function hasModelKey(names: readonly string[], config: unknown, agentType: ExecutorType): boolean {
+export function hasModelKey(
+    names: readonly string[],
+    config: unknown,
+    agentType: ExecutorType,
+    connection: ModelProvider | null = null
+): boolean {
     const present = new Set(names);
+    // A selected connection that can run this agent supplies its key — before the settings, which may still clear it.
+    if (connection !== null && providerSupportsAgent(connection, agentType)) present.add(PROVIDER_ENV[connection]);
     const settings = isRecord(config) ? config : {};
     if (agentType === CLAUDE_CODE && isRecord(settings.env)) {
         for (const [name, value] of Object.entries(settings.env)) {
