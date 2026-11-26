@@ -319,6 +319,22 @@ describe('an exec run in the supervised gate manager', () => {
         expect(calls[0]?.gate).not.toHaveProperty('parallel');
     });
 
+    it('names a GitLab job’s host in FACTORY_FORGE_HOSTS for a gate, never for an exec nor a GitHub job', async () => {
+        const { runner, calls } = gateRunner(() => answered(0));
+        const manager = createSupervisedGateManager({ config, runner });
+        const gitlab: BoardJob = { ...JOB, repo: { forge: 'gitlab', host: 'GitLab.Example.com', path: 'group/app' } };
+        await manager.acquire(KEY, 'node:24', 'FACTORY_FORGE_HOSTS=evil.example.com\n', { job: gitlab });
+        await manager.runGate(KEY, 'test', 'npm test');
+        await manager.runGate(KEY, 'exec', 'ls', { exec: true });
+        expect(calls[0]?.gate.env.FACTORY_FORGE_HOSTS).toBe('gitlab.example.com');
+        expect(calls[1]?.gate.env).not.toHaveProperty('FACTORY_FORGE_HOSTS');
+        const github = gateRunner(() => answered(0));
+        const plain = createSupervisedGateManager({ config, runner: github.runner });
+        await plain.acquire(KEY, 'node:24', '', { job: JOB });
+        await plain.runGate(KEY, 'test', 'npm test');
+        expect(github.calls[0]?.gate.env).not.toHaveProperty('FACTORY_FORGE_HOSTS');
+    });
+
     it('is capped at 10 minutes, even when the gate default is longer', async () => {
         const { runner, calls } = gateRunner(() => answered(0));
         const manager = createSupervisedGateManager({ config, runner, gateTimeoutMs: 3 * TEN_MINUTES_MS });

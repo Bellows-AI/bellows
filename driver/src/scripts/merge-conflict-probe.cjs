@@ -16,7 +16,9 @@
 // precondition failure: there is nothing here to reconcile.
 //
 // GITHUB_TOKEN, when present (this helper always declares githubWriting: true): the fresh
-// installation token the board mints for the loop immediately before a github-writing helper. The
+// installation token the board mints for the loop immediately before a github-writing helper. A GitLab
+// job's step carries none: FACTORY_FORGE_HELPER names the supervisor's mailbox helper instead, which the
+// fetch runs as its credential helper (FORGE_CREDENTIAL_HELPER below). The
 // credential-helper CODE is a literal copy of scripts/credential-helper.sh — CRED_HELPER is a
 // reserved claim env name the generic transport does not forward to a helper, and a script
 // content-passed into a container cannot require() a sibling file, so every consumer of this
@@ -48,6 +50,9 @@ const ERROR_MAX_LENGTH = 200;
 const UP_TO_DATE_MARKER = 'MERGE-UP-TO-DATE';
 const REBASED_MARKER = 'MERGE-REBASED';
 
+// The exact snippet driver/src/scripts/credential-helper-forge.sh carries (publish-base.ts's
+// FORGE_STEP_CREDENTIAL_HELPER): the mailbox helper the supervisor wrote, named by its env var, in credential mode.
+const FORGE_CREDENTIAL_HELPER = '!FACTORY_GATE_MODE=credential /bin/sh "$FACTORY_FORGE_HELPER"';
 // The exact snippet driver/src/scripts/credential-helper.sh carries, trimmed the same way
 // publish.ts's CREDENTIAL_HELPER is: git appends the credential operation to this value verbatim.
 // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion inside the git helper snippet, not a JS template
@@ -154,14 +159,19 @@ function ensureCleanCheckout(publication) {
 }
 
 /**
- * Fetches the PR's recorded base, authenticated when a token is available. { ok } or a refusal.
+ * Fetches the PR's recorded base, authenticated when a token is available — or, on a step that asks its forge
+ * through the supervisor's mailbox (FACTORY_FORGE_HELPER set), by the mailbox helper. { ok } or a refusal.
  * @param {Publication} publication
  * @returns {{ ok: boolean }}
  */
 function fetchBase(publication) {
-    const token = process.env.GITHUB_TOKEN;
+    const helper = process.env.FACTORY_FORGE_HELPER
+        ? FORGE_CREDENTIAL_HELPER
+        : process.env.GITHUB_TOKEN
+          ? CREDENTIAL_HELPER
+          : null;
     try {
-        if (token) {
+        if (helper) {
             const origin = git('remote', 'get-url', 'origin');
             if (!origin.startsWith('https://')) {
                 fail('auth_failed', 'the credentialed fetch refuses a non-https origin: ' + origin);
@@ -169,7 +179,7 @@ function fetchBase(publication) {
             }
             git(
                 '-c',
-                'credential.helper=' + CREDENTIAL_HELPER,
+                'credential.helper=' + helper,
                 '-c',
                 'http.followRedirects=initial',
                 'fetch',

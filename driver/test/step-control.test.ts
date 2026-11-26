@@ -508,10 +508,15 @@ describe('the whole channel against the real supervisor', () => {
 
         // The agent is held back until `go`, and the group serves steps while it works.
         await go();
-        const midRun = await run('draft-1', 'publish', 'console.log(process.env.GITHUB_TOKEN)', {
-            env: { GITHUB_TOKEN: 'only-for-this-step' },
-        });
-        expect(midRun.stdout.trim()).toBe('only-for-this-step');
+        const midRun = await run(
+            'draft-1',
+            'publish',
+            'console.log(process.env.GITHUB_TOKEN === "only-for-this-step")',
+            {
+                env: { GITHUB_TOKEN: 'only-for-this-step' },
+            }
+        );
+        expect(midRun.stdout.trim()).toBe('true');
 
         // The agent ends; the supervisor reports and keeps serving.
         agentExits(0);
@@ -637,21 +642,23 @@ describe('the step broker observer (issue #831)', () => {
     });
 });
 
-describe('the step broker holdsGate', () => {
+describe('the step broker holdsForgeAsk', () => {
+    const GH = 'github.com';
+    const GL = 'gitlab.example.com';
     const gate = (id: string) => step(id, { kind: 'gate' });
 
     it('is true only for a pulled, unsettled gate step', async () => {
         const broker = createStepBroker();
         broker.open('t');
-        expect(broker.holdsGate('unknown', 'g1')).toBe(false);
+        expect(broker.holdsForgeAsk('unknown', 'g1', GH)).toBe(false);
         const answered = broker.submit('t', gate('g1'));
-        expect(broker.holdsGate('t', 'g1')).toBe(false);
+        expect(broker.holdsForgeAsk('t', 'g1', GH)).toBe(false);
         expect(await broker.next('t', 0, never)).toMatchObject({ id: 'g1' });
-        expect(broker.holdsGate('t', 'g1')).toBe(true);
-        expect(broker.holdsGate('t', 'other')).toBe(false);
+        expect(broker.holdsForgeAsk('t', 'g1', GH)).toBe(true);
+        expect(broker.holdsForgeAsk('t', 'other', GH)).toBe(false);
         broker.settle('t', 'g1', 'i-1', result());
         await answered;
-        expect(broker.holdsGate('t', 'g1')).toBe(false);
+        expect(broker.holdsForgeAsk('t', 'g1', GH)).toBe(false);
     });
 
     it('is false for a pulled step of another kind', async () => {
@@ -659,7 +666,7 @@ describe('the step broker holdsGate', () => {
         broker.open('t');
         void broker.submit('t', step('p1'));
         await broker.next('t', 0, never);
-        expect(broker.holdsGate('t', 'p1')).toBe(false);
+        expect(broker.holdsForgeAsk('t', 'p1', GH)).toBe(false);
     });
 
     it('is false after a queued step is cancelled and after the group is released', async () => {
@@ -668,26 +675,56 @@ describe('the step broker holdsGate', () => {
         const queued = broker.submit('t', gate('g1'));
         queued.catch(() => undefined);
         broker.cancel('t', 'g1');
-        expect(broker.holdsGate('t', 'g1')).toBe(false);
+        expect(broker.holdsForgeAsk('t', 'g1', GH)).toBe(false);
         const pulled = broker.submit('t', gate('g2'));
         pulled.catch(() => undefined);
         await broker.next('t', 0, never);
-        expect(broker.holdsGate('t', 'g2')).toBe(true);
+        expect(broker.holdsForgeAsk('t', 'g2', GH)).toBe(true);
         broker.release('t');
-        expect(broker.holdsGate('t', 'g2')).toBe(false);
+        expect(broker.holdsForgeAsk('t', 'g2', GH)).toBe(false);
     });
 
-    // An agent's exec gets no GitHub token, so the driver's `/gate-token` refuses its ask.
+    it('a sync, publish, probe or helper step holds an ask for its own forgeHost alone', async () => {
+        const broker = createStepBroker();
+        broker.open('t');
+        for (const kind of ['sync', 'publish', 'probe', 'helper'] as const) {
+            const id = `${kind}-1`;
+            const queued = broker.submit('t', step(id, { kind, forgeHost: GL }));
+            queued.catch(() => undefined);
+            expect(broker.holdsForgeAsk('t', id, GL), `${kind} queued`).toBe(false);
+            await broker.next('t', 0, never);
+            expect(broker.holdsForgeAsk('t', id, GL), kind).toBe(true);
+            expect(broker.holdsForgeAsk('t', id, GH), `${kind} other host`).toBe(false);
+            expect(broker.holdsForgeAsk('t', id, 'other.example.com'), `${kind} foreign host`).toBe(false);
+            broker.settle('t', id, 'i-1', result());
+            await queued;
+            expect(broker.holdsForgeAsk('t', id, GL), `${kind} settled`).toBe(false);
+        }
+    });
+
+    it('a review step or a forge-kind step without a forgeHost never holds an ask', async () => {
+        const broker = createStepBroker();
+        broker.open('t');
+        void broker.submit('t', step('r1', { kind: 'review', forgeHost: GL }));
+        void broker.submit('t', step('s1', { kind: 'sync' }));
+        await broker.next('t', 0, never);
+        await broker.next('t', 0, never);
+        expect(broker.holdsForgeAsk('t', 'r1', GL)).toBe(false);
+        expect(broker.holdsForgeAsk('t', 's1', GL)).toBe(false);
+        expect(broker.holdsForgeAsk('t', 's1', GH)).toBe(false);
+    });
+
+    // An agent's exec gets no forge token, so the driver's `/gate-token` refuses its ask.
     it('a tokenless gate step never holds a token ask', async () => {
         const broker = createStepBroker();
         broker.open('t');
         const exec = broker.submit('t', step('x1', { kind: 'gate', tokenless: true }));
         exec.catch(() => undefined);
         await broker.next('t', 0, never);
-        expect(broker.holdsGate('t', 'x1')).toBe(false);
+        expect(broker.holdsForgeAsk('t', 'x1', GH)).toBe(false);
         const plain = broker.submit('t', gate('g1'));
         plain.catch(() => undefined);
         await broker.next('t', 0, never);
-        expect(broker.holdsGate('t', 'g1')).toBe(true);
+        expect(broker.holdsForgeAsk('t', 'g1', GH)).toBe(true);
     });
 });

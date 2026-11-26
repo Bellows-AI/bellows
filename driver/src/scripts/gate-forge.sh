@@ -1,10 +1,12 @@
 #!/bin/sh
-# The gate's GitHub helper, installed by the gate loop at `<gate>/bin/gh` and used two ways: as git's
-# credential helper (FACTORY_GATE_MODE=credential, git appends get|store|erase) and as a `gh` shim
-# first on the gate's PATH. A gate holds no GitHub token of its own: each use asks for one through
-# the request's mailbox, `$FACTORY_GATE_RUN/asks/<pid>`, answered by the supervisor in
-# `answers/<pid>` as `token <value>` or `none <reason>`. An ask never printed or kept a token on
-# any stream but its caller's, and a token is never empty: no grant is a non-zero exit.
+# The forge helper, installed by the gate loop at `<gate>/bin/gh` and by the supervisor in a forge step's
+# own mailbox, and used two ways: as git's credential helper (FACTORY_GATE_MODE=credential, git appends
+# get|store|erase) and as a `gh` shim first on the gate's PATH. A gate or step holds no forge token of its
+# own: each use asks for one through the mailbox, `ask <host>` in `$FACTORY_GATE_RUN/asks/<pid>`, answered
+# by the supervisor in `answers/<pid>` as `token <value>` or `none <reason>`. It answers https only, for
+# github.com (user x-access-token) and each host in the comma-separated FACTORY_FORGE_HOSTS (user oauth2);
+# any other host gets no output and no ask. An ask never printed or kept a token on any stream but its
+# caller's, and a token is never empty: no grant is a non-zero exit.
 # Only absolute paths for the tools: the request's PATH is the gate command's.
 box=${FACTORY_GATE_RUN:-}
 limit=${FACTORY_GATE_ASK_SECONDS:-60}
@@ -16,7 +18,7 @@ pause() {
     /bin/sleep 0.2 2>/dev/null || /bin/sleep 1
 }
 
-# Asks for a token: sets $token and returns 0, or sets $reason and returns 1.
+# Asks for host $1's token: sets $token and returns 0, or sets $reason and returns 1.
 ask() {
     token=
     reason=
@@ -27,7 +29,7 @@ ask() {
     me=$$
     /bin/rm -f "$box/answers/$me"
     # Staged under a dot name the supervisor skips, then renamed whole: it never reads half an ask.
-    if ! { printf 'ask\n' > "$box/asks/.$me.tmp" && /bin/mv -f "$box/asks/.$me.tmp" "$box/asks/$me"; }; then
+    if ! { printf 'ask %s\n' "$1" > "$box/asks/.$me.tmp" && /bin/mv -f "$box/asks/.$me.tmp" "$box/asks/$me"; }; then
         reason='could not write the ask'
         return 1
     fi
@@ -71,7 +73,10 @@ ask() {
 }
 
 refused() {
-    echo "gate-github: no GitHub token ($reason)" >&2
+    case $reason in
+        waiting) echo "gate-forge: no token (waiting for the task's starter to reconnect $1 on the board)" >&2 ;;
+        *) echo "gate-forge: no token ($reason)" >&2 ;;
+    esac
 }
 
 if [ "${FACTORY_GATE_MODE:-}" = credential ]; then
@@ -84,12 +89,28 @@ if [ "${FACTORY_GATE_MODE:-}" = credential ]; then
             host=*) host=${line#host=} ;;
         esac
     done
-    [ "$protocol" = https ] && [ "$host" = github.com ] || exit 0
-    ask || {
-        refused
+    [ "$protocol" = https ] || exit 0
+    lower=$(printf '%s' "$host" | /usr/bin/tr '[:upper:]' '[:lower:]' 2>/dev/null) && host=$lower
+    host=${host%:443}
+    case $host in '' | *[!a-z0-9.:-]*) exit 0 ;; esac
+    allowed=
+    [ "$host" = github.com ] && allowed=github
+    set -f
+    oldifs=$IFS
+    IFS=,
+    for listed in ${FACTORY_FORGE_HOSTS:-}; do
+        [ -z "$allowed" ] && [ "$listed" = "$host" ] && allowed=listed
+    done
+    IFS=$oldifs
+    set +f
+    [ -n "$allowed" ] || exit 0
+    ask "$host" || {
+        refused "$host"
         exit 1
     }
-    printf 'username=x-access-token\npassword=%s\n' "$token"
+    user=oauth2
+    [ "$allowed" = github ] && user=x-access-token
+    printf 'username=%s\npassword=%s\n' "$user" "$token"
     exit 0
 fi
 
@@ -105,11 +126,11 @@ for dir in $PATH; do
     fi
 done
 IFS=$oldifs
-if ask; then
+if ask github.com; then
     GH_TOKEN=$token
     export GH_TOKEN
 else
-    refused
+    refused github.com
 fi
 if [ -z "$real" ]; then
     echo 'gh: not found' >&2

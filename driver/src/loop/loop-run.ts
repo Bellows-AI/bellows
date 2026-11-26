@@ -5,6 +5,7 @@ import { evidencePolicyActive, type GatesOutcome } from '../evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from '../runner.js';
 import { adoptStep, recordAdopted, runnerClassStep } from './loop-adopt.js';
 import { askGithubToken } from './loop-github.js';
+import { usesForgeMailbox } from '../repo-ref.js';
 import { preHelperStep } from './loop-helpers.js';
 import { probeTreeNow, type GateFailure, type GateSession } from './loop-gates.js';
 import { beginGates, mintGateCredentials, probeDeadServices } from './loop-gates.js';
@@ -114,8 +115,9 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     const { runner } = rt;
     // An adopted run's tree is its result, and a taken-over run is still writing it: nothing rewrites it.
     if (ctx.adopted || ctx.takeover) return null;
-    // A starting claim's fetch reaches GitHub; a restore and a repo-less job do not.
-    const fetches = Boolean(job.repo) && !claimContinuesSession(job);
+    // A starting claim's fetch reaches GitHub; a restore and a repo-less job do not. A job whose git asks through the
+    // forge mailbox is handed no token: its sync step asks for its own.
+    const fetches = Boolean(job.repo) && !claimContinuesSession(job) && !usesForgeMailbox(job);
     const githubToken = fetches ? await askGithubToken(rt, job, 'the checkout sync') : null;
     const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken ?? undefined);
     let syncedOut: { value: SyncResult } | null;

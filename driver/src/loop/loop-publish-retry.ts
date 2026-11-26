@@ -17,6 +17,7 @@ import {
     type TreeProbe,
 } from '../publish/publish.js';
 import { stepLost } from '../step-control.js';
+import { usesForgeMailbox } from '../repo-ref.js';
 
 /**
  * Pushes the branch and opens the PR. A lost supervisor (`stepLost`) is thrown, never a failed publish:
@@ -96,6 +97,20 @@ async function bindingOf(
 }
 
 /**
+ * The token one try pushes with, and whether its absence is worth a retry: a job whose git asks through the forge
+ * mailbox is handed none and misses none — its push step asks for its own.
+ */
+async function pushToken(
+    rt: LoopRuntime,
+    job: BoardJob,
+    what: string
+): Promise<{ token: string | null; missing: boolean }> {
+    if (usesForgeMailbox(job)) return { token: null, missing: false };
+    const token = await askGithubToken(rt, job, what);
+    return { token, missing: token === null };
+}
+
+/**
  * `publishBranch` with a NEW token ask per try, retried while `publishRetryable` says a fresh token or a
  * moment's wait may land it. `down` fences before every retry's ask and between each ask and its
  * push, as the single try always did; the backoff is cut short by a stand-down. `stepLost` propagates.
@@ -110,11 +125,11 @@ export async function publishWithRetry(
     let options = publish.options;
     for (let n = 1; ; n++) {
         if (n > 1 && (await down())) return STOOD_DOWN;
-        const token = await askGithubToken(rt, job, publish.what);
+        const { token, missing } = await pushToken(rt, job, publish.what);
         if (await down()) return STOOD_DOWN;
         if (n > 1) options = await next();
         const result = await publishBranch(rt, job, token, options);
-        if (n === PUBLISH_TRIES || !publishRetryable(result, token === null)) return result;
+        if (n === PUBLISH_TRIES || !publishRetryable(result, missing)) return result;
         const wait = PUBLISH_BACKOFF_MS[n - 1] ?? 0;
         rt.log(
             `job ${job.id}: ${publish.what} failed (try ${n} of ${PUBLISH_TRIES}, ${result.cause ?? 'unknown'}) — asking for a new GitHub token and retrying in ${wait} ms`

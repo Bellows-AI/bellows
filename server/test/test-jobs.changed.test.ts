@@ -355,8 +355,8 @@ describe('test-jobs --changed path-to-phase map', () => {
         }
     });
 
-    it('maps the GitHub credential helpers to its phase and to both images’ phases', () => {
-        for (const file of ['github-credential.cjs', 'credential-broker.cjs']) {
+    it('maps the forge credential helpers to its phase and to both images’ phases', () => {
+        for (const file of ['forge-credential.cjs', 'credential-broker.cjs']) {
             expect(classify([`docker/executor-common/${file}`]).selected).toEqual(
                 expect.arrayContaining(['github-credential', 'cooperative-stop', 'tool-isolation', 'image-checks'])
             );

@@ -32,10 +32,18 @@ export const formatRepoRef = (ref: RepoRef): string =>
     ref.forge === 'github' && ref.host === GITHUB_HOST ? ref.path : `${ref.forge}:${ref.host}/${ref.path}`;
 
 /**
- * Why this driver cannot clone `ref`, or null when it can. It holds a git credential for github.com only,
- * so every other host is refused before any sync or token request.
+ * Whether the job's git reaches its forge through the supervisor's mailbox (`StepRequest.forgeHost`): a GitLab
+ * repository, whose member token is fetched on demand by the step's own git and never rides a step or claim env.
+ */
+export const usesForgeMailbox = (job: { repo?: RepoRef | null | undefined }): boolean => job.repo?.forge === 'gitlab';
+
+/**
+ * Why this driver cannot clone `ref`, or null when it can. A GitLab host is the board's to decide (it claims only
+ * connected ones, and the mailbox fetches the token); GitHub is served on github.com only, so every other
+ * GitHub host is refused before any sync or token request.
  */
 export function cloneHostRefusal(ref: RepoRef): string | null {
-    if (ref.forge === 'github' && ref.host.toLowerCase() === GITHUB_HOST) return null;
+    if (ref.forge === 'gitlab') return null;
+    if (ref.host.toLowerCase() === GITHUB_HOST) return null;
     return `This job names repository ${ref.forge}:${ref.host}/${ref.path}, but this driver holds no git credential for that host, so nothing was cloned.`;
 }

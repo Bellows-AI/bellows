@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { gitHardenScript } from '../src/container-scripts.js';
+import { gateForgeScript, gitHardenScript } from '../src/container-scripts.js';
 import { supervisorLiterals } from '../src/supervisor-plan.js';
 import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { boardJob } from './fixtures/board-job.js';
@@ -36,6 +36,8 @@ describe('the hardened git of the supervisor’s steps', () => {
         for (const shape of shapes) {
             const env = Object.fromEntries(supervisorLiterals(config, job, shape));
             expect(env[SUPERVISOR_ENV.gitHardenScript]).toBe(gitHardenScript);
+            // The forge helper a forge step's mailbox holds rides the same list, on both executors.
+            expect(env[SUPERVISOR_ENV.forgeHelper]).toBe(gateForgeScript);
         }
         expect(gitHardenScript).toBe(readFileSync(join(SCRIPTS, 'git-harden.cjs'), 'utf8'));
     });

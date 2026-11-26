@@ -756,7 +756,7 @@ const WINDOW_MS = 120_000;
 const DELIVERY: Timing = { ...scaled(15), refreshMs: 2 * scaled(15).rebindGraceMs };
 const rebound = (g: Group) => g.logs.some((l) => l.startsWith('supervisor: rebound to claim 2'));
 
-/** One `github-credential.cjs`-shaped call from inside group `g`, started now. */
+/** One `forge-credential.cjs`-shaped call from inside group `g`, started now. */
 function credentialCall(s: Sim, g: Group, t: Timing) {
     const by = t.refreshMs / OBSERVED_DELIVERY_MS;
     // Whole milliseconds: a timer or an abort signal takes no fraction.

@@ -145,6 +145,21 @@ describe('the gate shell', () => {
             ]);
         });
 
+        it('registers the helper for each host FACTORY_FORGE_HOSTS lists, beside github.com', () => {
+            const { run, bin } = mailbox();
+            const GITLAB = 'credential.https://gitlab.example.com.helper';
+            const ran = gateWith(
+                `git config --get-all ${HELPER}; git config --get-all ${GITLAB}; echo "$GIT_CONFIG_COUNT"`,
+                {
+                    FACTORY_GATE_RUN: run,
+                    FACTORY_GATE_BIN: bin,
+                    FACTORY_FORGE_HOSTS: 'gitlab.example.com,github.com,a b',
+                }
+            );
+            const helper = `!FACTORY_GATE_MODE=credential /bin/sh '${bin}/gh'`;
+            expect(ran.stdout.split('\n')).toEqual(['', helper, '', helper, '4', '']);
+        });
+
         it('leaves the environment alone without both variables and the asks directory', () => {
             const { run, bin } = mailbox();
             for (const env of [{}, { FACTORY_GATE_RUN: run }, { FACTORY_GATE_RUN: run, FACTORY_GATE_BIN: '' }]) {

@@ -16,7 +16,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { gateGithubScript, gateShellScript } from '../src/container-scripts.js';
+import { gateForgeScript, gateShellScript } from '../src/container-scripts.js';
 import { GATE_FILES, GATE_TOKEN_PATH, MAILBOX_FILES, MAILBOXES } from '../src/supervisor-contract.js';
 import { withoutGateEnv } from './fixtures/gate-env.js';
 import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
@@ -99,7 +99,7 @@ beforeAll(() => {
         `#!/bin/sh\nprintf '%s\\n' "$GH_TOKEN" >> "$GH_RECORD"\nprintf 'gh-sees=%s\\n' "$GH_TOKEN"\n`
     );
     chmodSync(join(shared.fakeReal, 'gh'), 0o755);
-    writeFileSync(join(shared.bin, 'gh'), gateGithubScript);
+    writeFileSync(join(shared.bin, 'gh'), gateForgeScript);
     chmodSync(join(shared.bin, 'gh'), 0o700);
     // Paid here, under the hook's own bound, instead of inside the first case.
     // Outside any gate: inherited from a gate this suite runs in, the mailbox would make the helper ask and wait.
@@ -139,7 +139,7 @@ async function startDriver({ lifeMs, unconfirmedMint }: { lifeMs: number; unconf
         queue: [] as unknown[],
         waiter,
         answerBodies: [] as string[],
-        asks: [] as { step: string; authorization: string }[],
+        asks: [] as { step: string; host: string; authorization: string }[],
         timeline: [] as string[],
     };
     const mark = (event: string) => driver.timeline.push(`${Math.round(performance.now())}ms ${event}`);
@@ -174,9 +174,13 @@ async function startDriver({ lifeMs, unconfirmedMint }: { lifeMs: number; unconf
                 return send(200, {});
             }
             if (request.method === 'POST' && url === GATE_TOKEN_PATH) {
-                const body = JSON.parse(await readBody(request)) as { step: string };
+                const body = JSON.parse(await readBody(request)) as { step: string; host: string };
                 mark('POST /gate-token received');
-                driver.asks.push({ step: body.step, authorization: request.headers.authorization ?? '' });
+                driver.asks.push({
+                    step: body.step,
+                    host: body.host,
+                    authorization: request.headers.authorization ?? '',
+                });
                 if (unconfirmedMint) {
                     unconfirmedMint();
                     return send(503, {});
@@ -348,7 +352,10 @@ describe('a gate asks for its GitHub token through its mailbox', () => {
         const answer = await gate.answerOf('gate-1');
         expect(answer.exitCode).toBe(0);
         expect(gate.recorded()).toEqual(['ghs_mint_1', 'ghs_mint_2']);
-        expect(driver.asks.map((ask) => ask.step)).toEqual(['gate-1', 'gate-1']);
+        expect(driver.asks.map((ask) => [ask.step, ask.host])).toEqual([
+            ['gate-1', 'github.com'],
+            ['gate-1', 'github.com'],
+        ]);
         expect(driver.asks[0]?.authorization).toBe(`Bearer ${CONTROL_TOKEN}`);
     });
 
@@ -398,8 +405,30 @@ describe('a gate asks for its GitHub token through its mailbox', () => {
         expect(answer.exitCode).toBeNull();
         expect(answer.tokenAskUnanswered).toBe(true);
         // The helper was told `none unanswered` by the supervisor (its own wait is 60 s, never reached).
-        expect(`${answer.stdout}${answer.stderr}`).toContain('no GitHub token (unanswered)');
+        expect(`${answer.stdout}${answer.stderr}`).toContain('gate-forge: no token (unanswered)');
         expect(gate.recorded()).toEqual([]);
+    });
+
+    it('asks for a GitLab job’s host the gate env names, and never relays a host it does not', async () => {
+        const driver = await startDriver({ lifeMs: 3_600_000 });
+        const gate = startGate(driver);
+        const fill = (host: string) => `printf 'protocol=https\\nhost=${host}\\n\\n' | git credential fill`;
+        const handWritten =
+            'printf \'ask evil.example.com\\n\' > "$FACTORY_GATE_RUN/asks/.7.tmp" && mv "$FACTORY_GATE_RUN/asks/.7.tmp" "$FACTORY_GATE_RUN/asks/7"; ' +
+            'i=0; while [ ! -f "$FACTORY_GATE_RUN/answers/7" ] && [ $i -lt 200 ]; do sleep 0.02; i=$((i+1)); done; echo "answer=$(cat "$FACTORY_GATE_RUN/answers/7")"';
+        driver.queue.push({
+            id: 'gate-1',
+            invocation: 'i-1',
+            kind: 'gate',
+            argv: [`${fill('gitlab.example.com')}; ${handWritten}; exit 0`],
+            cwd: WORKTREE,
+            env: { FACTORY_FORGE_HOSTS: 'gitlab.example.com' },
+            timeoutMs: 20_000,
+        });
+        const answer = await gate.answerOf('gate-1');
+        expect(answer.stdout).toContain('username=oauth2\npassword=[redacted]');
+        expect(answer.stdout).toContain('answer=none refused');
+        expect(driver.asks.map((ask) => ask.host)).toEqual(['gitlab.example.com']);
     });
 
     it('answers a non-github host nothing', async () => {

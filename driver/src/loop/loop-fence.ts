@@ -335,8 +335,15 @@ function leaveConclusion(
     );
 }
 
-/** The halt a failed checkout sync ends the attempt with: always a fault, config when the script named a kind. */
+/**
+ * The halt a failed checkout sync ends the attempt with: a fault, config when the script named a kind — except a
+ * forge credential ask left unanswered (`forge_wait`), which is no verdict on the checkout: handed back as an
+ * interruption like a lost supervisor's, the session and the task volume kept for the next claim.
+ */
 export function syncFailureHalt(synced: SyncResult): SetupHalt {
+    if (synced.kind === 'forge_wait') {
+        return { halt: 'interrupt', reason: `the checkout sync waits for the forge credential: ${synced.reason}` };
+    }
     // A thread whose task volume is gone and whose checkpoint cannot rebuild it: its own kind, for a person.
     if (synced.kind === 'checkpoint_unrestorable') {
         return faultHalt(

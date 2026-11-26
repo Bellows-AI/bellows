@@ -117,14 +117,24 @@ export const GATE_FILES = {
  */
 export const GATE_REPORT_FILES = { dir: 'report', resources: 'resources' } as const;
 /**
- * A gate request's GitHub token mailbox, beside `GATE_FILES` (`GATE_ASK_FILES` of supervisor.cjs, the
- * names `scripts/gate-github.sh` and `scripts/gate-loop.sh` spell): the supervisor makes `asks/` and
+ * A gate request's forge token mailbox, beside `GATE_FILES` (`GATE_ASK_FILES` of supervisor.cjs, the
+ * names `scripts/gate-forge.sh` and `scripts/gate-loop.sh` spell): the supervisor makes `asks/` and
  * `answers/` in the request, the helper writes `asks/<pid>` and reads `answers/<pid>`, and the loop
  * installs the helper at `bin/gh`. A review has none of it.
  */
 export const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', bin: 'bin' } as const;
 /** The review mailbox's layout is the gate mailbox's (`scripts/review-loop.sh` spells the same names). */
 export const REVIEW_FILES = GATE_FILES;
+/**
+ * What the supervisor sets in the env of a step that carries `forgeHost`: its mailbox directory (`asks/`, `answers/`,
+ * the helper), the helper's path and the host it serves. The step's credential helper code (`FORGE_STEP_CREDENTIAL_HELPER`)
+ * names them, so no value of them is a secret.
+ */
+export const FORGE_STEP_ENV = {
+    run: 'FACTORY_GATE_RUN',
+    helper: 'FACTORY_FORGE_HELPER',
+    hosts: 'FACTORY_FORGE_HOSTS',
+} as const;
 /** How long a cancelled or timed-out gate may take to answer before the supervisor answers for it. */
 export const GATE_CANCEL_GRACE_MS = 10_000;
 /** A gate loop whose heartbeat is older than this is lost: its request never ran, or its answer is gone. */
@@ -264,8 +274,14 @@ export interface StepRequest {
     timeoutMs: number;
     /** A `gate` step only: it runs beside the other parallel gates instead of waiting its turn in the gate lane. */
     parallel?: true;
-    /** A `gate` step only: an agent's exec, whose GitHub token ask the driver refuses (`StepBroker.holdsGate`). */
+    /** A `gate` step only: an agent's exec, whose token ask the driver refuses (`StepBroker.holdsForgeAsk`). */
     tokenless?: true;
+    /**
+     * A `sync`, `publish`, `probe` or `helper` step that fetches or pushes a forge host the supervisor serves a credential for: the
+     * normalized host. The supervisor opens a memory-backed mailbox for the step's lifetime (`FORGE_STEP_ENV`), and the
+     * step's git asks for the member's token through it — the token never rides the step's env or the task volume.
+     */
+    forgeHost?: string;
 }
 
 /** What the supervisor answers a step with. `replayed` marks an answer read back from its ledger. */
@@ -350,7 +366,7 @@ export function finalReportOf(log: string): FinalReport | null {
 /** The routes a supervisor reaches the driver's control endpoint by, beside `GET /control`. */
 export const STEP_PATH = '/step';
 export const REPORT_PATH = '/report';
-/** `POST /gate-token {step}`: a running gate step's GitHub token ask, relayed by the supervisor. */
+/** `POST /gate-token {step, host}`: a running step's forge token ask for `host`, relayed by the supervisor. */
 export const GATE_TOKEN_PATH = '/gate-token';
 
 /**
@@ -463,6 +479,8 @@ export const SUPERVISOR_ENV = {
     /** The attempt's checkpoint at finalize: the script by content, and the tree it works on. */
     /** The hardened `git` every step runs (scripts/git-harden.cjs), by content. */
     gitHardenScript: 'SUPERVISOR_GIT_HARDEN_SCRIPT',
+    /** The forge helper (`scripts/gate-forge.sh`) by content: written into a forge step's mailbox. */
+    forgeHelper: 'SUPERVISOR_FORGE_HELPER',
     checkpointScript: 'SUPERVISOR_CHECKPOINT_SCRIPT',
     checkpointCheckout: 'SUPERVISOR_CHECKPOINT_CHECKOUT',
     checkpointBranch: 'SUPERVISOR_CHECKPOINT_BRANCH',

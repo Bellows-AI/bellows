@@ -3,6 +3,7 @@ import type { BoardJob } from './board/board.js';
 import type { DriverConfig } from './config.js';
 import { formatRepoRef } from './repo-ref.js';
 import {
+    forgeHostsEnv,
     npmQuietEnv,
     opencodeDataDir,
     RESUME_MAY_BE_UNWRITTEN_ENV,
@@ -173,6 +174,7 @@ function opencodePlan(
         ...workspaceSkillsEnv(job),
         ...hiddenSkillsEnv(job),
         ...finishRetryEnv(config),
+        ...forgeHostsEnv(job),
     ];
     const cliArgs = ['run', ...opencodeAgentArgs()];
     if (session) {
@@ -227,6 +229,7 @@ function claudePlan(
         ...workspaceSkillsEnv(job),
         ...hiddenSkillsEnv(job),
         ...finishRetryEnv(config),
+        ...forgeHostsEnv(job),
     ];
     const cliArgs = [
         session.resume ? '--resume' : '--session-id',
