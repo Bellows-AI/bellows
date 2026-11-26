@@ -7,7 +7,7 @@
  * workspace a job belongs to, so it does not even need to know the organization.
  */
 import { isDriverCredential } from './board-credential.js';
-import { FORGE_HOSTS_ENV } from './claim.js';
+import { FORGE_CA_ENV, FORGE_HOSTS_ENV } from './claim.js';
 import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
 import { loadRunnerClasses, type RunnerClasses } from './runner-classes.js';
 import {
@@ -290,6 +290,9 @@ function runnerPassEnv(raw: string | undefined): string[] {
     if (own) throw new Error(`RUNNER_ENV must not name ${own}: it is the driver's own secret`);
     if (names.includes(FORGE_HOSTS_ENV)) {
         throw new Error(`RUNNER_ENV must not name ${FORGE_HOSTS_ENV}: the driver names the task's forge hosts`);
+    }
+    if (names.includes(FORGE_CA_ENV)) {
+        throw new Error(`RUNNER_ENV must not name ${FORGE_CA_ENV}: the driver delivers the forge's CA`);
     }
     const telemetry = names.find((name) => name.startsWith(RUNNER_ENV_REFUSED_PREFIX));
     if (telemetry)

@@ -7,7 +7,9 @@ import { syncFailureHalt } from '../src/loop/loop-fence.js';
 import { CREDENTIAL_HELPER, credentialHelperOf, FORGE_STEP_CREDENTIAL_HELPER } from '../src/publish/publish-base.js';
 import { gitProbeScript, publishCheckout, type SyncResult } from '../src/publish/publish.js';
 import { cloneHostRefusal, usesForgeMailbox } from '../src/repo-ref.js';
-import { stepLost, type StepSink } from '../src/step-control.js';
+import { forgeHostsOf } from '../src/claim.js';
+import { gitlabForgeHost, serveGateToken } from '../src/gate-token-control.js';
+import { createStepBroker, stepLost, type StepSink } from '../src/step-control.js';
 import { runHelperStep, runSyncStep, supervisedStepRunner } from '../src/supervised-steps.js';
 import { type StepRequest, type StepResult, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { restoreTaskTree } from '../src/task-restore.js';
@@ -162,9 +164,16 @@ describe('the startup sync of a GitLab job', () => {
 });
 
 describe('a forge wait ends the attempt as an interruption', () => {
-    it('hands the attempt back: never a fault, never a verdict', () => {
-        const halt = syncFailureHalt({ ok: false, reason: 'the credential ask waits', kind: 'forge_wait' });
-        expect(halt).toMatchObject({ halt: 'interrupt' });
+    it('hands the attempt back outside the budget: never a fault, never a verdict', () => {
+        const halt = syncFailureHalt(
+            { ok: false, reason: 'the credential ask waits', kind: 'forge_wait' },
+            gitlabJob()
+        );
+        expect(halt).toMatchObject({
+            halt: 'interrupt',
+            blocked: true,
+            reason: expect.stringContaining('the GitLab credential could not be confirmed; the task waits and resumes'),
+        });
         expect(halt).not.toHaveProperty('verdict');
     });
 });
@@ -374,6 +383,109 @@ describe('both executors sync a GitLab job through the mailbox', () => {
     ] as const)('on %s: an unanswered ask is a forge wait, not a failed sync', async (_executor, syncOf) => {
         const result: SyncResult = await syncOf(gitlabJob());
         expect(result).toMatchObject({ ok: false, kind: 'forge_wait' });
-        expect(syncFailureHalt(result)).toMatchObject({ halt: 'interrupt' });
+        expect(syncFailureHalt(result, gitlabJob())).toMatchObject({ halt: 'interrupt', blocked: true });
+    });
+});
+
+/**
+ * A GitLab job whose repository host carries the default port (`gitlab.example.com:443`) through the real step broker:
+ * a played supervisor pulls each step and, for one that names a `forgeHost`, relays the ask its helper makes — git's
+ * `host=` as the URL spelled it — through the real `/gate-token` route, which authorizes it by `holdsForgeAsk`. One
+ * normalization rule on both ends (`normalizeForgeHost`): every ask resolves to a token, none is refused as foreign.
+ */
+describe('a GitLab host spelled with its default port', () => {
+    const PORTED = 'gitlab.example.com:443';
+
+    function brokered(answer: (step: StepRequest) => StepResult) {
+        const broker = createStepBroker();
+        const token = 'tok';
+        broker.open(token);
+        const stop = new AbortController();
+        const asks: { step: string; status: number }[] = [];
+        const steps: StepRequest[] = [];
+        const slot = {
+            relay: {
+                token: async (host: string) =>
+                    host === HOST ? ({ kind: 'token', token: 'glpat-x', expiresAt: null } as const) : ('gone' as const),
+            },
+        };
+        void (async () => {
+            while (!stop.signal.aborted) {
+                const step = await broker.next(token, 1000, stop.signal).catch(() => 'closed' as const);
+                if (step === 'closed') return;
+                if (step === null) continue;
+                steps.push(step);
+                let asked = true;
+                if (step.forgeHost !== undefined) {
+                    const reply = await serveGateToken(slot, JSON.stringify({ step: step.id, host: PORTED }), {
+                        holds: (id, host) => broker.holdsForgeAsk(token, id, host),
+                        open: () => true,
+                        signal: stop.signal,
+                    });
+                    asks.push({ step: step.id, status: reply.status });
+                    asked = reply.status === 200;
+                }
+                broker.settle(token, step.id, step.invocation, asked ? answer(step) : unanswered);
+            }
+        })();
+        return { host: { config, sink: broker }, asks, steps, stop: () => stop.abort() };
+    }
+
+    const portedJob = (over: Partial<BoardJob> = {}) =>
+        gitlabJob({ repo: { forge: 'gitlab', host: PORTED, path: 'group/sub/widgets' }, ...over });
+
+    it('names the normalized host on every forge step, and each ask resolves: sync, restore, publish', async () => {
+        const sha = 'a'.repeat(40);
+        const stale: StepResult = { exitCode: 1, stdout: '', stderr: 'rejected (stale info)', timedOut: false };
+        const refused: StepResult = { exitCode: 1, stdout: '', stderr: 'remote: refused', timedOut: false };
+        const pushes = [stale, refused];
+        const b = brokered((step) => {
+            const has = (word: string) => step.argv.includes(word);
+            if (step.kind === 'sync') return ok('{"ok":true,"reason":null}');
+            if (step.argv[2] === gitProbeScript) {
+                return ok(
+                    JSON.stringify({ cloned: true, branch: 'main', defaultBranch: 'main', dirty: true, unpushed: 0 })
+                );
+            }
+            if (has('push')) return pushes.shift() ?? ok();
+            if (has('ls-remote')) return ok('');
+            if (has('rev-list')) return ok('0\n');
+            if (has('rev-parse')) return ok(`${sha}\n`);
+            if (step.env.ACTION) return ok(step.env.ACTION === 'read' ? '{}' : '');
+            if (has('switch')) return has('-c') ? ok() : { exitCode: 1, stdout: '', stderr: '', timedOut: false };
+            return ok();
+        });
+        try {
+            expect(await runSyncStep(b.host, portedJob())).toEqual({ ok: true, reason: null });
+
+            const restoring = portedJob({ followUp: true });
+            restoring.taskRestore = { checkpoint: { id: 'cp', chunks: [] } as never, older: [], restored: false };
+            b.steps.length = 0;
+            await restoreTaskTree(b.host, restoring, { removeOlder: async () => undefined }).catch(() => undefined);
+            expect(b.steps.map((step) => step.forgeHost)).toEqual([HOST]);
+
+            const job = portedJob();
+            const published = await publishCheckout(
+                job,
+                { pullRequests: fakePullRequests().port },
+                supervisedStepRunner(b.host, job, { kind: 'publish' })
+            );
+            // The push was refused for real after the stale-lease fetch, and the reconcile found nothing landed.
+            expect(published).toMatchObject({ ok: false, published: false });
+            const verbs = networkSteps(b.steps).map((step) =>
+                step.argv.find((arg) => ['push', 'fetch', 'ls-remote'].includes(arg))
+            );
+            expect(verbs).toEqual(['push', 'fetch', 'push', 'ls-remote']);
+        } finally {
+            b.stop();
+        }
+        expect(b.asks.length).toBeGreaterThanOrEqual(6);
+        expect(b.asks.every((ask) => ask.status === 200)).toBe(true);
+        for (const step of b.steps.filter((one) => one.forgeHost !== undefined)) expect(step.forgeHost).toBe(HOST);
+    });
+
+    it('lists the normalized host for the agent and its gates', () => {
+        expect(forgeHostsOf(portedJob())).toEqual([HOST]);
+        expect(gitlabForgeHost(portedJob())).toBe(HOST);
     });
 });

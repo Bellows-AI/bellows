@@ -13,7 +13,7 @@ import { type GroupTakenAway, LeftoverTerminating, type RunOutcome } from '../ru
 import { SYNC_FAILURE_KINDS, withConflictContext, type SyncResult } from '../publish/publish.js';
 import type { AttemptCtx, EndDecision, LoopRuntime, SetupHalt, VerdictBody } from './loop-types.js';
 import { type StartupCause, StartupRefused, transientStartup } from '../startup-cause.js';
-import { StepChannelClosed } from '../step-control.js';
+import { credentialWait, StepChannelClosed } from '../step-control.js';
 import { DaemonLost } from '../dockerd-loss.js';
 
 /**
@@ -229,9 +229,28 @@ export function leaveDecision(job: BoardJob, reason: string, exitCode: number | 
     return setupDecision(leaveConclusion(job, reason, exitCode, logReason));
 }
 
-/** Why a gate or setup whose supervisor was lost interrupts its attempt. */
-export const gateLossReason = (e: unknown): string =>
-    `infrastructure loss: the task supervisor running the gates was lost (${(e as Error).message})`;
+/**
+ * Why an attempt whose credential ask went unanswered (`credentialWait`) is handed back: the board did not confirm
+ * the forge credential, or holds the task for the starter's grant. Names the cause, never a lost supervisor.
+ */
+export const credentialWaitReason = (job: Pick<BoardJob, 'repo'>, detail: string): string =>
+    `the ${job.repo?.forge === 'gitlab' ? 'GitLab' : 'GitHub'} credential could not be confirmed; ` +
+    `the task waits and resumes (${detail})`;
+
+/**
+ * Why a step lost under `what` (`stepLost`) hands its attempt back: a credential wait says so
+ * (`credentialWaitReason`), any other loss is the infrastructure's.
+ */
+export const supervisorLossReason = (job: Pick<BoardJob, 'repo'>, what: string, e: unknown): string => {
+    const message = (e as Error).message;
+    return credentialWait(e)
+        ? credentialWaitReason(job, message)
+        : `infrastructure loss: the task supervisor running ${what} was lost (${message})`;
+};
+
+/** Why a gate or setup whose supervisor was lost, or whose credential ask went unanswered, interrupts its attempt. */
+export const gateLossReason = (job: Pick<BoardJob, 'repo'>, e: unknown): string =>
+    supervisorLossReason(job, 'the gates', e);
 
 /**
  * Hands an attempt that ended without a verdict back to the board as an interruption (issues #792,
@@ -265,8 +284,10 @@ export const interruptDecision = (
 export const GROUP_TAKEN_AWAY_READ_MS = 15_000;
 
 /**
- * What a lost supervisor is: only a closed channel can be a node loss — a step answered too late
- * or a token ask left unanswered is a hang, never node evidence. The executor's answer decides: `taken` is a node
+ * What a lost supervisor is: only a closed channel can be a node loss — a step answered too late is a hang, never
+ * node evidence. A credential ask left unanswered (`credentialWait`) is no loss at all but a wait for an unconfirmed
+ * credential: `blocked`, so however often it repeats it spends no budget, and the executor is not asked. For a closed
+ * channel the executor's answer decides: `taken` is a node
  * loss, `kept` (the group is confirmed still there) leaves the interruption counting against the poison budget,
  * and `unknown` — an error, a timeout, a runner that cannot tell — is `blocked`: an unconfirmed read never
  * licenses a negative verdict, so the hand-back spends no budget. A stand-down mid-read flags nothing.
@@ -277,6 +298,7 @@ export async function supervisorLossFlag(
     e: unknown
 ): Promise<{ nodeLoss?: true; blocked?: true; daemonLoss?: true }> {
     if (e instanceof DaemonLost) return e.flags;
+    if (credentialWait(e)) return { blocked: true };
     if (!(e instanceof StepChannelClosed)) return {};
     const { rt, job, state } = ctx;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -337,12 +359,16 @@ function leaveConclusion(
 
 /**
  * The halt a failed checkout sync ends the attempt with: a fault, config when the script named a kind — except a
- * forge credential ask left unanswered (`forge_wait`), which is no verdict on the checkout: handed back as an
- * interruption like a lost supervisor's, the session and the task volume kept for the next claim.
+ * forge credential ask left unanswered (`forge_wait`), which is no verdict on the checkout: handed back outside the
+ * interruption budget (`blocked`, `credentialWait`), the session and the task volume kept for the next claim.
  */
-export function syncFailureHalt(synced: SyncResult): SetupHalt {
+export function syncFailureHalt(synced: SyncResult, job: Pick<BoardJob, 'repo'>): SetupHalt {
     if (synced.kind === 'forge_wait') {
-        return { halt: 'interrupt', reason: `the checkout sync waits for the forge credential: ${synced.reason}` };
+        return {
+            halt: 'interrupt',
+            reason: credentialWaitReason(job, synced.reason ?? 'the credential ask went unanswered'),
+            blocked: true,
+        };
     }
     // A thread whose task volume is gone and whose checkpoint cannot rebuild it: its own kind, for a person.
     if (synced.kind === 'checkpoint_unrestorable') {

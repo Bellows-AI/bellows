@@ -9,6 +9,7 @@ import { gitlabForgeHost } from './gate-token-control.js';
 import { annotateActiveSpan, withChildSpan } from './lifecycle-span.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
 import { failureExcerpt } from './gate-excerpt.js';
+import { GATE_FORGE_CA_ENV, gateForgeCa } from './forge-ca.js';
 import { ARTIFACT_LIMIT, REPORT_BYTE_LIMIT, tailKept } from './runner.js';
 import { StepTokenUnanswered } from './step-control.js';
 import type { GateStepRequest } from './supervised-steps.js';
@@ -184,13 +185,16 @@ export function envBodyRecord(body: string): Record<string, string> {
 }
 
 /**
- * A gate step's env: the claim's, which never names the forge hosts itself, and a GitLab job's host for a gate
- * that may ask for its token (scripts/gate-forge.sh answers it beside github.com); an exec asks for none.
+ * A gate step's env: the claim's, which never names the forge hosts nor their CA itself, and a GitLab job's host for
+ * a gate that may ask for its token (scripts/gate-forge.sh answers it beside github.com), with the connection's
+ * private CA chain when it has one (scripts/gate-shell.sh trusts it for that host); an exec asks for none.
  */
 function gateStepEnv(envBody: string, job: BoardJob, tokenless: boolean | undefined): Record<string, string> {
-    const { [FORGE_STEP_ENV.hosts]: _claimed, ...env } = envBodyRecord(envBody);
+    const { [FORGE_STEP_ENV.hosts]: _claimed, [GATE_FORGE_CA_ENV]: _claimedCa, ...env } = envBodyRecord(envBody);
     const forgeHost = tokenless ? null : gitlabForgeHost(job);
-    return forgeHost ? { ...env, [FORGE_STEP_ENV.hosts]: forgeHost } : env;
+    if (!forgeHost) return env;
+    const ca = gateForgeCa(job);
+    return { ...env, [FORGE_STEP_ENV.hosts]: forgeHost, ...(ca ? { [GATE_FORGE_CA_ENV]: ca } : {}) };
 }
 
 /**

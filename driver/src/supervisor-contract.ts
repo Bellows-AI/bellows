@@ -481,6 +481,8 @@ export const SUPERVISOR_ENV = {
     gitHardenScript: 'SUPERVISOR_GIT_HARDEN_SCRIPT',
     /** The forge helper (`scripts/gate-forge.sh`) by content: written into a forge step's mailbox. */
     forgeHelper: 'SUPERVISOR_FORGE_HELPER',
+    /** A GitLab job's private CA chain (`forge-ca.ts`): written beside a forge step's helper, trusted for its host. */
+    forgeCa: 'SUPERVISOR_FORGE_CA',
     checkpointScript: 'SUPERVISOR_CHECKPOINT_SCRIPT',
     checkpointCheckout: 'SUPERVISOR_CHECKPOINT_CHECKOUT',
     checkpointBranch: 'SUPERVISOR_CHECKPOINT_BRANCH',

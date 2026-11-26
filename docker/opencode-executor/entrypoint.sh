@@ -62,6 +62,31 @@ if [ -n "${FACTORY_STATS_URL:-}" ] && [ -n "${RUNNER_JOB_ID:-}" ] && [ -n "${RUN
     done
 fi
 
+# A GitLab behind a private CA (docs/connections.md): RUNNER_FORGE_CA is the connection's certificate
+# chain, the driver's, validated from the claim. It is written to a 0644 file per forge host the helper
+# lists (github.com keeps the system bundle) in a directory of this container that the tool uid can read,
+# and git trusts it for that host alone (`http.https://<host>/.sslCAInfo`), never by turning verification
+# off. A directory that is not ours is left alone: git then fails its TLS verify and says so. The chain
+# is not left in the agent's env.
+FORGE_CA_DIR=/tmp/.factory-forge-ca
+if [ -n "${RUNNER_FORGE_CA:-}" ]; then
+    if [ -L "$FORGE_CA_DIR" ] || { [ -e "$FORGE_CA_DIR" ] && { [ ! -d "$FORGE_CA_DIR" ] || [ ! -O "$FORGE_CA_DIR" ]; }; }; then
+        echo "opencode-executor: $FORGE_CA_DIR is not a directory of ours: the forge CA is not installed" >&2
+    elif rm -rf "$FORGE_CA_DIR" && mkdir -m 0755 "$FORGE_CA_DIR"; then
+        for host in $(node "$FORGE_CREDENTIAL" hosts 2>/dev/null); do
+            [ "$host" = github.com ] && continue
+            ca="$FORGE_CA_DIR/$host.pem"
+            if printf '%s' "$RUNNER_FORGE_CA" > "$ca" && chmod 0644 "$ca" &&
+                git config --global "http.https://$host/.sslCAInfo" "$ca" 2>/dev/null; then :; else
+                echo "opencode-executor: could not install the forge CA for $host" >&2
+            fi
+        done
+    else
+        echo "opencode-executor: could not create $FORGE_CA_DIR: the forge CA is not installed" >&2
+    fi
+fi
+unset RUNNER_FORGE_CA
+
 # The tool uid shares node's group and the tree's umask, and reads this file through its own:
 # readable, never writable, by the commands the agent runs.
 if [ -f "$HOME/.gitconfig" ]; then chmod 0644 "$HOME/.gitconfig" 2>/dev/null || true; fi

@@ -65,6 +65,9 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
   board's GitHub token are a step's own `env`; a GitLab job's token is never in one, its `forgeHost` steps ask through
   a mailbox in the supervisor's tmpdir. `driver/test/supervised-steps.test.ts`, `driver/test/forge-credential.test.ts`,
   `driver/test/supervisor-forge-step.test.ts`.
+- **A GitLab job's private CA rides the pod spec as docker's argv carries it**: `RUNNER_FORGE_CA` on the agent
+  (`runner-plan.ts`), `SUPERVISOR_FORGE_CA` on the supervisor (`supervisorLiterals`), `FACTORY_FORGE_CA` in a gate's
+  step env (`gateStepEnv`). `driver/test/forge-ca.test.ts`, `driver/test/k8s/gates-and-reviewer.test.ts`.
 - **A stale acknowledgement never licenses a bump**: the acks are re-armed and re-acknowledged first
   (`bumpWhenAcked` in `driver/src/k8s/k8s-services.ts`, `driver/test/k8s/services.test.ts`).
 - **The fence orders contenders by `claim_seq`, never by a clock or the refundable attempt counter.**

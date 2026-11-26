@@ -55,19 +55,25 @@ const HTTP_TOO_MANY = 429;
 const HTTP_SERVER_ERROR = 500;
 const MS_PER_SECOND = 1000;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
-/** A host as git names it: DNS labels, and a port where it is not https's default. */
-const HOST = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?$/;
-const DEFAULT_HTTPS_PORT = ':443';
+/** A host as git names it, lowercased: DNS labels, and an optional port of one to five digits. */
+const HOST_PARTS =
+    /^((?=.{1,253}(?::|$))[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)(?::([0-9]{1,5}))?$/;
+const DEFAULT_HTTPS_PORT = '443';
 const FORGE_GRANT_REQUIRED = 'FORGE_GRANT_REQUIRED';
 
 const connectionKey = (id) => `${CONNECTION_KEY_PREFIX}${id}`;
 
-/** A host lowercased with a default `:443` stripped, or null where it is not one. */
+/**
+ * A host lowercased with a default `:443` dropped and any other port kept, or null where it is not one (whitespace,
+ * userinfo, a path, a trailing dot). The driver's `normalizeForgeHost` (driver/src/repo-ref.ts) is the rule;
+ * driver/test/forge-host-normalization.test.ts pins this copy to it.
+ */
 function normalizeHost(host) {
     if (typeof host !== 'string') return null;
-    const lower = host.trim().toLowerCase();
-    const bare = lower.endsWith(DEFAULT_HTTPS_PORT) ? lower.slice(0, -DEFAULT_HTTPS_PORT.length) : lower;
-    return HOST.test(bare) ? bare : null;
+    const parts = HOST_PARTS.exec(host.toLowerCase());
+    if (!parts) return null;
+    const [, name, port] = parts;
+    return port === undefined || port === DEFAULT_HTTPS_PORT ? name : `${name}:${port}`;
 }
 
 /** The key of a GitLab host's credential, or null for a value that names no host. */

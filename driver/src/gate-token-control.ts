@@ -1,6 +1,7 @@
 import type { BoardJob } from './board/board.js';
 import type { ForgeGrant } from './forge-credential-call.js';
 import { parseJsonObject } from './json-parse.js';
+import { normalizeForgeHost } from './repo-ref.js';
 
 /**
  * The supervisor token's gate-token route: `POST /gate-token {step, host}` is a running step's forge token
@@ -19,18 +20,6 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_CONFLICT = 409;
 const HTTP_UNAVAILABLE = 503;
 const STEP_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,200}$/;
-/** A DNS name in lowercase, with an optional port: what a forge host is once normalized. */
-const FORGE_HOST =
-    /^(?=.{1,253}(:|$))[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/;
-const HTTPS_PORT_SUFFIX = ':443';
-
-/** A host as git names it, normalized (lowercase, no `:443`), or null for anything that is not a host name. */
-export function normalizeForgeHost(raw: unknown): string | null {
-    if (typeof raw !== 'string') return null;
-    const lower = raw.toLowerCase();
-    const host = lower.endsWith(HTTPS_PORT_SUFFIX) ? lower.slice(0, -HTTPS_PORT_SUFFIX.length) : lower;
-    return FORGE_HOST.test(host) ? host : null;
-}
 
 const GITHUB_HOST = 'github.com';
 

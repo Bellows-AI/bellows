@@ -245,6 +245,8 @@ function buildOrgStores({
         commitAuthor: config.auth.mode !== 'none',
         // The forge start gate's claim half: a member holds the grant, so the claim reads it (no member, no gate).
         ...(config.auth.mode !== 'none' ? { forgeStanding: readGrantStanding } : {}),
+        // A self-managed GitLab's CA bundle rides the claim: this org's live connection on the repo's host.
+        forgeCa: async (host) => (await forgeConnections.application(host))?.caBundle,
         // The completion surface records the thread's publication identity in the same
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,

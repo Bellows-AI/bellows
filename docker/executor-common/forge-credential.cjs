@@ -39,7 +39,7 @@ const USERNAME = { github: 'x-access-token', gitlab: 'oauth2' };
 function configuredHosts(env) {
     const named = String(env[FORGE_HOSTS_ENV] ?? '')
         .split(',')
-        .map((entry) => broker.normalizeHost(entry))
+        .map((entry) => broker.normalizeHost(entry.trim()))
         .filter((host) => host !== null);
     return [...new Set([GITHUB_HOST, ...named])];
 }

@@ -52,12 +52,12 @@ export class StepTimedOut extends Error {
 }
 
 /**
- * Thrown for a gate whose GitHub token ask the supervisor could not get answered: it ran without a
- * token it needed, so its exit is no verdict, the same as a lost supervisor's (`stepLost`).
+ * Thrown for a gate whose forge token ask (GitHub's or GitLab's) the supervisor could not get answered: it ran
+ * without a token it needed, so its exit is no verdict, the same as a lost supervisor's (`stepLost`).
  */
 export class StepTokenUnanswered extends Error {
     constructor() {
-        super('a GitHub token ask of the gate went unanswered: no verdict');
+        super('a forge token ask of the gate went unanswered: no verdict');
         this.name = 'StepTokenUnanswered';
     }
 }
@@ -69,6 +69,13 @@ export class StepTokenUnanswered extends Error {
  */
 export const stepLost = (error: unknown): boolean =>
     error instanceof StepChannelClosed || error instanceof StepTimedOut || error instanceof StepTokenUnanswered;
+
+/**
+ * Whether a lost step (`stepLost`) is a credential ask left unanswered — a gate's, or a forge step's (`ForgeWait`):
+ * the board did not confirm the credential or holds it for the starter. A wait, not a loss of anything: the attempt is
+ * handed back outside the interruption budget (`blocked`), its session and checkout kept, however often it repeats.
+ */
+export const credentialWait = (error: unknown): error is StepTokenUnanswered => error instanceof StepTokenUnanswered;
 
 /** What the runners and the loop use: submit a step, read the supervisor's report. */
 export interface StepSink {

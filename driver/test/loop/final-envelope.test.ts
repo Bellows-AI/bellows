@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../../src/board/board.js';
 import { BoardHttpError } from '../../src/board/board-retry.js';
 import type { GateClaim } from '../../src/gates.js';
-import { StepChannelClosed } from '../../src/step-control.js';
+import { StepChannelClosed, StepTokenUnanswered } from '../../src/step-control.js';
 import type { PublishResult } from '../../src/publish/publish.js';
 import type { Loop } from '../../src/loop/loop.js';
 import { drive, gatedJob, job, ok, stubBoard, stubGateStack, stubRunner } from '../fixtures/loop-stubs.js';
@@ -318,6 +318,29 @@ describe('a lost supervisor under the gates and the setup', () => {
         await drive({ ...board, runner, gates });
         expect(stack.ran.names).toEqual([]);
         interruptedOnly(board);
+    });
+
+    it('hands an attempt back outside the budget when an ad-hoc gate’s credential ask went unanswered', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const { stack, gates } = stubGateStack();
+        let claim: GateClaim | undefined;
+        stack.server.register = (_token, registered) => {
+            claim = registered;
+        };
+        const runner = stubRunner(async () => {
+            claim?.onInfraLoss?.('the gate’s credential ask went unanswered', new StepTokenUnanswered());
+            return ok();
+        });
+        await drive({ ...board, runner, gates });
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted).toEqual([
+            {
+                id: job(1).id,
+                reason: expect.stringContaining('credential could not be confirmed; the task waits and resumes'),
+                release: true,
+                blocked: true,
+            },
+        ]);
     });
 });
 

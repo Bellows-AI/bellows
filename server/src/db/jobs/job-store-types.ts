@@ -657,6 +657,12 @@ export interface Claim {
      */
     author?: ClaimAuthor;
     /**
+     * The PEM CA bundle of a self-managed GitLab (docs/gitlab.md): the claiming org's live connection on the repo's
+     * host, so the runner's git and API calls trust the instance. Absent for a GitHub repo, a repo-less task and a
+     * connection without one. A public certificate chain, not a secret, but never logged.
+     */
+    forgeCa?: string;
+    /**
      * The board-owned Factory execution context, rendered by `master-prompt.ts` from
      * trusted claim metadata alone — never from `job.command`, a node's own prompt text, or any
      * other author-supplied content. Delivered through the executor's native system-instruction
@@ -1168,6 +1174,12 @@ export interface CreateJobStoreDeps {
      */
     forgeStanding?: ForgeStandingReader;
     /**
+     * The CA bundle of the org's live GitLab connection on `host`, read on every claim of a GitLab repo (`Claim.forgeCa`):
+     * undefined for a confirmed absence (no connection, no bundle). A failed or unconfirmed read throws, which rolls the
+     * claim back. Absent in the tests that predate it — a claim then carries none.
+     */
+    forgeCa?: (host: string) => Promise<string | undefined>;
+    /**
      * The execution-plan reader, when the deployment has a GitHub App installation to read through.
      * Declared inline like `env`, because `db/` imports nothing from `workspace/` at runtime — a
      * claim hands it the repo label and the thread's base branch and gets the plan at that
@@ -1311,6 +1323,7 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     githubApp: boolean;
     commitAuthor: boolean;
     forgeStanding: ForgeStandingReader | undefined;
+    forgeCa: CreateJobStoreDeps['forgeCa'];
     planReader: CreateJobStoreDeps['plan'];
     executorConfig: CreateJobStoreDeps['executorConfig'];
     prs: JobStorePrs | undefined;

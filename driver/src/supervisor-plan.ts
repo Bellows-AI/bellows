@@ -3,6 +3,7 @@ import { opencodeDbPath, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { checkpointScript, gateForgeScript, gitHardenScript } from './container-scripts.js';
 import { OPENCODE } from './executors.js';
+import { forgeCaOf } from './forge-ca.js';
 import { gateDeadlineMs } from './gate-manager.js';
 import { declaredTimeoutMs } from './gates.js';
 import { baseBranchOf } from './publish/publish-base.js';
@@ -97,6 +98,12 @@ function finishRelayLiterals(config: DriverConfig, job: BoardJob, gated: boolean
     return bound === null ? [] : [[SUPERVISOR_ENV.finishRelayMs, String(bound)]];
 }
 
+/** A GitLab job's private CA for the supervisor's forge steps (`forge-ca.ts`): none without one. */
+function forgeCaLiterals(job: BoardJob): [string, string][] {
+    const chain = forgeCaOf(job);
+    return chain ? [[SUPERVISOR_ENV.forgeCa, chain]] : [];
+}
+
 /** The supervisor's own env literals: the budget it enforces, the paces it works at, whether an exporter and a gate container wait. */
 export function supervisorLiterals(
     config: DriverConfig,
@@ -106,6 +113,7 @@ export function supervisorLiterals(
     return [
         [SUPERVISOR_ENV.gitHardenScript, gitHardenScript],
         [SUPERVISOR_ENV.forgeHelper, gateForgeScript],
+        ...forgeCaLiterals(job),
         [SUPERVISOR_ENV.controlMs, String(RUN_CONTROL_POLL_MS)],
         [SUPERVISOR_ENV.deadlineMs, String(runTimeoutMs(config, job))],
         [SUPERVISOR_ENV.drainMs, String(SUPERVISOR_DRAIN_MS)],

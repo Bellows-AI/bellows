@@ -16,6 +16,7 @@ import {
     transcriptDir,
 } from './claim.js';
 import { agentPrompt } from './continuation.js';
+import { forgeCaEnv } from './forge-ca.js';
 import { OPENCODE } from './executors.js';
 import {
     claudeSystemPromptArgs,
@@ -175,6 +176,7 @@ function opencodePlan(
         ...hiddenSkillsEnv(job),
         ...finishRetryEnv(config),
         ...forgeHostsEnv(job),
+        ...forgeCaEnv(job),
     ];
     const cliArgs = ['run', ...opencodeAgentArgs()];
     if (session) {
@@ -230,6 +232,7 @@ function claudePlan(
         ...hiddenSkillsEnv(job),
         ...finishRetryEnv(config),
         ...forgeHostsEnv(job),
+        ...forgeCaEnv(job),
     ];
     const cliArgs = [
         session.resume ? '--resume' : '--session-id',

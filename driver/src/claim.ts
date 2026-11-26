@@ -6,7 +6,7 @@
  */
 
 import type { DriverConfig } from './config.js';
-import { formatRepoRef, type RepoRef } from './repo-ref.js';
+import { formatRepoRef, normalizeForgeHost, type RepoRef } from './repo-ref.js';
 import type { BoardJob } from './board/board.js';
 import { OPENCODE } from './executors.js';
 import { opencodeConfigContent } from './master-prompt.js';
@@ -174,10 +174,18 @@ export const CREDENTIAL_CACHE_SIZE = { k8s: '1Mi', docker: '1m' } as const;
  * executors (runner-plan.ts); a claim or RUNNER_ENV value under it is refused.
  */
 export const FORGE_HOSTS_ENV = 'RUNNER_FORGE_HOSTS';
+/**
+ * A GitLab task's private CA chain for the agent (`forge-ca.ts`): both images' entrypoints write it to a file per
+ * forge host, trust it there and unset it. Set by the driver alone, on both executors; a claim or RUNNER_ENV value
+ * under it is refused.
+ */
+export const FORGE_CA_ENV = 'RUNNER_FORGE_CA';
 
-/** The GitLab hosts the task's repository lives on, lowercased: none for a GitHub task. */
-export const forgeHostsOf = (job: Pick<BoardJob, 'repo'>): string[] =>
-    job.repo?.forge === 'gitlab' ? [job.repo.host.toLowerCase()] : [];
+/** The GitLab hosts the task's repository lives on, normalized (`normalizeForgeHost`): none for a GitHub task. */
+export const forgeHostsOf = (job: Pick<BoardJob, 'repo'>): string[] => {
+    const host = job.repo?.forge === 'gitlab' ? normalizeForgeHost(job.repo.host) : null;
+    return host === null ? [] : [host];
+};
 
 /** `RUNNER_FORGE_HOSTS` for the agent, only where the task has a GitLab host. */
 export function forgeHostsEnv(job: Pick<BoardJob, 'repo'>): [string, string][] {
@@ -243,6 +251,8 @@ export const RESERVED_ENV_NAMES = [
     'RUNNER_LEASE_TOKEN',
     // The hosts the agent's forge helper sends the attempt pair for: the driver's to name from the repository.
     FORGE_HOSTS_ENV,
+    // The forge's private CA the agent trusts: the driver's, from the claim's validated chain.
+    FORGE_CA_ENV,
     // The attempt's telemetry export credential (telemetry-config.ts), under every OTLP header name.
     ...OTLP_HEADER_ENV_NAMES,
     'BELLOWS_SESSION_ID',

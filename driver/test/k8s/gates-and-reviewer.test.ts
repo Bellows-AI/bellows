@@ -451,14 +451,19 @@ describe('the kubernetes runner and the gates', () => {
         });
     });
 
+    /** A GitLab gate's env as the gate manager composes it: the host, and the private CA chain as one line. */
+    const GITLAB_GATE_ENV = {
+        FACTORY_FORGE_HOSTS: 'gitlab.example.com',
+        FACTORY_FORGE_CA: '-----BEGIN CERTIFICATE-----,AAAA,-----END CERTIFICATE-----',
+    };
     // The docker counterpart: docker/reads-and-volume.test.ts. The gate manager names the host; no token rides along.
-    it('carries a GitLab gate’s FACTORY_FORGE_HOSTS to the gate sidecar step, and no token', async () => {
+    it('carries a GitLab gate’s FACTORY_FORGE_HOSTS and FACTORY_FORGE_CA to the gate sidecar step, and no token', async () => {
         const { request } = fakeRequest();
         const steps = fakeSteps(() => stepOk('passed'));
         const k8s = runner(request, {}, undefined, steps.sink);
         const gitlab: BoardJob = { ...gated, repo: { forge: 'gitlab', host: 'gitlab.example.com', path: 'group/app' } };
-        await k8s.runGate(gitlab, { ...gate, env: { FACTORY_FORGE_HOSTS: 'gitlab.example.com' } });
-        expect(steps.submitted[0]?.env).toEqual({ FACTORY_FORGE_HOSTS: 'gitlab.example.com' });
+        await k8s.runGate(gitlab, { ...gate, env: GITLAB_GATE_ENV });
+        expect(steps.submitted[0]?.env).toEqual(GITLAB_GATE_ENV);
         expect(JSON.stringify(steps.submitted[0])).not.toMatch(
             /GITLAB_TOKEN|GL_TOKEN|GITHUB_TOKEN|GH_TOKEN|CI_JOB_TOKEN/
         );

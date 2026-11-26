@@ -4,7 +4,8 @@ import { createBoard } from '../src/board/board.js';
 import { type PublishStep, publishCheckout, publishRetryable } from '../src/publish/publish.js';
 import { type FakePr, fakePullRequests } from './fixtures/fake-pull-requests.js';
 import type { PrOperationWrite as PrOperationNote } from '../src/board/board-pr-operations.js';
-import { StepChannelClosed, StepTimedOut } from '../src/step-control.js';
+import { StepChannelClosed, StepTimedOut, stepLost } from '../src/step-control.js';
+import { ForgeWait } from '../src/supervised-steps.js';
 import { githubRef } from './fixtures/repo-ref.js';
 
 /**
@@ -248,6 +249,48 @@ describe('publication reconciliation after an uncertain response', () => {
         await expect(publishCheckout(JOB, { pullRequests: w.pr.port }, losing)).rejects.toSatisfy(
             (e) => e instanceof StepChannelClosed || e instanceof StepTimedOut
         );
+    });
+
+    // An unconfirmed read never licenses a negative verdict: the reconcile after a failed push, the HEAD read and the
+    // ledger read each rethrow a credential wait or a lost step instead of answering the push's failure.
+    it.each([
+        ['a credential wait', () => new ForgeWait('git ls-remote')],
+        ['a lost step', () => new StepChannelClosed('git ls-remote')],
+    ])('rethrows %s during the reconcile after an ordinary push failure', async (_name, lost) => {
+        const w = world();
+        const failing = async (step: PublishStep) => {
+            if (step.label === 'git push') throw new Error('git push: the remote end hung up unexpectedly');
+            if (step.label === 'git ls-remote') throw lost();
+            return w.run(step);
+        };
+        await expect(publishCheckout(JOB, { pullRequests: w.pr.port }, failing)).rejects.toSatisfy(stepLost);
+        expect(w.pr.state.creates).toBe(0);
+    });
+
+    it('rethrows a lost HEAD read instead of failing the publish as a checkout with no HEAD', async () => {
+        const w = world();
+        const losing = async (step: PublishStep) => {
+            if (step.label === 'git rev-parse HEAD') throw new StepChannelClosed('git rev-parse HEAD');
+            return w.run(step);
+        };
+        await expect(publishCheckout(JOB, { pullRequests: w.pr.port }, losing)).rejects.toBeInstanceOf(
+            StepChannelClosed
+        );
+    });
+
+    it('rethrows a lost ledger read on a clean, pushed tree instead of reporting nothing to publish', async () => {
+        const w = world({ dirty: false });
+        w.state.remoteHead = COMMIT;
+        w.state.trackingHead = COMMIT;
+        w.state.ledger.set(`fix/10@${COMMIT}`, { state: 'pushing' });
+        const losing = async (step: PublishStep) => {
+            if (step.label === 'publication ledger') throw new StepChannelClosed('publication ledger');
+            return w.run(step);
+        };
+        await expect(publishCheckout(JOB, { pullRequests: w.pr.port }, losing)).rejects.toBeInstanceOf(
+            StepChannelClosed
+        );
+        expect(w.pr.state.creates).toBe(0);
     });
 });
 

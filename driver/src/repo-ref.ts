@@ -18,6 +18,28 @@ const GITHUB_REPO_PATH_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 const REPO_PATH_PATTERN = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)+$/;
 const HOST_PATTERN = /^(?!\.+(:|$))[A-Za-z0-9.-]+(:[0-9]+)?$/;
 
+/**
+ * A forge host as a lowercase DNS name (labels of letters, digits and inner hyphens) and an optional port of one to
+ * five digits: the shape every normalized host has.
+ */
+const FORGE_HOST_PARTS =
+    /^((?=.{1,253}(?::|$))[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)(?::([0-9]{1,5}))?$/;
+const HTTPS_DEFAULT_PORT = '443';
+
+/**
+ * THE driver's forge host rule, everywhere a host is compared or keyed: lowercased, a default `:443` dropped, any
+ * other port kept; null for anything that is not a host name (whitespace, userinfo, a path, a trailing dot, an IPv6
+ * literal). The copies that cannot import it (`credential-broker.cjs` `normalizeHost`, `supervisor.cjs`, `gate-forge.sh`)
+ * answer the same table: `driver/test/forge-host-normalization.test.ts`.
+ */
+export function normalizeForgeHost(raw: unknown): string | null {
+    if (typeof raw !== 'string') return null;
+    const parts = FORGE_HOST_PARTS.exec(raw.toLowerCase());
+    if (!parts) return null;
+    const [, name, port] = parts;
+    return port === undefined || port === HTTPS_DEFAULT_PORT ? (name as string) : `${name}:${port}`;
+}
+
 /** Whether a wire value is a well-formed ref: a known forge, a host, and the forge's own path shape. */
 export function isRepoRef(value: unknown): value is RepoRef {
     if (typeof value !== 'object' || value === null) return false;
@@ -44,6 +66,6 @@ export const usesForgeMailbox = (job: { repo?: RepoRef | null | undefined }): bo
  */
 export function cloneHostRefusal(ref: RepoRef): string | null {
     if (ref.forge === 'gitlab') return null;
-    if (ref.host.toLowerCase() === GITHUB_HOST) return null;
+    if (normalizeForgeHost(ref.host) === GITHUB_HOST) return null;
     return `This job names repository ${ref.forge}:${ref.host}/${ref.path}, but this driver holds no git credential for that host, so nothing was cloned.`;
 }

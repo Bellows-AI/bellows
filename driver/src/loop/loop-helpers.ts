@@ -4,11 +4,11 @@ import type { HelperFailureReport, HelperPlan, HelperResult, InvokeChild } from 
 import { formatConcludeOutput, runHelperPlan } from '../helpers.js';
 import { askGithubToken } from './loop-github.js';
 import { down, raceStep } from './loop-attempt.js';
-import { supervisorLossFlag } from './loop-fence.js';
+import { credentialWaitReason, supervisorLossFlag } from './loop-fence.js';
 import { helperCauseOf } from './loop-ledger.js';
 import type { AttemptCtx, SetupConclusion, SetupHalt } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
-import { stepLost } from '../step-control.js';
+import { credentialWait, stepLost } from '../step-control.js';
 import { usesForgeMailbox } from '../repo-ref.js';
 
 /** Whether a helper is handed a token the loop asks for: a github-writing one, unless its job asks through the forge mailbox. */
@@ -153,7 +153,7 @@ export async function runPostHelperPhase(
     return null;
 }
 
-/** A helper whose supervisor was lost: the attempt is interrupted, and the caller ends it. */
+/** A helper whose supervisor was lost, or whose credential ask waits: the attempt is handed back, the caller ends it. */
 type InterruptHalt = Extract<SetupHalt, { halt: 'interrupt' }>;
 
 /**
@@ -173,7 +173,9 @@ async function runPlanFenced(
     } catch (e) {
         if (down(ctx.state)) return STOOD_DOWN;
         if (!stepLost(e)) throw e;
-        const reason = `infrastructure loss: a ${plan.phase}-run helper's supervisor was lost (${(e as Error).message})`;
+        const reason = credentialWait(e)
+            ? credentialWaitReason(ctx.job, (e as Error).message)
+            : `infrastructure loss: a ${plan.phase}-run helper's supervisor was lost (${(e as Error).message})`;
         return { halt: 'interrupt', reason, ...(await supervisorLossFlag(ctx, e)) };
     }
 }

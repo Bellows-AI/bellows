@@ -40,4 +40,31 @@ if [ -n "${FACTORY_GATE_RUN:-}" ] && [ -n "${FACTORY_GATE_BIN:-}" ] && [ -d "$FA
     set +f
     export GIT_CONFIG_COUNT=$n
 fi
+# A GitLab behind a private CA: FACTORY_FORGE_CA is the connection's certificate chain, each PEM line a
+# comma-separated field (a request's env is one line per name). It is written to a file in this gate's own
+# tmp and trusted for each host of FACTORY_FORGE_HOSTS alone (`http.https://<host>/.sslCAInfo`, appended to
+# the GIT_CONFIG_* pairs like the helpers above), never by turning verification off; the chain is not left
+# in the command's env, and never printed.
+if [ -n "${FACTORY_FORGE_CA:-}" ] && [ -n "${FACTORY_FORGE_HOSTS:-}" ]; then
+    ca_dir="${TMPDIR:-/tmp}/factory-forge-ca"
+    set -f
+    oldifs=$IFS
+    IFS=,
+    if mkdir -p "$ca_dir" && for line in $FACTORY_FORGE_CA; do printf '%s\n' "$line"; done > "$ca_dir/ca.pem.$$" &&
+        chmod 0644 "$ca_dir/ca.pem.$$" && mv -f "$ca_dir/ca.pem.$$" "$ca_dir/ca.pem"; then
+        n=${GIT_CONFIG_COUNT:-0}
+        case $n in '' | *[!0-9]*) n=0 ;; esac
+        for host in $FACTORY_FORGE_HOSTS; do
+            case $host in '' | github.com | *[!a-z0-9.:-]*) continue ;; esac
+            export "GIT_CONFIG_KEY_$n=http.https://$host/.sslCAInfo" "GIT_CONFIG_VALUE_$n=$ca_dir/ca.pem"
+            n=$((n + 1))
+        done
+        export GIT_CONFIG_COUNT=$n
+    else
+        echo "[gate] could not write the forge CA to $ca_dir: git will not trust the forge's private CA" >&2
+    fi
+    IFS=$oldifs
+    set +f
+fi
+unset FACTORY_FORGE_CA
 exec sh -c "$1"

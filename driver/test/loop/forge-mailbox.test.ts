@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../../src/board/board.js';
 import type { HelperPlan } from '../../src/helpers.js';
 import { createLoop } from '../../src/loop/loop.js';
-import type { RunOutcome } from '../../src/runner.js';
+import type { RunOutcome, RunSession } from '../../src/runner.js';
 import { StepChannelClosed } from '../../src/step-control.js';
 import { ForgeWait } from '../../src/supervised-steps.js';
 import { config, drive, job, ok, sleep, stubBoard, stubRunner } from '../fixtures/loop-stubs.js';
@@ -14,6 +14,9 @@ import { githubRef } from '../fixtures/repo-ref.js';
  * credential ask the board leaves unanswered or waiting hands the attempt back as an interruption, the session
  * and the checkout kept, never a fault and never `dead`.
  */
+
+/** What a credential wait's hand-back says (`credentialWaitReason`): the cause, never a lost supervisor. */
+const CREDENTIAL_WAIT = 'the GitLab credential could not be confirmed; the task waits and resumes';
 
 const gitlab = (n: number, over: Partial<BoardJob> = {}): BoardJob => ({
     ...job(n),
@@ -78,7 +81,11 @@ describe('a GitLab job in the loop', () => {
         expect(ran).toBe(0);
         expect(board.board.completed).toEqual([]);
         expect(board.board.interrupted).toEqual([
-            expect.objectContaining({ id: gitlab(1).id, reason: expect.stringContaining('forge credential') }),
+            expect.objectContaining({
+                id: gitlab(1).id,
+                blocked: true,
+                reason: expect.stringContaining(CREDENTIAL_WAIT),
+            }),
         ]);
         expect(runner.reclaimed).toEqual([]);
     });
@@ -93,9 +100,31 @@ describe('a GitLab job in the loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed).toEqual([]);
-        expect(board.board.interrupted).toEqual([expect.objectContaining({ id: gitlab(1).id })]);
+        expect(board.board.interrupted).toEqual([expect.objectContaining({ id: gitlab(1).id, blocked: true })]);
         expect(board.board.interrupted[0]?.reason).toContain('git push');
+        expect(board.board.interrupted[0]?.reason).toContain(CREDENTIAL_WAIT);
+        expect(board.board.interrupted[0]?.reason).not.toContain('supervisor');
         expect(runner.reclaimed).toEqual([]);
+    });
+
+    it('hands a helper’s unanswered credential ask back outside the budget, never a failed helper', async () => {
+        const plan: HelperPlan = { helperId: 'noop', phase: 'pre', input: null, githubWriting: true };
+        const board = stubBoard([gitlab(1, { publish: false, helperPlans: [plan] })]);
+        const runner = stubRunner(async () => ok());
+        runner.runHelper = async () => {
+            throw new ForgeWait('the helper noop');
+        };
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted).toEqual([
+            expect.objectContaining({
+                id: gitlab(1).id,
+                blocked: true,
+                reason: expect.stringContaining(CREDENTIAL_WAIT),
+            }),
+        ]);
     });
 
     it('leaves an attempt whose supervisor was lost mid-fetch to its lease: no verdict, nothing reclaimed', async () => {
@@ -143,5 +172,86 @@ describe('a GitLab job in the loop', () => {
         expect(board.board.githubAsks).toHaveLength(2);
         expect(runner.syncTokens).toEqual(['ghs_minted']);
         expect(runner.githubTokens).toEqual(['ghs_minted']);
+    });
+});
+
+/**
+ * The board's budget rule (`releaseOpen`, server/src/db/jobs/job-store-interruption-budget.ts) over the stub board: a
+ * blocked, requirement, org-suspended or node-loss hand-back is outside the poison budget; any other spends it, and
+ * past ten the board refuses the hand-back (`exhausted`), which leaves the attempt to retire.
+ */
+const INTERRUPTION_BUDGET = 10;
+function budgeted(board: ReturnType<typeof stubBoard>): string[] {
+    const counted: string[] = [];
+    const take = board.board.interrupt.bind(board.board);
+    board.board.interrupt = async (claimed, interruption) => {
+        const free =
+            interruption.blocked || interruption.requirement || interruption.orgSuspended || interruption.nodeLoss;
+        if (!free) {
+            if (counted.length >= INTERRUPTION_BUDGET) return 'exhausted';
+            counted.push(interruption.reason);
+        }
+        return take(claimed, interruption);
+    };
+    return counted;
+}
+
+describe('a credential wait never spends the interruption budget', () => {
+    const OUTAGES = INTERRUPTION_BUDGET + 3;
+    /** Every claim of one task, the session it continues kept on each. */
+    const claims = (n: number): BoardJob[] =>
+        Array.from({ length: n }, (_, i) => gitlab(1, { claimSeq: i + 1, resumeSessionId: 'session-1' }));
+
+    it('waits out more outages at the sync than the budget holds, then runs and publishes: never dead', async () => {
+        const board = stubBoard(claims(OUTAGES + 1));
+        const counted = budgeted(board);
+        const sessions: (RunSession | null)[] = [];
+        const runner = stubRunner(
+            async (_job, session) => {
+                sessions.push(session);
+                return ok();
+            },
+            { publish: LANDED }
+        );
+        let syncs = 0;
+        runner.syncCheckout = async (synced) => {
+            runner.synced.push(synced);
+            syncs += 1;
+            return syncs <= OUTAGES
+                ? { ok: false, reason: 'the credential ask went unanswered', kind: 'forge_wait' }
+                : { ok: true, reason: null };
+        };
+
+        await drive({ ...board, runner });
+
+        expect(board.board.interrupted).toHaveLength(OUTAGES);
+        for (const handed of board.board.interrupted) {
+            expect(handed).toMatchObject({ blocked: true, reason: expect.stringContaining(CREDENTIAL_WAIT) });
+        }
+        expect(counted).toEqual([]);
+        // The checkout is never reclaimed and the session is resumed once the credential is back.
+        expect(runner.reclaimed).toEqual([]);
+        expect(sessions).toEqual([{ id: 'session-1', resume: true }]);
+        expect(board.board.completed).toEqual([expect.objectContaining({ status: 'succeeded' })]);
+    });
+
+    it('waits out more outages at the publish than the budget holds, then publishes: never failed', async () => {
+        const board = stubBoard(claims(OUTAGES + 1));
+        const counted = budgeted(board);
+        const runner = stubRunner(async () => ok());
+        let pushes = 0;
+        runner.publishGit = async () => {
+            pushes += 1;
+            if (pushes <= OUTAGES) throw new ForgeWait('git push');
+            return LANDED;
+        };
+
+        await drive({ ...board, runner });
+
+        expect(board.board.interrupted).toHaveLength(OUTAGES);
+        for (const handed of board.board.interrupted) expect(handed).toMatchObject({ blocked: true });
+        expect(counted).toEqual([]);
+        expect(runner.reclaimed).toEqual([]);
+        expect(board.board.completed).toEqual([expect.objectContaining({ status: 'succeeded' })]);
     });
 });

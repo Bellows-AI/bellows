@@ -36,7 +36,7 @@ import {
 } from './publish/publish.js';
 import { snapshotTree } from './review/review-snapshot.js';
 import type { Runner } from './runner.js';
-import { usesForgeMailbox } from './repo-ref.js';
+import { normalizeForgeHost, usesForgeMailbox } from './repo-ref.js';
 import { noStepChannel, StepTimedOut, StepTokenUnanswered, type StepSink, stepLost } from './step-control.js';
 import { SUPERVISOR_ENV, type StepKind, type StepRequest, type StepResult } from './supervisor-contract.js';
 
@@ -100,11 +100,14 @@ export const claimStepEnv = (job: BoardJob, githubToken?: string): Record<string
 });
 
 /**
- * The `forgeHost` of a step of `job` that reaches its remote: the lowercased host for a job that asks through
- * the forge mailbox, nothing otherwise. The supervisor serves that step the member's token on demand.
+ * The `forgeHost` of a step of `job` that reaches its remote: the normalized host (`normalizeForgeHost`, the one the
+ * helper asks for and `holdsForgeAsk` compares) for a job that asks through the forge mailbox, nothing otherwise. The
+ * supervisor serves that step the member's token on demand.
  */
-export const forgeHostOf = (job: BoardJob): { forgeHost?: string } =>
-    usesForgeMailbox(job) && job.repo ? { forgeHost: job.repo.host.toLowerCase() } : {};
+export const forgeHostOf = (job: BoardJob): { forgeHost?: string } => {
+    const host = usesForgeMailbox(job) && job.repo ? normalizeForgeHost(job.repo.host) : null;
+    return host === null ? {} : { forgeHost: host };
+};
 
 /**
  * A step whose credential ask the supervisor could not get answered — the board left it unanswered or holds
@@ -444,7 +447,7 @@ export interface GateStepRequest {
     timeoutMs: number;
     /** Runs beside the other parallel gates in the gate container instead of waiting its turn (`StepRequest.parallel`). */
     parallel?: true;
-    /** An agent's exec: the step gets no GitHub token (`StepRequest.tokenless`). */
+    /** An agent's exec: the step gets no forge token, GitHub's or GitLab's (`StepRequest.tokenless`). */
     tokenless?: true;
 }
 

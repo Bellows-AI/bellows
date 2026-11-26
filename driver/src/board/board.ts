@@ -7,7 +7,7 @@ import { heldBeat } from './board-heartbeat.js';
 import type { Interruption } from './board-interruption.js';
 import { artifactCalls } from '../artifact-calls.js';
 import { type AttachmentContent, attachmentCalls, type ClaimAttachment } from './board-attachments.js';
-import { claimOf, parseClaim } from './board-claim.js';
+import { type ClaimForgeCa, claimOf, parseClaim } from './board-claim.js';
 import { type ClaimSkills, skillCalls } from './board-skills.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError, uncodedAnswer } from './board-retry.js';
@@ -65,7 +65,7 @@ export interface DeclaredGate {
     parallel?: true;
 }
 
-export interface BoardJob extends ClaimSkills {
+export interface BoardJob extends ClaimSkills, ClaimForgeCa {
     id: string;
     attachments?: ClaimAttachment[];
     command: string;

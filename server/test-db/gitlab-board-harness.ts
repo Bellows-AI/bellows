@@ -72,7 +72,7 @@ export interface Harness {
     replica(options?: ReplicaOptions): ReturnType<typeof replicaOf>;
     /** A running app over a fresh replica. */
     board(options?: ReplicaOptions): Promise<Board>;
-    connect(org: Org, options?: { host?: string; groups?: string[] }): Promise<string>;
+    connect(org: Org, options?: { host?: string; groups?: string[]; caBundle?: string }): Promise<string>;
     /** Connects, activates with the admin's link and links the member as `login`; the connection id. */
     linked(org: Org, memberLogin: string, options?: { groups?: string[] }): Promise<string>;
 }
@@ -290,12 +290,13 @@ export async function startHarness(sql: () => Sql): Promise<Harness & { stop(): 
                 close: () => app.close(),
             };
         },
-        async connect(org, { host = HOST, groups = ['platform'] } = {}) {
+        async connect(org, { host = HOST, groups = ['platform'], caBundle } = {}) {
             const made = await org.store.create({
                 host,
                 clientId: org.clientId,
                 clientSecret: org.clientSecret,
                 allowedGroups: groups,
+                caBundle,
             });
             if (!made.ok) throw new Error('create refused');
             return made.connection.id;

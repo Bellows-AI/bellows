@@ -91,8 +91,12 @@ if [ "${FACTORY_GATE_MODE:-}" = credential ]; then
     done
     [ "$protocol" = https ] || exit 0
     lower=$(printf '%s' "$host" | /usr/bin/tr '[:upper:]' '[:lower:]' 2>/dev/null) && host=$lower
+    # The driver's host rule (repo-ref.ts normalizeForgeHost): DNS labels and one optional numeric port, checked
+    # before a default :443 is dropped; anything else asks nothing.
+    case $host in
+        '' | *[!a-z0-9.:-]* | [.:-]* | *[.-] | *..* | *.-* | *-.* | *[.-]:* | *:*:* | *: | *:*[!0-9]* | *:??????*) exit 0 ;;
+    esac
     host=${host%:443}
-    case $host in '' | *[!a-z0-9.:-]*) exit 0 ;; esac
     allowed=
     [ "$host" = github.com ] && allowed=github
     set -f

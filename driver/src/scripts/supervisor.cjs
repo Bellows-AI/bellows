@@ -85,6 +85,8 @@
 //                               driver — a 5xx, a `waiting` grant, no answer — before `none unanswered` (default 40000).
 //   SUPERVISOR_FORGE_HELPER   — scripts/gate-forge.sh by content: written into the mailbox a step carrying `forgeHost`
 //                               gets in this container's own tmpdir; absent, such a step is refused.
+//   SUPERVISOR_FORGE_CA       — a GitLab job's private CA chain (PEM): written into a forge step's mailbox beside the
+//                               helper and trusted for the step's host alone (`http.https://<host>/.sslCAInfo`).
 //
 // Exit status: 0 finalized, 124 finalized after the run budget ended the agent, 70 the supervisor
 // itself failed, 75 the driver was lost before the agent was released (nothing ran to adopt). The
@@ -266,11 +268,36 @@ const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', bin: 'bin' };
 const FORGE_STEP_ENV = { run: 'FACTORY_GATE_RUN', helper: 'FACTORY_FORGE_HELPER', hosts: 'FACTORY_FORGE_HOSTS' };
 /** The forge helper's name in a forge step's mailbox. */
 const FORGE_HELPER_FILE = 'gate-forge.sh';
+/** The forge's private CA chain in a forge step's mailbox, and its mode: read by this uid's git alone. */
+const FORGE_CA_FILE = 'forge-ca.pem';
+const FORGE_CA_MODE = 0o600;
 /** A forge step's mailbox and helper: this container's uid alone. */
 const FORGE_BOX_MODE = 0o700;
-/** A normalized forge host: a lowercase DNS name, an optional port (gate-token-control.ts `normalizeForgeHost`). */
-const FORGE_HOST =
-    /^(?=.{1,253}(:|$))[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/;
+/** A forge host, lowercased: a DNS name and an optional port of one to five digits. */
+const FORGE_HOST_PARTS =
+    /^((?=.{1,253}(?::|$))[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*)(?::([0-9]{1,5}))?$/;
+const HTTPS_DEFAULT_PORT = '443';
+
+/**
+ * A host lowercased with a default `:443` dropped and any other port kept, or null for anything that is not a host
+ * name: the driver's rule (repo-ref.ts `normalizeForgeHost`), pinned by driver/test/forge-host-normalization.test.ts.
+ * @param {unknown} raw
+ * @returns {string | null}
+ */
+function normalizeForgeHost(raw) {
+    if (typeof raw !== 'string') return null;
+    const parts = FORGE_HOST_PARTS.exec(raw.toLowerCase());
+    if (!parts) return null;
+    const [, name, port] = parts;
+    return port === undefined || port === HTTPS_DEFAULT_PORT ? /** @type {string} */ (name) : `${name}:${port}`;
+}
+
+/**
+ * Whether a value is a host already normalized: what the driver names on a step and the helper asks for.
+ * @param {unknown} host
+ * @returns {host is string}
+ */
+const isForgeHost = (host) => typeof host === 'string' && normalizeForgeHost(host) === host;
 /** The host every gate may ask for: GitHub's. */
 const GITHUB_HOST = 'github.com';
 /** An ask's whole content, as scripts/gate-forge.sh writes it. */
@@ -539,6 +566,8 @@ function settingsOf(env) {
         gitHarden: env.SUPERVISOR_GIT_HARDEN_SCRIPT || null,
         // The forge helper a forge step's mailbox holds (scripts/gate-forge.sh), by content; null refuses such a step.
         forgeHelper: env.SUPERVISOR_FORGE_HELPER || null,
+        // A GitLab job's private CA chain a forge step's git trusts for its host; null: the system bundle alone.
+        forgeCa: env.SUPERVISOR_FORGE_CA || null,
         gate: env.SUPERVISOR_GATE === '1',
         review: env.SUPERVISOR_REVIEWER === '1',
         gateLostMs: positive(env, 'SUPERVISOR_GATE_LOST_MS', DEFAULT_GATE_LOST_MS),
@@ -1009,7 +1038,7 @@ function spawnStep(run, step) {
  * @returns {string | null}
  */
 function forgeStepRefusal(run, step) {
-    if (typeof step.forgeHost !== 'string' || !FORGE_HOST.test(step.forgeHost)) {
+    if (!isForgeHost(step.forgeHost)) {
         return 'refusing a forge step: its forgeHost is not a host name';
     }
     if (!run.settings.forgeHelper) {
@@ -1021,7 +1050,8 @@ function forgeStepRefusal(run, step) {
 
 /**
  * A forge step's mailbox in this container's own tmpdir — never the task volume — private to this uid:
- * `asks/`, `answers/` and the forge helper. Removed by the caller when the step ends.
+ * `asks/`, `answers/`, the forge helper and the forge's private CA when the job has one. Removed by the caller
+ * when the step ends.
  * @param {Run} run
  * @returns {string}
  */
@@ -1035,11 +1065,35 @@ function openForgeBox(run) {
         fs.writeFileSync(path.join(dir, FORGE_HELPER_FILE), /** @type {string} */ (run.settings.forgeHelper), {
             mode: FORGE_BOX_MODE,
         });
+        if (run.settings.forgeCa) {
+            fs.writeFileSync(path.join(dir, FORGE_CA_FILE), run.settings.forgeCa, { mode: FORGE_CA_MODE });
+        }
         return dir;
     } catch (error) {
         fs.rmSync(dir, { recursive: true, force: true });
         throw error;
     }
+}
+
+/**
+ * The GIT_CONFIG_* pairs that trust the job's private CA, written into the step's mailbox, for the step's host
+ * alone — appended after the pairs the step's env (or this container's) already holds; none without a CA. Command
+ * scope: the hardened git keeps it (it pins only what can run), and it outranks the checkout's own config.
+ * @param {Run} run
+ * @param {Record<string, string>} env
+ * @param {string} host
+ * @param {string} dir
+ * @returns {Record<string, string>}
+ */
+function forgeCaConfig(run, env, host, dir) {
+    if (!run.settings.forgeCa) return {};
+    const held = Number(env.GIT_CONFIG_COUNT ?? run.settings.childEnv.GIT_CONFIG_COUNT ?? 0);
+    const n = Number.isSafeInteger(held) && held >= 0 ? held : 0;
+    return {
+        [`GIT_CONFIG_KEY_${n}`]: `http.https://${host}/.sslCAInfo`,
+        [`GIT_CONFIG_VALUE_${n}`]: path.join(dir, FORGE_CA_FILE),
+        GIT_CONFIG_COUNT: String(n + 1),
+    };
 }
 
 /**
@@ -1069,6 +1123,7 @@ async function spawnForgeStep(run, step) {
             [FORGE_STEP_ENV.run]: dir,
             [FORGE_STEP_ENV.helper]: path.join(dir, FORGE_HELPER_FILE),
             [FORGE_STEP_ENV.hosts]: host,
+            ...forgeCaConfig(run, env, host, dir),
         },
     });
     /** @type {Outcome | null} */
@@ -1753,7 +1808,7 @@ function askedHost(box, name) {
         return;
     }
     const host = FORGE_ASK.exec(text)?.[1] ?? '';
-    return FORGE_HOST.test(host) && box.hosts.includes(host) ? host : null;
+    return isForgeHost(host) && box.hosts.includes(host) ? host : null;
 }
 
 /**
@@ -1825,10 +1880,7 @@ function serveAsks(run, box, flight) {
  * @param {Step} step
  * @returns {string[]}
  */
-const gateHosts = (step) => [
-    GITHUB_HOST,
-    ...(step.env?.[FORGE_STEP_ENV.hosts] ?? '').split(',').filter((host) => FORGE_HOST.test(host)),
-];
+const gateHosts = (step) => [GITHUB_HOST, ...(step.env?.[FORGE_STEP_ENV.hosts] ?? '').split(',').filter(isForgeHost)];
 
 /**
  * The asks of one running gate: its request's mailbox (`running/<id>/`). Only a request the loop took is
@@ -3186,6 +3238,7 @@ module.exports = {
     GATE_LOST_MS: DEFAULT_GATE_LOST_MS,
     GATE_CANCEL_MS: DEFAULT_GATE_CANCEL_MS,
     createMachine,
+    normalizeForgeHost,
     settingsOf,
     spawnStep,
     supervise,

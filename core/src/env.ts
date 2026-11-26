@@ -78,6 +78,8 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'RUNNER_LEASE_TOKEN',
     // The hosts the runner's forge helper answers (driver/src/claim.ts FORGE_HOSTS_ENV): the driver names them.
     'RUNNER_FORGE_HOSTS',
+    // The forge's private CA the runner trusts (driver/src/claim.ts FORGE_CA_ENV): the driver delivers it.
+    'RUNNER_FORGE_CA',
     // The runner's telemetry export credential (driver/src/telemetry-config.ts), under every OTLP header name.
     'OTEL_EXPORTER_OTLP_HEADERS',
     'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
