@@ -94,12 +94,17 @@ export const registerGitlab = (forge) => {
         if (!userIds.has(login)) userIds.set(login, USER_ID_BASE + userIds.size + 1);
         return userIds.get(login);
     };
+    /** login -> the profile fields a lane or test overrides (`name`, `commit_email`, `public_email`) */
+    const profiles = new Map();
     const userJson = (login) => ({
         id: userId(login),
         username: login,
         name: login,
         state: 'active',
         email: emailOf(login),
+        commit_email: emailOf(login),
+        public_email: '',
+        ...profiles.get(login),
         web_url: `https://gitlab.test/${login}`,
     });
 
@@ -1130,6 +1135,11 @@ export const registerGitlab = (forge) => {
     control('sign-in', ({ response, body }) =>
         forge.json(response, 200, issuePair(body.login ?? DEFAULT_MEMBER, body.clientId ?? null, body.scope ?? DEFAULT_SCOPE))
     );
+    // Overrides the `/user` profile fields of a login (`name`, `commit_email`, `public_email`), as a member edits them.
+    control('user-profile', ({ response, body }) => {
+        profiles.set(body.login, { ...profiles.get(body.login), ...body.fields });
+        forge.json(response, 200, userJson(body.login));
+    });
     control('projects', async ({ response, body, request }) => {
         if (!body.path || projectOf(body.path)) return badRequest(response, 'a project path is required and must be new');
         const id = forge.nextId();

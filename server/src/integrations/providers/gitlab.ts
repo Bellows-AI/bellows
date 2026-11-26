@@ -2,6 +2,7 @@ import { CONTENT_TYPE_HEADER, GITLAB_OAUTH_SCOPE, gitlabHostOf, JSON_CONTENT_TYP
 import type { GitlabApplication } from '../../db/forge-connections.js';
 import type { GitlabApi, GitlabResponse } from '../../gitlab/gitlab-api.js';
 import type { AuthorizationClient } from '../authorization-types.js';
+import { gitlabProfileOf } from '../forge-profile.js';
 import type { DiscoveredIdentity, ExchangeResult, OAuthProviderHooks } from '../oauth-provider.js';
 import { answerOf, isRecord } from './oauth-http.js';
 
@@ -154,11 +155,13 @@ export function createGitlabProvider({
                 );
                 if (!isRecord(user) || typeof user.id !== 'number' || typeof user.username !== 'string') return null;
                 if (user.username === '') return null;
+                const profile = gitlabProfileOf(user);
                 return {
                     externalAccountId: String(user.id),
                     label: user.username,
                     resources: [],
                     authority: { scopes: [] },
+                    ...(profile ? { profile } : {}),
                 };
             },
         };

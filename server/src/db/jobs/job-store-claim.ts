@@ -595,7 +595,7 @@ async function assembleClaim(
     });
     const outcomes = connections.outcomes.length > 0 ? { connectionOutcomes: connections.outcomes } : {};
     // Read on every claim, takeover and resume included, so a recovered runner gets the same author.
-    const author = commitAuthor ? await claimAuthorFor(tx, row.run_as) : null;
+    const author = commitAuthor ? await claimAuthorFor(tx, orgId, row) : null;
     return { ...claim, lastGateReports, ...outcomes, ...(author ? { author } : {}), ...(await claimForgeCa(ctx, row)) };
 }
 

@@ -12,6 +12,7 @@ import {
 } from '../db/forge-links.js';
 import { orgSql } from '../db/org-sql.js';
 import type { GitlabApi } from '../gitlab/gitlab-api.js';
+import type { ForgeProfile } from './forge-profile.js';
 import { INTEGRATIONS_RETURN_PATH } from './authorization-types.js';
 import type { MemberForgeGrants, MemberGrantTokens, StoreMemberGrantRefusal } from './member-forge-grant.js';
 import type { ExchangeResult } from './oauth-provider.js';
@@ -173,6 +174,7 @@ async function complete(deps: GitlabLinksDeps, input: CompleteInput): Promise<Li
         userId: input.userId,
         forge: target.forge,
         externalAccountId: issued.externalAccountId,
+        ...(issued.profile ? { profile: issued.profile } : {}),
         tokens: issued.tokens,
         connection: { id: target.connection.id, requireActive: checked === null },
     });
@@ -246,7 +248,10 @@ async function issuedFor(
     provider: GitlabProvider,
     target: Target,
     { code, redirectUri, verifier }: { code: string; redirectUri: string; verifier: string }
-): Promise<{ ok: true; accessToken: string; externalAccountId: string; tokens: MemberGrantTokens } | Refused> {
+): Promise<
+    | { ok: true; accessToken: string; externalAccountId: string; profile?: ForgeProfile; tokens: MemberGrantTokens }
+    | Refused
+> {
     const hooks = provider.hooksFor(target.orgId, target.forge);
     if (!hooks) return { ok: false, failure: 'connection-gone' };
     const exchanged: ExchangeResult = await hooks
@@ -264,6 +269,7 @@ async function issuedFor(
         ok: true,
         accessToken,
         externalAccountId: identity.externalAccountId,
+        ...(identity.profile ? { profile: identity.profile } : {}),
         tokens: {
             accessToken,
             refreshToken,
