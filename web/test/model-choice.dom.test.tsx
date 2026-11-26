@@ -244,3 +244,150 @@ describe('the follow-up Model control', () => {
         await waitFor(() => expect(within(list).queryByRole('option', { name: 'openai/gpt-5.1' })).toBeNull());
     });
 });
+
+describe('the Model chip follows the selected executor connection', () => {
+    const CONNECTION = '33333333-3333-4333-8333-333333333333';
+    const connected = {
+        providerConnectionId: CONNECTION,
+        providerConnectionName: 'Team key',
+        providerConnectionProvider: 'anthropic' as const,
+        providerConnectionScope: 'org' as const,
+        configOverridesConnection: false,
+    };
+    const routedWorkspace: WorkspacePayload = {
+        executors: [
+            { ...profileWorkspace.executors[0]!, id: '44444444-4444-4444-8444-444444444444', name: 'plain' },
+            { ...profileWorkspace.executors[0]!, name: 'routed', ...connected },
+        ],
+        orgExecutors: [],
+        defaultExecutor: { scope: 'user', name: 'plain' },
+    };
+
+    function board(models: unknown, workspace: WorkspacePayload = routedWorkspace) {
+        const calls = stubFetch((call) => {
+            if (call.url === '/api/workspace') return workspace;
+            if (call.url === '/api/repos') return repos;
+            if (call.url === '/api/auth/me') return OPEN_BOARD_SESSION;
+            if (call.url === '/api/model-setup') return setup;
+            if (call.url === `/api/provider-connections/${CONNECTION}/models`) return models;
+            if (call.method === 'POST' && call.url === '/api/jobs') {
+                return { status: 201, body: { id: LAUNCHED_ID, status: 'queued' } };
+            }
+        });
+        return {
+            calls,
+            modelReads: () => calls.filter((c) => c.url.endsWith('/models')),
+            launched: () => calls.filter((c) => c.method === 'POST' && c.url === '/api/jobs').map((c) => c.body),
+        };
+    }
+
+    const pickExecutor = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
+        await user.click(await screen.findByRole('button', { name: /^Executor/ }));
+        await user.click(await within(await screen.findByRole('listbox')).findByRole('option', { name }));
+    };
+    const offeredModels = async (user: ReturnType<typeof userEvent.setup>) => {
+        await user.click(modelPicker());
+        const list = await screen.findByRole('listbox');
+        return within(list)
+            .getAllByRole('option')
+            .map((option) => option.textContent);
+    };
+
+    beforeEach(() => {
+        stubObjectUrls();
+    });
+
+    it('selected executor determines model source', async () => {
+        const user = userEvent.setup();
+        const { modelReads } = board({ state: 'listed', models: ['claude-live-1', 'claude-live-2'] });
+        renderApp('/tasks/new');
+        await screen.findByLabelText('What should the agent do?');
+
+        // The default executor has no connection: today's curated list, and no connection read at all.
+        expect(await offeredModels(user)).toContain('claude-opus-5-5');
+        expect(modelReads()).toHaveLength(0);
+        await user.keyboard('{Escape}');
+
+        // The connection's executor offers that connection's live models instead.
+        await pickExecutor(user, 'routed');
+        await user.click(modelPicker());
+        const list = await screen.findByRole('listbox');
+        await waitFor(() => {
+            const models = within(list)
+                .getAllByRole('option')
+                .map((option) => option.textContent);
+            expect(models).toEqual(expect.arrayContaining(['claude-live-1', 'claude-live-2']));
+            expect(models).not.toContain('claude-opus-5-5');
+        });
+        expect(modelReads()).toHaveLength(1);
+    });
+
+    it('manual model entry survives unsupported or failed discovery', async () => {
+        const user = userEvent.setup();
+        const { launched } = board({ state: 'failed', code: 'UPSTREAM', message: 'The provider is unreachable.' });
+        renderApp('/tasks/new');
+        await screen.findByLabelText('What should the agent do?');
+        await pickExecutor(user, 'routed');
+
+        // A failed read says so (never "no models"), keeps the curated suggestions and still takes a typed name.
+        await user.click(modelPicker());
+        await screen.findByText(/Could not list the models Team key offers: The provider is unreachable\./);
+        expect(
+            within(await screen.findByRole('listbox'))
+                .getAllByRole('option')
+                .map((option) => option.textContent)
+        ).toContain('claude-opus-5-5');
+        await user.type(screen.getByRole('combobox', { name: 'Search model' }), 'my-hand-typed-model{Enter}');
+        expect(modelPicker().getAttribute('aria-label')).toBe('Model: my-hand-typed-model');
+        await launch(user, 'fix the login crash');
+        await waitFor(() => expect(launched()).toHaveLength(1));
+        expect(launched()[0]).toMatchObject({ model: 'my-hand-typed-model' });
+    });
+
+    it('says a successful empty list apart from an unsupported one', async () => {
+        const user = userEvent.setup();
+        board({ state: 'listed', models: [] });
+        renderApp('/tasks/new');
+        await screen.findByLabelText('What should the agent do?');
+        await pickExecutor(user, 'routed');
+        await user.click(modelPicker());
+        await screen.findByText(/Team key lists no models\. Type the name of the model to use\./);
+        expect(screen.queryByText(/Could not list/)).toBeNull();
+        await user.keyboard('{Escape}');
+    });
+
+    it('offers a follow-up on a connection thread that connection’s models', async () => {
+        const user = userEvent.setup();
+        board({ state: 'listed', models: ['claude-live-1'] });
+        const jobs = authoredBy(missingSummaryThread, LOCAL_AUTHOR).map((j) => ({
+            ...j,
+            executor: 'routed',
+            executorScope: 'user' as const,
+            agentType: null,
+            agentModel: null,
+        }));
+        stubFetch((call: FetchCall) => {
+            if (call.url === '/api/auth/me') return OPEN_BOARD_SESSION;
+            if (call.url === '/api/model-setup') return setup;
+            if (call.url === '/api/workspace') return routedWorkspace;
+            if (call.url === `/api/provider-connections/${CONNECTION}/models`) {
+                return { state: 'listed', models: ['claude-live-1'] };
+            }
+            const match = /\/api\/jobs\/([^/]+)\/(thread|activity)/.exec(call.url);
+            if (match && jobs.some((j) => j.id === match[1])) {
+                return match[2] === 'thread' ? { jobs } : mockedActivityOf(jobs);
+            }
+        });
+        renderApp(`/tasks/${jobs[0]!.id}`);
+        await screen.findByLabelText('Ask for a follow-up');
+        await user.click(modelPicker());
+        const list = await screen.findByRole('listbox');
+        await waitFor(() =>
+            expect(
+                within(list)
+                    .getAllByRole('option')
+                    .map((option) => option.textContent)
+            ).toContain('claude-live-1')
+        );
+    });
+});

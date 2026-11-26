@@ -1,9 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ExecutorScope, ExecutorType } from '@factory-ai/core';
+import type { ExecutorScope, ExecutorType, ModelProvider, ProviderConnectionScope } from '@factory-ai/core';
 import { usePersonalExecutorWrites } from './usePersonalExecutorWrites.js';
 import { request } from './request.js';
 
-export interface WorkspaceExecutor {
+/**
+ * The safe connection fields an executor row carries (docs/api.md): the id, and the name, provider and scope when the
+ * caller may see the connection. Never a key or a secret reference.
+ */
+export interface ExecutorConnectionFields {
+    /** The provider connection the profile runs its model on; null or absent is the environment keys. */
+    providerConnectionId?: string | null;
+    providerConnectionName?: string | null;
+    providerConnectionProvider?: ModelProvider | null;
+    providerConnectionScope?: ProviderConnectionScope | null;
+    /** Pasted configuration credentials or endpoints take precedence over the connection. */
+    configOverridesConnection?: boolean;
+}
+
+export interface WorkspaceExecutor extends ExecutorConnectionFields {
     /** The row's id: the by-id remove and suspend routes address it (issue 440). */
     id: string;
     name: string;
@@ -22,7 +36,7 @@ export interface WorkspaceExecutor {
  * member's browser runs — the full organization configuration answers to the admin list
  * (`listOrgExecutorConfigs`), never to the poll.
  */
-export interface OrgExecutor {
+export interface OrgExecutor extends ExecutorConnectionFields {
     name: string;
     type: string;
     createdAt: string;
@@ -82,7 +96,14 @@ export interface UseWorkspace {
     error: string | null;
     saving: boolean;
     saveExecutors: (
-        executors: { name: string; type: string; config: object; gateFixRounds: number; suspended?: boolean }[]
+        executors: {
+            name: string;
+            type: string;
+            config: object;
+            gateFixRounds: number;
+            suspended?: boolean;
+            providerConnectionId?: string | null;
+        }[]
     ) => Promise<string | null>;
     /** Removes ONE personal profile by id (issue 440); the by-id route cannot clobber other rows. */
     removeExecutor: (id: string) => Promise<string | null>;
@@ -217,9 +238,7 @@ export function useWorkspace(): UseWorkspace {
      * The executor PUT is not asynchronous — nothing clones — so no re-arm timing is needed.
      */
     const saveExecutors = useCallback(
-        async (
-            executors: { name: string; type: string; config: object; gateFixRounds: number; suspended?: boolean }[]
-        ): Promise<string | null> => {
+        async (executors: Parameters<UseWorkspace['saveExecutors']>[0]): Promise<string | null> => {
             setSaving(true);
             try {
                 const result = await putJson('/api/workspace/executors', { executors }, 'Could not save the executors');

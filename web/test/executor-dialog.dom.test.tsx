@@ -30,7 +30,7 @@ import {
 } from '../src/workspace/executors.js';
 import { GUIDED_COPY } from '../src/workspace/executor-guided.js';
 import { renderApp, stubFetch } from './dom.js';
-import { boardHandler, personalExecutor, settingsBoard } from './settings-board.js';
+import { boardHandler, listedModels, personalExecutor, providerConnection, settingsBoard } from './settings-board.js';
 
 /**
  * The personal executor dialog on the real Executors page, over a stubbed board that stores what
@@ -461,5 +461,281 @@ describe('the executor dialog: the guided provider step', () => {
         await user.keyboard('{Escape}');
         await dialogGone();
         expect(screen.queryByRole('dialog', { name: confirmDialog })).toBeNull();
+    });
+});
+
+describe('the executor dialog: provider connections', () => {
+    const TEAM = providerConnection('Team key', { scope: 'org', provider: 'anthropic' });
+    const MINE = providerConnection('My key', { scope: 'personal', provider: 'anthropic' });
+    const OPENAI = providerConnection('OpenAI key', { scope: 'org', provider: 'openai' });
+    const SUBSCRIPTION = providerConnection('Max plan', { scope: 'personal', provider: 'subscription' });
+    /** With suggestions the input names a datalist, which makes it a combobox. */
+    const typedModel = () => within(modelGroup()).getByRole<HTMLInputElement>('combobox', { name: MODEL_CUSTOM_LABEL });
+    const connectionSelect = () => inDialog().getByLabelText<HTMLSelectElement>('Provider connection', { exact: true });
+    const optionNames = () => [...connectionSelect().options].map((option) => option.textContent);
+    const putBody = (calls: { method: string; url: string; body: unknown }[]) =>
+        calls.filter((call) => call.method === 'PUT' && call.url === '/api/workspace/executors').at(-1)?.body as {
+            executors: { name: string; providerConnectionId?: string | null; config: Record<string, unknown> }[];
+        };
+    const connectionWrites = (calls: { method: string; url: string }[]) =>
+        calls.filter((call) => call.method !== 'GET' && call.url.startsWith('/api/provider-connections'));
+    const board = (overrides: Parameters<typeof settingsBoard>[0] = {}) =>
+        settingsBoard({ providerConnections: [TEAM, MINE, OPENAI, SUBSCRIPTION], ...overrides });
+
+    it('filters connections by scope and runtime', async () => {
+        stubFetch(boardHandler(board()));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await openAdd(user);
+
+        // Claude Code runs Anthropic and a subscription; an OpenAI key is explained, not offered.
+        await waitFor(() => expect(optionNames()).toContain('Team key — Anthropic · Organization'));
+        expect(optionNames()).toEqual([
+            'None (environment keys)',
+            'Team key — Anthropic · Organization',
+            'My key — Anthropic · Personal',
+            'Max plan — Claude subscription · Personal',
+        ]);
+        expect(
+            within(inDialog().getByRole('list', { name: 'Connections not offered' })).getByText(
+                /OpenAI key is not offered/
+            )
+        ).toBeTruthy();
+
+        // OpenCode runs OpenAI, not a subscription.
+        await user.selectOptions(field('Agent'), OPENCODE);
+        expect(optionNames()).toEqual([
+            'None (environment keys)',
+            'Team key — Anthropic · Organization',
+            'My key — Anthropic · Personal',
+            'OpenAI key — OpenAI · Organization',
+        ]);
+        expect(inDialog().getByRole('list', { name: 'Connections not offered' }).textContent).toContain('Max plan');
+    });
+
+    it('offers an organization executor the organization connections only, saying why not the personal ones', async () => {
+        stubFetch(boardHandler(board()));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await user.click(await screen.findByRole('button', { name: 'Add organization executor' }));
+        await screen.findByRole('dialog', { name: ADD_LABEL });
+        await waitFor(() => expect(optionNames()).toContain('Team key — Anthropic · Organization'));
+        expect(optionNames()).toEqual(['None (environment keys)', 'Team key — Anthropic · Organization']);
+        expect(inDialog().getByRole('list', { name: 'Connections not offered' }).textContent).toContain(
+            'An organization executor can only use an organization provider connection.'
+        );
+    });
+
+    it('switches provider without mutating a shared connection', async () => {
+        const shared = board({
+            executors: [
+                { ...personalExecutor('first'), providerConnectionId: TEAM.id },
+                { ...personalExecutor('second'), providerConnectionId: TEAM.id },
+            ],
+        });
+        const calls = stubFetch(boardHandler(shared));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await user.click(await editButton('first'));
+        await screen.findByRole('dialog', { name: /^Edit executor$/ });
+        await waitFor(() => expect(connectionSelect().value).toBe(TEAM.id));
+
+        await user.selectOptions(connectionSelect(), MINE.id);
+        await user.click(button(SAVE_LABEL));
+        await dialogGone();
+
+        // Only the edited row's reference moved; its sibling still shares the original, and no connection was written.
+        expect(putBody(calls).executors.map((row) => [row.name, row.providerConnectionId])).toEqual([
+            ['first', MINE.id],
+            ['second', TEAM.id],
+        ]);
+        expect(connectionWrites(calls)).toEqual([]);
+        expect(shared.providerConnections.map((row) => row.name)).toEqual([
+            'Team key',
+            'My key',
+            'OpenAI key',
+            'Max plan',
+        ]);
+    });
+
+    it('discards the previous connection model response', async () => {
+        let releaseTeam: (answer: unknown) => void = () => undefined;
+        const held = new Promise((resolve) => {
+            releaseTeam = resolve;
+        });
+        stubFetch(
+            boardHandler(
+                board({ connectionModels: { [TEAM.id]: held as never, [MINE.id]: listedModels('claude-mine-1') } })
+            )
+        );
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await openAdd(user);
+        await waitFor(() => expect(optionNames()).toContain('Team key — Anthropic · Organization'));
+        await user.click(modelRadio(MODEL_CUSTOM_LABEL));
+
+        await user.selectOptions(connectionSelect(), TEAM.id);
+        await within(modelGroup()).findByText(/Loading the models Team key offers/);
+        await user.selectOptions(connectionSelect(), MINE.id);
+        await within(modelGroup()).findByText(/1 model from My key/);
+
+        // The slow answer for the connection the member left arrives last and changes nothing.
+        releaseTeam(listedModels('claude-team-1', 'claude-team-2'));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(modelGroup().textContent).toContain('1 model from My key');
+        expect(modelGroup().textContent).not.toContain('Team key');
+        expect(
+            [...modelGroup().querySelectorAll('datalist option')].map((option) => option.getAttribute('value'))
+        ).toEqual(['claude-mine-1']);
+    });
+
+    it('requires reselection for a known incompatible model', async () => {
+        const stale = board({
+            executors: [
+                {
+                    ...personalExecutor('router', { model: 'anthropic/claude-sonnet-5-5' }),
+                    type: OPENCODE,
+                    providerConnectionId: TEAM.id,
+                },
+            ],
+        });
+        const calls = stubFetch(boardHandler(stale));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await user.click(await editButton('router'));
+        await screen.findByRole('dialog', { name: /^Edit executor$/ });
+        await waitFor(() => expect(connectionSelect().value).toBe(TEAM.id));
+        expect(customModel().value).toBe('anthropic/claude-sonnet-5-5');
+
+        await user.selectOptions(connectionSelect(), OPENAI.id);
+
+        // The Anthropic-prefixed model is cleared, said, and Save waits for a new choice.
+        expect(customModel().value).toBe('');
+        expect(modelGroup().textContent).toContain('“anthropic/claude-sonnet-5-5” belongs to another provider');
+        expect(button(SAVE_LABEL).disabled).toBe(true);
+        expect(describedBy(button(SAVE_LABEL))).toBe(SAVE_HINTS.model);
+
+        await user.type(customModel(), 'openai/gpt-5.1');
+        expect(button(SAVE_LABEL).disabled).toBe(false);
+        await user.click(button(SAVE_LABEL));
+        await dialogGone();
+        expect(putBody(calls).executors[0]).toMatchObject({
+            providerConnectionId: OPENAI.id,
+            config: { model: 'openai/gpt-5.1' },
+        });
+    });
+
+    it('shows config override notice without credential values', async () => {
+        const SECRET = 'sk-ant-pasted-secret-value';
+        const pasted = board({
+            executors: [
+                {
+                    ...personalExecutor('pasted', { env: { ANTHROPIC_API_KEY: SECRET } }),
+                    providerConnectionId: TEAM.id,
+                },
+                { ...personalExecutor('clean'), providerConnectionId: TEAM.id },
+            ],
+        });
+        stubFetch(boardHandler(pasted));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+
+        await user.click(await editButton('clean'));
+        await screen.findByRole('dialog', { name: /^Edit executor$/ });
+        await waitFor(() => expect(connectionSelect().value).toBe(TEAM.id));
+        expect(inDialog().queryByRole('note')).toBeNull();
+        await user.click(button('Cancel'));
+        await dialogGone();
+
+        await user.click(await editButton('pasted'));
+        await screen.findByRole('dialog', { name: /^Edit executor$/ });
+        const notice = await inDialog().findByRole('note');
+        expect(notice.textContent).toContain('takes precedence over');
+        expect(notice.textContent).toContain('Team key');
+        expect(notice.textContent).not.toContain(SECRET);
+        // The pasted configuration is never erased on the member's behalf.
+        expect(json().value).toContain(SECRET);
+
+        // None means no connection to override, so no notice.
+        await user.selectOptions(connectionSelect(), '');
+        expect(inDialog().queryByRole('note')).toBeNull();
+    });
+
+    it('preserves None environment keys for legacy profiles', async () => {
+        const legacy = board({ executors: [personalExecutor('legacy')] });
+        const calls = stubFetch(boardHandler(legacy));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await user.click(await editButton('legacy'));
+        await screen.findByRole('dialog', { name: /^Edit executor$/ });
+        await waitFor(() => expect(optionNames()).toContain('Team key — Anthropic · Organization'));
+        expect(connectionSelect().value).toBe('');
+        expect(connectionSelect().selectedOptions[0]?.textContent).toBe('None (environment keys)');
+
+        // A save that never touched the connection says nothing about it: the write is what it always was.
+        await user.click(await inDialog().findByText(ADVANCED_LABEL));
+        await user.clear(field('Gate repair rounds'));
+        await user.type(field('Gate repair rounds'), '5');
+        await user.click(button(SAVE_LABEL));
+        await dialogGone();
+        expect(putBody(calls).executors[0]).not.toHaveProperty('providerConnectionId');
+    });
+
+    it('keeps manual model entry when the listing fails, and says so apart from an empty list', async () => {
+        const failing = board({
+            connectionModels: {
+                [TEAM.id]: { state: 'failed', code: 'UPSTREAM', message: 'The provider is unreachable.' },
+                [MINE.id]: listedModels(),
+            },
+        });
+        const calls = stubFetch(boardHandler(failing));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await openAdd(user);
+        await waitFor(() => expect(optionNames()).toContain('Team key — Anthropic · Organization'));
+        await user.type(field('Name'), 'manual');
+        await user.click(modelRadio(MODEL_CUSTOM_LABEL));
+
+        await user.selectOptions(connectionSelect(), TEAM.id);
+        await within(modelGroup()).findByText(
+            /Could not list the models Team key offers: The provider is unreachable\./
+        );
+        within(modelGroup()).getByRole('button', { name: 'Retry listing models' });
+        // The curated suggestions stand in while the read fails.
+        expect(modelGroup().querySelectorAll('datalist option').length).toBeGreaterThan(0);
+        await user.type(typedModel(), 'claude-typed-by-hand');
+
+        await user.selectOptions(connectionSelect(), MINE.id);
+        await within(modelGroup()).findByText(/My key lists no models\. Type the name of the model to use\./);
+        expect(modelGroup().textContent).not.toContain('Could not list');
+
+        await user.selectOptions(connectionSelect(), TEAM.id);
+        await within(modelGroup()).findByText(/Could not list the models/);
+        await user.click(button(ADD_LABEL));
+        await dialogGone();
+        expect(putBody(calls).executors[0]).toMatchObject({
+            providerConnectionId: TEAM.id,
+            config: { model: 'claude-typed-by-hand' },
+        });
+    });
+
+    it('shows a failed connection list as an error with a retry, never as no connections', async () => {
+        const unavailable = board();
+        let answer = false;
+        stubFetch(
+            boardHandler(unavailable, (call) =>
+                call.url === '/api/provider-connections' && !answer
+                    ? { status: 503, body: { error: 'No provider connection store for this organization' } }
+                    : undefined
+            )
+        );
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await openAdd(user);
+        await inDialog().findByText('No provider connection store for this organization');
+        expect(optionNames()).toEqual(['None (environment keys)']);
+        answer = true;
+        await user.click(button('Retry loading connections'));
+        await waitFor(() => expect(optionNames()).toContain('Team key — Anthropic · Organization'));
     });
 });

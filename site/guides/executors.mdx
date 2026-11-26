@@ -84,12 +84,27 @@ resolves only from your own scopes.
 ### Run an executor on a provider connection
 
 A profile can select one **provider connection** — a named model key with its endpoint, set up under
-**Settings → Model** — instead of relying on keys set in the environment. Several profiles can share
+**Settings → Model** — instead of relying on keys set in the environment. In the executor dialog, choose
+it in the **Provider connection** field beside **Agent**; **None (environment keys)** is the default
+and keeps a profile exactly as it was. This is separate from **Connect a provider** under it, which
+writes a key and endpoint into this one profile's own configuration. Several profiles can share
 one connection, and each profile picks its own connection and model, so one connection's key
 rotation reaches every profile that selects it on its next task, while a task already running keeps
 the key it started with. Switching one profile to another connection changes nothing about the other
 profiles or the connection itself.
 
+- The field lists only the connections this profile's scope and agent can use, with each one's name,
+  provider and whether it is yours or the organization's, and says why the others are not offered. The
+  server checks the same rules when you save, so the list is a convenience, not the guard.
+- The **Model** control lists the selected connection's own models when its provider can list them.
+  It says apart a list still loading, a list with nothing in it, a provider that does not list its
+  models, and a listing that failed; in the last two it offers suggestions and you can always type a
+  model name. Switching connection reloads the list, and a model that clearly belongs to another
+  provider is cleared so you choose again. The composer's and a follow-up's **Model** chip follow the
+  executor's connection the same way.
+- When the profile's own configuration sets a key or endpoint, a note beside the field says it takes
+  precedence over the connection. The note never shows the value; remove it from the configuration to
+  run on the connection.
 - An organization profile can use organization connections only. A personal profile can use your own
   connections or the organization's. Promoting a personal profile to the organization is refused while
   it selects a personal connection.

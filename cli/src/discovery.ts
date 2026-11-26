@@ -1,4 +1,5 @@
-import type { VisibleRepos, WorkspaceView } from './board.js';
+import type { VisibleRepos } from './board.js';
+import type { WorkspaceView } from './workspace-view.js';
 
 /**
  * The data a discovery command reports, joined from the board's own reads. Pure: nothing here

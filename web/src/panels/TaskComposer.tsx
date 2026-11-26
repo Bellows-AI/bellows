@@ -10,7 +10,7 @@ import { withDraftReturn } from '../components/DraftReturnBanner.js';
 import { BranchCombobox } from '../components/BranchCombobox.js';
 import { Icon } from '../components/Icon.js';
 import { SearchSelect } from '../components/SearchSelect.js';
-import { ModelCombobox, useKnownModels } from '../components/ModelCombobox.js';
+import { ModelCombobox, useModelChoices } from '../components/ModelCombobox.js';
 import { SlashSkillMenu, useSlashMenu } from '../components/SlashSkillMenu.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
@@ -84,13 +84,18 @@ function ComposerModelChip({
     const { executor, executorScope } = state;
     const profile = executors.find((option) => option.name === executor && option.scope === executorScope);
     const runsDefault = executor === '' && agentDefault !== null;
-    const models = useKnownModels(runsDefault ? agentDefault.agentType : (profile?.type ?? null));
+    // A profile that selects a connection offers that connection's models; the agent default and the rest read the member's setup.
+    const { models, note } = useModelChoices(
+        runsDefault ? agentDefault.agentType : (profile?.type ?? null),
+        runsDefault ? null : (profile?.connection ?? null)
+    );
     return (
         <div className="composer-context-item">
             <ModelCombobox
                 value={state.model}
                 defaultLabel={runsDefault ? `Default (${agentDefault.model})` : 'Default'}
                 models={models}
+                note={note}
                 onChange={(model) => update({ model })}
             />
         </div>

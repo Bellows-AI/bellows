@@ -1,4 +1,5 @@
 import type { ExecutorScope } from '@factory-ai/core';
+import type { ExecutorConnectionFields } from './useWorkspace.js';
 import { request } from './request.js';
 
 /**
@@ -8,7 +9,7 @@ import { request } from './request.js';
  * member, whose only consumer here is read-only.
  */
 
-export interface OrgExecutorFull {
+export interface OrgExecutorFull extends ExecutorConnectionFields {
     id: string;
     name: string;
     type: string;
@@ -30,6 +31,8 @@ export interface OrgExecutorInput {
     gateFixRounds: number;
     /** Always sent: the PUT is whole-entry, and an omitted class resets the profile to the default. */
     runnerClass: string | null;
+    /** An id selects a connection, null clears it; absent keeps the row's (a legacy profile's write is unchanged). */
+    providerConnectionId?: string | null;
 }
 
 /**

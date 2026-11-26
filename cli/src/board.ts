@@ -16,6 +16,7 @@ import {
 } from './transport.js';
 import type { BoardClock } from './transport.js';
 import type { TaskUsage, Tokens, UsageBlock } from './usage-types.js';
+import type { WorkspaceView } from './workspace-view.js';
 
 /**
  * The board client for the person routes the CLI speaks to: the two reads
@@ -407,29 +408,6 @@ export interface VisibleRepos {
     repos: { owner: string; name: string; private: boolean; defaultBranch: string | null; pushedAt: string | null }[];
     installation: unknown;
     meta: { fetchedAt: string | null; error: string | null };
-}
-
-/** The safe provider connection fields an executor row carries (copied from core, never imported): no key, no secret reference. */
-export interface ExecutorConnectionView {
-    providerConnectionId?: string | null;
-    providerConnectionName?: string | null;
-    providerConnectionProvider?: string | null;
-    providerConnectionScope?: 'org' | 'personal' | null;
-    /** Pasted config credentials or endpoints take precedence over the connection. */
-    configOverridesConnection?: boolean;
-}
-
-/** The slice of the workspace read discovery shows: executor selection metadata. */
-export interface WorkspaceView {
-    executors: ({ name: string; type: string; suspended?: boolean } & ExecutorConnectionView)[];
-    /** `runnerClass`: the named runner class the org profile's tasks run on; null or absent means the default. */
-    orgExecutors: ({
-        name: string;
-        type: string;
-        runnerClass?: string | null;
-        suspended?: boolean;
-    } & ExecutorConnectionView)[];
-    defaultExecutor: { scope: string; name: string } | null;
 }
 
 export interface SkillView {
