@@ -326,6 +326,7 @@ describe('test-jobs --changed path-to-phase map', () => {
             'server/src/db/provider-connection-secrets.ts',
             'server/src/db/jobs/job-store-claim-executor.ts',
             'server/src/db/user-executor-store.ts',
+            'server/src/db/executor-connection-selection.ts',
             'server/migrations/168_executor_provider_connection.sql',
             'core/src/model-providers.ts',
             'core/src/provider-connections.ts',
