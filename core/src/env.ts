@@ -34,8 +34,18 @@ export const MAX_ENV_VARS_PER_SCOPE = 100;
  * GitHub is the App's alone — the runner obtains a renewing installation token from the board
  * (docs/connections.md), and a member token would outrank it in `gh` and never renew.
  */
-/** GitHub's credential names: the App's alone, never a member's (docs/connections.md). */
-export const GITHUB_ENV_NAMES: readonly string[] = ['GITHUB_TOKEN', 'GH_TOKEN'];
+/**
+ * The forges' credential names, never a member's: GitHub is the App's, and GitLab's is the starter's own grant, which
+ * the runner fetches from the board on demand (docs/connections.md). `CI_JOB_TOKEN` is the name GitLab's own tooling
+ * reads for a job credential; no run holds one.
+ */
+export const FORGE_ENV_NAMES: readonly string[] = [
+    'GITHUB_TOKEN',
+    'GH_TOKEN',
+    'GITLAB_TOKEN',
+    'GL_TOKEN',
+    'CI_JOB_TOKEN',
+];
 
 /**
  * The runner's agent container starts as root to launch its tool broker, and the glibc
@@ -75,7 +85,7 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'BELLOWS_RESUME_MAY_BE_UNWRITTEN',
     'OPENCODE_CONFIG_CONTENT',
     'CLAUDE_CODE_CONFIG_CONTENT',
-    ...GITHUB_ENV_NAMES,
+    ...FORGE_ENV_NAMES,
     ...LOADER_ENV_NAMES,
 ];
 

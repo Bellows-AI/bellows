@@ -273,8 +273,8 @@ const MS_PER_HOUR = 3_600_000;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
 const DAYS_PER_WEEK = 7;
 const DAYS_PER_YEAR = 365;
-/** Names the runner never takes from the driver's env: its GitHub token is the board's to mint and renew. */
-const RUNNER_ENV_REFUSED = ['GITHUB_TOKEN', 'GH_TOKEN'];
+/** Names the runner never takes from the driver's env: its forge token is the board's to mint or serve. */
+const RUNNER_ENV_REFUSED = ['GITHUB_TOKEN', 'GH_TOKEN', 'GITLAB_TOKEN', 'GL_TOKEN', 'CI_JOB_TOKEN'];
 /** The driver's own secrets: a runner never holds the credential the board authenticates the driver by. */
 const DRIVER_OWN_SECRETS = ['DRIVER_CREDENTIAL', 'DRIVER_CREDENTIAL_FILE'];
 /** The driver's own telemetry settings (an exporter header may carry a backend token) are not a runner's to inherit. */
@@ -284,7 +284,7 @@ const RUNNER_ENV_REFUSED_PREFIX = 'OTEL_';
 function runnerPassEnv(raw: string | undefined): string[] {
     const names = nameList(text(raw, 'RUNNER_ENV', DEFAULTS.passEnv));
     const refused = names.find((name) => RUNNER_ENV_REFUSED.includes(name));
-    if (refused) throw new Error(`RUNNER_ENV must not name ${refused}: the runner's GitHub token comes from the board`);
+    if (refused) throw new Error(`RUNNER_ENV must not name ${refused}: the runner's forge token comes from the board`);
     const own = names.find((name) => DRIVER_OWN_SECRETS.includes(name));
     if (own) throw new Error(`RUNNER_ENV must not name ${own}: it is the driver's own secret`);
     const telemetry = names.find((name) => name.startsWith(RUNNER_ENV_REFUSED_PREFIX));

@@ -187,7 +187,7 @@ The driver reads only the environment. It has no database access and talks to th
 | --- | --- | --- | --- |
 | `CLAUDE_EXECUTOR_IMAGE` | | `claude-executor` | Image for Claude Code tasks. |
 | `OPENCODE_EXECUTOR_IMAGE` | | `opencode-executor` | Image for OpenCode tasks. |
-| `RUNNER_ENV` | | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names of driver environment variables forwarded to runners. Values never appear in a command line. Must not name `GITHUB_TOKEN`, `GH_TOKEN`, `DRIVER_CREDENTIAL`, `DRIVER_CREDENTIAL_FILE` or any `OTEL_*` variable. |
+| `RUNNER_ENV` | | `CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY` | Names of driver environment variables forwarded to runners. Values never appear in a command line. Must not name `GITHUB_TOKEN`, `GH_TOKEN`, `GITLAB_TOKEN`, `GL_TOKEN`, `CI_JOB_TOKEN`, `DRIVER_CREDENTIAL`, `DRIVER_CREDENTIAL_FILE` or any `OTEL_*` variable. |
 | `RUNNER_SKIP_PERMISSIONS` | | off | Adds `--dangerously-skip-permissions`. Without it most headless jobs stall at a permission prompt. With it the agent runs anything inside the runner. |
 | `RUNNER_SERVICES` | | on | Starts the [services](/guides/services) a repo declares. `0` or `false` disables. |
 | `RUNNER_OTEL_ENDPOINT` | | `http://collector:4318` | OTLP endpoint given to runners. |

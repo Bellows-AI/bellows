@@ -752,7 +752,7 @@ export interface Claim {
      * repo label: org < workspace < repo, the more specific scope winning. Optional — absent on a
      * board built without an env store, which the driver reads as "no environment".
      *
-     * It never carries `GITHUB_TOKEN` or `GH_TOKEN` (`withoutGithubToken`): the runner obtains the
+     * It never carries a forge token name (`GITHUB_TOKEN`, `GH_TOKEN`, `GITLAB_TOKEN`, `GL_TOKEN`, `CI_JOB_TOKEN`) (`withoutForgeTokens`): the runner obtains the
      * App's installation token from the board's credential endpoint (docs/connections.md).
      *
      * Deliberately NOT persisted on the job row: `GET /api/jobs/:id` serves output and metadata to

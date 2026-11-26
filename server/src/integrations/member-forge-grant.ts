@@ -256,6 +256,26 @@ async function readSecret(
     }
 }
 
+/**
+ * The secret read took time: the token is served only while the grant and connection checked before it are still in
+ * force. A removal, a revoke or a reconnect during the read must not let the old token out; null is "still in force".
+ */
+async function staleAfterRead(
+    deps: Settings,
+    who: { orgId: string; userId: string; forge: string },
+    grant: GrantRow
+): Promise<{ ok: false; outcome: IntegrationOutcome } | null> {
+    const { orgId, userId, forge } = who;
+    const still = await readMemberGrant(deps, orgId, userId, forge);
+    if (!still) return required('missing', forge);
+    if (still.status !== 'active' || still.secret_wedged_at !== null) return required('reconnect', forge);
+    // Another sign-in or refresh replaced the credential under the read: the one read is stale, the caller asks again.
+    if (still.id !== grant.id || still.secret_version !== grant.secret_version) {
+        return unavailable('refresh-in-progress');
+    }
+    return null;
+}
+
 async function tokenOnce(
     deps: Settings,
     who: { orgId: string; userId: string; forge: string },
@@ -277,6 +297,8 @@ async function tokenOnce(
         // Whatever the refresh did, the grant and its stored credential are read again from the top.
         return refreshed.ok ? tokenOnce(deps, who, signal, false) : refreshed;
     }
+    const stale = await staleAfterRead(deps, who, grant);
+    if (stale) return stale;
     return { ok: true, accessToken: payload.accessToken, expiresAt: payload.accessExpiresAt };
 }
 
