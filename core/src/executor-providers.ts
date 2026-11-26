@@ -2,7 +2,7 @@ import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
 import { PROVIDER_AGENTS } from './model-providers.js';
 
 /**
- * The providers an executor profile's guided setup offers (BEL-603): the model-setup's key providers
+ * The providers an executor profile's guided setup offers : the model-setup's key providers
  * a profile can carry its own credential for, plus the OpenAI-compatible custom endpoint, which is
  * an OpenCode provider block (`npm: @ai-sdk/openai-compatible`) rather than a stored env name. The
  * guided setup renders this list and `guidedExecutorConfig` generates the config from a pick, so a
@@ -33,6 +33,9 @@ const OPENCODE_PROVIDER_ID: Readonly<Record<ExecutorProvider, string>> = {
     litellm: 'anthropic',
     'openai-compatible': 'custom',
 };
+
+/** The npm package an OpenAI-compatible endpoint's block loads: the generic OpenAI-wire SDK. */
+export const OPENAI_COMPATIBLE_NPM = '@ai-sdk/openai-compatible';
 
 /** The OpenCode model prefix each provider's model id carries; the custom endpoint takes its own id. */
 const OPENCODE_PROVIDER_PREFIX: Readonly<Record<ExecutorProvider, string | null>> = {
@@ -116,7 +119,7 @@ function guidedCompatibleConfig(model: string, key: string, baseUrl: string | un
         model: modelId,
         provider: {
             [id]: {
-                npm: '@ai-sdk/openai-compatible',
+                npm: OPENAI_COMPATIBLE_NPM,
                 name: id,
                 options: { baseURL: baseUrl ?? '', apiKey: key },
                 models: { [model]: { ...customModelEntry, name: model } },
@@ -141,10 +144,16 @@ export function guidedExecutorConfig(input: GuidedExecutorInput): Record<string,
     const prefix = OPENCODE_PROVIDER_PREFIX[provider];
     const modelId = prefix === null ? `${customProviderId(baseUrl ?? '')}/${model}` : `${prefix}/${model}`;
     // A custom endpoint IS its provider block: there is no built-in to fall back to, so the key
-    // stands even when empty and the save refuses it. A built-in without a key is the inherited one.
+    // stands even when empty and the save refuses it.
     if (provider === 'openai-compatible') return guidedCompatibleConfig(model, key, baseUrl, modelId);
-    if (key === '') return { model: modelId };
     const id = OPENCODE_PROVIDER_ID[provider];
+    // Without a key the run uses the one connected in Settings → Model; a base URL still travels, so
+    // a member's own gateway works on it (cloud refuses the redirect until a key of theirs stands
+    // with it, as it would for a hand-written one).
+    if (key === '')
+        return baseUrl === undefined
+            ? { model: modelId }
+            : { model: modelId, provider: { [id]: { options: { baseURL: baseUrl } } } };
     const options: Record<string, string> = { apiKey: key };
     if (baseUrl !== undefined) options.baseURL = baseUrl;
     return { model: modelId, provider: { [id]: { options } } };

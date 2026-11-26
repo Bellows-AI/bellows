@@ -82,7 +82,7 @@ describe('redirectsPlatformCredential', () => {
         expect(redirectsPlatformCredential({}, provider({ baseURL: URL, apiKey: VALUE }), 'opencode')).toBeNull();
     });
 
-    it('accepts a provider key that is exactly the {env:NAME} reference the board resolves at claim (BEL-603)', () => {
+    it('accepts a provider key that is exactly the {env:NAME} reference the board resolves at claim ', () => {
         const provider = (options: Record<string, unknown>) => ({ provider: { anthropic: { options } } });
         expect(
             redirectsPlatformCredential({}, provider({ baseURL: URL, apiKey: '{env:GATEWAY_KEY}' }), 'opencode')

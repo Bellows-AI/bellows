@@ -251,7 +251,7 @@ export function hasModelKey(names: readonly string[], config: unknown, agentType
 }
 
 /**
- * A custom provider key that names a secret instead of carrying one (BEL-603): exactly `{env:NAME}`
+ * A custom provider key that names a secret instead of carrying one : exactly `{env:NAME}`
  * beside a `baseURL`. The board resolves it at claim from the member's own scopes — the env the
  * claim already merged — and writes the value into the rendered provider config, so opencode never
  * substitutes it itself: a raw `{env:…}` would read the runner's whole environment, the deployment

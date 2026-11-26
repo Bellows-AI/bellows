@@ -274,6 +274,7 @@ export {
     EXECUTOR_PROVIDERS,
     guidedExecutorConfig,
     isExecutorProvider,
+    OPENAI_COMPATIBLE_NPM,
 } from './executor-providers.js';
 export type { JobMode } from './job-mode.js';
 export { JOB_MODES, OBJECTIVE_MODE, WORKFLOW_MODE } from './job-mode.js';

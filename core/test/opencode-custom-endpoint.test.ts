@@ -7,7 +7,7 @@ import { guidedExecutorConfig } from '../src/executor-providers.js';
 import { OPENCODE } from '../src/executors.js';
 
 /*
- * The acceptance BEL-603 pins in a runner-shaped way: an OpenAI-compatible executor created through
+ * The acceptance the guided executor pins in a runner-shaped way: an OpenAI-compatible executor created through
  * the guided setup is one the real OpenCode CLI accepts. The lane runs the real images against a
  * scripted endpoint — scripts/fake-model-endpoint.mjs answers the OpenAI wire format in `--openai`
  * mode, and the scripts/test-jobs.sh phases drive a real task through it; what is pinned here,

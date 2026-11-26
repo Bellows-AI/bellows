@@ -1,16 +1,19 @@
 import {
     CLAUDE_CODE,
+    ENV_SUBSTITUTION,
     EXECUTOR_PROVIDER_AGENTS,
     EXECUTOR_PROVIDERS,
     type ExecutorProvider,
     type ExecutorType,
+    ENV_NAME,
     guidedExecutorConfig,
+    OPENAI_COMPATIBLE_NPM,
 } from '@factory-ai/core';
 import type { ProviderMeta } from '../model-setup/providers.js';
 import { PROVIDER_META } from '../model-setup/providers.js';
 
 /**
- * The guided provider step (BEL-603): the provider, its key and base URL, and the model the
+ * The guided provider step: the provider, its key and base URL, and the model the
  * generated configuration carries — the same shape onboarding's Connect a model picks, saved into
  * the profile's configuration instead of the environment. The key is whatever the row holds or the
  * member typed, verbatim: a literal the save seals into the secret store, a `stored-credential:`
@@ -57,7 +60,7 @@ export const guidedKeyOf = (key: GuidedKey): string =>
 
 /** Whether a value is exactly the `{env:NAME}` reference the board resolves at claim. */
 export const isEnvReference = (value: unknown): value is string =>
-    typeof value === 'string' && /^\{env:[^}]+\}$/.test(value);
+    typeof value === 'string' && ENV_SUBSTITUTION.test(value);
 
 /** The Claude Code half of the detection: the key and base URL the settings env carries. */
 function guidedFromClaudeConfig(config: Record<string, unknown>, model: string): GuidedChoice | null {
@@ -94,7 +97,7 @@ function guidedFromOpencodeConfig(config: Record<string, unknown>, model: string
     const options = block.options;
     const baseUrl = typeof options.baseURL === 'string' ? options.baseURL : '';
     if (typeof options.apiKey !== 'string') return null;
-    if (block.npm === '@ai-sdk/openai-compatible') {
+    if (block.npm === OPENAI_COMPATIBLE_NPM) {
         return {
             provider: 'openai-compatible',
             key: keySetting(options.apiKey),
@@ -155,7 +158,9 @@ export function guidedChoiceError(choice: GuidedChoice): string | null {
     if (choice.provider === 'openai-compatible') {
         if (!choice.baseUrl.trim()) return 'Enter the endpoint base URL to continue.';
         if (choice.key.kind === 'none') return 'Paste a key or name a secret to continue.';
-        if (choice.key.kind === 'reference' && !choice.key.name.trim()) return 'Enter the name of the secret to use.';
+        if (choice.key.kind === 'reference' && !ENV_NAME.test(choice.key.name.trim())) {
+            return 'Enter the name of the secret to use.';
+        }
     }
     if (choice.provider === 'litellm' && !choice.baseUrl.trim()) return 'Enter the proxy URL to continue.';
     return null;

@@ -94,7 +94,7 @@ describe.skipIf(!enabled)('executor settings never read back a provider key', ()
     });
 });
 
-describe.skipIf(!enabled)('a provider key that names a secret is a reference, not a credential (BEL-603)', () => {
+describe.skipIf(!enabled)('a provider key that names a secret is a reference, not a credential ', () => {
     it('the {env:NAME} reference stays verbatim in the row and in the claim read, and the store is never written', async () => {
         const executors = store();
         await executors.replace(ALICE, [

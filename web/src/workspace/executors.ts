@@ -251,7 +251,7 @@ export interface ExecutorDraft {
     configs: Record<ExecutorType, string>;
     customModel: Record<ExecutorType, boolean>;
     /**
-     * The guided provider step's choice per agent (BEL-603): null is the raw configuration, the
+     * The guided provider step's choice per agent: null is the raw configuration, the
      * JSON under Advanced alone. `preGuided` keeps the configuration text a guided pick started
      * from, so removing the provider settings puts back what was there. Both live in
      * executor-guided.ts's module: the choice, its detection and the generation it drives.

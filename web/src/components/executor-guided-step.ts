@@ -6,7 +6,7 @@ import { applyGuidedChoice, type GuidedChoice } from '../workspace/executor-guid
 import { parseExecutorConfig, readModel, type ExecutorDraft } from '../workspace/executors.js';
 
 /**
- * The guided provider step's state (BEL-603), split out of ExecutorDialog so the dialog stays the
+ * The guided provider step's state, split out of ExecutorDialog so the dialog stays the
  * draft's owner without growing past its lint budget. The choice lives in the draft per agent;
  * the live key check and the model suggestions ride beside it, recomputed from it, never stored.
  * A guided change regenerates the whole configuration from the choice; a raw edit that parses
@@ -24,7 +24,12 @@ export function useGuidedStep(draft: ExecutorDraft, setDraft: Dispatch<SetStateA
     const guidedKey = guided?.key.kind === 'key' ? guided.key.value : '';
     const check = useKeyCheck({
         provider: guided !== null && guided.provider !== 'openai-compatible' ? guided.provider : 'anthropic',
-        key: guidedKey.startsWith('stored-credential:') ? '' : guidedKey,
+        // The member's own endpoint is not checked here (nothing to check against): no verify
+        // request fires for it, for a pasted key, a stored marker or a secret reference alike.
+        key:
+            guided !== null && guided.provider !== 'openai-compatible' && !guidedKey.startsWith('stored-credential:')
+                ? guidedKey
+                : '',
         baseUrl: guided?.baseUrl ?? '',
         mode: cloud ? CLOUD : SELF_HOSTED,
     });

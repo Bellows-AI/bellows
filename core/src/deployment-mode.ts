@@ -63,7 +63,7 @@ export const PROVIDER_API_KEY = 'apiKey';
 /**
  * opencode substitutes these from the runner's env or files, which hold the platform credential —
  * except the `{env:NAME}` form that is exactly one substitution: the board resolves that one itself
- * at claim from the member's own scopes (BEL-603), so it never reaches the runner as a substitution
+ * at claim from the member's own scopes, so it never reaches the runner as a substitution
  * and cannot name a `RUNNER_ENV` value. Everything else stays a redirect refusal.
  */
 const SUBSTITUTION = /\{(?:env|file):/;

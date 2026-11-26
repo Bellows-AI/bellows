@@ -51,7 +51,7 @@ const isMarker = (value: string) => value.startsWith(STORED_CREDENTIAL_PREFIX);
 const markerOf = (ref: string) => `${STORED_CREDENTIAL_PREFIX}${ref}`;
 
 /** Every non-empty string at a credential-shaped key, at any depth, with its path. A value that is
- * exactly opencode's `{env:NAME}` reference (BEL-603) is not a credential: the board resolves it at
+ * exactly opencode's `{env:NAME}` reference  is not a credential: the board resolves it at
  * claim from the member's own scopes, so it stays verbatim in the config row — storing it would pin
  * nothing (the value it names rotates) and read as a key the store does not hold. */
 export function credentialsIn(config: unknown, path: string[] = []): { path: string[]; value: string }[] {

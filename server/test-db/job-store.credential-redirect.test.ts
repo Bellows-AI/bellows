@@ -354,7 +354,7 @@ describe.skipIf(!enabled)('Claude Code takes its model credentials from one scop
 });
 
 /**
- * A custom provider key that names a secret instead of carrying one (BEL-603): exactly `{env:NAME}`
+ * A custom provider key that names a secret instead of carrying one : exactly `{env:NAME}`
  * beside a `baseURL`. The claim resolves it from the scopes it already merged — the env that travels,
  * a reviewer's grant applied — and writes the value into the rendered provider config, so a raw
  * `{env:…}` never reaches the runner (opencode would substitute it from an environment that also

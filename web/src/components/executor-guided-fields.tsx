@@ -96,7 +96,7 @@ function GuidedKeySource({
 }
 
 /**
- * The guided provider step (BEL-603), the fields of onboarding's Connect a model over an executor
+ * The guided provider step, the fields of onboarding's Connect a model over an executor
  * profile: the provider cards the model step renders, its key field with the live check, the base
  * URL, and the model. Picking a provider writes the generated configuration the Advanced editor
  * shows; removing the provider settings puts back what a pick started from. Presentational only —

@@ -10,7 +10,7 @@ export interface ProviderCard {
 
 /**
  * The provider choice: one card per provider this deployment offers, a native radio in each, in one radiogroup.
- * The cards are handed in, so the model step and the executor's guided provider step (BEL-603) render the same
+ * The cards are handed in, so the model step and the executor's guided provider step render the same
  * component over their own catalogs.
  */
 export function ProviderCards({

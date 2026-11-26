@@ -71,7 +71,7 @@ import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
 const MESSAGES_PATH = '/v1/messages';
-/** The OpenAI-wire paths the `--openai` mode serves beside the Anthropic one (BEL-603). */
+/** The OpenAI-wire paths the `--openai` mode serves beside the Anthropic one . */
 const OPENAI_CHAT_PATH = '/v1/chat/completions';
 const OPENAI_MODELS_PATH = '/v1/models';
 const LANE_OPENAI_MODEL = 'fake-model';

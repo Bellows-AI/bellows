@@ -419,6 +419,27 @@ describe('the executor dialog: the guided provider step', () => {
         expect(JSON.stringify(saved?.config)).not.toContain('GATEWAY_KEY_VALUE');
     });
 
+    it('does not check an OpenAI-compatible endpoint key: no verify request fires for it', async () => {
+        const checks: string[] = [];
+        stubFetch(
+            boardHandler(settingsBoard(), ({ method, url }) => {
+                if (method === 'POST' && url === '/api/model-setup/verify') checks.push(url);
+            })
+        );
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await openAdd(user);
+
+        await user.click(inDialog().getByText(GUIDED_COPY.PROVIDER_STEP_LABEL));
+        await user.selectOptions(field('Agent'), 'OpenCode');
+        await user.click(providerRadio('OpenAI-compatible'));
+        await user.type(field('Base URL'), 'http://127.0.0.1:9/v1');
+        await user.type(field('API key'), 'sk-endpoint-key');
+        // The endpoint is reached when a task runs, not from the dialog: no check fired.
+        expect(checks).toEqual([]);
+        expect(executorDialog().textContent).toContain('The endpoint is not checked here');
+    });
+
     it('removing the provider settings puts back the configuration the pick started from', async () => {
         stubFetch(boardHandler(settingsBoard({ executors: [personalExecutor('main', { model: 'opus' })] })));
         const user = userEvent.setup({ delay: null });

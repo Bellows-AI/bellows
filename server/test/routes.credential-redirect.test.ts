@@ -88,7 +88,7 @@ describe('cloud mode: executor settings refuse a redirect of the platform creden
     });
 });
 
-describe('cloud mode: a custom provider key that names a member secret is accepted (BEL-603)', () => {
+describe('cloud mode: a custom provider key that names a member secret is accepted ', () => {
     const REFERENCE = {
         provider: {
             'vllm-internal': {

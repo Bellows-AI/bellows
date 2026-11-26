@@ -633,7 +633,7 @@ describe('the tool-isolation lanes (issue #814)', () => {
     });
 });
 
-describe('the scripted model endpoint in OpenAI-wire mode (BEL-603)', () => {
+describe('the scripted model endpoint in OpenAI-wire mode ', () => {
     const chat = (url: string, body: object) =>
         fetch(`${url}/v1/chat/completions`, { method: 'POST', body: JSON.stringify({ stream: false, ...body }) }).then(
             (response) =>

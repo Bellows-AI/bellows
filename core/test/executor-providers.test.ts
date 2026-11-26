@@ -11,7 +11,7 @@ import {
 import { missingProviderSecretMessage, resolveProviderReferences } from '../src/model-providers.js';
 
 /**
- * The executor guided setup's provider catalog and the config it generates (BEL-603): one list the
+ * The executor guided setup's provider catalog and the config it generates : one list the
  * dialog's picker renders and the config generator reads, so a new provider lands in both or neither.
  * The generated JSON is what the member sees under Advanced and what the claim carries to the runner.
  */
@@ -82,6 +82,24 @@ describe('guidedExecutorConfig', () => {
     it('leaves a Claude Code config without a key at the model alone', () => {
         expect(guidedExecutorConfig({ provider: 'anthropic', agent: CLAUDE_CODE, model: 'sonnet', key: '' })).toEqual({
             model: 'sonnet',
+        });
+    });
+
+    it('keeps an OpenCode built-in base URL even without a key, so a gateway on the connected key works', () => {
+        expect(
+            guidedExecutorConfig({
+                provider: 'anthropic',
+                agent: OPENCODE,
+                model: 'sonnet',
+                key: '',
+                baseUrl: 'https://gw.internal/v1',
+            })
+        ).toEqual({
+            model: 'anthropic/sonnet',
+            provider: { anthropic: { options: { baseURL: 'https://gw.internal/v1' } } },
+        });
+        expect(guidedExecutorConfig({ provider: 'anthropic', agent: OPENCODE, model: 'sonnet', key: '' })).toEqual({
+            model: 'anthropic/sonnet',
         });
     });
 
