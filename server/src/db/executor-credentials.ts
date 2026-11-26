@@ -1,4 +1,4 @@
-import { isCredentialKey, STORED_CREDENTIAL_PREFIX } from '@factory-ai/core';
+import { ENV_SUBSTITUTION, isCredentialKey, STORED_CREDENTIAL_PREFIX } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import type {
     SecretDiagnostic,
@@ -50,12 +50,15 @@ const pathKey = (path: readonly string[]) => JSON.stringify(path);
 const isMarker = (value: string) => value.startsWith(STORED_CREDENTIAL_PREFIX);
 const markerOf = (ref: string) => `${STORED_CREDENTIAL_PREFIX}${ref}`;
 
-/** Every non-empty string at a credential-shaped key, at any depth, with its path. */
+/** Every non-empty string at a credential-shaped key, at any depth, with its path. A value that is
+ * exactly opencode's `{env:NAME}` reference  is not a credential: the board resolves it at
+ * claim from the member's own scopes, so it stays verbatim in the config row — storing it would pin
+ * nothing (the value it names rotates) and read as a key the store does not hold. */
 export function credentialsIn(config: unknown, path: string[] = []): { path: string[]; value: string }[] {
     if (Array.isArray(config)) return config.flatMap((item, index) => credentialsIn(item, [...path, String(index)]));
     if (typeof config !== 'object' || config === null) return [];
     return Object.entries(config).flatMap(([key, value]) =>
-        typeof value === 'string' && value !== '' && isCredentialKey(key)
+        typeof value === 'string' && value !== '' && !ENV_SUBSTITUTION.test(value) && isCredentialKey(key)
             ? [{ path: [...path, key], value }]
             : credentialsIn(value, [...path, key])
     );

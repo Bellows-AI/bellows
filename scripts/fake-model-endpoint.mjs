@@ -71,6 +71,10 @@ import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 
 const MESSAGES_PATH = '/v1/messages';
+/** The OpenAI-wire paths the `--openai` mode serves beside the Anthropic one . */
+const OPENAI_CHAT_PATH = '/v1/chat/completions';
+const OPENAI_MODELS_PATH = '/v1/models';
+const LANE_OPENAI_MODEL = 'fake-model';
 const COUNT_TOKENS_PATH = '/v1/messages/count_tokens';
 const REQUESTS_PATH = '/requests';
 const CONTROL_PATH = '/control';
@@ -183,7 +187,7 @@ const textOf = (content) =>
           ? content.map((block) => block.text).join('\n')
           : JSON.stringify(content ?? '');
 
-export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false, probeFiles = [], steps = [], skillSentinels = [], finishGate = false } = {}) {
+export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false, probeFiles = [], steps = [], skillSentinels = [], finishGate = false, openai = false } = {}) {
     let agentRequests = 0;
     /** Each gate-failure message answered with a fix, in order. */
     const finishFailures = [];
@@ -427,6 +431,67 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
                 reply.setHeader('content-type', 'application/json');
                 return reply.end(JSON.stringify({ input_tokens: 1 }));
             }
+            // The OpenAI-wire mode (`--openai`): the same scripted answers in chat-completions form,
+            // for an executor whose provider block points an OpenAI-compatible endpoint at this
+            // server. Tools arrive as OpenAI function definitions and leave as tool_calls; the
+            // step, control and report channels above are unchanged.
+            if (openai && url === OPENAI_MODELS_PATH) {
+                reply.setHeader('content-type', 'application/json');
+                return reply.end(JSON.stringify({ object: 'list', data: [{ id: LANE_OPENAI_MODEL, object: 'model' }] }));
+            }
+            if (openai && request.method === 'POST' && url === OPENAI_CHAT_PATH) {
+                let chat = {};
+                try {
+                    chat = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+                } catch {
+                    // An unparseable body is answered like a tool-less request.
+                }
+                const functions = (Array.isArray(chat.tools) ? chat.tools : [])
+                    .map((tool) => tool?.function?.name ?? tool?.name)
+                    .filter((name) => typeof name === 'string');
+                const messages = Array.isArray(chat.messages) ? chat.messages : [];
+                // OpenAI histories carry the tool result inside a `tool` role message.
+                const anthropic = messages.map((entry) =>
+                    entry?.role === 'tool'
+                        ? { role: 'user', content: [{ type: 'tool_result', tool_use_id: entry.tool_call_id, content: entry.content ?? '' }] }
+                        : entry
+                );
+                const answer = agentReply(functions.map((name) => ({ name })), anthropic);
+                const text = answer.content.find((block) => block.type === 'text')?.text ?? '';
+                const call = answer.content.find((block) => block.type === 'tool_use');
+                const finish = call ? 'tool_calls' : 'stop';
+                const choices = call
+                    ? [
+                          {
+                              index: 0,
+                              message: {
+                                  role: 'assistant',
+                                  content: null,
+                                  tool_calls: [
+                                      {
+                                          id: call.id,
+                                          type: 'function',
+                                          function: { name: call.name, arguments: JSON.stringify(call.input ?? {}) },
+                                      },
+                                  ],
+                              },
+                              finish_reason: finish,
+                          },
+                      ]
+                    : [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: finish }];
+                const base = { id: `chatcmpl-${answer.id}`, created: 1, model: chat.model ?? LANE_OPENAI_MODEL };
+                if (chat.stream) {
+                    reply.setHeader('content-type', 'text/event-stream');
+                    const part = (delta, reason) =>
+                        `data: ${JSON.stringify({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: reason }] })}\n\n`;
+                    const toolDelta = call
+                        ? part({ role: 'assistant', tool_calls: [{ index: 0, id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.input ?? {}) } }] }, null)
+                        : part({ role: 'assistant', content: text }, null);
+                    return reply.end(`${part({ role: 'assistant' }, null)}${toolDelta}${part({}, finish)}data: [DONE]\n\n`);
+                }
+                reply.setHeader('content-type', 'application/json');
+                return reply.end(JSON.stringify({ ...base, object: 'chat.completion', choices, usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+            }
             if (request.method !== 'POST' || url !== MESSAGES_PATH) {
                 reply.statusCode = 404;
                 return reply.end('not found');
@@ -504,6 +569,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         skillSentinels: flagList('--skill-sentinel'),
         steps: process.argv.includes('--steps') ? JSON.parse(process.argv[process.argv.indexOf('--steps') + 1]) : [],
         finishGate: process.argv.includes('--finish-gate'),
+        openai: process.argv.includes('--openai'),
     });
     const port = await endpoint.listen(flag('--port', 0));
     process.stdout.write(`${port}\n`);

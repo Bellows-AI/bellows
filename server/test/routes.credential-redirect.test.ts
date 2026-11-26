@@ -88,6 +88,50 @@ describe('cloud mode: executor settings refuse a redirect of the platform creden
     });
 });
 
+describe('cloud mode: a custom provider key that names a member secret is accepted ', () => {
+    const REFERENCE = {
+        provider: {
+            'vllm-internal': {
+                npm: '@ai-sdk/openai-compatible',
+                options: { baseURL: URL, apiKey: '{env:GATEWAY_KEY}' },
+                models: { 'llama-3': {} },
+            },
+        },
+        model: 'vllm-internal/llama-3',
+    };
+
+    it('the personal PUT and the org create keep the {env:NAME} reference verbatim in the row', async () => {
+        const { send, executors } = await boot('cloud');
+        expect((await send('PUT', '/api/workspace/executors', personal(REFERENCE, 'opencode'))).statusCode).toBe(
+            HTTP_OK
+        );
+        expect(executors.rows()[0]?.config).toEqual(REFERENCE);
+
+        const created = await send('POST', '/api/org/executors', org(REFERENCE, 'opencode'));
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        expect(executors.rows().at(-1)?.config).toEqual(REFERENCE);
+    });
+
+    it('the refusals stay: a {file:…} read, a reference embedded in other text, and no key at all', async () => {
+        const { send } = await boot('cloud');
+        const withKey = (apiKey: string) => ({
+            provider: { 'vllm-internal': { npm: '@ai-sdk/openai-compatible', options: { baseURL: URL, apiKey } } },
+        });
+        expectRefused(
+            await send('PUT', '/api/workspace/executors', personal(withKey('{file:/run/key}'), 'opencode')),
+            'baseURL'
+        );
+        expectRefused(
+            await send('PUT', '/api/workspace/executors', personal(withKey('Bearer {env:KEY}'), 'opencode')),
+            'baseURL'
+        );
+        expectRefused(
+            await send('PUT', '/api/workspace/executors', personal(OPENCODE_REDIRECT, 'opencode')),
+            'baseURL'
+        );
+    });
+});
+
 describe('cloud mode: env scopes refuse a redirect with no member key', () => {
     it('refuses it at org, workspace and repo scope', async () => {
         const { send, envVars } = await boot('cloud');

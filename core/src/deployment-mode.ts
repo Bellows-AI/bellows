@@ -57,11 +57,18 @@ export const CREDENTIAL_REDIRECTS: Readonly<Record<string, readonly string[]>> =
     OPENAI_BASE_URL: ['OPENAI_API_KEY'],
 };
 
-/** opencode's per-provider redirect, answered only by a literal `apiKey` beside it. */
-const PROVIDER_BASE_URL = 'baseURL';
-const PROVIDER_API_KEY = 'apiKey';
-/** opencode substitutes these from the runner's env or files, which hold the platform credential. */
+/** opencode's per-provider keys: the block's `baseURL` and the `apiKey` beside it. */
+export const PROVIDER_BASE_URL = 'baseURL';
+export const PROVIDER_API_KEY = 'apiKey';
+/**
+ * opencode substitutes these from the runner's env or files, which hold the platform credential —
+ * except the `{env:NAME}` form that is exactly one substitution: the board resolves that one itself
+ * at claim from the member's own scopes, so it never reaches the runner as a substitution
+ * and cannot name a `RUNNER_ENV` value. Everything else stays a redirect refusal.
+ */
 const SUBSTITUTION = /\{(?:env|file):/;
+/** The one board-resolvable reference: `{env:NAME}`, alone in the value. */
+export const ENV_SUBSTITUTION = /^\{env:([^}]+)\}$/;
 
 const REDIRECT_PHRASE = 'would send the deployment model credential to another host';
 
@@ -81,12 +88,17 @@ function isObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** The first object at any depth whose `baseURL` has no literal `apiKey` beside it. */
+/** The first object at any depth whose `baseURL` has no literal `apiKey` and no resolvable reference beside it. */
 function providerRedirectIn(value: unknown): boolean {
     if (Array.isArray(value)) return value.some(providerRedirectIn);
     if (!isObject(value)) return false;
     const key = value[PROVIDER_API_KEY];
-    if (nonEmpty(value[PROVIDER_BASE_URL]) && !(nonEmpty(key) && !SUBSTITUTION.test(key))) return true;
+    if (nonEmpty(value[PROVIDER_BASE_URL])) {
+        // A literal key answers the redirect; so does the `{env:NAME}` reference the board resolves
+        // itself at claim (never a `{file:…}`, and never a reference embedded in other text).
+        const resolvable = nonEmpty(key) && ENV_SUBSTITUTION.test(key);
+        if (!resolvable && !(nonEmpty(key) && !SUBSTITUTION.test(key))) return true;
+    }
     return Object.values(value).some(providerRedirectIn);
 }
 

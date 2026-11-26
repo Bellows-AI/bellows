@@ -71,6 +71,12 @@ const GLYPHS: Record<string, { viewBox: string; d: string; stroke?: number }> = 
         d: 'M4.5 4h15A1.5 1.5 0 0 1 21 5.5v3a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 8.5v-3A1.5 1.5 0 0 1 4.5 4zM4.5 14h15a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5v-3A1.5 1.5 0 0 1 4.5 14zM7 7h.01M7 17h.01',
         stroke: 2.2,
     },
+    // A globe with one meridian: any endpoint that speaks the OpenAI wire format.
+    'openai-compatible': {
+        viewBox: '0 0 24 24',
+        d: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM3.6 9h16.8M3.6 15h16.8M12 3c-2.5 2.2-3.8 5.1-3.8 9s1.3 6.8 3.8 9c2.5-2.2 3.8-5.1 3.8-9S14.5 5.2 12 3z',
+        stroke: 1.8,
+    },
     // Simple Icons `claude`: a Claude plan rather than an API key.
     subscription: {
         viewBox: '0 0 24 24',

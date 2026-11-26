@@ -44,6 +44,7 @@ async function start(
         killTools?: boolean;
         probeFiles?: string[];
         finishGate?: boolean;
+        openai?: boolean;
     } = {}
 ) {
     const { createFakeModelEndpoint } = (await import(pathToFileURL(ENDPOINT).href)) as {
@@ -629,5 +630,95 @@ describe('the tool-isolation lanes (issue #814)', () => {
         expect(controlVerdict(1, '1 0', [])).toBe('bad');
         expect(controlVerdict(137, '1 0', [])).toBe('ok');
         expect(controlVerdict(143, '1 0', ['step-1'])).toBe('ok');
+    });
+});
+
+describe('the scripted model endpoint in OpenAI-wire mode ', () => {
+    const chat = (url: string, body: object) =>
+        fetch(`${url}/v1/chat/completions`, { method: 'POST', body: JSON.stringify({ stream: false, ...body }) }).then(
+            (response) =>
+                response.json() as Promise<{
+                    choices: {
+                        message: {
+                            content: string | null;
+                            tool_calls?: { id: string; function: { name: string; arguments: string } }[];
+                        };
+                        finish_reason: string;
+                    }[];
+                }>
+        );
+
+    it('answers chat completions with the same scripted steps, tools as OpenAI function calls', async () => {
+        const { endpoint, url } = await start({ openai: true, toolSteps: 2 });
+
+        const first = await chat(url, { tools: [{ type: 'function', function: { name: 'Bash' } }] });
+        expect(first.choices[0]!.finish_reason).toBe('tool_calls');
+        expect(first.choices[0]!.message.tool_calls![0]!.function).toMatchObject({
+            name: 'Bash',
+            arguments: JSON.stringify({ command: 'touch step-1', description: 'touch a marker' }),
+        });
+
+        const second = await chat(url, { tools: [{ type: 'function', function: { name: 'Bash' } }] });
+        expect(second.choices[0]!.message.tool_calls![0]!.function.arguments).toContain('step-2');
+        const third = await chat(url, { tools: [{ type: 'function', function: { name: 'Bash' } }] });
+        expect(third.choices[0]!.finish_reason).toBe('stop');
+        expect(third.choices[0]!.message.content).toBe('done');
+        expect(endpoint.agentRequests).toBe(3);
+    });
+
+    it('maps a tool-role message to the tool_result the scripted steps read', async () => {
+        const { url } = await start({ openai: true, toolSteps: 2 });
+        const toolMessages = (id: string, text: string) => ({
+            tools: [{ type: 'function', function: { name: 'Bash' } }],
+            messages: [
+                {
+                    role: 'assistant',
+                    tool_calls: [{ id, type: 'function', function: { name: 'Bash', arguments: '{}' } }],
+                },
+                { role: 'tool', tool_call_id: id, content: text },
+            ],
+        });
+
+        const first = await chat(url, { tools: [{ type: 'function', function: { name: 'Bash' } }] });
+        const id = first.choices[0]!.message.tool_calls![0]!.id;
+        const second = await chat(url, toolMessages(id, 'ok'));
+        expect(second.choices[0]!.finish_reason).toBe('tool_calls');
+        expect(second.choices[0]!.message.tool_calls![0]!.function.arguments).toContain('step-2');
+    });
+
+    it('streams the same answer as OpenAI server-sent events, ending with [DONE]', async () => {
+        const { url } = await start({ openai: true, toolSteps: 1 });
+
+        const body = await (
+            await fetch(`${url}/v1/chat/completions`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    stream: true,
+                    tools: [{ type: 'function', function: { name: 'Bash' } }],
+                    messages: [],
+                }),
+            })
+        ).text();
+
+        expect(body).toContain('"object":"chat.completion.chunk"');
+        expect(body).toContain('"tool_calls"');
+        expect(body.trimEnd().endsWith('data: [DONE]')).toBe(true);
+    });
+
+    it('lists the declared model on /v1/models', async () => {
+        const { url } = await start({ openai: true });
+        const models = (await (await fetch(`${url}/v1/models`)).json()) as { data: { id: string }[] };
+        expect(models.data.map((model) => model.id)).toEqual(['fake-model']);
+    });
+
+    it('the Anthropic wire is untouched beside it', async () => {
+        const { url } = await start({});
+        const reply = (await (
+            await fetch(`${url}/v1/messages`, {
+                method: 'POST',
+                body: JSON.stringify({ stream: false, tools: [{ name: 'Bash' }], messages: [] }),
+            })
+        ).json()) as { content: { type: string }[] };
+        expect(reply.content[0]!.type).toBe('tool_use');
     });
 });

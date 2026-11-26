@@ -1284,6 +1284,10 @@
         stroke: var(--brand-litellm);
     }
 
+    .provider-mark[data-provider='openai-compatible'] {
+        stroke: var(--brand-openai-compatible);
+    }
+
     .integration-list {
         display: grid;
         gap: var(--space-3);

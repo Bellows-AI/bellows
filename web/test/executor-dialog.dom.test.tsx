@@ -28,6 +28,7 @@ import {
     SAVE_HINTS,
     SAVE_LABEL,
 } from '../src/workspace/executors.js';
+import { GUIDED_COPY } from '../src/workspace/executor-guided.js';
 import { renderApp, stubFetch } from './dom.js';
 import { boardHandler, personalExecutor, settingsBoard } from './settings-board.js';
 
@@ -356,5 +357,109 @@ describe('the runner class (organization profiles only)', () => {
         await user.click(await screen.findByRole('button', { name: 'Add organization executor' }));
         await screen.findByRole('dialog', { name: ADD_LABEL });
         expect(within(orgDialog()).queryByLabelText(RUNNER_CLASS_LABEL)).toBeNull();
+    });
+});
+
+describe('the executor dialog: the guided provider step', () => {
+    const PROVIDER_GROUP = 'Provider';
+
+    /** A card's accessible name is its label with its second line: match on the label's head. */
+    const providerRadio = (label: string) =>
+        within(inDialog().getByRole('radiogroup', { name: PROVIDER_GROUP })).getByRole<HTMLInputElement>('radio', {
+            name: new RegExp(`^${label}`),
+        });
+
+    it('adds an OpenAI-compatible executor through the guided step, with no JSON typed', async () => {
+        const board = settingsBoard();
+        stubFetch(boardHandler(board));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await openAdd(user);
+
+        // The provider step waits collapsed: no JSON in front of the member, and the raw Model control
+        // still the one shown.
+        const pick = inDialog().getByText(GUIDED_COPY.PROVIDER_STEP_LABEL);
+        expect(pick.closest('details')?.open).toBe(false);
+        expect(modelRadio(MODEL_DEFAULT_LABEL).checked).toBe(true);
+
+        await user.click(pick);
+        const cards = inDialog().getByRole('radiogroup', { name: PROVIDER_GROUP });
+        expect(within(cards).getAllByRole('radio')).toHaveLength(3); // Claude Code: Anthropic, OpenRouter, LiteLLM
+
+        // The OpenAI-compatible card only exists for OpenCode: switch the agent first.
+        await user.selectOptions(field('Agent'), 'OpenCode');
+        expect(within(inDialog().getByRole('radiogroup', { name: PROVIDER_GROUP })).getAllByRole('radio')).toHaveLength(
+            5
+        );
+        await user.click(providerRadio('OpenAI-compatible'));
+
+        // The generated configuration appears under Advanced with no typing in it, and the raw
+        // Model control is replaced by the guided one.
+        expect(inDialog().queryByRole('group', { name: 'Model' })).toBeNull();
+        await user.type(field('Base URL'), 'http://127.0.0.1:9/v1');
+        await user.click(inDialog().getByText(GUIDED_COPY.KEY_REFERENCE_LABEL));
+        await user.type(field('API key'), 'GATEWAY_KEY');
+        await user.type(field('Model'), 'llama-3');
+        await user.click(inDialog().getByText(ADVANCED_LABEL));
+        const generated = JSON.parse(json().value) as {
+            model: string;
+            provider: Record<string, { npm: string; options: Record<string, string> }>;
+        };
+        expect(generated.model).toBe('127-0-0-1/llama-3');
+        expect(generated.provider['127-0-0-1']).toMatchObject({
+            npm: '@ai-sdk/openai-compatible',
+            options: { baseURL: 'http://127.0.0.1:9/v1', apiKey: '{env:GATEWAY_KEY}' },
+        });
+
+        await user.type(field('Name'), 'gateway');
+        await user.click(button(ADD_LABEL));
+        await dialogGone();
+        const saved = board.executors.find((executor) => executor.name === 'gateway');
+        expect(saved?.config).toEqual(generated);
+        expect(JSON.stringify(saved?.config)).not.toContain('GATEWAY_KEY_VALUE');
+    });
+
+    it('does not check an OpenAI-compatible endpoint key: no verify request fires for it', async () => {
+        const checks: string[] = [];
+        stubFetch(
+            boardHandler(settingsBoard(), ({ method, url }) => {
+                if (method === 'POST' && url === '/api/model-setup/verify') checks.push(url);
+            })
+        );
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await openAdd(user);
+
+        await user.click(inDialog().getByText(GUIDED_COPY.PROVIDER_STEP_LABEL));
+        await user.selectOptions(field('Agent'), 'OpenCode');
+        await user.click(providerRadio('OpenAI-compatible'));
+        await user.type(field('Base URL'), 'http://127.0.0.1:9/v1');
+        await user.type(field('API key'), 'sk-endpoint-key');
+        // The endpoint is reached when a task runs, not from the dialog: no check fired.
+        expect(checks).toEqual([]);
+        expect(executorDialog().textContent).toContain('The endpoint is not checked here');
+    });
+
+    it('removing the provider settings puts back the configuration the pick started from', async () => {
+        stubFetch(boardHandler(settingsBoard({ executors: [personalExecutor('main', { model: 'opus' })] })));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await user.click(await editButton('main'));
+        await screen.findByRole('dialog', { name: 'Edit executor' });
+
+        await user.click(inDialog().getByText(GUIDED_COPY.PROVIDER_STEP_LABEL));
+        await user.click(providerRadio('Anthropic'));
+        await user.type(field('Model'), 'sonnet');
+        await user.click(inDialog().getByText(ADVANCED_LABEL));
+        expect(json().value).not.toBe('{}');
+
+        await user.click(inDialog().getByRole('button', { name: GUIDED_COPY.REMOVE_PROVIDER_LABEL }));
+        expect(json().value).toBe('{\n  "model": "opus"\n}');
+        expect(modelRadio(MODEL_CUSTOM_LABEL).checked).toBe(true);
+        expect(customModel().value).toBe('opus');
+        // A pristine close asks nothing.
+        await user.keyboard('{Escape}');
+        await dialogGone();
+        expect(screen.queryByRole('dialog', { name: confirmDialog })).toBeNull();
     });
 });

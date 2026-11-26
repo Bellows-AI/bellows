@@ -6,12 +6,19 @@ import { StateNote } from '../components/StateNote.js';
 import { AgentModelFields, useAgentModel } from './AgentModelFields.js';
 import { AdvancedBase, KeyField, ProxyField, SecretNote } from './KeyField.js';
 import { ProviderCards } from './ProviderCards.js';
-import { agentLock, detectProvider, PROVIDER_META, providerAgents, providerChoices, saveReason } from './providers.js';
+import {
+    agentLock,
+    detectProvider,
+    PROVIDER_META,
+    providerAgents,
+    providerChoices,
+    saveReason,
+    secretNames,
+} from './providers.js';
 import { useSaveRun } from './SavePrimary.js';
 import { keyBody } from './save-body.js';
 import { ScopeControl } from './ScopeControl.js';
 import { useKeyCheck } from './useKeyCheck.js';
-
 const MODEL_HELP = 'Saved as your default agent and model. Change any time in Settings.';
 const PROXY_MODEL_HELP = 'Read from the proxy after the check. Saved as your default agent and model.';
 
@@ -117,11 +124,22 @@ export function KeyFormView({ ids, form, orgName }: { ids: string; form: KeyForm
     const hosted = provider !== 'litellm' && provider !== 'subscription';
     return (
         <>
-            <ProviderCards ids={ids} choices={form.choices} value={provider} onChange={form.choose} />
+            <ProviderCards
+                ids={ids}
+                choices={form.choices.map((id) => ({ id, ...PROVIDER_META[id] }))}
+                value={provider}
+                onChange={(id) => form.choose(id as ModelProvider)}
+            />
             {provider === 'litellm' ? (
                 <ProxyField ids={ids} value={form.proxy} hidden={form.hiddenProxy} onChange={form.setProxy} />
             ) : null}
-            <KeyField ids={ids} provider={provider} value={form.key} check={form.check} onChange={form.onKey} />
+            <KeyField
+                ids={ids}
+                meta={PROVIDER_META[provider]}
+                value={form.key}
+                check={form.check}
+                onChange={form.onKey}
+            />
             <AgentModelFields
                 ids={ids}
                 state={form.choice}
@@ -140,7 +158,7 @@ export function KeyFormView({ ids, form, orgName }: { ids: string; form: KeyForm
             {hosted ? (
                 <AdvancedBase
                     ids={ids}
-                    provider={provider}
+                    name={secretNames(provider, true)[1] ?? ''}
                     value={form.base}
                     hidden={form.keepBase}
                     onChange={form.setBase}

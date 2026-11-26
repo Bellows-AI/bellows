@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { CLAUDE_CODE, EXECUTOR_TYPES, MAX_GATE_FIX_ROUNDS, OPENCODE, RUNNER_MANAGED_KEYS } from '@factory-ai/core';
 import {
+    applyGuidedChoice,
+    guidedChoiceError,
+    guidedFromConfig,
+    guidedKeyOf,
+    guidedProvidersFor,
+} from '../src/workspace/executor-guided.js';
+import {
     EXECUTOR_TYPE_META,
     GATE_FIX_ROUNDS_HELP,
     MAX_CONFIG_BYTES,
@@ -671,5 +678,142 @@ describe('mergeExecutors — suspension (issue 440)', () => {
         const active: ExecutorRow = { name: 'main', type: 'claude-code', config: {}, gateFixRounds: 3 };
         const result = mergeExecutors([active], 'main', edited);
         expect(result.ok && result.value[0]).not.toHaveProperty('suspended');
+    });
+});
+
+describe('the guided provider step', () => {
+    it('offers each agent the providers its key runs on, in catalog order', () => {
+        expect(guidedProvidersFor(CLAUDE_CODE)).toEqual(['anthropic', 'openrouter', 'litellm']);
+        expect(guidedProvidersFor(OPENCODE)).toEqual([
+            'anthropic',
+            'openrouter',
+            'openai',
+            'litellm',
+            'openai-compatible',
+        ]);
+    });
+
+    it('generates the configuration the guided fields describe, key verbatim', () => {
+        expect(
+            applyGuidedChoice(CLAUDE_CODE, {
+                provider: 'anthropic',
+                key: { kind: 'key', value: 'sk' },
+                baseUrl: '',
+                model: 'sonnet',
+            })
+        ).toEqual({
+            model: 'sonnet',
+            env: { ANTHROPIC_API_KEY: 'sk' },
+        });
+        expect(
+            applyGuidedChoice(OPENCODE, {
+                provider: 'openai-compatible',
+                key: { kind: 'reference', name: 'GATEWAY_KEY' },
+                baseUrl: 'https://vllm.internal:8000/v1',
+                model: 'llama-3',
+            })
+        ).toEqual({
+            model: 'vllm-internal/llama-3',
+            provider: {
+                'vllm-internal': expect.objectContaining({
+                    npm: '@ai-sdk/openai-compatible',
+                    options: { baseURL: 'https://vllm.internal:8000/v1', apiKey: '{env:GATEWAY_KEY}' },
+                }),
+            },
+        });
+        expect(guidedKeyOf({ kind: 'reference', name: ' K ' })).toBe('{env:K}');
+        expect(guidedKeyOf({ kind: 'none' })).toBe('');
+    });
+
+    it('reads a generated configuration back into the guided fields, marker and reference included', () => {
+        const generated = applyGuidedChoice(OPENCODE, {
+            provider: 'openai-compatible',
+            key: { kind: 'key', value: 'stored-credential:abc' },
+            baseUrl: 'https://vllm.internal/v1',
+            model: 'llama-3',
+        });
+        expect(guidedFromConfig(OPENCODE, generated)).toEqual({
+            provider: 'openai-compatible',
+            key: { kind: 'key', value: 'stored-credential:abc' },
+            baseUrl: 'https://vllm.internal/v1',
+            model: 'llama-3',
+        });
+
+        const claude = {
+            model: 'sonnet',
+            env: { ANTHROPIC_API_KEY: 'stored-credential:x', ANTHROPIC_BASE_URL: 'https://p.example' },
+        };
+        expect(guidedFromConfig(CLAUDE_CODE, claude)).toEqual({
+            provider: 'litellm',
+            key: { kind: 'key', value: 'stored-credential:x' },
+            baseUrl: 'https://p.example',
+            model: 'sonnet',
+        });
+
+        const opencodeLitellm = {
+            model: 'anthropic/sonnet',
+            provider: { anthropic: { options: { apiKey: 'sk', baseURL: 'https://p.example' } } },
+        };
+        expect(guidedFromConfig(OPENCODE, opencodeLitellm)).toEqual({
+            provider: 'litellm',
+            key: { kind: 'key', value: 'sk' },
+            baseUrl: 'https://p.example',
+            model: 'sonnet',
+        });
+
+        // Not a guided shape: several provider blocks, no model, an unknown block.
+        expect(guidedFromConfig(OPENCODE, { model: 'm', provider: { a: {}, b: {} } })).toBeNull();
+        expect(guidedFromConfig(OPENCODE, {})).toBeNull();
+        expect(
+            guidedFromConfig(OPENCODE, { model: 'm', provider: { mystery: { options: { apiKey: 'k' } } } })
+        ).toBeNull();
+    });
+
+    it('names what a guided choice still needs, per provider', () => {
+        const base = { provider: 'openai-compatible', baseUrl: '', model: '', key: { kind: 'none' } } as const;
+        expect(guidedChoiceError(base)).toBe('Enter a model identifier to continue.');
+        expect(guidedChoiceError({ ...base, model: 'llama' })).toBe('Enter the endpoint base URL to continue.');
+        expect(guidedChoiceError({ ...base, model: 'llama', baseUrl: 'https://v.example/v1' })).toBe(
+            'Paste a key or name a secret to continue.'
+        );
+        expect(
+            guidedChoiceError({
+                ...base,
+                model: 'llama',
+                baseUrl: 'https://v.example/v1',
+                key: { kind: 'reference', name: '' },
+            })
+        ).toBe('Enter the name of the secret to use.');
+        expect(
+            guidedChoiceError({
+                ...base,
+                model: 'llama',
+                baseUrl: 'https://v.example/v1',
+                key: { kind: 'reference', name: 'K' },
+            })
+        ).toBeNull();
+        expect(guidedChoiceError({ ...base, provider: 'litellm', model: 'sonnet' })).toBe(
+            'Enter the proxy URL to continue.'
+        );
+        expect(
+            guidedChoiceError({ ...base, provider: 'litellm', model: 'sonnet', baseUrl: 'https://p.example' })
+        ).toBeNull();
+        // A built-in provider needs no key of its own: the connected one runs the task.
+        expect(guidedChoiceError({ ...base, provider: 'anthropic', model: 'sonnet' })).toBeNull();
+    });
+
+    it('a draft whose guided choice is unfinished is refused at the guided field', () => {
+        const draft: ExecutorDraft = {
+            ...initialExecutorDraft(undefined),
+            name: 'main',
+            guided: {
+                'claude-code': null,
+                opencode: { provider: 'openai-compatible', key: { kind: 'none' }, baseUrl: '', model: '' },
+            },
+        };
+        draft.type = OPENCODE;
+        const refused = validateExecutorDraft(draft, [], null);
+        expect(refused).toEqual({ ok: false, error: 'Enter a model identifier to continue.', field: 'guided' });
+        expect(SAVE_HINTS.guided).toBe('Finish the provider settings to save.');
     });
 });

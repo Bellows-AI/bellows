@@ -43,8 +43,8 @@ export function describedBy(ids: string, ...parts: (string | null | false)[]): s
         .join(' ');
 }
 
-/** A field's own error, below its help. */
-function FieldError({ id, error }: { id: string; error: string | null }) {
+/** A field's own error, below its help. Shared with the guided provider fields' module. */
+export function FieldError({ id, error }: { id: string; error: string | null }) {
     return error ? (
         <StateNote state="error" id={id}>
             {error}

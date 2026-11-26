@@ -16,6 +16,7 @@ import {
     forbiddenCredentialIn,
     GITHUB_ENV_NAMES,
     hasModelKey,
+    missingProviderSecretMessage,
     modelKeyRequired,
     NO_MODEL_MESSAGE,
     executorSuspendedMessage,
@@ -24,6 +25,7 @@ import {
     type ExecutorType,
     OPENCODE,
     redirectsPlatformCredential,
+    resolveProviderReferences,
     RUNNER_MANAGED_KEYS,
 } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
@@ -116,14 +118,34 @@ export async function resolveClaimExecutor(
     row: ClaimExecutorRow
 ): Promise<ResolvedClaimExecutor> {
     const { env, executorConfig, deploymentMode, platformModelProvided = false, grant } = deps;
-    const { executorType, executorRefusal, source, runnerClass } = await claimExecutorOf(tx, executorConfig, row);
+    const claimExecutor = await claimExecutorOf(tx, executorConfig, row);
+    let { source } = claimExecutor;
+    const { executorType, executorRefusal, runnerClass } = claimExecutor;
     // Read once the agent is known: a Claude Code run takes its model names from one scope (`stackClaudeCodeEnv`).
     const resolvedEnv = withoutGithubToken(
         env ? await env.resolveFor({ userId: row.run_as, repo: row.repo }, tx, { agentType: executorType }) : undefined
     );
     let claimEnv = grant !== undefined ? grantedEnv(resolvedEnv, grant) : resolvedEnv;
+    // A custom provider's `{env:NAME}` key is the board's to resolve: the value comes from the scopes
+    // the claim merged — the env that travels, a reviewer's grant applied — never from the runner's
+    // own environment, so a deployment `RUNNER_ENV` value cannot be named into a member endpoint. An
+    // unresolved reference fails the task before the agent starts, naming the missing secret.
+    let profileConfig: unknown = source?.config;
+    if (source !== null) {
+        const resolved = resolveProviderReferences(source.config, claimEnv ?? {});
+        source = { ...source, config: resolved.config };
+        profileConfig = resolved.config;
+        if (resolved.missing.length > 0) {
+            return {
+                claimEnv: undefined,
+                executorType,
+                executorRefusal: missingProviderSecretMessage(resolved.missing),
+                runModel: null,
+                runnerClass,
+            };
+        }
+    }
     if (source !== null) claimEnv = mergeExecutorConfigEnv(claimEnv, source);
-    const profileConfig: unknown = source?.config;
     claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType, deploymentMode);
     // Claude Code takes `$ANTHROPIC_MODEL` over its settings' `model`: a chosen model rides under that name too, so no
     // member value outranks it.

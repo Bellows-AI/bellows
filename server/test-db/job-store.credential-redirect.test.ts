@@ -1,4 +1,9 @@
-import { credentialRedirectMessage, type DeploymentMode, STORED_CREDENTIAL_PREFIX } from '@factory-ai/core';
+import {
+    credentialRedirectMessage,
+    type DeploymentMode,
+    missingProviderSecretMessage,
+    STORED_CREDENTIAL_PREFIX,
+} from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
@@ -345,5 +350,136 @@ describe.skipIf(!enabled)('Claude Code takes its model credentials from one scop
         expect(claim?.env).toMatchObject({ ANTHROPIC_API_KEY: 'repo' });
         expect(claim?.env).not.toHaveProperty('OPENROUTER_API_KEY');
         expect(claim?.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+    });
+});
+
+/**
+ * A custom provider key that names a secret instead of carrying one : exactly `{env:NAME}`
+ * beside a `baseURL`. The claim resolves it from the scopes it already merged — the env that travels,
+ * a reviewer's grant applied — and writes the value into the rendered provider config, so a raw
+ * `{env:…}` never reaches the runner (opencode would substitute it from an environment that also
+ * holds the deployment's credential). A name no scope holds fails the task before the agent starts,
+ * naming the secret; the deployment key is never a source, in either mode.
+ */
+describe.skipIf(!enabled)('a custom provider key that names a secret resolves at claim', () => {
+    const gateway = (apiKey: string) => ({
+        provider: {
+            'vllm-internal': {
+                npm: '@ai-sdk/openai-compatible',
+                options: { baseURL: 'https://vllm.internal/v1', apiKey },
+                models: { 'llama-3': {} },
+            },
+        },
+        model: 'vllm-internal/llama-3',
+    });
+    const GATEWAY_KEY = 'GATEWAY_KEY';
+    const endpoint = (claim: Claim | null | undefined) =>
+        JSON.parse(claim?.env?.OPENCODE_CONFIG_CONTENT ?? 'null') as {
+            provider: { 'vllm-internal': { options: { apiKey: string } } };
+        } | null;
+    /** The resolved key the rendered provider block carries, asserted so a null config names itself. */
+    const gatewayKey = (claim: Claim | null | undefined, want: string) => {
+        const options = endpoint(claim)?.provider['vllm-internal']?.options;
+        expect(options?.apiKey).toBe(want);
+    };
+
+    it('an org secret value is written into the rendered provider config, never the raw reference', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud');
+        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) }]);
+        await env.replaceOrg('env-admin', [{ name: GATEWAY_KEY, value: 'sk-org-gateway', isSecret: true }]);
+        await task(jobs);
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBeNull();
+        const options = endpoint(claim)?.provider['vllm-internal']?.options;
+        expect(options).toEqual({ baseURL: 'https://vllm.internal/v1', apiKey: 'sk-org-gateway' });
+        expect(JSON.stringify(claim)).not.toContain('{env:');
+    });
+
+    it('the higher scope wins the name: workspace over organization, repository over workspace', async () => {
+        const { executors, env, jobs } = stores(ORG, 'self-hosted');
+        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) }]);
+        await env.replaceOrg('env-admin', [{ name: GATEWAY_KEY, value: 'org-value', isSecret: false }]);
+        await task(jobs);
+        gatewayKey(await jobs.claim('w1', LEASE_SECONDS), 'org-value');
+
+        await env.replaceWorkspace(ALICE, [{ name: GATEWAY_KEY, value: 'member-value', isSecret: false }]);
+        await task(jobs);
+        gatewayKey(await jobs.claim('w2', LEASE_SECONDS), 'member-value');
+
+        await env.replaceRepo('env-admin', 'acme', 'web', [
+            { name: GATEWAY_KEY, value: 'repo-value', isSecret: false },
+        ]);
+        await task(jobs, 'acme/web');
+        gatewayKey(await jobs.claim('w3', LEASE_SECONDS), 'repo-value');
+    });
+
+    it('rotating the org secret applies to the next claim with no profile edit', async () => {
+        const { executors, env, jobs } = stores(ORG, 'self-hosted');
+        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) }]);
+        await env.replaceOrg('env-admin', [{ name: GATEWAY_KEY, value: 'first-value', isSecret: true }]);
+        await task(jobs);
+        gatewayKey(await jobs.claim('w1', LEASE_SECONDS), 'first-value');
+
+        await env.replaceOrg('env-admin', [{ name: GATEWAY_KEY, value: 'rotated-value', isSecret: true }]);
+        await task(jobs);
+        gatewayKey(await jobs.claim('w2', LEASE_SECONDS), 'rotated-value');
+    });
+
+    it('a name no scope holds fails the task before the agent starts, naming the secret — the deployment key included', async () => {
+        const { executors, jobs } = stores(ORG, 'cloud');
+        // ANTHROPIC_API_KEY is the deployment's own key name: it resolves only from a member scope,
+        // and none is set, so the runner env must never answer for it.
+        await executors.replace(ALICE, [
+            { name: 'main', type: 'opencode', config: gateway('{env:ANTHROPIC_API_KEY}') },
+        ]);
+        await task(jobs);
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBe(missingProviderSecretMessage(['ANTHROPIC_API_KEY']));
+        expect(claim?.env).toBeUndefined();
+        expect(await jobs.claim('w2', LEASE_SECONDS)).toBeNull();
+
+        // An empty value is just as unresolved.
+        const { executors: executors2, env, jobs: jobs2 } = stores(ORG, 'self-hosted');
+        await executors2.replace(ALICE, [{ name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) }]);
+        await env.replaceWorkspace(ALICE, [{ name: GATEWAY_KEY, value: '', isSecret: false }]);
+        await task(jobs2);
+        const refused = await jobs2.claim('w1', LEASE_SECONDS);
+        expect(refused?.executorRefusal).toBe(missingProviderSecretMessage([GATEWAY_KEY]));
+    });
+
+    it('a reviewer claim resolves only past its grant: an ungranted name is refused, a granted one travels', async () => {
+        const { executors, env, jobs } = stores(ORG, 'cloud');
+        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) }]);
+        await env.replaceOrg('env-admin', [{ name: GATEWAY_KEY, value: 'sk-org-gateway', isSecret: true }]);
+        await env.replaceWorkspace(ALICE, [{ name: 'ANTHROPIC_API_KEY', value: KEY, isSecret: true }]);
+        await task(jobs, 'acme/api');
+        const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
+        expect(caller.executorRefusal).toBeNull();
+
+        const review = await jobs.requestReview(caller.id, caller.leaseToken, {
+            key: 'sec-1',
+            profile: 'sec',
+            revision: 'h:1',
+            ref: reviewRefOf(caller.id, 'sec-1'),
+        });
+        expect(review.result).toBe('created');
+        // The grant names the redirect key only: the reference cannot resolve past it, so the
+        // review claim fails before the agent starts rather than carrying the value anyway.
+        const reviewer = 'claim' in review ? review.claim : undefined;
+        expect(reviewer?.executorRefusal).toBe(missingProviderSecretMessage([GATEWAY_KEY]));
+        expect(reviewer?.env).toBeUndefined();
+    });
+
+    it("a reference on a provider without a baseURL is opencode's own substitution and travels untouched", async () => {
+        const { executors, env, jobs } = stores(ORG, 'self-hosted');
+        const builtin = { provider: { anthropic: { options: { apiKey: '{env:MY_KEY}' } } }, model: 'anthropic/sonnet' };
+        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: builtin }]);
+        await env.replaceWorkspace(ALICE, [{ name: 'MY_KEY', value: 'sk-member', isSecret: false }]);
+        await task(jobs);
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBeNull();
+        expect(JSON.parse(claim?.env?.OPENCODE_CONFIG_CONTENT ?? 'null')).toEqual(builtin);
     });
 });
