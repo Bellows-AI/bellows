@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { gateForgeScript } from '../src/container-scripts.js';
 import {
     FORGE_STEP_ENV,
@@ -23,7 +23,8 @@ import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/s
  * every token served is redacted from what the ledger keeps and the driver is answered.
  */
 process.env.SUPERVISOR_NO_MAIN = '1';
-const supervisor = createRequire(import.meta.url)('../src/scripts/supervisor.cjs') as {
+const requireCjs = createRequire(import.meta.url);
+const supervisor = requireCjs('../src/scripts/supervisor.cjs') as {
     supervise(env: Record<string, string>, log: (line: string) => void): Promise<number>;
 };
 
@@ -43,6 +44,7 @@ type Mint = (n: number) => { status: number; body: unknown } | Promise<{ status:
 const servers: Server[] = [];
 const dirs: string[] = [];
 afterEach(async () => {
+    vi.restoreAllMocks();
     await stopSupervisors();
     for (const server of servers.splice(0)) {
         server.closeAllConnections();
@@ -397,5 +399,69 @@ describe('a step with no forge host', () => {
         const answer = await sup.answerOf('publish-1');
         expect(answer.stdout).toBe('t=[redacted] [redacted]\n');
         expect(sup.ledger()).not.toMatch(/glpat_env_value|ghs_env_value/);
+    });
+});
+
+describe('a mailbox read that cannot be confirmed is no withdrawn ask', () => {
+    /** The supervisor's own `fs`, failing every read of an ask file (`<mailbox>/asks/<pid>`) with `code`. */
+    const failAskReads = (code: string) => {
+        const fs = requireCjs('node:fs') as typeof import('node:fs');
+        const real = fs.readFileSync;
+        return vi.spyOn(fs, 'readFileSync').mockImplementation(((file: unknown, ...rest: unknown[]) => {
+            if (typeof file === 'string' && /\/asks\/\d+$/.test(file)) {
+                throw Object.assign(new Error(`${code}: injected`), { code });
+            }
+            return (real as (...args: unknown[]) => unknown)(file, ...rest);
+        }) as typeof fs.readFileSync);
+    };
+
+    it.each(['EIO', 'EACCES'])('a %s reading the ask ends the step as a credential wait, never a verdict', async (code) => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        failAskReads(code);
+        sup.order('sync-1', `export FACTORY_GATE_ASK_SECONDS=1; ${fill()}; exit 0`);
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBe(true);
+        expect(answer.exitCode).toBeNull();
+        expect(driver.asks).toEqual([]);
+        expect(sup.logs.join('\n')).toContain(code);
+    });
+
+    it.each(['EIO', 'EACCES'])('a %s listing the asks ends the step as a credential wait', async (code) => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        const fs = requireCjs('node:fs') as typeof import('node:fs');
+        const real = fs.readdirSync;
+        vi.spyOn(fs, 'readdirSync').mockImplementation(((dir: unknown, ...rest: unknown[]) => {
+            if (typeof dir === 'string' && dir.endsWith('/asks')) throw Object.assign(new Error('injected'), { code });
+            return (real as (...args: unknown[]) => unknown)(dir, ...rest);
+        }) as typeof fs.readdirSync);
+        sup.order('sync-1', `export FACTORY_GATE_ASK_SECONDS=1; ${fill()}; exit 0`);
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBe(true);
+        expect(driver.asks).toEqual([]);
+    });
+
+    it('a fault that clears is answered, and the step is no credential wait', async () => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        const spy = failAskReads('EIO');
+        sup.order('sync-1', `export FACTORY_GATE_ASK_SECONDS=10; ${fill()}; exit 0`);
+        while (!sup.logs.some((line) => line.includes('EIO'))) await new Promise((resolve) => setTimeout(resolve, 10));
+        spy.mockRestore();
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBeUndefined();
+        expect(answer.exitCode).toBe(0);
+        expect(answer.stdout).toContain('password=[redacted]');
+    });
+
+    it('a vanished ask (ENOENT) is a withdrawn one: nothing is asked of the driver', async () => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        failAskReads('ENOENT');
+        sup.order('sync-1', `export FACTORY_GATE_ASK_SECONDS=1; ${fill()}; echo "status=$?"; exit 0`);
+        const answer = await sup.answerOf('sync-1');
+        expect(driver.asks).toEqual([]);
+        expect(answer.stdout).toContain('status=1');
     });
 });

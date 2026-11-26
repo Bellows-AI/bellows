@@ -120,7 +120,7 @@ const { pipeline, Transform } = require('node:stream');
 /** @typedef {{ id: string, kind: string, effect: StepResult | null, invocations: Record<string, Call> }} Entry */
 /** @typedef {{ token?: string, none?: string }} GateAnswer */
 /** @typedef {{ token: string, expiresAt: number | null }} Grant */
-/** @typedef {{ startedAt: number, why: string | null, stoppedAt: number, over: boolean, abort: AbortController, asking: Map<string, Promise<GateAnswer>>, cache: Map<string, Grant>, tokens: Set<string>, answering: Set<string>, unanswered: boolean, readFailed: boolean }} Flight */
+/** @typedef {{ startedAt: number, why: string | null, stoppedAt: number, over: boolean, abort: AbortController, asking: Map<string, Promise<GateAnswer>>, cache: Map<string, Grant>, tokens: Set<string>, answering: Set<string>, unanswered: boolean, readFailed: boolean, unread: Set<string> }} Flight */
 /** @typedef {{ step: Step, dir: string, hosts: string[] }} AskBox */
 /** @typedef {{ exitCode: number | null, how: string }} AgentEnd */
 /** @typedef {{ outcome: string, cause: string | null }} Intent */
@@ -1551,7 +1551,7 @@ function stoppedGateResult(why, step, output) {
  * @returns {Outcome | null}
  */
 function unansweredGateResult(flight, output, stderr = '') {
-    if (!flight.unanswered && flight.asking.size === 0) return null;
+    if (!flight.unanswered && flight.asking.size === 0 && flight.unread.size === 0) return null;
     const result = stepResult(null, output, `${stderr}a forge token ask went unanswered: no verdict`);
     return { result: { ...result, tokenAskUnanswered: true }, interrupted: false };
 }
@@ -1757,6 +1757,7 @@ const newFlight = (run) => ({
     answering: new Set(),
     unanswered: false,
     readFailed: false,
+    unread: new Set(),
 });
 
 /**
@@ -1794,19 +1795,42 @@ function writeAskAnswer(run, box, name, got) {
     }
 }
 
+/** Whether a read failed because the file or its directory is confirmed absent: the only fault that answers anything. */
+const confirmedAbsent = (/** @type {unknown} */ error) =>
+    /** @type {NodeJS.ErrnoException} */ (error)?.code === 'ENOENT' ||
+    /** @type {NodeJS.ErrnoException} */ (error)?.code === 'ENOTDIR';
+
+/** The mailbox name of a directory listing that could not be read (`flight.unread`). */
+const ASKS_LISTING = '/';
+
 /**
- * The host an ask names (`ask <host>`), or null for an ask that names none this box may ask for.
+ * The host an ask names (`ask <host>`), or null for an ask that names none this box may ask for. Only a confirmed
+ * ENOENT is a withdrawn ask: any other read fault (EIO, EACCES) leaves the ask unresolved, so the flight holds it
+ * (`flight.unread`) until a later read settles it, and a step that ends meanwhile is a credential wait, not a verdict.
+ * @param {Run} run
  * @param {AskBox} box
+ * @param {Flight} flight
  * @param {string} name
- * @returns {string | null | undefined} undefined: the ask is gone (the helper withdrew it).
+ * @returns {string | null | undefined} undefined: the ask is gone (the helper withdrew it) or could not be read.
  */
-function askedHost(box, name) {
+function askedHost(run, box, flight, name) {
     let text;
     try {
         text = fs.readFileSync(path.join(box.dir, GATE_ASK_FILES.asks, name), 'utf8');
-    } catch {
+    } catch (error) {
+        if (confirmedAbsent(error)) {
+            flight.unread.delete(name);
+            return;
+        }
+        if (!flight.unread.has(name)) {
+            run.log(
+                `supervisor: ${box.step.kind} ${box.step.id} ask unreadable: ${/** @type {NodeJS.ErrnoException} */ (error)?.code}`
+            );
+        }
+        flight.unread.add(name);
         return;
     }
+    flight.unread.delete(name);
     const host = FORGE_ASK.exec(text)?.[1] ?? '';
     return isForgeHost(host) && box.hosts.includes(host) ? host : null;
 }
@@ -1822,7 +1846,7 @@ function askedHost(box, name) {
  * @returns {Promise<void>}
  */
 async function answerAsk(run, box, flight, name) {
-    const host = askedHost(box, name);
+    const host = askedHost(run, box, flight, name);
     if (host === undefined) return;
     if (host === null) return writeAskAnswer(run, box, name, { none: 'refused' });
     const gen = run.bindingGen;
@@ -1850,16 +1874,19 @@ function serveAsks(run, box, flight) {
     try {
         names = fs.readdirSync(dir);
     } catch (error) {
-        if (
-            /** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT' &&
-            /** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOTDIR' &&
-            !flight.readFailed
-        ) {
+        if (confirmedAbsent(error)) {
+            flight.unread.delete(ASKS_LISTING);
+            return;
+        }
+        // Unconfirmed: asks may be waiting in a directory that cannot be listed, so the flight holds them.
+        flight.unread.add(ASKS_LISTING);
+        if (!flight.readFailed) {
             flight.readFailed = true;
-            run.log(`supervisor: ${what} asks unreadable: ${/** @type {NodeJS.ErrnoException} */ (error).code}`);
+            run.log(`supervisor: ${what} asks unreadable: ${/** @type {NodeJS.ErrnoException} */ (error)?.code}`);
         }
         return;
     }
+    flight.unread.delete(ASKS_LISTING);
     for (const name of names) {
         if (name.startsWith('.') || flight.answering.has(name)) continue;
         if (!GATE_ASK_NAME.test(name)) {
