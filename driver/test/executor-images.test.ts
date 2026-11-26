@@ -2032,6 +2032,40 @@ describe('the exec directive in every prompt surface', () => {
     );
 });
 
+// A task spent its whole run budget circling on one failing test, its piped filters hiding the very
+// error it was chasing, until the driver killed the run idle. The guides now say: a suite's full
+// output goes to a file, the red-green loop goes to a subagent, and three identical failures stop
+// the loop dead instead of feeding it a fourth blind edit.
+describe('the test-iteration discipline in the agent instructions', () => {
+    it.each(['docker/claude-executor/claude-home/CLAUDE.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+        '%s sends suites to a file, the loop to a subagent, and stops on three identical failures',
+        (path) => {
+            const text = read(path).replace(/\s+/g, ' ');
+            expect(text).toContain('## Context discipline');
+            expect(text).toContain('Run a suite into a file, read the file.');
+            expect(text).toMatch(/never re-run a suite to see what a filter hid/);
+            expect(text).toContain('Iterate a failing test in a subagent.');
+            expect(text).toMatch(/returns only the verdict per test/);
+            expect(text).toContain('Three identical failures is a stop.');
+            expect(text).toMatch(/Never blind string-replace a file you have not re-read/);
+        }
+    );
+
+    it('each guide names the subagent its own executor runs the loop with', () => {
+        expect(read('docker/claude-executor/claude-home/CLAUDE.md')).toContain('`general-purpose`, the Task tool');
+        expect(read('docker/opencode-executor/opencode-home/AGENTS.md')).toContain('the `general` agent');
+    });
+
+    it('the factory-fix skill carries the discipline itself, never a pointer at the guide', () => {
+        const text = read('docker/skills/factory-fix/SKILL.md').replace(/\s+/g, ' ');
+        expect(text).toContain('Iterate tests out of your context.');
+        expect(text).toMatch(/goes to a file you grep/);
+        expect(text).toMatch(/delegated to a subagent/);
+        expect(text).toMatch(/stop-and-diagnose/);
+        expect(text).not.toContain('agent guide');
+    });
+});
+
 // Issue #814: the agent's commands run as their own uid. The launcher in front of each image's
 // entrypoint starts the tool broker as root and drops for good; the entrypoints keep the CLI's own
 // state from the tool uid, which shares its group and its umask.

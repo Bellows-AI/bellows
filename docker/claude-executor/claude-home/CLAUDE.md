@@ -121,6 +121,30 @@ not use an Atlassian MCP server or `acli`. The factory-linear skill's helper,
 `node /usr/local/share/factory-skills/factory-linear/linear.cjs`, is the path for Linear issues; not a Linear
 MCP server or API key.
 
+## Context discipline
+
+An overgrown session triggers compaction, which costs minutes per cycle.
+
+- **Search order for codebase questions: `grep` → `read`.** Find the place with `grep` first.
+  `read` is for a file you are about to edit — not for open-ended investigation, and never re-read
+  a file you have not changed.
+- **Bound what a shell search can print.** When you shell out, narrow it (`--include`, a path
+  prefix, `| head`) rather than running a bare `grep -rn` over the whole tree.
+- **Trim what you print.** Summarize test and gate output (the summary lines, the failing files,
+  `tail`) rather than pasting a full suite run into the session.
+- **Run a suite into a file, read the file.** Redirect the full output to a file
+  (`npx vitest run … > /tmp/suite.log 2>&1`) and print only the summary lines — the `Tests` counts
+  and the failing names. When the summary is not enough, grep the file; never re-run a suite to
+  see what a filter hid.
+- **Iterate a failing test in a subagent.** A test↔fix loop you expect to take more than two
+  runs — a failure whose cause you do not already know, a broad suite to verify — runs in a
+  subagent (`general-purpose`, the Task tool): the subagent runs the loop, suites into files as
+  above, and returns only the verdict per test, the remaining failing names with a one-line cause
+  each, and the files it changed. The main session never carries the loop's raw output.
+- **Three identical failures is a stop.** If the same test fails the same way three times, stop
+  editing: re-read the failing assertion and the code under test, state the diagnosis in one
+  line, then make one reasoned edit. Never blind string-replace a file you have not re-read.
+
 ## Infrastructure access
 
 The environment and the job's declared services carry the infrastructure — on `127.0.0.1` only a

@@ -91,6 +91,18 @@ An overgrown session triggers compaction, which costs minutes per cycle.
   prefix, `| head`) rather than running a bare `grep -rn` over the whole tree.
 - **Trim what you print.** Summarize test and gate output (the summary lines, the failing files,
   `tail`) rather than pasting a full suite run into the session.
+- **Run a suite into a file, read the file.** Redirect the full output to a file
+  (`npx vitest run … > /tmp/suite.log 2>&1`) and print only the summary lines — the `Tests` counts
+  and the failing names. When the summary is not enough, grep the file; never re-run a suite to
+  see what a filter hid.
+- **Iterate a failing test in a subagent.** A test↔fix loop you expect to take more than two
+  runs — a failure whose cause you do not already know, a broad suite to verify — runs in a
+  subagent (the `general` agent): the subagent runs the loop, suites into files as above, and
+  returns only the verdict per test, the remaining failing names with a one-line cause each, and
+  the files it changed. The main session never carries the loop's raw output.
+- **Three identical failures is a stop.** If the same test fails the same way three times, stop
+  editing: re-read the failing assertion and the code under test, state the diagnosis in one
+  line, then make one reasoned edit. Never blind string-replace a file you have not re-read.
 
 ## Infrastructure access
 
