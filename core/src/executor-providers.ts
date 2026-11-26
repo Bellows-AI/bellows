@@ -95,7 +95,7 @@ export interface GuidedExecutorInput {
      */
     key: string;
     /** The endpoint's base URL, where the provider takes one. */
-    baseUrl?: string;
+    baseUrl?: string | undefined;
 }
 
 /** The Claude Code half: the key and the base URL ride the settings' own `env`. */

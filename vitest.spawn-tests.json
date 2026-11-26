@@ -4,6 +4,7 @@
         "core/test/biome.test.ts",
         "core/test/ci-workflows.test.ts",
         "core/test/no-ticket-keys.test.ts",
+        "core/test/opencode-custom-endpoint.test.ts",
         "core/test/release-script.test.ts",
         "core/test/skills.fix-scripts.test.ts",
         "core/test/test-changed.git.test.ts",

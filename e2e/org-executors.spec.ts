@@ -287,3 +287,50 @@ test('Suspend keeps a personal profile but withholds Make default and the compos
 
     for (const name of ['Alpha', 'Beta']) await removePersonal(page, name);
 });
+
+test('an OpenAI-compatible executor is created through the guided provider, with no JSON typed', async ({ page }) => {
+    await asAdmin(page);
+    const name = PROFILES[0]!;
+
+    await page.getByRole('button', { name: 'Add organization executor' }).click();
+    const dialog = page.getByRole('dialog', { name: ADD_LABEL });
+    await dialog.getByLabel('Name', { exact: true }).fill(name);
+    await dialog.getByLabel('Agent').selectOption('OpenCode');
+
+    // The guided provider step, collapsed until the member opens it.
+    await dialog.getByText('Connect a provider').click();
+    const cards = dialog.getByRole('radiogroup', { name: 'Provider' });
+    await expect(cards.getByRole('radio')).toHaveCount(5);
+    await cards.getByRole('radio', { name: /^OpenAI-compatible/ }).click();
+
+    // The endpoint, the key named as an organization secret, and the model — no JSON anywhere.
+    await dialog.getByLabel('Base URL').fill('http://vllm.internal:8000/v1');
+    await dialog.getByText('Use a secret by name').click();
+    await dialog.getByLabel('API key').fill('GATEWAY_KEY');
+    await dialog.getByLabel('Model', { exact: true }).fill('llama-3');
+
+    // The generated configuration is visible under Advanced: the provider block the claim delivers.
+    await dialog.getByText('Advanced configuration').click();
+    const generated = await dialog.getByLabel('Configuration JSON').inputValue();
+    expect(JSON.parse(generated)).toEqual({
+        model: 'vllm-internal/llama-3',
+        provider: {
+            'vllm-internal': expect.objectContaining({
+                npm: '@ai-sdk/openai-compatible',
+                options: { baseURL: 'http://vllm.internal:8000/v1', apiKey: '{env:GATEWAY_KEY}' },
+            }),
+        },
+    });
+
+    await dialog.getByRole('button', { name: ADD_LABEL }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(row(page, name)).toBeVisible();
+
+    // The stored row keeps the reference verbatim (the board does not seal it), then it goes.
+    await row(page, name).getByRole('button', { name: 'Edit' }).click();
+    const edit = page.getByRole('dialog', { name: 'Edit executor' });
+    await edit.getByText('Advanced configuration').click();
+    expect(JSON.parse(await edit.getByLabel('Configuration JSON').inputValue())).toEqual(JSON.parse(generated));
+    await page.keyboard.press('Escape');
+    await deleteProfile(page, name);
+});
