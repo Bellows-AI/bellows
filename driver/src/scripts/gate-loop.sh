@@ -12,6 +12,7 @@
 #   parallel                         present while the loop can run requests side by side (`setsid` exists)
 #   bin/gh                           the forge helper ($2, scripts/gate-forge.sh), installed at start
 #   running/<id>/{asks,answers}      a forge token ask (`ask <host>`) of the running request and the supervisor's answer
+#   running/<id>/faults              the helper's marker that an ask could not be written; moved to done/<id> with the rest
 #   running/<id>/report/             what the gate and this loop record for the answer, moved to done/<id>/report/
 #                                    with it, so a gate killed at its deadline is answered with what it had written:
 #                                    the gate's own files (`$FACTORY_GATE_RUN/report/<section>.json`) and `resources`,

@@ -3135,6 +3135,8 @@ function askingGate(
                 if (!existsSync(file)) return false;
                 state.answer = readFileSync(file, 'utf8');
                 state.answeredAt = Date.now();
+                // The helper takes its answer: it reads it and removes it, which is how the supervisor knows it was read.
+                rmSync(file);
                 return true;
             },
         };

@@ -458,7 +458,7 @@ describe('a mailbox read that cannot be confirmed is no withdrawn ask', () => {
         expect(answer.stdout).toContain('password=[redacted]');
     });
 
-    it('a vanished ask (ENOENT) is a withdrawn one: nothing is asked of the driver', async () => {
+    it('an ask that vanishes unanswered (ENOENT) is one the helper gave up on: a credential wait, nothing asked of the driver', async () => {
         const driver = await startDriver(minted(3_600_000));
         const sup = startSupervisor(driver);
         failAskReads('ENOENT');
@@ -466,6 +466,7 @@ describe('a mailbox read that cannot be confirmed is no withdrawn ask', () => {
         const answer = await sup.answerOf('sync-1');
         expect(driver.asks).toEqual([]);
         expect(answer.stdout).toContain('status=1');
+        expect(answer.tokenAskUnanswered).toBe(true);
     });
 });
 
@@ -635,5 +636,62 @@ describe('mailbox I/O whose outcome is unconfirmed ends the step as a credential
         const answer = await sup.answerOf('sync-1');
         expect(answer.exitCode).toBe(0);
         expect(answer.tokenAskUnanswered).toBeUndefined();
+    });
+});
+
+describe('a helper that cannot get its ask written reports the transport fault', () => {
+    const WRITE = `printf 'ask %s\\n' "$1"`;
+    const RENAME = '/bin/mv -f "$box/asks/.$me.tmp"';
+    /** The shipped helper with one step of its ask replaced by a failing command: only that I/O is faulted. */
+    const faulted = (step: string) => {
+        const script = gateForgeScript.replace(step, step === WRITE ? 'false' : '/bin/false');
+        expect(script).not.toBe(gateForgeScript);
+        return script;
+    };
+    const FAULTS = [
+        ['write', WRITE],
+        ['rename', RENAME],
+    ] as const;
+    const run = `"$${FORGE_STEP_ENV.run}"`;
+
+    it.each(FAULTS)(
+        'a failed ask %s is a credential wait, never git’s auth failure as the verdict',
+        async (_name, step) => {
+            const driver = await startDriver(minted(3_600_000));
+            const sup = startSupervisor(driver, { [SUPERVISOR_ENV.forgeHelper]: faulted(step) });
+            sup.order('sync-1', `${fill()}; exit 128`);
+            const answer = await sup.answerOf('sync-1');
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+            expect(driver.asks).toEqual([]);
+        }
+    );
+
+    it('a real EACCES on the asks directory is the same wait', async () => {
+        if (process.getuid?.() === 0) return; // root writes through a read-only directory
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        sup.order('sync-1', `chmod 555 ${run}/asks; ${fill()}; status=$?; chmod 755 ${run}/asks; exit $status`);
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBe(true);
+        expect(answer.exitCode).toBeNull();
+    });
+
+    it('a step that forges the marker gets a rerun at most: its pass is never recorded', async () => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        sup.order('sync-1', `mkdir ${run}/faults/forged; exit 0`);
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBe(true);
+        expect(answer.exitCode).toBeNull();
+    });
+
+    it('a step that fails with no marker keeps its own verdict', async () => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        sup.order('sync-1', 'exit 9');
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBeUndefined();
+        expect(answer.exitCode).toBe(9);
     });
 });

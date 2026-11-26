@@ -119,10 +119,10 @@ export const GATE_REPORT_FILES = { dir: 'report', resources: 'resources' } as co
 /**
  * A gate request's forge token mailbox, beside `GATE_FILES` (`GATE_ASK_FILES` of supervisor.cjs, the
  * names `scripts/gate-forge.sh` and `scripts/gate-loop.sh` spell): the supervisor makes `asks/` and
- * `answers/` in the request, the helper writes `asks/<pid>` and reads `answers/<pid>`, and the loop
+ * `answers/` (and `faults/`, the helper's marker that an ask could not be written) in the request, the helper writes `asks/<pid>` and reads `answers/<pid>`, and the loop
  * installs the helper at `bin/gh`. A review has none of it.
  */
-export const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', bin: 'bin' } as const;
+export const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', faults: 'faults', bin: 'bin' } as const;
 /** The review mailbox's layout is the gate mailbox's (`scripts/review-loop.sh` spells the same names). */
 export const REVIEW_FILES = GATE_FILES;
 /**

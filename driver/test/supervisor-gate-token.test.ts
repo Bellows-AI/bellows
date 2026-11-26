@@ -205,7 +205,9 @@ async function startDriver({ lifeMs, unconfirmedMint }: { lifeMs: number; unconf
 function startGate(
     driver: Awaited<ReturnType<typeof startDriver>>,
     env: Record<string, string> = {},
-    now?: () => number
+    now?: () => number,
+    /** The forge helper this gate gets in its `bin/`, in place of the shipped one: a fault injected into one step of it. */
+    helper?: string
 ) {
     const root = mkdtempSync(join(tmpdir(), 'gate-token-'));
     dirs.push(root);
@@ -214,7 +216,14 @@ function startGate(
     ) as Record<keyof typeof MAILBOXES, string>;
     for (const path of Object.values(box)) mkdirSync(path, { recursive: true });
     const gate = box.gate;
-    const { bin, fakeReal } = shared;
+    const { fakeReal } = shared;
+    let { bin } = shared;
+    if (helper !== undefined) {
+        bin = join(root, 'bin');
+        mkdirSync(bin);
+        writeFileSync(join(bin, 'gh'), helper);
+        chmodSync(join(bin, 'gh'), 0o700);
+    }
     const record = join(root, 'gh-record');
     for (const sub of [GATE_FILES.requests, GATE_FILES.running, GATE_FILES.done])
         mkdirSync(join(gate, sub), { recursive: true });
@@ -426,6 +435,71 @@ describe('a gate asks for its GitHub token through its mailbox', () => {
         expect(answer.tokenAskUnanswered).toBe(true);
         expect(answer.exitCode).toBeNull();
         expect(gate.recorded()).toEqual([]);
+    });
+
+    describe('a gate whose answer or ask meets a fault that cannot be confirmed', () => {
+        const WRITE = `printf 'ask %s\\n' "$1"`;
+        const RENAME = '/bin/mv -f "$box/asks/.$me.tmp"';
+        const faulted = (step: string) => {
+            const script = gateForgeScript.replace(step, step === WRITE ? 'false' : '/bin/false');
+            expect(script).not.toBe(gateForgeScript);
+            return script;
+        };
+        const HANDS = (host: string) =>
+            `printf 'ask ${host}\\n' > "$FACTORY_GATE_RUN/asks/.9.tmp" && mv "$FACTORY_GATE_RUN/asks/.9.tmp" "$FACTORY_GATE_RUN/asks/9"; i=0; while [ ! -f "$FACTORY_GATE_RUN/answers/9" ] && [ $i -lt 200 ]; do sleep 0.02; i=$((i+1)); done`;
+
+        it.each([
+            ['write', WRITE],
+            ['rename', RENAME],
+        ])('a failed ask %s is a credential wait, never the gate’s verdict', async (_name, step) => {
+            const driver = await startDriver({ lifeMs: 3_600_000 });
+            const gate = startGate(driver, {}, undefined, faulted(step));
+            gate.order('gate-1', 'gh; exit 1');
+            const answer = await gate.answerOf('gate-1');
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+            expect(driver.asks).toEqual([]);
+        });
+
+        it('a gate that forges the marker is rerun, never passed', async () => {
+            const driver = await startDriver({ lifeMs: 3_600_000 });
+            const gate = startGate(driver);
+            gate.order('gate-1', 'mkdir "$FACTORY_GATE_RUN/faults/forged"; exit 0');
+            const answer = await gate.answerOf('gate-1');
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+        });
+
+        it('a gate that fails with no marker keeps its own verdict', async () => {
+            const driver = await startDriver({ lifeMs: 3_600_000 });
+            const gate = startGate(driver);
+            gate.order('gate-1', 'exit 7');
+            const answer = await gate.answerOf('gate-1');
+            expect(answer.tokenAskUnanswered).toBeUndefined();
+            expect(answer.exitCode).toBe(7);
+        });
+
+        it('an answer the gate never read is a credential wait after the loop moves the mailbox to done', async () => {
+            const driver = await startDriver({ lifeMs: 3_600_000 });
+            const gate = startGate(driver);
+            gate.order('gate-1', `${HANDS('github.com')}; sleep 0.2; exit 1`);
+            const answer = await gate.answerOf('gate-1');
+            expect(driver.asks).toHaveLength(1);
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+        });
+
+        it('an answer the gate took is no wait: the move to done is not read as consumption either way', async () => {
+            const driver = await startDriver({ lifeMs: 3_600_000 });
+            const gate = startGate(driver);
+            gate.order(
+                'gate-1',
+                `${HANDS('github.com')}; cat "$FACTORY_GATE_RUN/answers/9" >/dev/null; rm -f "$FACTORY_GATE_RUN/answers/9"; exit 1`
+            );
+            const answer = await gate.answerOf('gate-1');
+            expect(answer.tokenAskUnanswered).toBeUndefined();
+            expect(answer.exitCode).toBe(1);
+        });
     });
 
     it('asks for a GitLab job’s host the gate env names, and never relays a host it does not', async () => {
