@@ -415,17 +415,20 @@ describe('a mailbox read that cannot be confirmed is no withdrawn ask', () => {
         }) as typeof fs.readFileSync);
     };
 
-    it.each(['EIO', 'EACCES'])('a %s reading the ask ends the step as a credential wait, never a verdict', async (code) => {
-        const driver = await startDriver(minted(3_600_000));
-        const sup = startSupervisor(driver);
-        failAskReads(code);
-        sup.order('sync-1', `export FACTORY_GATE_ASK_SECONDS=1; ${fill()}; exit 0`);
-        const answer = await sup.answerOf('sync-1');
-        expect(answer.tokenAskUnanswered).toBe(true);
-        expect(answer.exitCode).toBeNull();
-        expect(driver.asks).toEqual([]);
-        expect(sup.logs.join('\n')).toContain(code);
-    });
+    it.each(['EIO', 'EACCES'])(
+        'a %s reading the ask ends the step as a credential wait, never a verdict',
+        async (code) => {
+            const driver = await startDriver(minted(3_600_000));
+            const sup = startSupervisor(driver);
+            failAskReads(code);
+            sup.order('sync-1', `export FACTORY_GATE_ASK_SECONDS=1; ${fill()}; exit 0`);
+            const answer = await sup.answerOf('sync-1');
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+            expect(driver.asks).toEqual([]);
+            expect(sup.logs.join('\n')).toContain(code);
+        }
+    );
 
     it.each(['EIO', 'EACCES'])('a %s listing the asks ends the step as a credential wait', async (code) => {
         const driver = await startDriver(minted(3_600_000));

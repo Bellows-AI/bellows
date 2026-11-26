@@ -83,14 +83,35 @@ export interface GitHttpsRemote {
     host: string;
     url: string;
     requests: string[];
+    /** When set, a request without `oauth2:<token>` basic auth is answered 401, as a forge does for a private repo. */
+    requireToken: string | null;
+    /** The tokens' basic-auth requests that were accepted, in order. */
+    accepted: string[];
+    /**
+     * Parks the next `git-upload-pack` or `git-receive-pack` POST (a fetch's or a push's data exchange) until the
+     * returned `release` is called; `reached` settles once the request is parked: the operation is in flight.
+     */
+    holdNext(service: 'git-upload-pack' | 'git-receive-pack'): { reached: Promise<void>; release: () => void };
     close(): Promise<void>;
 }
 
 export async function startGitHttpsRemote(ca: PrivateCa, bare: string): Promise<GitHttpsRemote> {
     const requests: string[] = [];
+    const accepted: string[] = [];
+    const holds = new Map<string, { reached: () => void; released: Promise<void> }>();
+    let requireToken: string | null = null;
     const server: Server = createServer({ key: ca.key, cert: ca.cert }, (req, res) => {
         const url = new URL(req.url ?? '/', 'https://remote');
         requests.push(`${req.method} ${url.pathname}${url.search}`);
+        if (requireToken !== null) {
+            const want = `Basic ${Buffer.from(`oauth2:${requireToken}`).toString('base64')}`;
+            if (req.headers.authorization !== want) {
+                res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="forge"' });
+                res.end();
+                return;
+            }
+            accepted.push(requireToken);
+        }
         const advertised = url.searchParams.get('service') ?? '';
         if (req.method === 'GET' && url.pathname.endsWith('/info/refs') && SERVICES.includes(advertised)) {
             const service = advertised.replace(/^git-/, '');
@@ -101,15 +122,23 @@ export async function startGitHttpsRemote(ca: PrivateCa, bare: string): Promise<
             return;
         }
         const posted = SERVICES.find((service) => url.pathname.endsWith(`/${service}`));
-        if (req.method === 'POST' && posted) {
+        if (req.method !== 'POST' || !posted) {
+            res.writeHead(404);
+            res.end();
+            return;
+        }
+        const serve = () => {
+            if (res.destroyed) return;
             const child = spawn('git', [posted.replace(/^git-/, ''), '--stateless-rpc', bare]);
             res.writeHead(200, { 'Content-Type': `application/x-${posted}-result` });
             (req.headers['content-encoding'] === 'gzip' ? req.pipe(createGunzip()) : req).pipe(child.stdin);
             child.stdout.pipe(res);
-            return;
-        }
-        res.writeHead(404);
-        res.end();
+        };
+        const held = holds.get(posted);
+        if (!held) return serve();
+        holds.delete(posted);
+        held.reached();
+        void held.released.then(serve);
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const host = `127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -117,6 +146,21 @@ export async function startGitHttpsRemote(ca: PrivateCa, bare: string): Promise<
         host,
         url: `https://${host}/group/project.git`,
         requests,
+        get requireToken() {
+            return requireToken;
+        },
+        set requireToken(token: string | null) {
+            requireToken = token;
+        },
+        accepted,
+        holdNext: (service) => {
+            let reached!: () => void;
+            let release!: () => void;
+            const reachedP = new Promise<void>((resolve) => (reached = resolve));
+            const released = new Promise<void>((resolve) => (release = resolve));
+            holds.set(service, { reached, released });
+            return { reached: reachedP, release };
+        },
         close: async () => {
             server.closeAllConnections();
             await new Promise((resolve) => server.close(resolve));

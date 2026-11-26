@@ -31,6 +31,7 @@
         "driver/test/forge-ca-git.test.ts",
         "driver/test/forge-credential.test.ts",
         "driver/test/forge-host-normalization.test.ts",
+        "driver/test/forge-recovery-git.test.ts",
         "driver/test/gate-loop-run.test.ts",
         "driver/test/git-harden.test.ts",
         "driver/test/helper-receipts.test.ts",
