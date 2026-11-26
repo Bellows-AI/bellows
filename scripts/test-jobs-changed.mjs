@@ -80,7 +80,7 @@ export const RULES = [
     [/^server\/src\/auth\/driver-credential-(cli|command)\.ts$/, NONE, 'the driver credential command line, not called by any jobs phase'],
     [/^driver\/src\/change-request-url\.ts$/, NONE, 'a copied URL parser nothing in the driver calls yet; pinned by server/test/change-request-url-parity.test.ts'],
     // Asked before every sync, publish and gate (driver/src/board/board.ts), and installed in every task.
-    [/^driver\/src\/(github-credential-call\.ts|loop\/loop-github\.ts|scripts\/credential-helper\.sh)$/, FULL, 'the GitHub token ask every task makes'],
+    [/^driver\/src\/(forge-credential-call\.ts|loop\/loop-github\.ts|scripts\/credential-helper(-forge)?\.sh)$/, FULL, 'the GitHub token ask every task makes'],
 
     // --- the board (server/src, core/src, server/migrations) ----------------------------------------
     // Derived from what the lane calls: the routes in scripts/test-jobs.sh, scripts/lanes/jobs/*.sh and the helpers they
@@ -144,7 +144,7 @@ export const RULES = [
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
     [/^driver\/src\/(loop\/loop-gates|loop\/loop-gate-pass|loop\/loop-finish|loop\/loop-run-control|gate-manager|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|loop\/gate-settled|gate-record|gate-excerpt|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs|dockerd-loss|tools|tool-control)\.ts$/, ['driver', 'workflows', 'finish-gate'], 'gates and phases'],
     [/^driver\/src\/gate-result\.ts$/, ['driver', 'workflows'], 'gates'],
-    [/^driver\/src\/scripts\/gate-(loop|shell|github)\.sh$/, ['driver', 'workflows'], 'gates'],
+    [/^driver\/src\/scripts\/gate-(loop|shell|forge)\.sh$/, ['driver', 'workflows'], 'gates'],
     [/^driver\/src\/(docker\/docker-task-volume|task-volume)\.ts$/, ['driver', 'capacity', 'pinned-skills', ...RECOVERY], 'task volume'],
     [/^driver\/src\/(docker\/docker-close-read|close-read|docker\/docker-teardown|loop\/loop-conclusion|loop\/loop-post-run)\.ts$/, ['driver', ...RECOVERY], 'task conclusion'],
     [/^driver\/src\/(master-prompt|continuation|transcript-export|loop\/loop-export|export-control|evidence-policy|helper-receipts|verdict-budget|loop\/loop-verdict|loop\/loop-attempt|loop\/loop-handover|telemetry-config)\.ts$/, ['driver', 'cooperative-stop'], 'agent run and its readout'],

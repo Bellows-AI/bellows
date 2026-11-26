@@ -82,7 +82,6 @@
         "driver/test/scripts.test.ts",
         "driver/test/skill-inputs.test.ts",
         "driver/test/skill-view.test.ts",
-        "driver/test/supervisor-forge-step.test.ts",
         "driver/test/supervisor-gate-token.test.ts",
         "driver/test/takeover-sim.test.ts",
         "driver/test/telemetry-shipping.test.ts",
