@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { NO_MODEL_MESSAGE, noExecutorMessage } from '@factory-ai/core';
+import type { ProviderConnectionMeta } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
+import type { OrgRuntime } from '../src/orgs.js';
 import type { ConnectionStore, ConnectionView } from '../src/db/connection-store.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
 import type { SkillStore } from '../src/db/skill-store.js';
@@ -76,6 +78,9 @@ interface Scenario {
     brokenExecutors?: boolean;
     /** Bellows Cloud: the task's model credential is judged on this env store. */
     cloudEnv?: EnvVarStore;
+    /** The org's provider connections; `main` is rewritten to select `connection` when one is given. */
+    providerConnections?: OrgRuntime['providerConnections'];
+    connection?: { id: string };
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -83,7 +88,14 @@ async function boot(scenario: Scenario = {}) {
     const member = auth.seedMember('test-org', 'octocat');
     const other = auth.seedMember('test-org', 'hubot');
     const executors = memoryUserExecutorStore();
-    await executors.replace(member.user.id, [{ name: 'main', type: 'claude-code', config: {} }]);
+    await executors.replace(member.user.id, [
+        {
+            name: 'main',
+            type: 'claude-code',
+            config: {},
+            ...(scenario.connection ? { providerConnectionId: scenario.connection.id } : {}),
+        },
+    ]);
     const asked: { userId: string; explicit: string[] }[] = [];
     const allowed = new Set(scenario.allowed ?? []);
     const connections = {
@@ -136,6 +148,7 @@ async function boot(scenario: Scenario = {}) {
                 : executors,
             repoSkills: scenario.repoSkills,
             skills: scenario.skills,
+            providerConnections: scenario.providerConnections,
         }),
         auth,
     });
@@ -188,6 +201,70 @@ describe('POST /api/jobs/preflight model', () => {
     it('is not checked on a self-hosted board', async () => {
         const { check } = await verdict(await boot(), { repo: 'acme/web', executor: 'main' }, 'model');
         expect(check).toBeUndefined();
+    });
+});
+
+/** A provider connection store answering metadata only: what preflight is allowed to read. */
+const connectionsAnswering = (
+    answer: (userId: string, id: string) => Promise<ProviderConnectionMeta | null>
+): OrgRuntime['providerConnections'] => ({ forUser: answer }) as unknown as OrgRuntime['providerConnections'];
+const CONNECTION_ID = '44444444-4444-4444-8444-444444444444';
+const metaOf = (provider: ProviderConnectionMeta['provider'], scope: 'org' | 'personal' = 'personal') =>
+    ({ id: CONNECTION_ID, name: 'main', provider, scope, baseUrl: null, hasKey: true }) as ProviderConnectionMeta;
+
+describe('POST /api/jobs/preflight provider connection', () => {
+    const task = { repo: 'acme/web', executor: 'main' };
+
+    it('a referenced connection alone satisfies the model check in cloud, with no env key', async () => {
+        const booted = await boot({
+            cloudEnv: memoryEnvVarStore(),
+            connection: { id: CONNECTION_ID },
+            providerConnections: connectionsAnswering(async () => metaOf('anthropic')),
+        });
+        const { check, body } = await verdict(booted, task, 'model');
+        expect(check).toMatchObject({ status: 'ok' });
+        expect(body.ready).toBe(true);
+        expect(JSON.stringify(body)).not.toContain('sk-');
+    });
+
+    it('is unverified, never NO_MODEL, when the connection cannot be read', async () => {
+        const booted = await boot({
+            cloudEnv: memoryEnvVarStore(),
+            connection: { id: CONNECTION_ID },
+            providerConnections: connectionsAnswering(async () => {
+                throw new Error('connections unreadable');
+            }),
+        });
+        const { check, body } = await verdict(booted, task, 'model');
+        expect(check).toMatchObject({ status: 'unverified' });
+        expect(check).not.toHaveProperty('code');
+        expect(body.ready).toBe(true);
+    });
+
+    it('is unverified when the board has no connection store to judge on', async () => {
+        const booted = await boot({ cloudEnv: memoryEnvVarStore(), connection: { id: CONNECTION_ID } });
+        expect((await verdict(booted, task, 'model')).check).toMatchObject({ status: 'unverified' });
+    });
+
+    it.each([
+        ['an unsupported provider and executor pair', metaOf('openai')],
+        ['a connection that no longer exists', null],
+    ])('blocks %s, on a self-hosted board too', async (_name, meta) => {
+        const booted = await boot({
+            connection: { id: CONNECTION_ID },
+            providerConnections: connectionsAnswering(async () => meta),
+        });
+        const { check, body } = await verdict(booted, task, 'model');
+        expect(check).toMatchObject({ status: 'blocked', code: 'PROVIDER_CONNECTION_REFUSED' });
+        expect(body.ready).toBe(false);
+    });
+
+    it('is ok on a self-hosted board when the selected connection can run the executor', async () => {
+        const booted = await boot({
+            connection: { id: CONNECTION_ID },
+            providerConnections: connectionsAnswering(async () => metaOf('litellm')),
+        });
+        expect((await verdict(booted, task, 'model')).check).toMatchObject({ status: 'ok' });
     });
 });
 

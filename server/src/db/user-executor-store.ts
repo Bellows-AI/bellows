@@ -3,6 +3,13 @@ import { DEFAULT_GATE_FIX_ROUNDS, ORG_SCOPE, USER_SCOPE, type ExecutorScope } fr
 import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
 import { type AgentDefault, type AgentDefaults, agentDefaultMethods } from './agent-default-sql.js';
 import {
+    assertConnectionSelection,
+    assertMovedSelection,
+    lockOrgRowForUpdate,
+    modelOf,
+    selectedOf,
+} from './executor-connection-selection.js';
+import {
     convertedGate,
     type ExecutorCredentialDeps,
     resolveCredentials,
@@ -50,6 +57,11 @@ export interface ExecutorProfile {
      * Resolved at claim like the type, so an edit reaches every later claim.
      */
     readonly runnerClass: string | null;
+    /**
+     * The provider connection the profile runs its model on (docs/workspace.md), or null for the stacked env and
+     * the pasted config alone. An id, never a credential: the claim resolves the key from the secret store.
+     */
+    readonly providerConnectionId: string | null;
 }
 
 /** What `configFor` answers: the row's type, the raw config the member pasted, its round limit, whether it is suspended and its runner class. */
@@ -59,6 +71,8 @@ export interface UserExecutorConfig {
     readonly gateFixRounds: number;
     readonly suspended: boolean;
     readonly runnerClass: string | null;
+    /** The selected provider connection (docs/env.md); absent — not null — when the profile selects none, so a profile without one reads as it always did. */
+    readonly providerConnectionId?: string;
 }
 
 /**
@@ -98,6 +112,8 @@ export interface UserExecutorStore {
             gateFixRounds?: number;
             /** Omitted: the suspension a row of the same name already carried survives the rewrite. */
             suspended?: boolean;
+            /** Omitted keeps the connection a same-named row selected; null clears it. A selection is validated (`ExecutorConnectionRefusedError`). */
+            providerConnectionId?: string | null;
         }[]
     ): Promise<void>;
     /** Removes one of the member's OWN personal rows by id. False when the id names no such row. */
@@ -157,6 +173,7 @@ export interface UserExecutorStore {
         config: Record<string, unknown>;
         gateFixRounds?: number;
         runnerClass?: string | null;
+        providerConnectionId?: string | null;
         createdBy: string;
     }): Promise<ExecutorProfile & { config: Record<string, unknown> }>;
     /**
@@ -172,6 +189,8 @@ export interface UserExecutorStore {
             config?: Record<string, unknown>;
             gateFixRounds?: number;
             runnerClass?: string | null;
+            /** Omitted keeps the row's connection; null clears it. */
+            providerConnectionId?: string | null;
         }
     ): Promise<(ExecutorProfile & { config: Record<string, unknown> }) | null>;
     /** Removes an org-scope row. False when the id names no org row of this organization. */
@@ -181,7 +200,8 @@ export interface UserExecutorStore {
      * org row down into the calling admin's personal list. Only the caller's OWN personal row
      * promotes — the update's WHERE clause holds that, so the route's caller is the enforcement.
      * A name already taken in the target scope surfaces as the name index. A demotion clears the
-     * row's runner class: a personal profile names none.
+     * row's runner class: a personal profile names none. The row's provider connection must be visible in the target
+     * scope: a promotion refuses a personal one (`ExecutorConnectionRefusedError`).
      */
     changeScope(id: string, to: ExecutorScope, userId: string): Promise<ExecutorProfile | null>;
     /** How many org-scope rows the organization holds — the cap check's read. */
@@ -237,6 +257,7 @@ interface Row {
     created_by: string | null;
     suspended: boolean;
     runner_class: string | null;
+    provider_connection_id: string | null;
 }
 
 const toExecutorProfile = (row: Row): ExecutorProfile => ({
@@ -249,6 +270,7 @@ const toExecutorProfile = (row: Row): ExecutorProfile => ({
     createdBy: row.created_by,
     suspended: row.suspended,
     runnerClass: row.runner_class,
+    providerConnectionId: row.provider_connection_id,
 });
 
 /**
@@ -266,12 +288,30 @@ async function replacePersonalRows(
     // Read before the delete: an entry that does not say otherwise keeps the suspension its
     // same-named predecessor carried (issue 440), and a stored credential sent back as its marker
     // stays stored.
-    const previous = await tx<{ name: string; suspended: boolean; secret_refs: StoredCredential[] }[]>`
-        select name, suspended, secret_refs from executor_profile
+    const previous = await tx<
+        { name: string; suspended: boolean; secret_refs: StoredCredential[]; provider_connection_id: string | null }[]
+    >`
+        select name, suspended, secret_refs, provider_connection_id from executor_profile
         where org_id = ${orgId} and user_id = ${userId}
         for update
     `;
     const suspendedNames = new Set(previous.filter((row) => row.suspended).map((row) => row.name));
+    const previousConnection = new Map(previous.map((row) => [row.name, row.provider_connection_id]));
+    // An entry that omits the connection keeps its same-named predecessor's; each selection is judged in this transaction.
+    const connectionIds = executors.map((executor) =>
+        executor.providerConnectionId === undefined
+            ? (previousConnection.get(executor.name) ?? null)
+            : executor.providerConnectionId
+    );
+    for (const [index, executor] of executors.entries()) {
+        await assertConnectionSelection(tx, orgId, {
+            owner: userId,
+            connectionId: connectionIds[index]!,
+            type: executor.type,
+            model: modelOf(executor.config),
+            previousConnectionId: previousConnection.get(executor.name) ?? null,
+        });
+    }
     const sealed = sealedOf(storedOf(previous));
     await tx`
         delete from executor_profile
@@ -291,10 +331,11 @@ async function replacePersonalRows(
         gate_fix_rounds: executor.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS,
         position: index,
         suspended: executor.suspended ?? suspendedNames.has(executor.name),
+        provider_connection_id: connectionIds[index]!,
     }));
     await tx`
         insert into executor_profile
-            ${tx(rows, 'org_id', 'user_id', 'name', 'type', 'config', 'secret_refs', 'gate_fix_rounds', 'position', 'suspended')}
+            ${tx(rows, 'org_id', 'user_id', 'name', 'type', 'config', 'secret_refs', 'gate_fix_rounds', 'position', 'suspended', 'provider_connection_id')}
     `;
 }
 
@@ -323,7 +364,7 @@ async function setSuspendedRow(
     const rows = await sql<Row[]>`
         update executor_profile set suspended = ${suspended}, updated_at = now()
         where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
-        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
+        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
     `;
     return rows[0] ? toExecutorProfile(rows[0]) : null;
 }
@@ -344,9 +385,10 @@ async function readConfig(
             gate_fix_rounds: number;
             suspended: boolean;
             runner_class: string | null;
+            provider_connection_id: string | null;
         }[]
     >`
-        select type, config, gate_fix_rounds, suspended, runner_class
+        select type, config, gate_fix_rounds, suspended, runner_class, provider_connection_id
         from executor_profile
         where org_id = ${orgId} and user_id is not distinct from ${owner} and name = ${name}
     `;
@@ -358,6 +400,7 @@ async function readConfig(
               gateFixRounds: row.gate_fix_rounds,
               suspended: row.suspended,
               runnerClass: row.runner_class,
+              ...selectedOf(row.provider_connection_id),
           }
         : null;
 }
@@ -381,11 +424,14 @@ async function claimConfigRow(
     exec: Sql | TransactionSql
 ): Promise<UserExecutorConfig | null> {
     const rows = await (exec as Sql)<
-        (Pick<ConfiguredRow, 'type' | 'config' | 'gate_fix_rounds' | 'suspended' | 'runner_class'> & {
+        (Pick<
+            ConfiguredRow,
+            'type' | 'config' | 'gate_fix_rounds' | 'suspended' | 'runner_class' | 'provider_connection_id'
+        > & {
             secret_refs: StoredCredential[];
         })[]
     >`
-        select type, config, secret_refs, gate_fix_rounds, suspended, runner_class
+        select type, config, secret_refs, gate_fix_rounds, suspended, runner_class, provider_connection_id
         from executor_profile
         where org_id = ${deps.orgId} and user_id is not distinct from ${owner} and name = ${name}
     `;
@@ -401,6 +447,7 @@ async function claimConfigRow(
         gateFixRounds: row.gate_fix_rounds,
         suspended: row.suspended,
         runnerClass: row.runner_class,
+        ...selectedOf(row.provider_connection_id),
     };
 }
 
@@ -411,16 +458,24 @@ async function insertOrgRow(
 ): Promise<ConfiguredRow> {
     const rows = await writeSealed(deps, [input.config], async (tx, sealedOf) => {
         const [sealed] = sealedOf([]);
+        await assertConnectionSelection(tx, deps.orgId, {
+            owner: null,
+            connectionId: input.providerConnectionId ?? null,
+            type: input.type,
+            model: modelOf(input.config),
+            previousConnectionId: null,
+        });
         const position = await nextPosition(tx, deps.orgId, null);
         return tx<ConfiguredRow[]>`
             insert into executor_profile
-                (org_id, user_id, name, type, config, secret_refs, gate_fix_rounds, position, created_by, runner_class)
+                (org_id, user_id, name, type, config, secret_refs, gate_fix_rounds, position, created_by, runner_class,
+                 provider_connection_id)
             values (
                 ${deps.orgId}, null, ${input.name}, ${input.type}, ${tx.json(sealed!.config as never)},
                 ${tx.json(sealed!.secretRefs as never)}, ${input.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS},
-                ${position}, ${input.createdBy}, ${input.runnerClass ?? null}
+                ${position}, ${input.createdBy}, ${input.runnerClass ?? null}, ${input.providerConnectionId ?? null}
             )
-            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
+            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config
         `;
     });
     const row = rows[0];
@@ -437,13 +492,9 @@ async function updateOrgRow(
     const { orgId } = deps;
     const { config } = patch;
     const rows = await writeSealed(deps, config ? [config] : [], async (tx, sealedOf) => {
-        const previous = await tx<{ secret_refs: StoredCredential[] }[]>`
-            select secret_refs from executor_profile
-            where org_id = ${orgId} and id = ${id} and user_id is null
-            for update
-        `;
-        if (!previous[0]) return [];
-        const [sealed] = config ? sealedOf(storedOf(previous)) : [];
+        const previous = await lockOrgRowForUpdate(tx, orgId, { id, patch });
+        if (!previous) return [];
+        const [sealed] = config ? sealedOf(storedOf([previous])) : [];
         return tx<ConfiguredRow[]>`
             update executor_profile set
                 name = coalesce(${patch.name ?? null}, name),
@@ -453,9 +504,10 @@ async function updateOrgRow(
                 gate_fix_rounds = coalesce(${patch.gateFixRounds ?? null}, gate_fix_rounds),
                 runner_class = case when ${patch.runnerClass !== undefined} then ${patch.runnerClass ?? null}
                                     else runner_class end,
+                provider_connection_id = ${previous.connectionId},
                 updated_at = now()
             where org_id = ${orgId} and id = ${id} and user_id is null
-            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
+            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config
         `;
     });
     return rows[0] ?? null;
@@ -539,7 +591,7 @@ export function createUserExecutorStore({
             // `config` is deliberately not selected: the routes echo these rows on every poll, and
             // pasted config may hold credentials.
             const rows = await sql<Row[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
                 from executor_profile
                 where org_id = ${orgId} and user_id = ${userId}
                 order by position asc, name asc
@@ -550,7 +602,7 @@ export function createUserExecutorStore({
         async listWithConfigs(userId) {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config
                 from executor_profile
                 where org_id = ${orgId} and user_id = ${userId}
                 order by position asc, name asc
@@ -575,7 +627,7 @@ export function createUserExecutorStore({
         async listOrg() {
             await gate();
             const rows = await sql<Row[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
                 from executor_profile
                 where org_id = ${orgId} and user_id is null
                 order by position asc, name asc
@@ -586,7 +638,7 @@ export function createUserExecutorStore({
         async listOrgWithConfigs() {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config
                 from executor_profile
                 where org_id = ${orgId} and user_id is null
                 order by position asc, name asc
@@ -616,13 +668,14 @@ export function createUserExecutorStore({
             if (to === USER_SCOPE) {
                 // Org row down into the calling admin's personal list, at the end of it.
                 const rows = await sql.begin(async (tx) => {
+                    await assertMovedSelection(tx, orgId, { id, from: null, to: userId });
                     const position = await nextPosition(tx, orgId, userId);
                     return tx<Row[]>`
                         update executor_profile set
                             user_id = ${userId}, position = ${position}, created_by = null, runner_class = null,
                             updated_at = now()
                         where org_id = ${orgId} and id = ${id} and user_id is null
-                        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
+                        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
                     `;
                 });
                 const row = rows[0];
@@ -632,12 +685,13 @@ export function createUserExecutorStore({
             // the ownership enforcement at the row: another member's row does not match, and the
             // route's caller check rests on this.
             const rows = await sql.begin(async (tx) => {
+                await assertMovedSelection(tx, orgId, { id, from: userId, to: null });
                 const position = await nextPosition(tx, orgId, null);
                 return tx<Row[]>`
                     update executor_profile set
                         user_id = null, position = ${position}, created_by = ${userId}, updated_at = now()
                     where org_id = ${orgId} and id = ${id} and user_id = ${userId}
-                    returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
+                    returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
                 `;
             });
             const row = rows[0];

@@ -346,6 +346,33 @@ describe('the runner job spec', () => {
         });
     });
 
+    it('references every credential name a selected connection blanked only from the per-attempt Secret', () => {
+        // The kubernetes counterpart of the docker rule: the claim's own value, empty included, is the only
+        // reference — the credentials Secret's endpoint and tokens never ride beside the connection's key.
+        const envJob: BoardJob = {
+            ...job,
+            env: {
+                ANTHROPIC_API_KEY: 'connection-key',
+                ANTHROPIC_BASE_URL: '',
+                ANTHROPIC_AUTH_TOKEN: '',
+                OPENROUTER_API_KEY: '',
+            },
+        };
+        const configured = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            RUNNER_CREDENTIALS_SECRET: 'claude-credentials',
+            RUNNER_ENV: 'ANTHROPIC_BASE_URL,ANTHROPIC_AUTH_TOKEN,OPENROUTER_API_KEY',
+        });
+        const env = runnerJobSpec(configured, envJob, { id: SESSION, resume: false }).spec.template.spec.containers[0]!
+            .env;
+        for (const name of ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'OPENROUTER_API_KEY']) {
+            expect(env.filter((entry) => entry.name === name)).toEqual([
+                { name, valueFrom: { secretKeyRef: { name: secretName(envJob), key: name } } },
+            ]);
+        }
+        expect(JSON.stringify(env)).not.toContain('connection-key');
+    });
+
     it('references a forwarded ANTHROPIC_MODEL the claim pins only from the per-attempt Secret', () => {
         const envJob: BoardJob = { ...job, env: { ANTHROPIC_MODEL: 'P' } };
         const configured = loadDriverConfig({

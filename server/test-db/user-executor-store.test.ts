@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-selection.js';
+import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import {
     createUserExecutorStore,
     ExecutorSuspendedError,
@@ -573,5 +575,158 @@ describe.skipIf(!enabled)('the agent default', () => {
         const orgA = (await store.listOrg()).find((row) => row.name === 'org-a')!;
         await store.setOrgSuspended(orgA.id, true);
         expect(await store.resolvedDefault(ALICE)).toBeNull();
+    });
+});
+
+describe.skipIf(!enabled)('executor writes and the provider connection they select', () => {
+    const connections = () => createProviderConnectionStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
+    const connect = (over: Partial<Parameters<ReturnType<typeof connections>['create']>[0]> = {}) =>
+        connections().create({
+            scope: 'personal',
+            userId: ALICE,
+            provider: 'anthropic',
+            name: `c-${randomUUID().slice(0, 8)}`,
+            baseUrl: null,
+            key: 'sk-ant-store-test-key',
+            ...over,
+        });
+    const refusal = async (write: () => Promise<unknown>) => {
+        const error = await write().then(
+            () => null,
+            (e: unknown) => e
+        );
+        expect(error).toBeInstanceOf(ExecutorConnectionRefusedError);
+        return (error as ExecutorConnectionRefusedError).reason;
+    };
+
+    it('all writes enforce provider scope and compatibility', async () => {
+        const mine = await connect();
+        const bobs = await connect({ userId: BOB });
+        const org = await connect({ scope: 'org' });
+        const openai = await connect({ scope: 'org', provider: 'openai' });
+        const personalOpenai = await connect({ provider: 'openai' });
+
+        // Personal whole-list PUT: own and org connections pass; another member's, unsupported pairs and unknown ids do not.
+        await store.replace(ALICE, [
+            { name: 'a', type: 'claude-code', config: {}, providerConnectionId: mine.id },
+            { name: 'b', type: 'opencode', config: {}, providerConnectionId: org.id },
+        ]);
+        expect((await store.list(ALICE)).map((row) => row.providerConnectionId)).toEqual([mine.id, org.id]);
+        expect(
+            await refusal(() =>
+                store.replace(ALICE, [{ name: 'x', type: 'claude-code', config: {}, providerConnectionId: bobs.id }])
+            )
+        ).toBe('missing');
+        expect(
+            await refusal(() =>
+                store.replace(ALICE, [{ name: 'x', type: 'claude-code', config: {}, providerConnectionId: openai.id }])
+            )
+        ).toBe('incompatible');
+        expect(
+            await refusal(() =>
+                store.replace(ALICE, [{ name: 'x', type: 'opencode', config: {}, providerConnectionId: randomUUID() }])
+            )
+        ).toBe('missing');
+        // A refused save leaves the list as it was.
+        expect((await store.list(ALICE)).map((row) => row.name)).toEqual(['a', 'b']);
+
+        // Org create/update: an org connection only.
+        expect(
+            await refusal(() =>
+                store.createOrg({
+                    name: 'o1',
+                    type: 'claude-code',
+                    config: {},
+                    createdBy: ALICE,
+                    providerConnectionId: mine.id,
+                })
+            )
+        ).toBe('scope');
+        const created = await store.createOrg({
+            name: 'o2',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+            providerConnectionId: org.id,
+        });
+        expect(created.providerConnectionId).toBe(org.id);
+        expect(
+            await refusal(() =>
+                store.updateOrg(created.id, { type: 'claude-code', providerConnectionId: personalOpenai.id })
+            )
+        ).toBe('scope');
+        expect(await refusal(() => store.updateOrg(created.id, { providerConnectionId: openai.id }))).toBe(
+            'incompatible'
+        );
+        // A type change alone is a selection write too: the connection stays, the pair must still hold.
+        const subscription = await connect({ scope: 'org', provider: 'subscription' });
+        const claudeOnly = await store.createOrg({
+            name: 'o3',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+            providerConnectionId: subscription.id,
+        });
+        expect(await refusal(() => store.updateOrg(claudeOnly.id, { type: 'opencode' }))).toBe('incompatible');
+    });
+
+    it('promotion refuses a personal connection', async () => {
+        const mine = await connect();
+        const org = await connect({ scope: 'org' });
+        await store.replace(ALICE, [
+            { name: 'p-personal', type: 'claude-code', config: {}, providerConnectionId: mine.id },
+            { name: 'p-org', type: 'claude-code', config: {}, providerConnectionId: org.id },
+        ]);
+        const [personal, shared] = await store.list(ALICE);
+
+        expect(await refusal(() => store.changeScope(personal!.id, 'org', ALICE))).toBe('scope');
+        expect((await store.changeScope(shared!.id, 'org', ALICE))?.providerConnectionId).toBe(org.id);
+        // Demotion into a personal list: the org connection is visible there.
+        expect((await store.changeScope(shared!.id, 'user', ALICE))?.providerConnectionId).toBe(org.id);
+    });
+
+    it('connection switching requires a valid or explicitly reselected model', async () => {
+        const anthropic = await connect({ provider: 'anthropic' });
+        const openai = await connect({ provider: 'openai' });
+        await store.replace(ALICE, [
+            {
+                name: 'sw',
+                type: 'opencode',
+                config: { model: 'anthropic/claude-x' },
+                providerConnectionId: anthropic.id,
+            },
+        ]);
+
+        // Switching with a model the board knows belongs to the old provider is refused ...
+        expect(
+            await refusal(() =>
+                store.replace(ALICE, [
+                    {
+                        name: 'sw',
+                        type: 'opencode',
+                        config: { model: 'anthropic/claude-x' },
+                        providerConnectionId: openai.id,
+                    },
+                ])
+            )
+        ).toBe('model');
+        // ... explicit reselection passes, and so does a model with no known prefix (discovery proves nothing).
+        await store.replace(ALICE, [
+            { name: 'sw', type: 'opencode', config: { model: 'openai/gpt-x' }, providerConnectionId: openai.id },
+        ]);
+        await store.replace(ALICE, [
+            { name: 'sw', type: 'opencode', config: { model: 'house-model' }, providerConnectionId: anthropic.id },
+        ]);
+        // Re-saving the same connection does not re-judge the model.
+        await store.replace(ALICE, [
+            { name: 'sw', type: 'opencode', config: { model: 'openai/gpt-x' }, providerConnectionId: anthropic.id },
+        ]);
+    });
+
+    it('a row with no connection is unchanged', async () => {
+        await store.replace(ALICE, [{ name: 'plain', type: 'claude-code', config: { model: 'm' } }]);
+        expect((await store.list(ALICE))[0]?.providerConnectionId).toBeNull();
+        // The claim-time read omits the key entirely, so a profile without a connection reads exactly as it always did.
+        expect(await store.configFor(ALICE, 'plain')).not.toHaveProperty('providerConnectionId');
     });
 });

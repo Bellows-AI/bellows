@@ -424,6 +424,16 @@ describe('the kind recovery stub barrier', () => {
         expect(child.stdout()).not.toContain('released in');
     });
 
+    it('reports the model credential names its env carries, empty when blanked and unset when absent', async () => {
+        const box = sandbox();
+        const child = run(box.wrapper, ['sh', join(ROOT, 'scripts/k8s-stub.sh'), 'prompt factory-stub-model-env'], {
+            ANTHROPIC_API_KEY: 'lane-key',
+            ANTHROPIC_BASE_URL: '',
+        });
+        expect(await child.exited).toBe(0);
+        expect(child.stdout()).toContain('model-env key=lane-key base= bearer=unset\n');
+    });
+
     // Issue #829: an agent that only leaves its ready file, so a lane counts its runs without holding it.
     it('passes straight through, leaving its ready file', async () => {
         const box = sandbox();

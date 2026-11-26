@@ -3,7 +3,11 @@ import { describe, expect, it } from 'vitest';
 import { MAX_PROVIDER_CONNECTIONS_PER_SCOPE, type ProviderConnectionMeta } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { ProviderKeys } from '../src/provider-keys/verify.js';
-import { ProviderConnectionCapError, type ProviderConnectionStore } from '../src/db/provider-connection-store.js';
+import {
+    ProviderConnectionCapError,
+    ProviderConnectionReferencedError,
+    type ProviderConnectionStore,
+} from '../src/db/provider-connection-store.js';
 import type { AppConfig } from '../src/config.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, testConfig } from './helpers.js';
 import {
@@ -27,6 +31,9 @@ const track = trackApps();
 const BASE = '/api/provider-connections';
 const KEY = 'sk-ant-route-test-0123456789';
 const ROTATED = 'sk-ant-route-test-rotated-key';
+/** What the double's `remove` refuses with, by connection id: the executors that select it (the SQL store's foreign key). */
+const references = new Map<string, { executors: { name: string; scope: 'org' | 'personal' }[]; other: boolean }>();
+
 /** An in-memory ProviderConnectionStore, for the route contract only. */
 function memoryProviderConnectionStore(): ProviderConnectionStore {
     interface Row {
@@ -85,6 +92,8 @@ function memoryProviderConnectionStore(): ProviderConnectionStore {
             return metaOf(row);
         },
         async remove(owner, id) {
+            const refs = references.get(id);
+            if (refs) throw new ProviderConnectionReferencedError(refs.executors, refs.other);
             const index = rows.findIndex((row) => row.id === id && row.userId === owner);
             if (index === -1) return false;
             rows.splice(index, 1);
@@ -94,6 +103,10 @@ function memoryProviderConnectionStore(): ProviderConnectionStore {
             const row = visible(userId).find((row) => row.id === id);
             if (!row) return null;
             return { connection: metaOf(row), key: row.key };
+        },
+        async claimCredentialFor() {
+            // The route contract never claims; the claim's read is covered against PostgreSQL.
+            throw new Error('claimCredentialFor is not part of the route contract');
         },
     };
 }
@@ -297,6 +310,29 @@ describe('PUT and DELETE /api/provider-connections/:id', () => {
         });
         expect(over.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(over.json()).toMatchObject({ code: 'TOO_MANY_CONNECTIONS' });
+    });
+
+    it('refuses to delete a connection executors still select, naming what the caller may see', async () => {
+        const { member, inject } = await boot();
+        const made = await inject(member, 'POST', BASE, {
+            scope: 'personal',
+            name: 'busy',
+            provider: 'anthropic',
+            key: KEY,
+        });
+        const id = (made.json() as { id: string }).id;
+        references.set(id, { executors: [{ name: 'my-exec', scope: 'personal' }], other: true });
+
+        const refused = await inject(member, 'DELETE', `${BASE}/${id}`);
+
+        expect(refused.statusCode).toBe(409);
+        expect(refused.json()).toMatchObject({
+            code: 'PROVIDER_CONNECTION_IN_USE',
+            executors: [{ name: 'my-exec', scope: 'personal' }],
+            otherReferences: true,
+        });
+        references.delete(id);
+        expect((await inject(member, 'DELETE', `${BASE}/${id}`)).statusCode).toBe(HTTP_OK);
     });
 
     it('a member may delete a personal row but not an org row; an unknown id is 404', async () => {

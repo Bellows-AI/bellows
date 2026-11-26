@@ -3,8 +3,10 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { MAX_PROVIDER_CONNECTIONS_PER_SCOPE } from '@factory-ai/core';
 import { EnvSecretError, readConnectionCredential } from '../src/db/provider-connection-secrets.js';
+import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import {
     ProviderConnectionCapError,
+    ProviderConnectionReferencedError,
     createProviderConnectionStore,
     type ProviderConnectionStore,
 } from '../src/db/provider-connection-store.js';
@@ -320,5 +322,81 @@ describe.skipIf(!enabled)('the provider connection store', () => {
         expect(renamed).toMatchObject({ id: made.id, scope: 'org' });
         expect(await store.count('org', ALICE)).toBe(1);
         expect(await store.count('personal', BOB)).toBe(0);
+    });
+});
+
+describe.skipIf(!enabled)('deleting a connection executors reference', () => {
+    const executors = () => createUserExecutorStore({ sql, orgId: ORG, secrets: healthy, secretLog: () => {} });
+
+    it('refuses while referenced, names only executors the caller can see, and deletes once released', async () => {
+        const shared = await store.create(create({ scope: 'org', name: 'shared' }));
+        await executors().replace(ALICE, [
+            { name: 'alice-exec', type: 'claude-code', config: {}, providerConnectionId: shared.id },
+        ]);
+        await executors().replace(BOB, [
+            { name: 'bob-private', type: 'claude-code', config: {}, providerConnectionId: shared.id },
+        ]);
+        await executors().createOrg({
+            name: 'org-exec',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+            providerConnectionId: shared.id,
+        });
+
+        const error = await store.remove(null, shared.id, ALICE).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(ProviderConnectionReferencedError);
+        const detail = error as ProviderConnectionReferencedError;
+        expect(detail.executors.map((e) => e.name).sort()).toEqual(['alice-exec', 'org-exec']);
+        expect(detail.otherReferences).toBe(true);
+        expect(detail.message).not.toContain('bob-private');
+        expect(JSON.stringify(detail.executors)).not.toContain('bob-private');
+        // Nothing was deleted or cleared.
+        expect(await store.forUser(ALICE, shared.id)).not.toBeNull();
+        expect(await rowOf(shared.id)).toBeDefined();
+
+        await executors().replace(ALICE, []);
+        await executors().replace(BOB, []);
+        await sql`delete from executor_profile where org_id = ${ORG} and user_id is null`;
+        expect(await store.remove(null, shared.id, ALICE)).toBe(true);
+    });
+
+    it('deletion details hide other members personal executor names', async () => {
+        const org = await store.create(create({ scope: 'org', name: 'hidden-refs' }));
+        await executors().replace(BOB, [
+            { name: 'bob-secret-name', type: 'claude-code', config: {}, providerConnectionId: org.id },
+        ]);
+
+        const error = (await store
+            .remove(null, org.id, ALICE)
+            .catch((e: unknown) => e)) as ProviderConnectionReferencedError;
+
+        expect(error.executors).toEqual([]);
+        expect(error.otherReferences).toBe(true);
+        expect(JSON.stringify(error)).not.toContain('bob-secret-name');
+        expect(error.message).not.toContain('bob-secret-name');
+        await executors().replace(BOB, []);
+    });
+
+    it('reference insert racing deletion cannot leave a dangling executor', async () => {
+        for (let round = 0; round < 8; round += 1) {
+            const conn = await store.create(create({ name: `race-${round}` }));
+            const outcomes = await Promise.allSettled([
+                executors().replace(ALICE, [
+                    { name: 'racer', type: 'claude-code', config: {}, providerConnectionId: conn.id },
+                ]),
+                store.remove(ALICE, conn.id, ALICE),
+            ]);
+            expect(outcomes.some((o) => o.status === 'fulfilled')).toBe(true);
+            const dangling = await sql`
+                select 1 from executor_profile e
+                where e.org_id = ${ORG} and e.provider_connection_id is not null
+                  and not exists (select 1 from provider_connection c where c.org_id = e.org_id and c.id = e.provider_connection_id)
+            `;
+            expect(dangling).toHaveLength(0);
+            await executors().replace(ALICE, []);
+            await store.remove(ALICE, conn.id, ALICE).catch(() => undefined);
+        }
     });
 });

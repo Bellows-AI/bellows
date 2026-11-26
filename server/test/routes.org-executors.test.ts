@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { connectionSelectionRefusal, type SelectedConnection } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import { bridgedRequestClass } from '../src/auth/bridge-binding.js';
 import type { AppConfig } from '../src/config.js';
@@ -742,5 +743,117 @@ describe('executor lists to a bridged (MCP) caller', () => {
             for (const row of cookie.json().executors as Record<string, unknown>[])
                 expect(row, url).toHaveProperty('config');
         }
+    });
+});
+
+describe('organization executors: provider connection selection', () => {
+    const ORG_CONNECTION = '66666666-6666-4666-8666-666666666666';
+    const PERSONAL_CONNECTION = '77777777-7777-4777-8777-777777777777';
+    const OPENAI_CONNECTION = '88888888-8888-4888-8888-888888888888';
+    const known: Record<string, SelectedConnection> = {
+        [ORG_CONNECTION]: { provider: 'anthropic', scope: 'org', ownerId: null },
+        [PERSONAL_CONNECTION]: { provider: 'anthropic', scope: 'personal', ownerId: 'someone' },
+        [OPENAI_CONNECTION]: { provider: 'openai', scope: 'org', ownerId: null },
+    };
+    /** The shared rule the SQL store runs in its transaction, applied by the double. */
+    const freshRules = () =>
+        memoryUserExecutorStore(({ owner, connectionId, type }) => {
+            const connection = known[connectionId];
+            return connectionSelectionRefusal({
+                // A personal connection is its saving member's own: the owner is who saves it.
+                connection:
+                    connection && connection.scope === 'personal'
+                        ? { ...connection, ownerId: owner }
+                        : (connection ?? null),
+                owner,
+                agentType: type as 'claude-code' | 'opencode',
+            });
+        });
+    const create = (cookie: string, instance: Awaited<ReturnType<typeof boot>>['instance'], extra: object) =>
+        instance.inject({
+            method: 'POST',
+            url: '/api/org/executors',
+            headers: { cookie },
+            payload: { ...CLAUDE_CODE, ...extra },
+        });
+
+    it('stores and echoes an org connection, the selection metadata every member reads', async () => {
+        const { instance, adminCookie, memberCookie } = await boot(freshRules());
+        const created = await create(adminCookie, instance, { providerConnectionId: ORG_CONNECTION });
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        expect(created.json()).toMatchObject({ providerConnectionId: ORG_CONNECTION });
+        const listed = await instance.inject({
+            method: 'GET',
+            url: '/api/org/executors',
+            headers: { cookie: memberCookie },
+        });
+        expect(listed.json().executors[0]).toMatchObject({ providerConnectionId: ORG_CONNECTION });
+        expect(listed.json().executors[0]).not.toHaveProperty('config');
+    });
+
+    it.each([
+        ['a personal connection on an organization executor', { providerConnectionId: PERSONAL_CONNECTION }],
+        ['an unsupported provider and executor type', { providerConnectionId: OPENAI_CONNECTION }],
+        ['an unknown connection', { providerConnectionId: '99999999-9999-4999-8999-999999999999' }],
+    ])('refuses %s with 409 PROVIDER_CONNECTION_REFUSED, storing nothing', async (_name, extra) => {
+        const { instance, adminCookie, executors } = await boot(freshRules());
+        const refused = await create(adminCookie, instance, extra);
+        expect(refused.statusCode).toBe(HTTP_CONFLICT);
+        expect(refused.json()).toMatchObject({ code: 'PROVIDER_CONNECTION_REFUSED' });
+        expect(executors.rows()).toEqual([]);
+    });
+
+    it('refuses a malformed connection id as a bad body, and refuses an edit that switches to a refused one', async () => {
+        const { instance, adminCookie } = await boot(freshRules());
+        expect((await create(adminCookie, instance, { providerConnectionId: 'not-an-id' })).statusCode).toBe(
+            HTTP_BAD_REQUEST
+        );
+        const created = (await create(adminCookie, instance, { providerConnectionId: ORG_CONNECTION })).json();
+        const edit = await instance.inject({
+            method: 'PUT',
+            url: `/api/org/executors/${created.id}`,
+            headers: { cookie: adminCookie },
+            payload: { ...CLAUDE_CODE, providerConnectionId: OPENAI_CONNECTION },
+        });
+        expect(edit.statusCode).toBe(HTTP_CONFLICT);
+        // Null clears the selection; omitting it keeps it.
+        const kept = await instance.inject({
+            method: 'PUT',
+            url: `/api/org/executors/${created.id}`,
+            headers: { cookie: adminCookie },
+            payload: CLAUDE_CODE,
+        });
+        expect(kept.json()).toMatchObject({ providerConnectionId: ORG_CONNECTION });
+        const cleared = await instance.inject({
+            method: 'PUT',
+            url: `/api/org/executors/${created.id}`,
+            headers: { cookie: adminCookie },
+            payload: { ...CLAUDE_CODE, providerConnectionId: null },
+        });
+        expect(cleared.json()).toMatchObject({ providerConnectionId: null });
+    });
+
+    it('refuses a promotion that would carry a personal connection into the organization', async () => {
+        const { instance, adminCookie, executors } = await boot(freshRules());
+        await instance.inject({
+            method: 'PUT',
+            url: '/api/workspace/executors',
+            headers: { cookie: adminCookie },
+            payload: {
+                executors: [
+                    { name: 'mine', type: 'claude-code', config: {}, providerConnectionId: PERSONAL_CONNECTION },
+                ],
+            },
+        });
+        const row = executors.rows()[0]!;
+        const response = await instance.inject({
+            method: 'POST',
+            url: `/api/org/executors/${row.id}/scope`,
+            headers: { cookie: adminCookie },
+            payload: { scope: 'org' },
+        });
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json()).toMatchObject({ code: 'PROVIDER_CONNECTION_REFUSED' });
+        expect(executors.rows()[0]!.userId).not.toBeNull();
     });
 });

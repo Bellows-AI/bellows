@@ -23,6 +23,7 @@ import type { JobReadStore } from './job-store-reads.js';
 import type { JobWorkerStore } from './job-store-worker.js';
 import type { JobConclusionStore } from './job-store-conclusions.js';
 import type { DeploymentMode, UserRef, ExecutorScope, ExecutorType, JobMode, TaskTitleOrigin } from '@factory-ai/core';
+import type { ClaimConnectionReader } from './job-store-claim-executor.js';
 import type { AdmissionBudgets, ClaimObserver, JobAdmissionStore } from './job-store-admission.js';
 import type { PlanLimits } from '../plan-limits.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
@@ -1212,8 +1213,11 @@ export interface CreateJobStoreDeps {
             config: Record<string, unknown>;
             suspended: boolean;
             runnerClass: string | null;
+            providerConnectionId?: string;
         } | null>;
     };
+    /** The provider connection store's claim-time reader (`ClaimConnectionReader`); absent, a profile naming a connection is refused at claim. */
+    providerConnections?: ClaimConnectionReader;
     /**
      * The PR lifecycle store, when the deployment records publications and PR waits (036).
      * Declared inline like `env`, because only the completion surface (the publication upsert),
@@ -1314,6 +1318,7 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     githubApp: boolean;
     planReader: CreateJobStoreDeps['plan'];
     executorConfig: CreateJobStoreDeps['executorConfig'];
+    providerConnections: CreateJobStoreDeps['providerConnections'];
     prs: JobStorePrs | undefined;
     metrics: ClaimObserver | undefined;
     orgKey: string | undefined;

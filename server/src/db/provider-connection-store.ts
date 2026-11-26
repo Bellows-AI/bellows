@@ -1,10 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import {
+    type ConnectionCredential,
+    type ConnectionSelectionRefusal,
     MAX_PROVIDER_CONNECTIONS_PER_SCOPE,
     type ModelProvider,
     type ProviderConnectionMeta,
     type ProviderConnectionScope,
+    type SelectedConnection,
 } from '@factory-ai/core';
 import { waitAdvisoryXactLock } from './pool.js';
 import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
@@ -57,14 +60,28 @@ export interface ProviderConnectionStore {
     create(input: ProviderConnectionInput): Promise<ProviderConnectionMeta>;
     /** Edits the row `owner` owns (null: the organization's). Null when no such row. */
     update(owner: string | null, id: string, patch: ProviderConnectionPatch): Promise<ProviderConnectionMeta | null>;
-    /** Deletes the row and retires its stored secret after the commit. False when no such row. */
-    remove(owner: string | null, id: string): Promise<boolean>;
+    /**
+     * Deletes the row and retires its stored secret after the commit. False when no such row. Refused with
+     * `ProviderConnectionReferencedError` while an executor profile selects it, naming only the executors `viewer`
+     * (a member's id; absent sees the organization's alone) can see — never a silent clear.
+     */
+    remove(owner: string | null, id: string, viewer?: string): Promise<boolean>;
     /**
      * The stored key of a connection the member may use, with its metadata, fail-closed: any answer
      * that is not a confirmed value of the stored version throws, so a caller never treats an
      * inconclusive read as an absent or wrong key.
      */
     credentialFor(userId: string, id: string): Promise<{ connection: ProviderConnectionMeta; key: string } | null>;
+    /**
+     * The claim's read, on the claim's transaction: the connection a profile selected, judged by `check` (the
+     * shared selection rules, which see the row's provider, scope and owner) BEFORE its key is read, then its
+     * current sealed key, fail-closed like `credentialFor` — an unconfirmed read throws and the claim rolls back.
+     */
+    claimCredentialFor(
+        exec: Sql | TransactionSql,
+        id: string,
+        check: (connection: SelectedConnection | null) => ConnectionSelectionRefusal | null
+    ): Promise<{ refusal: ConnectionSelectionRefusal } | { credential: ConnectionCredential }>;
 }
 
 /** The per-scope cap is full. The routes answer `TOO_MANY_CONNECTIONS`. */
@@ -75,12 +92,38 @@ export class ProviderConnectionCapError extends Error {
     }
 }
 
+/** One executor profile that selects a connection, as a deletion refusal may name it. */
+export interface ReferencingExecutor {
+    readonly name: string;
+    readonly scope: 'org' | 'personal';
+}
+
 /**
- * The seam a referencing table's enforcement uses (a later slice's executor-profile foreign key):
- * deleting a connection other rows still name is refused, and the stored secret is retired only
- * after a deletion that committed. Thrown by `remove` once references exist.
+ * Deleting a connection executor profiles still select is refused (`executor_profile_provider_connection_fk`),
+ * and the stored secret is retired only after a deletion that committed. `executors` names only the referencing
+ * profiles the caller can see — the organization's and their own; `otherReferences` says others exist, without
+ * saying whose or what.
  */
-export class ProviderConnectionReferencedError extends Error {}
+export class ProviderConnectionReferencedError extends Error {
+    constructor(
+        readonly executors: readonly ReferencingExecutor[],
+        readonly otherReferences: boolean
+    ) {
+        super(
+            executors.length > 0
+                ? `The connection is still used by: ${executors.map((e) => `${e.scope} executor ${e.name}`).join(', ')}${otherReferences ? ', and by other executors' : ''}.`
+                : 'The connection is still used by other executors.'
+        );
+        this.name = 'ProviderConnectionReferencedError';
+    }
+}
+
+const FOREIGN_KEY_VIOLATION = '23503';
+const EXECUTOR_REFERENCE_FK = 'executor_profile_provider_connection_fk';
+
+const isExecutorReference = (error: unknown): boolean =>
+    (error as { code?: string; constraint_name?: string }).code === FOREIGN_KEY_VIOLATION &&
+    (error as { constraint_name?: string }).constraint_name === EXECUTOR_REFERENCE_FK;
 
 interface Row {
     id: string;
@@ -118,6 +161,31 @@ const toMeta = (row: {
     baseUrl: row.base_url,
     hasKey: row.has_key === undefined ? row.secret_ref !== null : Boolean(row.has_key),
 });
+
+/** The refusal a claim reads a missing row as; the shared rule words it the same (`connectionSelectionRefusal`). */
+const MISSING_REFUSAL: ConnectionSelectionRefusal = {
+    reason: 'missing',
+    message: 'The provider connection does not exist or is not available to you.',
+};
+
+/** What a refused deletion names: the referencing profiles the viewer can see, and whether any other exist. */
+async function referencedError(
+    sql: Sql,
+    orgId: string,
+    id: string,
+    viewer: string | undefined
+): Promise<ProviderConnectionReferencedError> {
+    const rows = await sql<{ name: string; user_id: string | null }[]>`
+        select name, user_id from executor_profile
+        where org_id = ${orgId} and provider_connection_id = ${id}
+        order by (user_id is not null), position, name
+    `;
+    const visible = rows.filter((row) => row.user_id === null || row.user_id === viewer);
+    return new ProviderConnectionReferencedError(
+        visible.map((row) => ({ name: row.name, scope: row.user_id === null ? 'org' : 'personal' })),
+        visible.length < rows.length
+    );
+}
 
 /** The lock one scope's create holds for its count-then-insert, so concurrent creates cannot race past the cap. */
 const scopeLockKey = (orgId: string, owner: string | null) => `provider-connection:${orgId}:${owner ?? 'org'}`;
@@ -285,19 +353,47 @@ export function createProviderConnectionStore({
             }
         },
 
-        async remove(owner, id) {
+        async remove(owner, id, viewer) {
             await gate();
             const rows = await sql<{ secret_ref: string; secret_version: string; user_id: string | null }[]>`
                 delete from provider_connection
                 where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
                 returning secret_ref, secret_version, user_id
-            `;
+            `.catch(async (error: unknown) => {
+                if (!isExecutorReference(error)) throw error;
+                throw await referencedError(sql, orgId, id, viewer);
+            });
             const row = rows[0];
             if (row) {
                 await retireConnectionSecrets(deps, [retiredConnectionSecret(orgId, id, row.user_id, row)]);
                 return true;
             }
             return false;
+        },
+
+        async claimCredentialFor(exec, id, check) {
+            if (ready) await ready;
+            const rows = await (exec as Sql)<SealedRow[]>`
+                select id, name, provider, user_id, base_url, secret_ref, secret_version
+                from provider_connection
+                where org_id = ${orgId} and id = ${id}
+            `;
+            const row = rows[0];
+            const refusal = check(
+                row
+                    ? { provider: row.provider, scope: row.user_id === null ? 'org' : 'personal', ownerId: row.user_id }
+                    : null
+            );
+            if (refusal || !row) return { refusal: refusal ?? MISSING_REFUSAL };
+            const key = await readConnectionCredential(secrets, {
+                orgId,
+                userId: row.user_id,
+                connectionId: row.id,
+                name: row.name,
+                ref: row.secret_ref,
+                version: row.secret_version,
+            });
+            return { credential: { provider: row.provider, key, baseUrl: row.base_url } };
         },
 
         async credentialFor(userId, id) {

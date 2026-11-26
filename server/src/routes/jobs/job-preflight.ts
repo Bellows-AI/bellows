@@ -20,7 +20,12 @@ import {
     type EffectiveCatalog,
     type ExecutorTypeRead,
 } from '../../skill-catalog.js';
-import { executorTypeOf, modelStanding } from './executor-usable.js';
+import {
+    executorTypeOf,
+    modelStanding,
+    type SelectedProfileConnection,
+    selectedConnectionOf,
+} from './executor-usable.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body } from '../helpers.js';
 import { parseConnectionIds } from '../connections.js';
@@ -139,6 +144,8 @@ interface ExecutorStanding {
     type: ExecutorTypeRead;
     /** The resolved profile's config, which may hold the model credential; absent when no profile resolved. */
     config?: Record<string, unknown>;
+    /** The provider connection the resolved profile selects; absent when it selects none. */
+    connection?: SelectedProfileConnection | null;
 }
 
 async function executorCheck(
@@ -226,6 +233,7 @@ async function executorCheck(
         check: { subject: 'executor', name, status: 'ok', detail },
         type: executorTypeOf(row.value.type),
         config: row.value.config,
+        connection: selectedConnectionOf(row.value.providerConnectionId, at),
     };
 }
 
@@ -240,8 +248,14 @@ async function modelCheck(
     userId: string,
     { rt, executor }: { rt: Runtime; executor: ExecutorStanding }
 ): Promise<Check | null> {
-    if (!rt.modelRequired) return null;
-    const subject = { userId, repo: selection.repo, type: executor.type, config: executor.config ?? null };
+    if (!rt.modelRequired && !executor.connection) return null;
+    const subject = {
+        userId,
+        repo: selection.repo,
+        type: executor.type,
+        config: executor.config ?? null,
+        connection: executor.connection ?? null,
+    };
     const read = await attempt(log, 'model credential names', () => modelStanding(rt, subject));
     if (!read.ok || read.value === 'unverified') {
         return {
@@ -249,6 +263,24 @@ async function modelCheck(
             name: null,
             status: 'unverified',
             detail: 'the model credential could not be checked',
+        };
+    }
+    // A selected connection the shared rules refuse blocks whether the board requires a key or not: the claim refuses it too.
+    if (typeof read.value === 'object') {
+        return {
+            subject: 'model',
+            name: null,
+            status: 'blocked',
+            code: ERROR_CODES.PROVIDER_CONNECTION_REFUSED,
+            detail: read.value.refused.message,
+        };
+    }
+    if (read.value === 'not-required') {
+        return {
+            subject: 'model',
+            name: null,
+            status: 'ok',
+            detail: 'the selected provider connection can run this executor',
         };
     }
     if (read.value === 'missing') {
