@@ -648,6 +648,12 @@ describe('a helper that cannot get its ask written reports the transport fault',
         expect(script).not.toBe(gateForgeScript);
         return script;
     };
+    /** The same fault with storage that refuses every new file: any allocation in the fault path fails too. */
+    const starved = (step: string) =>
+        faulted(step)
+            .replaceAll('/bin/mkdir', '/bin/false')
+            .replaceAll('/bin/mv', '/bin/false')
+            .replaceAll('/bin/touch', '/bin/false');
     const FAULTS = [
         ['write', WRITE],
         ['rename', RENAME],
@@ -667,6 +673,28 @@ describe('a helper that cannot get its ask written reports the transport fault',
         }
     );
 
+    it.each(FAULTS)(
+        'a storage fault that refuses the ask %s and every new file is still a wait: the signal allocates nothing',
+        async (_name, step) => {
+            const driver = await startDriver(minted(3_600_000));
+            const sup = startSupervisor(driver, { [SUPERVISOR_ENV.forgeHelper]: starved(step) });
+            sup.order('sync-1', `${fill()}; exit 128`);
+            const answer = await sup.answerOf('sync-1');
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+        }
+    );
+
+    it('the helper’s fault branch creates nothing: it only removes the pre-made slot', () => {
+        const from = gateForgeScript.indexOf('; then', gateForgeScript.indexOf('if ! {'));
+        const branch = gateForgeScript
+            .slice(from, gateForgeScript.indexOf("reason='could not write the ask'"))
+            .replace(/^\s*#.*$/gm, '')
+            .replaceAll('2>/dev/null', '');
+        expect(branch).toContain('/bin/rm -f "$box/faults/armed"');
+        expect(branch).not.toMatch(/mkdir|touch|mktemp|ln |printf|>|\bmv\b|cp /);
+    });
+
     it('a real EACCES on the asks directory is the same wait', async () => {
         if (process.getuid?.() === 0) return; // root writes through a read-only directory
         const driver = await startDriver(minted(3_600_000));
@@ -680,7 +708,7 @@ describe('a helper that cannot get its ask written reports the transport fault',
     it('a step that forges the marker gets a rerun at most: its pass is never recorded', async () => {
         const driver = await startDriver(minted(3_600_000));
         const sup = startSupervisor(driver);
-        sup.order('sync-1', `mkdir ${run}/faults/forged; exit 0`);
+        sup.order('sync-1', `rm ${run}/faults/armed; exit 0`);
         const answer = await sup.answerOf('sync-1');
         expect(answer.tokenAskUnanswered).toBe(true);
         expect(answer.exitCode).toBeNull();

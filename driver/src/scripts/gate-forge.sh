@@ -6,8 +6,8 @@
 # by the supervisor in `answers/<pid>` as `token <value>` or `none <reason>`. It answers https only, for
 # github.com (user x-access-token) and each host in the comma-separated FACTORY_FORGE_HOSTS (user oauth2);
 # any other host gets no output and no ask. An ask never printed or kept a token on any stream but its
-# caller's, and a token is never empty: no grant is a non-zero exit. An ask that cannot be written leaves a
-# marker in `$FACTORY_GATE_RUN/faults/<pid>`, which the supervisor reads as a credential wait.
+# caller's, and a token is never empty: no grant is a non-zero exit. An ask that cannot be written removes the
+# supervisor's pre-made `$FACTORY_GATE_RUN/faults/armed`, which the supervisor reads as a credential wait.
 # Only absolute paths for the tools: the request's PATH is the gate command's.
 box=${FACTORY_GATE_RUN:-}
 limit=${FACTORY_GATE_ASK_SECONDS:-60}
@@ -32,10 +32,11 @@ ask() {
     # Staged under a dot name the supervisor skips, then renamed whole: it never reads half an ask.
     if ! { printf 'ask %s\n' "$1" > "$box/asks/.$me.tmp" && /bin/mv -f "$box/asks/.$me.tmp" "$box/asks/$me"; }; then
         /bin/rm -f "$box/asks/.$me.tmp" 2>/dev/null
-        # The ask never got written, so the supervisor cannot know a credential was wanted: say so in a directory of
-        # its own beside `asks/` (a marker needs no data block, and the asks directory may be the one that failed).
-        # The step then ends with no verdict and is run again; a marker can only ever cause that, never a pass.
-        /bin/mkdir "$box/faults/$me" 2>/dev/null
+        # The ask never got written, so the supervisor cannot know a credential was wanted. The signal must not need
+        # storage the fault may have taken: the supervisor made `faults/armed` before this request started, and
+        # removing it frees an entry and allocates nothing. Without it the step ends with no verdict and is run
+        # again; anyone able to remove it can only cause that, never a pass.
+        /bin/rm -f "$box/faults/armed" 2>/dev/null
         reason='could not write the ask'
         return 1
     fi

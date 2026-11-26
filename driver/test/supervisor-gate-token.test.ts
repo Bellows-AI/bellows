@@ -461,10 +461,26 @@ describe('a gate asks for its GitHub token through its mailbox', () => {
             expect(driver.asks).toEqual([]);
         });
 
+        it.each([
+            ['write', WRITE],
+            ['rename', RENAME],
+        ])('a storage fault that refuses the ask %s and every new file is still a wait', async (_name, step) => {
+            const driver = await startDriver({ lifeMs: 3_600_000 });
+            const starved = faulted(step)
+                .replaceAll('/bin/mkdir', '/bin/false')
+                .replaceAll('/bin/mv', '/bin/false')
+                .replaceAll('/bin/touch', '/bin/false');
+            const gate = startGate(driver, {}, undefined, starved);
+            gate.order('gate-1', 'gh; exit 1');
+            const answer = await gate.answerOf('gate-1');
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+        });
+
         it('a gate that forges the marker is rerun, never passed', async () => {
             const driver = await startDriver({ lifeMs: 3_600_000 });
             const gate = startGate(driver);
-            gate.order('gate-1', 'mkdir "$FACTORY_GATE_RUN/faults/forged"; exit 0');
+            gate.order('gate-1', 'rm "$FACTORY_GATE_RUN/faults/armed"; exit 0');
             const answer = await gate.answerOf('gate-1');
             expect(answer.tokenAskUnanswered).toBe(true);
             expect(answer.exitCode).toBeNull();

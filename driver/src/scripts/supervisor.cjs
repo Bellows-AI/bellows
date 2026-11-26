@@ -263,7 +263,7 @@ const REPORT_STRING_FLOOR = 64;
 /** The most the loop's resource samples answer: their tail, which holds the end sample. */
 const REPORT_RESOURCES_LIMIT = 32_768;
 /** A gate request's or forge step's token mailbox (`GATE_ASK_FILES` of supervisor-contract.ts; gate-forge.sh spells the same). */
-const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', faults: 'faults', bin: 'bin' };
+const GATE_ASK_FILES = { asks: 'asks', answers: 'answers', faults: 'faults', faultSlot: 'armed', bin: 'bin' };
 /** What a forge step's child gets in its env (`FORGE_STEP_ENV` of supervisor-contract.ts). */
 const FORGE_STEP_ENV = { run: 'FACTORY_GATE_RUN', helper: 'FACTORY_FORGE_HELPER', hosts: 'FACTORY_FORGE_HOSTS' };
 /** The forge helper's name in a forge step's mailbox. */
@@ -1062,6 +1062,7 @@ function openForgeBox(run) {
         for (const name of [GATE_ASK_FILES.asks, GATE_ASK_FILES.answers, GATE_ASK_FILES.faults]) {
             fs.mkdirSync(path.join(dir, name), { mode: FORGE_BOX_MODE });
         }
+        fs.writeFileSync(path.join(dir, GATE_ASK_FILES.faults, GATE_ASK_FILES.faultSlot), '');
         fs.writeFileSync(path.join(dir, FORGE_HELPER_FILE), /** @type {string} */ (run.settings.forgeHelper), {
             mode: FORGE_BOX_MODE,
         });
@@ -1148,7 +1149,7 @@ async function spawnForgeStep(run, step) {
         flight.abort.abort();
         // What the helper took is settled before the box goes; a mailbox that will not go is no verdict on the step.
         settleDelivered({ step, dir, hosts: [host] }, flight);
-        readFaults(path.join(dir, GATE_ASK_FILES.faults), flight);
+        readFaults(path.join(dir, GATE_ASK_FILES.faults), flight, true);
         try {
             fs.rmSync(dir, { recursive: true, force: true });
         } catch (error) {
@@ -1438,7 +1439,7 @@ function takeGateAnswer(run, lane, name, flight) {
         outputCut: rawCut || escapedCut,
         report: readGateReport(done),
     };
-    reconcileCompleted(done, flight);
+    reconcileCompleted(done, flight, lane);
     fs.rmSync(done, { recursive: true, force: true });
     return answer;
 }
@@ -1510,6 +1511,7 @@ function postGateRequest(run, step, name) {
         for (const name of [GATE_ASK_FILES.asks, GATE_ASK_FILES.answers, GATE_ASK_FILES.faults]) {
             fs.mkdirSync(path.join(staged, name));
         }
+        fs.writeFileSync(path.join(staged, GATE_ASK_FILES.faults, GATE_ASK_FILES.faultSlot), '');
     }
     fs.writeFileSync(path.join(staged, GATE_FILES.command), laneCommand(step));
     fs.writeFileSync(path.join(staged, GATE_FILES.cwd), /** @type {string} */ (step.cwd));
@@ -1870,23 +1872,27 @@ const settleDelivered = (box, flight) => settleDeliveredIn(path.join(box.dir, GA
 const FAULTS_LISTING = '//';
 
 /**
- * The transport faults the helper reported (`faults/<pid>`, made when it could not get an ask written): git then
- * failed for want of a credential the board was never asked for, so the step has no verdict and ends as a credential
- * wait. Anyone able to run in the step can make a marker, and it only turns the step's result into a rerun, never into
- * a pass. A directory that cannot be listed leaves the question open; an absent one holds no marker.
+ * The transport fault the helper reported: it removes `faults/armed`, the slot made before the request started, when it
+ * could not get an ask written (the signal needs no storage the fault may have taken: removing an entry allocates
+ * nothing). A mailbox without its slot means a step that git failed for want of a credential the board was never asked
+ * for, so it has no verdict and ends as a credential wait. Anyone able to run in the step can remove the slot, and it
+ * only turns the step's result into a rerun, never into a pass. A directory that cannot be listed leaves the question
+ * open; one that is not there (`required` false: the mailbox moved) concludes nothing.
  * @param {string} dir
  * @param {Flight} flight
+ * @param {boolean} required whether the directory must be there to be read, as a mailbox in place or a completed gate's
  */
-function readFaults(dir, flight) {
+function readFaults(dir, flight, required = false) {
     let names;
     try {
         names = fs.readdirSync(dir);
     } catch (error) {
         if (!confirmedAbsent(error)) flight.unread.add(FAULTS_LISTING);
+        else if (required) flight.unanswered = true;
         return;
     }
     flight.unread.delete(FAULTS_LISTING);
-    if (names.length > 0) flight.unanswered = true;
+    if (!names.includes(GATE_ASK_FILES.faultSlot)) flight.unanswered = true;
 }
 
 /**
@@ -1894,9 +1900,10 @@ function readFaults(dir, flight) {
  * reported there, and which delivered answers are still in it unread.
  * @param {string} done
  * @param {Flight} flight
+ * @param {LaneKind} lane
  */
-function reconcileCompleted(done, flight) {
-    readFaults(path.join(done, GATE_ASK_FILES.faults), flight);
+function reconcileCompleted(done, flight, lane) {
+    readFaults(path.join(done, GATE_ASK_FILES.faults), flight, lane === 'gate');
     settleDeliveredIn(path.join(done, GATE_ASK_FILES.answers), flight);
 }
 
