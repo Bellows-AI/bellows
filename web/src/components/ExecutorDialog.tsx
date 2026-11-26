@@ -22,19 +22,22 @@ import {
     guidedFromConfig,
     guidedProvidersFor,
 } from '../workspace/executor-guided.js';
-import type { ExecutorProvider } from '@factory-ai/core';
+import { type ExecutorProvider, type ExecutorScope, USER_SCOPE } from '@factory-ai/core';
 import { useDraftReturnHref } from './DraftReturnBanner.js';
 import {
     AdvancedConfiguration,
     AgentField,
+    ConnectionOverrideNotice,
     CredentialsNote,
     ExecutorActions,
     ModelField,
     modelBlockedNote,
     NameField,
+    ProviderConnectionField,
     RunnerClassField,
 } from './executor-dialog-parts.js';
 import { GuidedProviderFields } from './executor-guided-fields.js';
+import { type ConnectionStep, useConnectionStep } from './executor-connection-step.js';
 import { useGuidedStep } from './executor-guided-step.js';
 import { ProviderCards } from '../model-setup/ProviderCards.js';
 import type { RunnerClassOption } from '../api/useWorkspace.js';
@@ -91,6 +94,11 @@ export interface ExecutorDialogProps {
     runnerClasses?: readonly RunnerClassOption[];
     /** Bellows Cloud: the credentials note adds that an OAuth token is refused. */
     cloud?: boolean;
+    /**
+     * Whose profile this is: an organization profile may select an organization connection only, a personal one its
+     * own or the organization's. Defaults to personal.
+     */
+    executorScope?: ExecutorScope;
 }
 
 /** What to do once the reader answers Discard changes. */
@@ -106,6 +114,7 @@ export function ExecutorDialog({
     saving,
     runnerClasses,
     cloud = false,
+    executorScope = USER_SCOPE,
 }: ExecutorDialogProps) {
     const [baseline, setBaseline] = useState<ExecutorDraft>(() => initialExecutorDraft(undefined));
     const [draft, setDraft] = useState<ExecutorDraft>(baseline);
@@ -136,7 +145,8 @@ export function ExecutorDialog({
 
     const isEdit = editing !== null;
     const { type } = draft;
-    const view = executorEditorView({ draft, baseline, existing, editing, nameTouched });
+    const step = useConnectionStep({ open, draft, setDraft, scope: executorScope });
+    const view = executorEditorView({ draft, baseline, existing, editing, nameTouched, connections: step.choices });
     const { guided, check, suggestions, setGuided, pickProvider, removeGuided } = useGuidedStep(draft, setDraft, cloud);
 
     const setConfig = (text: string, customModel: boolean) =>
@@ -224,10 +234,17 @@ export function ExecutorDialog({
                         saving={saving}
                         onName={(name) => setDraft({ ...draft, name })}
                         onNameBlur={() => setNameTouched(true)}
-                        onAgent={(next) => setDraft({ ...draft, type: next })}
-                        onModelDefault={() => writeModel(null, false)}
+                        onAgent={step.pickAgent}
+                        connection={step.connection}
+                        onModelDefault={() => {
+                            step.clearReselect();
+                            writeModel(null, false);
+                        }}
                         onModelCustom={() => setConfig(draft.configs[type], true)}
-                        onModel={(value) => writeModel(value.trim() || null, true)}
+                        onModel={(value) => {
+                            step.clearReselect();
+                            writeModel(value.trim() || null, true);
+                        }}
                         onRunnerClass={(runnerClass) => setDraft({ ...draft, runnerClass })}
                         onJson={editJson}
                         onFormat={format}
@@ -269,6 +286,7 @@ function DialogFields(props: {
     onName: (name: string) => void;
     onNameBlur: () => void;
     onAgent: (type: ExecutorDraft['type']) => void;
+    connection: ConnectionStep;
     onModelDefault: () => void;
     onModelCustom: () => void;
     onModel: (value: string) => void;
@@ -293,6 +311,23 @@ function DialogFields(props: {
                 onBlur={props.onNameBlur}
             />
             <AgentField ids={ids} value={type} onChange={props.onAgent} />
+            <ProviderConnectionField
+                ids={ids}
+                value={draft.providerConnectionId}
+                offered={props.connection.offered}
+                unavailable={props.connection.unavailable}
+                selectedRefusal={
+                    view.validation.ok === false && view.validation.field === 'connection'
+                        ? view.validation.error
+                        : null
+                }
+                listError={props.connection.listError}
+                onRetry={props.connection.onRetry}
+                onChange={props.connection.onChange}
+            />
+            {view.overridesConnection ? (
+                <ConnectionOverrideNotice connection={props.connection.name ?? 'the selected connection'} />
+            ) : null}
             {guided === null ? (
                 <details className="picker-advanced">
                     <summary>{GUIDED_COPY.PROVIDER_STEP_LABEL}</summary>
@@ -337,6 +372,9 @@ function DialogFields(props: {
                     model={view.model}
                     blocked={modelBlockedNote(view.parsed.ok, view.modelUnsupported)}
                     error={view.modelError}
+                    catalog={props.connection.catalog}
+                    reselect={props.connection.reselect}
+                    onRetryModels={props.connection.onRetryModels}
                     onDefault={props.onModelDefault}
                     onCustom={props.onModelCustom}
                     onModel={props.onModel}

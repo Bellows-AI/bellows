@@ -108,6 +108,32 @@ describe.skipIf(!enabled)('the user executor store', () => {
         });
     });
 
+    it('reads whether a pasted config overrides a connection from the stored markers, on every list read', async () => {
+        await store.replace(ALICE, [
+            { name: 'plain', type: 'opencode', config: { model: 'anthropic/claude-sonnet-4-5' } },
+            { name: 'keyed', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: 'sk-test-override' } } },
+            { name: 'ref', type: 'opencode', config: { provider: { p: { options: { apiKey: '{env:MY_KEY}' } } } } },
+            {
+                name: 'endpoint',
+                type: 'opencode',
+                config: { provider: { p: { options: { baseURL: 'https://x.test' } } } },
+            },
+        ]);
+        const flags = (rows: { name: string; configOverridesConnection?: boolean }[]) =>
+            Object.fromEntries(rows.map((row) => [row.name, row.configOverridesConnection]));
+        const expected = { plain: false, keyed: true, ref: true, endpoint: true };
+        expect(flags(await store.list(ALICE))).toEqual(expected);
+        expect(flags(await store.listWithConfigs(ALICE))).toEqual(expected);
+        await store.createOrg({
+            name: 'org-keyed',
+            type: 'claude-code',
+            config: { env: { ANTHROPIC_API_KEY: 'sk-test-org' } },
+            createdBy: ALICE,
+        });
+        expect(flags(await store.listOrg())).toEqual({ 'org-keyed': true });
+        expect(flags(await store.listOrgWithConfigs())).toEqual({ 'org-keyed': true });
+    });
+
     /**
      * The list comes back in the order it was saved, and that is a stored `position` (041), not an
      * inference. It used to be inferred from `created_at asc, name asc`, which could never work:

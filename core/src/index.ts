@@ -283,6 +283,7 @@ export {
 export type {
     ConnectionRefusalReason,
     ConnectionSelectionRefusal,
+    ExecutorConnectionFields,
     ProviderConnectionMeta,
     SelectedConnection,
     ProviderConnectionModels,
@@ -291,6 +292,7 @@ export type {
 export {
     connectionModelRefusal,
     connectionSelectionRefusal,
+    executorConnectionFields,
     MAX_PROVIDER_CONNECTIONS_PER_SCOPE,
 } from './provider-connections.js';
 export type { JobMode } from './job-mode.js';

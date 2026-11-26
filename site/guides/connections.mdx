@@ -11,8 +11,23 @@ description: "What Bellows connects to, what each connection lets tasks do, and 
 | Jira | Tasks look up and comment on your Jira issues | You, with your own Atlassian account |
 | Linear | Tasks look up and comment on your Linear issues | You, with your own Linear account |
 | Discord | Notifications about task events | You or an admin, through a webhook |
+| Model providers | The key and endpoint an executor's model runs on | You (your own) or an admin (the organization's), under **Settings → Model** |
 
 Open **Settings → Integrations** to see what you have connected. **Browse integrations** lists everything available.
+
+## Model provider connections
+
+A provider connection is a named model key with its endpoint — Anthropic, OpenRouter, OpenAI, LiteLLM, or on self-hosted boards a Claude subscription. Executors select one by name, so several can share a key and a rotation reaches them all. They are separate from the Jira, Linear and Discord connections above.
+
+Manage them under **Settings → Model → Provider connections**:
+
+- **Add connection.** Pick who can use it (**Only me**, or **Everyone in the organization** for admins), a name, the provider, the key and, where one fits, an endpoint. Bellows checks the key and shows how many models it offers; **Save** waits for a working key.
+- **Edit.** Rename it or change its endpoint. This never touches the stored key.
+- **Replace key.** Check and save a new key. A task already running keeps the key it started with.
+- **Show models.** Reads the connection's live models. An empty list, a provider that does not list models, and a failed read are shown differently.
+- **Remove.** Refused while an executor still selects it; the message names the executors you can see.
+
+Organization connections are managed by admins and usable by every member's executors; personal connections are yours alone. A key is never shown again after it is saved. See [Executors](/guides/executors) for choosing a connection.
 
 ## GitHub
 

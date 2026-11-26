@@ -1,4 +1,5 @@
 import { ADMIN_ROLE, CLAUDE_CODE, type DeploymentMode, type Role } from '@factory-ai/core';
+import type { ProviderConnectionMeta, ProviderConnectionModels } from '@factory-ai/core';
 import type { ConnectionView } from '../src/api/connections.js';
 import type { OrgExecutorFull, OrgExecutorInput } from '../src/api/orgExecutors.js';
 import type { SubscriptionScope, SubscriptionView } from '../src/api/notificationSubscriptions.js';
@@ -21,6 +22,12 @@ export interface SettingsBoard {
     /** The runner classes the board declares, as `GET /api/workspace/executors` answers them. */
     runnerClasses: RunnerClassOption[];
     connections: ConnectionView[];
+    /** The provider connections the caller may see, safe metadata only (`GET /api/provider-connections`). */
+    providerConnections: ProviderConnectionMeta[];
+    /** What `GET /api/provider-connections/:id/models` answers per connection; absent answers a listed catalog with no models. */
+    connectionModels: Record<string, FetchReply>;
+    /** The last key each connection was created or rotated with, so a test can see what a write carried. */
+    connectionKeys: Record<string, string>;
     /** The notification subscriptions of each scope, and the channel kinds the board can send through. */
     subscriptions: Record<SubscriptionScope, SubscriptionView[]>;
     connectorKinds: string[];
@@ -44,6 +51,9 @@ export function settingsBoard(overrides: Partial<SettingsBoard> = {}): SettingsB
         orgExecutors: [],
         runnerClasses: [],
         connections: [],
+        providerConnections: [],
+        connectionModels: {},
+        connectionKeys: {},
         subscriptions: { org: [], workspace: [] },
         connectorKinds: ['discord'],
         jiraConfigured: true,
@@ -89,6 +99,21 @@ export const orgExecutor = (name: string): SettingsBoard['orgExecutors'][number]
     createdBy: null,
     suspended: false,
 });
+
+export const providerConnection = (
+    name: string,
+    overrides: Partial<ProviderConnectionMeta> = {}
+): ProviderConnectionMeta => ({
+    id: id(),
+    name,
+    provider: 'anthropic',
+    scope: 'org',
+    baseUrl: null,
+    hasKey: true,
+    ...overrides,
+});
+
+export const listedModels = (...models: string[]): ProviderConnectionModels => ({ state: 'listed', models });
 
 export const connection = (site: string, overrides: Partial<ConnectionView> = {}): ConnectionView => ({
     id: id(),
@@ -143,13 +168,16 @@ function defaultExecutor(board: SettingsBoard) {
 function workspace(board: SettingsBoard) {
     return {
         executors: board.executors.map(({ config: _config, ...row }) => row),
-        orgExecutors: board.orgExecutors.map(({ name, type, createdAt, suspended, runnerClass }) => ({
-            name,
-            type,
-            createdAt,
-            suspended,
-            runnerClass,
-        })),
+        orgExecutors: board.orgExecutors.map(
+            ({ name, type, createdAt, suspended, runnerClass, providerConnectionId }) => ({
+                name,
+                type,
+                createdAt,
+                suspended,
+                runnerClass,
+                ...(providerConnectionId === undefined ? {} : { providerConnectionId }),
+            })
+        ),
         defaultExecutor: defaultExecutor(board),
     };
 }
@@ -219,6 +247,8 @@ function routes(board: SettingsBoard, { method, url, body }: FetchCall): FetchRe
         }
         return { status: 204 };
     }
+    const provider = providerConnectionRoutes(board, method, path, body);
+    if (provider !== undefined) return provider;
     if (method === 'GET' && path === '/api/integrations') {
         return {
             integrations: [
@@ -233,6 +263,67 @@ function routes(board: SettingsBoard, { method, url, body }: FetchCall): FetchRe
         return { status: 204 };
     }
     return subscriptionRoutes(board, path, method, body);
+}
+
+const CONNECTION_PATH = /^\/api\/provider-connections(?:\/([^/]+)(\/models)?)?$/;
+
+/** The provider connection routes: the safe list, the models read, and writes that change what the next read answers. */
+function providerConnectionRoutes(
+    board: SettingsBoard,
+    method: string,
+    path: string,
+    body: unknown
+): FetchReply | undefined {
+    const match = CONNECTION_PATH.exec(path);
+    if (!match) return undefined;
+    const rowId = match[1];
+    if (rowId === undefined) {
+        if (method === 'GET') return { connections: board.providerConnections };
+        const input = body as {
+            scope: 'org' | 'personal';
+            name: string;
+            provider: ProviderConnectionMeta['provider'];
+            key: string;
+            baseUrl?: string;
+        };
+        const created = providerConnection(input.name, {
+            scope: input.scope,
+            provider: input.provider,
+            baseUrl: input.baseUrl ?? null,
+        });
+        board.providerConnections.push(created);
+        board.connectionKeys[created.id] = input.key;
+        return { status: 201, body: created };
+    }
+    const index = board.providerConnections.findIndex((row) => row.id === rowId);
+    if (index < 0) return { status: 404, body: { error: 'No such provider connection' } };
+    if (match[2] !== undefined) return board.connectionModels[rowId] ?? listedModels();
+    if (method === 'PUT') {
+        const { key, ...patch } = body as { name?: string; baseUrl?: string | null; key?: string };
+        if (key !== undefined) board.connectionKeys[rowId] = key;
+        board.providerConnections[index] = { ...board.providerConnections[index]!, ...patch };
+        return board.providerConnections[index];
+    }
+    if (method === 'DELETE') {
+        const users = [...board.executors, ...board.orgExecutors].filter((row) => row.providerConnectionId === rowId);
+        if (users.length > 0) {
+            return {
+                status: 409,
+                body: {
+                    error: 'Executors still use this connection',
+                    code: 'PROVIDER_CONNECTION_IN_USE',
+                    executors: users.map((row) => ({
+                        name: row.name,
+                        scope: board.orgExecutors.includes(row as never) ? 'org' : 'personal',
+                    })),
+                    otherReferences: false,
+                },
+            };
+        }
+        board.providerConnections.splice(index, 1);
+        return { id: rowId, removed: true };
+    }
+    return undefined;
 }
 
 const SUBSCRIPTION_PATH = /^\/api\/(org|workspace)\/notification-subscriptions(?:\/([^/]+)(\/test)?)?$/;

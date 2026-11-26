@@ -1,6 +1,14 @@
 import { EXECUTOR_TYPES, type ExecutorType, isModelProvider } from '@factory-ai/core';
 import type { AnchorSide } from '../anchor.js';
 import { type ModelSetupView, useModelSetup } from '../api/useModelSetup.js';
+import { useConnectionModels } from '../api/useProviderConnections.js';
+import {
+    catalogModels,
+    catalogNote,
+    type ChipConnection,
+    modelCatalogOf,
+    normalizedChoices,
+} from '../workspace/model-catalog.js';
 import { type ModelSource, modelOptions } from '../model-setup/providers.js';
 import { type SearchRow, SearchSelect } from './SearchSelect.js';
 
@@ -28,6 +36,28 @@ export function useKnownModels(agent: string | null): string[] {
 }
 
 /**
+ * The models a chip offers and the sentence that says where they came from. With a selected connection that is its live
+ * catalog — the curated suggestions only while the read cannot answer, and nothing for a successful empty list — and
+ * without one, `useKnownModels`'s answer as it always was. Typing a model name is open in every state.
+ */
+export function useModelChoices(
+    agent: string | null,
+    connection: ChipConnection | null
+): { models: string[]; note: string | null; pick: (model: string) => string } {
+    const known = useKnownModels(agent);
+    const read = useConnectionModels(connection?.id ?? null);
+    if (connection === null) return { models: known, note: null, pick: (model) => model };
+    const type = EXECUTOR_TYPES.find((candidate) => candidate === agent) ?? null;
+    const catalog = modelCatalogOf(connection, type, read.models);
+    // A typed or picked name goes through the same rule as the offered list, so a bare id is saved as the server accepts it.
+    return {
+        models: [...catalogModels(catalog)],
+        note: catalogNote(catalog),
+        pick: (model) => normalizedChoices(connection.provider, type, model),
+    };
+}
+
+/**
  * The Model chip, on the new task and on a follow-up. '' is the default — `defaultLabel` names it, and the caller sends
  * nothing for it. The search filters the provider's models, and the text typed is offered as a model of its own, so any
  * model the provider serves can be used. A follow-up sits at the page's foot, so its list opens `up`.
@@ -36,6 +66,7 @@ export function ModelCombobox({
     value,
     defaultLabel,
     models,
+    note,
     disabled,
     side,
     onChange,
@@ -43,6 +74,8 @@ export function ModelCombobox({
     value: string;
     defaultLabel: string;
     models: readonly string[];
+    /** Where the models came from, when that is a connection's live list: its loading, empty, unsupported or failed state. */
+    note?: string | null;
     disabled?: boolean;
     side?: AnchorSide;
     onChange: (model: string) => void;
@@ -62,7 +95,7 @@ export function ModelCombobox({
             value={value}
             options={options}
             before={before}
-            help={MODEL_HELP}
+            help={note ? `${MODEL_HELP} ${note}` : MODEL_HELP}
             side={side ?? 'down'}
             disabled={disabled ?? false}
             onChange={onChange}

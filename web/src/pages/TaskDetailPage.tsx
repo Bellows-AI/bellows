@@ -5,6 +5,7 @@ import type { NavigateFunction } from 'react-router-dom';
 import { useThread } from '../api/useJobs.js';
 import type { Job } from '../api/useJobs.js';
 import type { WorkspacePayload } from '../api/useWorkspace.js';
+import { type ChipConnection, chipConnectionOf } from '../workspace/model-catalog.js';
 import { useThreadActivity } from '../api/useJobActivity.js';
 import type { SubmittedFiles } from '../api/taskWrites.js';
 import type { UseTasks } from '../api/useTasks.js';
@@ -307,6 +308,14 @@ function threadAgentOf(latest: Job | null, workspace: WorkspacePayload | null): 
     return rows?.find((row) => row.name === latest.executor)?.type ?? null;
 }
 
+/** The connection the thread's executor selects, read off the workspace poll when the caller may see it; null for a frozen agent default. */
+function threadConnectionOf(latest: Job | null, workspace: WorkspacePayload | null): ChipConnection | null {
+    if (latest === null || latest.agentType !== null) return null;
+    const rows = latest.executorScope === ORG_SCOPE ? workspace?.orgExecutors : workspace?.executors;
+    const row = rows?.find((candidate) => candidate.name === latest.executor);
+    return row === undefined ? null : chipConnectionOf(row);
+}
+
 export function TaskDetailPage() {
     const { tasks, session, sessionLoading, workspace } = useTasksPage();
     const navigate = useNavigate();
@@ -388,6 +397,7 @@ export function TaskDetailPage() {
                 onConnectionChange={detail.refresh}
                 activity={activity}
                 agent={threadAgentOf(latest, workspace.data)}
+                connection={threadConnectionOf(latest, workspace.data)}
             />
             {detail.jobs !== null && detail.jobs.length > 0 ? (
                 <TaskArchiveDialog

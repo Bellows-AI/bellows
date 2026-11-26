@@ -1,7 +1,7 @@
 import type { MouseEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { StateNote } from './StateNote.js';
-import { EXECUTOR_TYPES, type ExecutorType } from '@factory-ai/core';
+import { EXECUTOR_TYPES, type ExecutorType, type ProviderConnectionMeta } from '@factory-ai/core';
 import {
     ADD_LABEL,
     ADVANCED_LABEL,
@@ -28,6 +28,8 @@ import {
     SAVE_LABEL,
 } from '../workspace/executors.js';
 import { JsonEditor } from './JsonEditor.js';
+import { PROVIDER_META } from '../model-setup/providers.js';
+import { catalogModels, catalogNote, type ModelCatalog } from '../workspace/model-catalog.js';
 
 /**
  * The executor dialog's fields (issue 261), presentational only: ExecutorDialog.tsx owns the draft
@@ -168,11 +170,19 @@ export function ModelField(props: {
     model: string;
     blocked: string | null;
     error: string | null;
+    /** The selected connection's catalog; `none` without one, which keeps the control as it was. */
+    catalog?: ModelCatalog;
+    /** The model dropped because it belongs to another provider: said until the member chooses again. */
+    reselect?: string | null;
+    onRetryModels?: () => void;
     onDefault: () => void;
     onCustom: () => void;
     onModel: (value: string) => void;
 }) {
     const { ids, custom, blocked, error } = props;
+    const catalog: ModelCatalog = props.catalog ?? { kind: 'none' };
+    const suggestions = catalogModels(catalog);
+    const note = catalogNote(catalog);
     const meta = EXECUTOR_TYPE_META[props.type];
     return (
         <fieldset
@@ -214,11 +224,18 @@ export function ModelField(props: {
                     // A blocked control cannot read the model, and an example would pass for it.
                     placeholder={blocked === null ? meta.modelExample : undefined}
                     disabled={blocked !== null}
+                    list={suggestions.length > 0 ? `${ids}-model-list` : undefined}
                     aria-invalid={error ? true : undefined}
-                    aria-describedby={describedBy(ids, 'model-help', error !== null && 'model-error')}
+                    aria-describedby={describedBy(
+                        ids,
+                        'model-help',
+                        note !== null && 'model-catalog',
+                        error !== null && 'model-error'
+                    )}
                     onChange={(event) => props.onModel(event.target.value)}
                 />
             ) : null}
+            {custom ? <ModelSuggestions id={`${ids}-model-list`} models={suggestions} /> : null}
             <p className="picker-help" id={`${ids}-model-help`}>
                 {meta.modelHelp} For example: {meta.modelExample}
             </p>
@@ -227,8 +244,66 @@ export function ModelField(props: {
                     {blocked}
                 </p>
             ) : null}
+            <ModelCatalogNote id={`${ids}-model-catalog`} catalog={catalog} onRetry={props.onRetryModels} />
+            <ModelReselectNote id={`${ids}-model-reselect`} model={props.reselect ?? null} />
             <FieldError id={`${ids}-model-error`} error={error} />
         </fieldset>
+    );
+}
+
+/** The models a catalog offers, as the typed identifier's suggestions; nothing when it offers none. */
+function ModelSuggestions({ id, models }: { id: string; models: readonly string[] }) {
+    if (models.length === 0) return null;
+    return (
+        <datalist id={id}>
+            {models.map((model) => (
+                <option key={model} value={model} />
+            ))}
+        </datalist>
+    );
+}
+
+/** Said until the member chooses again: the model dropped because it belongs to another provider. */
+function ModelReselectNote({ id, model }: { id: string; model: string | null }) {
+    if (!model) return null;
+    return (
+        <p className="picker-help" id={id}>
+            The model “{model}” belongs to another provider, so it was cleared. Choose a model for this connection, or
+            use the runner default.
+        </p>
+    );
+}
+
+/** The line under the Model control for a connection's catalog: a failure is an error with its retry, anything else plain help. */
+function ModelCatalogNote({
+    id,
+    catalog,
+    onRetry,
+}: {
+    id: string;
+    catalog: ModelCatalog;
+    onRetry?: (() => void) | undefined;
+}) {
+    const note = catalogNote(catalog);
+    if (note === null) return null;
+    if (catalog.kind !== 'failed') {
+        return (
+            <p className="picker-help" id={id} role={catalog.kind === 'loading' ? 'status' : undefined}>
+                {note}
+            </p>
+        );
+    }
+    return (
+        <>
+            <p className="state-note error" id={id}>
+                {note}
+            </p>
+            {onRetry ? (
+                <button type="button" onClick={onRetry}>
+                    Retry listing models
+                </button>
+            ) : null}
+        </>
     );
 }
 
@@ -388,5 +463,110 @@ export function ExecutorActions(props: {
                 </button>
             </div>
         </>
+    );
+}
+
+/** A connection's line in the select and the notes: its name, its provider and whose it is. */
+export function connectionLabel(connection: ProviderConnectionMeta): string {
+    return `${connection.name} — ${PROVIDER_META[connection.provider].label} · ${
+        connection.scope === 'org' ? 'Organization' : 'Personal'
+    }`;
+}
+
+export const CONNECTION_FIELD_LABEL = 'Provider connection';
+export const CONNECTION_NONE_LABEL = 'None (environment keys)';
+export const CONNECTION_HELP =
+    'The key and endpoint this executor’s tasks use for their model. Executors can share a connection, and editing one here only changes which connection it uses. None runs on the keys in your environment.';
+
+/**
+ * The Provider connection select. It offers the connections this agent and scope may use (the shared selection rule's
+ * answer, not a label match), and says why the others are not offered. This is the SHARED credential — the guided
+ * "Connect a provider" setup below writes the executor's own configuration instead, and wins over it.
+ */
+export function ProviderConnectionField(props: {
+    ids: string;
+    value: string;
+    offered: readonly ProviderConnectionMeta[];
+    unavailable: readonly { connection: ProviderConnectionMeta; reason: string }[];
+    /** The selected connection when the visible list holds it but this agent or scope cannot run it. */
+    selectedRefusal: string | null;
+    /** The visible list could not be read: the failure, never an empty list. */
+    listError: string | null;
+    onRetry: () => void;
+    onChange: (id: string) => void;
+}) {
+    const { ids, value, offered, unavailable } = props;
+    const selected = [...offered, ...unavailable.map((row) => row.connection)].find((row) => row.id === value);
+    return (
+        <div className="picker-field">
+            <label htmlFor={`${ids}-connection`}>{CONNECTION_FIELD_LABEL}</label>
+            <select
+                id={`${ids}-connection`}
+                className="field"
+                value={value}
+                aria-invalid={props.selectedRefusal ? true : undefined}
+                aria-describedby={describedBy(
+                    ids,
+                    'connection-help',
+                    props.listError !== null && 'connection-list-error',
+                    props.selectedRefusal !== null && 'connection-error'
+                )}
+                onChange={(event) => props.onChange(event.target.value)}
+            >
+                <option value="">{CONNECTION_NONE_LABEL}</option>
+                {offered.map((connection) => (
+                    <option key={connection.id} value={connection.id}>
+                        {connectionLabel(connection)}
+                    </option>
+                ))}
+                {value !== '' && !offered.some((row) => row.id === value) ? (
+                    <option value={value}>
+                        {selected
+                            ? `${connectionLabel(selected)} — cannot be used here`
+                            : 'Selected connection (not listed)'}
+                    </option>
+                ) : null}
+            </select>
+            <p className="picker-help" id={`${ids}-connection-help`}>
+                {CONNECTION_HELP}
+            </p>
+            {props.listError ? (
+                <>
+                    {/* Said beside the field and tied to it, not announced: the dialog's own alert is the failed save. */}
+                    <p className="state-note error" id={`${ids}-connection-list-error`}>
+                        {props.listError}
+                    </p>
+                    <button type="button" onClick={props.onRetry}>
+                        Retry loading connections
+                    </button>
+                </>
+            ) : null}
+            <FieldError id={`${ids}-connection-error`} error={props.selectedRefusal} />
+            {unavailable.length > 0 ? (
+                <ul className="picker-help" aria-label="Connections not offered">
+                    {unavailable.map(({ connection, reason }) => (
+                        <li key={connection.id}>
+                            {connection.name} is not offered: {reason}
+                        </li>
+                    ))}
+                </ul>
+            ) : null}
+        </div>
+    );
+}
+
+/**
+ * Said beside the select, before Save, when the pasted configuration sets its own credential or endpoint while a
+ * connection is selected: the configuration wins at claim. A fixed sentence plus the connection's NAME — never a value
+ * from the configuration.
+ */
+export function ConnectionOverrideNotice({ connection }: { connection: string }) {
+    return (
+        <div className="banner-warn picker-override" role="note">
+            <p>
+                This executor’s own configuration sets a credential or endpoint, and it takes precedence over{' '}
+                {connection}. Remove it from the configuration to run on the connection’s key and endpoint.
+            </p>
+        </div>
     );
 }

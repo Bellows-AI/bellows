@@ -10,6 +10,8 @@ import {
     RUNNER_MANAGED_KEYS,
     USER_SCOPE,
 } from '@factory-ai/core';
+import { type ConnectionChoices, configOverridesConnection, selectedConnectionError } from './executor-connections.js';
+import { chipConnectionOf, type ChipConnection, normalizedChoices } from './model-catalog.js';
 import { guidedChoiceError, guidedFromConfig, type GuidedChoice } from './executor-guided.js';
 
 /**
@@ -80,10 +82,15 @@ export type ValidExecutor = {
      * organization profile names one; the org PUT is whole-entry, so every edit sends it back.
      */
     runnerClass: string | null;
+    /**
+     * The provider connection the executor runs its model on: an id selects it, null clears it. Absent when the row
+     * had none and still has none, so a legacy profile's write is byte-for-byte what it was.
+     */
+    providerConnectionId?: string | null;
 };
 
 /** Which field a draft's failure belongs to, so the dialog shows it beside that field. */
-export type ExecutorField = 'name' | 'model' | 'guided' | 'config' | 'rounds';
+export type ExecutorField = 'name' | 'connection' | 'model' | 'guided' | 'config' | 'rounds';
 
 export type ExecutorValidation =
     | { ok: true; value: ValidExecutor }
@@ -261,6 +268,10 @@ export interface ExecutorDraft {
     gateFixRounds: string;
     /** The chosen runner class; '' is the deployment's default. */
     runnerClass: string;
+    /** The chosen provider connection's id; '' is None (environment keys). */
+    providerConnectionId: string;
+    /** The connection the row had when the dialog opened ('' for none): whether a save must say anything about it. */
+    initialConnectionId: string;
 }
 
 function perType<T>(value: (type: ExecutorType) => T): Record<ExecutorType, T> {
@@ -281,6 +292,8 @@ export function initialExecutorDraft(row: ExecutorRow | undefined): ExecutorDraf
         preGuided: configs,
         gateFixRounds: row ? String(row.gateFixRounds) : '',
         runnerClass: row?.runnerClass ?? '',
+        providerConnectionId: row?.providerConnectionId ?? '',
+        initialConnectionId: row?.providerConnectionId ?? '',
     };
 }
 
@@ -305,12 +318,15 @@ export function validateModelChoice(
 export function validateExecutorDraft(
     draft: ExecutorDraft,
     existing: readonly { name: string }[],
-    editing: string | null
+    editing: string | null,
+    connections: ConnectionChoices | null = null
 ): ExecutorValidation {
     const nameError = validateExecutorName(draft.name, existing, editing);
     if (nameError) return { ok: false, error: nameError, field: 'name' };
 
     const { type } = draft;
+    const connectionError = connections === null ? null : selectedConnectionError(draft, connections);
+    if (connectionError) return { ok: false, error: connectionError, field: 'connection' };
     const guidedError = draft.guided[type] === null ? null : guidedChoiceError(draft.guided[type]!);
     if (guidedError !== null) return { ok: false, error: guidedError, field: 'guided' };
 
@@ -324,6 +340,7 @@ export function validateExecutorDraft(
 
     const modelError = validateModelChoice(parsed.value, draft.customModel[type], type);
     if (modelError) return { ok: false, error: modelError, field: 'model' };
+    const config = connectionNormalizedConfig(parsed.value, draft, connections);
 
     const rounds = validateGateFixRounds(draft.gateFixRounds);
     if (!rounds.ok) return { ...rounds, field: 'rounds' };
@@ -333,11 +350,26 @@ export function validateExecutorDraft(
         value: {
             name: draft.name.trim(),
             type,
-            config: parsed.value,
+            config,
             gateFixRounds: rounds.value,
             runnerClass: draft.runnerClass || null,
+            // Said only when it is a selection or a change: an untouched legacy row sends what it always did.
+            ...(draft.providerConnectionId === '' && draft.initialConnectionId === ''
+                ? {}
+                : { providerConnectionId: draft.providerConnectionId || null }),
         },
     };
+}
+
+/** A selected connection's model is saved the way the server accepts it: `normalizeModelId`, the one rule the offered list follows. */
+function connectionNormalizedConfig(
+    config: Record<string, unknown>,
+    draft: ExecutorDraft,
+    connections: ConnectionChoices | null
+): Record<string, unknown> {
+    const connection = connections?.connections.find((row) => row.id === draft.providerConnectionId);
+    if (connection === undefined || typeof config.model !== 'string' || config.model === '') return config;
+    return withModel(config, normalizedChoices(connection.provider, draft.type, config.model));
 }
 
 /** Key-sorted JSON, so two configurations that differ only in key order or spacing compare equal. */
@@ -360,6 +392,7 @@ function savedShape(draft: ExecutorDraft): string {
         parsed.ok ? canonicalJson(parsed.value) : draft.configs[draft.type],
         rounds.ok ? rounds.value : draft.gateFixRounds,
         draft.runnerClass,
+        draft.providerConnectionId,
     ]);
 }
 
@@ -386,6 +419,7 @@ export function executorDraftChanges(
  */
 export const SAVE_HINTS: Record<ExecutorField, string> = {
     name: 'Enter a valid name to save.',
+    connection: 'Choose a provider connection this agent can run to save.',
     model: 'Finish the Model choice to save.',
     guided: 'Finish the provider settings to save.',
     config: 'Fix the JSON in Advanced configuration to save.',
@@ -454,6 +488,8 @@ export type ExecutorRow = {
     runnerClass?: string | null;
     /** Carried back unchanged so a whole-list save never resumes a suspended row (issue 440). */
     suspended?: boolean;
+    /** The provider connection the row selects (an id, never a key); absent or null is the environment keys. */
+    providerConnectionId?: string | null;
 };
 
 /**
@@ -513,7 +549,18 @@ export function executorChoiceOf(id: string): ExecutorChoice | null {
 /** One row the composer's executor select offers, from either scope. */
 export interface ComposerExecutorOption extends ExecutorChoice {
     type: string;
+    /** The provider connection the profile selects, when the caller may see it; the Model chip lists its models. */
+    connection?: ChipConnection;
 }
+
+/** A workspace row as the composer reads it: the profile and the connection fields its poll carries. */
+type ComposerExecutorRow = { name: string; type: string; suspended?: boolean } & Parameters<typeof chipConnectionOf>[0];
+
+/** The `connection` key only on a row that selects a visible one, so a profile without one reads as it always did. */
+const connectionOf = (row: ComposerExecutorRow): { connection?: ChipConnection } => {
+    const connection = chipConnectionOf(row);
+    return connection === null ? {} : { connection };
+};
 
 /**
  * The composer's options, personal first then the organization's — the member's own rows where
@@ -521,16 +568,18 @@ export interface ComposerExecutorOption extends ExecutorChoice {
  * has configured nothing personal: that is the whole point of the shared scope.
  */
 export function composerExecutorOptions(
-    personal: readonly { name: string; type: string; suspended?: boolean }[],
-    org: readonly { name: string; type: string; suspended?: boolean }[]
+    personal: readonly ComposerExecutorRow[],
+    org: readonly ComposerExecutorRow[]
 ): ComposerExecutorOption[] {
     // A suspended profile (issue 440) is not offered: it cannot launch a run, and leaving it out is
     // what makes the draft's clamp reconcile a selection that was suspended underneath it.
     return [
         ...personal
             .filter((row) => !row.suspended)
-            .map((row) => ({ scope: USER_SCOPE, name: row.name, type: row.type })),
-        ...org.filter((row) => !row.suspended).map((row) => ({ scope: ORG_SCOPE, name: row.name, type: row.type })),
+            .map((row) => ({ scope: USER_SCOPE, name: row.name, type: row.type, ...connectionOf(row) })),
+        ...org
+            .filter((row) => !row.suspended)
+            .map((row) => ({ scope: ORG_SCOPE, name: row.name, type: row.type, ...connectionOf(row) })),
     ];
 }
 
@@ -639,19 +688,22 @@ export function executorEditorView({
     existing,
     editing,
     nameTouched,
+    connections = null,
 }: {
     draft: ExecutorDraft;
     baseline: ExecutorDraft;
     existing: readonly { name: string }[];
     editing: string | null;
     nameTouched: boolean;
+    /** The visible connections and the scope being edited; null until they are read, which judges nothing. */
+    connections?: ConnectionChoices | null;
 }) {
     const { type } = draft;
     const parsed = parseExecutorConfig(draft.configs[type]);
     const model = parsed.ok ? readModel(parsed.value) : null;
     const custom = draft.customModel[type];
     const guided = draft.guided[type];
-    const validation = validateExecutorDraft(draft, existing, editing);
+    const validation = validateExecutorDraft(draft, existing, editing, connections);
     const changes = executorDraftChanges(baseline, draft);
     const nameError = validateExecutorName(draft.name, existing, editing);
     const rounds = validateGateFixRounds(draft.gateFixRounds);
@@ -671,5 +723,6 @@ export function executorEditorView({
         jsonError: parsed.ok ? null : parsed.error,
         roundsError: rounds.ok ? null : rounds.error,
         managed: parsed.ok ? runnerManagedSettings(type, parsed.value) : [],
+        overridesConnection: draft.providerConnectionId !== '' && parsed.ok && configOverridesConnection(parsed.value),
     };
 }

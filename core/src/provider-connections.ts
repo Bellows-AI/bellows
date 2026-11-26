@@ -103,3 +103,29 @@ export function connectionModelRefusal(
         message: `The model "${model}" does not belong to a ${provider} connection; choose a model for it.`,
     };
 }
+
+/**
+ * The safe connection fields an executor row carries beside its `providerConnectionId`: the name, provider and scope
+ * the caller may see, so a client can show the choice without a second read. Null when the row selects none — or when
+ * the caller cannot see the row it names (never the reason: a hidden connection reads as absent).
+ */
+export interface ExecutorConnectionFields {
+    readonly providerConnectionId: string | null;
+    readonly providerConnectionName: string | null;
+    readonly providerConnectionProvider: ModelProvider | null;
+    readonly providerConnectionScope: ProviderConnectionScope | null;
+}
+
+/** An executor row's connection fields, read from the connections the caller may see. */
+export function executorConnectionFields(
+    id: string | null,
+    visible: ReadonlyMap<string, ProviderConnectionMeta>
+): ExecutorConnectionFields {
+    const connection = id === null ? undefined : visible.get(id);
+    return {
+        providerConnectionId: id,
+        providerConnectionName: connection?.name ?? null,
+        providerConnectionProvider: connection?.provider ?? null,
+        providerConnectionScope: connection?.scope ?? null,
+    };
+}

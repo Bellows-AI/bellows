@@ -1,5 +1,13 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { type DeploymentMode, ERROR_CODES, type ExecutorScope, ORG_SCOPE, USER_SCOPE } from '@factory-ai/core';
+import {
+    type DeploymentMode,
+    ERROR_CODES,
+    executorConnectionFields,
+    type ExecutorScope,
+    ORG_SCOPE,
+    type ProviderConnectionMeta,
+    USER_SCOPE,
+} from '@factory-ai/core';
 import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
@@ -11,6 +19,7 @@ import {
     MAX_EXECUTORS_PER_USER,
     parseExecutorFields,
     personalRunnerClassRefusal,
+    visibleConnections,
 } from './executor-fields.js';
 import {
     ExecutorDefaultNotFoundError,
@@ -18,6 +27,7 @@ import {
     type ExecutorProfile,
 } from '../db/user-executor-store.js';
 import type { UserExecutorStore } from '../db/user-executor-store.js';
+import type { ProviderConnectionStore } from '../db/provider-connection-store.js';
 import type { RunnerClassOption } from '../config-runner-classes.js';
 import type { OrgRegistry } from '../orgs.js';
 import { agentDefaultRoutes } from './agent-default.js';
@@ -96,8 +106,20 @@ type ExecutorEntry = {
     providerConnectionId?: string | null;
 };
 
+/**
+ * The connection fields a row carries when the read knows the caller's visible connections: the name, provider and
+ * scope beside the id, and whether the pasted config overrides the connection. Safe metadata only (docs/api.md).
+ */
+function connectionFields(row: ExecutorProfile, visible: ReadonlyMap<string, ProviderConnectionMeta> | undefined) {
+    if (visible === undefined) return {};
+    return {
+        ...executorConnectionFields(row.providerConnectionId, visible),
+        configOverridesConnection: row.configOverridesConnection === true,
+    };
+}
+
 /** A personal row as the poll and the PUT answer it — never `config`, which may hold credentials. */
-function personalRow(row: ExecutorProfile) {
+function personalRow(row: ExecutorProfile, visible?: ReadonlyMap<string, ProviderConnectionMeta>) {
     return {
         id: row.id,
         name: row.name,
@@ -106,6 +128,7 @@ function personalRow(row: ExecutorProfile) {
         gateFixRounds: row.gateFixRounds,
         suspended: row.suspended,
         providerConnectionId: row.providerConnectionId,
+        ...connectionFields(row, visible),
     };
 }
 
@@ -119,7 +142,10 @@ interface WorkspaceDeps {
 async function runtimeOf(
     orgs: OrgRegistry,
     request: Parameters<typeof callerOf>[0]
-): Promise<{ userExecutors: UserExecutorStore | undefined } | { error: string; code: string; status: number }> {
+): Promise<
+    | { userExecutors: UserExecutorStore | undefined; providerConnections: ProviderConnectionStore | undefined }
+    | { error: string; code: string; status: number }
+> {
     const rt = await orgs.for(orgOf(request));
     if (!rt) {
         return {
@@ -128,7 +154,7 @@ async function runtimeOf(
             status: HTTP_UNAVAILABLE,
         };
     }
-    return { userExecutors: rt.userExecutors };
+    return { userExecutors: rt.userExecutors, providerConnections: rt.providerConnections };
 }
 
 /** `list`'s per-entry name-shape and duplicate-name checks, in one place. */
@@ -181,19 +207,25 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
                       executors.list(caller.user.id),
                       executors.listOrg(),
                       executors.resolvedDefault(caller.user.id),
+                      visibleConnections(rt.providerConnections, caller.user.id),
                   ])
-                : ([[], [], null] as [ExecutorProfile[], ExecutorProfile[], null])
+                : ([[], [], null, new Map()] as [
+                      ExecutorProfile[],
+                      ExecutorProfile[],
+                      null,
+                      ReadonlyMap<string, ProviderConnectionMeta>,
+                  ])
     );
     if (!loaded.ok) return reply;
 
-    const [executorRows, orgExecutorRows, resolved] = loaded.value;
+    const [executorRows, orgExecutorRows, resolved, visible] = loaded.value;
 
     return reply.code(HTTP_OK).send({
         // `config` is deliberately absent from these rows: it may hold credentials the member
         // pasted, and this payload is fetched by a poll that can run every two seconds. The org
         // rows are selection metadata for the same reason — their configuration answers to the
         // admin list, never to the poll every member's browser runs.
-        executors: executorRows.map(personalRow),
+        executors: executorRows.map((row) => personalRow(row, visible)),
         orgExecutors: orgExecutorRows.map((row: ExecutorProfile) => ({
             name: row.name,
             type: row.type,
@@ -201,6 +233,7 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
             suspended: row.suspended,
             runnerClass: row.runnerClass,
             providerConnectionId: row.providerConnectionId,
+            ...connectionFields(row, visible),
         })),
         // The member's resolved default: their stored preference while it still resolves, else the
         // deterministic fallback the store computes — what a new task draft autoselects. When an agent default wins,
@@ -228,14 +261,16 @@ async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
     const loaded = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => executors.listWithConfigs(userId)
+        async () =>
+            Promise.all([executors.listWithConfigs(userId), visibleConnections(ctx.providerConnections, userId)])
     );
     if (!loaded.ok) return reply;
+    const [rows, visible] = loaded.value;
 
     return reply.code(HTTP_OK).send({
         // A bridged (MCP) caller never reads the configuration, which may hold provider credentials.
-        executors: loaded.value.map((row) =>
-            isBridged(request.raw) ? personalRow(row) : { ...personalRow(row), config: row.config }
+        executors: rows.map((row) =>
+            isBridged(request.raw) ? personalRow(row, visible) : { ...personalRow(row, visible), config: row.config }
         ),
         // The classes an org profile may name (RUNNER_CLASSES), each with whether it gets a docker daemon.
         runnerClasses: deps.runnerClasses,
@@ -273,7 +308,7 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
     }
 
     // 200, not 202: nothing runs in the background — the rows are written by the time this returns.
-    return reply.code(HTTP_OK).send({ executors: saved.value.map(personalRow) });
+    return reply.code(HTTP_OK).send({ executors: saved.value.map((row) => personalRow(row)) });
 }
 
 /** Resolves the caller and the executor store the personal by-id routes share. */
@@ -292,7 +327,7 @@ async function personalExecutorContext(deps: WorkspaceDeps, request: FastifyRequ
         reply.code(HTTP_UNAVAILABLE).send(NO_EXECUTOR_STORE);
         return null;
     }
-    return { userId: caller.user.id, executors: rt.userExecutors };
+    return { userId: caller.user.id, executors: rt.userExecutors, providerConnections: rt.providerConnections };
 }
 
 /**

@@ -11,7 +11,8 @@ import { useStickToBottom } from '../use-stick-to-bottom.js';
 import { AttachmentDropZone } from './AttachmentDropZone.js';
 import { attachmentHandlers } from './AttachmentPicker.js';
 import { ChatInput } from './ChatInput.js';
-import { ModelCombobox, useKnownModels } from '../components/ModelCombobox.js';
+import { ModelCombobox, useModelChoices } from '../components/ModelCombobox.js';
+import type { ChipConnection } from '../workspace/model-catalog.js';
 import { FOLLOW_UP_INPUT_ID, notAuthorMessage } from './TaskHeader.js';
 import { TaskActivity } from './TaskActivity.js';
 import { TaskOutcome } from './TaskOutcome.js';
@@ -76,6 +77,7 @@ function FollowUpComposer({
     adder,
     current,
     agent,
+    connection,
 }: {
     /** The thread's root run: the key of this thread's draft in the shell's store. */
     rootId: string;
@@ -83,6 +85,8 @@ function FollowUpComposer({
     current: string | null;
     /** The thread's agent, which a follow-up never changes: the models offered are its own; null when unknown. */
     agent: string | null;
+    /** The connection the thread's executor selects, when the caller may see it: its live models are the ones offered. */
+    connection: ChipConnection | null;
     draftStore: ComposerDraftStore;
     error: string | null;
     sending: boolean;
@@ -114,7 +118,8 @@ function FollowUpComposer({
         };
     }, [adder, limits, add]);
     const blocked = !draft.trim() || frozen || files.blocker !== null;
-    const models = useKnownModels(agent).filter((model) => model !== current);
+    const choices = useModelChoices(agent, connection);
+    const models = choices.models.filter((model) => model !== current);
     // '' is the thread's own model: sent only when the member picked another.
     const picked = held?.model?.trim() ?? '';
     const model = picked === '' || picked === current ? undefined : picked;
@@ -165,12 +170,13 @@ function FollowUpComposer({
                                 value={held?.model ?? ''}
                                 defaultLabel={current ?? 'Default'}
                                 models={models}
+                                note={choices.note}
                                 disabled={frozen}
                                 side="up"
                                 onChange={(next) =>
                                     draftStore.updateFollowUp(rootId, (prev) => ({
                                         ...prev,
-                                        model: next === '' ? undefined : next,
+                                        model: next === '' ? undefined : choices.pick(next),
                                         submissionKey: null,
                                     }))
                                 }
@@ -220,6 +226,7 @@ function FollowUp({
     onFollowUp,
     adder,
     agent,
+    connection,
 }: {
     latest: Job;
     rootId: string;
@@ -230,6 +237,7 @@ function FollowUp({
     onFollowUp: OnFollowUp;
     adder: MutableRefObject<((files: File[]) => void) | null>;
     agent: string | null;
+    connection: ChipConnection | null;
 }) {
     const eligibility = followUpEligibility(latest, viewer);
     const asked = endedOnQuestion(latest);
@@ -242,6 +250,7 @@ function FollowUp({
                     rootId={rootId}
                     current={latest.agentModel ?? latest.resolvedModel}
                     agent={agent}
+                    connection={connection}
                     draftStore={draftStore}
                     error={error}
                     sending={sending}
@@ -333,6 +342,7 @@ export function TaskDetail({
     onConnectionChange,
     activity = NO_ACTIVITY,
     agent = null,
+    connection = null,
 }: {
     /** The page's head: title, id line, batch backlink. Rendered whatever the poll holds. */
     header: ReactNode;
@@ -365,6 +375,8 @@ export function TaskDetail({
     activity?: ThreadActivity;
     /** The thread's agent (its frozen agent default, else its profile's type); null when unknown. */
     agent?: string | null;
+    /** The connection the thread's executor selects, when the caller may see it; its live models are what a follow-up offers. */
+    connection?: ChipConnection | null;
 }) {
     const followUpAdd = useRef<((files: File[]) => void) | null>(null);
 
@@ -457,6 +469,7 @@ export function TaskDetail({
                     onFollowUp={onFollowUp}
                     adder={followUpAdd}
                     agent={agent}
+                    connection={connection}
                 />
             </AttachmentDropZone>
         </div>

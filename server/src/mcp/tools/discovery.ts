@@ -66,6 +66,11 @@ const ExecutorRow = z.object({
     type: z.string(),
     runnerClass: z.string().nullable().optional(),
     suspended: z.boolean().optional(),
+    providerConnectionId: z.string().nullable().optional(),
+    providerConnectionName: z.string().nullable().optional(),
+    providerConnectionProvider: z.string().nullable().optional(),
+    providerConnectionScope: z.enum(['org', 'personal']).nullable().optional(),
+    configOverridesConnection: z.boolean().optional(),
 });
 const WorkspaceSchema = z.object({
     executors: z.array(ExecutorRow),
@@ -95,6 +100,18 @@ export const listExecutors = defineTool({
                     .describe('The runner class its tasks run on; null is the default. Only an org profile names one.'),
                 suspended: z.boolean(),
                 default: z.boolean(),
+                providerConnectionId: z
+                    .string()
+                    .nullable()
+                    .describe('The provider connection it runs its model on; null uses the environment keys.'),
+                providerConnectionName: z.string().nullable().describe("That connection's name, when you may see it."),
+                providerConnectionProvider: z.string().nullable().describe("That connection's model provider."),
+                providerConnectionScope: z.enum(['org', 'personal']).nullable(),
+                configOverridesConnection: z
+                    .boolean()
+                    .describe(
+                        'True when pasted configuration credentials or endpoints take precedence over the connection.'
+                    ),
             })
         ),
     }),
@@ -111,6 +128,11 @@ export const listExecutors = defineTool({
             type: profile.type,
             runnerClass: profile.runnerClass ?? null,
             suspended: profile.suspended === true,
+            providerConnectionId: profile.providerConnectionId ?? null,
+            providerConnectionName: profile.providerConnectionName ?? null,
+            providerConnectionProvider: profile.providerConnectionProvider ?? null,
+            providerConnectionScope: profile.providerConnectionScope ?? null,
+            configOverridesConnection: profile.configOverridesConnection === true,
             default: defaultExecutor?.scope === scope && defaultExecutor.name === profile.name,
         });
         const rows = [...executors.map((p) => row('user', p)), ...orgExecutors.map((p) => row('org', p))];

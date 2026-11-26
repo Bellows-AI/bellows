@@ -117,6 +117,7 @@ export async function harness({
     installationListing,
     orgsFor,
     workflows,
+    providerConnections,
 }: {
     config?: Partial<AppConfig>;
     /** Defaults to the fixture stub, so route tests get a populated payload without a database. */
@@ -151,6 +152,8 @@ export async function harness({
     orgsFor?: readonly string[];
     /** Absent by default, which leaves the workflow routes answering 503. */
     workflows?: WorkflowStore;
+    /** Absent by default, which leaves the connection fields on executor rows null. */
+    providerConnections?: OrgRuntime['providerConnections'];
 } = {}) {
     const config = testConfig(overrides);
     const telemetry = telemetryOption ?? stubTelemetryClient();
@@ -173,6 +176,7 @@ export async function harness({
         envVars,
         workflows,
         userExecutors: executors,
+        providerConnections,
         ...(orgsFor ? { orgsFor } : {}),
     });
     const app = await buildApp({

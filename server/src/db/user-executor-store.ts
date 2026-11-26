@@ -62,6 +62,12 @@ export interface ExecutorProfile {
      * the pasted config alone. An id, never a credential: the claim resolves the key from the secret store.
      */
     readonly providerConnectionId: string | null;
+    /**
+     * Whether the pasted config carries its own credential, endpoint or `{env:NAME}` reference, which the claim
+     * keeps above the connection's (docs/workspace.md). Read from the stored markers and the config text, never by
+     * decrypting a key; only the list reads answer it, so a write's echo omits it.
+     */
+    readonly configOverridesConnection?: boolean;
 }
 
 /** What `configFor` answers: the row's type, the raw config the member pasted, its round limit, whether it is suspended and its runner class. */
@@ -258,6 +264,7 @@ interface Row {
     suspended: boolean;
     runner_class: string | null;
     provider_connection_id: string | null;
+    overrides_connection?: boolean;
 }
 
 const toExecutorProfile = (row: Row): ExecutorProfile => ({
@@ -271,6 +278,7 @@ const toExecutorProfile = (row: Row): ExecutorProfile => ({
     suspended: row.suspended,
     runnerClass: row.runner_class,
     providerConnectionId: row.provider_connection_id,
+    ...(row.overrides_connection === undefined ? {} : { configOverridesConnection: row.overrides_connection }),
 });
 
 /**
@@ -591,7 +599,8 @@ export function createUserExecutorStore({
             // `config` is deliberately not selected: the routes echo these rows on every poll, and
             // pasted config may hold credentials.
             const rows = await sql<Row[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id,
+                    (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id = ${userId}
                 order by position asc, name asc
@@ -602,7 +611,8 @@ export function createUserExecutorStore({
         async listWithConfigs(userId) {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config,
+                    (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id = ${userId}
                 order by position asc, name asc
@@ -627,7 +637,8 @@ export function createUserExecutorStore({
         async listOrg() {
             await gate();
             const rows = await sql<Row[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id,
+                    (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id is null
                 order by position asc, name asc
@@ -638,7 +649,8 @@ export function createUserExecutorStore({
         async listOrgWithConfigs() {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config,
+                    (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id is null
                 order by position asc, name asc
