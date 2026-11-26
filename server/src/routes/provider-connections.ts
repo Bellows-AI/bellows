@@ -78,6 +78,7 @@ function parseCreate(raw: unknown, deploymentMode: DeploymentMode): ParsedCreate
     if (scope !== 'org' && scope !== 'personal') return refusal('scope must be org or personal');
     const nameReason = badConnectionName(name);
     if (nameReason) return refusal(nameReason, ERROR_CODES.BAD_NAME);
+    const connectionName = name as string;
     if (!isModelProvider(provider)) return refusal('provider must be one of the model providers');
     if (!providerAvailable(provider, deploymentMode)) {
         return refusal(CLOUD_CREDENTIAL_MESSAGE, ERROR_CODES.CLOUD_CREDENTIAL_REFUSED);
@@ -86,16 +87,18 @@ function parseCreate(raw: unknown, deploymentMode: DeploymentMode): ParsedCreate
     if (baseUrl === undefined) {
         return provider === 'litellm'
             ? refusal('LiteLLM needs a baseUrl')
-            : { scope, name, provider, key, baseUrl: null };
+            : { scope, name: connectionName, provider, key, baseUrl: null };
     }
     if (provider === 'subscription' || typeof baseUrl !== 'string' || !validBase(baseUrl)) {
         return refusal('baseUrl must be an http(s) URL without credentials, and a subscription takes none');
     }
-    return { scope, name, provider, key, baseUrl };
+    return { scope, name: connectionName, provider, key, baseUrl };
 }
 
 /** The edit body, or the refusal: metadata and an optional rotation; provider and scope are not fields. */
-function parseEdit(raw: unknown): { patch: { name?: string; baseUrl?: string | null; key?: string } } | { error: string; code: string } {
+function parseEdit(
+    raw: unknown
+): { patch: { name?: string; baseUrl?: string | null; key?: string } } | { error: string; code: string } {
     const fields = jsonBody(raw);
     // Immutability is loud: a body naming either field is refused for exactly that, before the
     // unknown-field scan can reframe it.
@@ -217,7 +220,11 @@ function discoveryOf(verdict: VerifyAnswer): ProviderConnectionModels {
 async function handleList(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const ctx = await contextOf(orgs, request, reply);
     if (!ctx) return reply;
-    const read = await guard(reply, (e) => request.log.error({ err: e }), () => ctx.store.listFor(ctx.caller.user.id));
+    const read = await guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        () => ctx.store.listFor(ctx.caller.user.id)
+    );
     if (!read.ok) return reply;
     return reply.code(HTTP_OK).send({ connections: read.value });
 }
@@ -261,8 +268,10 @@ async function handleEdit(deps: ProviderConnectionRoutesDeps, request: FastifyRe
     if (!ctx) return reply;
     const id = idParam(request, reply);
     if (id === null) return reply;
-    const existing = await guard(reply, (e) => request.log.error({ err: e }), () =>
-        ctx.store.forUser(ctx.caller.user.id, id)
+    const existing = await guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        () => ctx.store.forUser(ctx.caller.user.id, id)
     );
     if (!existing.ok) return reply;
     if (!existing.value) return noSuchConnection(reply);
@@ -300,16 +309,20 @@ async function handleDelete(orgs: OrgRegistry, request: FastifyRequest, reply: F
     if (!ctx) return reply;
     const id = idParam(request, reply);
     if (id === null) return reply;
-    const existing = await guard(reply, (e) => request.log.error({ err: e }), () =>
-        ctx.store.forUser(ctx.caller.user.id, id)
+    const existing = await guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        () => ctx.store.forUser(ctx.caller.user.id, id)
     );
     if (!existing.ok) return reply;
     if (!existing.value) return noSuchConnection(reply);
     if (existing.value.scope === 'org' && !ctx.admin) {
         return bad(reply, ERROR_CODES.FORBIDDEN, 'Only an admin configures an organization connection', HTTP_FORBIDDEN);
     }
-    const removed = await guard(reply, (e) => request.log.error({ err: e }), () =>
-        ctx.store.remove(existing.value!.scope === 'org' ? null : ctx.caller.user.id, id)
+    const removed = await guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        () => ctx.store.remove(existing.value!.scope === 'org' ? null : ctx.caller.user.id, id)
     );
     if (!removed.ok) return reply;
     if (!removed.value) return noSuchConnection(reply);
@@ -334,8 +347,10 @@ async function handleModels(
     if (!ctx) return reply;
     const id = idParam(request, reply);
     if (id === null) return reply;
-    const found = await guard(reply, (e) => request.log.error({ err: e }), () =>
-        ctx.store.credentialFor(ctx.caller.user.id, id)
+    const found = await guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        () => ctx.store.credentialFor(ctx.caller.user.id, id)
     );
     if (!found.ok) return reply;
     if (!found.value) return noSuchConnection(reply);
@@ -369,8 +384,8 @@ interface ProviderConnectionRoutesDeps {
 }
 
 export function providerConnectionRoutes(deps: ProviderConnectionRoutesDeps): FastifyPluginAsync {
+    const limiter = createRateLimiter({ limit: PER_MEMBER_PER_WINDOW, windowMs: WINDOW_MS, now: deps.now ?? Date.now });
     return async (app) => {
-        const limiter = createRateLimiter({ limit: PER_MEMBER_PER_WINDOW, windowMs: WINDOW_MS, now: deps.now });
         app.get(PATH, { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) => handleList(deps.orgs, request, reply));
         app.post(PATH, { bodyLimit: BODY_LIMIT }, (request, reply) => handleCreate(deps, request, reply));
         app.put(`${PATH}/:id`, { bodyLimit: BODY_LIMIT }, (request, reply) => handleEdit(deps, request, reply));

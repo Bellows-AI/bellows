@@ -1,8 +1,4 @@
-import type {
-    CreatedEnvSecret,
-    RetiredEnvSecret,
-    UnknownEnvSecret,
-} from './env-secrets.js';
+import type { CreatedEnvSecret, RetiredEnvSecret, UnknownEnvSecret } from './env-secrets.js';
 import {
     createEnvSecrets,
     EnvSecretError,
@@ -10,10 +6,16 @@ import {
     releaseEnvSecrets,
     retireEnvSecrets,
 } from './env-secrets.js';
+import type {
+    SecretDiagnostic,
+    SecretIdentity,
+    SecretRef,
+    SecretStore,
+    SecretVersion,
+} from '../secrets/secret-store.js';
 
 /** A stored credential that could not be delivered: the closed code/reason carries the story. */
 export { EnvSecretError };
-import type { SecretDiagnostic, SecretIdentity, SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
 
 /**
  * A provider connection's key lives in the secret store (docs/secrets.md, docs/api.md): the row
@@ -61,7 +63,10 @@ export interface ProviderConnectionSecretDeps {
  * organization's connection rows shows nothing naming. An inconclusive read deletes nothing and
  * reports every candidate. Never throws.
  */
-export function releaseConnectionSecrets(deps: ProviderConnectionSecretDeps, candidates: readonly (RetiredEnvSecret | UnknownEnvSecret)[]) {
+export function releaseConnectionSecrets(
+    deps: ProviderConnectionSecretDeps,
+    candidates: readonly (RetiredEnvSecret | UnknownEnvSecret)[]
+) {
     return releaseEnvSecrets(deps.secrets, candidates, {
         signal: AbortSignal.timeout(deps.cleanupDeadlineMs),
         diagnose: deps.secretLog,
@@ -93,14 +98,14 @@ export async function mintConnectionSecret(
 
 /** The stored record a superseding write retires, built from the row it came from. */
 export const retiredConnectionSecret = (
-    deps: ProviderConnectionSecretDeps,
+    orgId: string,
     connectionId: string,
     userId: string | null,
     row: { secret_ref: string; secret_version: string }
 ): RetiredEnvSecret => ({
     ref: row.secret_ref as SecretRef,
     version: row.secret_version as SecretVersion,
-    identity: providerConnectionSecretIdentity(deps.orgId, connectionId, userId),
+    identity: providerConnectionSecretIdentity(orgId, connectionId, userId),
 });
 
 /** The post-commit deletes of the records the committed rows no longer name. Never throws. */

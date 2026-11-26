@@ -5,7 +5,6 @@ import type { AuthStore } from '../src/auth/store.js';
 import type { AppConfig, AuthConfig } from '../src/config.js';
 import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
-import type { ProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import type { WorkflowStore } from '../src/db/workflows/workflow-store.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';

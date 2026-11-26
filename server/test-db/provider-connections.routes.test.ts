@@ -7,13 +7,7 @@ import { createAuthStore } from '../src/auth/store.js';
 import { createProviderKeys } from '../src/provider-keys/verify.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
-import {
-    type FakeProvider,
-    modelList,
-    openRouterKey,
-    serverError,
-    startFakeProvider,
-} from '../test/fake-provider.js';
+import { type FakeProvider, modelList, openRouterKey, serverError, startFakeProvider } from '../test/fake-provider.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { testSecretStore } from './env-secrets-harness.js';
 import { useTestDb } from './harness.js';
@@ -35,8 +29,6 @@ const KEY = 'sk-ant-routes-test-0123456789abcdef';
 let app: FastifyInstance;
 let admin: string;
 let member: string;
-let outsider: string;
-let orgId: string;
 let secrets: SecretStore;
 let fake: FakeProvider;
 
@@ -75,10 +67,8 @@ const boot = async () => {
         });
         return token;
     };
-    orgId = firstOrg;
     admin = await tokenFor(firstOrg);
     member = await tokenFor(firstOrg);
-    outsider = await tokenFor(otherOrg);
 
     const ready = Promise.resolve();
     const config = testConfig({ auth: githubAuth(), integrations: { callbackOrigin: null, jira: null, linear: null } });
@@ -183,7 +173,7 @@ describe.skipIf(!enabled)('the provider connection routes', () => {
         expect(listed.json.models).toBeUndefined();
     });
 
-    it('a member discovers through an org connection but not through another member\'s personal one', async () => {
+    it("a member discovers through an org connection but not through another member's personal one", async () => {
         await boot();
         fake.reply('/v1/models', modelList('shared-model'));
         const orgRow = await createConnection(admin, { scope: 'org', name: 'team' });

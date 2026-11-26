@@ -6,6 +6,7 @@ import {
     type ProviderConnectionMeta,
     type ProviderConnectionScope,
 } from '@factory-ai/core';
+import { waitAdvisoryXactLock } from './pool.js';
 import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
 import {
     mintConnectionSecret,
@@ -91,6 +92,12 @@ interface Row {
     secret_version: string | null;
 }
 
+/** The sealed row a superseding write or a fail-closed read starts from: the reference is not null. */
+interface SealedRow extends Row {
+    secret_ref: string;
+    secret_version: string;
+}
+
 /** The columns a metadata answer is built from: never `secret_ref` or `secret_version` unguarded. */
 const META_COLUMNS = (exec: Sql | TransactionSql) =>
     exec`id, name, provider, user_id, base_url, (secret_ref is not null) as has_key`;
@@ -114,6 +121,50 @@ const toMeta = (row: {
 
 /** The lock one scope's create holds for its count-then-insert, so concurrent creates cannot race past the cap. */
 const scopeLockKey = (orgId: string, owner: string | null) => `provider-connection:${orgId}:${owner ?? 'org'}`;
+
+/**
+ * The edit's one transaction: lock the row `owner` owns, publish the name, endpoint and — on a
+ * rotation — the fresh reference and version in one statement, and answer what the superseded
+ * secret is. `null` when no such row: the caller releases what it minted.
+ */
+async function replaceConnectionRow(
+    tx: TransactionSql,
+    {
+        orgId,
+        owner,
+        id,
+        patch,
+        made,
+    }: {
+        orgId: string;
+        owner: string | null;
+        id: string;
+        patch: ProviderConnectionPatch;
+        made: Awaited<ReturnType<typeof mintConnectionSecret>> | null;
+    }
+): Promise<{ row: Row; superseded: ReturnType<typeof retiredConnectionSecret> | undefined } | null> {
+    const [current] = await tx<SealedRow[]>`
+        select id, name, provider, user_id, base_url, secret_ref, secret_version
+        from provider_connection
+        where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
+        for update
+    `;
+    if (!current) return null;
+    const name = patch.name ?? current.name;
+    const baseUrl = patch.baseUrl === undefined ? current.base_url : patch.baseUrl;
+    const [row] = await tx<Row[]>`
+        update provider_connection set
+            name = ${name}, base_url = ${baseUrl}, updated_at = now()
+            ${made ? tx`, secret_ref = ${made.ref}, secret_version = ${made.version}` : tx``}
+        where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
+        returning id, name, provider, user_id, base_url, secret_ref
+    `;
+    if (!row) return null;
+    return {
+        row,
+        superseded: made ? retiredConnectionSecret(orgId, id, current.user_id, current) : undefined,
+    };
+}
 
 export function createProviderConnectionStore({
     sql,
@@ -188,7 +239,7 @@ export function createProviderConnectionStore({
             const made = await mintConnectionSecret(deps, identityOf(id, owner), input.key);
             try {
                 const rows = await sql.begin(async (tx) => {
-                    await tx`select pg_advisory_xact_lock(hashtextextended(${scopeLockKey(orgId, owner)}, 0))`;
+                    await waitAdvisoryXactLock(tx, scopeLockKey(orgId, owner));
                     const counted = await tx<{ count: number }[]>`
                         select count(*)::int as count from provider_connection
                         where org_id = ${orgId} and user_id is not distinct from ${owner}
@@ -218,35 +269,16 @@ export function createProviderConnectionStore({
             const made =
                 patch.key === undefined ? null : await mintConnectionSecret(deps, identityOf(id, owner), patch.key);
             const dropMade = () => (made ? releaseConnectionSecrets(deps, [made]) : undefined);
-            let superseded: ReturnType<typeof retiredConnectionSecret> | undefined;
             try {
-                const rows = await sql.begin(async (tx) => {
-                    const [current] = await tx<Row[]>`
-                        select id, name, provider, user_id, base_url, secret_ref, secret_version
-                        from provider_connection
-                        where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
-                        for update
-                    `;
-                    if (!current) return [];
-                    const name = patch.name ?? current.name;
-                    const baseUrl = patch.baseUrl === undefined ? current.base_url : patch.baseUrl;
-                    const [row] = await tx<Row[]>`
-                        update provider_connection set
-                            name = ${name}, base_url = ${baseUrl}, updated_at = now()
-                            ${made ? tx`, secret_ref = ${made.ref}, secret_version = ${made.version}` : tx``}
-                        where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
-                        returning id, name, provider, user_id, base_url, secret_ref
-                    `;
-                    if (row && made) superseded = retiredConnectionSecret(deps, id, current.user_id, current);
-                    return row ? [row] : [];
-                });
-                const row = rows[0];
-                if (!row) {
+                const replaced = await sql.begin(async (tx) =>
+                    replaceConnectionRow(tx, { orgId, owner, id, patch, made })
+                );
+                if (!replaced) {
                     await dropMade();
                     return null;
                 }
-                if (superseded) await retireConnectionSecrets(deps, [superseded]);
-                return toMeta(row);
+                if (replaced.superseded) await retireConnectionSecrets(deps, [replaced.superseded]);
+                return toMeta(replaced.row);
             } catch (error) {
                 await dropMade();
                 throw error;
@@ -262,7 +294,7 @@ export function createProviderConnectionStore({
             `;
             const row = rows[0];
             if (row) {
-                await retireConnectionSecrets(deps, [retiredConnectionSecret(deps, id, row.user_id, row)]);
+                await retireConnectionSecrets(deps, [retiredConnectionSecret(orgId, id, row.user_id, row)]);
                 return true;
             }
             return false;
@@ -270,7 +302,7 @@ export function createProviderConnectionStore({
 
         async credentialFor(userId, id) {
             await gate();
-            const rows = await sql<Row[]>`
+            const rows = await sql<SealedRow[]>`
                 select id, name, provider, user_id, base_url, secret_ref, secret_version
                 from provider_connection
                 where org_id = ${orgId} and id = ${id} and ${visibleTo(userId)}

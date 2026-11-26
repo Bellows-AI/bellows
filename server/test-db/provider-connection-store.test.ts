@@ -55,14 +55,16 @@ const create = (over: Partial<CreateInput> = {}): CreateInput => ({
 });
 
 const rowOf = async (id: string) => {
-    const [row] = await sql<{
-        secret_ref: string;
-        secret_version: string;
-        user_id: string | null;
-        provider: string;
-        base_url: string | null;
-        name: string;
-    }[]>`select secret_ref, secret_version, user_id, provider, base_url, name
+    const [row] = await sql<
+        {
+            secret_ref: string;
+            secret_version: string;
+            user_id: string | null;
+            provider: string;
+            base_url: string | null;
+            name: string;
+        }[]
+    >`select secret_ref, secret_version, user_id, provider, base_url, name
          from provider_connection where org_id = ${ORG} and id = ${id}`;
     return row;
 };
@@ -83,7 +85,7 @@ describe.skipIf(!enabled)('the provider connection store', () => {
         expect(row.secret_version).toBeTruthy();
         expect(JSON.stringify(row)).not.toContain(KEY);
         expect(row.user_id).toBe(ALICE);
-        expect((await store.credentialFor(ALICE, made.id)).key).toBe(KEY);
+        expect((await store.credentialFor(ALICE, made.id))!.key).toBe(KEY);
     });
 
     it('a reference copied to another connection reads as identity-mismatch, never the key', async () => {
@@ -97,7 +99,7 @@ describe.skipIf(!enabled)('the provider connection store', () => {
         `;
         try {
             await store.credentialFor(ALICE, copied);
-            expect.unreachable('the copied reference read another connection\'s key');
+            expect.unreachable("the copied reference read another connection's key");
         } catch (error) {
             expect(error).toBeInstanceOf(EnvSecretError);
             expect((error as EnvSecretError).code).toBe('identity-mismatch');
@@ -127,7 +129,7 @@ describe.skipIf(!enabled)('the provider connection store', () => {
         }
     });
 
-    it('lists the member\'s own and the organization\'s, never another member\'s personal rows', async () => {
+    it("lists the member's own and the organization's, never another member's personal rows", async () => {
         const orgRow = await store.create(create({ scope: 'org', userId: ALICE, name: 'team' }));
         const own = await store.create(create({ name: 'mine' }));
         await store.create(create({ userId: BOB, name: 'bobs' }));
@@ -203,7 +205,7 @@ describe.skipIf(!enabled)('the provider connection store', () => {
         const after = (await rowOf(made.id))!;
         expect(after.secret_ref).not.toBe(before.secret_ref);
         expect(after.secret_version).not.toBe(before.secret_version);
-        expect((await store.credentialFor(ALICE, made.id)).key).toBe(ROTATED);
+        expect((await store.credentialFor(ALICE, made.id))!.key).toBe(ROTATED);
 
         // The superseded secret is retired after the commit: reading it is an error, never the old key.
         try {
@@ -229,7 +231,7 @@ describe.skipIf(!enabled)('the provider connection store', () => {
             baseUrl: 'https://proxy.example.test',
             hasKey: true,
         });
-        expect((await store.credentialFor(ALICE, made.id)).key).toBe(KEY);
+        expect((await store.credentialFor(ALICE, made.id))!.key).toBe(KEY);
     });
 
     it('publishes the endpoint and the credential version together, and a stale reader fails closed', async () => {
@@ -266,7 +268,7 @@ describe.skipIf(!enabled)('the provider connection store', () => {
             code: '23505',
         });
 
-        expect((await spied.credentialFor(ALICE, made.id)).key).toBe(KEY);
+        expect((await spied.credentialFor(ALICE, made.id))!.key).toBe(KEY);
         expect(spy.calls.creates).toHaveLength(createsBefore + 1);
         expect(spy.calls.deletes).toHaveLength(1);
     });
@@ -274,10 +276,15 @@ describe.skipIf(!enabled)('the provider connection store', () => {
     it('a failed delete keeps the row and the secret; a committed one retires the secret', async () => {
         const made = await store.create(create({ name: 'doomed' }));
         const failing = failingPoolQuery(sql, 'delete from provider_connection');
-        const broken = createProviderConnectionStore({ sql: failing, orgId: ORG, secrets: healthy, secretLog: () => {} });
+        const broken = createProviderConnectionStore({
+            sql: failing,
+            orgId: ORG,
+            secrets: healthy,
+            secretLog: () => {},
+        });
         await expect(broken.remove(ALICE, made.id)).rejects.toThrow();
         expect(await store.forUser(ALICE, made.id)).not.toBeNull();
-        expect((await store.credentialFor(ALICE, made.id)).key).toBe(KEY);
+        expect((await store.credentialFor(ALICE, made.id))!.key).toBe(KEY);
 
         expect(await store.remove(BOB, made.id)).toBe(false);
         expect(await store.remove(ALICE, made.id)).toBe(true);
@@ -292,7 +299,7 @@ describe.skipIf(!enabled)('the provider connection store', () => {
                 ref: row.secret_ref,
                 version: row.secret_version,
             });
-            expect.unreachable('the deleted connection\'s secret read');
+            expect.unreachable("the deleted connection's secret read");
         } catch (error) {
             expect(error).toBeInstanceOf(EnvSecretError);
         }
@@ -303,7 +310,7 @@ describe.skipIf(!enabled)('the provider connection store', () => {
         expect((await rowOf(made.id))!.user_id).toBeNull();
         // A member reads and uses it; only the org owner door (owner null) edits it.
         expect((await store.forUser(BOB, made.id))?.scope).toBe('org');
-        expect((await store.credentialFor(BOB, made.id)).key).toBe(KEY);
+        expect((await store.credentialFor(BOB, made.id))!.key).toBe(KEY);
         expect(await store.update(ALICE, made.id, { name: 'renamed-by-member' })).toBeNull();
         const renamed = await store.update(null, made.id, { name: 'renamed-by-org' });
         expect(renamed).toMatchObject({ id: made.id, scope: 'org' });

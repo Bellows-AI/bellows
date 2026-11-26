@@ -340,8 +340,9 @@ async function registerRunnerCredentialRoutes(
 }
 
 /**
- * The routes that exist only with their dependency — commerce (and COMMERCE_ENABLED), the provider key check — and
- * the model setup the key check serves, which every board has.
+ * The routes that exist only with their dependency — commerce (and COMMERCE_ENABLED), the provider
+ * key check — the model setup the key check serves, which every board has, and the provider
+ * connections whose discovery spends the stored key through it.
  */
 async function registerOptionalRoutes(
     app: FastifyInstance,
@@ -351,6 +352,7 @@ async function registerOptionalRoutes(
 ): Promise<void> {
     if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
     if (providerKeys) await app.register(modelSetupVerifyRoutes({ providerKeys, now }));
+    await app.register(providerConnectionRoutes({ orgs, deploymentMode: config.deploymentMode, providerKeys, now }));
     await app.register(modelSetupRoutes({ config, orgs }));
 }
 
@@ -518,16 +520,6 @@ export async function buildApp({
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes(executorRouteDeps(config, orgs)));
-    // Provider connections: the named model-provider credentials, the metadata read beside the
-    // per-org CRUD and, with a checker wired, the discovery read over a stored key.
-    await app.register(
-        providerConnectionRoutes({
-            orgs,
-            deploymentMode: config.deploymentMode,
-            providerKeys,
-            now,
-        })
-    );
     // The organization's export archive: an admin read over every org table and object.
     await app.register(orgExportRoutes({ orgs }));
     // Notification subscriptions: the org's settings for who hears about a task verdict.

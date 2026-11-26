@@ -46,8 +46,7 @@ function memoryProviderConnectionStore(): ProviderConnectionStore {
         hasKey: true,
     });
     const visible = (userId: string) => rows.filter((row) => row.userId === null || row.userId === userId);
-    const owned = (owner: string | null, id: string) =>
-        rows.find((row) => row.id === id && row.userId === owner);
+    const owned = (owner: string | null, id: string) => rows.find((row) => row.id === id && row.userId === owner);
     return {
         async listFor(userId) {
             return visible(userId).map(metaOf);
@@ -111,36 +110,27 @@ async function boot(overrides: Partial<AppConfig> = {}, checker: ProviderKeys | 
         now: () => clock,
     });
     track(app);
+    /** The injected request a signed-in cookie drives: app-bound, so a call names only the caller. */
+    const inject = (cookie: string, method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, payload?: unknown) =>
+        app.inject({
+            method,
+            url,
+            headers: { cookie, ...(payload === undefined ? {} : { 'content-type': 'application/json' }) },
+            ...(payload === undefined
+                ? {}
+                : { payload: typeof payload === 'string' ? payload : JSON.stringify(payload) }),
+        });
     return {
-        app,
-        store,
         admin: await signedIn(auth, admin),
         member: await signedIn(auth, member),
+        inject,
     };
 }
 
-type Booted = Awaited<ReturnType<typeof boot>>;
-
-const call = (
-    app: Booted['app'],
-    cookie: string,
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
-    url: string,
-    payload?: unknown
-) =>
-    app.inject({
-        method,
-        url,
-        headers: { cookie, ...(payload === undefined ? {} : { 'content-type': 'application/json' }) },
-        ...(payload === undefined
-            ? {}
-            : { payload: typeof payload === 'string' ? payload : JSON.stringify(payload) }),
-    });
-
 describe('POST /api/provider-connections', () => {
     it('a member creates a personal connection; an org write is admin-gated', async () => {
-        const { app, member, admin } = await boot();
-        const personal = await call(app, member, 'POST', BASE, {
+        const { member, admin, inject } = await boot();
+        const personal = await inject(member, 'POST', BASE, {
             scope: 'personal',
             name: 'mine',
             provider: 'anthropic',
@@ -150,7 +140,7 @@ describe('POST /api/provider-connections', () => {
         expect(personal.json()).toMatchObject({ scope: 'personal', name: 'mine', provider: 'anthropic', hasKey: true });
         expect((personal.json() as { id: string }).id).toBeTruthy();
 
-        const refused = await call(app, member, 'POST', BASE, {
+        const refused = await inject(member, 'POST', BASE, {
             scope: 'org',
             name: 'team',
             provider: 'anthropic',
@@ -159,7 +149,7 @@ describe('POST /api/provider-connections', () => {
         expect(refused.statusCode).toBe(HTTP_FORBIDDEN);
         expect(refused.json()).toMatchObject({ code: 'FORBIDDEN' });
 
-        const byAdmin = await call(app, admin, 'POST', BASE, {
+        const byAdmin = await inject(admin, 'POST', BASE, {
             scope: 'org',
             name: 'team',
             provider: 'anthropic',
@@ -171,23 +161,38 @@ describe('POST /api/provider-connections', () => {
 
     it.each([
         ['a key with whitespace', { scope: 'personal', name: 'x', provider: 'anthropic', key: `${KEY}\r\nx-evil: 1` }],
-        ['a base URL that is not a URL', { scope: 'personal', name: 'x', provider: 'litellm', key: KEY, baseUrl: 'not a url' }],
-        ['a base URL with userinfo', { scope: 'personal', name: 'x', provider: 'litellm', key: KEY, baseUrl: 'https://u:p@proxy.example.test' }],
+        [
+            'a base URL that is not a URL',
+            { scope: 'personal', name: 'x', provider: 'litellm', key: KEY, baseUrl: 'not a url' },
+        ],
+        [
+            'a base URL with userinfo',
+            { scope: 'personal', name: 'x', provider: 'litellm', key: KEY, baseUrl: 'https://u:p@proxy.example.test' },
+        ],
         ['litellm without a base URL', { scope: 'personal', name: 'x', provider: 'litellm', key: KEY }],
-        ['a base URL for a subscription', { scope: 'personal', name: 'x', provider: 'subscription', key: 'sk-ant-oat01-a', baseUrl: 'http://127.0.0.1:1' }],
+        [
+            'a base URL for a subscription',
+            {
+                scope: 'personal',
+                name: 'x',
+                provider: 'subscription',
+                key: 'sk-ant-oat01-a',
+                baseUrl: 'http://127.0.0.1:1',
+            },
+        ],
         ['an unknown provider', { scope: 'personal', name: 'x', provider: 'mistral', key: KEY }],
         ['an unknown field', { scope: 'personal', name: 'x', provider: 'anthropic', key: KEY, extra: 1 }],
     ])('refuses %s as BAD_BODY', async (_label, payload) => {
-        const { app, member } = await boot();
-        const res = await call(app, member, 'POST', BASE, payload);
+        const { member, inject } = await boot();
+        const res = await inject(member, 'POST', BASE, payload);
         expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(res.json()).toMatchObject({ code: 'BAD_BODY' });
         expect(res.body).not.toContain(KEY);
     });
 
     it('cloud refuses a subscription connection', async () => {
-        const { app, member } = await boot({ deploymentMode: 'cloud' });
-        const res = await call(app, member, 'POST', BASE, {
+        const { member, inject } = await boot({ deploymentMode: 'cloud' });
+        const res = await inject(member, 'POST', BASE, {
             scope: 'personal',
             name: 'x',
             provider: 'subscription',
@@ -200,8 +205,8 @@ describe('POST /api/provider-connections', () => {
 
 describe('PUT and DELETE /api/provider-connections/:id', () => {
     it('edits metadata; an omitted key retains it; provider and scope are immutable', async () => {
-        const { app, store, member } = await boot();
-        const made = await call(app, member, 'POST', BASE, {
+        const { member, inject } = await boot();
+        const made = await inject(member, 'POST', BASE, {
             scope: 'personal',
             name: 'before',
             provider: 'anthropic',
@@ -209,78 +214,113 @@ describe('PUT and DELETE /api/provider-connections/:id', () => {
         });
         const id = (made.json() as { id: string }).id;
 
-        const edited = await call(app, member, 'PUT', `${BASE}/${id}`, { name: 'after', baseUrl: 'https://proxy.example.test' });
+        const edited = await inject(member, 'PUT', `${BASE}/${id}`, {
+            name: 'after',
+            baseUrl: 'https://proxy.example.test',
+        });
         expect(edited.statusCode).toBe(HTTP_OK);
         expect(edited.json()).toMatchObject({ id, name: 'after', baseUrl: 'https://proxy.example.test', hasKey: true });
 
-        const providerMove = await call(app, member, 'PUT', `${BASE}/${id}`, { provider: 'openai' });
+        const providerMove = await inject(member, 'PUT', `${BASE}/${id}`, { provider: 'openai' });
         expect(providerMove.statusCode).toBe(HTTP_BAD_REQUEST);
-        const scopeMove = await call(app, member, 'PUT', `${BASE}/${id}`, { scope: 'org' });
+        const scopeMove = await inject(member, 'PUT', `${BASE}/${id}`, { scope: 'org' });
         expect(scopeMove.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(scopeMove.json()).toMatchObject({ code: 'BAD_SCOPE' });
 
-        const listed = await call(app, member, 'GET', BASE);
+        const listed = await inject(member, 'GET', BASE);
         expect((listed.json() as { connections: { id: string; name: string }[] }).connections).toEqual([
-            { id, name: 'after', provider: 'anthropic', scope: 'personal', baseUrl: 'https://proxy.example.test', hasKey: true },
+            {
+                id,
+                name: 'after',
+                provider: 'anthropic',
+                scope: 'personal',
+                baseUrl: 'https://proxy.example.test',
+                hasKey: true,
+            },
         ]);
     });
 
     it('a member may delete a personal row but not an org row; an unknown id is 404', async () => {
-        const { app, admin, member } = await boot();
-        const orgRow = await call(app, admin, 'POST', BASE, { scope: 'org', name: 'team', provider: 'anthropic', key: KEY });
+        const { admin, member, inject } = await boot();
+        const orgRow = await inject(admin, 'POST', BASE, {
+            scope: 'org',
+            name: 'team',
+            provider: 'anthropic',
+            key: KEY,
+        });
         const orgId = (orgRow.json() as { id: string }).id;
-        const refused = await call(app, member, 'DELETE', `${BASE}/${orgId}`);
+        const refused = await inject(member, 'DELETE', `${BASE}/${orgId}`);
         expect(refused.statusCode).toBe(HTTP_FORBIDDEN);
 
-        const personal = await call(app, member, 'POST', BASE, { scope: 'personal', name: 'mine', provider: 'anthropic', key: KEY });
+        const personal = await inject(member, 'POST', BASE, {
+            scope: 'personal',
+            name: 'mine',
+            provider: 'anthropic',
+            key: KEY,
+        });
         const personalId = (personal.json() as { id: string }).id;
-        const foreign = await call(app, admin, 'DELETE', `${BASE}/${personalId}`);
+        const foreign = await inject(admin, 'DELETE', `${BASE}/${personalId}`);
         expect(foreign.statusCode).toBe(HTTP_NOT_FOUND);
-        const removed = await call(app, member, 'DELETE', `${BASE}/${personalId}`);
+        const removed = await inject(member, 'DELETE', `${BASE}/${personalId}`);
         expect(removed.statusCode).toBe(HTTP_OK);
-        const gone = await call(app, member, 'GET', `${BASE}/${personalId}/models`);
+        const gone = await inject(member, 'GET', `${BASE}/${personalId}/models`);
         expect(gone.statusCode).toBe(HTTP_NOT_FOUND);
     });
 });
 
 describe('GET /api/provider-connections/:id/models', () => {
     it('answers discovery through the stored key and never echoes it', async () => {
-        const { app, member } = await boot();
-        const made = await call(app, member, 'POST', BASE, { scope: 'personal', name: 'x', provider: 'anthropic', key: KEY });
+        const { member, inject } = await boot();
+        const made = await inject(member, 'POST', BASE, {
+            scope: 'personal',
+            name: 'x',
+            provider: 'anthropic',
+            key: KEY,
+        });
         const id = (made.json() as { id: string }).id;
-        const res = await call(app, member, 'GET', `${BASE}/${id}/models`);
+        const res = await inject(member, 'GET', `${BASE}/${id}/models`);
         expect(res.statusCode).toBe(HTTP_OK);
         expect(res.json()).toEqual({ state: 'listed', models: ['stub-model'] });
         expect(res.body).not.toContain(KEY);
     });
 
-    it('another member\'s personal connection is not discoverable', async () => {
-        const { app, admin, member } = await boot();
-        const made = await call(app, member, 'POST', BASE, { scope: 'personal', name: 'x', provider: 'anthropic', key: KEY });
+    it("another member's personal connection is not discoverable", async () => {
+        const { admin, member, inject } = await boot();
+        const made = await inject(member, 'POST', BASE, {
+            scope: 'personal',
+            name: 'x',
+            provider: 'anthropic',
+            key: KEY,
+        });
         const id = (made.json() as { id: string }).id;
-        const res = await call(app, admin, 'GET', `${BASE}/${id}/models`);
+        const res = await inject(admin, 'GET', `${BASE}/${id}/models`);
         expect(res.statusCode).toBe(HTTP_NOT_FOUND);
     });
 
     it('is rate-limited per member', async () => {
-        const { app, member } = await boot();
-        const made = await call(app, member, 'POST', BASE, { scope: 'personal', name: 'x', provider: 'anthropic', key: KEY });
+        const { member, inject } = await boot();
+        const made = await inject(member, 'POST', BASE, {
+            scope: 'personal',
+            name: 'x',
+            provider: 'anthropic',
+            key: KEY,
+        });
         const id = (made.json() as { id: string }).id;
         for (let i = 0; i < 10; i += 1) {
-            const res = await call(app, member, 'GET', `${BASE}/${id}/models`);
+            const res = await inject(member, 'GET', `${BASE}/${id}/models`);
             expect(res.statusCode).toBe(HTTP_OK);
         }
-        const limited = await call(app, member, 'GET', `${BASE}/${id}/models`);
+        const limited = await inject(member, 'GET', `${BASE}/${id}/models`);
         expect(limited.statusCode).toBe(HTTP_TOO_MANY_REQUESTS);
         expect(limited.json()).toMatchObject({ code: 'RATE_LIMITED' });
         clock += 61_000;
-        const recovered = await call(app, member, 'GET', `${BASE}/${id}/models`);
+        const recovered = await inject(member, 'GET', `${BASE}/${id}/models`);
         expect(recovered.statusCode).toBe(HTTP_OK);
     });
 
     it('a malformed JSON body that carries the key is refused without echoing it', async () => {
-        const { app, member } = await boot();
-        const res = await call(app, member, 'POST', BASE, `{"provider":"anthropic","key":"${KEY}",`);
+        const { member, inject } = await boot();
+        const res = await inject(member, 'POST', BASE, `{"provider":"anthropic","key":"${KEY}",`);
         expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(res.body).not.toContain(KEY);
     });
