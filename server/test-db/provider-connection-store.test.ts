@@ -8,7 +8,9 @@ import {
     createProviderConnectionStore,
     type ProviderConnectionStore,
 } from '../src/db/provider-connection-store.js';
-import { failingPoolQuery, spySecrets, testSecretStore } from './env-secrets-harness.js';
+import { failingPoolQuery, spySecrets } from './env-secrets-harness.js';
+import { MutableKeys } from './secrets-postgres-harness.js';
+import { createPostgresSecretStore } from '../src/secrets/postgres-secret-store.js';
 import { testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
@@ -38,7 +40,9 @@ let store: ProviderConnectionStore;
 beforeAll(() => {
     if (!enabled) return;
     sql = db.sql;
-    healthy = testSecretStore(sql);
+    // A longer deadline than the shared 3 s one: the cap race runs 25 concurrent writes through
+    // one pool, and under a loaded lane a 3 s bound turns a slow mint into a fake refusal.
+    healthy = createPostgresSecretStore({ sql, keys: new MutableKeys(), deadlineMs: 30_000 });
     store = createProviderConnectionStore({ sql, orgId: ORG, secrets: healthy, secretLog: () => {} });
 });
 

@@ -356,6 +356,8 @@ describe.skipIf(!enabled)('GET /api/org/export', () => {
             'job_connection_binding.credential',
             'notification_subscription.secret_ref',
             'notification_subscription.secret_version',
+            'provider_connection.secret_ref',
+            'provider_connection.secret_version',
             'batch_pr_observation.claim_token',
             'commerce_usage_report.claim_token',
             'notification_outbox.claim_token',

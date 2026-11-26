@@ -92,6 +92,8 @@ export const RULES = [
     [/^server\/src\/secrets\//, FULL, 'the secret store every board opens'],
     [/^server\/src\/(pr-follower|batch-loops|batch-pr-observer|stats-service|skills|skill-catalog)\.ts$/, FULL, 'the PR follower and stats warm-up every board runs, and the skill catalog every create reads'],
     [/^server\/src\/db\/(pool|migrate|org-sql|org-tables|org-status|audit-log|lease-types|attempt-of-lease|restore-types|object-write-fence|operation-receipts|env-var-store|env-secrets|user-executor-store|executor-credentials|stored-repos|tracked-repos|master-prompt|review-prompt|evidence-policy|follow-up-recap|gate-report|task-summary|plan-limits|plan-allowances|outbox-backoff|pr-follow-store|pr-lifecycle-store|org-retention|org-purge|skill-store|connection-bindings|agent-default-sql|env-var-write)\.ts$/, FULL, 'stores the job path, the claim or a boot loop uses'],
+    // No lane phase spends a provider connection yet (the executor wiring is a later slice), so unproven stays full.
+    [/^server\/src\/db\/provider-connection(-(secrets|store))?\.ts$/, FULL, 'the provider connection store, unproven in the lane until a phase spends it'],
     [/^server\/src\/db\/batches\/batch-store-(observation|types)\.ts$/, FULL, 'the PR follower every board runs reads its lease'],
     // What server/src/main.ts starts on every board (pinned by the test from its start* imports): a loop's first pass runs
     // at boot. Integration recovery reads every integration module and the grants; commerce delivery is called and returns
@@ -102,7 +104,7 @@ export const RULES = [
     [/^server\/src\/attachments\/(attachment-collector|attachment-store|attachment-rows)\.ts$/, FULL, 'the attachment sweep every board runs over the shared object store'],
     [/^server\/src\/routes\/(auth|auth-onboarding|auth-shared|health|error-handler|executor-fields|helpers|route-guards|plan-limit|env|workspace|org-executors|github-credential|operation-receipts|ingest|stats|connections|agent-default|onboarding-setup)\.ts$/, FULL, 'routes the lane fixture, the driver or a runner calls in every phase'],
     // Registration runs at boot: a route file whose plugin body calls something besides declaring routes (pinned by the test).
-    [/^server\/src\/routes\/(skills|skills-store|version|webhook|attachments|notification-subscriptions|operator|org-export|repos|connection-credential|batches\/batches|model-setup-verify)\.ts$/, FULL, 'registration does work at every boot'],
+    [/^server\/src\/routes\/(skills|skills-store|version|webhook|attachments|notification-subscriptions|operator|org-export|repos|connection-credential|batches\/batches|model-setup-verify|provider-connections)\.ts$/, FULL, 'registration does work at every boot'],
     // Called by named phases only.
     [/^server\/src\/db\/connection-store\.ts$/, ['github-credential', 'question-round-trip', 'pinned-skills'], 'connections: two phases seed one and bind it to a task'],
     [/^server\/src\/(routes|db)\/agent-title\.ts$/, ['tool-isolation', 'question-round-trip'], 'the task title helper'],
