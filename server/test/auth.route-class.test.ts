@@ -84,6 +84,19 @@ describe('the route classes (what a scoped caller may do)', () => {
         expect(roleOf('PUT', '/api/model-setup')).toBe('member');
     });
 
+    // Provider connections hold a stored provider key: the list is metadata (a read), every write
+    // and every spend of the stored key is a browser act no scoped grant may make.
+    it('provider connections list as a read and keep their writes and discovery class none', () => {
+        expect(classOf('GET', '/api/provider-connections')).toBe('read');
+        expect(roleOf('GET', '/api/provider-connections')).toBe('member');
+        expect(classOf('GET', '/api/provider-connections/:id/models')).toBe('none');
+        expect(classOf('POST', '/api/provider-connections')).toBe('none');
+        expect(classOf('PUT', '/api/provider-connections/:id')).toBe('none');
+        expect(classOf('DELETE', '/api/provider-connections/:id')).toBe('none');
+        expect(roleOf('POST', '/api/provider-connections')).toBe('member');
+        expect(roleOf('DELETE', '/api/provider-connections/:id')).toBe('member');
+    });
+
     // The operator spans every organization: its rows are pinned the same way, and none is reachable by a scoped grant.
     it('operator is exactly the organization status, delete and driver credential surface, and never a scoped route', () => {
         const operator = ROUTE_CLASSES.filter((row) => row[3] === 'operator');
