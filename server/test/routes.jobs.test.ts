@@ -2147,7 +2147,7 @@ describe('POST /api/jobs/:id/gates', () => {
         expect(store.gatesReported).toEqual([{ id: ID, results: gates }]);
     });
 
-    it("accepts a settled gate's finishedAt and timeoutMs, and stores both", async () => {
+    it("accepts a settled gate's finishedAt, timeoutMs and timedOut, and stores them", async () => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
         const gates = [
@@ -2159,6 +2159,7 @@ describe('POST /api/jobs/:id/gates', () => {
                 startedAt: '2026-10-30T10:00:00.000Z',
                 finishedAt: '2026-10-30T10:15:00.000Z',
                 timeoutMs: 900_000,
+                timedOut: true,
             },
         ];
 
@@ -2173,6 +2174,7 @@ describe('POST /api/jobs/:id/gates', () => {
         ['a fractional timeoutMs', { timeoutMs: 1.5 }],
         ['a zero timeoutMs', { timeoutMs: 0 }],
         ['a string timeoutMs', { timeoutMs: '900' }],
+        ['a timedOut other than true', { timedOut: false }],
     ])('refuses %s on a gate entry', async (_label, extra) => {
         const instance = await harnessWith(stubStore());
         const response = await post(instance, `/api/jobs/${ID}/gates`, {

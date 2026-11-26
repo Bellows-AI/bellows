@@ -87,6 +87,8 @@ describe("the gate manager keeps a run's whole output", () => {
         expect(passed.output.endsWith('done')).toBe(true);
         const timedOut = await runWith({ exitCode: null, stdout: '', timedOut: true });
         expect(timedOut.exitCode).toBe(124);
+        expect(timedOut.timedOut).toBe(true);
         expect(timedOut.output).toContain('gate killed after');
+        expect(passed).not.toHaveProperty('timedOut');
     });
 });

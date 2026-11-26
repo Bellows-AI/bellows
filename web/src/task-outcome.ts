@@ -284,7 +284,8 @@ export const threadOwnerOf = (job: Job) => job.executionUser ?? job.author;
 export function followUpEligibility(latest: Job, viewer: FollowUpViewer): FollowUpEligibility {
     if (viewer.loading) return 'pending';
     if (!isTerminal(latest.status)) return 'not-finished';
-    if (latest.doneAt !== null) return 'closed';
+    // Archiving stamps every row of the thread, and the board refuses a follow-up on it (`task_archived`).
+    if (latest.doneAt !== null || latest.archivedAt !== null) return 'closed';
     if (viewer.admin && viewer.id !== null) return 'eligible';
     if ((threadOwnerOf(latest)?.id ?? null) !== viewer.id) return 'not-author';
     return 'eligible';

@@ -12,6 +12,7 @@ import { noChangeSkip } from './loop-no-change.js';
 import { restartDeadServices } from './loop-services.js';
 import type { AttemptCtx } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
+import { fitReport } from './gate-settled.js';
 
 /** What one pass over the declared gates found: the failed gate, the dead services, or why it skipped. */
 export interface GatesPhase {
@@ -66,6 +67,7 @@ export async function runGatePass(
         deadServices: deadAfter,
         gatesSkipped: null,
         recoveredServices,
-        reports: gateSession.lastReports ?? [],
+        // The checkpoint keeps what the board was told: the list cut to its body.
+        reports: fitReport(gateSession.lastReports ?? []),
     };
 }

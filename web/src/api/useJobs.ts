@@ -56,6 +56,8 @@ export interface GateCheck {
     finishedAt?: string;
     /** The deadline the gate ran under, in ms. */
     timeoutMs?: number;
+    /** Set when the gate was killed at that deadline: the driver's outcome, never inferred from elapsed time. */
+    timedOut?: true;
     /** What the gate recorded beside its output: failed tests, selection, slowest files, the guest's resources. */
     result?: GateResult;
 }

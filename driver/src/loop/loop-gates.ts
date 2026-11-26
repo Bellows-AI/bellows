@@ -6,7 +6,14 @@ import { tailBytes, type DeadService } from '../runner.js';
 import { stepLost } from '../step-control.js';
 import type { GateRun } from '../gate-manager.js';
 import { declaredTimeoutMs, type GateLedger } from '../gates.js';
-import { type GateTiming, outputBudgets, segmentsOf, settledGate, type OutputBudgets } from './gate-settled.js';
+import {
+    fitReport,
+    type GateTiming,
+    outputBudgets,
+    segmentsOf,
+    settledGate,
+    type OutputBudgets,
+} from './gate-settled.js';
 import type { GateResult } from '../gate-result.js';
 import { gateIdentity, orgKeyOf } from '../gate-identity.js';
 import { recordGateRun, type GateEnd } from '../gate-record.js';
@@ -444,7 +451,8 @@ export async function runDeclaredGates(
             // (or stub) holding it must not see gates move after the fact.
             // A 409 here is not a kill order — the heartbeat is the one place that decides a
             // superseded run must die (docs/jobs.md); this pump only ever loses freshness.
-            await rt.board.gates(job, [...results]);
+            // Cut to the board's body as a whole: a refused report would leave stale gate states.
+            await rt.board.gates(job, fitReport(results));
         } catch (e) {
             log(`job ${job.id}: could not report gate state, continuing: ${describeError(e)}`);
         }

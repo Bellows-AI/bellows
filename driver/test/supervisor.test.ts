@@ -3381,6 +3381,34 @@ describe('the supervisor run: a gate step’s injected GitHub token in its outpu
         await supervised.done;
     });
 
+    // The structured report and the failure lines carried past the output cut reach the driver and the saved
+    // reports beside stdout, so a token in an assertion message or a failure line is redacted there too.
+    it('redacts it from the report sections, the resources and the failure lines', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        const token = TOKENS.GITHUB_TOKEN;
+        const noise = 'Error: Timeout calling "onTaskUpdate"\n    at frame (node:internal/x:1:1)\n'.repeat(20_000);
+        fakeGateLoop(supervised.box.gate, () => ({
+            exitCode: 1,
+            output: ` FAIL  web/test/a.test.ts > sends ${token}\n${noise} Test Files  1 failed (1)\n`,
+            report: {
+                'tests.json': JSON.stringify({
+                    failures: [{ file: 'a.test.ts', test: 'auth', message: `got ${token}` }],
+                    [`by-${token}`]: 'a report keyed by the token',
+                }),
+                resources: `t=1 cpu=1 load=0.1 mem=1/2 throttled=0,0 ${token}\n`,
+            },
+        }));
+        driver.order(gateStep('gate-1', 'npm test', { env: TOKENS, timeoutMs: 60_000 }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        const answer = driver.answers.get('gate-1')!;
+        expect(answer.failureLines).toContain('[redacted]');
+        expect(JSON.stringify(answer)).not.toContain(token);
+        expect(everything(supervised, 'gate-1')).not.toContain(token);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
     it('leaves a gate that carries no token untouched', async () => {
         const driver = await startDriver();
         const supervised = run(driver, GATED);

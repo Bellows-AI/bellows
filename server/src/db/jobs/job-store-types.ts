@@ -95,6 +95,8 @@ export interface GateReport {
     finishedAt?: string;
     /** The deadline the gate ran under, in ms; only on a settled entry that ran. */
     timeoutMs?: number;
+    /** Set when the gate was killed at that deadline: the driver's outcome, never inferred from elapsed time. */
+    timedOut?: true;
     /** The gate's tail. Bounded by the driver's window; truncated again at the route. */
     output: string | null;
     /** The recorded execution this entry is; absent for a gate no record covers. */
