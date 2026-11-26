@@ -3,7 +3,9 @@ import {
     ADMIN_ROLE,
     type DeploymentMode,
     ERROR_CODES,
+    executorConnectionFields,
     ORG_SCOPE,
+    type ProviderConnectionMeta,
     USER_SCOPE,
     type ExecutorScope,
 } from '@factory-ai/core';
@@ -23,6 +25,7 @@ import {
     MAX_EXECUTORS_PER_USER,
     orgRunnerClassRefusal,
     parseExecutorFields,
+    visibleConnections,
 } from './executor-fields.js';
 
 const HTTP_OK = 200;
@@ -121,16 +124,37 @@ function badProfileName(name: string): string | null {
     return badSegment('name', name);
 }
 
+type VisibleConnections = ReadonlyMap<string, ProviderConnectionMeta>;
+
+/**
+ * A row's connection fields beside its id, when the read knows the caller's visible connections: safe name, provider
+ * and scope, and whether the pasted config overrides the connection — never a key or a secret reference.
+ */
+function connectionFields(
+    row: { providerConnectionId: string | null; configOverridesConnection?: boolean },
+    visible: VisibleConnections | undefined
+) {
+    if (visible === undefined) return {};
+    return {
+        ...executorConnectionFields(row.providerConnectionId, visible),
+        configOverridesConnection: row.configOverridesConnection === true,
+    };
+}
+
 /** Selection metadata every member may see. */
-function selectionMetadata(row: {
-    id: string;
-    name: string;
-    type: string;
-    createdAt: string;
-    suspended: boolean;
-    runnerClass: string | null;
-    providerConnectionId: string | null;
-}): Record<string, unknown> {
+function selectionMetadata(
+    row: {
+        id: string;
+        name: string;
+        type: string;
+        createdAt: string;
+        suspended: boolean;
+        runnerClass: string | null;
+        providerConnectionId: string | null;
+        configOverridesConnection?: boolean;
+    },
+    visible?: VisibleConnections
+): Record<string, unknown> {
     return {
         id: row.id,
         name: row.name,
@@ -139,6 +163,7 @@ function selectionMetadata(row: {
         suspended: row.suspended,
         runnerClass: row.runnerClass,
         providerConnectionId: row.providerConnectionId,
+        ...connectionFields(row, visible),
     };
 }
 
@@ -170,19 +195,23 @@ function parseOrgFields(
 }
 
 /** The admin list's row: the metadata plus the configuration and the audit fields. */
-function adminRow(row: {
-    id: string;
-    name: string;
-    type: string;
-    createdAt: string;
-    updatedAt: string;
-    gateFixRounds: number;
-    createdBy: string | null;
-    suspended: boolean;
-    runnerClass: string | null;
-    providerConnectionId: string | null;
-    config: Record<string, unknown>;
-}): Record<string, unknown> {
+function adminRow(
+    row: {
+        id: string;
+        name: string;
+        type: string;
+        createdAt: string;
+        updatedAt: string;
+        gateFixRounds: number;
+        createdBy: string | null;
+        suspended: boolean;
+        runnerClass: string | null;
+        providerConnectionId: string | null;
+        configOverridesConnection?: boolean;
+        config: Record<string, unknown>;
+    },
+    visible?: VisibleConnections
+): Record<string, unknown> {
     return {
         id: row.id,
         name: row.name,
@@ -194,13 +223,16 @@ function adminRow(row: {
         createdBy: row.createdBy,
         runnerClass: row.runnerClass,
         providerConnectionId: row.providerConnectionId,
+        ...connectionFields(row, visible),
         config: row.config,
     };
 }
 
 async function handleListOrgExecutors(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeOf(orgs, request);
+    const rt = await orgs.for(orgOf(request));
+    const store = rt?.userExecutors;
     if (!store) return noStore(reply);
+    const connections = rt.providerConnections;
     const caller = callerOf(request);
     if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
 
@@ -211,18 +243,20 @@ async function handleListOrgExecutors(orgs: OrgRegistry, request: FastifyRequest
         const loaded = await guard(
             reply,
             (e) => request.log.error({ err: e }),
-            () => store.listOrgWithConfigs()
+            async () => Promise.all([store.listOrgWithConfigs(), visibleConnections(connections, caller.user.id)])
         );
         if (!loaded.ok) return reply;
-        return reply.code(HTTP_OK).send({ executors: loaded.value.map(adminRow) });
+        const [rows, visible] = loaded.value;
+        return reply.code(HTTP_OK).send({ executors: rows.map((row) => adminRow(row, visible)) });
     }
     const loaded = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => store.listOrg()
+        async () => Promise.all([store.listOrg(), visibleConnections(connections, caller.user.id)])
     );
     if (!loaded.ok) return reply;
-    return reply.code(HTTP_OK).send({ executors: loaded.value.map(selectionMetadata) });
+    const [rows, visible] = loaded.value;
+    return reply.code(HTTP_OK).send({ executors: rows.map((row) => selectionMetadata(row, visible)) });
 }
 
 async function handleCreateOrgExecutor(deps: OrgExecutorRoutesDeps, request: FastifyRequest, reply: FastifyReply) {

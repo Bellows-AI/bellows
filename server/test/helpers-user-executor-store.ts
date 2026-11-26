@@ -103,6 +103,11 @@ export function memoryUserExecutorStore(
     const byScope = (userId: string | null) =>
         rows.filter((r) => r.userId === userId).sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
 
+    /** The SQL list reads' `overrides_connection`: a stored credential, an `{env:NAME}` reference or an endpoint in the config. */
+    const overridesConnection = (config: Record<string, unknown>) =>
+        /\{env:|"[a-z_]*base_?url"|"[a-z_]*(api_?key|auth_?token|access_?token|secret_?access_?key|password)"/i.test(
+            JSON.stringify(config)
+        );
     const toProfile = (r: Row): ExecutorProfile => ({
         id: r.id,
         name: r.name,
@@ -114,6 +119,7 @@ export function memoryUserExecutorStore(
         suspended: r.suspended,
         runnerClass: r.runnerClass,
         providerConnectionId: r.providerConnectionId,
+        configOverridesConnection: overridesConnection(r.config),
     });
 
     return {

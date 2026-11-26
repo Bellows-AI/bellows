@@ -447,3 +447,91 @@ describe('executors: GET /api/workspace/executors', () => {
         expect(response.statusCode).toBe(HTTP_OK);
     });
 });
+
+describe('executor rows: safe provider connection metadata', () => {
+    const ORG_CONNECTION = '66666666-6666-4666-8666-666666666666';
+    const OWN_CONNECTION = '77777777-7777-4777-8777-777777777777';
+    const SECRET = 'sk-never-in-a-payload';
+    const visible = [
+        { id: ORG_CONNECTION, name: 'Team key', provider: 'anthropic', scope: 'org', baseUrl: null, hasKey: true },
+        { id: OWN_CONNECTION, name: 'My key', provider: 'openrouter', scope: 'personal', baseUrl: null, hasKey: true },
+    ];
+
+    async function bootWithConnections() {
+        const auth = memoryAuthStore();
+        const caller = auth.seedMember('test-org', 'octocat');
+        const executors = memoryUserExecutorStore();
+        const h = await harness({
+            auth,
+            userExecutors: executors,
+            repos: REPOS,
+            config: { auth: githubAuth() },
+            providerConnections: { listFor: async () => visible } as never,
+        });
+        track(h.app);
+        await executors.replace(caller.user.id, [
+            { name: 'plain', type: 'claude-code', config: {} },
+            { name: 'shared', type: 'claude-code', config: {}, providerConnectionId: ORG_CONNECTION },
+            {
+                name: 'pasted',
+                type: 'opencode',
+                config: {
+                    provider: { custom: { options: { baseURL: 'https://llm.example.test/v1', apiKey: SECRET } } },
+                },
+                providerConnectionId: OWN_CONNECTION,
+            },
+        ]);
+        await executors.createOrg({
+            name: 'team',
+            type: 'claude-code',
+            config: {},
+            createdBy: caller.user.id,
+            providerConnectionId: ORG_CONNECTION,
+        });
+        return { app: h.app, cookie: await signedIn(auth, caller) };
+    }
+
+    it('names the connection, its provider and scope, and flags a config override, on the poll', async () => {
+        const { app, cookie } = await bootWithConnections();
+        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        const byName = Object.fromEntries(body.executors.map((row: { name: string }) => [row.name, row]));
+        expect(byName.plain).toMatchObject({
+            providerConnectionId: null,
+            providerConnectionName: null,
+            providerConnectionProvider: null,
+            providerConnectionScope: null,
+            configOverridesConnection: false,
+        });
+        expect(byName.shared).toMatchObject({
+            providerConnectionId: ORG_CONNECTION,
+            providerConnectionName: 'Team key',
+            providerConnectionProvider: 'anthropic',
+            providerConnectionScope: 'org',
+            configOverridesConnection: false,
+        });
+        expect(byName.pasted).toMatchObject({
+            providerConnectionName: 'My key',
+            providerConnectionScope: 'personal',
+            configOverridesConnection: true,
+        });
+        expect(body.orgExecutors[0]).toMatchObject({
+            providerConnectionName: 'Team key',
+            providerConnectionProvider: 'anthropic',
+            providerConnectionScope: 'org',
+        });
+        const text = JSON.stringify(body);
+        expect(text).not.toContain(SECRET);
+        expect(text).not.toContain('baseURL');
+        expect(body.executors[0]).not.toHaveProperty('config');
+    });
+
+    it('reads a connection the caller cannot see as absent, never as an error or a leak', async () => {
+        const { app, cookie } = await bootWithConnections();
+        // Another member's personal connection is not in the caller's list: the id travels, the details do not.
+        const hidden = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(hidden.executors.length).toBeGreaterThan(0);
+        const edit = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
+        const row = edit.json().executors.find((r: { name: string }) => r.name === 'shared');
+        expect(row).toMatchObject({ providerConnectionName: 'Team key', providerConnectionScope: 'org' });
+    });
+});

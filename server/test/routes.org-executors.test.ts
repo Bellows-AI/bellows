@@ -40,13 +40,18 @@ const CLAUDE_CODE = { name: 'team-runner', type: 'claude-code', config: { model:
 
 async function boot(
     executors: MemoryUserExecutorStore = memoryUserExecutorStore(),
-    overrides: Partial<AppConfig> = {}
+    overrides: Partial<AppConfig> = {},
+    providerConnections?: Parameters<typeof staticRegistry>[0] extends infer P
+        ? P extends { providerConnections?: infer C }
+            ? C
+            : never
+        : never
 ) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
     const config = testConfig({ auth: githubAuth(), ...overrides });
-    const instance = await build(executors, auth, config);
+    const instance = await build(executors, auth, config, providerConnections);
     track(instance);
     return {
         instance,
@@ -59,12 +64,18 @@ async function boot(
 }
 
 /** Boots the app with the given executor store. */
-function build(executors: MemoryUserExecutorStore, auth: AuthStore, config: AppConfig) {
+function build(
+    executors: MemoryUserExecutorStore,
+    auth: AuthStore,
+    config: AppConfig,
+    providerConnections?: Parameters<typeof boot>[2]
+) {
     return buildApp({
         config,
         orgs: staticRegistry({
             config,
             userExecutors: executors,
+            providerConnections,
             telemetry: stubTelemetryClient(),
         }),
         auth,
@@ -855,5 +866,60 @@ describe('organization executors: provider connection selection', () => {
         expect(response.statusCode).toBe(HTTP_CONFLICT);
         expect(response.json()).toMatchObject({ code: 'PROVIDER_CONNECTION_REFUSED' });
         expect(executors.rows()[0]!.userId).not.toBeNull();
+    });
+});
+
+describe('organization executors: safe connection metadata', () => {
+    const ORG_CONNECTION = '66666666-6666-4666-8666-666666666666';
+    const SECRET = 'sk-never-in-a-payload';
+    const listFor = async () => [
+        { id: ORG_CONNECTION, name: 'Team key', provider: 'anthropic', scope: 'org', baseUrl: null, hasKey: true },
+    ];
+    const seed = async () => {
+        const executors = memoryUserExecutorStore();
+        const booted = await boot(executors, {}, { listFor } as never);
+        await executors.createOrg({
+            name: 'team',
+            type: 'claude-code',
+            config: { apiKey: SECRET, model: 'sonnet' },
+            createdBy: booted.admin.user.id,
+            providerConnectionId: ORG_CONNECTION,
+        });
+        return booted;
+    };
+    const expected = {
+        providerConnectionId: ORG_CONNECTION,
+        providerConnectionName: 'Team key',
+        providerConnectionProvider: 'anthropic',
+        providerConnectionScope: 'org',
+    };
+
+    it('gives a member the connection fields and the override indicator without config or key', async () => {
+        const { instance, memberCookie } = await seed();
+        const response = await instance.inject({
+            method: 'GET',
+            url: '/api/org/executors',
+            headers: { cookie: memberCookie },
+        });
+        const row = response.json().executors[0];
+        expect(row).toMatchObject({ ...expected, configOverridesConnection: true });
+        expect(row).not.toHaveProperty('config');
+        expect(response.body).not.toContain(SECRET);
+    });
+
+    it('gives an admin the same fields beside the config, and a bridged admin the member view', async () => {
+        const { instance, adminCookie, admin } = await seed();
+        const listed = await instance.inject({
+            method: 'GET',
+            url: '/api/org/executors',
+            headers: { cookie: adminCookie },
+        });
+        expect(listed.json().executors[0]).toMatchObject({ ...expected, configOverridesConnection: true });
+        expect(listed.json().executors[0]).toHaveProperty('config');
+        const Request = bridgedRequestClass({ ...admin, scopes: ['factory:read'] });
+        const bridged = await instance.inject({ method: 'GET', url: '/api/org/executors', Request });
+        expect(bridged.json().executors[0]).toMatchObject(expected);
+        expect(bridged.json().executors[0]).not.toHaveProperty('config');
+        expect(bridged.body).not.toContain(SECRET);
     });
 });

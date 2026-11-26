@@ -65,6 +65,8 @@ const view = (id: string, extra: Partial<ConnectionView> = {}): ConnectionView =
     ...extra,
 });
 
+const ORG_CONNECTION = '66666666-6666-4666-8666-666666666666';
+
 interface Scenario {
     repos?: { owner: string; name: string }[];
     repoError?: string | null;
@@ -81,6 +83,8 @@ interface Scenario {
     repoSkills?: NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills'];
     /** Also configure an org opencode executor `oc`. */
     opencodeExecutor?: boolean;
+    /** Alice's `mine` and the org's `shared` run on this org connection, which the registry lists. */
+    connected?: boolean;
     /** Bellows Cloud: the task's model credential is judged on this env store. */
     cloudEnv?: EnvVarStore;
 }
@@ -136,13 +140,22 @@ async function boot(scenario: Scenario = {}) {
         },
     } as unknown as ConnectionStore;
     const executors = memoryUserExecutorStore();
-    await executors.replace(people.alice.user.id, [{ name: 'mine', type: 'claude-code', config: { token: 'SECRET' } }]);
+    const connectionId = scenario.connected ? ORG_CONNECTION : undefined;
+    await executors.replace(people.alice.user.id, [
+        {
+            name: 'mine',
+            type: 'claude-code',
+            config: { token: 'SECRET' },
+            ...(connectionId ? { providerConnectionId: connectionId } : {}),
+        },
+    ]);
     await executors.createOrg({
         name: 'shared',
         type: 'claude-code',
         config: { token: 'ORG-SECRET' },
         runnerClass: 'builds',
         createdBy: people.alice.user.id,
+        ...(connectionId ? { providerConnectionId: connectionId } : {}),
     });
     if (scenario.opencodeExecutor) {
         await executors.createOrg({
@@ -160,6 +173,22 @@ async function boot(scenario: Scenario = {}) {
         repoSkills: scenario.repoSkills,
         ...(scenario.cloudEnv ? { envVars: scenario.cloudEnv } : {}),
         ...(scenario.noExecutorStore ? {} : { userExecutors: executors }),
+        ...(scenario.connected
+            ? {
+                  providerConnections: {
+                      listFor: async () => [
+                          {
+                              id: ORG_CONNECTION,
+                              name: 'Team key',
+                              provider: 'anthropic',
+                              scope: 'org',
+                              baseUrl: null,
+                              hasKey: true,
+                          },
+                      ],
+                  } as never,
+              }
+            : {}),
     });
     const orgB = staticRegistry({
         config,
@@ -323,6 +352,24 @@ describe('list_executors', () => {
         ]);
         expect(result.data.executors.filter((e: { default: boolean }) => e.default)).toHaveLength(1);
         expect(JSON.stringify(result)).not.toContain('SECRET');
+    });
+
+    it('names each profile connection, provider and scope, and never a key or reference', async () => {
+        const { data, ...rest } = await call(await boot({ connected: true }), 'alice', 'list_executors');
+        expect(data.executors).toMatchObject([
+            {
+                scope: 'user',
+                providerConnectionId: ORG_CONNECTION,
+                providerConnectionName: 'Team key',
+                providerConnectionProvider: 'anthropic',
+                providerConnectionScope: 'org',
+                configOverridesConnection: false,
+            },
+            { scope: 'org', providerConnectionName: 'Team key', providerConnectionScope: 'org' },
+        ]);
+        const plain = await call(await boot(), 'alice', 'list_executors');
+        expect(plain.data.executors[0]).toMatchObject({ providerConnectionId: null, providerConnectionName: null });
+        expect(JSON.stringify({ data, rest })).not.toMatch(/SECRET|hasKey|secretRef/);
     });
 
     it("shows another member only the organization's profiles, and another org none of them", async () => {

@@ -104,6 +104,46 @@ describe('bellows executor list', () => {
         expect(none.out.join('')).toBe('no executors\n');
     });
 
+    it('shows the connection name, provider and scope, the id alone when the name is hidden, and a config override', async () => {
+        const fixture = workspace({
+            executors: [
+                {
+                    name: 'mine',
+                    type: 'claude',
+                    providerConnectionId: 'c1',
+                    providerConnectionName: 'Team key',
+                    providerConnectionProvider: 'anthropic',
+                    providerConnectionScope: 'org',
+                    configOverridesConnection: true,
+                },
+                { name: 'hidden', type: 'claude', providerConnectionId: 'c2' },
+            ],
+            orgExecutors: [{ name: 'team', type: 'claude', providerConnectionId: null }],
+        });
+        const json_ = harness({ '/api/workspace': () => json(fixture) });
+        expect(await run(['executor', 'list', '--json'], json_.io)).toBe(0);
+        const rows = JSON.parse(json_.out.join('')).data.executors;
+        expect(rows[0]).toMatchObject({
+            providerConnectionId: 'c1',
+            providerConnectionName: 'Team key',
+            providerConnectionProvider: 'anthropic',
+            providerConnectionScope: 'org',
+            configOverridesConnection: true,
+        });
+        expect(rows[2]).not.toHaveProperty('providerConnectionId');
+
+        const human = harness({ '/api/workspace': () => json(fixture) });
+        expect(await run(['executor', 'list'], human.io)).toBe(0);
+        expect(human.out.join('')).toBe(
+            [
+                'user  mine  claude  connection Team key (anthropic, org)  config overrides connection  active  default',
+                'user  hidden  claude  connection c2  active',
+                'org  team  claude  active',
+                '',
+            ].join('\n')
+        );
+    });
+
     it('never carries a profile config through', async () => {
         const { out, io } = harness({
             '/api/workspace': () =>

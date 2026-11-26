@@ -39,6 +39,14 @@ export interface ExecutorRow {
     /** The runner class its tasks run on; null means the driver's default. A personal profile never names one. */
     runnerClass: string | null;
     suspended: boolean;
+    /** Present only on a row that selects a provider connection; absent means the environment keys. */
+    providerConnectionId?: string;
+    /** The connection's name, provider and scope — absent when the caller may not see the connection. */
+    providerConnectionName?: string;
+    providerConnectionProvider?: string;
+    providerConnectionScope?: 'org' | 'personal';
+    /** Present (true) when pasted config credentials or endpoints take precedence over the connection. */
+    configOverridesConnection?: true;
     /** The caller's resolved default: what a task naming no executor gets. */
     default: boolean;
 }
@@ -51,6 +59,13 @@ export function executorDiscovery(workspace: WorkspaceView): { executors: Execut
         type: profile.type,
         runnerClass: profile.runnerClass ?? null,
         suspended: profile.suspended === true,
+        ...(profile.providerConnectionId ? { providerConnectionId: profile.providerConnectionId } : {}),
+        ...(profile.providerConnectionName ? { providerConnectionName: profile.providerConnectionName } : {}),
+        ...(profile.providerConnectionProvider
+            ? { providerConnectionProvider: profile.providerConnectionProvider }
+            : {}),
+        ...(profile.providerConnectionScope ? { providerConnectionScope: profile.providerConnectionScope } : {}),
+        ...(profile.configOverridesConnection === true ? { configOverridesConnection: true as const } : {}),
         default: workspace.defaultExecutor?.scope === scope && workspace.defaultExecutor.name === profile.name,
     });
     return {

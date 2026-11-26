@@ -8,10 +8,12 @@ import {
     isCredentialRedirectMessage,
     MAX_GATE_FIX_ROUNDS,
     credentialRedirectMessage,
+    type ProviderConnectionMeta,
     redirectsPlatformCredential,
 } from '@factory-ai/core';
 import type { DeploymentMode, ErrorCode } from '@factory-ai/core';
 import { ExecutorConnectionRefusedError } from '../db/executor-connection-selection.js';
+import type { ProviderConnectionStore } from '../db/provider-connection-store.js';
 
 /**
  * A ceiling on how many executors one person can configure, and (issue 391) on how many
@@ -174,4 +176,16 @@ export function parseExecutorFields(entry: unknown, deploymentMode: DeploymentMo
         gateFixRounds,
         ...optional,
     };
+}
+
+/**
+ * The connections the member may see (their own and the organization's), keyed by id: what an executor row's connection
+ * fields are read from. A board with no connection store answers none, so a row's reference reads as hidden.
+ */
+export async function visibleConnections(
+    store: ProviderConnectionStore | undefined,
+    userId: string
+): Promise<ReadonlyMap<string, ProviderConnectionMeta>> {
+    if (!store) return new Map();
+    return new Map((await store.listFor(userId)).map((connection) => [connection.id, connection]));
 }
