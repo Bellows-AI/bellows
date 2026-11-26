@@ -381,4 +381,44 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
         expect(claim?.env?.ANTHROPIC_API_KEY).toBe('sk-ant-ambient');
         expect(JSON.parse(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual({ model: 'm-1' });
     });
+
+    it('an OpenRouter connection with a custom endpoint routes Claude Code to that endpoint, for every deployment mode', async () => {
+        for (const mode of ['self-hosted', 'cloud'] as const) {
+            const { executors, connections, jobs } = stores({ mode });
+            const conn = await connect(connections, {
+                provider: 'openrouter',
+                key: 'sk-or-custom',
+                baseUrl: 'https://gateway.example.test/api/v1',
+            });
+            const name = `or-${mode}`;
+            await executors.replace(ALICE, [{ name, type: 'claude-code', config: {}, providerConnectionId: conn.id }]);
+            await queue(jobs, name);
+
+            const claim = await jobs.claim('w1', LEASE_SECONDS);
+
+            expect(claim?.env, mode).toMatchObject({
+                ANTHROPIC_BASE_URL: 'https://gateway.example.test/api',
+                ANTHROPIC_AUTH_TOKEN: 'sk-or-custom',
+                ANTHROPIC_API_KEY: '',
+            });
+            expect(JSON.stringify(claim?.env), mode).not.toContain(OPENROUTER_ANTHROPIC_BASE_URL);
+        }
+    });
+
+    it('the claim refuses NO_MODEL for a cleared connection key beside an ambient key the connection replaced', async () => {
+        const { executors, connections, env, jobs } = stores({ mode: 'cloud' });
+        await env.replaceOrg('admin', [{ name: 'OPENROUTER_API_KEY', value: 'sk-or-ambient', isSecret: true }]);
+        const conn = await connect(connections);
+        await executors.replace(ALICE, [
+            {
+                name: 'cleared',
+                type: 'claude-code',
+                config: { env: { ANTHROPIC_API_KEY: '' } },
+                providerConnectionId: conn.id,
+            },
+        ]);
+        await queue(jobs, 'cleared');
+
+        expect((await jobs.claim('w1', LEASE_SECONDS))?.executorRefusal).toBe(NO_MODEL_MESSAGE);
+    });
 });
