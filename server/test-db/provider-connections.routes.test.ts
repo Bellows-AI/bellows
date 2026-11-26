@@ -166,6 +166,7 @@ describe.skipIf(!enabled)('the provider connection routes', () => {
             name: 'sub',
             key: 'sk-ant-oat01-routes-test',
         });
+        fake.requests.length = 0;
         const listed = await call(admin, 'GET', `${BASE}/${made.json.id}/models`);
         expect(listed.status).toBe(OK);
         expect(listed.json).toEqual({ state: 'unsupported' });
@@ -196,7 +197,7 @@ describe.skipIf(!enabled)('the provider connection routes', () => {
 
     it('the list answers safe metadata alone: no key material and no secret reference', async () => {
         await boot();
-        await createConnection(admin, { name: 'alpha' });
+        await createConnection(member, { name: 'alpha' });
         await createConnection(admin, { scope: 'org', name: 'beta' });
         const list = await call(member, 'GET', BASE);
         expect(list.status).toBe(OK);

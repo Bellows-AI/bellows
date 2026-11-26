@@ -39,6 +39,7 @@ import type { ProviderKeys } from './provider-keys/verify.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
+import { providerConnectionRoutes } from './routes/provider-connections.js';
 import { createConnectorRegistry, type ConnectorRegistry } from './notifications/connector.js';
 import { notificationSubscriptionRoutes } from './routes/notification-subscriptions.js';
 import { orgMemberRoutes } from './routes/org-members.js';
@@ -517,6 +518,16 @@ export async function buildApp({
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes(executorRouteDeps(config, orgs)));
+    // Provider connections: the named model-provider credentials, the metadata read beside the
+    // per-org CRUD and, with a checker wired, the discovery read over a stored key.
+    await app.register(
+        providerConnectionRoutes({
+            orgs,
+            deploymentMode: config.deploymentMode,
+            providerKeys,
+            now,
+        })
+    );
     // The organization's export archive: an admin read over every org table and object.
     await app.register(orgExportRoutes({ orgs }));
     // Notification subscriptions: the org's settings for who hears about a task verdict.

@@ -131,7 +131,7 @@ const call = (
     app.inject({
         method,
         url,
-        headers: { cookie, 'content-type': 'application/json' },
+        headers: { cookie, ...(payload === undefined ? {} : { 'content-type': 'application/json' }) },
         ...(payload === undefined
             ? {}
             : { payload: typeof payload === 'string' ? payload : JSON.stringify(payload) }),
