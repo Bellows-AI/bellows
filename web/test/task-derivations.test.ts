@@ -20,6 +20,7 @@ import {
     threadSetupMs,
     threadPublish,
 } from '../src/task-outcome.js';
+import { primaryAction } from '../src/panels/TaskHeader.js';
 import { job, question } from './tasks-fixtures.js';
 
 describe('endedOnQuestion (issue #226)', () => {
@@ -564,6 +565,15 @@ describe('followUpEligibility', () => {
         expect(followUpEligibility(job({ author: other }), viewer(me.id, false, false))).toBe('not-author');
         const closed = job({ author: other, doneAt: '2026-09-01T12:05:00.000Z' });
         expect(followUpEligibility(closed, viewer(me.id, false, true))).toBe('closed');
+    });
+
+    // The board refuses every follow-up on an archived thread (`task_archived`), so the page offers none.
+    it('closes an archived task to its author and an admin alike', () => {
+        const archived = job({ author: me, status: 'failed', archivedAt: '2026-11-26T10:00:00.000Z' });
+        expect(primaryAction({ ...archived, archivedAt: null }, null, 'eligible')).toBe('ask');
+        expect(followUpEligibility(archived, viewer(me.id))).toBe('closed');
+        expect(followUpEligibility(archived, viewer(me.id, false, true))).toBe('closed');
+        expect(primaryAction(archived, null, followUpEligibility(archived, viewer(me.id)))).not.toBe('ask');
     });
 
     it("takes the owner from the thread's executionUser, not the latest row's author", () => {

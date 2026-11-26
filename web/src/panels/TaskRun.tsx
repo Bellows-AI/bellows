@@ -412,11 +412,13 @@ function gateDuration(gate: GateCheck, running: boolean): string | null {
     return ranMs === null ? null : clockText(Math.round(ranMs / MS_PER_SECOND));
 }
 
-/** A failed gate that ran as long as the deadline it ran under was stopped by it. */
-const gateTimedOut = (gate: GateCheck): boolean => {
-    const ranMs = gateRanMs(gate);
-    return gate.status === 'failed' && ranMs !== null && gate.timeoutMs !== undefined && ranMs >= gate.timeoutMs;
-};
+/**
+ * A failed gate the driver killed at its deadline. Read from the outcome, never from elapsed time:
+ * `finishedAt` lands after the terminal write and the log upload, so a failure just short of the
+ * deadline can look as long as it.
+ */
+const gateTimedOut = (gate: GateCheck): boolean =>
+    gate.status === 'failed' && gate.timedOut === true && gate.timeoutMs !== undefined;
 
 function GateRow({ gate, terminal }: { gate: GateCheck; terminal: boolean }) {
     const running = !terminal && gate.status === 'running';

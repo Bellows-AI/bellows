@@ -185,6 +185,7 @@ describe('the supervised gate manager: one gate as a step', () => {
         await manager.acquire(KEY, 'node:24', '', { job: JOB });
         expect(await manager.runGate(KEY, 'test', 'npm test')).toEqual({
             exitCode: 124,
+            timedOut: true,
             output: '[driver] gate killed after 30000ms',
         });
     });

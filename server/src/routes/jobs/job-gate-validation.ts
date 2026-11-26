@@ -45,15 +45,17 @@ function gateEntryRecord(entry: Record<string, unknown>): Pick<GateReport, 'exec
 /** When a gate started and settled and the deadline it ran under, or the reason it is refused. */
 function gateEntryTiming(
     entry: Record<string, unknown>
-): Pick<GateReport, 'startedAt' | 'finishedAt' | 'timeoutMs'> | string {
-    const timing: Pick<GateReport, 'startedAt' | 'finishedAt' | 'timeoutMs'> = {};
+): Pick<GateReport, 'startedAt' | 'finishedAt' | 'timeoutMs' | 'timedOut'> | string {
+    const timing: Pick<GateReport, 'startedAt' | 'finishedAt' | 'timeoutMs' | 'timedOut'> = {};
     for (const key of ['startedAt', 'finishedAt'] as const) {
         const value = entry[key];
         if (value === undefined) continue;
         if (typeof value !== 'string' || !nullableTimestamp(value)) return `gate ${key} must be a timestamp`;
         timing[key] = value;
     }
-    const { timeoutMs } = entry;
+    const { timeoutMs, timedOut } = entry;
+    if (timedOut !== undefined && timedOut !== true) return 'gate timedOut must be true when present';
+    if (timedOut === true) timing.timedOut = true;
     if (timeoutMs === undefined) return timing;
     if (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs) || timeoutMs < 1) {
         return 'gate timeoutMs must be a positive integer';

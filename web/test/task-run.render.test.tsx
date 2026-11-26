@@ -567,6 +567,7 @@ describe('TaskRun close phase', () => {
                 startedAt: at(2),
                 finishedAt: at(17),
                 timeoutMs: 15 * 60_000,
+                timedOut: true as const,
             },
             { name: 'reused', status: 'skipped' as const, exitCode: null, output: 'reused' },
         ];
@@ -577,6 +578,23 @@ describe('TaskRun close phase', () => {
         expect(panel).toContain('timed out at 15m 0s');
         expect(panel).toContain('Total gate time 17m 0s');
         expect(panel).not.toContain('data-gate-duration="reused"');
+    });
+
+    // `finishedAt` is stamped after the terminal write and the log upload, so a gate that failed just short
+    // of its deadline can read as having run past it: only the driver's own timeout outcome says it timed out.
+    it('labels a timeout only from the outcome, never from elapsed time', () => {
+        const at = (seconds: number) => new Date(Date.UTC(2026, 10, 24, 10, 0, seconds)).toISOString();
+        const failed = {
+            name: 'test',
+            status: 'failed' as const,
+            exitCode: 1,
+            output: 'boom',
+            startedAt: at(0),
+            finishedAt: at(50),
+            timeoutMs: 30_000,
+        };
+        const html = renderDetail({ jobs: [job({ status: 'failed', gates: [failed] })] });
+        expect(html.slice(html.indexOf('task-verification'))).not.toContain('timed out');
     });
 
     it('a skipped gate renders a skipped pill and its "no changes" output', () => {

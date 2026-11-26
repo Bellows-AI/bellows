@@ -47,6 +47,8 @@ export interface GateRun {
     fullTruncated?: true;
     /** True when the environment's `setup` command failed: the gate itself never ran. */
     setupFailed?: true;
+    /** True when the gate was killed at its deadline — the outcome itself, never inferred from elapsed time. */
+    timedOut?: true;
     /** What the run measured around the gate command; present only for a run given an `execution`. */
     measure?: GateMeasure;
     /** What the gate recorded beside its output: failed tests, selection, slowest files, the guest's resources. */
@@ -209,6 +211,7 @@ function gateRunOf(result: StepResult, deadlineMs: number): GateRun {
     if (result.timedOut) {
         return {
             exitCode: TIMEOUT_EXIT_CODE,
+            timedOut: true,
             output: output || `[driver] gate killed after ${deadlineMs}ms`,
             ...whole,
             ...structured,

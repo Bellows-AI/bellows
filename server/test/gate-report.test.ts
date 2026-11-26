@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { COMMAND_LIMIT } from '@factory-ai/core';
-import { renderFailedGates } from '../src/db/gate-report.js';
+import { gateOutputTail, renderFailedGates } from '../src/db/gate-report.js';
 import type { GateReport } from '../src/db/jobs/job-store-types.js';
-import { INTERP_TAIL_LIMIT } from '../src/db/workflows/workflow-schema.js';
+import { INTERP_TAIL_LIMIT, TRUNCATION_MARKER } from '../src/db/workflows/workflow-schema.js';
 
 const gate = (name: string, status: GateReport['status'], output: string | null): GateReport => ({
     name,
@@ -48,5 +48,48 @@ describe('gate report text', () => {
         expect(text).toContain('Gate "a"');
         expect(text).not.toContain('Gate "b"');
         expect(command.length + 2 + text.length).toBeLessThanOrEqual(COMMAND_LIMIT);
+    });
+
+    // The driver stores a failed gate as `[failure lines]` then `[output tail]`; a cut to the board's tail
+    // budget must keep the failing names, the summary and the last lines, not the first 4 KiB of the names.
+    it('keeps the failure lines, the summary and the end of the tail when it shortens an excerpt', () => {
+        const names = Array.from({ length: 300 }, (_, i) => ` FAIL  web/test/f${i}.test.ts > suite > case ${i}`);
+        const summary = ' Test Files  300 failed | 10 passed (310)';
+        const tail = `${'stack frame\n'.repeat(1000)}LAST LINE`;
+        const output = `[failure lines]\n${[...names, summary].join('\n')}\n[output tail]\n${tail}`;
+        const kept = gateOutputTail(gate('test', 'failed', output));
+        expect(kept).toContain(names[0]);
+        expect(kept).toContain(summary);
+        expect(kept.endsWith('LAST LINE')).toBe(true);
+        expect(kept.length).toBeLessThanOrEqual(INTERP_TAIL_LIMIT + TRUNCATION_MARKER.length);
+    });
+
+    // A failed output the driver kept whole (it fit the driver's budget) is not framed: the board frames it
+    // the same way, so a failing name anywhere in it and its closing error both survive the cut.
+    it('frames an unframed output, keeping a failure line from its middle and its end', () => {
+        const output = [
+            'build step\n'.repeat(300),
+            ' FAIL  web/test/a.test.ts > adds\n',
+            'stack frame\n'.repeat(300),
+            ' Test Files  1 failed | 9 passed (10)\n',
+            'Error: the real failure',
+        ].join('');
+        const kept = gateOutputTail(gate('test', 'failed', output));
+        expect(kept).toContain(' FAIL  web/test/a.test.ts > adds');
+        expect(kept).toContain(' Test Files  1 failed | 9 passed (10)');
+        expect(kept.endsWith('Error: the real failure')).toBe(true);
+        expect(kept.length).toBeLessThanOrEqual(INTERP_TAIL_LIMIT + TRUNCATION_MARKER.length);
+    });
+
+    it('keeps the end of an output that names no failure', () => {
+        const output = `${'early noise\n'.repeat(1000)}Error: the real failure`;
+        const kept = gateOutputTail(gate('test', 'failed', output));
+        expect(kept.endsWith('Error: the real failure')).toBe(true);
+        expect(kept).toContain('[…truncated by the board]');
+        expect(kept.length).toBeLessThanOrEqual(INTERP_TAIL_LIMIT + TRUNCATION_MARKER.length);
+    });
+
+    it('leaves an output within the budget as it is', () => {
+        expect(gateOutputTail(gate('test', 'failed', 'short'))).toBe('short');
     });
 });
