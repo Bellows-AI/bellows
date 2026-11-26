@@ -117,67 +117,55 @@ export function ProviderConnectionsPanel({ session }: { session: Session | null 
             </p>
             {problem ? <StateNote state="error">{problem}</StateNote> : null}
 
-            {connections === null ? (
-                list.error ? (
-                    <>
-                        <StateNote state="error">{list.error}</StateNote>
-                        <button type="button" className="tertiary" onClick={list.refresh}>
-                            Retry
-                        </button>
-                    </>
-                ) : (
-                    <StateNote state="loading">Loading provider connections…</StateNote>
-                )
-            ) : connections.length === 0 ? (
-                <p className="muted">
-                    No provider connections yet. Add one to share a key between executors without pasting it into each.
-                </p>
-            ) : (
-                <ScrollRegion className="table-wrap" aria-label="Provider connections">
-                    <table className="data data-compact table-cards">
-                        <thead>
-                            <tr>
-                                <th scope="col">Name</th>
-                                <th scope="col">Provider</th>
-                                <th scope="col">Scope</th>
-                                <th scope="col">Endpoint</th>
-                                <th scope="col">
-                                    <span className="muted">Actions</span>
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {connections.map((row) => (
-                                <tr key={row.id}>
-                                    <td data-label="Name">{row.name}</td>
-                                    <td data-label="Provider">
-                                        <span className="pill">{PROVIDER_META[row.provider].label}</span>
-                                    </td>
-                                    <td data-label="Scope">{SCOPE_LABEL[row.scope]}</td>
-                                    <td data-label="Endpoint" className="muted">
-                                        {row.baseUrl ?? 'Default'}
-                                    </td>
-                                    <td data-label="Actions">
-                                        <RowActions
-                                            rowName={row.name}
-                                            primary={
-                                                canManage(row)
-                                                    ? {
-                                                          label: 'Edit',
-                                                          onSelect: () => setDialog({ kind: 'edit', connection: row }),
-                                                      }
-                                                    : null
-                                            }
-                                            actions={actions(row)}
-                                            disabled={busy}
-                                        />
-                                    </td>
+            <ConnectionsRead error={list.error} rows={connections} onRetry={list.refresh}>
+                {(rows) => (
+                    <ScrollRegion className="table-wrap" aria-label="Connection list">
+                        <table className="data data-compact table-cards">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Name</th>
+                                    <th scope="col">Provider</th>
+                                    <th scope="col">Scope</th>
+                                    <th scope="col">Endpoint</th>
+                                    <th scope="col">
+                                        <span className="muted">Actions</span>
+                                    </th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </ScrollRegion>
-            )}
+                            </thead>
+                            <tbody>
+                                {rows.map((row) => (
+                                    <tr key={row.id}>
+                                        <td data-label="Name">{row.name}</td>
+                                        <td data-label="Provider">
+                                            <span className="pill">{PROVIDER_META[row.provider].label}</span>
+                                        </td>
+                                        <td data-label="Scope">{SCOPE_LABEL[row.scope]}</td>
+                                        <td data-label="Endpoint" className="muted">
+                                            {row.baseUrl ?? 'Default'}
+                                        </td>
+                                        <td data-label="Actions">
+                                            <RowActions
+                                                rowName={row.name}
+                                                primary={
+                                                    canManage(row)
+                                                        ? {
+                                                              label: 'Edit',
+                                                              onSelect: () =>
+                                                                  setDialog({ kind: 'edit', connection: row }),
+                                                          }
+                                                        : null
+                                                }
+                                                actions={actions(row)}
+                                                disabled={busy}
+                                            />
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </ScrollRegion>
+                )}
+            </ConnectionsRead>
             {viewed ? <ConnectionModels connection={viewed} /> : null}
 
             <ProviderConnectionDialog
@@ -274,6 +262,46 @@ function ModelsBody({
                     </li>
                 ))}
             </ul>
+        </>
+    );
+}
+
+/**
+ * The list read's verdicts, in one place. A failed read is said whatever rows are held — they are the last true answer,
+ * never a verdict — with its Retry; "none yet" is said only while the latest read succeeded.
+ */
+function ConnectionsRead({
+    error,
+    rows,
+    onRetry,
+    children,
+}: {
+    error: string | null;
+    rows: ProviderConnectionMeta[] | null;
+    onRetry: () => void;
+    children: (rows: ProviderConnectionMeta[]) => ReactNode;
+}) {
+    let body: ReactNode = null;
+    if (rows === null) body = error ? null : <StateNote state="loading">Loading provider connections…</StateNote>;
+    else if (rows.length > 0) body = children(rows);
+    else if (!error) {
+        body = (
+            <p className="muted">
+                No provider connections yet. Add one to share a key between executors without pasting it into each.
+            </p>
+        );
+    }
+    return (
+        <>
+            {error ? (
+                <>
+                    <StateNote state="error">{error}</StateNote>
+                    <button type="button" className="tertiary" onClick={onRetry}>
+                        Retry
+                    </button>
+                </>
+            ) : null}
+            {body}
         </>
     );
 }

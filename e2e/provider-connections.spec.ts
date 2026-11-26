@@ -36,7 +36,8 @@ async function asAdmin(page: Page) {
     await setRole(ADMIN_ROLE);
 }
 
-const section = (page: Page) => page.getByRole('region', { name: 'Provider connections' });
+const section = (page: Page) =>
+    page.locator('section').filter({ has: page.getByRole('heading', { name: /^Provider connections/ }) });
 const connectionRow = (page: Page, name: string) => section(page).getByRole('row').filter({ hasText: name });
 
 async function addConnection(

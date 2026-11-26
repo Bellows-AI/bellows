@@ -25,7 +25,8 @@ const withSetup = (
         return extra(call);
     });
 
-const panel = () => screen.findByRole('region', { name: 'Provider connections' });
+const panel = async () =>
+    (await screen.findByRole('heading', { name: /^Provider connections/ })).closest('section') as HTMLElement;
 const row = async (name: string) => within(await panel()).findByRole('row', { name: new RegExp(`^${name}(?![a-z])`) });
 const openMenu = async (user: ReturnType<typeof userEvent.setup>, name: string) =>
     user.click(await screen.findByRole('button', { name: `Actions for ${name}` }));
@@ -264,6 +265,69 @@ describe('Settings → Model: provider connections', () => {
         expect(within(section).queryByText(/No provider connections yet/)).toBeNull();
         answer = true;
         await user.click(within(section).getByRole('button', { name: 'Retry' }));
+        await row('My key');
+    });
+
+    const REFRESH_FAILURE = 'No provider connection store for this organization';
+
+    it('never says there are no connections while the refresh after the first create failed', async () => {
+        const board = settingsBoard({ providerConnections: [] });
+        let failReads = false;
+        stubFetch(
+            withSetup(board, (call) =>
+                call.method === 'GET' && call.url === '/api/provider-connections' && failReads
+                    ? { status: 503, body: { error: REFRESH_FAILURE } }
+                    : undefined
+            )
+        );
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/model');
+        const section = await panel();
+        await within(section).findByText(/No provider connections yet/);
+
+        await user.click(within(section).getByRole('button', { name: 'Add connection' }));
+        const dialog = await screen.findByRole('dialog', { name: 'Add provider connection' });
+        await user.type(within(dialog).getByLabelText('Name'), 'First one');
+        fireEvent.change(within(dialog).getByLabelText('API key'), { target: { value: SECRET } });
+        await within(dialog).findByText(/Key works/);
+        failReads = true;
+        await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+        // The write succeeded, but the re-read failed: the failure and its Retry show, and no empty verdict does.
+        await within(section).findByText(REFRESH_FAILURE);
+        expect(within(section).getByRole('button', { name: 'Retry' })).toBeTruthy();
+        expect(within(section).queryByText(/No provider connections yet/)).toBeNull();
+        failReads = false;
+        await user.click(within(section).getByRole('button', { name: 'Retry' }));
+        await row('First one');
+        expect(within(section).queryByText(REFRESH_FAILURE)).toBeNull();
+    });
+
+    it('keeps the cached rows and shows the failure and Retry when a refresh of a non-empty list fails', async () => {
+        const board = settingsBoard({ providerConnections: [mine] });
+        let failReads = false;
+        stubFetch(
+            withSetup(board, (call) =>
+                call.method === 'GET' && call.url === '/api/provider-connections' && failReads
+                    ? { status: 503, body: { error: REFRESH_FAILURE } }
+                    : undefined
+            )
+        );
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/model');
+        await row('My key');
+        await user.click(within(await panel()).getByRole('button', { name: 'Add connection' }));
+        const dialog = await screen.findByRole('dialog', { name: 'Add provider connection' });
+        await user.type(within(dialog).getByLabelText('Name'), 'Second');
+        fireEvent.change(within(dialog).getByLabelText('API key'), { target: { value: SECRET } });
+        await within(dialog).findByText(/Key works/);
+        failReads = true;
+        await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+        const section = await panel();
+        await within(section).findByText(REFRESH_FAILURE);
+        expect(within(section).getByRole('button', { name: 'Retry' })).toBeTruthy();
+        // The rows already held are the last true answer and stay, but the failure is never hidden behind them.
         await row('My key');
     });
 });

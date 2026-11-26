@@ -85,7 +85,7 @@ function ComposerModelChip({
     const profile = executors.find((option) => option.name === executor && option.scope === executorScope);
     const runsDefault = executor === '' && agentDefault !== null;
     // A profile that selects a connection offers that connection's models; the agent default and the rest read the member's setup.
-    const { models, note } = useModelChoices(
+    const { models, note, pick } = useModelChoices(
         runsDefault ? agentDefault.agentType : (profile?.type ?? null),
         runsDefault ? null : (profile?.connection ?? null)
     );
@@ -96,7 +96,7 @@ function ComposerModelChip({
                 defaultLabel={runsDefault ? `Default (${agentDefault.model})` : 'Default'}
                 models={models}
                 note={note}
-                onChange={(model) => update({ model })}
+                onChange={(model) => update({ model: pick(model) })}
             />
         </div>
     );

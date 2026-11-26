@@ -176,7 +176,7 @@ function FollowUpComposer({
                                 onChange={(next) =>
                                     draftStore.updateFollowUp(rootId, (prev) => ({
                                         ...prev,
-                                        model: next === '' ? undefined : next,
+                                        model: next === '' ? undefined : choices.pick(next),
                                         submissionKey: null,
                                     }))
                                 }

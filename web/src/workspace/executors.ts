@@ -11,7 +11,7 @@ import {
     USER_SCOPE,
 } from '@factory-ai/core';
 import { type ConnectionChoices, configOverridesConnection, selectedConnectionError } from './executor-connections.js';
-import { chipConnectionOf, type ChipConnection } from './model-catalog.js';
+import { chipConnectionOf, type ChipConnection, normalizedChoices } from './model-catalog.js';
 import { guidedChoiceError, guidedFromConfig, type GuidedChoice } from './executor-guided.js';
 
 /**
@@ -340,6 +340,7 @@ export function validateExecutorDraft(
 
     const modelError = validateModelChoice(parsed.value, draft.customModel[type], type);
     if (modelError) return { ok: false, error: modelError, field: 'model' };
+    const config = connectionNormalizedConfig(parsed.value, draft, connections);
 
     const rounds = validateGateFixRounds(draft.gateFixRounds);
     if (!rounds.ok) return { ...rounds, field: 'rounds' };
@@ -349,7 +350,7 @@ export function validateExecutorDraft(
         value: {
             name: draft.name.trim(),
             type,
-            config: parsed.value,
+            config,
             gateFixRounds: rounds.value,
             runnerClass: draft.runnerClass || null,
             // Said only when it is a selection or a change: an untouched legacy row sends what it always did.
@@ -358,6 +359,17 @@ export function validateExecutorDraft(
                 : { providerConnectionId: draft.providerConnectionId || null }),
         },
     };
+}
+
+/** A selected connection's model is saved the way the server accepts it: `normalizeModelId`, the one rule the offered list follows. */
+function connectionNormalizedConfig(
+    config: Record<string, unknown>,
+    draft: ExecutorDraft,
+    connections: ConnectionChoices | null
+): Record<string, unknown> {
+    const connection = connections?.connections.find((row) => row.id === draft.providerConnectionId);
+    if (connection === undefined || typeof config.model !== 'string' || config.model === '') return config;
+    return withModel(config, normalizedChoices(connection.provider, draft.type, config.model));
 }
 
 /** Key-sorted JSON, so two configurations that differ only in key order or spacing compare equal. */

@@ -719,6 +719,31 @@ describe('the executor dialog: provider connections', () => {
         });
     });
 
+    it('offers and saves OpenCode model ids the way the server accepts them', async () => {
+        const live = board({ connectionModels: { [OPENAI.id]: listedModels('gpt-5.1') } });
+        const calls = stubFetch(boardHandler(live));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await openAdd(user);
+        await waitFor(() => expect(optionNames()).toContain('Team key — Anthropic · Organization'));
+        await user.type(field('Name'), 'prefixed');
+        await user.selectOptions(field('Agent'), OPENCODE);
+        await user.click(modelRadio(MODEL_CUSTOM_LABEL));
+        await user.selectOptions(connectionSelect(), OPENAI.id);
+        await within(modelGroup()).findByText(/1 model from OpenAI key/);
+        expect([...modelGroup().querySelectorAll('datalist option')].map((o) => o.getAttribute('value'))).toEqual([
+            'openai/gpt-5.1',
+        ]);
+        // A bare name typed by hand is saved prefixed too.
+        await user.type(typedModel(), 'gpt-5-mini');
+        await user.click(button(ADD_LABEL));
+        await dialogGone();
+        expect(putBody(calls).executors[0]).toMatchObject({
+            providerConnectionId: OPENAI.id,
+            config: { model: 'openai/gpt-5-mini' },
+        });
+    });
+
     it('shows a failed connection list as an error with a retry, never as no connections', async () => {
         const unavailable = board();
         let answer = false;

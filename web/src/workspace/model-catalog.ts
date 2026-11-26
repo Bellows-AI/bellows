@@ -1,4 +1,4 @@
-import type { ExecutorType, ModelProvider, ProviderConnectionMeta } from '@factory-ai/core';
+import { type ExecutorType, type ModelProvider, normalizeModelId, type ProviderConnectionMeta } from '@factory-ai/core';
 import type { ConnectionModels } from '../api/providerConnections.js';
 import { modelOptions } from '../model-setup/providers.js';
 
@@ -19,6 +19,15 @@ export type ModelCatalog =
     /** The read failed; the curated suggestions stand in and the sentence says why. */
     | { kind: 'failed'; connection: string; message: string; fallback: readonly string[] };
 
+/**
+ * The one rule for a model id taken from a connection: the model setup's `normalizeModelId` (OpenCode names a model
+ * `<provider>/<model>`, Claude Code's id is kept), so what is offered, picked and saved is what the server accepts.
+ * '' is Default and stays empty; an unknown agent cannot be judged, so the id is kept as given.
+ */
+export function normalizedChoices(provider: ModelProvider, agent: ExecutorType | null, model: string): string {
+    return model === '' || agent === null ? model : normalizeModelId(provider, agent, model);
+}
+
 export function modelCatalogOf(
     connection: Pick<ProviderConnectionMeta, 'name' | 'provider'> | undefined,
     agent: ExecutorType | null,
@@ -26,14 +35,15 @@ export function modelCatalogOf(
 ): ModelCatalog {
     if (connection === undefined || read === null) return { kind: 'none' };
     const name = connection.name;
-    const curated = agent === null ? [] : modelOptions(connection.provider, agent, undefined);
+    const norm = (id: string) => normalizedChoices(connection.provider, agent, id);
+    const curated = agent === null ? [] : modelOptions(connection.provider, agent, undefined).map(norm);
     switch (read.state) {
         case 'loading':
             return { kind: 'loading', connection: name };
         case 'listed':
             return read.models.length === 0
                 ? { kind: 'empty', connection: name }
-                : { kind: 'listed', connection: name, models: read.models };
+                : { kind: 'listed', connection: name, models: read.models.map(norm) };
         case 'unsupported':
             return { kind: 'unsupported', connection: name, fallback: curated };
         case 'failed':

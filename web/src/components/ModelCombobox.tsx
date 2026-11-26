@@ -2,7 +2,13 @@ import { EXECUTOR_TYPES, type ExecutorType, isModelProvider } from '@factory-ai/
 import type { AnchorSide } from '../anchor.js';
 import { type ModelSetupView, useModelSetup } from '../api/useModelSetup.js';
 import { useConnectionModels } from '../api/useProviderConnections.js';
-import { catalogModels, catalogNote, type ChipConnection, modelCatalogOf } from '../workspace/model-catalog.js';
+import {
+    catalogModels,
+    catalogNote,
+    type ChipConnection,
+    modelCatalogOf,
+    normalizedChoices,
+} from '../workspace/model-catalog.js';
 import { type ModelSource, modelOptions } from '../model-setup/providers.js';
 import { type SearchRow, SearchSelect } from './SearchSelect.js';
 
@@ -37,12 +43,18 @@ export function useKnownModels(agent: string | null): string[] {
 export function useModelChoices(
     agent: string | null,
     connection: ChipConnection | null
-): { models: string[]; note: string | null } {
+): { models: string[]; note: string | null; pick: (model: string) => string } {
     const known = useKnownModels(agent);
     const read = useConnectionModels(connection?.id ?? null);
-    if (connection === null) return { models: known, note: null };
-    const catalog = modelCatalogOf(connection, EXECUTOR_TYPES.find((type) => type === agent) ?? null, read.models);
-    return { models: [...catalogModels(catalog)], note: catalogNote(catalog) };
+    if (connection === null) return { models: known, note: null, pick: (model) => model };
+    const type = EXECUTOR_TYPES.find((candidate) => candidate === agent) ?? null;
+    const catalog = modelCatalogOf(connection, type, read.models);
+    // A typed or picked name goes through the same rule as the offered list, so a bare id is saved as the server accepts it.
+    return {
+        models: [...catalogModels(catalog)],
+        note: catalogNote(catalog),
+        pick: (model) => normalizedChoices(connection.provider, type, model),
+    };
 }
 
 /**
