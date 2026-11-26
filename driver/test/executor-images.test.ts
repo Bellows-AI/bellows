@@ -2034,8 +2034,8 @@ describe('the exec directive in every prompt surface', () => {
 
 // A task spent its whole run budget circling on one failing test, its piped filters hiding the very
 // error it was chasing, until the driver killed the run idle. The guides now say: tests run through
-// the declared gates (their excerpt is bounded, the full log stored), the red-green loop goes to a
-// subagent, and three identical failures stop the loop dead instead of feeding it a fourth blind
+// the declared gates (their answer is a bounded, failure-first excerpt), the red-green loop goes to
+// a subagent, and three identical failures stop the loop dead instead of feeding it a fourth blind
 // edit. The discipline names no test runner: the guides ship to any stack.
 describe('the test-iteration discipline in the agent instructions', () => {
     it.each(['docker/claude-executor/claude-home/CLAUDE.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
@@ -2045,7 +2045,9 @@ describe('the test-iteration discipline in the agent instructions', () => {
             expect(text).toContain('## Context discipline');
             expect(text).toContain('Run tests through the gates, not around them.');
             expect(text).toMatch(/goes through `factory-gate` — filtered to your tests when the gate accepts a filter/);
-            expect(text).toMatch(/the full log is stored, out of your context/);
+            expect(text).toMatch(/its answer is a bounded, failure-first excerpt/);
+            expect(text).toMatch(/redirect the whole answer to a file and grep it/);
+            expect(text).toMatch(/a run you made ad hoc this attempt is not in it/);
             expect(text).toMatch(/A bare shell sweep of a suite the gates own floods the session and proves nothing/);
             expect(text).toMatch(/a repository with no gates at all \(exit 3\), a gate too long to run ad hoc \(422\)/);
             expect(text).toMatch(/the full output goes to a file you grep, never pasted into the session/);

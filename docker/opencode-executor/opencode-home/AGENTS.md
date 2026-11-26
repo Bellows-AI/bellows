@@ -93,11 +93,13 @@ An overgrown session triggers compaction, which costs minutes per cycle.
   `tail`) rather than pasting a full suite run into the session.
 - **Run tests through the gates, not around them.** When the repository declares gates, a test
   run goes through `factory-gate` — filtered to your tests when the gate accepts a filter —
-  because its answer is a bounded excerpt and the full log is stored, out of your context, for
-  `--last --full` (redirect that to a file and grep it, never print it whole). A bare shell sweep
-  of a suite the gates own floods the session and proves nothing. Your own shell only runs what
-  no gate can — a repository with no gates at all (exit 3), a gate too long to run ad hoc (422) —
-  and then the full output goes to a file you grep, never pasted into the session.
+  because its answer is a bounded, failure-first excerpt. A bare shell sweep of a suite the
+  gates own floods the session and proves nothing. When an excerpt is not enough, redirect the
+  whole answer to a file and grep it, never print it whole. `factory-gate <name> --last --full`
+  reads the thread's last stored report — a finish gate's log, or an earlier attempt's; a run
+  you made ad hoc this attempt is not in it. Your own shell only runs what no gate can — a
+  repository with no gates at all (exit 3), a gate too long to run ad hoc (422) — and then the
+  full output goes to a file you grep, never pasted into the session.
 - **Iterate a failing test in a subagent.** A test↔fix loop you expect to take more than two
   runs — a failure whose cause you do not already know, a broad suite to verify — runs in a
   subagent (the `general` agent): the subagent runs the loop under the same rule — its test runs

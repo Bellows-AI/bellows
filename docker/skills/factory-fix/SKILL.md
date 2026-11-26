@@ -32,8 +32,8 @@ them** — the commands in this skill are placeholders, not literals.
   the failing **integration** test is the repro. Most backend bugs are integration-level; default
   there unless the fault is provably pure.
 - **Iterate tests out of your context.** Test runs go through the declared gates whenever the
-  repository has them (filtered when a gate accepts a filter — their answers are bounded, the
-  full log stored out of your context); your own shell only runs what no gate can, and then its
+  repository has them (filtered when a gate accepts a filter — each answer is a bounded,
+  failure-first excerpt); your own shell only runs what no gate can, and then its
   full output goes to a file you grep, never pasted into the session. A red-green loop you expect
   to take more than two runs is delegated to a subagent that runs the loop under the same rule —
   its test runs through the gates where the repository declares them — and returns only the
