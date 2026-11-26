@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { ProviderConnectionMeta } from '@factory-ai/core';
+import { MAX_PROVIDER_CONNECTIONS_PER_SCOPE, type ProviderConnectionMeta } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { ProviderKeys } from '../src/provider-keys/verify.js';
-import type { ProviderConnectionStore } from '../src/db/provider-connection-store.js';
+import { ProviderConnectionCapError, type ProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import type { AppConfig } from '../src/config.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, testConfig } from './helpers.js';
 import {
     HTTP_BAD_REQUEST,
+    HTTP_CREATED,
     HTTP_FORBIDDEN,
     HTTP_NOT_FOUND,
     HTTP_OK,
@@ -25,7 +26,7 @@ import {
 const track = trackApps();
 const BASE = '/api/provider-connections';
 const KEY = 'sk-ant-route-test-0123456789';
-
+const ROTATED = 'sk-ant-route-test-rotated-key';
 /** An in-memory ProviderConnectionStore, for the route contract only. */
 function memoryProviderConnectionStore(): ProviderConnectionStore {
     interface Row {
@@ -59,6 +60,11 @@ function memoryProviderConnectionStore(): ProviderConnectionStore {
             return rows.filter((row) => (scope === 'org' ? row.userId === null : row.userId === userId)).length;
         },
         async create(input) {
+            const scopeCount = rows.filter((row) =>
+                input.scope === 'org' ? row.userId === null : row.userId === input.userId
+            ).length;
+            // The real store refuses inside its own transaction; the double mirrors the refusal.
+            if (scopeCount >= MAX_PROVIDER_CONNECTIONS_PER_SCOPE) throw new ProviderConnectionCapError();
             const row: Row = {
                 id: randomUUID(),
                 userId: input.scope === 'org' ? null : input.userId,
@@ -204,7 +210,39 @@ describe('POST /api/provider-connections', () => {
 });
 
 describe('PUT and DELETE /api/provider-connections/:id', () => {
-    it('edits metadata; an omitted key retains it; provider and scope are immutable', async () => {
+    it('a rotation replaces the stored key: the checker sees the replacement, and the omitted key keeps the old one', async () => {
+        const seen: string[] = [];
+        const echoChecker: ProviderKeys = {
+            verify: async (input) => {
+                seen.push(input.key);
+                return { ok: true, models: [input.key] };
+            },
+        };
+        const { member, inject } = await boot({}, echoChecker);
+        const made = await inject(member, 'POST', BASE, {
+            scope: 'personal',
+            name: 'x',
+            provider: 'anthropic',
+            key: KEY,
+        });
+        const id = (made.json() as { id: string }).id;
+        expect(await inject(member, 'GET', `${BASE}/${id}/models`)).toMatchObject({
+            statusCode: HTTP_OK,
+        });
+        expect(seen).toEqual([KEY]);
+
+        const rotated = await inject(member, 'PUT', `${BASE}/${id}`, { key: ROTATED });
+        expect(rotated.statusCode).toBe(HTTP_OK);
+        await inject(member, 'GET', `${BASE}/${id}/models`);
+        expect(seen).toEqual([KEY, ROTATED]);
+
+        // An edit without a key keeps the stored one: no rotation is minted.
+        await inject(member, 'PUT', `${BASE}/${id}`, { name: 'renamed' });
+        await inject(member, 'GET', `${BASE}/${id}/models`);
+        expect(seen).toEqual([KEY, ROTATED, ROTATED]);
+    });
+
+    it('edits metadata; provider and scope are immutable', async () => {
         const { member, inject } = await boot();
         const made = await inject(member, 'POST', BASE, {
             scope: 'personal',
@@ -238,6 +276,27 @@ describe('PUT and DELETE /api/provider-connections/:id', () => {
                 hasKey: true,
             },
         ]);
+    });
+
+    it('the create over the per-scope cap answers the cap refusal, not an internal error', async () => {
+        const { member, inject } = await boot();
+        for (let i = 0; i < MAX_PROVIDER_CONNECTIONS_PER_SCOPE; i += 1) {
+            const made = await inject(member, 'POST', BASE, {
+                scope: 'personal',
+                name: `cap-${i}`,
+                provider: 'anthropic',
+                key: KEY,
+            });
+            expect(made.statusCode).toBe(HTTP_CREATED);
+        }
+        const over = await inject(member, 'POST', BASE, {
+            scope: 'personal',
+            name: 'over',
+            provider: 'anthropic',
+            key: KEY,
+        });
+        expect(over.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(over.json()).toMatchObject({ code: 'TOO_MANY_CONNECTIONS' });
     });
 
     it('a member may delete a personal row but not an org row; an unknown id is 404', async () => {
@@ -318,10 +377,26 @@ describe('GET /api/provider-connections/:id/models', () => {
         expect(recovered.statusCode).toBe(HTTP_OK);
     });
 
-    it('a malformed JSON body that carries the key is refused without echoing it', async () => {
+    it('a malformed JSON body that carries the key is refused with fixed text, on create and on edit', async () => {
         const { member, inject } = await boot();
-        const res = await inject(member, 'POST', BASE, `{"provider":"anthropic","key":"${KEY}",`);
-        expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
-        expect(res.body).not.toContain(KEY);
+        const post = await inject(member, 'POST', BASE, `{"provider":"anthropic","key":"${KEY}",`);
+        expect(post.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(post.json()).toMatchObject({
+            code: 'BAD_BODY',
+            error: 'The connection body could not be read',
+        });
+        expect(post.body).not.toContain(KEY);
+
+        const made = await inject(member, 'POST', BASE, {
+            scope: 'personal',
+            name: 'x',
+            provider: 'anthropic',
+            key: KEY,
+        });
+        const id = (made.json() as { id: string }).id;
+        const put = await inject(member, 'PUT', `${BASE}/${id}`, `{"key":"${KEY}",`);
+        expect(put.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(put.json()).toMatchObject({ code: 'BAD_BODY', error: 'The connection body could not be read' });
+        expect(put.body).not.toContain(KEY);
     });
 });

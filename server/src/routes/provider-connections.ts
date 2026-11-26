@@ -18,7 +18,7 @@ import type { OrgRegistry } from '../orgs.js';
 import type { ProviderKeys, VerifyAnswer } from '../provider-keys/verify.js';
 import type { AppConfig } from '../config.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
-import { validBase, validKey } from './model-setup-verify.js';
+import { refuseUnparsedBody, validBase, validKey } from './model-setup-verify.js';
 
 /**
  * Provider connections (docs/api.md): the named model-provider credentials a member brings and an
@@ -120,8 +120,9 @@ function parseEdit(
         }
         patch.baseUrl = fields.baseUrl as string | null;
     }
-    if (fields.key !== undefined && !validKey(fields.key)) {
-        return refusal('key must be a provider key: printable characters, no spaces');
+    if (fields.key !== undefined) {
+        if (!validKey(fields.key)) return refusal('key must be a provider key: printable characters, no spaces');
+        patch.key = fields.key as string;
     }
     return { patch };
 }
@@ -196,8 +197,8 @@ async function writeOrRefuse<T>(
             try {
                 return { ok: await write() };
             } catch (error) {
-                if (isNameTaken(error)) return { taken: true };
                 if (error instanceof ProviderConnectionCapError) return { capped: true };
+                if (isNameTaken(error)) return { taken: true };
                 throw error;
             }
         }
@@ -385,10 +386,17 @@ interface ProviderConnectionRoutesDeps {
 
 export function providerConnectionRoutes(deps: ProviderConnectionRoutesDeps): FastifyPluginAsync {
     const limiter = createRateLimiter({ limit: PER_MEMBER_PER_WINDOW, windowMs: WINDOW_MS, now: deps.now ?? Date.now });
+    // The create and edit bodies carry a key: a body the parser refused answers fixed text, never
+    // the parser's message, which may quote it.
+    const refuseUnparsed = refuseUnparsedBody('The connection body could not be read');
     return async (app) => {
         app.get(PATH, { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) => handleList(deps.orgs, request, reply));
-        app.post(PATH, { bodyLimit: BODY_LIMIT }, (request, reply) => handleCreate(deps, request, reply));
-        app.put(`${PATH}/:id`, { bodyLimit: BODY_LIMIT }, (request, reply) => handleEdit(deps, request, reply));
+        app.post(PATH, { bodyLimit: BODY_LIMIT, errorHandler: refuseUnparsed }, (request, reply) =>
+            handleCreate(deps, request, reply)
+        );
+        app.put(`${PATH}/:id`, { bodyLimit: BODY_LIMIT, errorHandler: refuseUnparsed }, (request, reply) =>
+            handleEdit(deps, request, reply)
+        );
         app.delete(`${PATH}/:id`, { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleDelete(deps.orgs, request, reply)
         );
