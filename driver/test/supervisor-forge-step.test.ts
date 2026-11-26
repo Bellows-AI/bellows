@@ -468,3 +468,172 @@ describe('a mailbox read that cannot be confirmed is no withdrawn ask', () => {
         expect(answer.stdout).toContain('status=1');
     });
 });
+
+describe('mailbox I/O whose outcome is unconfirmed ends the step as a credential wait', () => {
+    type Fs = typeof import('node:fs');
+    const nodeFs = () => requireCjs('node:fs') as Fs;
+    const faultOf = (code: string) => Object.assign(new Error(`${code}: injected`), { code });
+
+    /**
+     * Fails the supervisor's own `fs[method]` with `code` for each call whose first argument matches `where`, as many
+     * times as `times` says (always when absent); every other call is the real one.
+     */
+    function fail(
+        method: 'writeFileSync' | 'renameSync' | 'rmSync' | 'mkdtempSync',
+        where: RegExp,
+        code: string,
+        times = Infinity
+    ) {
+        const fs = nodeFs();
+        const real = fs[method] as (...args: unknown[]) => unknown;
+        let left = times;
+        return vi.spyOn(fs, method as 'rmSync').mockImplementation(((file: unknown, ...rest: unknown[]) => {
+            if (typeof file === 'string' && where.test(file) && left > 0) {
+                left -= 1;
+                throw faultOf(code);
+            }
+            return real(file, ...rest);
+        }) as never);
+    }
+
+    const ASK_ONE_SECOND = 'export FACTORY_GATE_ASK_SECONDS=1;';
+    /** The step's own staged, then renamed, ask: what the helper writes, spelled out so a script can vary the content. */
+    const handAsk = (content: string) => `printf '${content}' > "$${FORGE_STEP_ENV.run}/asks/9"; sleep 0.6; echo done`;
+
+    describe.each(['EIO', 'EACCES', 'ENOSPC'])('a %s', (code) => {
+        it('writing the answer leaves the ask unresolved: no token reaches the step, and it is a credential wait', async () => {
+            const driver = await startDriver(minted(3_600_000));
+            const sup = startSupervisor(driver);
+            fail('writeFileSync', /\/answers\/\d+\.tmp$/, code);
+            sup.order('sync-1', `${ASK_ONE_SECOND} ${fill()}; exit 0`);
+            const answer = await sup.answerOf('sync-1');
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+            expect(answer.stderr).not.toContain('refused');
+        });
+
+        it('renaming the answer into place leaves the ask unresolved, and a credential wait', async () => {
+            const driver = await startDriver(minted(3_600_000));
+            const sup = startSupervisor(driver);
+            fail('renameSync', /\/answers\/\d+\.tmp$/, code);
+            sup.order('sync-1', `${ASK_ONE_SECOND} ${fill()}; exit 0`);
+            const answer = await sup.answerOf('sync-1');
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+        });
+
+        it('opening the mailbox is no refusal of the step: it never ran, and it is a credential wait', async () => {
+            const driver = await startDriver(minted(3_600_000));
+            const sup = startSupervisor(driver);
+            fail('mkdtempSync', /factory-forge-/, code);
+            sup.order('sync-1', 'echo ran');
+            const answer = await sup.answerOf('sync-1');
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+            expect(answer.stdout).toBe('');
+        });
+    });
+
+    it('a write fault that clears is retried: the token is delivered and the step is no credential wait', async () => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        fail('writeFileSync', /\/answers\/\d+\.tmp$/, 'EIO', 3);
+        sup.order('sync-1', `export FACTORY_GATE_ASK_SECONDS=10; ${fill()}; exit 0`);
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBeUndefined();
+        expect(answer.exitCode).toBe(0);
+        expect(answer.stdout).toContain('password=[redacted]');
+    });
+
+    it('a mailbox whose existence cannot be confirmed still gets its answer', async () => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        const fs = nodeFs();
+        const real = fs.existsSync;
+        vi.spyOn(fs, 'existsSync').mockImplementation((file) =>
+            typeof file === 'string' && /factory-forge-[^/]+$/.test(file) ? false : real(file)
+        );
+        sup.order('sync-1', `${ASK_ONE_SECOND} ${fill()}; exit 0`);
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBeUndefined();
+        expect(answer.stdout).toContain('password=[redacted]');
+    });
+
+    it('a token the step never took (its read of the answer failed) is a credential wait, not a failed step', async () => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        const run = `"$${FORGE_STEP_ENV.run}"`;
+        sup.order(
+            'sync-1',
+            `printf 'ask ${HOST}\n' > ${run}/asks/.9.tmp && mv ${run}/asks/.9.tmp ${run}/asks/9; i=0; while [ ! -f ${run}/answers/9 ] && [ $i -lt 100 ]; do sleep 0.02; i=$((i+1)); done; sleep 0.2; exit 1`
+        );
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBe(true);
+        expect(answer.exitCode).toBeNull();
+        expect(driver.asks).toHaveLength(1);
+    });
+
+    it('a token the step took is no wait: the answer was consumed', async () => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        sup.order('sync-1', `${fill()}; exit 3`);
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBeUndefined();
+        expect(answer.exitCode).toBe(3);
+    });
+
+    it.each([
+        ['an empty file', ''],
+        ['a malformed one', 'garbage\\n'],
+        ['one naming no host', 'ask \\n'],
+        ['one with trailing text', 'ask gitlab.example.com extra\\n'],
+    ])(
+        '%s in the asks directory is no request: the ask stays unresolved, never `none refused`',
+        async (_name, content) => {
+            const driver = await startDriver(minted(3_600_000));
+            const sup = startSupervisor(driver);
+            sup.order('sync-1', handAsk(content));
+            const answer = await sup.answerOf('sync-1');
+            expect(answer.tokenAskUnanswered).toBe(true);
+            expect(answer.exitCode).toBeNull();
+            expect(driver.asks).toEqual([]);
+        }
+    );
+
+    it.each([
+        ['a foreign host', 'ask evil.example.com\\n'],
+        ['a host that is no host name', 'ask Evil_Host/../x\\n'],
+    ])('a whole request for %s is a confirmed refusal, and no credential wait', async (_name, content) => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        const run = `"$${FORGE_STEP_ENV.run}"`;
+        sup.order(
+            'sync-1',
+            `printf '${content}' > ${run}/asks/.9.tmp && mv ${run}/asks/.9.tmp ${run}/asks/9; i=0; while [ ! -f ${run}/answers/9 ] && [ $i -lt 200 ]; do sleep 0.02; i=$((i+1)); done; echo "answer=$(cat ${run}/answers/9)"; rm -f ${run}/answers/9`
+        );
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBeUndefined();
+        expect(answer.stdout).toContain('answer=none refused');
+        expect(driver.asks).toEqual([]);
+    });
+
+    it('a name that is no ask that cannot be removed does not stop the real ask being answered', async () => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        fail('rmSync', /\/asks\/junk$/, 'EIO');
+        sup.order('sync-1', `: > "$${FORGE_STEP_ENV.run}/asks/junk"; ${fill()}; exit 0`);
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.tokenAskUnanswered).toBeUndefined();
+        expect(answer.stdout).toContain('password=[redacted]');
+    });
+
+    it('a mailbox that cannot be removed when the step ends is no failure of the step', async () => {
+        const driver = await startDriver(minted(3_600_000));
+        const sup = startSupervisor(driver);
+        fail('rmSync', /factory-forge-[^/]+$/, 'EIO', 1);
+        sup.order('sync-1', `${fill()}; exit 0`);
+        const answer = await sup.answerOf('sync-1');
+        expect(answer.exitCode).toBe(0);
+        expect(answer.tokenAskUnanswered).toBeUndefined();
+    });
+});

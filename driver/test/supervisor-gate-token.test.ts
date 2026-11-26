@@ -15,7 +15,7 @@ import type { AddressInfo } from 'node:net';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { gateForgeScript, gateShellScript } from '../src/container-scripts.js';
 import { GATE_FILES, GATE_TOKEN_PATH, MAILBOX_FILES, MAILBOXES } from '../src/supervisor-contract.js';
 import { withoutGateEnv } from './fixtures/gate-env.js';
@@ -56,6 +56,7 @@ const closes: Promise<void>[] = [];
 const gates: ChildProcess[] = [];
 let tearingDown = false;
 afterEach(async () => {
+    vi.restoreAllMocks();
     tearingDown = true;
     try {
         await teardown();
@@ -406,6 +407,24 @@ describe('a gate asks for its GitHub token through its mailbox', () => {
         expect(answer.tokenAskUnanswered).toBe(true);
         // The helper was told `none unanswered` by the supervisor (its own wait is 60 s, never reached).
         expect(`${answer.stdout}${answer.stderr}`).toContain('gate-forge: no token (unanswered)');
+        expect(gate.recorded()).toEqual([]);
+    });
+
+    it('gives the gate no verdict when its answer could not be written: an EIO is no refusal and no failure', async () => {
+        const nodeFs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs');
+        const real = nodeFs.writeFileSync;
+        vi.spyOn(nodeFs, 'writeFileSync').mockImplementation(((file: unknown, ...rest: unknown[]) => {
+            if (typeof file === 'string' && /\/answers\/\d+\.tmp$/.test(file)) {
+                throw Object.assign(new Error('EIO: injected'), { code: 'EIO' });
+            }
+            return (real as (...args: unknown[]) => unknown)(file, ...rest);
+        }) as typeof nodeFs.writeFileSync);
+        const driver = await startDriver({ lifeMs: 3_600_000 });
+        const gate = startGate(driver, { FACTORY_GATE_ASK_SECONDS: '1' });
+        gate.order('gate-1', 'gh; exit 1');
+        const answer = await gate.answerOf('gate-1');
+        expect(answer.tokenAskUnanswered).toBe(true);
+        expect(answer.exitCode).toBeNull();
         expect(gate.recorded()).toEqual([]);
     });
 

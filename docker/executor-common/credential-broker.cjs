@@ -245,18 +245,30 @@ const exitCodeOf = (result) => {
     return result.reason === 'integration_required' ? EXIT_INTEGRATION_REQUIRED : 1;
 };
 
-/** Drops the entries of one key, whichever pair wrote them: git found the credential rejected. */
+/**
+ * Drops the entries of one key, whichever pair wrote them: git found the credential rejected. True only when every
+ * entry of the key is confirmed gone; a cache that cannot be listed, an entry that cannot be read or one that will
+ * not go leaves a rejected credential possibly served again, which is false here and never a quiet success.
+ */
 function erase(deps, key) {
-    for (const name of listEntries(deps).names) {
+    const { names, unreadable } = listEntries(deps);
+    let confirmed = !unreadable;
+    for (const name of names) {
         const file = path.join(deps.dir, name);
         try {
             if (JSON.parse(fs.readFileSync(file, 'utf8')).key !== key) continue;
-        } catch {
-            // Unreadable: not provably this key's, so left for `clear`.
+        } catch (error) {
+            // Gone meanwhile: nothing to drop. Unreadable or malformed: not provably this key's, so unconfirmed.
+            if (!(error && error.code === 'ENOENT')) confirmed = false;
             continue;
         }
-        fs.rmSync(file, { force: true });
+        try {
+            fs.rmSync(file, { force: true });
+        } catch {
+            confirmed = false;
+        }
     }
+    return confirmed;
 }
 
 /** The directory's file names; ENOENT/ENOTDIR is an absent cache, anything else an unreadable one. */

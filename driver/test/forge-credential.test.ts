@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import {
     envFileBody,
@@ -164,6 +164,53 @@ describe('the runner forge helper for github.com', () => {
         await helper.obtain(r.deps);
         expect(await helper.main(['git', 'erase'], r.deps)).toBe(0);
         expect(await helper.obtain(r.deps)).toBe('ghs_new_secret');
+    });
+
+    describe('an erase whose outcome cannot be confirmed', () => {
+        type Fs = typeof import('node:fs');
+        const nodeFs = () => createRequire(import.meta.url)('node:fs') as Fs;
+        const fault = (code: string) => Object.assign(new Error(`${code}: injected`), { code });
+        const SECRET_ERASE = 'could not be confirmed cleared';
+        afterEach(() => vi.restoreAllMocks());
+
+        it.each(['EIO', 'EACCES'])('is not a quiet success when the cache cannot be listed (%s)', async (code) => {
+            const r = rig([minted('ghs_old_secret')]);
+            await helper.obtain(r.deps);
+            const real = nodeFs().readdirSync;
+            vi.spyOn(nodeFs(), 'readdirSync').mockImplementation(((dir: unknown, ...rest: unknown[]) => {
+                if (dir === r.deps.dir) throw fault(code);
+                return (real as (...args: unknown[]) => unknown)(dir, ...rest);
+            }) as never);
+            expect(await helper.main(['git', 'erase'], r.deps)).toBe(1);
+            expect(r.stderr.join('\n')).toContain(SECRET_ERASE);
+        });
+
+        it('is not a quiet success when an entry cannot be read or cannot be removed', async () => {
+            const r = rig([minted('ghs_old_secret')]);
+            await helper.obtain(r.deps);
+            const fs = nodeFs();
+            const read = fs.readFileSync;
+            const spy = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: unknown, ...rest: unknown[]) => {
+                if (typeof file === 'string' && file.startsWith(r.deps.dir)) throw fault('EIO');
+                return (read as (...args: unknown[]) => unknown)(file, ...rest);
+            }) as never);
+            expect(await helper.main(['git', 'erase'], r.deps)).toBe(1);
+            spy.mockRestore();
+            const rm = fs.rmSync;
+            vi.spyOn(fs, 'rmSync').mockImplementation(((file: unknown, ...rest: unknown[]) => {
+                if (typeof file === 'string' && file.startsWith(r.deps.dir)) throw fault('EACCES');
+                return (rm as (...args: unknown[]) => unknown)(file, ...rest);
+            }) as never);
+            expect(await helper.main(['git', 'erase'], r.deps)).toBe(1);
+        });
+
+        it('is a success for an absent cache, and for one it dropped', async () => {
+            const r = rig([minted('ghs_old_secret')]);
+            expect(await helper.main(['git', 'erase'], r.deps)).toBe(0);
+            await helper.obtain(r.deps);
+            expect(await helper.main(['git', 'erase'], r.deps)).toBe(0);
+            expect(r.stderr).toEqual([]);
+        });
     });
 
     it('presents the lease the supervisor relays, not the one the container started with (#1045)', async () => {

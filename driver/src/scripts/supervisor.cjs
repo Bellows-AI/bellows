@@ -120,7 +120,7 @@ const { pipeline, Transform } = require('node:stream');
 /** @typedef {{ id: string, kind: string, effect: StepResult | null, invocations: Record<string, Call> }} Entry */
 /** @typedef {{ token?: string, none?: string }} GateAnswer */
 /** @typedef {{ token: string, expiresAt: number | null }} Grant */
-/** @typedef {{ startedAt: number, why: string | null, stoppedAt: number, over: boolean, abort: AbortController, asking: Map<string, Promise<GateAnswer>>, cache: Map<string, Grant>, tokens: Set<string>, answering: Set<string>, unanswered: boolean, readFailed: boolean, unread: Set<string> }} Flight */
+/** @typedef {{ startedAt: number, why: string | null, stoppedAt: number, over: boolean, abort: AbortController, asking: Map<string, Promise<GateAnswer>>, cache: Map<string, Grant>, tokens: Set<string>, answering: Set<string>, unanswered: boolean, readFailed: boolean, unread: Set<string>, delivered: Set<string> }} Flight */
 /** @typedef {{ step: Step, dir: string, hosts: string[] }} AskBox */
 /** @typedef {{ exitCode: number | null, how: string }} AgentEnd */
 /** @typedef {{ outcome: string, cause: string | null }} Intent */
@@ -1111,8 +1111,15 @@ async function spawnForgeStep(run, step) {
     try {
         dir = openForgeBox(run);
     } catch (error) {
+        // The step never ran: whether the mailbox can be made is unconfirmed, so it has no verdict, not a refusal.
         const why = `could not open the forge mailbox: ${/** @type {NodeJS.ErrnoException} */ (error)?.code ?? error}`;
-        return { result: stepResult(STEP_REFUSED_EXIT, '', why), interrupted: false };
+        return {
+            result: {
+                ...stepResult(null, '', `${why}: a forge token ask went unanswered: no verdict`),
+                tokenAskUnanswered: true,
+            },
+            interrupted: false,
+        };
     }
     const flight = newFlight(run);
     const env = Object.fromEntries(Object.entries(step.env ?? {}).filter(([name]) => !TOKEN_ENV_NAMES.includes(name)));
@@ -1139,7 +1146,15 @@ async function spawnForgeStep(run, step) {
     } finally {
         flight.over = true;
         flight.abort.abort();
-        fs.rmSync(dir, { recursive: true, force: true });
+        // What the helper took is settled before the box goes; a mailbox that will not go is no verdict on the step.
+        settleDelivered({ step, dir, hosts: [host] }, flight);
+        try {
+            fs.rmSync(dir, { recursive: true, force: true });
+        } catch (error) {
+            run.log(
+                `supervisor: forge mailbox of ${step.id} not removed: ${/** @type {NodeJS.ErrnoException} */ (error)?.code}`
+            );
+        }
     }
     const ended = /** @type {Outcome} */ (/** @type {unknown} */ (outcome));
     const tokens = [...flight.tokens];
@@ -1551,7 +1566,9 @@ function stoppedGateResult(why, step, output) {
  * @returns {Outcome | null}
  */
 function unansweredGateResult(flight, output, stderr = '') {
-    if (!flight.unanswered && flight.asking.size === 0 && flight.unread.size === 0) return null;
+    if (!flight.unanswered && flight.asking.size === 0 && flight.unread.size === 0 && flight.delivered.size === 0) {
+        return null;
+    }
     const result = stepResult(null, output, `${stderr}a forge token ask went unanswered: no verdict`);
     return { result: { ...result, tokenAskUnanswered: true }, interrupted: false };
 }
@@ -1758,6 +1775,7 @@ const newFlight = (run) => ({
     unanswered: false,
     readFailed: false,
     unread: new Set(),
+    delivered: new Set(),
 });
 
 /**
@@ -1769,29 +1787,63 @@ const redactedBy = (flight, text) =>
     [...flight.tokens].reduce((kept, token) => kept.split(token).join('[redacted]'), text);
 
 /**
- * Writes one answer into the mailbox, staged and renamed whole, and withdraws the ask it answers.
+ * Writes one answer into the mailbox, staged and renamed whole, and withdraws the ask it answers. Delivery is
+ * confirmed only when the rename landed: a token answer is then held on the flight until the helper takes it
+ * (`settleDelivered`). A fault that is not a confirmed absence (EIO, EACCES, ENOSPC) leaves the ask unresolved on
+ * the flight (`unread`) and the ask file in place, so the next tick answers it again; a run that ended under the
+ * write (ENOENT, ENOTDIR) has nobody left to read it.
  * @param {Run} run
  * @param {AskBox} box
- * @param {string} name
- * @param {GateAnswer} got
+ * @param {Flight} flight
+ * @param {{ name: string, got: GateAnswer }} ask the ask's name and the answer to it
  */
-function writeAskAnswer(run, box, name, got) {
+function writeAskAnswer(run, box, flight, { name, got }) {
     const answers = path.join(box.dir, GATE_ASK_FILES.answers);
     const staged = path.join(answers, `${name}.tmp`);
+    const what = `${box.step.kind} ${box.step.id}`;
     try {
         fs.writeFileSync(staged, got.token ? `token ${got.token}\n` : `none ${got.none}\n`, { mode: GATE_ENV_MODE });
         fs.renameSync(staged, path.join(answers, name));
+    } catch (error) {
+        try {
+            fs.rmSync(staged, { force: true });
+        } catch {
+            // A staging file that will not go is not read by anyone (the helper takes the final name only).
+        }
+        if (confirmedAbsent(error)) {
+            flight.unread.delete(name);
+            return;
+        }
+        if (!flight.unread.has(name)) {
+            run.log(`supervisor: ${what} ask not answered: ${/** @type {NodeJS.ErrnoException} */ (error)?.code}`);
+        }
+        flight.unread.add(name);
+        return;
+    }
+    flight.unread.delete(name);
+    if (got.token) flight.delivered.add(name);
+    try {
         fs.rmSync(path.join(box.dir, GATE_ASK_FILES.asks, name), { force: true });
     } catch (error) {
-        // The run ended under the write: nobody is left to read the answer. Anything else is logged once.
-        fs.rmSync(staged, { force: true });
-        if (
-            /** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT' &&
-            /** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOTDIR'
-        )
-            run.log(
-                `supervisor: ${box.step.kind} ${box.step.id} ask not answered: ${/** @type {NodeJS.ErrnoException} */ (error).code}`
-            );
+        // Delivered; only its withdrawal is unconfirmed, and an answered ask asked again is answered the same.
+        run.log(`supervisor: ${what} ask not withdrawn: ${/** @type {NodeJS.ErrnoException} */ (error)?.code}`);
+    }
+}
+
+/**
+ * Drops each token answer the helper has taken (its file is confirmed gone from `answers/`). One still there, or
+ * whose state cannot be read, stays on the flight: a token delivered and never taken is no credential the step
+ * had, so the step ends as a credential wait (`unansweredGateResult`), never as the failure its git then reports.
+ * @param {AskBox} box
+ * @param {Flight} flight
+ */
+function settleDelivered(box, flight) {
+    for (const name of flight.delivered) {
+        try {
+            fs.accessSync(path.join(box.dir, GATE_ASK_FILES.answers, name));
+        } catch (error) {
+            if (confirmedAbsent(error)) flight.delivered.delete(name);
+        }
     }
 }
 
@@ -1811,7 +1863,8 @@ const ASKS_LISTING = '/';
  * @param {AskBox} box
  * @param {Flight} flight
  * @param {string} name
- * @returns {string | null | undefined} undefined: the ask is gone (the helper withdrew it) or could not be read.
+ * @returns {string | null | undefined} undefined: the ask is gone (the helper withdrew it) or could not be read
+ *   or understood; null: a whole request for a host this box may not ask for.
  */
 function askedHost(run, box, flight, name) {
     let text;
@@ -1830,9 +1883,32 @@ function askedHost(run, box, flight, name) {
         flight.unread.add(name);
         return;
     }
+    // The helper stages an ask under a dot name and renames it whole, so a visible ask that is not `ask <host>` is
+    // empty, torn or foreign content: no request to answer or refuse, left unresolved until a read settles it.
+    const request = FORGE_ASK.exec(text);
+    if (!request) {
+        if (!flight.unread.has(name)) {
+            run.log(`supervisor: ${box.step.kind} ${box.step.id} ask has no readable request`);
+        }
+        flight.unread.add(name);
+        return;
+    }
     flight.unread.delete(name);
-    const host = FORGE_ASK.exec(text)?.[1] ?? '';
+    const host = request[1] ?? '';
     return isForgeHost(host) && box.hosts.includes(host) ? host : null;
+}
+
+/**
+ * Whether the mailbox directory is confirmed gone: any other failure to look is inconclusive, never a yes.
+ * @param {AskBox} box
+ */
+function boxAbsent(box) {
+    try {
+        fs.accessSync(box.dir);
+        return false;
+    } catch (error) {
+        return confirmedAbsent(error);
+    }
 }
 
 /**
@@ -1848,15 +1924,17 @@ function askedHost(run, box, flight, name) {
 async function answerAsk(run, box, flight, name) {
     const host = askedHost(run, box, flight, name);
     if (host === undefined) return;
-    if (host === null) return writeAskAnswer(run, box, name, { none: 'refused' });
+    if (host === null) return writeAskAnswer(run, box, flight, { name, got: { none: 'refused' } });
     const gen = run.bindingGen;
     const got = await gateToken(run, box.step, flight, host);
-    if (flight.over || flight.why || !fs.existsSync(box.dir)) return;
+    // Only a confirmed absence of the mailbox means nobody asked: a box that cannot be checked is written to, and
+    // the write says (`writeAskAnswer`).
+    if (flight.over || flight.why || boxAbsent(box)) return;
     if (run.bindingGen !== gen) {
         flight.unanswered = true;
         return;
     }
-    writeAskAnswer(run, box, name, got);
+    writeAskAnswer(run, box, flight, { name, got });
 }
 
 /**
@@ -1875,7 +1953,9 @@ function serveAsks(run, box, flight) {
         names = fs.readdirSync(dir);
     } catch (error) {
         if (confirmedAbsent(error)) {
+            // The mailbox is gone (its gate settled, or the step ended): what it held can no longer be taken.
             flight.unread.delete(ASKS_LISTING);
+            settleDelivered(box, flight);
             return;
         }
         // Unconfirmed: asks may be waiting in a directory that cannot be listed, so the flight holds them.
@@ -1887,10 +1967,18 @@ function serveAsks(run, box, flight) {
         return;
     }
     flight.unread.delete(ASKS_LISTING);
+    settleDelivered(box, flight);
     for (const name of names) {
         if (name.startsWith('.') || flight.answering.has(name)) continue;
         if (!GATE_ASK_NAME.test(name)) {
-            fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+            // Not an ask, whatever it holds: removed when it can be, left alone (and logged) when it cannot.
+            try {
+                fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+            } catch (error) {
+                run.log(
+                    `supervisor: ${what} stray name not removed: ${/** @type {NodeJS.ErrnoException} */ (error)?.code}`
+                );
+            }
             continue;
         }
         flight.answering.add(name);

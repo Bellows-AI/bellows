@@ -91,7 +91,10 @@ async function main(argv, deps) {
     if (mode === 'git') {
         const key = requestKey(deps.env, await deps.stdin());
         if (operation === 'erase') {
-            if (key !== null) broker.erase(deps, key);
+            if (key !== null && !broker.erase(deps, key)) {
+                deps.stderr('forge-credential: the credential cache could not be confirmed cleared of a rejected credential.');
+                return 1;
+            }
             return 0;
         }
         if (operation !== 'get' || key === null) return 0;
