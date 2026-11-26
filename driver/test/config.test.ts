@@ -31,7 +31,7 @@ describe('the driver config: basics', () => {
             concurrency: 2,
             pollMs: 5_000,
             leaseSeconds: 300,
-            jobTimeoutMs: 7_200_000,
+            jobTimeoutMs: 28_800_000,
             skipPermissions: false,
         });
         expect(config.passEnv).toEqual(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
@@ -552,9 +552,9 @@ describe('the driver config: policy and gates', () => {
 
     // The cap on ONE gate: the runner's timeout covers the agent, this covers a gate that hangs.
     // A timed-out gate is a failed gate, not a stalled verdict.
-    it('bounds each gate with a configurable timeout, ten minutes by default', () => {
+    it('bounds each gate with a configurable timeout, twenty minutes by default', () => {
         const OVERRIDE_GATE_TIMEOUT_MS = 30_000;
-        expect(loadDriverConfig({}).gateTimeoutMs).toBe(600_000);
+        expect(loadDriverConfig({}).gateTimeoutMs).toBe(1_200_000);
         expect(loadDriverConfig({ GATE_TIMEOUT_MS: String(OVERRIDE_GATE_TIMEOUT_MS) }).gateTimeoutMs).toBe(
             OVERRIDE_GATE_TIMEOUT_MS
         );

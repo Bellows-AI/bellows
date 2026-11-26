@@ -146,7 +146,7 @@ export interface DriverConfig {
      * excludes interruption from do-not-disrupt, and it does not drain on rebalance
      * recommendations — and an external drain (kubectl drain, a managed-nodegroup upgrade)
      * proceeds all the same. Off by default, and the cost is stated where the decision is made:
-     * an undisruptable pod pins its node for as long as its run lasts — up to jobTimeoutMs, two
+     * an undisruptable pod pins its node for as long as its run lasts — up to jobTimeoutMs, eight
      * hours by default — so an operator running only on-demand nodes may legitimately leave it
      * off.
      */
@@ -292,6 +292,8 @@ function runnerPassEnv(raw: string | undefined): string[] {
 
 /** The upper bound on DRIVER_LEASE_SECONDS: one hour. */
 const MAX_LEASE_SECONDS = 3600;
+/** The default DRIVER_JOB_TIMEOUT_MS: eight hours. */
+const DEFAULT_JOB_TIMEOUT_MS = 28_800_000;
 /** The lower bound on DRIVER_JOB_TIMEOUT_MS. */
 const MIN_JOB_TIMEOUT_MS = 1_000;
 /** The upper bound on DRIVER_CONCURRENCY. */
@@ -301,7 +303,7 @@ const MIN_POLL_MS = 250;
 /** The upper bound on DRIVER_POLL_MS. */
 const MAX_POLL_MS = 300_000;
 /** The default GATE_TIMEOUT_MS. */
-const DEFAULT_GATE_TIMEOUT_MS = 600_000;
+const DEFAULT_GATE_TIMEOUT_MS = 1_200_000;
 /** The lower bound on GATE_TIMEOUT_MS. */
 const MIN_GATE_TIMEOUT_MS = 1_000;
 /** The default RUNNER_CACHE_WATCH_POLL_MS. */
@@ -350,7 +352,7 @@ const DEFAULTS = {
     concurrency: 2,
     pollMs: 5_000,
     leaseSeconds: 300,
-    jobTimeoutMs: 2 * MS_PER_HOUR,
+    jobTimeoutMs: DEFAULT_JOB_TIMEOUT_MS,
     otelEndpoint: 'http://collector:4318',
     passEnv: 'CLAUDE_CODE_OAUTH_TOKEN,ANTHROPIC_API_KEY',
 } as const;

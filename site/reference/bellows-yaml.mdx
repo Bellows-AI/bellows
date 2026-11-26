@@ -106,7 +106,7 @@ Each gate starts with `- name:`. Other keys are indented under it.
 | --- | --- | --- | --- | --- |
 | `name` | string | yes | none | Unique. Up to 64 characters. No `/` or `\`. Cannot start with `-` or `.` |
 | `command` | string | yes | none | One line, not empty, up to 4096 characters. Run through a shell. Exit code 0 passes |
-| `timeout` | integer | no | 10 minutes | Whole minutes, 1 to 120. Without it, the platform's gate timeout applies (600 seconds by default) |
+| `timeout` | integer | no | 20 minutes | Whole minutes, 1 to 120. Without it, the platform's gate timeout applies (20 minutes by default; 10 minutes when the agent runs the gate itself) |
 | `on_demand` | `true` | no | off | Only the value `true`. The agent can run the gate, the end-of-run pass skips it |
 | `filter` | `true` | no | off | Only the value `true`. The agent can narrow a run; the value arrives as `$GATE_FILTER`, up to 256 characters |
 | `parallel` | `true` | no | off | Only the value `true`. The end-of-run pass runs it together with the `parallel` gates declared right next to it; needs `setsid` in the image, else the gates run one at a time; see [Parallel gates](/guides/gates#parallel-gates) |

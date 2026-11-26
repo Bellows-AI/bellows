@@ -55,7 +55,7 @@ A gate that fails because the environment broke is not the agent's fault. Bellow
 | ----------- | -------- | ---------------------------------------------------------------------------------------- |
 | `name`      | yes      | Unique. Up to 64 chars. No `/` or `\`, and cannot start with `-` or `.`                  |
 | `command`   | yes      | One line, up to 4096 chars, run through a shell                                          |
-| `timeout`   | no       | Whole minutes, 1 to 120. Without it, the platform default applies (10 minutes today)      |
+| `timeout`   | no       | Whole minutes, 1 to 120. Without it, the platform default applies (20 minutes today; 10 minutes when the agent runs the gate itself)      |
 | `on_demand` | no       | Only `true`. The agent can run it, the end-of-run pass skips it, and it never fails the task |
 | `filter`    | no       | Only `true`. The agent can narrow a run; the value arrives as `$GATE_FILTER`             |
 | `parallel`  | no       | Only `true`. The end-of-run pass runs it together with the `parallel` gates declared right next to it |
