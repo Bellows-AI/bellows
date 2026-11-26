@@ -29,6 +29,8 @@ const EXCERPT_FAILURES = '[failure lines]\n';
 const EXCERPT_TAIL = '\n[output tail]\n';
 const FAILURE_LINE = /^\s*(?:FAIL\b|[×✗✖]|❯ .*\bfailed\b)/;
 const SUMMARY_LINE = /^\s*(?:Test Files|Tests)\s+\d/;
+/** The most of one failure line kept, as the driver keeps it: a test name and its path, never the message after it. */
+const FAILURE_LINE_MAX_CHARS = 300;
 /** What the failing lines may take of a cut excerpt, and of that what the first lines keep before the last. */
 const FAILURE_SHARE = 0.75;
 const HEAD_SHARE = 0.67;
@@ -69,7 +71,7 @@ function bothEnds(text: string, budget: number): string {
 /** The failure and summary lines of an unframed output, distinct and in order: the head the driver would have framed. */
 function failureLinesOf(output: string): string {
     const lines = output.split('\n').filter((line) => FAILURE_LINE.test(line) || SUMMARY_LINE.test(line));
-    return [...new Set(lines.map((line) => line.trimEnd()))].join('\n');
+    return [...new Set(lines.map((line) => line.trimEnd().slice(0, FAILURE_LINE_MAX_CHARS)))].join('\n');
 }
 
 /** The failure lines and the tail of an output, framed: the driver's own sections, or picked here the same way. */

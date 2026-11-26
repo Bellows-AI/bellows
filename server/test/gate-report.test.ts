@@ -81,6 +81,14 @@ describe('gate report text', () => {
         expect(kept.length).toBeLessThanOrEqual(INTERP_TAIL_LIMIT + TRUNCATION_MARKER.length);
     });
 
+    it('keeps the start of a failure line too long to fit whole', () => {
+        const name = ` FAIL  web/test/a.test.ts > case ${'p'.repeat(3200)}`;
+        const output = `${name}\n${'stack frame\n'.repeat(400)} Test Files  1 failed (1)\nError: the real failure`;
+        const kept = gateOutputTail(gate('test', 'failed', output));
+        expect(kept).toContain(' FAIL  web/test/a.test.ts > case ppp');
+        expect(kept.endsWith('Error: the real failure')).toBe(true);
+    });
+
     it('keeps the end of an output that names no failure', () => {
         const output = `${'early noise\n'.repeat(1000)}Error: the real failure`;
         const kept = gateOutputTail(gate('test', 'failed', output));
