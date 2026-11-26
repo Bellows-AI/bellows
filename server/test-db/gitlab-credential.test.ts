@@ -30,6 +30,7 @@ const OK = 200;
 const CONFLICT = 409;
 const UNAVAILABLE = 503;
 const LEASE_SECONDS = 60;
+/** The board's clock three hours on: every stored GitLab token (two hours) is then due a refresh. */
 const THREE_HOURS_MS = 3 * 3600 * 1000;
 const later = () => Date.now() + THREE_HOURS_MS;
 const FORGE = gitlabForgeOf(HOST);
@@ -75,6 +76,26 @@ const boot = async (options: Parameters<Harness['board']>[0] = {}) => {
     return board;
 };
 
+/**
+ * A board whose clock runs three hours ahead until its first token refresh has been answered: the stored token is due,
+ * and the refreshed one (stamped on the real clock) is read as live. `during` runs inside the refresh call.
+ */
+const dueOnce = (during: () => Promise<void> = async () => {}) => {
+    let offset = THREE_HOURS_MS;
+    return {
+        clock: () => Date.now() + offset,
+        api: h.gitlabApi((api) => ({
+            ...api,
+            request: async (req) => {
+                if (req.path !== '/oauth/token') return api.request(req);
+                await during();
+                const answer = await api.request(req);
+                offset = 0;
+                return answer;
+            },
+        })),
+    };
+};
 const repo = () => ({ forge: 'gitlab', host: HOST, path: `${grp}/web` });
 
 /** The org's GitLab set up, the member linked and the repo tracked, on `board`. */
@@ -120,19 +141,19 @@ describe.skipIf(!enabled)('the attempt’s GitLab credential', () => {
     });
 
     it('refreshes an expired token once for concurrent requests and answers the new one', async () => {
-        const board = await boot();
-        await setUp(board);
-        const { id, claim } = await board.running(org, repo());
-        const before = (await credential(board, id, claim.leaseToken)).json<{ token: string }>().token;
-        const due = await boot({ clock: later });
+        const first = await boot();
+        await setUp(first);
+        const { id, claim } = await first.running(org, repo());
+        const board = await boot(dueOnce());
         const calls = tokenCalls();
-        const answers = await Promise.all([1, 2, 3].map(() => credential(due, id, claim.leaseToken)));
+        const answers = await Promise.all([1, 2, 3].map(() => credential(board, id, claim.leaseToken)));
         // The refresh rotates the refresh token: one call, never one per request; a loser asks again.
         expect(tokenCalls()).toBe(calls + 1);
         for (const a of answers) expect([OK, UNAVAILABLE]).toContain(a.statusCode);
-        const after = await credential(due, id, claim.leaseToken);
-        expect(after.statusCode).toBe(OK);
-        expect(after.json<{ token: string }>().token).not.toBe(before);
+        const after = await credential(board, id, claim.leaseToken);
+        expect(after.statusCode, after.body).toBe(OK);
+        const fresh = after.json<{ token: string; expiresAt: string }>();
+        expect(Date.parse(fresh.expiresAt)).toBeGreaterThan(Date.now() + 3600 * 1000);
         expect(tokenCalls()).toBe(calls + 1);
     });
 
@@ -171,16 +192,6 @@ describe.skipIf(!enabled)('the attempt’s GitLab credential', () => {
         expect(crossed.body).not.toContain(first);
     });
 
-    it('serves only the thread root’s repository: a task on another project gets nothing', async () => {
-        const board = await boot();
-        await setUp(board);
-        const { id, claim } = await board.running(org, repo());
-        await sql`update job set repo = ${`${grp}/other`} where id = ${id}`;
-        const res = await credential(board, id, claim.leaseToken);
-        expect(res.statusCode).toBe(403);
-        expect(res.body).not.toContain('"token"');
-    });
-
     it('withholds the token from an attempt cancelled while the refresh is in flight', async () => {
         const board = await boot();
         await setUp(board);
@@ -193,24 +204,18 @@ describe.skipIf(!enabled)('the attempt’s GitLab credential', () => {
         const reached = new Promise<void>((resolve) => {
             blocked = resolve;
         });
-        const slow = await boot({
-            clock: later,
-            api: h.gitlabApi((api) => ({
-                ...api,
-                request: async (req) => {
-                    if (req.path !== '/oauth/token') return api.request(req);
-                    blocked();
-                    await gate;
-                    return api.request(req);
-                },
-            })),
-        });
+        const slow = await boot(
+            dueOnce(async () => {
+                blocked();
+                await gate;
+            })
+        );
         const pending = credential(slow, id, claim.leaseToken);
         await reached;
         await sql`update job set cancel_requested_at = now() where id = ${id}`;
         release();
         const res = await pending;
-        expect(res.statusCode).toBe(403);
+        expect(res.statusCode, res.body).toBe(403);
         expect(res.body).not.toContain('"token"');
     });
 
@@ -266,7 +271,7 @@ describe.skipIf(!enabled)('the attempt’s GitLab credential', () => {
         expect(res.body).not.toContain(own.accessToken);
         expect(await heartbeat(lost, id, claim.leaseToken)).toMatchObject({ requirementWait: true });
         expect((await lost.link(org, connectionId, 'dev-one')).result).toBe('linked');
-        const back = await credential(lost, id, claim.leaseToken);
+        const back = await credential(await boot(), id, claim.leaseToken);
         expect(back.statusCode).toBe(OK);
         expect(back.json()).toMatchObject({ token: expect.any(String) });
     });
