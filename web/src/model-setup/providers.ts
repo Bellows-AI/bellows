@@ -8,8 +8,6 @@ import {
     type ModelProvider,
     OPENCODE,
     PROVIDER_AGENTS,
-    PROVIDER_BASE_URL_ENV,
-    PROVIDER_ENV,
     providerAvailable,
 } from '@factory-ai/core';
 
@@ -153,14 +151,6 @@ export function modelOptions(source: ModelSource, agent: ExecutorType, checked: 
         (id) => source !== 'openrouter' || agent !== CLAUDE_CODE || id.startsWith('anthropic/')
     );
     return fromCheck.length > 0 ? fromCheck : [...CURATED[source][agent]];
-}
-
-/** The names a save writes: the key, and the base URL beside it (LiteLLM always has one). */
-export function secretNames(provider: ModelProvider, withBase: boolean): string[] {
-    const base = PROVIDER_BASE_URL_ENV[provider];
-    return base !== null && (withBase || provider === 'litellm')
-        ? [PROVIDER_ENV[provider], base]
-        : [PROVIDER_ENV[provider]];
 }
 
 /** What `POST /api/model-setup/verify` answers (server/src/provider-keys/verify.ts), copied: web imports no server. */

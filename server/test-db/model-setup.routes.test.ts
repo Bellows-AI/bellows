@@ -165,7 +165,10 @@ describe.skipIf(!enabled)('the model setup routes', () => {
 
         const mine = await save(
             admin,
-            orgBody({ scope: 'personal', connection: { intent: 'create', provider: 'anthropic', key: KEY_A, name: 'Mine' } })
+            orgBody({
+                scope: 'personal',
+                connection: { intent: 'create', provider: 'anthropic', key: KEY_A, name: 'Mine' },
+            })
         );
         expect(mine.status).toBe(OK);
         const theirs = await save(
@@ -191,7 +194,10 @@ describe.skipIf(!enabled)('the model setup routes', () => {
     it('personal onboarding yields a personal connection executor and default', async () => {
         const saved = await save(
             member,
-            orgBody({ scope: 'personal', connection: { intent: 'create', provider: 'anthropic', key: KEY_A, name: 'Mine' } })
+            orgBody({
+                scope: 'personal',
+                connection: { intent: 'create', provider: 'anthropic', key: KEY_A, name: 'Mine' },
+            })
         );
         expect(saved.status).toBe(OK);
         const workspace = await call(member, 'GET', '/api/workspace');

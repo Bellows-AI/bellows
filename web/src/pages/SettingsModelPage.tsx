@@ -18,7 +18,7 @@ export function SettingsModelPage() {
             <PageHeader
                 eyebrow="Settings"
                 title="Model"
-                description="The provider key your tasks run on, the default agent and model, and the named connections executors share."
+                description="The default executor your tasks run on, the provider connection behind it, and the named connections executors share."
             />
             <ModelSetup
                 session={session}

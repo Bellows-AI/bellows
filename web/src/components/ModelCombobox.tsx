@@ -18,6 +18,12 @@ const MODEL_HELP = 'The model the agent runs. Pick one the provider offers, or t
 function sourceOf(setup: ModelSetupView | null): ModelSource | null {
     if (setup === null || setup.effective === null) return null;
     if (setup.effective === 'platform') return 'platform';
+    if (setup.effective === 'executor') {
+        // A default executor on a connection names its provider; on none, the platform model or what the env holds.
+        const provider = setup.selected?.connection?.provider ?? (setup.personal ?? setup.org)?.provider;
+        if (setup.selected?.connection == null && setup.platform) return 'platform';
+        return isModelProvider(provider) ? provider : null;
+    }
     const provider = setup[setup.effective]?.provider;
     return isModelProvider(provider) ? provider : null;
 }

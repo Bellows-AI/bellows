@@ -17,6 +17,15 @@ afterEach(() => {
 });
 
 const NOTHING = { platform: false, org: null, personal: null, effective: null };
+const SAVED = {
+    saved: true,
+    scope: 'personal',
+    executorId: 'executor-1',
+    executorName: 'Anthropic',
+    connectionId: 'connection-1',
+    connectionName: 'Anthropic',
+    replayed: false,
+};
 type Setup = Record<string, unknown>;
 
 /** Answers the setup read with `setup`, the key check with `verify(call)`; the PUT answers saved. */
@@ -26,18 +35,19 @@ function board(
 ) {
     return stubFetch((call) => {
         if (call.url === '/api/model-setup' && call.method === 'GET') return setup;
-        if (call.url === '/api/model-setup' && call.method === 'PUT') return { saved: true };
+        if (call.url === '/api/model-setup' && call.method === 'PUT') return SAVED;
         if (call.url === '/api/model-setup/verify') return verify(call);
     });
 }
 
-function mount(session: Partial<Session> = {}, onSaved = vi.fn()) {
+function mount(session: Partial<Session> = {}, onSaved = vi.fn(), saveExisting = false) {
     const view = renderAt(
         <ModelSetup
             session={memberSession(session)}
             labels={{ form: 'Save and continue', banner: 'Continue' }}
             onSaved={onSaved}
             footer={(primary) => primary}
+            saveExisting={saveExisting}
         />
     );
     return { ...view, onSaved };
@@ -191,14 +201,15 @@ describe('the live key check', () => {
 });
 
 describe('who the key is for', () => {
-    it('a member gets only "Only me" with the note; the secret note names the env and the scope', async () => {
+    it('a member gets only "Only me" with the note; the secret note names the connection and the scope', async () => {
         board();
         mount();
         await screen.findByRole('radiogroup', { name: 'Provider' });
         expect(screen.queryByRole('radio', { name: /^Everyone in/ })).toBeNull();
         expect(screen.getByText(/Only an admin can add a key for everyone in Bellows AI/)).toBeTruthy();
-        const note = screen.getByText(/Saved as your personal secret/);
-        expect(note.textContent).toContain('ANTHROPIC_API_KEY');
+        const note = screen.getByText(/Saved as your personal provider connection/);
+        expect(note.textContent).toContain('Nobody — admins included — can read the key back');
+        expect(note.textContent).not.toContain('ANTHROPIC_API_KEY');
     });
 
     it('an admin chooses, the organization by default', async () => {
@@ -206,14 +217,14 @@ describe('who the key is for', () => {
         mount({ role: 'admin' });
         await screen.findByRole('radiogroup', { name: 'Provider' });
         expect((screen.getByRole('radio', { name: 'Everyone in Bellows AI' }) as HTMLInputElement).checked).toBe(true);
-        expect(screen.getByText(/Saved as an organization secret/).textContent).toContain('ANTHROPIC_API_KEY');
+        expect(screen.getByText(/Saved as an organization provider connection/)).toBeTruthy();
         fireEvent.click(screen.getByRole('radio', { name: 'Only me' }));
-        expect(screen.getByText(/Saved as your personal secret/)).toBeTruthy();
+        expect(screen.getByText(/Saved as your personal provider connection/)).toBeTruthy();
     });
 });
 
 describe('Save', () => {
-    it('waits with its reason, then saves the key and default and hands over once the setup is re-read', async () => {
+    it('waits with its reason, then creates the connection and executor and hands over once the setup is re-read', async () => {
         const calls = board(NOTHING, () => ({ ok: true, models: ['claude-sonnet-5-5'] }));
         const { onSaved } = mount();
         await keyInput();
@@ -225,13 +236,58 @@ describe('Save', () => {
         await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
         expect(puts(calls)[0]?.body).toEqual({
             scope: 'personal',
-            provider: 'anthropic',
-            key: 'sk-ant-api03-abc',
+            requestId: expect.any(String),
             agentType: 'claude-code',
             model: 'claude-sonnet-5-5',
+            connection: { intent: 'create', provider: 'anthropic', key: 'sk-ant-api03-abc', name: 'Anthropic' },
+            executor: { name: 'Anthropic' },
         });
         const put = calls.findIndex((c) => c.method === 'PUT');
         expect(calls.slice(put).some((c) => c.url === '/api/model-setup' && c.method === 'GET')).toBe(true);
+    });
+
+    it('names the connection and executor by the Name field, and waits while it is empty', async () => {
+        const calls = board(NOTHING, () => ({ ok: true, models: ['claude-sonnet-5-5'] }));
+        const { onSaved } = mount();
+        fireEvent.change(await keyInput(), { target: { value: 'sk-ant-api03-abc' } });
+        await waitFor(() => expect(saveButton().getAttribute('aria-disabled')).toBeNull());
+        fireEvent.change(screen.getByLabelText('Name'), { target: { value: ' ' } });
+        expect(saveButton().getAttribute('aria-disabled')).toBe('true');
+        expect(screen.getByText('Give the connection a name.')).toBeTruthy();
+        fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Team Anthropic' } });
+        fireEvent.click(saveButton());
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(puts(calls)[0]?.body).toMatchObject({
+            connection: { intent: 'create', name: 'Team Anthropic' },
+            executor: { name: 'Team Anthropic' },
+        });
+    });
+
+    it('a name already in use is refused with its sentence, nothing handed over, and the same body retries with one request id', async () => {
+        const bodies: { requestId: string }[] = [];
+        stubFetch((call) => {
+            if (call.url === '/api/model-setup' && call.method === 'GET') return NOTHING;
+            if (call.url === '/api/model-setup/verify') return { ok: true, models: ['claude-sonnet-5-5'] };
+            if (call.url === '/api/model-setup' && call.method === 'PUT') {
+                bodies.push(call.body as { requestId: string });
+                return {
+                    status: 409,
+                    body: {
+                        code: 'NAME_TAKEN',
+                        error: 'A connection with that name already exists in this scope; choose another name',
+                    },
+                };
+            }
+        });
+        const { onSaved } = mount();
+        fireEvent.change(await keyInput(), { target: { value: 'sk-ant-api03-abc' } });
+        await waitFor(() => expect(saveButton().getAttribute('aria-disabled')).toBeNull());
+        fireEvent.click(saveButton());
+        expect(await screen.findByText(/already exists in this scope/)).toBeTruthy();
+        fireEvent.click(saveButton());
+        await waitFor(() => expect(bodies).toHaveLength(2));
+        expect(bodies[1]?.requestId).toBe(bodies[0]?.requestId);
+        expect(onSaved).not.toHaveBeenCalled();
     });
 
     it('an aria-disabled Save writes nothing', async () => {
@@ -265,9 +321,11 @@ describe('the configured banners', () => {
         await waitFor(() => expect(onSaved).toHaveBeenCalled());
         expect(puts(calls)[0]?.body).toEqual({
             scope: 'personal',
-            provider: 'platform',
+            requestId: expect.any(String),
             agentType: 'claude-code',
             model: 'claude-sonnet-5-5',
+            connection: { intent: 'none' },
+            executor: { name: 'Platform model' },
         });
     });
 
@@ -281,7 +339,7 @@ describe('the configured banners', () => {
 
     const orgKey = { provider: 'anthropic', agentType: null, model: null, keyNames: ['ANTHROPIC_API_KEY'] };
 
-    it("the org banner saves the agent alone on the org's key when no default exists", async () => {
+    it("the org banner adopts a real executor on the org's environment key when no default exists", async () => {
         const calls = board({ platform: false, org: orgKey, personal: null, effective: 'org' });
         const { onSaved } = mount();
         expect(await screen.findByText('Bellows AI already has a model.')).toBeTruthy();
@@ -289,9 +347,11 @@ describe('the configured banners', () => {
         await waitFor(() => expect(onSaved).toHaveBeenCalled());
         expect(puts(calls)[0]?.body).toEqual({
             scope: 'personal',
-            provider: 'existing',
+            requestId: expect.any(String),
             agentType: 'claude-code',
             model: 'claude-sonnet-5-5',
+            connection: { intent: 'none' },
+            executor: { name: 'Anthropic (organization key)' },
         });
     });
 
@@ -307,13 +367,131 @@ describe('the configured banners', () => {
     });
 });
 
+describe('a default executor', () => {
+    const selected = (over: Record<string, unknown> = {}) => ({
+        scope: 'personal',
+        executorId: 'executor-1',
+        name: 'Anthropic',
+        agentType: 'claude-code',
+        model: 'claude-sonnet-5-5',
+        suspended: false,
+        connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'personal', baseUrl: null },
+        ...over,
+    });
+    const view = (over: Record<string, unknown> = {}) => ({
+        platform: false,
+        org: null,
+        personal: null,
+        selected: selected(over),
+        effective: 'executor',
+    });
+
+    it('shows the executor and its connection, recovered from the read alone', async () => {
+        board(view());
+        mount();
+        expect(await screen.findByText('Your tasks run on Anthropic.')).toBeTruthy();
+        expect(screen.getByText(/Claude Code · Anthropic · claude-sonnet-5-5/).textContent).toContain(
+            'connection Anthropic'
+        );
+        expect(screen.queryByRole('radiogroup', { name: 'Provider' })).toBeNull();
+    });
+
+    it('a model-only change edits the executor by id on its connection and never sends a key', async () => {
+        const calls = board(view());
+        const { onSaved } = mount({}, vi.fn(), true);
+        await screen.findByText('Your tasks run on Anthropic.');
+        expect(screen.queryByLabelText('API key')).toBeNull();
+        fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'claude-opus-5-5' } });
+        fireEvent.click(screen.getByRole('button', { name: /^(Save and continue|Continue)$/ }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(puts(calls)[0]?.body).toEqual({
+            scope: 'personal',
+            requestId: expect.any(String),
+            agentType: 'claude-code',
+            model: 'claude-opus-5-5',
+            connection: { intent: 'reuse', id: 'connection-1' },
+            executor: { id: 'executor-1' },
+        });
+        expect(JSON.stringify(puts(calls)[0]?.body)).not.toContain('"key"');
+    });
+
+    it('onboarding Continue only records the step on an executor already there', async () => {
+        const calls = board(view());
+        const { onSaved } = mount();
+        await screen.findByText('Your tasks run on Anthropic.');
+        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(puts(calls)).toHaveLength(0);
+    });
+
+    it('explicit rotation sends the new key for the executor’s own connection and nothing else changes', async () => {
+        const calls = board(view(), () => ({ ok: true }));
+        const { onSaved } = mount();
+        fireEvent.click(await screen.findByRole('button', { name: 'Replace the key' }));
+        expect(screen.getByText(/Replace the key of/).textContent).toContain('Anthropic');
+        fireEvent.change(await keyInput(), { target: { value: 'sk-ant-api03-new' } });
+        await waitFor(() =>
+            expect(screen.getByRole('button', { name: 'Replace key' }).getAttribute('aria-disabled')).toBeNull()
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'Replace key' }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(puts(calls)[0]?.body).toEqual({
+            scope: 'personal',
+            requestId: expect.any(String),
+            agentType: 'claude-code',
+            model: 'claude-sonnet-5-5',
+            connection: { intent: 'rotate', id: 'connection-1', key: 'sk-ant-api03-new' },
+            executor: { id: 'executor-1' },
+        });
+    });
+
+    it('offers no rotation of a connection the member does not own: the organization’s, for a member', async () => {
+        board(
+            view({
+                scope: 'org',
+                connection: { id: 'c', name: 'Team', provider: 'anthropic', scope: 'org', baseUrl: null },
+            })
+        );
+        mount();
+        await screen.findByText('Bellows AI runs tasks on Anthropic.');
+        expect(screen.queryByRole('button', { name: 'Replace the key' })).toBeNull();
+        expect(screen.queryByLabelText('Model')).toBeNull();
+    });
+
+    it('lets an admin replace the organization executor’s key', async () => {
+        board(
+            view({
+                scope: 'org',
+                connection: { id: 'c', name: 'Team', provider: 'anthropic', scope: 'org', baseUrl: null },
+            })
+        );
+        mount({ role: 'admin' });
+        expect(await screen.findByRole('button', { name: 'Replace the key' })).toBeTruthy();
+    });
+
+    it('"Connect another provider" opens the key form for a second connection and executor', async () => {
+        const calls = board(view(), () => ({ ok: true, models: ['claude-sonnet-5-5'] }));
+        const { onSaved } = mount();
+        fireEvent.click(await screen.findByRole('button', { name: 'Connect another provider' }));
+        fireEvent.click(screen.getByRole('radio', { name: /^OpenRouter/ }));
+        fireEvent.change(await keyInput(), { target: { value: 'sk-or-v1-abc' } });
+        await waitFor(() => expect(saveButton().getAttribute('aria-disabled')).toBeNull());
+        fireEvent.click(saveButton());
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(puts(calls)[0]?.body).toMatchObject({
+            connection: { intent: 'create', provider: 'openrouter', name: 'OpenRouter' },
+            executor: { name: 'OpenRouter' },
+        });
+    });
+});
+
 describe('the pages', () => {
     it('the onboarding step saves, records the step done, re-reads /me and moves on', async () => {
         let setup: Session['setup'] = { completed: false, done: [], skipped: [] };
         const calls = stubFetch((call) => {
             if (call.url === '/api/auth/me') return memberSession({ setup });
             if (call.url === '/api/model-setup' && call.method === 'GET') return NOTHING;
-            if (call.url === '/api/model-setup' && call.method === 'PUT') return { saved: true };
+            if (call.url === '/api/model-setup' && call.method === 'PUT') return SAVED;
             if (call.url === '/api/model-setup/verify') return { ok: true, models: ['claude-sonnet-5-5'] };
             if (call.url === '/api/onboarding/setup') {
                 setup = { completed: false, done: ['model'], skipped: [] };

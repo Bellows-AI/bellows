@@ -60,10 +60,10 @@ function Saver() {
             onClick={() =>
                 void setup.save({
                     scope: 'personal',
-                    provider: 'anthropic',
-                    key: 'sk-ant-test',
                     agentType: 'claude-code',
                     model: 'claude-test-model',
+                    connection: { intent: 'create', provider: 'anthropic', key: 'sk-ant-test', name: 'Anthropic' },
+                    executor: { name: 'Anthropic' },
                 })
             }
         >
@@ -98,6 +98,29 @@ describe('the No model yet banner', () => {
         board(NONE, { mode: 'cloud', workspace: PROFILE });
         renderAt(<NoModelBanner />);
         expect(await screen.findByText(new RegExp(TEXT))).toBeTruthy();
+    });
+
+    it('cloud with a connection-backed default executor: no banner, though no env key or agent default exists', async () => {
+        const executor: ModelSetupView = {
+            ...NONE,
+            effective: 'executor',
+            selected: {
+                scope: 'org',
+                executorId: 'executor-1',
+                name: 'Claude',
+                agentType: 'claude-code',
+                model: 'claude-test-model',
+                suspended: false,
+                connection: { id: 'c-1', name: 'Anthropic', provider: 'anthropic', scope: 'org', baseUrl: null },
+            },
+        };
+        const { reads } = board(executor, { mode: 'cloud', workspace: PROFILE });
+        renderAt(<NoModelBanner />);
+        await waitFor(() => expect(reads()).toBe(1));
+        await act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+        });
+        expect(banner()).toBeNull();
     });
 
     it('disappears after a save elsewhere, without a reload', async () => {

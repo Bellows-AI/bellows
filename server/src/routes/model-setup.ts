@@ -207,7 +207,10 @@ async function executorCapRefusal(ctx: Context, scope: 'org' | 'personal'): Prom
             : null;
     }
     return (await ctx.executors.list(ctx.userId)).length >= MAX_EXECUTORS_PER_USER
-        ? refusal(`at most ${MAX_EXECUTORS_PER_USER} executors can be configured at once`, ERROR_CODES.TOO_MANY_EXECUTORS)
+        ? refusal(
+              `at most ${MAX_EXECUTORS_PER_USER} executors can be configured at once`,
+              ERROR_CODES.TOO_MANY_EXECUTORS
+          )
         : null;
 }
 
@@ -240,7 +243,12 @@ async function handlePut(config: AppConfig, orgs: OrgRegistry, request: FastifyR
     }
     const { modelSetup } = ctx;
     if (!modelSetup) {
-        return bad(reply, ERROR_CODES.WORKSPACE_UNAVAILABLE, 'No model setup store for this organization', HTTP_UNAVAILABLE);
+        return bad(
+            reply,
+            ERROR_CODES.WORKSPACE_UNAVAILABLE,
+            'No model setup store for this organization',
+            HTTP_UNAVAILABLE
+        );
     }
     if (parsed.connection.intent === 'none' && !config.platformModelProvided && !ctx.envVars) return noEnvStore(reply);
     const saved = await guard(

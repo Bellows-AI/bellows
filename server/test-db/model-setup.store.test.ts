@@ -60,7 +60,10 @@ function stores(secrets: SecretStore = healthy) {
 }
 
 let counter = 0;
-const requestId = () => `req-${(counter += 1)}-${Math.random().toString(36).slice(2, 10)}`;
+const requestId = () => {
+    counter += 1;
+    return `req-${counter}-${Math.random().toString(36).slice(2, 10)}`;
+};
 
 const command = (over: Partial<SetupCommand> = {}): SetupCommand => ({
     scope: 'org',
@@ -92,7 +95,11 @@ describe.skipIf(!enabled)('the model setup command', () => {
         expect(await count('executor_profile')).toBe(1);
         expect(await selection(null)).toBe(result.executorId);
         const [row] = await executors.listOrg();
-        expect(row).toMatchObject({ id: result.executorId, type: 'claude-code', providerConnectionId: result.connectionId });
+        expect(row).toMatchObject({
+            id: result.executorId,
+            type: 'claude-code',
+            providerConnectionId: result.connectionId,
+        });
         expect(await connections.credentialFor(ALICE, result.connectionId!)).toMatchObject({ key: 'sk-ant-setup-A' });
         const stored = await sql`select config from executor_profile where org_id = ${ORG}`;
         expect(JSON.stringify(stored)).not.toContain('sk-ant-setup-A');
@@ -264,7 +271,12 @@ describe.skipIf(!enabled)('the model setup command', () => {
         await setup.apply(
             command({
                 connection: { intent: 'rotate', id: first.connectionId!, key: 'sk-ant-setup-ROTATED' },
-                executor: { id: first.executorId, name: 'Claude', agentType: 'claude-code', model: 'claude-sonnet-4-5' },
+                executor: {
+                    id: first.executorId,
+                    name: 'Claude',
+                    agentType: 'claude-code',
+                    model: 'claude-sonnet-4-5',
+                },
             })
         );
         await mustCreate(jobs.create('echo two', ALICE, { repo: null, executor: 'Claude', executorScope: 'org' }));
@@ -303,7 +315,13 @@ describe.skipIf(!enabled)('the model setup command', () => {
 
         const openai = await setup.apply(
             command({
-                connection: { intent: 'create', provider: 'openai', key: 'sk-openai-ok', baseUrl: null, name: 'OpenAI' },
+                connection: {
+                    intent: 'create',
+                    provider: 'openai',
+                    key: 'sk-openai-ok',
+                    baseUrl: null,
+                    name: 'OpenAI',
+                },
                 executor: { name: 'GPT', agentType: 'opencode', model: 'gpt-5' },
             })
         );
@@ -400,7 +418,10 @@ describe.skipIf(!enabled)('the model setup command', () => {
         const failingReads = new Proxy(sql, {
             apply(target, thisArg, args: unknown[]) {
                 const strings = args[0];
-                if (Array.isArray(strings) && strings.join('?').includes('select secret_ref from provider_connection')) {
+                if (
+                    Array.isArray(strings) &&
+                    strings.join('?').includes('select secret_ref from provider_connection')
+                ) {
                     return Promise.reject(new Error('simulated read failure'));
                 }
                 return Reflect.apply(target, thisArg, args);
@@ -415,7 +436,13 @@ describe.skipIf(!enabled)('the model setup command', () => {
             await expect(
                 createModelSetupStore(deps).apply(
                     command({
-                        connection: { intent: 'create', provider: 'openai', key: 'sk-x', baseUrl: null, name: 'Second' },
+                        connection: {
+                            intent: 'create',
+                            provider: 'openai',
+                            key: 'sk-x',
+                            baseUrl: null,
+                            name: 'Second',
+                        },
                         executor: { name: 'Second', agentType: 'opencode', model: 'gpt-5' },
                     })
                 )

@@ -6,21 +6,13 @@ import { StateNote } from '../components/StateNote.js';
 import { AgentModelFields, useAgentModel } from './AgentModelFields.js';
 import { AdvancedBase, KeyField, ProxyField, SecretNote } from './KeyField.js';
 import { ProviderCards } from './ProviderCards.js';
-import {
-    agentLock,
-    detectProvider,
-    PROVIDER_META,
-    providerAgents,
-    providerChoices,
-    saveReason,
-    secretNames,
-} from './providers.js';
+import { agentLock, detectProvider, PROVIDER_META, providerAgents, providerChoices, saveReason } from './providers.js';
 import { useSaveRun } from './SavePrimary.js';
-import { keyBody } from './save-body.js';
+import { createBody } from './save-body.js';
 import { ScopeControl } from './ScopeControl.js';
 import { useKeyCheck } from './useKeyCheck.js';
-const MODEL_HELP = 'Saved as your default agent and model. Change any time in Settings.';
-const PROXY_MODEL_HELP = 'Read from the proxy after the check. Saved as your default agent and model.';
+const MODEL_HELP = 'Becomes your default executor. Change any time in Settings.';
+const PROXY_MODEL_HELP = 'Read from the proxy after the check. Becomes your default executor.';
 
 /** The base URL a provider sends: LiteLLM's proxy, the Advanced one for a hosted provider, none for a subscription. */
 const baseFor = (provider: ModelProvider, proxy: string, base: string) =>
@@ -33,9 +25,9 @@ const savedProvider = (scopeView: ModelScopeView | null | undefined, choices: re
 };
 
 /**
- * The proxy and base URLs the form shows: the member's edit, else the URL the scope holds for this provider. A base URL
- * stored as a secret has no value to show, so it is kept (`keepBase`) until the member types one; a secret LiteLLM proxy
- * must be entered again, since the key check needs it (`hiddenProxy`).
+ * The proxy and base URLs the form shows: the member's edit, else the URL the scope holds for this provider. A URL
+ * stored as a secret has no value to show and is not carried into a new connection; a secret LiteLLM proxy must be
+ * entered again, since the key check needs it (`hiddenProxy`).
  */
 function urlsOf(
     scopeView: ModelScopeView | null | undefined,
@@ -48,10 +40,12 @@ function urlsOf(
     return {
         proxy: proxyEdit ?? (provider === 'litellm' ? saved?.baseUrl : undefined) ?? '',
         base: baseEdit ?? (hosted ? saved?.baseUrl : undefined) ?? '',
-        keepBase: hosted && baseEdit === null && saved?.baseUrlSet === true,
         hiddenProxy: provider === 'litellm' && proxyEdit === null && saved?.baseUrlSet === true,
     };
 }
+
+/** What stops a save on the name: it names the connection and its executor, so it cannot be empty. */
+const nameReason = (name: string) => (name.trim() === '' ? 'Give the connection a name.' : null);
 
 /**
  * The key form's state: provider (moved by a pasted key's prefix), key and its live check, base URLs, agent and model,
@@ -71,9 +65,11 @@ export function useKeyForm(session: Session | null, setup: UseModelSetup, onSave
     const [providerPick, setProviderPick] = useState<ModelProvider | null>(null);
     const provider = providerPick ?? savedProvider(scopeView, choices) ?? 'anthropic';
     const [key, setKey] = useState('');
+    const [nameEdit, setName] = useState<string | null>(null);
+    const name = nameEdit ?? PROVIDER_META[provider].label;
     const [proxyEdit, setProxy] = useState<string | null>(null);
     const [baseEdit, setBase] = useState<string | null>(null);
-    const { proxy, base, keepBase, hiddenProxy } = urlsOf(scopeView, provider, proxyEdit, baseEdit);
+    const { proxy, base, hiddenProxy } = urlsOf(scopeView, provider, proxyEdit, baseEdit);
     const baseUrl = baseFor(provider, proxy, base).trim();
     const check = useKeyCheck({ provider, key, baseUrl, mode });
     const saved =
@@ -102,16 +98,17 @@ export function useKeyForm(session: Session | null, setup: UseModelSetup, onSave
         hiddenProxy,
         base,
         setBase,
-        keepBase,
+        name,
+        setName,
         scope,
         setScope: setScopePick,
         check,
         choice,
         save,
-        reason: saveReason({ provider, key, baseUrl, model: choice.model, check: check.kind }),
+        reason: saveReason({ provider, key, baseUrl, model: choice.model, check: check.kind }) ?? nameReason(name),
         press: () =>
             void save.run(
-                keyBody({ scope, provider, key, baseUrl, keepBase, agentType: choice.agent, model: choice.model })
+                createBody({ scope, provider, key, baseUrl, name, agentType: choice.agent, model: choice.model })
             ),
     };
 }
@@ -155,20 +152,30 @@ export function KeyFormView({ ids, form, orgName }: { ids: string; form: KeyForm
                 value={form.scope}
                 onChange={form.setScope}
             />
+            <div className="picker-field">
+                <label htmlFor={`${ids}-name`}>Name</label>
+                <input
+                    id={`${ids}-name`}
+                    className="field"
+                    type="text"
+                    value={form.name}
+                    aria-describedby={`${ids}-name-help`}
+                    onChange={(event) => form.setName(event.target.value)}
+                />
+                <p className="picker-help" id={`${ids}-name-help`}>
+                    Names the connection and the executor on it. A name already in use is refused, never overwritten.
+                </p>
+            </div>
             {hosted ? (
                 <AdvancedBase
                     ids={ids}
-                    name={secretNames(provider, true)[1] ?? ''}
+                    name="the connection"
                     value={form.base}
-                    hidden={form.keepBase}
+                    hidden={false}
                     onChange={form.setBase}
                 />
             ) : null}
-            <SecretNote
-                provider={provider}
-                scope={form.scope}
-                withBase={hosted && (form.keepBase || form.base.trim() !== '')}
-            />
+            <SecretNote scope={form.scope} />
             {form.save.error ? <StateNote state="error">{form.save.error}</StateNote> : null}
         </>
     );

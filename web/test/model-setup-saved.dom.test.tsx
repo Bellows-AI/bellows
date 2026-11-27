@@ -7,8 +7,8 @@ import { memberSession } from './fixtures.js';
 
 /**
  * What is saved survives a save the member did not change: a saved model the list does not name stays as "Other…"
- * text and goes back in the PUT as it was; and an agent-only save uses the variant the route takes — `platform` while
- * the deployment supplies the model, an org key configured or not.
+ * text and goes back in the PUT as it was; a legacy setup adopts a real executor with the `none` intent, the route
+ * deciding the platform model or the key in view; a saved base or proxy URL pre-fills a new connection.
  */
 
 afterEach(() => {
@@ -16,12 +16,30 @@ afterEach(() => {
 });
 
 type Setup = Record<string, unknown>;
+const SAVED = {
+    saved: true,
+    scope: 'personal',
+    executorId: 'executor-1',
+    executorName: 'Adopted',
+    connectionId: null,
+    connectionName: null,
+    replayed: false,
+};
+/** The adoption body: no connection, a real executor named for what it adopts, a request id the hook minted. */
+const adopted = (name: string, agentType: string, model: string, scope = 'personal') => ({
+    scope,
+    requestId: expect.any(String),
+    agentType,
+    model,
+    connection: { intent: 'none' },
+    executor: { name },
+});
 
 function board(setup: Setup) {
     return stubFetch((call) => {
         if (call.url === '/api/auth/me') return memberSession({ platformModel: setup.platform === true });
         if (call.url === '/api/model-setup' && call.method === 'GET') return setup;
-        if (call.url === '/api/model-setup' && call.method === 'PUT') return { saved: true };
+        if (call.url === '/api/model-setup' && call.method === 'PUT') return SAVED;
         if (call.url === '/api/onboarding/setup') return { status: 204 };
         if (call.url === '/api/model-setup/verify') return { ok: true };
     });
@@ -65,12 +83,9 @@ describe('a saved model the list does not name', () => {
         await screen.findByText('Bellows AI already has a model.');
         expect(modelSelect().value).toBe('');
         expect((screen.getByLabelText('Model id') as HTMLInputElement).value).toBe('openrouter/mistralai/devstral');
-        expect(await saveUnchanged(calls, onSaved)).toEqual({
-            scope: 'personal',
-            provider: 'existing',
-            agentType: 'opencode',
-            model: 'openrouter/mistralai/devstral',
-        });
+        expect(await saveUnchanged(calls, onSaved)).toEqual(
+            adopted('OpenRouter (organization key)', 'opencode', 'openrouter/mistralai/devstral')
+        );
     });
 
     it('matches a listed model after normalization instead of replacing it', async () => {
@@ -102,12 +117,7 @@ describe('a saved model the list does not name', () => {
         const onSaved = mount({ platformModel: true, role: 'admin' });
         await screen.findByText('This deployment provides a model.');
         expect((screen.getByRole('radio', { name: 'Only me' }) as HTMLInputElement).checked).toBe(true);
-        expect(await saveUnchanged(calls, onSaved)).toEqual({
-            scope: 'personal',
-            provider: 'platform',
-            agentType: 'claude-code',
-            model: 'house-model-v2',
-        });
+        expect(await saveUnchanged(calls, onSaved)).toEqual(adopted('Platform model', 'claude-code', 'house-model-v2'));
     });
 
     it("prefills the key form from the member's own key: its provider, agent and unlisted model", async () => {
@@ -121,16 +131,16 @@ describe('a saved model the list does not name', () => {
     });
 });
 
-describe('the agent-only save with the platform model on and an org key', () => {
+describe('the adoption with the platform model on and an org key', () => {
     const setup = {
         platform: true,
         org: scopeView('anthropic', '', '', ['ANTHROPIC_API_KEY']),
         personal: null,
         effective: 'org',
     };
-    const expected = { scope: 'personal', provider: 'platform', agentType: 'claude-code', model: 'claude-sonnet-5-5' };
+    const expected = adopted('Anthropic (organization key)', 'claude-code', 'claude-sonnet-5-5');
 
-    it('onboarding Continue sends the platform variant', async () => {
+    it('onboarding Continue sends the none intent: the route picks the platform model', async () => {
         const calls = board({ ...setup, org: { ...setup.org, agentType: null, model: null } });
         renderApp('/onboarding/model?returnTo=%2Ftasks');
         await screen.findByText('Bellows AI already has a model.');
@@ -138,7 +148,7 @@ describe('the agent-only save with the platform model on and an org key', () => 
         await waitFor(() => expect(putBody(calls)).toEqual(expected));
     });
 
-    it('Settings → Model Save sends the platform variant', async () => {
+    it('Settings → Model Save sends the same none intent', async () => {
         const calls = board({ ...setup, org: { ...setup.org, agentType: null, model: null } });
         renderApp('/settings/model');
         await screen.findByText('Bellows AI already has a model.');
@@ -171,11 +181,17 @@ describe('a saved base or proxy URL', () => {
         expect(sent.verify).toMatchObject({ baseUrl: 'https://gw.example.test' });
         expect(sent.put).toEqual({
             scope: 'personal',
-            provider: 'anthropic',
-            key: 'sk-ant-api03-new',
-            baseUrl: 'https://gw.example.test',
+            requestId: expect.any(String),
             agentType: 'claude-code',
             model: 'claude-opus-5-5',
+            connection: {
+                intent: 'create',
+                provider: 'anthropic',
+                key: 'sk-ant-api03-new',
+                baseUrl: 'https://gw.example.test',
+                name: 'Anthropic',
+            },
+            executor: { name: 'Anthropic' },
         });
     });
 
@@ -192,18 +208,19 @@ describe('a saved base or proxy URL', () => {
         );
         const sent = await pasteAndSave(calls, onSaved, 'Virtual key', 'sk-virtual');
         expect(sent.put).toMatchObject({
-            provider: 'litellm',
-            baseUrl: 'https://llm.example.test',
             model: 'proxy-model',
+            connection: { intent: 'create', provider: 'litellm', baseUrl: 'https://llm.example.test' },
         });
     });
 
-    it('keeps a base URL saved as a secret: the Save asks to keep it, sending no value', async () => {
+    it('does not carry a base URL saved as a secret into a new connection: no value, no keep flag', async () => {
         const personal = scopeView('openai', 'opencode', 'openai/gpt-5.1', ['OPENAI_API_KEY']);
         const calls = board({ platform: false, org: null, personal: { ...personal, baseUrlSet: true } });
         const onSaved = mount();
         const sent = await pasteAndSave(calls, onSaved, 'API key', 'sk-proj-new');
-        expect(sent.put).toMatchObject({ provider: 'openai', keepBaseUrl: true });
-        expect(sent.put).not.toHaveProperty('baseUrl');
+        const connection = (sent.put as { connection: Record<string, unknown> }).connection;
+        expect(connection).toMatchObject({ intent: 'create', provider: 'openai' });
+        expect(connection).not.toHaveProperty('baseUrl');
+        expect(JSON.stringify(sent.put)).not.toContain('keepBaseUrl');
     });
 });

@@ -60,33 +60,33 @@ function endpointRefusal(provider: ModelProvider, baseUrl: unknown): Refusal | n
 
 const text = (value: unknown): value is string => typeof value === 'string' && value !== '';
 
-function parseConnection(raw: unknown, agentType: ExecutorType, config: AppConfig): ConnectionIntent | Refusal {
-    const fields = jsonBody(raw);
-    const { intent } = fields;
-    if (intent === 'none') {
-        if (Object.keys(fields).length > 1) return refusal('intent none takes no other connection field');
-        return { intent };
+const CREATE_FIELDS = ['intent', 'provider', 'key', 'baseUrl', 'name'];
+const ROTATE_FIELDS = ['intent', 'id', 'key', 'baseUrl'];
+
+const unknownField = (fields: Record<string, unknown>, allowed: readonly string[]): Refusal | null => {
+    const extra = Object.keys(fields).find((name) => !allowed.includes(name));
+    return extra === undefined ? null : refusal(`unknown connection field ${extra}`);
+};
+
+function parseRotate(fields: Record<string, unknown>): ConnectionIntent | Refusal {
+    if (!text(fields.id)) return refusal('intent rotate needs the connection id');
+    const unknown = unknownField(fields, ROTATE_FIELDS);
+    if (unknown) return unknown;
+    if (!validKey(fields.key)) return refusal('key must be a provider key: printable characters, no spaces');
+    if (fields.baseUrl === undefined) return { intent: 'rotate', id: fields.id, key: fields.key };
+    if (typeof fields.baseUrl !== 'string' || !validBase(fields.baseUrl)) {
+        return refusal('baseUrl must be an http(s) URL without credentials');
     }
-    if (intent === 'reuse') {
-        if (!text(fields.id) || Object.keys(fields).length > 2) return refusal('intent reuse takes an id alone');
-        return { intent, id: fields.id };
-    }
-    if (intent === 'rotate') {
-        if (!text(fields.id)) return refusal('intent rotate needs the connection id');
-        const extra = Object.keys(fields).find((name) => !['intent', 'id', 'key', 'baseUrl'].includes(name));
-        if (extra !== undefined) return refusal(`unknown connection field ${extra}`);
-        if (!validKey(fields.key)) return refusal('key must be a provider key: printable characters, no spaces');
-        if (fields.baseUrl !== undefined) {
-            if (typeof fields.baseUrl !== 'string' || !validBase(fields.baseUrl)) {
-                return refusal('baseUrl must be an http(s) URL without credentials');
-            }
-            return { intent, id: fields.id, key: fields.key, baseUrl: fields.baseUrl };
-        }
-        return { intent, id: fields.id, key: fields.key };
-    }
-    if (intent !== 'create') return refusal('connection.intent must be create, reuse, rotate or none');
-    const extra = Object.keys(fields).find((name) => !['intent', 'provider', 'key', 'baseUrl', 'name'].includes(name));
-    if (extra !== undefined) return refusal(`unknown connection field ${extra}`);
+    return { intent: 'rotate', id: fields.id, key: fields.key, baseUrl: fields.baseUrl };
+}
+
+function parseCreate(
+    fields: Record<string, unknown>,
+    agentType: ExecutorType,
+    config: AppConfig
+): ConnectionIntent | Refusal {
+    const unknown = unknownField(fields, CREATE_FIELDS);
+    if (unknown) return unknown;
     const { provider, key, name, baseUrl } = fields;
     if (!isModelProvider(provider)) return refusal('connection.provider must be one of the model providers');
     if (!providerAvailable(provider, config.deploymentMode)) {
@@ -103,10 +103,34 @@ function parseConnection(raw: unknown, agentType: ExecutorType, config: AppConfi
     if (nameReason) return refusal(nameReason, ERROR_CODES.BAD_NAME);
     const endpoint = endpointRefusal(provider, baseUrl);
     if (endpoint) return endpoint;
-    return { intent, provider, key, name: name as string, baseUrl: typeof baseUrl === 'string' ? baseUrl : null };
+    return {
+        intent: 'create',
+        provider,
+        key,
+        name: name as string,
+        baseUrl: typeof baseUrl === 'string' ? baseUrl : null,
+    };
 }
 
-function parseExecutor(raw: unknown, common: { agentType: ExecutorType; model: string }): SetupCommand['executor'] | Refusal {
+function parseConnection(raw: unknown, agentType: ExecutorType, config: AppConfig): ConnectionIntent | Refusal {
+    const fields = jsonBody(raw);
+    const { intent } = fields;
+    if (intent === 'none') {
+        return Object.keys(fields).length > 1 ? refusal('intent none takes no other connection field') : { intent };
+    }
+    if (intent === 'reuse') {
+        if (!text(fields.id) || Object.keys(fields).length > 2) return refusal('intent reuse takes an id alone');
+        return { intent, id: fields.id };
+    }
+    if (intent === 'rotate') return parseRotate(fields);
+    if (intent !== 'create') return refusal('connection.intent must be create, reuse, rotate or none');
+    return parseCreate(fields, agentType, config);
+}
+
+function parseExecutor(
+    raw: unknown,
+    common: { agentType: ExecutorType; model: string }
+): SetupCommand['executor'] | Refusal {
     const fields = jsonBody(raw ?? {});
     const extra = Object.keys(fields).find((name) => !EXECUTOR_FIELDS.has(name));
     if (extra !== undefined) return refusal(`unknown executor field ${extra}`);
@@ -116,7 +140,10 @@ function parseExecutor(raw: unknown, common: { agentType: ExecutorType; model: s
         const reason = badConnectionName(name);
         if (reason) return refusal(reason.replace(/^name/, 'executor.name'), ERROR_CODES.BAD_NAME);
     }
-    if (expectedUpdatedAt !== undefined && (typeof expectedUpdatedAt !== 'string' || Number.isNaN(Date.parse(expectedUpdatedAt)))) {
+    if (
+        expectedUpdatedAt !== undefined &&
+        (typeof expectedUpdatedAt !== 'string' || Number.isNaN(Date.parse(expectedUpdatedAt)))
+    ) {
         return refusal('executor.expectedUpdatedAt must be the updatedAt the executor was read with');
     }
     return {

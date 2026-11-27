@@ -202,7 +202,7 @@ describe('GET /api/model-setup with a default executor', () => {
         agentType: 'claude-code',
         model: 'claude-sonnet-4-5',
         suspended: false,
-        connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'org' },
+        connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'org', baseUrl: null },
     };
 
     it('reports the selected executor and its connection, effective before any env key, with no value', async () => {
@@ -277,7 +277,13 @@ describe('PUT /api/model-setup', () => {
         expect(await b.executors.agentDefaults(b.member.user.id)).toEqual({ org: null, personal: null });
         expect(b.setup.commands[0]).toMatchObject({
             requestId: 'request-1',
-            connection: { intent: 'create', provider: 'anthropic', key: ANTHROPIC_KEY, name: 'Anthropic', baseUrl: null },
+            connection: {
+                intent: 'create',
+                provider: 'anthropic',
+                key: ANTHROPIC_KEY,
+                name: 'Anthropic',
+                baseUrl: null,
+            },
             executor: { name: 'Claude', agentType: 'claude-code', model: 'claude-sonnet-4-5' },
         });
     });
@@ -372,7 +378,10 @@ describe('PUT /api/model-setup', () => {
         expect(stale.statusCode).toBe(HTTP_CONFLICT);
         expect(stale.json().code).toBe('MODEL_SETUP_CONFLICT');
 
-        b.setup.fail = new ExecutorConnectionRefusedError('scope', 'An organization executor can only use an organization provider connection.');
+        b.setup.fail = new ExecutorConnectionRefusedError(
+            'scope',
+            'An organization executor can only use an organization provider connection.'
+        );
         const refused = await put(b, b.memberCookie, anthropicPersonal);
         expect(refused.statusCode).toBe(HTTP_CONFLICT);
         expect(refused.json().code).toBe('PROVIDER_CONNECTION_REFUSED');
@@ -388,10 +397,7 @@ describe('PUT /api/model-setup', () => {
 });
 
 describe('PUT /api/model-setup with no connection', () => {
-    const none = withConnection(
-        { intent: 'none' },
-        { executor: { name: 'Platform' } }
-    );
+    const none = withConnection({ intent: 'none' }, { executor: { name: 'Platform' } });
 
     it('with the platform model on, applies an executor on the platform model', async () => {
         const b = await boot({ platformModelProvided: true });
@@ -438,7 +444,11 @@ describe('PUT /api/model-setup with no connection', () => {
         b.envVars.listOrg = async () => {
             throw storeOutage();
         };
-        const response = await put(b, b.memberCookie, withConnection({ intent: 'none' }, { agentType: 'opencode', model: 'gpt-5' }));
+        const response = await put(
+            b,
+            b.memberCookie,
+            withConnection({ intent: 'none' }, { agentType: 'opencode', model: 'gpt-5' })
+        );
         expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
         expect(b.setup.commands).toEqual([]);
     });

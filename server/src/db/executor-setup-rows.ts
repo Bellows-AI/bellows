@@ -58,7 +58,9 @@ export async function writeSetupExecutor(
         for update
     `;
     if (!previous) {
-        throw new ExecutorIdentityError(`"${id}" is not ${owner === null ? 'an organization' : 'one of your'} executor`);
+        throw new ExecutorIdentityError(
+            `"${id}" is not ${owner === null ? 'an organization' : 'one of your'} executor`
+        );
     }
     const expected = input.expectedUpdatedAt;
     if (expected !== undefined && new Date(expected).getTime() !== previous.updated_at.getTime()) {
