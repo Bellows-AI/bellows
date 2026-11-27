@@ -339,25 +339,14 @@ kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/nul
 #    reports the sha set the task was made with, not the live one.
 begin_phase recovery-skills
 skills_release="/task/.lane-skills"
-skills_admin_token="fat_$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
-skills_admin_hash="$(printf '%s' "$skills_admin_token" | openssl dgst -sha256 -hex | sed 's/^.* //')"
-skills_admin="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-    psql -qtA -v ON_ERROR_STOP=1 -v "org=$member" -v "login=$member-admin" -v "hash=$skills_admin_hash" \
-    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
-with u as (
-    insert into app_user (github_user_id, github_login)
-    values ((1000000000 + floor(random() * 1000000000000))::bigint, :'login') returning id
-), m as (
-    insert into org_membership (org_id, github_login, user_id, role, claimed_at)
-    select :'org', :'login', u.id, 'admin', now() from u
-), t as (
-    insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
-    select :'org', 'personal', u.id, u.id, 'test-k8s', decode(:'hash', 'hex') from u
-)
-select count(*) from u;
-SQL
-)"
-[ "$skills_admin" = 1 ] && ok 'an org admin is minted' || bad 'an org admin is minted' "$skills_admin"
+# The admin is a second member of the smoke org: signed in through the fake GitHub like the first, then promoted by the
+# org's admin (the smoke member, FACTORY_TOKEN) through the role route.
+skills_admin_ok=''
+if lane_member "$member_login-admin" "$member" >"$work/recovery-admin.out" 2>&1; then
+    skills_admin_token="$MINTED_TOKEN"
+    [ "$(http_status PUT "$BASE/api/org/members/$MINTED_USER/role" '{"role":"admin"}')" = 200 ] && skills_admin_ok=1
+fi
+[ -n "$skills_admin_ok" ] && ok 'an org admin is minted' || bad 'an org admin is minted' "$(cat "$work/recovery-admin.out" 2>/dev/null)"
 skills_org="$(node "$REPO/scripts/lane-skills.mjs" "$BASE" "$skills_admin_token" /api/org/skills lane-org-skill 'Lane org skill - use it never.' 'ref/helper.txt=org helper')"
 skills_ws="$(node "$REPO/scripts/lane-skills.mjs" "$BASE" "$FACTORY_TOKEN" /api/workspace/skills lane-ws-skill 'Lane workspace skill v1 - use it never.' 'ref/helper.txt=workspace helper')"
 skills_org_sha="$(node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).sha256))' "$skills_org")"

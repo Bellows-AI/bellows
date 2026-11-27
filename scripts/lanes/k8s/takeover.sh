@@ -179,6 +179,18 @@ tk_settled() { # tk_settled <name> <job id> <interruption> -> the checks every c
     [ -n "$clean" ] && ok "$1: nothing of the job is left" || bad "$1: nothing of the job is left" "${left:-unconfirmed}"
 }
 
+tk_fake_pulls() { # tk_fake_pulls -> "<PR count>|<kind of token that opened the last>" at the fake GitHub; "?|?" when the read failed
+    bounded 20 node -e '
+fetch(process.argv[1] + "/_control/pulls", { signal: AbortSignal.timeout(10000) })
+    .then(async (r) => {
+        const pulls = r.status === 200 ? await r.json() : null;
+        if (!Array.isArray(pulls)) throw new Error("no list");
+        process.stdout.write(pulls.length + "|" + (pulls.at(-1)?.createdBy ?? ""));
+    })
+    .catch(() => process.stdout.write("?|?"));
+' "$FAKE_REACH"
+}
+
 tk_check() { # tk_check <name> <got> <want>
     [ "$2" = "$3" ] && ok "$1" || bad "$1" "got '$2', want '$3'"
 }
@@ -186,7 +198,7 @@ tk_check() { # tk_check <name> <got> <want>
 tk_prepare() { # tk_prepare -> the origin's push log and push hold hooks exist; the lane stops when they cannot
     # The origin keeps a push log (a hook): its daemon user owns the repository, so nothing else need write it. Its
     # pre-receive hook parks a push while lane-push-hold exists (it touches lane-push-hold.ready, then waits for
-    # lane-push-hold.go): the publish is held at the push, since the PR is the board's write and this board holds no GitHub.
+    # lane-push-hold.go): the publish is held at the push, before the board's PR write.
     tk_origin sh -c 'printf "%s\n" "#!/bin/sh" "while read old new ref; do echo \"\$ref\" >>lane-pushes.log; done" >"$1/hooks/post-receive" &&
         printf "%s\n" "#!/bin/sh" "if [ -e lane-push-hold ]; then : >lane-push-hold.ready; t=\$((\$(date +%s)+600)); while [ ! -e lane-push-hold.go ] && [ \"\$(date +%s)\" -lt \"\$t\" ]; do sleep 0.2; done; fi" >"$1/hooks/pre-receive" &&
         chmod 0755 "$1/hooks/post-receive" "$1/hooks/pre-receive"' sh "$TK_REPO" >/dev/null 2>&1 &&
@@ -409,13 +421,15 @@ else
 fi
 
 # T5. The publish: the agent commits, the origin holds the publish's push at its pre-receive hook, the driver dies
-#     there. The next claim resumes from the gates' checkpoint and publishes without a second push. The board of this
-#     lane holds no GitHub, so the PR ask is answered 409 GITHUB_UNAVAILABLE: the push landed and there is no PR; the
-#     board's PR write and its lost-answer reuse are the docker lane's publish-member phase (p2) and takeover-sim t5b.
+#     there. The next claim resumes from the gates' checkpoint and publishes without a second push. The board's GitHub
+#     is the lane's fake (the member signed in through it), so the PR ask is answered with the member's PR: the fake
+#     records one more PR, opened with the member's user token. The board's PR write and its lost-answer reuse are the
+#     docker lane's publish-member phase (p2) and takeover-sim t5b.
 begin_phase takeover-publish
 n="$RELEASE-t5"
 commit_plan takeover-publish "$(tk_plan "echo x >>$TK_D$n.gate.count")" || bad 'the publish plan is committed' 'the plan pod did not commit'
 t5_pushes="$(tk_origin_count "$TK_REPO/lane-pushes.log")"
+t5_pulls_before="$(tk_fake_pulls)"
 tk_origin sh -c ': >"$1/lane-push-hold"' sh "$TK_REPO" >/dev/null 2>&1 || bad 't5: the push hold is set' 'the origin pod could not write its repository'
 t5="$(queue_job "factory-stub-commit factory-stub-wait-$TK_D$n.agent")"
 tk_use "$t5"
@@ -456,7 +470,9 @@ else
     expect_contains 't5: the next claim takes over the group whose agent exited' "$(driver_logs)" "job $t5: $TOOK_OVER"
     expect_not_contains 't5: the finished runner was not waited out' "$(driver_logs)" "job $t5: $ADOPTED"
     expect_contains 't5: the gates are resumed from their checkpoint' "$(driver_logs)" "job $t5: resumed gates from claim 1's checkpoint"
-    expect_not_contains 't5: the verdict carries no PR: the board holds no GitHub' "$(job_output "$t5")" 'pull/'
+    expect_contains "t5: the verdict carries the member's PR" "$(job_output "$t5")" 'pull/'
+    case "$t5_pulls_before" in '?'*) t5_pulls_want='the PR count was unreadable before the publish' ;; *) t5_pulls_want="$((${t5_pulls_before%%|*} + 1))|user" ;; esac
+    tk_check "t5: the fake GitHub holds one more PR, opened with the member's user token" "$(tk_fake_pulls)" "$t5_pulls_want"
 fi
 tk_origin sh -c 'rm -f "$1/lane-push-hold" "$1/lane-push-hold.ready" "$1/lane-push-hold.go"' sh "$TK_REPO" >/dev/null 2>&1
 

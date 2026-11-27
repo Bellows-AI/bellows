@@ -995,8 +995,10 @@ describe('kind lane observability phase', () => {
         expect(phase).not.toMatch(/\$member\b/);
     });
 
-    it('mints a lane member through one bounded psql call shared with capacity', () => {
-        const body = script.match(/^mint_member\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
+    it('mints a lane member through lane_member, shared with capacity', () => {
+        const mint = script.match(/^mint_member\(\) \{[\s\S]*?^\}/m)?.[0] ?? '';
+        expect(mint).toContain('lane_member "$1"');
+        const body = script.match(/^lane_member\(\) \{[\s\S]*?^\}$/m)?.[0] ?? '';
         const exec = body.split('\n').find((line) => line.includes('kubectl exec')) ?? '';
         expect(exec).toContain('bounded');
         expect(exec).toContain('--request-timeout');
@@ -1019,5 +1021,69 @@ describe('kind lane observability phase', () => {
         expect(netpol).toMatch(/denied[\s\S]*unrelated[\s\S]*IP_OPS/);
         expect(netpol.slice(apply)).toMatch(/reaches dashboard "\$IP_OPS" 4318/);
         expect(netpol.slice(apply)).toMatch(/reaches unrelated "\$IP_OPS" 4318/);
+    });
+});
+
+describe('kind lane members hold a GitHub grant (BEL-617)', () => {
+    const script = readLaneScript('scripts/test-k8s.sh');
+    const laneFiles = ['recovery', 'gitlab', 'workspace', 'takeover'].map((phase) =>
+        readRepoFile(`scripts/lanes/k8s/${phase}.sh`)
+    );
+    const body = script.match(/^lane_member\(\) \{[\s\S]*?^\}$/m)?.[0] ?? '';
+
+    it('no kind script inserts a member, a membership or a token', () => {
+        for (const text of [script, ...laneFiles]) {
+            expect(text).not.toMatch(/insert into (app_user|org_membership|access_token)\b/);
+        }
+    });
+
+    it('lane_member seeds, registers at the fake and signs in, every call under bounded', () => {
+        expect(body).not.toBe('');
+        expect(body).toContain('scripts/publish-member-client.mjs');
+        expect(body).toContain('FAKE_FORGE_REACH_URL=');
+        expect(body).toContain('/_control/github/members');
+        const calls = body.split('\n').filter((line) => /kubectl exec|\bnode (-e|scripts)|\benv FAKE_FORGE/.test(line));
+        expect(calls.length).toBeGreaterThanOrEqual(5);
+        for (const line of calls) expect(line).toContain('bounded');
+    });
+
+    it('the smoke member, mint_member, recovery’s admin and gitlab’s admin all come from lane_member', () => {
+        expect(script).toMatch(/^lane_member "\$member_login"/m);
+        expect(script).toMatch(/^mint_member\(\) \{[^}]*lane_member "\$1"/m);
+        expect(laneFiles[0]).toContain('lane_member "$member_login-admin" "$member"');
+        expect(laneFiles[0]).toContain('/role');
+        expect(laneFiles[1]).toContain('lane_member "$glk_login"');
+    });
+
+    it('the board is installed with the fake as its GitHub, and the fake forge is not behind a switch', () => {
+        expect(script).toContain('--set "dashboard.offlineGithubUrl=http://$RELEASE-fake-forge:8080"');
+        expect(script).not.toMatch(/FAKE_FORGE:-/);
+        expect(script).toMatch(/^kubectl create configmap "\$RELEASE-fake-forge"/m);
+    });
+
+    it('the fake forge sits with the board on the drain layout, and its port-forward is killed on every exit', () => {
+        const place = script.indexOf("forge_place='    nodeSelector");
+        const pod = script.indexOf('$forge_place    containers:');
+        expect(place).toBeGreaterThan(-1);
+        expect(pod).toBeGreaterThan(place);
+        expect(script).toMatch(/cleanup\(\) \{[\s\S]*kill "\$fake_pf_pid"/);
+        expect(script).toMatch(/give_up\(\) \{\n\s+kill "\$pf_pid" "\$\{fake_pf_pid:-\}"/);
+    });
+
+    // A pin: the loop needs a board to answer, and the body reaches `bad` through the response split.
+    it('the smoke create loop reports the refusal body', () => {
+        expect(script).toContain('b.slice(0, 600)');
+        expect(script).toContain('refusal="${id#*|}"');
+        expect(script).toContain("'a job was queued' \"no id came back (last status: ${status:-none}): ${refusal:-}\"");
+    });
+
+    it('the workspace PVC label quotes the org id', () => {
+        expect(laneFiles[2]).toContain('labels: {factory.task-org: "$member"}');
+    });
+
+    it('the takeover publish expects the member’s PR from the fake', () => {
+        expect(laneFiles[3]).toContain("t5: the verdict carries the member's PR");
+        expect(laneFiles[3]).toContain('/_control/pulls');
+        expect(laneFiles[3]).not.toContain('the board holds no GitHub');
     });
 });
