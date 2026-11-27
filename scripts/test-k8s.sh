@@ -921,7 +921,7 @@ refuses() { # refuses <name> <needle> <helm args...>
     fi
 }
 refuses 'dashboard.offlineGithubUrl is refused unless dashboard.offline' 'dashboard.offlineGithubUrl' \
-    --set dashboard.offline=false --set github.appId=1 --set github.appPrivateKey=pem --set dashboard.offlineGithubUrl=x
+    "${GH_SETS[@]}" --set dashboard.offlineGithubUrl=x
 refuses 'the retired dashboard.otel is refused' 'observability.' "${GH_SETS[@]}" --set-string dashboard.otel.endpoint=http://otel.example:4318
 refuses 'an enabled collector with no endpoint is refused' 'observability.endpoint' "${GH_SETS[@]}" --set observability.enabled=true
 refuses 'a headers Secret name without a key is refused' 'observability.headersSecret' "${GH_SETS[@]}" \
