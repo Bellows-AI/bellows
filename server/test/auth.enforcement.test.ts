@@ -344,6 +344,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/agent-title', 'connector'],
     // The same read by the attempt: the pair alone.
     ['/api/jobs/:id/agent-change-request', 'connector'],
+    // The review loop's discussions read and reply, by the attempt's pair alone.
+    ['/api/jobs/:id/agent-review', 'connector'],
+    ['/api/jobs/:id/agent-review/replies', 'connector'],
     // A member's own uploads: a person's act, so 'user' (an organization token is refused).
     ['/api/attachments', 'user'],
     ['/api/attachments/limits', 'user'],

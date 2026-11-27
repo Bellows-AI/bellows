@@ -243,9 +243,10 @@ async function write(
     ctx: Ctx,
     request: { method: 'POST' | 'PUT'; path: string; body?: object },
     readBack: () => Promise<boolean>,
-    limits: { signal: AbortSignal; attemptMs: number }
+    limits: { signal: AbortSignal; attemptMs: number; live: (() => Promise<boolean>) | undefined }
 ): Promise<Outcome> {
-    if (limits.signal.aborted) return refused('not_sent');
+    // Nothing is sent for a call that has no time left, or for an attempt that is no longer the one acting.
+    if (limits.signal.aborted || (limits.live && !(await limits.live()))) return refused('not_sent');
     const attempt = AbortSignal.any([limits.signal, AbortSignal.timeout(limits.attemptMs)]);
     const settled = await written(ctx.call(request.method, request.path, attempt, request.body));
     if (settled) return settled;
@@ -263,6 +264,7 @@ interface Replier {
     marked: Set<string>;
     signal: AbortSignal;
     attemptMs: number;
+    live: (() => Promise<boolean>) | undefined;
 }
 
 const discussionPath = (env: Replier, id: string) => `${env.base}/discussions/${encodeURIComponent(id)}`;
@@ -304,13 +306,13 @@ function executeTarget(env: Replier, target: ReviewPlanTarget): Promise<Outcome>
 
 /**
  * Executes `plan` against merge request `iid` as the token's holder; the initial discussion read throws when unconfirmed.
- * `limits.attemptMs` is each write's own wait inside the call's `signal`.
+ * `limits.attemptMs` is each write's own wait inside the call's `signal`; `limits.live` is asked before every write.
  */
 export async function replyReview(
     call: GitlabCall,
     { ref, iid }: { ref: RepoRef; iid: number },
     plan: ReviewPlan,
-    limits: { signal: AbortSignal; attemptMs?: number }
+    limits: { signal: AbortSignal; attemptMs?: number; live?: () => Promise<boolean> }
 ): Promise<ReviewReply> {
     const ctx = ctxOf(call, ref);
     const base = baseOf(ctx, iid);
@@ -322,6 +324,7 @@ export async function replyReview(
         marked: new Set(addressedKeys(discussions.flatMap((d) => d.notes.map((note) => note.body)))),
         signal: limits.signal,
         attemptMs: limits.attemptMs ?? REVIEW_WRITE_ATTEMPT_MS,
+        live: limits.live,
     };
     const results: ReviewReplyResult[] = [];
     for (const target of plan.targets) {
