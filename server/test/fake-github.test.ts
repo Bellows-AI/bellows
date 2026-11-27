@@ -55,8 +55,9 @@ const send = async (method: string, path: string, token?: string, body?: object)
 };
 
 /** The sign-in round trip: authorize → code → token pair. */
-const signIn = async () => {
-    const authorize = await send('GET', '/login/oauth/authorize?redirect_uri=http://board.test/cb&state=s1');
+const signIn = async (login?: string) => {
+    const hint = login ? `&login=${login}` : '';
+    const authorize = await send('GET', `/login/oauth/authorize?redirect_uri=http://board.test/cb&state=s1${hint}`);
     const code = new URL(authorize.location as string).searchParams.get('code') as string;
     const exchanged = await send('POST', '/login/oauth/access_token', undefined, {
         grant_type: 'authorization_code',
@@ -117,6 +118,45 @@ describe('fake GitHub: the user-token flow', () => {
         forge.advance(2000);
         expect((await send('GET', '/user', pair.access_token)).status).toBe(401);
         expect((await refresh(pair.refresh_token)).body.access_token).toMatch(/^ghu_/);
+    });
+
+    const register = (login: string, id: number, installation: number) =>
+        send('POST', '/_control/github/members', undefined, { login, id, installation: { id: installation, account: login } });
+
+    it('signs in a registered identity by the login hint: /user and /user/installations answer it', async () => {
+        await register('lane-a', 42, 4242);
+        const pair = await signIn('lane-a');
+        expect((await send('GET', '/user', pair.access_token)).body).toEqual({ login: 'lane-a', id: 42 });
+        const installations = (await send('GET', '/user/installations', pair.access_token)).body.installations;
+        expect(installations).toHaveLength(1);
+        expect(installations[0].id).toBe(4242);
+    });
+
+    it('keeps the identity across a refresh', async () => {
+        await register('lane-a', 42, 4242);
+        const rotated = (await refresh((await signIn('lane-a')).refresh_token)).body;
+        expect((await send('GET', '/user', rotated.access_token)).body.login).toBe('lane-a');
+    });
+
+    it("two identities' tokens answer their own /user", async () => {
+        await register('lane-a', 42, 4242);
+        await register('lane-b', 43, 4343);
+        const [a, b] = [await signIn('lane-a'), await signIn('lane-b')];
+        expect((await send('GET', '/user', a.access_token)).body.id).toBe(42);
+        expect((await send('GET', '/user', b.access_token)).body.id).toBe(43);
+        expect((await send('GET', '/user/installations', b.access_token)).body.installations[0].id).toBe(4343);
+    });
+
+    it('refuses an unregistered login hint, not signing in as the default member', async () => {
+        const authorize = await send('GET', '/login/oauth/authorize?redirect_uri=http://board.test/cb&login=ghost');
+        expect(authorize.status).toBe(400);
+        expect(authorize.location).toBeNull();
+    });
+
+    it('with no hint the default member is unchanged', async () => {
+        const pair = await signIn();
+        expect((await send('GET', '/user', pair.access_token)).body).toEqual({ login: 'lane-member', id: 7001 });
+        expect((await send('GET', '/user/installations', pair.access_token)).body.installations[0].id).toBe(999001);
     });
 
     it('rejects an unknown code', async () => {

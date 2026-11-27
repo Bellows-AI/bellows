@@ -5,27 +5,36 @@ export const USER_TOKEN_TTL_S = 8 * 3600;
 const REFRESH_TOKEN_TTL_S = 15_811_200;
 const MEMBER = { login: 'lane-member', id: 7001 };
 const INSTALLATION_ID = 999001;
+const DEFAULT_IDENTITY = {
+    login: MEMBER.login,
+    id: MEMBER.id,
+    installation: { id: INSTALLATION_ID, account: 'lane-org' },
+};
 const PUBLIC_URL = 'https://github.com';
 
 export const registerGithub = (forge) => {
-    const codes = new Set();
-    /** refresh token -> { access, expiresAt }; a refresh token is deleted when used. */
+    /** code -> the identity it signs in as. */
+    const codes = new Map();
+    /** login -> { login, id, installation: { id, account } }, registered by the lane; the default member is not in it. */
+    const identities = new Map();
+    /** refresh token -> { access, expiresAt, identity }; a refresh token is deleted when used. */
     const refreshTokens = new Map();
     const pulls = new Map(); // `${owner}/${name}` -> pull[]
     // The lane's switch for a member who cannot write to the repository: a user token's PR writes answer 404.
     let userWrites = true;
     const writeRefused = (tokenKind) => !userWrites && tokenKind === 'user';
 
-    const issuePair = () => {
+    const issuePair = (identity) => {
         const id = forge.nextId();
         const access = `ghu_fake${id}`;
         const refresh = `ghr_fake${id}`;
         forge.tokens.set(access, {
             kind: 'user',
-            login: MEMBER.login,
+            login: identity.login,
+            identity,
             expiresAt: forge.clock() + USER_TOKEN_TTL_S * 1000,
         });
-        refreshTokens.set(refresh, { access, expiresAt: forge.clock() + REFRESH_TOKEN_TTL_S * 1000 });
+        refreshTokens.set(refresh, { access, identity, expiresAt: forge.clock() + REFRESH_TOKEN_TTL_S * 1000 });
         return {
             access_token: access,
             expires_in: USER_TOKEN_TTL_S,
@@ -40,8 +49,11 @@ export const registerGithub = (forge) => {
         'GET',
         '/login/oauth/authorize',
         ({ response, query }) => {
+            // GitHub's own `login` hint names the account to sign in; the lane's client sends it.
+            const hinted = query.login ? identities.get(query.login) : DEFAULT_IDENTITY;
+            if (!hinted) return forge.json(response, 400, { message: `no registered identity ${query.login}` });
             const code = `code${forge.nextId()}`;
-            codes.add(code);
+            codes.set(code, hinted);
             const target = new URL(query.redirect_uri);
             target.searchParams.set('code', code);
             if (query.state) target.searchParams.set('state', query.state);
@@ -63,20 +75,40 @@ export const registerGithub = (forge) => {
                 }
                 refreshTokens.delete(body.refresh_token);
                 forge.tokens.delete(held.access);
-                return forge.json(response, 200, issuePair());
+                return forge.json(response, 200, issuePair(held.identity));
             }
-            if (!codes.delete(body.code)) return forge.json(response, 200, { error: 'bad_verification_code' });
-            forge.json(response, 200, issuePair());
+            const identity = codes.get(body.code);
+            codes.delete(body.code);
+            if (!identity) return forge.json(response, 200, { error: 'bad_verification_code' });
+            forge.json(response, 200, issuePair(identity));
         },
         { auth: false }
     );
 
-    forge.route('GET', '/user', ({ response }) => forge.json(response, 200, MEMBER));
-    forge.route('GET', '/user/installations', ({ response }) =>
+    forge.route('GET', '/user', ({ response, token }) => {
+        const identity = token?.identity ?? DEFAULT_IDENTITY;
+        forge.json(response, 200, { login: identity.login, id: identity.id });
+    });
+    forge.route('GET', '/user/installations', ({ response, token }) => {
+        const { installation } = token?.identity ?? DEFAULT_IDENTITY;
         forge.json(response, 200, {
             total_count: 1,
-            installations: [{ id: INSTALLATION_ID, account: { login: 'lane-org', type: 'Organization' } }],
-        })
+            installations: [{ id: installation.id, account: { login: installation.account, type: 'Organization' } }],
+        });
+    });
+    // The lane's door for the people it signs in: each registers once, then signs in by the `login` hint.
+    forge.route(
+        'POST',
+        '/_control/github/members',
+        ({ response, body }) => {
+            identities.set(body.login, {
+                login: body.login,
+                id: body.id,
+                installation: { id: body.installation.id, account: body.installation.account },
+            });
+            forge.json(response, 200, { login: body.login });
+        },
+        { auth: false }
     );
 
     const shape = (pull) => ({
