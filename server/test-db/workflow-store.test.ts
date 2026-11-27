@@ -70,7 +70,7 @@ describe.skipIf(!enabled)('the workflow store', () => {
         expect(await store.listVisible({ userId: null, repo: null })).toEqual([]);
     });
 
-    it('compiles the github-review-reconcile block before storage, storing the EXPANDED graph', async () => {
+    it('compiles the review-reconcile block before storage, storing the EXPANDED graph', async () => {
         // The real, wired registry through workflow-store.ts's create() — beyond
         // workflow-block-compiler.test.ts's pure, dependency-injected coverage of the same
         // compile step. A block never publishes itself, so the downstream `ship` node is what
@@ -82,7 +82,7 @@ describe.skipIf(!enabled)('the workflow store', () => {
                 entry: 'review',
                 params: [],
                 nodes: [
-                    { name: 'review', kind: 'block', uses: 'builtin/github-review-reconcile' },
+                    { name: 'review', kind: 'block', uses: 'builtin/review-reconcile' },
                     { name: 'ship', kind: 'agent', session: 'fresh', prompt: 'ship', publish: true },
                 ],
                 edges: [{ from: 'review', to: 'ship', when: 'succeeded' }],
@@ -99,7 +99,7 @@ describe.skipIf(!enabled)('the workflow store', () => {
         const waitNode = record?.definition.nodes.find((n) => n.name === 'review--wait');
         expect(waitNode?.runtime).toMatchObject({
             runtime: 'pr-delivery-wait',
-            block: 'builtin/github-review-reconcile',
+            block: 'builtin/review-reconcile',
         });
         // The outer edge, rewritten to originate from the block's own exit node.
         expect(record?.definition.edges).toContainEqual({ from: 'review--collect', to: 'ship', when: 'succeeded' });
@@ -231,7 +231,7 @@ describe.skipIf(!enabled)('the workflow store', () => {
                 entry: 'review',
                 params: [],
                 nodes: [
-                    { name: 'review', kind: 'block', uses: 'builtin/github-review-reconcile' },
+                    { name: 'review', kind: 'block', uses: 'builtin/review-reconcile' },
                     { name: 'ship', kind: 'agent', session: 'fresh', prompt: 'ship', publish: true },
                 ],
                 edges: [{ from: 'review', to: 'ship', when: 'succeeded' }],

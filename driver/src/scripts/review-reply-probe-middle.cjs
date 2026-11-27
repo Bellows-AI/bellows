@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * The github-review-reconcile block's reply adapter — MIDDLE half, run between the
+ * The review-reconcile block's reply adapter — MIDDLE half, run between the
  * embedded review-collect.cjs and review-reply.cjs (driver/src/review/review-helpers.ts assembles the
  * five pieces — review-collect-probe-prelude.cjs, review-collect.cjs, this file,
  * review-reply.cjs, review-reply-probe-postlude.cjs — at driver load time). The `reply` node

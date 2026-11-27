@@ -24,7 +24,7 @@ const node = (name: string, overrides: Partial<WorkflowNode> = {}): WorkflowNode
 });
 
 /** A snapshot with one block's four internal nodes (collect/wait/repair/reply), `wait` carrying
- *  the runtime boundary — the exact shape github-review-reconcile.ts's expand() produces. */
+ *  the runtime boundary — the exact shape review-reconcile.ts's expand() produces. */
 const SNAPSHOT: WorkflowDefinition = {
     entry: 'review--collect',
     params: [],
@@ -33,7 +33,7 @@ const SNAPSHOT: WorkflowDefinition = {
             helperPlans: [{ helperId: 'review-collect-probe', phase: 'pre', githubWriting: true }],
         }),
         node('review--wait', {
-            runtime: { runtime: 'pr-delivery-wait', block: 'builtin/github-review-reconcile', params: {} },
+            runtime: { runtime: 'pr-delivery-wait', block: 'builtin/review-reconcile', params: {} },
             helperPlans: [{ helperId: 'review-collect-probe', phase: 'pre', githubWriting: true }],
         }),
         node('review--repair'),
@@ -151,7 +151,7 @@ describe('settleBlockWaits', () => {
             nodes: [
                 ...SNAPSHOT.nodes,
                 node('other--wait', {
-                    runtime: { runtime: 'pr-delivery-wait', block: 'builtin/github-review-reconcile', params: {} },
+                    runtime: { runtime: 'pr-delivery-wait', block: 'builtin/review-reconcile', params: {} },
                 }),
             ],
             edges: [],

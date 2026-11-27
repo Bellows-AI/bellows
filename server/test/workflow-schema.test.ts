@@ -20,7 +20,7 @@ const agent = (name: string, extra: Record<string, unknown> = {}) => ({
 const block = (name: string, extra: Record<string, unknown> = {}) => ({
     name,
     kind: 'block' as const,
-    uses: 'builtin/github-review-reconcile',
+    uses: 'builtin/review-reconcile',
     ...extra,
 });
 
@@ -62,7 +62,7 @@ describe('validateDefinition — block nodes', () => {
         expect(
             validateDefinition({
                 entry: 'a',
-                nodes: [agent('a', { uses: 'builtin/github-review-reconcile', publish: true })],
+                nodes: [agent('a', { uses: 'builtin/review-reconcile', publish: true })],
                 edges: [],
             })
         ).toMatchObject({ ok: false, refusal: { code: 'UNKNOWN_KEY' } });

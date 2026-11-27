@@ -3,7 +3,7 @@ import { nextTransition, type EngineRow } from '../src/db/workflows/workflow-eng
 import { validateDefinition } from '../src/db/workflows/workflow-schema-validate.js';
 import type { AuthoredWorkflowDefinition, WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { BLOCK_REGISTRY, compileDefinition } from '../src/db/workflows/workflow-blocks/index.js';
-import { REVIEW_MARKERS } from '../src/db/workflows/workflow-blocks/github-review-reconcile.js';
+import { REVIEW_MARKERS } from '../src/db/workflows/workflow-blocks/review-reconcile.js';
 
 /** Edges fire on the run's own verdict, never on a failed run's marker or a dead service. */
 const failedGate = (output: string): EngineRow['gates'] => [{ name: 'test', status: 'failed', exitCode: 1, output }];
@@ -23,7 +23,7 @@ function compileDefaultWorkflow(selection: { review: boolean; merge: boolean }):
         authored.nodes.push({
             name: 'review-reconciliation',
             kind: 'block',
-            uses: 'builtin/github-review-reconcile',
+            uses: 'builtin/review-reconcile',
             with: { maxRounds: 3 },
         });
         authored.edges.push({ from: DEFAULT_ENTRY_NODE, to: 'review-reconciliation', when: 'succeeded' });

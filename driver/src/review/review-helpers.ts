@@ -3,7 +3,7 @@ import { reviewCollectScript, reviewReplyScript } from './review.js';
 import type { HelperDescriptor } from '../helpers.js';
 
 /**
- * The `builtin/github-review-reconcile` block's two driver-side helpers, additive to
+ * The `builtin/review-reconcile` block's two driver-side helpers, additive to
  * issue #207's transport exactly the way issue #122 registered `merge-conflict-probe` — neither
  * transport (`docker-runner.ts`, `k8s-helper-runner.ts`) changes for this file.
  *
