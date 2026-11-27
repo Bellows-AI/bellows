@@ -28,6 +28,7 @@ FROM mirror.gcr.io/library/node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e2
 # because it is large. Byte-identical to the same layer in docker/claude-executor/Dockerfile,
 # deliberately — see the acli/gh note below.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ca-certificates curl git poppler-utils procps python3 \
     && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale
 
