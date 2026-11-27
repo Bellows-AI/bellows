@@ -8,7 +8,7 @@ import {
     type PrOperationWrite,
 } from '../../db/jobs/job-store-pr-operations.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { bad, guard, repoReason } from '../helpers.js';
+import { bad, guard, reportedRepoReason } from '../helpers.js';
 import { changeRequestProblem, refuseOffTaskChangeRequest } from './change-request-check.js';
 import { isBranchField } from './job-field-validation.js';
 import { CONTROL_BODY_LIMIT, HTTP_OK, INT4_MAX, leaseLost, notFoundJob } from './job-limits.js';
@@ -26,7 +26,7 @@ function validateOperation(
     if (!PR_OPERATIONS.includes(operation as PrOperationKind)) {
         return { ok: false, code: malformed, message: `operation must be one of ${PR_OPERATIONS.join(', ')}` };
     }
-    if (typeof repo !== 'string' || repoReason(repo) !== null)
+    if (typeof repo !== 'string' || reportedRepoReason(repo) !== null)
         return { ok: false, code: malformed, message: 'repo must be an owner/name' };
     if (!Number.isInteger(prNumber) || (prNumber as number) < 1 || (prNumber as number) > INT4_MAX) {
         return { ok: false, code: malformed, message: `prNumber must be an integer 1..${INT4_MAX}` };

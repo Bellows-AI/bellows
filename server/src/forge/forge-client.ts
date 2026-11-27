@@ -6,8 +6,10 @@ import type { MergeResult } from '../github/pr-merge.js';
 import type { BranchState } from '../github/pr-read.js';
 import type { OpenedPullRequest, PrCreate, PrEdit, PrWriter, PullRequestFacts } from '../github/pr-write.js';
 import type { RepoSkillRead } from '../github/skill-read.js';
-import { isGithubRepo } from './forges.js';
+import type { GitlabApi } from '../gitlab/gitlab-api.js';
+import { isGithubRepo, isGitlabRepo } from './forges.js';
 import { createGitHubForgeClient } from './github-client.js';
+import { createGitLabForgeClient } from './gitlab-client.js';
 
 /**
  * The forge boundary (docs/repos.md): every board-side read and write of a repository's forge goes through a
@@ -66,9 +68,11 @@ export interface ForgeSource {
         /** The change-request writer, over whichever API the board is configured for. */
         readonly writer?: PrWriter | undefined;
     };
+    /** What a GitLab change request is written through: the board's client and the connection's CA bundle. */
+    readonly gitlab?: { readonly api: GitlabApi; readonly caBundle: string | undefined };
 }
 
-/** The ref names a forge or host no client answers for yet (GitLab until its client lands). */
+/** The ref names a forge or host no client answers for (GitLab reads, and GitLab with no token to act as). */
 export const FORGE_UNSUPPORTED = 'unsupported';
 /** The forge is supported but the board holds nothing to reach it with here (offline, no installation, no API). */
 export const FORGE_UNCONFIGURED = 'unconfigured';
@@ -102,6 +106,9 @@ export function writeGap(
     source: ForgeSource | undefined,
     ref: RepoRef
 ): Extract<ForgeResolution, { ok: false }> | null {
+    if (isGitlabRepo(ref)) {
+        return source?.gitlab === undefined ? { ok: false, reason: FORGE_UNCONFIGURED, forge: ref.forge } : null;
+    }
     if (!isGithubRepo(ref)) return { ok: false, reason: FORGE_UNSUPPORTED, forge: ref.forge, host: ref.host };
     return source?.github?.writer === undefined ? { ok: false, reason: FORGE_UNCONFIGURED, forge: ref.forge } : null;
 }
@@ -131,6 +138,13 @@ export function resolveForgeClient(
     ref: RepoRef,
     credential: ActingCredential
 ): ForgeResolution {
+    if (isGitlabRepo(ref)) {
+        // GitLab has no installation and the reads are not served yet: only a member's token writes.
+        if (credential.kind !== 'token')
+            return { ok: false, reason: FORGE_UNSUPPORTED, forge: ref.forge, host: ref.host };
+        if (source?.gitlab === undefined) return { ok: false, reason: FORGE_UNCONFIGURED, forge: ref.forge };
+        return { ok: true, client: createGitLabForgeClient(source.gitlab, ref, credential) };
+    }
     if (!isGithubRepo(ref)) return { ok: false, reason: FORGE_UNSUPPORTED, forge: ref.forge, host: ref.host };
     const { reads, writer } = source?.github ?? {};
     // Reads are the installation's; a token credential may serve a writer alone (offline sign-in) or the merge's reads.

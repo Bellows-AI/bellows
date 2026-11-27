@@ -331,11 +331,11 @@ function registerSecurityHeaders(app: FastifyInstance, config: AppConfig): void 
  * under the offline `github` auth.
  */
 const jobRouteDepsOf = (
-    deps: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'prWriter' | 'githubMint' | 'metrics'> & {
+    deps: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'prWriter' | 'githubMint' | 'metrics' | 'gitlabApi'> & {
         forgeGate: ForgeGate | undefined;
     }
 ): JobRouteDeps => {
-    const { config, orgs, forgeGate, memberGrants, prWriter, githubMint, metrics } = deps;
+    const { config, orgs, forgeGate, memberGrants, prWriter, githubMint, metrics, gitlabApi } = deps;
     const apiUrl =
         config.github.mode === 'app' ? config.github.apiUrl : config.auth.mode === 'github' ? config.auth.apiUrl : null;
     return {
@@ -344,6 +344,7 @@ const jobRouteDepsOf = (
         pullRequests: {
             tokens: createPrTokenSource({ memberGrants, mint: githubMint ?? orgMint(orgs) }),
             forge: { github: { writer: prWriter ?? (apiUrl === null ? undefined : createPrWriter({ apiUrl })) } },
+            gitlab: gitlabAccessOf(orgs, gitlabApi),
         },
         ...(metrics ? { claimPoll: metrics.claimPoll } : {}),
     };
@@ -491,7 +492,7 @@ export async function buildApp({
     // The board and the workflow definitions it resolves against: per-org runtimes, the routes
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
     await app.register(
-        jobRoutes(jobRouteDepsOf({ config, orgs, forgeGate, memberGrants, prWriter, githubMint, metrics }))
+        jobRoutes(jobRouteDepsOf({ config, orgs, forgeGate, memberGrants, prWriter, githubMint, metrics, gitlabApi }))
     );
     registerTitleRoute(app, orgs);
     await app.register(preflightRoutes({ orgs, forgeGate }));

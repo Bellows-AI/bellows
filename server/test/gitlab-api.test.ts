@@ -306,3 +306,42 @@ describe('createGitlabApi.projectAccess', () => {
         expect(await httpApi().projectAccess({ host: lost, token: 't', project: 'g/p' })).toEqual(inconclusive);
     });
 });
+
+describe('createGitlabApi.request', () => {
+    it('sends a PUT with its body', async () => {
+        const seen: Array<{ method: string | undefined; body: string }> = [];
+        const host = await serve((req, res) => {
+            let body = '';
+            req.on('data', (chunk) => (body += chunk));
+            req.on('end', () => {
+                seen.push({ method: req.method, body });
+                json(res, 200, { ok: true });
+            });
+        });
+        const answer = await httpApi().request({
+            host,
+            path: '/api/v4/x',
+            method: 'PUT',
+            body: '{"target_branch":"main"}',
+            headers: { 'content-type': 'application/json' },
+        });
+        expect(answer).toMatchObject({ ok: true, status: 200 });
+        expect(seen).toEqual([{ method: 'PUT', body: '{"target_branch":"main"}' }]);
+    });
+
+    it('settles promptly, as unreachable and possibly sent, when the socket dies mid-body', async () => {
+        const host = await serve((_req, res) => {
+            res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000' });
+            res.write('{"partial":');
+            setTimeout(() => res.destroy(), 20);
+        });
+        const slow = createGitlabApi({ baseUrl: (h) => `http://${h}`, probeTimeoutMs: 5000 });
+        const started = Date.now();
+        expect(await slow.request({ host, path: '/api/v4/x' })).toEqual({
+            ok: false,
+            reason: 'unreachable',
+            sent: true,
+        });
+        expect(Date.now() - started).toBeLessThan(2000);
+    });
+});

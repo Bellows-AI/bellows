@@ -1,4 +1,4 @@
-import { ERROR_CODES, parseChangeRequestUrl } from '@factory-ai/core';
+import { ERROR_CODES, parseChangeRequestUrl, sameRepo } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { JobStore } from '../../db/jobs/job-store-types.js';
 import { changeRequestOnRepo } from '../../db/jobs/job-store-publication-repo.js';
@@ -12,9 +12,8 @@ export interface ChangeRequestProblem {
 }
 
 /**
- * Checks a reported change request's url against the repo and number reported beside it. Null when it is a
- * GitHub pull url for that very repo and number; a well-formed GitLab merge request url is `FORGE_UNSUPPORTED`
- * until the GitLab client lands; anything else is `malformedCode`.
+ * Checks a reported change request's url against the repo and number reported beside it. Null when it is a pull or
+ * merge request url for that very repo (the path as the forge folds case) and number; anything else is `malformedCode`.
  */
 export function changeRequestProblem({
     field,
@@ -31,13 +30,7 @@ export function changeRequestProblem({
 }): ChangeRequestProblem | null {
     const parsed = typeof url === 'string' && url.length <= PR_URL_LIMIT ? parseChangeRequestUrl(url) : null;
     if (parsed === null) return { code: malformedCode, message: `${field} must be a pull or merge request url` };
-    if (parsed.ref.forge !== 'github') {
-        return {
-            code: ERROR_CODES.FORGE_UNSUPPORTED,
-            message: `${field} names a ${parsed.ref.forge} change request, which is not supported yet`,
-        };
-    }
-    if (parsed.ref.path.toLowerCase() !== repo.toLowerCase() || parsed.number !== number) {
+    if (!sameRepo(parsed.ref, { ...parsed.ref, path: repo }) || parsed.number !== number) {
         return { code: malformedCode, message: `${field} must name the reported repo and number` };
     }
     return null;

@@ -8,7 +8,6 @@ import { testSecretDeps } from './env-secrets-harness.js';
 import {
     type Board,
     bearer,
-    driverBearer,
     type Harness,
     HOST,
     type Org,
@@ -196,23 +195,5 @@ describe.skipIf(!enabled)('reads of a tracked GitLab repository', () => {
         expect(res.json()).toMatchObject({ code: 'CONNECTION_NOT_AUTHORIZED' });
         expect(mints).toEqual([]);
         expect(reached).toEqual([]);
-    });
-
-    it('answers the driver’s pull request write for a GitLab attempt with 503: nothing is written, none is concluded, no wait is opened', async () => {
-        const { id, claim } = await board.running(org, ref());
-        const res = await board.app.inject({
-            method: 'POST',
-            url: `/api/jobs/${id}/pull-request`,
-            headers: { ...driverBearer, 'content-type': 'application/json' },
-            payload: { leaseToken: claim.leaseToken, branch: 'task/one', base: 'main' },
-        });
-        expect(res.statusCode).toBe(UNAVAILABLE);
-        expect(res.json()).toMatchObject({ code: 'UNAVAILABLE' });
-        const [waits] = await sql<
-            { count: string }[]
-        >`select count(*) from job_integration_requirement where root_job_id = ${id}`;
-        expect(Number(waits?.count)).toBe(0);
-        expect(reached).toEqual([]);
-        expect(repositoryReads()).toEqual([]);
     });
 });

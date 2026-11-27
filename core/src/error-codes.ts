@@ -126,8 +126,6 @@ export const ERROR_CODES = {
     FORGE_ACCESS_DENIED: 'FORGE_ACCESS_DENIED',
     /** The acting member holds no live grant for the repo's forge: connect it (docs/connections.md). */
     FORGE_GRANT_REQUIRED: 'FORGE_GRANT_REQUIRED',
-    /** The change request is on a forge the board cannot act on yet (a well-formed GitLab merge request URL). */
-    FORGE_UNSUPPORTED: 'FORGE_UNSUPPORTED',
     GITHUB_UNAVAILABLE: 'GITHUB_UNAVAILABLE',
     /** The organization already has a connection to that GitLab host (docs/connections.md). */
     GITLAB_CONNECTION_EXISTS: 'GITLAB_CONNECTION_EXISTS',

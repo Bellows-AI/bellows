@@ -43,6 +43,9 @@ export const forgeOfRepo = (repo: RepoRef | null): string | null =>
 /** Whether the GitHub reader answers for this repository: GitHub on github.com, the only host it is wired to. */
 export const isGithubRepo = (repo: RepoRef): boolean => sameRepo(githubRepo(repo.path), repo);
 
+/** Whether the ref names a GitLab project, on whatever host. */
+export const isGitlabRepo = (repo: RepoRef): boolean => repo.forge === 'gitlab';
+
 /** The ref of a wire `owner/name`, the edge into the stores: GitHub's until a route carries a forge; null for none. */
 export const repoRefOf = (repo: string | null): RepoRef | null => (repo === null ? null : githubRepo(repo));
 

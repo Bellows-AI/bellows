@@ -1,7 +1,7 @@
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import type { GithubMint } from '../routes/github-credential.js';
 import type { RepoRef } from '@factory-ai/core';
-import { forgeOfRepo } from './forges.js';
+import { forgeOfRepo, isGithubRepo } from './forges.js';
 
 /**
  * The token a PR write is made with (docs/connections.md). With member grants (`AUTH_MODE=github`) it is the thread
@@ -86,6 +86,8 @@ export function createPrTokenSource(deps: {
     const { memberGrants, mint } = deps;
 
     const installationToken: PrTokenSource = async ({ orgId, repo }) => {
+        // The installation is GitHub's: another forge's path must never be minted for as a same-named GitHub repository.
+        if (!isGithubRepo(repo)) return { ok: false, answer: 'no-forge' };
         const minted = await mint(orgId, repo.path).catch(() => undefined);
         if (minted === undefined) return UNAVAILABLE;
         return minted === null

@@ -190,9 +190,20 @@ if [ -n "$GL_CONNECTION" ]; then
     lane_touch "$GL_D/$RUN_ID-m1.go" || bad 'm1: the agent is released' 'the touch failed'
     expect_contains 'm1: the task succeeds' "$(gl_settled "$m1" 240)" succeeded
     m1_out="$(field "$(gl_read "$m1")" output)"
-    expect_contains 'm1: the task opened its merge request' "$m1_out" '/-/merge_requests/'
 
     gl_sum="$(gl_summary "$gl_calls0")"
+    # The board opens the MR as the member (no glab in the runner): the fake saw the create made by the member's own holder.
+    # The job output's `/-/merge_requests/` is also git's push hint, so it proves nothing here.
+    gl_mr="$(printf '%s\n' "$gl_sum" | sed -n 's/^mr //p')"
+    case "$gl_mr" in
+    "POST:201:$GL_LOGIN") ok "m1: the board opened the merge request as the member" ;;
+    *) bad "m1: the board opened the merge request as the member" "mr writes (method:status:holder): $gl_mr" ;;
+    esac
+    gl_pr_url="$(gl_psql "select pr_url from job_pr where root_job_id = '$m1'")"
+    case "$gl_pr_url" in
+    */"$GL_PROJECT"/-/merge_requests/[0-9]*) ok 'm1: the recorded publication is that merge request' ;;
+    *) bad 'm1: the recorded publication is that merge request' "pr_url: $gl_pr_url" ;;
+    esac
     gl_tokens="$(printf '%s\n' "$gl_sum" | sed -n 's/^git //p')"
     gl_authed="$(printf '%s\n' "$gl_tokens" | grep ':200:' || true)"
     [ -n "$gl_authed" ] && ok 'm1: the git calls the GitLab answered carried a token' || bad 'm1: the git calls the GitLab answered carried a token' "git calls: $gl_tokens"
