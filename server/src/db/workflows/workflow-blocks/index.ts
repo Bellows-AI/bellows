@@ -18,14 +18,14 @@ import {
     type WorkflowDefinition,
 } from '../workflow-schema.js';
 import { validateDefinition } from '../workflow-schema-validate.js';
-import { GITHUB_REVIEW_RECONCILE } from './github-review-reconcile.js';
+import { REVIEW_RECONCILE } from './review-reconcile.js';
 import { MERGE_CONFLICT_AUTOFIX } from './merge-conflict-autofix.js';
 import { parseRuntimeParams } from './runtime-params.js';
 import { BLOCK_NAMESPACE_SEPARATOR } from './types.js';
 import type { BlockConfigField, BlockDescriptor, BlockRegistry, CompileCheck, CompileRefusal } from './types.js';
 
 export const BLOCK_REGISTRY: BlockRegistry = new Map(
-    [GITHUB_REVIEW_RECONCILE, MERGE_CONFLICT_AUTOFIX].map((descriptor) => [descriptor.id, descriptor])
+    [REVIEW_RECONCILE, MERGE_CONFLICT_AUTOFIX].map((descriptor) => [descriptor.id, descriptor])
 );
 
 /** What `GET /api/workflow-blocks` serves — catalog metadata only, never a prompt or script body. */

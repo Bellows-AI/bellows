@@ -7,7 +7,7 @@ import {
     resolveMasterPrompt,
     resolveTurnContext,
 } from '../src/db/master-prompt.js';
-import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from '../src/db/workflows/workflow-blocks/github-review-reconcile.js';
+import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from '../src/db/workflows/workflow-blocks/review-reconcile.js';
 import { PROBE_HELPER_ID } from '../src/db/workflows/workflow-blocks/merge-conflict-autofix.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { readSkillCatalog } from '../src/skills.js';
@@ -41,7 +41,7 @@ const defaultSnapshot = (options: { review?: boolean; merge?: boolean } = {}): W
             gates: false,
             prompt: 'x',
             helperPlans: [{ helperId: COLLECT_HELPER_ID, phase: 'pre', githubWriting: true }],
-            runtime: { runtime: 'pr-delivery-wait', block: 'builtin/github-review-reconcile', params: {} },
+            runtime: { runtime: 'pr-delivery-wait', block: 'builtin/review-reconcile', params: {} },
         });
         nodes.push({
             name: 'review-reconciliation--reply',

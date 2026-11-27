@@ -7,7 +7,7 @@ import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review/re
 import { cleanupTempDirs, fixture, runSource, writeFixture } from './fixtures/review-script-support.js';
 
 /**
- * End-to-end coverage of the github-review-reconcile block's two composed helper bodies (issue
+ * End-to-end coverage of the review-reconcile block's two composed helper bodies (issue
  * #133) against a stub `gh`, mirroring `review-collect-script.test.ts`'s own convention but
  * driving the ASSEMBLED body (prelude + the unmodified #201 script + postlude), never a single
  * file — the pieces are unit-testable on their own, but only the assembly proves the HELPER_INPUT
@@ -512,7 +512,7 @@ describe('the review-reply-probe helper', () => {
         // GH_HTTP_STATUS fails every gh call, including the fresh re-fetch this node always runs
         // first — proving a reply-step failure propagates as ok:false, never a marker, so the
         // block's own reply->reply retry edge (server/src/db/workflows/workflow-blocks/
-        // github-review-reconcile.ts) is what re-attempts it.
+        // review-reconcile.ts) is what re-attempts it.
         const { verdict } = await probe(REVIEW_REPLY_PROBE_ID, { GH_HTTP_STATUS: '403' });
         expect(verdict.ok).toBe(false);
     });

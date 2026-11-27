@@ -162,7 +162,7 @@ const DESCRIPTORS: readonly HelperDescriptor[] = [
         version: 1,
         outputCapBytes: MERGE_CONFLICT_PROBE_OUTPUT_CAP_BYTES,
     },
-    // The github-review-reconcile block's own helpers, registered the same additive
+    // The review-reconcile block's own helpers, registered the same additive
     // way — driver/src/review/review-helpers.ts owns their script assembly and caps.
     ...REVIEW_HELPER_DESCRIPTORS,
 ];

@@ -547,7 +547,7 @@ describe('the real, shipped registry', () => {
     it('lists both reserved ids, with a catalog-facing description and configSchema', () => {
         const catalog = blockCatalog();
         expect(catalog.map((b) => b.id).sort()).toEqual(
-            ['builtin/github-review-reconcile', 'builtin/merge-conflict-autofix'].sort()
+            ['builtin/review-reconcile', 'builtin/merge-conflict-autofix'].sort()
         );
         for (const entry of catalog) {
             expect(typeof entry.description).toBe('string');
@@ -556,11 +556,25 @@ describe('the real, shipped registry', () => {
             expect(entry).not.toHaveProperty('expand');
         }
         // Both reserved ids are real and available: merge-conflict-autofix and
-        // github-review-reconcile — each block's own compiler coverage lives in its
+        // review-reconcile — each block's own compiler coverage lives in its
         // own sibling test file (workflow-block-merge-conflict-autofix.test.ts,
-        // workflow-block-github-review-reconcile.test.ts).
-        expect(catalog.find((b) => b.id === 'builtin/github-review-reconcile')?.available).toBe(true);
+        // workflow-block-review-reconcile.test.ts).
+        expect(catalog.find((b) => b.id === 'builtin/review-reconcile')?.available).toBe(true);
         expect(catalog.find((b) => b.id === 'builtin/merge-conflict-autofix')?.available).toBe(true);
+    });
+
+    it('keeps no alias for the retired forge-named review block id', () => {
+        const authored: AuthoredWorkflowDefinition = {
+            entry: 'step',
+            params: [],
+            nodes: [{ name: 'step', kind: 'block', uses: 'builtin/github-review-reconcile' }],
+            edges: [],
+        };
+        expect(compileDefinition(authored, BLOCK_REGISTRY)).toMatchObject({
+            ok: false,
+            refusal: { code: 'UNKNOWN_BLOCK' },
+        });
+        expect(blockCatalog().map((b) => b.id)).not.toContain('builtin/github-review-reconcile');
     });
 
     it('refuses UNKNOWN_BLOCK for an id the registry never reserved', () => {

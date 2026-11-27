@@ -13,7 +13,7 @@
  */
 import { OBJECTIVE_MODE, WORKFLOW_MODE, type JobMode } from '@factory-ai/core';
 import type { ClaimHelperPlan } from './jobs/job-store-types.js';
-import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from './workflows/workflow-blocks/github-review-reconcile.js';
+import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from './workflows/workflow-blocks/review-reconcile.js';
 import { PROBE_HELPER_ID } from './workflows/workflow-blocks/merge-conflict-autofix.js';
 import { nodeOf, type WorkflowDefinition } from './workflows/workflow-schema.js';
 
