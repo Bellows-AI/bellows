@@ -139,7 +139,7 @@ export const RULES = [
     [/^driver\/src\/(input-control\.ts|task-inputs\.ts|loop\/loop-inputs\.ts|scripts\/attachment-(?:fetch|extract)\.cjs)$/, ['driver', 'pinned-skills'], 'task input and pinned skill delivery'],
     [/^scripts\/lane-skills\.mjs$/, ['pinned-skills'], 'the pinned-skills phase publisher'],
     [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish(-retry)?|loop\/loop-pr-operation|board\/board-pull-request)\.ts$/, ['driver', 'driver-kill', 'compose-driver', 'publish-member'], 'publish'],
-    [/^(server\/src\/github\/pr-write|server\/src\/forge\/pr-token|server\/src\/routes\/jobs\/job-handlers-pull-request|server\/src\/db\/jobs\/job-store-pr-write)\.ts$/, ['publish-member'], 'the board\'s PR write as the member'],
+    [/^(server\/src\/github\/pr-write|server\/src\/forge\/(pr-token|gitlab-client)|server\/src\/routes\/jobs\/(job-handlers-pull-request|pull-request-forge|change-request-check)|server\/src\/db\/jobs\/job-store-pr-write)\.ts$/, ['publish-member', 'gitlab'], 'the board\'s PR and MR write as the member'],
     [/^scripts\/publish-member-client\.mjs$/, ['publish-member', 'gitlab'], 'the member the publish-member and gitlab phases sign in'],
     [/^scripts\/gitlab-member-client\.mjs$/, ['gitlab'], 'the gitlab phase connection and link client'],
     [/^scripts\/lane-hosts\.cjs$/, ['gitlab'], 'the resolver the gitlab phase board preloads for host.docker.internal'],

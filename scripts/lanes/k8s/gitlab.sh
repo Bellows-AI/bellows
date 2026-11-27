@@ -14,6 +14,7 @@ begin_phase gitlab
 #   g3  the runner pod is deleted mid-task: the replacement restores the checkout and asks again; the task finishes with one
 #       push, still the member's, after exactly one interruption
 #   g4  the driver is deleted mid-task: the replacement takes the running agent over, which asks again; one push
+#   g5  the board, not the runner, opens the merge request as the member (the driver asks the board; no driver change)
 # Not exercised in the sandbox this lane was written in (no docker, no cluster): it runs with the project's end-of-run lanes.
 
 echo
@@ -267,6 +268,20 @@ if [ -n "$glk_connected" ]; then
         case "$(printf '%s\n' "$glk_sum4" | sed -n 's/^git //p' | grep ':200:' | grep -v ":$GLK_LOGIN\$" || true)" in
         '') ok "g4: every authenticated git call was the member's" ;;
         *) bad "g4: every authenticated git call was the member's" "$glk_sum4" ;;
+        esac
+    fi
+
+    # G5: the board, not the runner, opens the merge request, as the member; the driver is unchanged on Kubernetes.
+    glk_calls5="$(glk_line calls "$(glk_summary)")"
+    g5="$(glk_queue "factory-stub-change")"
+    if [ -z "$g5" ]; then
+        bad 'g5: the board queues the GitLab task' 'it refused the create'
+    else
+        await_brief "$g5" 'succeeded|*' "$ORPHANED_S" >/dev/null && ok 'g5: the task finishes' || bad 'g5: the task finishes' "$(job_brief "$g5")"
+        glk_mr="$(printf '%s\n' "$(glk_summary "$glk_calls5")" | sed -n 's/^mr //p')"
+        case "$glk_mr" in
+        "POST:201:$GLK_LOGIN") ok 'g5: the board opened the MR as the member' ;;
+        *) bad 'g5: the board opened the MR as the member' "mr writes (method:status:holder): $glk_mr" ;;
         esac
     fi
 fi

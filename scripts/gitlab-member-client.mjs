@@ -12,6 +12,7 @@
 //         pushes <n>                     the pushes after <skip>
 //         push <holder>|<token kind>|<author>|<author email>|<committer>   the last push after <skip>, if any
 //         git <token id>:<status>:<holder>   each git call after <skip>, in order
+//         mr <method>:<status>:<holder>      each merge request write (not a read) after <skip>, in order
 // Exit 1 and stderr on a failure.
 import { existsSync, readFileSync } from 'node:fs';
 
@@ -53,11 +54,14 @@ if (mode === 'control') {
     const last = pushes.at(-1);
     const commit = last?.refs?.[0]?.commits?.[0];
     const git = fresh.filter((call) => call.event !== 'push' && call.path?.startsWith(`/${project}.git/`));
+    const mrPath = `/api/v4/projects/${encodeURIComponent(project)}/merge_requests`;
+    const mr = fresh.filter((call) => call.method !== 'GET' && call.path?.startsWith(mrPath));
     const lines = [
         `calls ${calls.length}`,
         `pushes ${pushes.length}`,
         `push ${last ? [last.holder, last.tokenKind, commit?.author?.name, commit?.author?.email, commit?.committer?.name].join('|') : ''}`,
         ...git.map((call) => `git ${call.tokenId}:${call.status}:${call.holder}`),
+        ...mr.map((call) => `mr ${call.method}:${call.status}:${call.holder}`),
     ];
     process.stdout.write(`${lines.join('\n')}\n`);
 } else if (mode === 'connect') {
