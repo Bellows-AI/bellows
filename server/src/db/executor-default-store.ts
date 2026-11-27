@@ -226,7 +226,9 @@ export async function assertUnselected(
  * The guard an organization executor's deletion or move to personal scope runs inside its transaction. Selections naming
  * it — the organization's, and members' own except `keep`'s (the actor keeps their selection on the row they now own) —
  * refuse the write with their counts, unless `resolution` clears them or re-points them at `replaceWith`, which must be
- * an active organization executor other than the targets. Nothing is released without that explicit word.
+ * an active organization executor other than the targets. Nothing is released without that explicit word. The
+ * selections are read `for update` and written under `executor_id = target`, so a default a member switches meanwhile
+ * waits for this transaction and is never cleared or overwritten by it.
  */
 export async function resolveOrphanedSelections(
     tx: TransactionSql,
@@ -239,6 +241,7 @@ export async function resolveOrphanedSelections(
         await tx<{ id: string; owner_id: string | null }[]>`
             select id, owner_id from executor_default_selection
             where org_id = ${orgId} and executor_id = ${target.id}
+            for update
         `
     ).filter((row) => row.owner_id === null || row.owner_id !== options.keep);
     if (held.length === 0) return;
@@ -252,7 +255,12 @@ export async function resolveOrphanedSelections(
     }
     const ids = held.map((row) => row.id);
     if ('clear' in resolution) {
-        await tx`delete from executor_default_selection where org_id = ${orgId} and id in ${tx(ids)}`;
+        // The rows are locked above, and the predicate still names what they were read for: a selection moved off the
+        // target meanwhile is not this write's to clear.
+        await tx`
+            delete from executor_default_selection
+            where org_id = ${orgId} and id in ${tx(ids)} and executor_id = ${target.id}
+        `;
         return;
     }
     const [next] = await tx<{ name: string; suspended: boolean }[]>`
@@ -264,7 +272,7 @@ export async function resolveOrphanedSelections(
     if (next.suspended) throw new ExecutorSuspendedError(`The organization executor "${next.name}" is suspended`);
     await tx`
         update executor_default_selection set executor_id = ${resolution.replaceWith}, updated_at = now()
-        where org_id = ${orgId} and id in ${tx(ids)}
+        where org_id = ${orgId} and id in ${tx(ids)} and executor_id = ${target.id}
     `;
 }
 
