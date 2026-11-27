@@ -191,8 +191,8 @@ describe.skipIf(!enabled)('the claim author of a GitLab task', () => {
 
         it('reads the profile of the very row the standing approved, on an updated_at tie', async () => {
             const { login, connectionId } = await linked(named);
-            const [live] = await sql<{ id: string; updated_at: Date; forge_connection_id: string }[]>`
-                select id, updated_at, forge_connection_id from integration_grant
+            const [live] = await sql<{ id: string }[]>`
+                select id from integration_grant
                 where org_id = ${org.id} and forge_profile ->> 'username' = ${login}`;
             // An id that sorts before (or after) the live row's: uuids compare as their hex text.
             const idOn = (side: 'before' | 'after'): string => {
@@ -208,7 +208,7 @@ describe.skipIf(!enabled)('the claim author of a GitLab task', () => {
                          status, forge_profile, forge_connection_id, updated_at)
                     values (${id}, ${org.id}, 'user', ${org.memberId}, ${`gitlab:${HOST}`}, ${`rival-${id}`},
                             ${sql.json({ scopes: [] })}, 'reconnect_required',
-                            ${sql.json({ username: 'rival', name: 'Rival' })}, ${connectionId}, ${live!.updated_at})`;
+                            ${sql.json({ username: 'rival', name: 'Rival' })}, ${connectionId}, (select updated_at from integration_grant where id = ${live!.id}))`;
             };
             // The live row sorts first on the tie: its profile, and only its, is the author.
             const behind = idOn('before');
