@@ -55,7 +55,7 @@ The render refuses to start without them, and names the missing value. With `sec
 | `dashboard.topologySpreadConstraints` | `[]` | Empty uses the default spread above one replica; a list replaces it, at any replica count. |
 | `artifacts.backend` | `s3` | `s3`, `gcs` or `filesystem`. `filesystem` keeps objects in the dashboard pod's `/tmp`. One replica only, and lost with the pod. Trials only. |
 | `artifacts.retentionDays` | `''` (90) | Days a deleted skill's versions are kept on a board with no organization retention window. Refused with `deploymentMode: cloud` and together with `dashboard.planDefaults.maxRetentionDays`. See [Data retention](/guides/retention). |
-| `deploymentMode`, `platformModelProvided`, `dashboard.planDefaults.*`, `dashboard.limits.*`, `dashboard.operatorGithubIds`, `dashboard.dbConnections` | | The cloud-mode and plan values. See [Server and driver configuration](/self-host/configuration). |
+| `deploymentMode`, `platformModelProvided`, `dashboard.planDefaults.*`, `dashboard.limits.*`, `dashboard.operatorGithubIds`, `dashboard.cloudSubscriptionOrgIds`, `dashboard.dbConnections` | | The cloud-mode and plan values. See [Server and driver configuration](/self-host/configuration). |
 | `ingress.enabled` | `false` | See [Ingress and TLS](#ingress-and-tls). |
 | `taskVolume.size` | `20Gi` | Size request of each thread's volume. |
 | `taskVolume.storageClass` | `''` | Empty is the cluster default. |

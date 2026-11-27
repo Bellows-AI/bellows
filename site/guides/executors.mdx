@@ -187,7 +187,7 @@ starts if the redirect has no key of yours. Self-hosted boards accept a redirect
 </Note>
 
 <Note>
-Bellows Cloud does not accept a Claude subscription OAuth token. A configuration that sets `CLAUDE_CODE_OAUTH_TOKEN` anywhere, for example under `env`, is refused on save with `CLOUD_CREDENTIAL_REFUSED`, and a profile saved with one earlier fails its task before the agent starts. Nothing saved is deleted. Use your own Anthropic API key (`ANTHROPIC_API_KEY`) instead. Self-hosted boards accept the token as before.
+Bellows Cloud does not accept a Claude subscription OAuth token, unless the operator has enabled subscription tokens for your organization. A configuration that sets `CLAUDE_CODE_OAUTH_TOKEN` anywhere, for example under `env`, is refused on save with `CLOUD_CREDENTIAL_REFUSED`, and a profile saved with one earlier fails its task before the agent starts. Nothing saved is deleted. Use your own Anthropic API key (`ANTHROPIC_API_KEY`) instead. Self-hosted boards accept the token as before.
 </Note>
 
 ## Pick an executor for a task

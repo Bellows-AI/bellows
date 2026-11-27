@@ -72,7 +72,6 @@ export const PROVIDER_META: Readonly<Record<ModelProvider, ProviderMeta>> = {
     subscription: {
         label: 'Claude subscription',
         sub: 'Pro / Max plan token from claude setup-token. Starts with sk-ant-oat01-',
-        tag: 'self-hosted only',
         keyLabel: 'Setup token',
         placeholder: 'sk-ant-oat01-…',
         keyLink: { text: 'run claude setup-token on your machine', href: null },
