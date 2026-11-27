@@ -7,7 +7,7 @@ import { useTestDb } from './harness.js';
 import { begin, connectionsOf, grantsOf, hostOf, jiraRuntime, newTag, script } from './jira-rig.js';
 
 /**
- * A member's connections end with the membership (BEL-620): the secret retired, the label blanked, one audit row,
+ * A member's connections end with the membership: the secret retired, the label blanked, one audit row,
  * in the removal's own transaction. An org-owned or another member's connection is untouched, and a Jira
  * connection stores the site host as its label, never the account's email or name.
  */

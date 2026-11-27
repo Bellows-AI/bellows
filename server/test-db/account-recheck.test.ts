@@ -7,7 +7,7 @@ import { useTestDb } from './harness.js';
 import { begin, cloudOf, connectionsOf, grantsOf, hostOf, jiraRuntime, newTag, script } from './jira-rig.js';
 
 /**
- * The periodic re-check of what a Jira account still reaches (BEL-620), against the scripted Atlassian: a confirmed
+ * The periodic re-check of what a Jira account still reaches, against the scripted Atlassian: a confirmed
  * loss revokes the connection, every fault answer leaves it alone, and the cycle runs behind one lease.
  */
 const enabled = Boolean(process.env.DATABASE_URL);

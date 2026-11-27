@@ -16,7 +16,7 @@ import { throughSignIn } from './signin.js';
 
 const SHOTS = 'artifacts/ui';
 const SITE = 'e2e-site.atlassian.net';
-// A Jira connection stores no email or name: its account label is the site host (BEL-620).
+// A Jira connection stores no email or name: its account label is the site host.
 const ACCOUNT_A = SITE;
 
 async function withSql<T>(run: (sql: postgres.Sql) => Promise<T>): Promise<T> {

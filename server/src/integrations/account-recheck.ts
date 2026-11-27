@@ -13,7 +13,7 @@ import type { IntegrationRuntime } from './integration-recovery.js';
  * The re-check of what a connection's account still reaches at its provider (docs/connections.md, "Revocation").
  * The providers push nothing (Atlassian's 3LO apps get no lifecycle webhook), so a loop asks: on every replica,
  * behind one lease so a cycle runs on one at a time. `recheckAccounts` is the cycle and the one place a later
- * account-level check joins it (BEL-601's closed and updated accounts); `recheckSiteAccess` is its first step.
+ * account-level check joins it (a provider's closed or updated accounts); `recheckSiteAccess` is its first step.
  *
  * A confirmed loss revokes through `revokeConnectionsInTx`. A failed, timed-out, empty or malformed answer, an
  * unreadable secret and a refresh that did not answer are inconclusive: nothing changes and the next cycle retries.

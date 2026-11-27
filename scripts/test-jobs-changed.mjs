@@ -98,7 +98,7 @@ export const RULES = [
     // What server/src/main.ts starts on every board (pinned by the test from its start* imports): a loop's first pass runs
     // at boot. Integration recovery reads every integration module and the grants; commerce delivery is called and returns
     // at its COMMERCE_ENABLED check.
-    [/^server\/src\/(integrations\/|db\/connection-grants\.ts$|skills\/skill-collector\.ts$|commerce\/commerce-loop\.ts$)/, FULL, 'a loop every board starts at boot, and what it reads'],
+    [/^server\/src\/(integrations\/|db\/(connection-grants|connection-revocation|background-lease)\.ts$|skills\/skill-collector\.ts$|commerce\/commerce-loop\.ts$)/, FULL, 'a loop every board starts at boot, and what it reads'],
     [/^server\/src\/(provider-keys\/|net\/pinned-request\.ts$)/, FULL, 'the provider key check server/src/main.ts builds on every board'],
     [/^server\/src\/oauth\/(rate-limit|special-use-address)\.ts$/, FULL, 'the rate limiter every request passes'],
     [/^server\/src\/attachments\/(attachment-collector|attachment-store|attachment-rows)\.ts$/, FULL, 'the attachment sweep every board runs over the shared object store'],

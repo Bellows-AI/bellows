@@ -9,7 +9,7 @@ import { revokeGrantIfOrphaned } from './connection-grants.js';
  * (credential and stored label gone), writes one `connection.revoke` audit row each, and revokes every grant left
  * with no active connection, so the secret is destroyed by the next recovery pass (`integration-recovery.ts`).
  * The membership removal (`auth/member-removal.ts`) and the site access re-check (`integrations/site-access.ts`)
- * both call it; BEL-601's account reports are meant to as well.
+ * both call it; a later account-report check is meant to as well.
  *
  * Lock order is the one of `connection-bindings.ts`: member rows, then the grant, then the connection. No thread
  * root is locked: a binding that lands on a connection revoked meanwhile is refused at use like any disconnected one.
