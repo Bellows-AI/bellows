@@ -1825,8 +1825,9 @@ async function runCall(run, entry, step) {
 }
 
 /**
- * A gate or review step's output with its injected GitHub token values replaced: the command may echo them,
- * and what the ledger keeps and the driver is answered must never hold one. The one choke point of both executors.
+ * A gate or review step's result with its injected GitHub token values replaced in every text it carries —
+ * stdout, stderr, the failure lines and the report — since the command may echo them, and what the ledger
+ * keeps and the driver is answered must never hold one. The one choke point of both executors.
  * @param {Step} step
  * @param {StepResult} result
  * @param {string[]} [served]
@@ -1839,8 +1840,18 @@ function redactedResult(step, result, served = []) {
     );
     if (secrets.length === 0) return result;
     /** @param {string} text */
-    const redact = (text) => secrets.reduce((kept, secret) => kept.split(secret).join('[redacted]'), text);
-    return { ...result, stdout: redact(result.stdout), stderr: redact(result.stderr) };
+    const redactText = (text) => secrets.reduce((kept, secret) => kept.split(secret).join('[redacted]'), text);
+    /** @param {unknown} value @returns {unknown} */
+    const redact = (value) => {
+        if (typeof value === 'string') return redactText(value);
+        if (Array.isArray(value)) return value.map(redact);
+        if (value !== null && typeof value === 'object') {
+            // A report is any JSON the gate wrote: its keys are text it chose too.
+            return Object.fromEntries(Object.entries(value).map(([key, inner]) => [redactText(key), redact(inner)]));
+        }
+        return value;
+    };
+    return /** @type {StepResult} */ (redact(result));
 }
 
 /**

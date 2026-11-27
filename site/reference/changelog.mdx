@@ -5,6 +5,21 @@ description: "What changed in each Bellows release, in plain words."
 
 User-facing changes only. Self-hosting upgrade notes live in the release notes on [GitHub](https://github.com/Bellows-AI/bellows/releases).
 
+<Update label="v0.1.8" description="2026-11-26">
+  **New**
+  - **Guided executor setup.** **Add executor** walks you through connecting a provider — Anthropic, OpenRouter, OpenAI, LiteLLM, or for OpenCode any OpenAI-compatible endpoint such as vLLM or a gateway. A pasted key goes to the secret store, and an OpenAI-compatible key can name a secret from **Settings → Environment** instead, so rotating it needs no edit. See [Executors](/guides/executors).
+
+  **Improved**
+  - Longer default limits: a gate without its own `timeout` gets 20 minutes (was 10), and a run is capped at 8 hours (was 2). A gate the agent runs itself while it works is still capped at 10 minutes. See [Limits](/reference/limits).
+  - Follow-ups and `factory-gate <name> --last` keep the failing test names, the summary and the last lines of a long gate output. See [Gates](/guides/gates).
+
+  **Fixed**
+  - A gate's report never carries the task's GitHub token, in its output, failure lines or recorded result.
+  - Many gates failing at once no longer leave the **Verification** panel showing stale gate states.
+  - **timed out at** shows only for a gate stopped at its deadline, not for one that failed close to it.
+  - An archived task no longer shows the follow-up box or **Ask for another pass**. See [Run tasks](/guides/run-tasks).
+</Update>
+
 <Update label="v0.1.7" description="2026-11-25">
   **New**
   - **Archive replaces remove.** An archived task leaves the task list but keeps its thread, logs, PR links and attachments readable under **Archived**. **Unarchive task** brings it back. See [Run tasks](/guides/run-tasks).

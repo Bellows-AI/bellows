@@ -296,7 +296,7 @@ const runRegisteredGate = async (
         try {
             const outcome = await manager.runGate(claim.key, gate.name, gate.command, {
                 signal,
-                timeoutMs: declaredTimeoutMs(gate),
+                timeoutMs: declaredTimeoutMs(gate) ?? AD_HOC_MAX_MINUTES * MS_PER_MINUTE,
                 filter,
                 execution: record?.execution,
             });

@@ -185,6 +185,7 @@ describe('the supervised gate manager: one gate as a step', () => {
         await manager.acquire(KEY, 'node:24', '', { job: JOB });
         expect(await manager.runGate(KEY, 'test', 'npm test')).toEqual({
             exitCode: 124,
+            timedOut: true,
             output: '[driver] gate killed after 30000ms',
         });
     });
@@ -610,7 +611,9 @@ describe('the gate server', () => {
         await server.close();
     });
 
-    it("passes a declared gate's timeout to the manager in ms", async () => {
+    // The agent's shell tool gives up on one command at 10 minutes, so a gate that declares no
+    // timeout runs ad hoc to that cap, not to the longer end-of-run default.
+    it("passes a declared gate's timeout to the manager in ms, and the ad-hoc cap for one that declares none", async () => {
         const seen: (number | undefined)[] = [];
         const manager = {
             acquire: async () => {},
@@ -622,14 +625,14 @@ describe('the gate server', () => {
         const { server, run } = await serveGates(manager, {
             gates: [
                 { name: 'test', command: 'npm test' },
-                { name: 'ui', command: 'npm run verify:ui', timeoutMinutes: 10 },
+                { name: 'ui', command: 'npm run verify:ui', timeoutMinutes: 5 },
             ],
         });
         for (const gate of ['test', 'ui']) {
             const response = await run(gate);
             expect(response.status).toBe(OK_STATUS);
         }
-        expect(seen).toEqual([undefined, 600_000]);
+        expect(seen).toEqual([600_000, 300_000]);
         await server.close();
     });
 

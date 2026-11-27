@@ -417,12 +417,12 @@ driver:
     # both; the driver refuses a lowered floor the lease cannot hold (lease >= orphan + lease / 3).
     orphanMinMs: '30000'
     stepWaitMs: '15000'
-    jobTimeoutMs: '7200000'
+    jobTimeoutMs: '28800000'
     # The wall-clock cap on ONE gate run — the gate Job's activeDeadlineSeconds. A gate that
     # outlives it fails with exit 124. A declared gate that installs dependencies into a fresh
-    # worktree before running a whole suite needs more than the ten-minute default. A gate's own
+    # worktree before running a whole suite needs more than ten minutes, so the default is twenty. A gate's own
     # `.bellows.yaml` `timeout:` overrides this one, capped by jobTimeoutMs.
-    gateTimeoutMs: '600000'
+    gateTimeoutMs: '1200000'
     # The orphan reaper: how often the driver sweeps service objects whose owning
     # job can no longer use them (DRIVER_REAP_INTERVAL_MS), and how old an object must be before
     # the sweep may act on it (DRIVER_REAP_GRACE_MS). '0' on the interval disables the reaper —
@@ -463,7 +463,7 @@ driver:
     # services — so Karpenter consolidation and cluster-autoscaler scale-down leave a running job
     # alone, instead of evicting it mid-run for the work to be redone silently under
     # a higher `attempts`. Empty is off, and off is deliberate: an undisruptable pod pins its node
-    # for as long as the run lasts — up to jobTimeoutMs, two hours by default — so an operator
+    # for as long as the run lasts — up to jobTimeoutMs, eight hours by default — so an operator
     # running only on-demand nodes may not want it. It does not stop an explicit `kubectl drain`.
     runnerDoNotDisrupt: ''
     resources:

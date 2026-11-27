@@ -203,8 +203,8 @@ The driver reads only the environment. It has no database access and talks to th
 | `DRIVER_CONCURRENCY` | | `2` | Tasks this driver runs at once. `1` to `32`. |
 | `DRIVER_POLL_MS` | | `5000` | Poll interval. `250` to `300000`. |
 | `DRIVER_LEASE_SECONDS` | | `300` | Lease length per claim. `10` to `3600`. |
-| `DRIVER_JOB_TIMEOUT_MS` | | `7200000` (2 hours) | Wall-clock cap per run. `1000` ms to 24 hours. |
-| `GATE_TIMEOUT_MS` | | `600000` (10 minutes) | Cap on one gate run. A timeout fails the gate with exit 124. `1000` ms to 24 hours. |
+| `DRIVER_JOB_TIMEOUT_MS` | | `28800000` (8 hours) | Wall-clock cap per run. `1000` ms to 24 hours. |
+| `GATE_TIMEOUT_MS` | | `1200000` (20 minutes) | Cap on one gate run. A timeout fails the gate with exit 124. `1000` ms to 24 hours. |
 | `DRIVER_HANDOVER_MS` | | `0` | How long a stopping driver lets runs finish before handing them back to the board. `0` hands them back at once, which a spot node's two-minute notice needs. Compose sets `5000`. |
 | `DRIVER_REBIND_GRACE_MS` | | `240000` (4 min) | Wait past the lease for a new holder to take over a released group. `1000` ms to 24 hours. |
 | `DRIVER_ORPHAN_MIN_MS` | | `30000` | Floor of a lost driver's orphan bound. `1000` to `90000` ms. Refused if the lease cannot hold it. |

@@ -77,8 +77,10 @@ describe.skipIf(!enabled)('a follow-up after a gate-failed run — database', ()
 
         const { command } = await claimFollowUp(parent, 'fix tests');
 
-        expect(command).toContain('x'.repeat(INTERP_TAIL_LIMIT) + TRUNCATION_MARKER);
-        expect(command).not.toContain('x'.repeat(INTERP_TAIL_LIMIT + 1));
+        // An output that names no failure keeps its end, marked where its start was cut.
+        const marker = `${TRUNCATION_MARKER.trimStart()}\n`;
+        expect(command).toContain(marker + 'x'.repeat(INTERP_TAIL_LIMIT - marker.length));
+        expect(command).not.toContain('x'.repeat(INTERP_TAIL_LIMIT - marker.length + 1));
     });
 
     it('adds nothing when every gate passed', async () => {

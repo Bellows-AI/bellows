@@ -22,7 +22,7 @@ description: "Quick answers to common questions, and a symptom-to-fix guide for 
     Connect it under **Settings → Model**, which checks the key and saves it as a secret together with your default agent and model. You can also store a key yourself as a [secret](/guides/env-and-secrets) under **Settings → Workspace** (only your runs) or **Settings → Organization** (everyone). It is injected into the runner's environment. Keep keys out of the executor's configuration JSON.
   </Accordion>
   <Accordion title="How long can a run take, and what does it cost?">
-    Each gate has a `timeout` of 1 to 120 minutes (default 10). The driver also caps a whole run. Its default is 2 hours and a self-hosted admin can change it. A run that hits the cap fails as `timed out`. Bellows records token usage per run: see `bellows job activity <id>`. This page cannot state a price.
+    Each gate has a `timeout` of 1 to 120 minutes (default 20). The driver also caps a whole run. Its default is 8 hours and a self-hosted admin can change it. A run that hits the cap fails as `timed out`. Bellows records token usage per run: see `bellows job activity <id>`. This page cannot state a price.
   </Accordion>
   <Accordion title="Which languages and frameworks does it support?">
     Any. The agent works inside the Docker image you name in `.bellows.yaml`, so use an image with your toolchain, for example `golang:1.25`. See [Configure your repo](/guides/configure-repo).

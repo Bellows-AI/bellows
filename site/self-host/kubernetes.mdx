@@ -62,8 +62,8 @@ The render refuses to start without them, and names the missing value. With `sec
 | `taskVolume.accessMode` | `ReadWriteOncePod` | Use `ReadWriteOnce` if your provisioner lacks it (kind's local-path). |
 | `taskVolume.ttlMs` | `'86400000'` | A thread's volumes are deleted this long after its last attempt, when nothing is pending. |
 | `driver.concurrency` | `'2'` | Tasks one driver runs at once. |
-| `driver.jobTimeoutMs` | `'7200000'` | Wall-clock cap on one run. |
-| `driver.gateTimeoutMs` | `'600000'` | Cap on one gate run. A gate's own `timeout:` in `.bellows.yaml` overrides it. |
+| `driver.jobTimeoutMs` | `'28800000'` | Wall-clock cap on one run. |
+| `driver.gateTimeoutMs` | `'1200000'` | Cap on one gate run. A gate's own `timeout:` in `.bellows.yaml` overrides it. |
 | `driver.runnerDoNotDisrupt` | `''` | Set to keep autoscalers from evicting a running task. It pins the node for the whole run. |
 | `dashboard.admission.maxRunning`, `maxRunningPerOrg`, `maxRunningPerRepo` | `''` | Cluster-wide caps on running tasks. Empty is unlimited. |
 | `mcp.enabled` | `false` | Turns on the MCP endpoint. Needs an `https` `auth.publicUrl`. See [Connect an MCP client](/mcp/connect). |

@@ -231,8 +231,8 @@ services:
             DRIVER_CONCURRENCY: ${DRIVER_CONCURRENCY:-2}
             DRIVER_POLL_MS: ${DRIVER_POLL_MS:-5000}
             DRIVER_LEASE_SECONDS: ${DRIVER_LEASE_SECONDS:-300}
-            DRIVER_JOB_TIMEOUT_MS: ${DRIVER_JOB_TIMEOUT_MS:-7200000}
-            GATE_TIMEOUT_MS: ${GATE_TIMEOUT_MS:-600000}
+            DRIVER_JOB_TIMEOUT_MS: ${DRIVER_JOB_TIMEOUT_MS:-28800000}
+            GATE_TIMEOUT_MS: ${GATE_TIMEOUT_MS:-1200000}
             # The orphan reaper: the periodic sweep of service objects whose owning
             # job is terminal, unknown to the board, or running under another lease. Interval 0
             # disables it; the grace keeps a fleet created moments before its verdict from being

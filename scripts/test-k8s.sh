@@ -461,7 +461,7 @@ expect_contains 'the gate listener binds all interfaces' "$(cat "$work/rendered.
 
 # Numbers arrive as integers, not whatever helm's float stringifier felt like — a `1.8e+06` here
 # would be refused by the driver's own integer check at boot.
-render | grep 'value: "7200000"' >/dev/null && ok 'the job timeout renders as an integer' ||
+render | grep 'value: "28800000"' >/dev/null && ok 'the job timeout renders as an integer' ||
     bad 'the job timeout renders as an integer' "$(render | grep -A1 DRIVER_JOB_TIMEOUT_MS)"
 render | grep -A1 'name: GATE_TIMEOUT_MS' | grep 'value: "1800000"' >/dev/null && ok 'the gate timeout renders as an integer' ||
     bad 'the gate timeout renders as an integer' "$(render | grep -A1 GATE_TIMEOUT_MS)"
