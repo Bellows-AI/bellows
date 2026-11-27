@@ -44,10 +44,15 @@ export function ModelSetup({
     const setup = useModelSetup();
     const ids = useId();
     const [mode, setMode] = useState<Mode>('banner');
-    const form = useKeyForm(session, setup, onSaved);
+    // A save of a new connection or a new key is done: the banner of what is now saved comes back.
+    const savedToBanner = async () => {
+        setMode('banner');
+        await onSaved();
+    };
+    const form = useKeyForm(session, setup, savedToBanner);
     const configured = useConfigured({ session, view: setup.data, setup, onSaved, saveExisting });
     const view = setup.data;
-    const rotate = useRotate(session, setup, onSaved, view?.selected);
+    const rotate = useRotate(session, setup, savedToBanner, view?.selected);
     const banner = mode !== 'banner' || !view ? null : bannerOf(view);
 
     let body: ReactNode;

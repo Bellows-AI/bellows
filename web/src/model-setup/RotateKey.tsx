@@ -27,7 +27,10 @@ export function useRotate(
         baseUrl: connection?.baseUrl ?? '',
         mode: session?.deploymentMode ?? SELF_HOSTED,
     });
-    const save = useSaveRun(setup, onSaved);
+    const save = useSaveRun(setup, async () => {
+        setKey('');
+        await onSaved();
+    });
     return {
         connection,
         key,
