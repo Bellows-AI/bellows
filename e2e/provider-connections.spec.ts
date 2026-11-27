@@ -81,14 +81,26 @@ async function addExecutor(page: Page, input: { name: string; agent: string; con
     await expect(dialog).toHaveCount(0);
 }
 
-async function selectedConnection(page: Page, executor: string): Promise<string> {
+/** The executor's dialog shows `expected` as its selected connection, once the connection list has loaded. */
+async function expectSelectedConnection(page: Page, executor: string, expected: string): Promise<void> {
     const dialog = await openExecutorDialog(page, executor);
     const select = dialog.getByLabel('Provider connection', { exact: true });
     await expect(select).not.toHaveValue('');
-    const label = await select.locator('option:checked').innerText();
+    // Until the list arrives the stored id renders as "Selected connection (not listed)": wait for the real label.
+    await expect(select.locator('option:checked')).toHaveText(expected);
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).toHaveCount(0);
-    return label;
+}
+
+/**
+ * Opens a connection row's menu and picks `action`. The menu always opens below its trigger (web/src/anchor.ts) and a
+ * click scrolls the trigger only to the viewport's edge, leaving the menu no room: the row comes to the middle first.
+ */
+async function chooseRowAction(page: Page, connection: string, action: string) {
+    const trigger = page.getByRole('button', { name: `Actions for ${connection}` });
+    await trigger.evaluate((element) => element.scrollIntoView({ block: 'center' }));
+    await trigger.click();
+    await page.getByRole('menu').getByRole('menuitem', { name: action }).click();
 }
 
 /** Removes the spec's executors and then its connections, through the routes. */
@@ -159,15 +171,14 @@ test('two providers, two executors and a shared connection switch independently 
         // Reload: the references are what the board stored.
         await page.reload();
         await expect(page.getByRole('region', { name: 'Executors' })).toBeVisible();
-        expect(await selectedConnection(page, EXECUTORS.claude)).toBe(TEAM_OPTION);
-        expect(await selectedConnection(page, EXECUTORS.open)).toBe(OPENAI_OPTION);
-        expect(await selectedConnection(page, EXECUTORS.shared)).toBe(OPENAI_OPTION);
+        await expectSelectedConnection(page, EXECUTORS.claude, TEAM_OPTION);
+        await expectSelectedConnection(page, EXECUTORS.open, OPENAI_OPTION);
+        await expectSelectedConnection(page, EXECUTORS.shared, OPENAI_OPTION);
         await page.screenshot({ path: `${SHOTS}/settings-executors-connections.png`, fullPage: true });
 
         // Rotation says what happened, and the executors still reference the connection by name.
         await page.goto('/settings/model');
-        await page.getByRole('button', { name: `Actions for ${TEAM}` }).click();
-        await page.getByRole('menu').getByRole('menuitem', { name: 'Replace key' }).click();
+        await chooseRowAction(page, TEAM, 'Replace key');
         const rotate = page.getByRole('dialog', { name: 'Replace key' });
         await rotate.getByLabel('API key').fill('sk-ant-api03-e2e-rotated');
         await expect(rotate.getByRole('status', { name: 'Key check' })).toContainText('2 models available');
@@ -177,8 +188,7 @@ test('two providers, two executors and a shared connection switch independently 
         await page.screenshot({ path: `${SHOTS}/settings-model-connection-rotated.png`, fullPage: true });
 
         // Removal is refused while executors select it, naming them.
-        await page.getByRole('button', { name: `Actions for ${TEAM}` }).click();
-        await page.getByRole('menu').getByRole('menuitem', { name: 'Remove' }).click();
+        await chooseRowAction(page, TEAM, 'Remove');
         await page.getByRole('dialog').getByRole('button', { name: 'Remove connection' }).click();
         await expect(page.getByText(new RegExp(`“${TEAM}” is still used by .*${EXECUTORS.claude}`))).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/settings-model-connection-in-use.png`, fullPage: true });

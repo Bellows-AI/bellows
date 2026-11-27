@@ -1,5 +1,5 @@
 import { CLAUDE_CODE } from '@factory-ai/core';
-import { expect, type Locator, type Page } from '@playwright/test';
+import { type APIResponse, expect, type Locator, type Page } from '@playwright/test';
 import { ADD_LABEL } from '../web/src/workspace/executors.js';
 import { queuedThread } from './fixtures/threads.js';
 
@@ -72,7 +72,14 @@ export async function trackRepos(page: Page, repos: { owner: string; name: strin
  */
 export async function withExecutor(page: Page): Promise<void> {
     await page.route('**/api/workspace', async (route) => {
-        const response = await route.fetch();
+        let response: APIResponse;
+        try {
+            response = await route.fetch();
+        } catch (error) {
+            // A refetch still in flight when the test ends has no page left to answer; anything else is a failure.
+            if (/Test ended|has been closed/.test(String(error))) return;
+            throw error;
+        }
         const body = (await response.json()) as Record<string, unknown>;
         await route.fulfill({
             response,
@@ -128,7 +135,14 @@ export async function mockExecutors(
     const held = { executors: initial };
     if (repos.length > 0) await trackRepos(page, repos);
     await page.route('**/api/workspace', async (route) => {
-        const response = await route.fetch();
+        let response: APIResponse;
+        try {
+            response = await route.fetch();
+        } catch (error) {
+            // A refetch still in flight when the test ends has no page left to answer; anything else is a failure.
+            if (/Test ended|has been closed/.test(String(error))) return;
+            throw error;
+        }
         const body = (await response.json()) as Record<string, unknown>;
         const executors = held.executors.map(({ config: _config, ...row }) => row);
         await route.fulfill({
