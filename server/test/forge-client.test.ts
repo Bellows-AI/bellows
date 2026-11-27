@@ -6,6 +6,7 @@ import {
     FORGE_UNSUPPORTED,
     INSTALLATION_CREDENTIAL,
     resolveForgeClient,
+    writeGap,
     type ForgeClient,
     type ForgeSource,
 } from '../src/forge/forge-client.js';
@@ -14,6 +15,7 @@ import type { InstallationTokenProvider } from '../src/github/app-token.js';
 import { GitHubMergeError } from '../src/github/pr-merge.js';
 import { GitHubReadError } from '../src/github/pr-read.js';
 import { createPrWriter, GitHubWriteError } from '../src/github/pr-write.js';
+import type { GitlabApi } from '../src/gitlab/gitlab-api.js';
 import { type FakeGithub, startFakeGithub } from '../test-db/fake-github.js';
 
 const API = 'https://api.github.test';
@@ -115,6 +117,21 @@ describe('resolveForgeClient', () => {
             reason: FORGE_UNSUPPORTED,
         });
         expect(requests).toEqual([]);
+    });
+
+    it('resolves a GitLab ref for a token credential only, and writes it only with the GitLab source', () => {
+        const gitlab = { api: {} as GitlabApi, caBundle: undefined };
+        const token = { kind: 'token', token: MEMBER_TOKEN } as const;
+        const client = resolveForgeClient({ gitlab }, GITLAB_REF, token);
+        expect(client).toMatchObject({ ok: true, client: { forge: 'gitlab' } });
+        expect(resolveForgeClient({ gitlab }, GITLAB_REF, INSTALLATION_CREDENTIAL)).toMatchObject({
+            ok: false,
+            reason: FORGE_UNSUPPORTED,
+        });
+        expect(resolveForgeClient({}, GITLAB_REF, token)).toMatchObject({ ok: false, reason: FORGE_UNCONFIGURED });
+        expect(writeGap({ gitlab }, GITLAB_REF)).toBeNull();
+        expect(writeGap({}, GITLAB_REF)).toMatchObject({ reason: FORGE_UNCONFIGURED });
+        expect(writeGap({ gitlab }, GITHUB_OTHER_HOST)).toMatchObject({ reason: FORGE_UNSUPPORTED });
     });
 
     it('is unconfigured when the board holds nothing to reach the forge with', () => {

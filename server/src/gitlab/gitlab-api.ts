@@ -32,7 +32,7 @@ export interface GitlabRequest {
     host: string;
     /** A path under the instance origin, query included. */
     path: string;
-    method?: 'GET' | 'POST';
+    method?: 'GET' | 'POST' | 'PUT';
     headers?: Record<string, string>;
     body?: string;
     caBundle?: string | undefined;
