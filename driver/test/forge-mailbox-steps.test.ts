@@ -332,6 +332,16 @@ describe('a github-writing helper of a GitLab job', () => {
         expectTokenless(s.steps);
     });
 
+    // The autofix block reads no forge state (BEL-539, B539-1): its probe is git-only and runs on a GitLab task as it
+    // is, its one body, with no board route and no `gh` or `glab` in it.
+    it('runs the git-only merge-conflict-probe body, with nothing of the forge in it', async () => {
+        const s = sink(() => ok('{"ok":true,"output":{}}'));
+        await runHelperStep(s.host, gitlabJob(), plan(), { token: SENTINEL });
+        const [, , body] = s.steps[0]!.argv;
+        expect(body).toBe(lookupHelper('merge-conflict-probe')!.scriptBody);
+        expect(body).not.toMatch(/agent-review|detailed_merge_status|\bgh\b|\bglab\b/);
+    });
+
     it('throws an unanswered ask as a lost step', async () => {
         const s = sink(() => unanswered);
         const thrown = await runHelperStep(s.host, gitlabJob(), plan()).then(
@@ -356,16 +366,19 @@ describe('the attempt pair in a GitLab review helper step (BEL-539)', () => {
         return s;
     };
 
-    it.each([REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID])('gives %s the pair, and still no forge token', async (id) => {
-        const job = gitlabJob();
-        const s = await run(job, id);
-        expect(s.steps[0]!.env).toMatchObject({
-            FACTORY_STATS_URL: config.statsUrl,
-            RUNNER_JOB_ID: job.id,
-            RUNNER_LEASE_TOKEN: job.leaseToken,
-        });
-        expectTokenless(s.steps);
-    });
+    it.each([REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID])(
+        'gives %s the pair, and still no forge token',
+        async (id) => {
+            const job = gitlabJob();
+            const s = await run(job, id);
+            expect(s.steps[0]!.env).toMatchObject({
+                FACTORY_STATS_URL: config.statsUrl,
+                RUNNER_JOB_ID: job.id,
+                RUNNER_LEASE_TOKEN: job.leaseToken,
+            });
+            expectTokenless(s.steps);
+        }
+    );
 
     it('never gives the pair to merge-conflict-probe, a read-only helper or a GitHub job', async () => {
         for (const s of [
@@ -379,7 +392,8 @@ describe('the attempt pair in a GitLab review helper step (BEL-539)', () => {
 });
 
 describe('a held grant in a review helper (BEL-539, F539-4)', () => {
-    const FORGE_WAIT = '{"schema":"review-collect-probe/v1","version":1,"ok":false,"reason":"forge_wait","error":"held"}';
+    const FORGE_WAIT =
+        '{"schema":"review-collect-probe/v1","version":1,"ok":false,"reason":"forge_wait","error":"held"}';
     const plan: HelperPlan = { helperId: REVIEW_COLLECT_PROBE_ID, phase: 'pre', input: null, githubWriting: true };
 
     it('throws a lost step for a GitLab job, so the attempt is interrupted, never failed', async () => {
