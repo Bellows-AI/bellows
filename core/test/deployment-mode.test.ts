@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     CLAUDE_CODE_OAUTH_TOKEN,
+    CLOUD,
     CLOUD_CREDENTIAL_MESSAGE,
     credentialRedirectMessage,
     DEPLOYMENT_MODES,
@@ -9,6 +10,8 @@ import {
     isCredentialRedirectMessage,
     platformCredentialBlanks,
     redirectsPlatformCredential,
+    SELF_HOSTED,
+    subscriptionTokenAllowed,
 } from '../src/deployment-mode.js';
 
 const VALUE = 'sk-ant-oat01-secret-value';
@@ -182,5 +185,32 @@ describe('platformCredentialBlanks', () => {
         expect(platformCredentialBlanks({ OPENAI_BASE_URL: URL, OPENAI_API_KEY: VALUE })).toEqual({});
         expect(platformCredentialBlanks({ ANTHROPIC_BASE_URL: '', ANTHROPIC_AUTH_TOKEN: VALUE })).toEqual({});
         expect(platformCredentialBlanks({})).toEqual({});
+    });
+});
+
+describe('subscriptionTokenAllowed', () => {
+    const policy = (deploymentMode: typeof CLOUD | typeof SELF_HOSTED, ids: string[]) => ({
+        deploymentMode,
+        cloudSubscriptionOrgIds: new Set(ids),
+    });
+
+    it('allows every org on a self-hosted board, listed or not', () => {
+        expect(subscriptionTokenAllowed(policy(SELF_HOSTED, []), 'test-org')).toBe(true);
+        expect(subscriptionTokenAllowed(policy(SELF_HOSTED, ['other-org']), 'test-org')).toBe(true);
+    });
+
+    it('refuses a cloud org the operator did not list, even when another org is listed', () => {
+        expect(subscriptionTokenAllowed(policy(CLOUD, []), 'test-org')).toBe(false);
+        expect(subscriptionTokenAllowed(policy(CLOUD, ['other-org']), 'test-org')).toBe(false);
+    });
+
+    it('allows a listed cloud org', () => {
+        expect(subscriptionTokenAllowed(policy(CLOUD, ['other-org', 'test-org']), 'test-org')).toBe(true);
+    });
+
+    it('matches the org id exactly', () => {
+        expect(subscriptionTokenAllowed(policy(CLOUD, ['test-org ']), 'test-org')).toBe(false);
+        expect(subscriptionTokenAllowed(policy(CLOUD, ['test']), 'test-org')).toBe(false);
+        expect(subscriptionTokenAllowed(policy(CLOUD, ['test-org']), 'test-org-2')).toBe(false);
     });
 });

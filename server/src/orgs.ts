@@ -251,6 +251,7 @@ function buildOrgStores({
         planDefaults: config.planDefaults,
         batches: config.batches.enabled,
         deploymentMode: config.deploymentMode,
+        cloudSubscriptionOrgIds: config.cloudSubscriptionOrgIds,
         platformModelProvided: config.platformModelProvided,
         ...(claimMetrics ? { metrics: claimMetrics } : {}),
         ...(orgKey ? { orgKey } : {}),

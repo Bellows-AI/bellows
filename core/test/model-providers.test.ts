@@ -70,11 +70,11 @@ describe('provider env, agents and availability', () => {
         });
     });
 
-    it('offers a subscription on a self-hosted board only', () => {
-        expect(providerAvailable('subscription', SELF_HOSTED)).toBe(true);
-        expect(providerAvailable('subscription', CLOUD)).toBe(false);
+    it('offers a subscription only where the subscription token is allowed', () => {
+        expect(providerAvailable('subscription', true)).toBe(true);
+        expect(providerAvailable('subscription', false)).toBe(false);
         for (const provider of ['anthropic', 'openrouter', 'openai', 'litellm'] as const) {
-            for (const mode of DEPLOYMENT_MODES) expect(providerAvailable(provider, mode)).toBe(true);
+            for (const allowed of [true, false]) expect(providerAvailable(provider, allowed)).toBe(true);
         }
     });
 

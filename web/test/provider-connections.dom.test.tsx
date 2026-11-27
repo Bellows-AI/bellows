@@ -103,6 +103,38 @@ describe('Settings → Model: provider connections', () => {
         expect(await screen.findByRole('dialog', { name: 'Edit provider connection' })).toBeTruthy();
     });
 
+    describe('the Claude subscription provider follows whether the org may use one', () => {
+        const addDialog = async (session: { deploymentMode: 'self-hosted' | 'cloud'; subscriptionToken: boolean }) => {
+            stubFetch(withSetup(settingsBoard({ role: ADMIN_ROLE, ...session })));
+            const user = userEvent.setup({ delay: null });
+            renderApp('/settings/model');
+            await user.click(await screen.findByRole('button', { name: 'Add connection' }));
+            const dialog = await screen.findByRole('dialog', { name: 'Add provider connection' });
+            within(dialog).getByRole('radio', { name: /^Anthropic/ });
+            return dialog;
+        };
+        const subscription = (dialog: HTMLElement) =>
+            within(dialog).queryByRole('radio', { name: /^Claude subscription/ });
+
+        it('is offered self-hosted', async () => {
+            expect(
+                subscription(await addDialog({ deploymentMode: 'self-hosted', subscriptionToken: true }))
+            ).toBeTruthy();
+        });
+
+        it('is offered to a cloud org the operator allows', async () => {
+            expect(subscription(await addDialog({ deploymentMode: 'cloud', subscriptionToken: true }))).toBeTruthy();
+        });
+
+        it('is hidden from any other cloud org, and a pasted token stays refused', async () => {
+            const dialog = await addDialog({ deploymentMode: 'cloud', subscriptionToken: false });
+            expect(subscription(dialog)).toBeNull();
+            fireEvent.change(within(dialog).getByLabelText('API key'), { target: { value: 'sk-ant-oat01-abc' } });
+            expect(subscription(dialog)).toBeNull();
+            await within(dialog).findByText(/This deployment accepts API keys only/);
+        });
+    });
+
     it('rename omits key while explicit rotation verifies and replaces it', async () => {
         const board = settingsBoard({ providerConnections: [mine], connectionKeys: { [mine.id]: 'sk-ant-old-key' } });
         const calls = stubFetch(withSetup(board));

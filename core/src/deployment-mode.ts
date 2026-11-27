@@ -9,7 +9,17 @@ export const CLOUD = 'cloud';
 export const DEPLOYMENT_MODES = [SELF_HOSTED, CLOUD] as const;
 export type DeploymentMode = (typeof DEPLOYMENT_MODES)[number];
 
-/** A Claude subscription OAuth token: a Claude.ai credential Bellows Cloud never collects. */
+/** What decides whether an org may configure a subscription token: `AppConfig` and the job store ctx both satisfy it. */
+export interface SubscriptionTokenPolicy {
+    readonly deploymentMode: DeploymentMode;
+    readonly cloudSubscriptionOrgIds: ReadonlySet<string>;
+}
+
+/** Self-hosted always; cloud only for an org the operator lists in CLOUD_SUBSCRIPTION_ORG_IDS. */
+export const subscriptionTokenAllowed = (policy: SubscriptionTokenPolicy, orgId: string): boolean =>
+    policy.deploymentMode !== CLOUD || policy.cloudSubscriptionOrgIds.has(orgId);
+
+/** A Claude subscription OAuth token: a Claude.ai credential Bellows Cloud collects only from a listed org. */
 export const CLAUDE_CODE_OAUTH_TOKEN = 'CLAUDE_CODE_OAUTH_TOKEN';
 
 /** The one refusal every cloud entry point answers — names only, never a value. */

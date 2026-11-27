@@ -265,13 +265,21 @@ describe('the executor dialog', () => {
         await dialogGone();
     });
 
-    it('in cloud mode, says an OAuth token cannot be configured and an API key can', async () => {
-        stubFetch(boardHandler(settingsBoard({ deploymentMode: 'cloud' })));
+    it('in a cloud org not allowed a subscription, says an OAuth token cannot be configured and an API key can', async () => {
+        stubFetch(boardHandler(settingsBoard({ deploymentMode: 'cloud', subscriptionToken: false })));
         const user = userEvent.setup({ delay: null });
         renderApp('/settings/executors');
         await openAdd(user);
         expect(executorDialog().textContent).toContain(CLOUD_OAUTH_NOTE);
         expect(CLOUD_OAUTH_NOTE).toContain('ANTHROPIC_API_KEY');
+    });
+
+    it('in a cloud org the operator allows a subscription, the cloud note is absent', async () => {
+        stubFetch(boardHandler(settingsBoard({ deploymentMode: 'cloud', subscriptionToken: true })));
+        const user = userEvent.setup({ delay: null });
+        renderApp('/settings/executors');
+        await openAdd(user);
+        expect(executorDialog().textContent).not.toContain(CLOUD_OAUTH_NOTE);
     });
 
     it('self-hosted, the cloud note is absent', async () => {

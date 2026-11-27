@@ -1,4 +1,4 @@
-import { CLOUD, type ExecutorProvider, SELF_HOSTED } from '@factory-ai/core';
+import type { ExecutorProvider } from '@factory-ai/core';
 import type { Dispatch, SetStateAction } from 'react';
 import { useKeyCheck } from '../model-setup/useKeyCheck.js';
 import { modelOptions } from '../model-setup/providers.js';
@@ -13,7 +13,11 @@ import { parseExecutorConfig, readModel, type ExecutorDraft } from '../workspace
  * re-reads the choice from the configuration, and one that does not hands the text back to the
  * raw editor.
  */
-export function useGuidedStep(draft: ExecutorDraft, setDraft: Dispatch<SetStateAction<ExecutorDraft>>, cloud: boolean) {
+export function useGuidedStep(
+    draft: ExecutorDraft,
+    setDraft: Dispatch<SetStateAction<ExecutorDraft>>,
+    subscriptionRefused: boolean
+) {
     const { type } = draft;
     const guided = draft.guided[type];
 
@@ -31,7 +35,7 @@ export function useGuidedStep(draft: ExecutorDraft, setDraft: Dispatch<SetStateA
                 ? guidedKey
                 : '',
         baseUrl: guided?.baseUrl ?? '',
-        mode: cloud ? CLOUD : SELF_HOSTED,
+        subscriptionAllowed: !subscriptionRefused,
     });
     const suggestions =
         guided === null || guided.provider === 'openai-compatible'

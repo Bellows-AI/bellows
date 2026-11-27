@@ -16,6 +16,8 @@ export interface VerifyInput {
     key: string;
     /** The provider's API base; required for `litellm`, optional for the other hosted providers. */
     baseUrl?: string | undefined;
+    /** Whether the caller's org may hold a subscription token (`subscriptionTokenAllowed`); false refuses one. */
+    subscriptionAllowed: boolean;
 }
 
 export type VerifyAnswer = ({ ok: true } & CheckResult) | { ok: false; code: CheckCode; message: string };
@@ -58,9 +60,9 @@ const refusal = (code: CheckCode): VerifyAnswer => ({ ok: false, code, message: 
 
 const never = () => false;
 
-/** A subscription token has no read to make with it: its format, and cloud's refusal. */
-const checkSubscription = (key: string, cloud: boolean): VerifyAnswer => {
-    if (cloud) return refusal(ERROR_CODES.REFUSED_IN_CLOUD);
+/** A subscription token has no read to make with it: its format, and cloud's refusal for an org not listed. */
+const checkSubscription = (key: string, refused: boolean): VerifyAnswer => {
+    if (refused) return refusal(ERROR_CODES.REFUSED_IN_CLOUD);
     return key.startsWith(SUBSCRIPTION_PREFIX) ? { ok: true } : refusal(ERROR_CODES.INVALID_KEY);
 };
 
@@ -88,8 +90,8 @@ export const createProviderKeys = (options: ProviderKeysOptions): ProviderKeys =
         return { ...settings, signal: signal ? AbortSignal.any([signal, deadline]) : deadline };
     };
     return {
-        verify({ provider, key, baseUrl }, signal) {
-            if (provider === 'subscription') return Promise.resolve(checkSubscription(key, cloud));
+        verify({ provider, key, baseUrl, subscriptionAllowed }, signal) {
+            if (provider === 'subscription') return Promise.resolve(checkSubscription(key, !subscriptionAllowed));
             const base = baseUrl ?? endpoints[provider];
             if (base === undefined) return Promise.resolve(refusal(ERROR_CODES.UNREACHABLE));
             return runCheck(CHECKS[provider], base, key, outbound(signal));

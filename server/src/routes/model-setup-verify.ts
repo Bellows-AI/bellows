@@ -1,4 +1,4 @@
-import { ERROR_CODES, isModelProvider } from '@factory-ai/core';
+import { type DeploymentMode, ERROR_CODES, isModelProvider, subscriptionTokenAllowed } from '@factory-ai/core';
 import type { FastifyError, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { createRateLimiter } from '../oauth/rate-limit.js';
@@ -42,7 +42,7 @@ export const validKey = (key: unknown): key is string =>
     typeof key === 'string' && key.length <= KEY_MAX && KEY_SHAPE.test(key);
 
 /** The check's input, or null: every field known, a listed provider, a header-safe key, a base URL where one fits. */
-function parseVerify(raw: unknown): VerifyInput | null {
+function parseVerify(raw: unknown): Omit<VerifyInput, 'subscriptionAllowed'> | null {
     const fields = jsonBody(raw);
     if (Object.keys(fields).some((name) => !FIELDS.has(name))) return null;
     const { provider, key, baseUrl } = fields;
@@ -69,9 +69,14 @@ const refuseUnparsed = refuseUnparsedBody(BAD_BODY_MESSAGE);
 
 export function modelSetupVerifyRoutes({
     providerKeys,
+    deploymentMode,
+    cloudSubscriptionOrgIds,
     now = Date.now,
 }: {
     providerKeys: ProviderKeys;
+    /** With `cloudSubscriptionOrgIds`, whether the caller's org may hold a subscription token. */
+    deploymentMode: DeploymentMode;
+    cloudSubscriptionOrgIds: ReadonlySet<string>;
     now?: (() => number) | undefined;
 }): FastifyPluginAsync {
     return async (app) => {
@@ -85,8 +90,13 @@ export function modelSetupVerifyRoutes({
                 reply.header('retry-after', String(verdict.retryAfterSeconds));
                 return bad(reply, ERROR_CODES.RATE_LIMITED, 'Too many key checks; try again shortly', HTTP_TOO_MANY);
             }
-            const input = parseVerify(request.body);
-            if (!input) return bad(reply, ERROR_CODES.BAD_BODY, BAD_BODY_MESSAGE);
+            const parsed = parseVerify(request.body);
+            if (!parsed) return bad(reply, ERROR_CODES.BAD_BODY, BAD_BODY_MESSAGE);
+            const subscriptionAllowed = subscriptionTokenAllowed(
+                { deploymentMode, cloudSubscriptionOrgIds },
+                orgOf(request)
+            );
+            const input: VerifyInput = { ...parsed, subscriptionAllowed };
             // The member going away ends the check: the signal reaches the lookup, both requests and every body read.
             const abort = new AbortController();
             reply.raw.once('close', () => {

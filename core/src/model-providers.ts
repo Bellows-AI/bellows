@@ -66,9 +66,9 @@ export const providerEnvNames = (provider: ModelProvider): string[] => {
     return base === null ? [PROVIDER_ENV[provider]] : [PROVIDER_ENV[provider], base];
 };
 
-/** Bellows Cloud refuses a Claude subscription token; every other provider is offered in both modes. */
-export const providerAvailable = (provider: ModelProvider, mode: DeploymentMode): boolean =>
-    provider !== 'subscription' || mode !== CLOUD;
+/** A Claude subscription is offered only where the org may hold the token (`subscriptionTokenAllowed`); every other provider always. */
+export const providerAvailable = (provider: ModelProvider, subscriptionAllowed: boolean): boolean =>
+    provider !== 'subscription' || subscriptionAllowed;
 
 /**
  * The provider a scope's names point to, in provider order: an Anthropic key (LiteLLM when an Anthropic base URL is

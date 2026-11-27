@@ -221,7 +221,7 @@ export {
     MAX_ENV_VARS_PER_SCOPE,
     RESERVED_ENV_NAMES,
 } from './env.js';
-export type { DeploymentMode } from './deployment-mode.js';
+export type { DeploymentMode, SubscriptionTokenPolicy } from './deployment-mode.js';
 export {
     CLAUDE_CODE_OAUTH_TOKEN,
     CLOUD,
@@ -237,6 +237,7 @@ export {
     redirectsPlatformCredential,
     SELF_HOSTED,
     STORED_CREDENTIAL_PREFIX,
+    subscriptionTokenAllowed,
 } from './deployment-mode.js';
 export type { ErrorCode } from './error-codes.js';
 export { ERROR_CODES } from './error-codes.js';

@@ -45,7 +45,7 @@ const keys = (options: Partial<ProviderKeysOptions> = {}) =>
 describe('each provider, when the key is good', () => {
     it('anthropic: lists the models, sending x-api-key and anthropic-version', async () => {
         fake.reply('/v1/models', modelList('claude-sonnet-4-5', 'claude-opus-4-1'));
-        const answer = await keys().verify({ provider: 'anthropic', key: KEY });
+        const answer = await keys().verify({ subscriptionAllowed: true, provider: 'anthropic', key: KEY });
         expect(answer).toEqual({ ok: true, models: ['claude-sonnet-4-5', 'claude-opus-4-1'] });
         const [seen] = fake.requests;
         expect(seen?.method).toBe('GET');
@@ -56,27 +56,34 @@ describe('each provider, when the key is good', () => {
 
     it('openai: lists the models with a bearer key', async () => {
         fake.reply('/v1/models', modelList('gpt-5', 'gpt-5-mini'));
-        const answer = await keys().verify({ provider: 'openai', key: KEY });
+        const answer = await keys().verify({ subscriptionAllowed: true, provider: 'openai', key: KEY });
         expect(answer).toEqual({ ok: true, models: ['gpt-5', 'gpt-5-mini'] });
         expect(fake.requests[0]?.headers.authorization).toBe(`Bearer ${KEY}`);
     });
 
     it('openrouter: answers the credit left and the limit', async () => {
         fake.reply('/api/v1/key', openRouterKey(7.5, 10, 2.5));
-        const answer = await keys().verify({ provider: 'openrouter', key: KEY });
+        const answer = await keys().verify({ subscriptionAllowed: true, provider: 'openrouter', key: KEY });
         expect(answer).toEqual({ ok: true, creditUsd: 7.5, budget: { limitUsd: 10, usedUsd: 2.5 } });
         expect(fake.requests[0]?.headers.authorization).toBe(`Bearer ${KEY}`);
     });
 
     it('openrouter: an unlimited key (null limit) is ok without a credit figure', async () => {
         fake.reply('/api/v1/key', openRouterKey(null, null, 1));
-        expect(await keys().verify({ provider: 'openrouter', key: KEY })).toEqual({ ok: true });
+        expect(await keys().verify({ subscriptionAllowed: true, provider: 'openrouter', key: KEY })).toEqual({
+            ok: true,
+        });
     });
 
     it('litellm: lists the models and reads the budget from /key/info', async () => {
         fake.reply('/v1/models', modelList('gpt-4o', 'claude-sonnet'));
         fake.reply('/key/info', liteLlmKeyInfo(100, 12.25));
-        const answer = await keys().verify({ provider: 'litellm', key: KEY, baseUrl: fake.origin });
+        const answer = await keys().verify({
+            subscriptionAllowed: true,
+            provider: 'litellm',
+            key: KEY,
+            baseUrl: fake.origin,
+        });
         expect(answer).toEqual({
             ok: true,
             models: ['gpt-4o', 'claude-sonnet'],
@@ -89,7 +96,9 @@ describe('each provider, when the key is good', () => {
     it('litellm: /key/info 404 is ok with the models only, never a zero budget', async () => {
         fake.reply('/v1/models', modelList('gpt-4o'));
         fake.reply('/key/info', notFound);
-        expect(await keys().verify({ provider: 'litellm', key: KEY, baseUrl: fake.origin })).toEqual({
+        expect(
+            await keys().verify({ subscriptionAllowed: true, provider: 'litellm', key: KEY, baseUrl: fake.origin })
+        ).toEqual({
             ok: true,
             models: ['gpt-4o'],
         });
@@ -98,14 +107,25 @@ describe('each provider, when the key is good', () => {
     it('litellm: /key/info without a numeric budget omits it', async () => {
         fake.reply('/v1/models', modelList('gpt-4o'));
         fake.reply('/key/info', liteLlmKeyInfo(null, 3));
-        expect(await keys().verify({ provider: 'litellm', key: KEY, baseUrl: `${fake.origin}/` })).toEqual({
+        expect(
+            await keys().verify({
+                subscriptionAllowed: true,
+                provider: 'litellm',
+                key: KEY,
+                baseUrl: `${fake.origin}/`,
+            })
+        ).toEqual({
             ok: true,
             models: ['gpt-4o'],
         });
     });
 
     it('subscription: a token with the subscription prefix passes a format check, with no request', async () => {
-        const answer = await keys().verify({ provider: 'subscription', key: 'sk-ant-oat01-abcdef' });
+        const answer = await keys().verify({
+            subscriptionAllowed: true,
+            provider: 'subscription',
+            key: 'sk-ant-oat01-abcdef',
+        });
         expect(answer).toEqual({ ok: true });
         expect(fake.requests).toEqual([]);
     });
@@ -117,13 +137,13 @@ describe('codes', () => {
         ['403', forbidden],
     ])('%s is INVALID_KEY', async (_label, reply) => {
         fake.reply('/v1/models', reply);
-        const answer = await keys().verify({ provider: 'anthropic', key: KEY });
+        const answer = await keys().verify({ subscriptionAllowed: true, provider: 'anthropic', key: KEY });
         expect(answer).toMatchObject({ ok: false, code: 'INVALID_KEY' });
     });
 
     it('openrouter credit 0 is NO_CREDIT', async () => {
         fake.reply('/api/v1/key', openRouterKey(0, 10, 10));
-        expect(await keys().verify({ provider: 'openrouter', key: KEY })).toMatchObject({
+        expect(await keys().verify({ subscriptionAllowed: true, provider: 'openrouter', key: KEY })).toMatchObject({
             ok: false,
             code: 'NO_CREDIT',
         });
@@ -131,7 +151,7 @@ describe('codes', () => {
 
     it('openrouter without the remaining-credit field is BAD_RESPONSE, never NO_CREDIT', async () => {
         fake.reply('/api/v1/key', json({ data: { limit: 10, usage: 1 } }));
-        expect(await keys().verify({ provider: 'openrouter', key: KEY })).toMatchObject({
+        expect(await keys().verify({ subscriptionAllowed: true, provider: 'openrouter', key: KEY })).toMatchObject({
             ok: false,
             code: 'BAD_RESPONSE',
         });
@@ -140,14 +160,22 @@ describe('codes', () => {
     it('connection refused is UNREACHABLE', async () => {
         const port = fake.port;
         await fake.close();
-        const answer = await keys().verify({ provider: 'litellm', key: KEY, baseUrl: `http://127.0.0.1:${port}` });
+        const answer = await keys().verify({
+            subscriptionAllowed: true,
+            provider: 'litellm',
+            key: KEY,
+            baseUrl: `http://127.0.0.1:${port}`,
+        });
         expect(answer).toMatchObject({ ok: false, code: 'UNREACHABLE' });
         fake = await startFakeProvider();
     });
 
     it('5xx is UNREACHABLE, never INVALID_KEY', async () => {
         fake.reply('/v1/models', serverError);
-        expect(await keys().verify({ provider: 'openai', key: KEY })).toMatchObject({ ok: false, code: 'UNREACHABLE' });
+        expect(await keys().verify({ subscriptionAllowed: true, provider: 'openai', key: KEY })).toMatchObject({
+            ok: false,
+            code: 'UNREACHABLE',
+        });
     });
 
     it.each([
@@ -157,7 +185,7 @@ describe('codes', () => {
         ['a redirect (never followed)', redirect],
     ])('%s is BAD_RESPONSE', async (_label, reply) => {
         fake.reply('/v1/models', reply);
-        expect(await keys().verify({ provider: 'anthropic', key: KEY })).toMatchObject({
+        expect(await keys().verify({ subscriptionAllowed: true, provider: 'anthropic', key: KEY })).toMatchObject({
             ok: false,
             code: 'BAD_RESPONSE',
         });
@@ -166,26 +194,48 @@ describe('codes', () => {
     it('a redirect is not followed', async () => {
         fake.reply('/v1/models', redirect);
         fake.reply('/elsewhere', modelList('x'));
-        await keys().verify({ provider: 'anthropic', key: KEY });
+        await keys().verify({ subscriptionAllowed: true, provider: 'anthropic', key: KEY });
         expect(fake.requests.map((r) => r.path)).toEqual(['/v1/models']);
     });
 
     it('subscription with the wrong prefix is INVALID_KEY', async () => {
-        expect(await keys().verify({ provider: 'subscription', key: 'sk-ant-api03-abc' })).toMatchObject({
+        expect(
+            await keys().verify({ subscriptionAllowed: true, provider: 'subscription', key: 'sk-ant-api03-abc' })
+        ).toMatchObject({
             ok: false,
             code: 'INVALID_KEY',
         });
     });
 
-    it('subscription in cloud is REFUSED_IN_CLOUD', async () => {
+    it('subscription for an org that may not hold one is REFUSED_IN_CLOUD', async () => {
         expect(
-            await keys({ deploymentMode: 'cloud' }).verify({ provider: 'subscription', key: 'sk-ant-oat01-abc' })
+            await keys({ deploymentMode: 'cloud' }).verify({
+                provider: 'subscription',
+                key: 'sk-ant-oat01-abc',
+                subscriptionAllowed: false,
+            })
         ).toMatchObject({ ok: false, code: 'REFUSED_IN_CLOUD' });
+    });
+
+    it('subscription follows the org flag, not the mode: a listed cloud org passes the format check', async () => {
+        expect(
+            await keys({ deploymentMode: 'cloud' }).verify({
+                provider: 'subscription',
+                key: 'sk-ant-oat01-abc',
+                subscriptionAllowed: true,
+            })
+        ).toEqual({ ok: true });
+        expect(fake.requests).toEqual([]);
     });
 
     it('every failure message is fixed text that never quotes the key or the URL', async () => {
         fake.reply('/v1/models', serverError);
-        const answer = await keys().verify({ provider: 'litellm', key: KEY, baseUrl: `${fake.origin}` });
+        const answer = await keys().verify({
+            subscriptionAllowed: true,
+            provider: 'litellm',
+            key: KEY,
+            baseUrl: `${fake.origin}`,
+        });
         expect(JSON.stringify(answer)).not.toContain(KEY);
         expect(JSON.stringify(answer)).not.toContain(String(fake.port));
     });
@@ -194,7 +244,12 @@ describe('codes', () => {
 describe('baseUrl (F7)', () => {
     it.each(['anthropic', 'openai'] as const)('%s hits the base URL it is given', async (provider) => {
         fake.reply('/v1/models', modelList('m'));
-        const answer = await keys({ endpoints: {} }).verify({ provider, key: KEY, baseUrl: fake.origin });
+        const answer = await keys({ endpoints: {} }).verify({
+            subscriptionAllowed: true,
+            provider,
+            key: KEY,
+            baseUrl: fake.origin,
+        });
         expect(answer).toEqual({ ok: true, models: ['m'] });
         expect(fake.requests).toHaveLength(1);
     });
@@ -202,6 +257,7 @@ describe('baseUrl (F7)', () => {
     it('openrouter hits the base URL it is given', async () => {
         fake.reply('/api/v1/key', openRouterKey(5));
         const answer = await keys({ endpoints: {} }).verify({
+            subscriptionAllowed: true,
             provider: 'openrouter',
             key: KEY,
             baseUrl: `${fake.origin}/api`,
@@ -211,7 +267,12 @@ describe('baseUrl (F7)', () => {
 
     it('a base URL that ends in /v1 is the same base', async () => {
         fake.reply('/v1/models', modelList('m'));
-        const answer = await keys().verify({ provider: 'openai', key: KEY, baseUrl: `${fake.origin}/v1/` });
+        const answer = await keys().verify({
+            subscriptionAllowed: true,
+            provider: 'openai',
+            key: KEY,
+            baseUrl: `${fake.origin}/v1/`,
+        });
         expect(answer).toEqual({ ok: true, models: ['m'] });
     });
 
@@ -229,6 +290,7 @@ describe('baseUrl (F7)', () => {
         });
         for (const provider of ['anthropic', 'openrouter', 'openai', 'litellm'] as const) {
             const answer = await cloud.verify({
+                subscriptionAllowed: true,
                 provider,
                 key: KEY,
                 baseUrl: `http://proxy.example.test:${fake.port}`,
@@ -241,6 +303,7 @@ describe('baseUrl (F7)', () => {
 
     it('cloud: a literal private address is refused before any request', async () => {
         const answer = await keys({ deploymentMode: 'cloud' }).verify({
+            subscriptionAllowed: true,
             provider: 'litellm',
             key: KEY,
             baseUrl: fake.origin,
@@ -253,13 +316,14 @@ describe('baseUrl (F7)', () => {
         const answer = await keys({
             deploymentMode: 'cloud',
             resolve: async () => ['93.184.216.34', '192.168.1.4'],
-        }).verify({ provider: 'litellm', key: KEY, baseUrl: 'https://proxy.example.test' });
+        }).verify({ subscriptionAllowed: true, provider: 'litellm', key: KEY, baseUrl: 'https://proxy.example.test' });
         expect(answer).toMatchObject({ ok: false, code: 'REFUSED_IN_CLOUD' });
     });
 
     it('self-hosted: a name resolving to a private address is allowed and the connection goes to it', async () => {
         fake.reply('/v1/models', modelList('m'));
         const answer = await keys({ resolve: async () => ['127.0.0.1'] }).verify({
+            subscriptionAllowed: true,
             provider: 'litellm',
             key: KEY,
             baseUrl: `http://litellm.internal.test:${fake.port}`,
@@ -276,7 +340,11 @@ describe('deadline', () => {
     ])('a provider that %s is answered UNREACHABLE within the deadline', async (_label, reply) => {
         fake.reply('/v1/models', reply);
         const started = Date.now();
-        const answer = await keys({ deadlineMs: DEADLINE_MS }).verify({ provider: 'openai', key: KEY });
+        const answer = await keys({ deadlineMs: DEADLINE_MS }).verify({
+            subscriptionAllowed: true,
+            provider: 'openai',
+            key: KEY,
+        });
         expect(answer).toMatchObject({ ok: false, code: 'UNREACHABLE' });
         expect(Date.now() - started).toBeLessThan(ANSWER_WITHIN_MS);
     });
@@ -286,6 +354,7 @@ describe('deadline', () => {
         fake.reply('/key/info', stall);
         const started = Date.now();
         const answer = await keys({ deadlineMs: DEADLINE_MS }).verify({
+            subscriptionAllowed: true,
             provider: 'litellm',
             key: KEY,
             baseUrl: fake.origin,
@@ -297,7 +366,7 @@ describe('deadline', () => {
     it("the caller's signal cancels the check", async () => {
         fake.reply('/v1/models', stall);
         const client = new AbortController();
-        const pending = keys().verify({ provider: 'openai', key: KEY }, client.signal);
+        const pending = keys().verify({ subscriptionAllowed: true, provider: 'openai', key: KEY }, client.signal);
         setTimeout(() => client.abort(), 50);
         expect(await pending).toMatchObject({ ok: false, code: 'UNREACHABLE' });
     });

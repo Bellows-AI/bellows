@@ -174,7 +174,7 @@ export function SettingsExecutorsPage() {
                 onSave={savePersonal}
                 onSaved={setSavedMessage}
                 saving={saving}
-                cloud={session?.deploymentMode === CLOUD}
+                subscriptionRefused={session?.deploymentMode === CLOUD && session.subscriptionToken !== true}
             />
         </>
     );

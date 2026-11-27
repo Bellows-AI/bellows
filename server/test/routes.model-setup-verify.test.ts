@@ -31,11 +31,15 @@ afterEach(async () => {
     await fake.close();
 });
 
-async function boot(deploymentMode: 'self-hosted' | 'cloud' = 'self-hosted') {
+async function boot(deploymentMode: 'self-hosted' | 'cloud' = 'self-hosted', subscriptionOrgIds: string[] = []) {
     const auth = memoryAuthStore();
     const alice = auth.seedMember('test-org', 'alice');
     const bob = auth.seedMember('test-org', 'bob');
-    const config = testConfig({ auth: githubAuth(), deploymentMode });
+    const config = testConfig({
+        auth: githubAuth(),
+        deploymentMode,
+        cloudSubscriptionOrgIds: new Set(subscriptionOrgIds),
+    });
     const lines: string[] = [];
     const app = await buildApp({
         config,
@@ -116,6 +120,21 @@ describe('POST /api/model-setup/verify', () => {
         expect(res.statusCode).toBe(HTTP_OK);
         expect(res.json()).toMatchObject({ ok: false, code: 'REFUSED_IN_CLOUD' });
         expect(fake.requests).toEqual([]);
+    });
+
+    it('cloud: a subscription token passes the format check for a listed org', async () => {
+        const { app, alice } = await boot('cloud', ['test-org']);
+        const res = await verify(app, alice, { provider: 'subscription', key: 'sk-ant-oat01-route-check' });
+        expect(res.statusCode).toBe(HTTP_OK);
+        expect(res.json()).toEqual({ ok: true });
+        expect(fake.requests).toEqual([]);
+    });
+
+    it('cloud: a subscription token is REFUSED_IN_CLOUD when only another org is listed', async () => {
+        const { app, alice } = await boot('cloud', ['other-org']);
+        const res = await verify(app, alice, { provider: 'subscription', key: 'sk-ant-oat01-route-check' });
+        expect(res.statusCode).toBe(HTTP_OK);
+        expect(res.json()).toMatchObject({ ok: false, code: 'REFUSED_IN_CLOUD' });
     });
 
     it('the 11th check in a minute by one member is 429 RATE_LIMITED; another member is unaffected', async () => {

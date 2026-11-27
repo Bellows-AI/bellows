@@ -951,6 +951,9 @@ refuses 'a second retention window is refused' 'two retention windows' \
 operator="$(gh_render "${CLOUD_SETS[@]}" --set-string 'dashboard.operatorGithubIds=101\,202')"
 expect_contains 'the operator GitHub ids render as a comma list' \
     "$(grep -A1 'name: OPERATOR_GITHUB_IDS$' <<<"$operator")" 'value: "101,202"'
+subscription="$(gh_render "${CLOUD_SETS[@]}" --set-string 'dashboard.cloudSubscriptionOrgIds=org-a\,org-b')"
+expect_contains 'the cloud subscription org ids render as a comma list' \
+    "$(grep -A1 'name: CLOUD_SUBSCRIPTION_ORG_IDS$' <<<"$subscription")" 'value: "org-a,org-b"'
 # The request limits and the pool: each replica's three pools and migration connection split dashboard.dbConnections.
 limits="$(gh_render --set-string 'dashboard.limits.trustedProxies=10.0.0.0/8\,192.168.0.1' \
     --set dashboard.replicas=2 --set dashboard.dbConnections=80)"

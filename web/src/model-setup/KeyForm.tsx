@@ -1,4 +1,4 @@
-import { ADMIN_ROLE, isModelProvider, type ModelProvider, SELF_HOSTED } from '@factory-ai/core';
+import { ADMIN_ROLE, isModelProvider, type ModelProvider } from '@factory-ai/core';
 import { useState } from 'react';
 import type { ModelScopeView, SetupScope, UseModelSetup } from '../api/useModelSetup.js';
 import type { Session } from '../api/useSession.js';
@@ -55,10 +55,11 @@ const nameReason = (name: string) => (name.trim() === '' ? 'Give the connection 
  * preselection the member did not see.
  */
 export function useKeyForm(session: Session | null, setup: UseModelSetup, onSaved: () => void | Promise<void>) {
-    const mode = session?.deploymentMode ?? SELF_HOSTED;
+    // Absent (no session yet) is never allowed; the server refuses a token either way.
+    const subscriptionAllowed = session?.subscriptionToken === true;
     const admin = session?.role === ADMIN_ROLE;
     const view = setup.data;
-    const choices = providerChoices(mode);
+    const choices = providerChoices(subscriptionAllowed);
     const [scopePick, setScopePick] = useState<SetupScope | null>(null);
     const scope = scopePick ?? (admin && !view?.personal?.keyNames.length ? 'org' : 'personal');
     const scopeView = view?.[scope];
@@ -71,7 +72,7 @@ export function useKeyForm(session: Session | null, setup: UseModelSetup, onSave
     const [baseEdit, setBase] = useState<string | null>(null);
     const { proxy, base, hiddenProxy } = urlsOf(scopeView, provider, proxyEdit, baseEdit);
     const baseUrl = baseFor(provider, proxy, base).trim();
-    const check = useKeyCheck({ provider, key, baseUrl, mode });
+    const check = useKeyCheck({ provider, key, baseUrl, subscriptionAllowed });
     const saved =
         scopeView && scopeView.provider === provider
             ? { agent: scopeView.agentType, model: scopeView.model }
@@ -100,7 +101,7 @@ export function useKeyForm(session: Session | null, setup: UseModelSetup, onSave
         key,
         onKey: (value: string) => {
             setKey(value);
-            choose(detectProvider(value.trim(), provider, mode));
+            choose(detectProvider(value.trim(), provider, subscriptionAllowed));
         },
         proxy,
         setProxy,

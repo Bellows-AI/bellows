@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { SESSION_COOKIE } from '../src/auth/session.js';
+import type { AppConfig } from '../src/config.js';
 import { ORG, beginOnboarding, finishOnboarding, setup, signIn } from './auth.oauth-fixtures.js';
 import { HTTP_BAD_REQUEST, HTTP_FORBIDDEN, HTTP_OK, HTTP_UNAUTHORIZED, HTTP_UNAVAILABLE } from './helpers-http.js';
 
@@ -86,6 +87,35 @@ describe('/api/auth/me', () => {
         });
 
         expect(response.json()).toMatchObject({ deploymentMode: 'cloud' });
+    });
+
+    describe('subscriptionToken: whether the session org may configure a Claude subscription token', () => {
+        const me = async (config: Partial<AppConfig>) => {
+            const { app } = await setup({ config });
+            const cookie = await signIn(app);
+            const response = await app.inject({
+                method: 'GET',
+                url: '/api/auth/me',
+                cookies: { [SESSION_COOKIE]: cookie },
+            });
+            return response.json();
+        };
+
+        it('is true on a self-hosted board', async () => {
+            expect(await me({ deploymentMode: 'self-hosted' })).toMatchObject({ subscriptionToken: true });
+        });
+
+        it('is true for a cloud org the operator listed, and never echoes another listed org', async () => {
+            const body = await me({ deploymentMode: 'cloud', cloudSubscriptionOrgIds: new Set([ORG, 'decoy-org']) });
+            expect(body).toMatchObject({ subscriptionToken: true });
+            expect(JSON.stringify(body)).not.toContain('decoy-org');
+        });
+
+        it('is false for a cloud org that is not listed, even when another org is', async () => {
+            const body = await me({ deploymentMode: 'cloud', cloudSubscriptionOrgIds: new Set(['decoy-org']) });
+            expect(body).toMatchObject({ subscriptionToken: false });
+            expect(JSON.stringify(body)).not.toContain('decoy-org');
+        });
     });
 
     it('answers 503, not "not signed in", when the session store cannot be reached', async () => {

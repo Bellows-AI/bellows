@@ -172,7 +172,7 @@ export function ProviderConnectionsPanel({ session }: { session: Session | null 
                 mode={dialog}
                 open={dialog !== null}
                 isAdmin={isAdmin}
-                deploymentMode={session?.deploymentMode ?? 'self-hosted'}
+                subscriptionAllowed={session?.subscriptionToken === true}
                 onClose={() => setDialog(null)}
                 onSaved={setSaved}
             />

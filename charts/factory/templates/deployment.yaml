@@ -164,6 +164,9 @@ spec:
                       # The board operator's GitHub user ids (cloud only); empty is nobody.
                       - name: OPERATOR_GITHUB_IDS
                         value: {{ .Values.dashboard.operatorGithubIds | quote }}
+                      # The cloud orgs that may use a Claude subscription token; empty is none.
+                      - name: CLOUD_SUBSCRIPTION_ORG_IDS
+                        value: {{ .Values.dashboard.cloudSubscriptionOrgIds | quote }}
                       # The request limits (server/src/config-limits.ts), each per replica; empty is the default.
                       - name: TRUSTED_PROXIES
                         value: {{ .Values.dashboard.limits.trustedProxies | quote }}

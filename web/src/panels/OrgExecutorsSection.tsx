@@ -172,7 +172,7 @@ export function OrgExecutorsSection({
                 saving={saving}
                 runnerClasses={runnerClasses}
                 executorScope={ORG_SCOPE}
-                cloud={session?.deploymentMode === CLOUD}
+                subscriptionRefused={session?.deploymentMode === CLOUD && session.subscriptionToken !== true}
             />
         </>
     );

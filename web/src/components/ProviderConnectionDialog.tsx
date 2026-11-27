@@ -1,9 +1,4 @@
-import {
-    type DeploymentMode,
-    MODEL_PROVIDERS,
-    type ModelProvider,
-    type ProviderConnectionScope,
-} from '@factory-ai/core';
+import { MODEL_PROVIDERS, type ModelProvider, type ProviderConnectionScope } from '@factory-ai/core';
 import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 import { useId, useState } from 'react';
 import {
@@ -48,7 +43,7 @@ export function ProviderConnectionDialog({
     mode,
     open,
     isAdmin,
-    deploymentMode,
+    subscriptionAllowed,
     onClose,
     onSaved,
 }: {
@@ -56,7 +51,8 @@ export function ProviderConnectionDialog({
     mode: ConnectionDialogMode | null;
     open: boolean;
     isAdmin: boolean;
-    deploymentMode: DeploymentMode;
+    /** Whether the org may configure a Claude subscription token: the provider is offered only then. */
+    subscriptionAllowed: boolean;
     onClose: () => void;
     /** The success sentence, told just before the dialog closes. */
     onSaved: (message: string) => void;
@@ -72,7 +68,7 @@ export function ProviderConnectionDialog({
                             key={mode.kind === 'create' ? 'create' : `${mode.kind}:${mode.connection.id}`}
                             mode={mode}
                             isAdmin={isAdmin}
-                            deploymentMode={deploymentMode}
+                            subscriptionAllowed={subscriptionAllowed}
                             onClose={onClose}
                             onSaved={onSaved}
                         />
@@ -206,7 +202,7 @@ function ProviderAndKey({
     mode,
     provider,
     choices,
-    deploymentMode,
+    subscriptionAllowed,
     keyValue,
     check,
     onProvider,
@@ -216,7 +212,7 @@ function ProviderAndKey({
     mode: ConnectionDialogMode['kind'];
     provider: ModelProvider;
     choices: readonly ModelProvider[];
-    deploymentMode: DeploymentMode;
+    subscriptionAllowed: boolean;
     keyValue: string;
     check: Parameters<typeof KeyField>[0]['check'];
     onProvider: (provider: ModelProvider) => void;
@@ -245,7 +241,7 @@ function ProviderAndKey({
                     onChange={(value) => {
                         onKey(value);
                         // A pasted key's prefix names its provider, on a create only.
-                        if (mode === 'create') onProvider(detectProvider(value.trim(), provider, deploymentMode));
+                        if (mode === 'create') onProvider(detectProvider(value.trim(), provider, subscriptionAllowed));
                     }}
                     check={check}
                 />
@@ -296,19 +292,19 @@ function FormActions({
 function ConnectionForm({
     mode,
     isAdmin,
-    deploymentMode,
+    subscriptionAllowed,
     onClose,
     onSaved,
 }: {
     mode: ConnectionDialogMode;
     isAdmin: boolean;
-    deploymentMode: DeploymentMode;
+    subscriptionAllowed: boolean;
     onClose: () => void;
     onSaved: (message: string) => void;
 }) {
     const ids = useId();
     const existing = mode.kind === 'create' ? null : mode.connection;
-    const choices = providerChoices(deploymentMode);
+    const choices = providerChoices(subscriptionAllowed);
     const [scope, setScope] = useState<ProviderConnectionScope>('personal');
     const [name, setName] = useState(existing?.name ?? '');
     const [provider, setProvider] = useState<ModelProvider>(existing?.provider ?? choices[0] ?? MODEL_PROVIDERS[0]);
@@ -320,7 +316,7 @@ function ConnectionForm({
     // Rotation checks the new key against the connection's own endpoint, so the check answers what a task will reach.
     const checkedBase = mode.kind === 'rotate' ? (existing?.baseUrl ?? '') : baseUrl;
     const keyed = mode.kind !== 'edit';
-    const check = useKeyCheck({ provider, key: keyed ? key : '', baseUrl: checkedBase, mode: deploymentMode });
+    const check = useKeyCheck({ provider, key: keyed ? key : '', baseUrl: checkedBase, subscriptionAllowed });
     const reason = connectionSaveReason({
         mode: mode.kind,
         name,
@@ -363,7 +359,7 @@ function ConnectionForm({
                 mode={mode.kind}
                 provider={provider}
                 choices={choices}
-                deploymentMode={deploymentMode}
+                subscriptionAllowed={subscriptionAllowed}
                 keyValue={key}
                 check={check}
                 onProvider={setProvider}

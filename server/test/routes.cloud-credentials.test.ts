@@ -1,4 +1,4 @@
-import { ERROR_CODES, type DeploymentMode } from '@factory-ai/core';
+import { credentialRedirectMessage, ERROR_CODES, type DeploymentMode } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import {
     githubAuth,
@@ -25,7 +25,7 @@ const NESTED = { model: 'sonnet', env: { [TOKEN]: VALUE } };
 const DEEP = { model: 'sonnet', provider: { extra: [{ env: { [TOKEN]: VALUE } }] } };
 const API_KEY = { model: 'sonnet', env: { ANTHROPIC_API_KEY: VALUE } };
 
-async function boot(deploymentMode: DeploymentMode) {
+async function boot(deploymentMode: DeploymentMode, subscriptionOrgIds: readonly string[] = []) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const executors = memoryUserExecutorStore();
@@ -35,7 +35,7 @@ async function boot(deploymentMode: DeploymentMode) {
         userExecutors: executors,
         envVars,
         repos: [{ owner: 'acme', name: 'web' }],
-        config: { auth: githubAuth(), deploymentMode },
+        config: { auth: githubAuth(), deploymentMode, cloudSubscriptionOrgIds: new Set(subscriptionOrgIds) },
     });
     track(h.app);
     const cookie = await signedIn(auth, admin);
@@ -113,5 +113,69 @@ describe('self-hosted mode keeps accepting the OAuth token', () => {
         expect((await send('PUT', '/api/env/workspace', vars(TOKEN))).statusCode).toBe(HTTP_OK);
         const repo = { repo: { owner: 'acme', name: 'web' }, ...vars(TOKEN) };
         expect((await send('PUT', '/api/env/repo', repo)).statusCode).toBe(HTTP_OK);
+    });
+});
+
+describe('cloud mode, an org the operator lists: every entry point accepts the OAuth token', () => {
+    it('in executor settings, personal and org', async () => {
+        const { send, executors } = await boot('cloud', ['test-org']);
+        expect((await send('PUT', '/api/workspace/executors', personal(NESTED))).statusCode).toBe(HTTP_OK);
+        expect((await send('PUT', '/api/workspace/executors', personal(DEEP))).statusCode).toBe(HTTP_OK);
+        const created = await send('POST', '/api/org/executors', org(NESTED));
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        expect((await send('PUT', `/api/org/executors/${created.json().id}`, org(DEEP))).statusCode).toBe(HTTP_OK);
+        expect(executors.rows()).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'team' })]));
+    });
+
+    it('in every env scope, and on a single-name and a multi-name write', async () => {
+        const { send } = await boot('cloud', ['test-org']);
+        expect((await send('PUT', '/api/env/org', vars(TOKEN))).statusCode).toBe(HTTP_OK);
+        expect((await send('PUT', '/api/env/workspace', vars(TOKEN))).statusCode).toBe(HTTP_OK);
+        const repo = { repo: { owner: 'acme', name: 'web' }, ...vars(TOKEN) };
+        expect((await send('PUT', '/api/env/repo', repo)).statusCode).toBe(HTTP_OK);
+        const single = await send('PUT', `/api/env/org/vars/${TOKEN}`, { value: VALUE, secret: true });
+        expect(single.statusCode).toBe(HTTP_OK);
+        const multi = await send('PUT', '/api/env/workspace/vars', {
+            entries: [{ name: TOKEN, value: VALUE, secret: true }],
+        });
+        expect(multi.statusCode).toBe(HTTP_OK);
+    });
+
+    it('still refuses a redirect of the deployment credential with no member key', async () => {
+        const { send } = await boot('cloud', ['test-org']);
+        const redirect = credentialRedirectMessage('ANTHROPIC_BASE_URL');
+        const envVars = { vars: [{ name: 'ANTHROPIC_BASE_URL', value: 'https://x.example.test', isSecret: false }] };
+        const fromEnv = await send('PUT', '/api/env/org', envVars);
+        expect(fromEnv.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(fromEnv.json().error).toBe(redirect);
+        const config = { env: { [TOKEN]: VALUE, ANTHROPIC_BASE_URL: 'https://x.example.test' } };
+        const fromExecutor = await send('PUT', '/api/workspace/executors', personal(config));
+        expect(fromExecutor.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(fromExecutor.json().error).toBe(redirect);
+    });
+});
+
+describe('cloud mode, only another org listed: every refusal holds', () => {
+    it('in executor settings and in every env scope', async () => {
+        const { send, executors, envVars } = await boot('cloud', ['other-org']);
+        expectRefused(await send('PUT', '/api/workspace/executors', personal(NESTED)));
+        expectRefused(await send('POST', '/api/org/executors', org(DEEP)));
+        expectRefused(await send('PUT', '/api/env/org', vars(TOKEN)));
+        expectRefused(await send('PUT', '/api/env/workspace', vars(TOKEN)));
+        expectRefused(await send('PUT', '/api/env/repo', { repo: { owner: 'acme', name: 'web' }, ...vars(TOKEN) }));
+        expectRefused(await send('PUT', `/api/env/org/vars/${TOKEN}`, { value: VALUE, secret: true }));
+        expectRefused(
+            await send('PUT', '/api/env/workspace/vars', { entries: [{ name: TOKEN, value: VALUE, secret: true }] })
+        );
+        expect(executors.rows()).toEqual([]);
+        expect(envVars.rows()).toEqual([]);
+    });
+
+    it('on the org executor update', async () => {
+        const { send, executors } = await boot('cloud', ['other-org']);
+        const created = await send('POST', '/api/org/executors', org(API_KEY));
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        expectRefused(await send('PUT', `/api/org/executors/${created.json().id}`, org(NESTED)));
+        expect(executors.rows()).toEqual([expect.objectContaining({ name: 'team', config: API_KEY })]);
     });
 });

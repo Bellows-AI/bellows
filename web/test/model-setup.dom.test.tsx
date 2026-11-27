@@ -60,15 +60,23 @@ const puts = (calls: FetchCall[]) => calls.filter((c) => c.method === 'PUT');
 const status = () => screen.getByRole('status', { name: 'Key check' });
 
 describe('provider cards', () => {
-    it('offers the subscription card self-hosted, never in cloud', async () => {
+    it('offers the subscription card self-hosted', async () => {
         board();
-        const selfHosted = mount();
+        mount();
         await screen.findByRole('radiogroup', { name: 'Provider' });
         expect(screen.getByRole('radio', { name: /^Claude subscription/ })).toBeTruthy();
-        selfHosted.unmount();
+    });
 
+    it('offers the subscription card to a cloud org the operator allows', async () => {
         board();
-        mount({ deploymentMode: 'cloud' });
+        mount({ deploymentMode: 'cloud', subscriptionToken: true });
+        await screen.findByRole('radiogroup', { name: 'Provider' });
+        expect(screen.getByRole('radio', { name: /^Claude subscription/ })).toBeTruthy();
+    });
+
+    it('never offers the subscription card to any other cloud org', async () => {
+        board();
+        mount({ deploymentMode: 'cloud', subscriptionToken: false });
         await screen.findByRole('radiogroup', { name: 'Provider' });
         expect(screen.queryByRole('radio', { name: /^Claude subscription/ })).toBeNull();
         expect(screen.getByRole('radio', { name: /^Anthropic/ })).toBeTruthy();
@@ -117,15 +125,24 @@ describe('provider cards', () => {
         expect(screen.getByText('Enter the proxy URL to continue.')).toBeTruthy();
     });
 
-    it('a subscription token in cloud is refused in the check line, with no call', async () => {
+    it('a subscription token in a cloud org not allowed one is refused in the check line, with no call', async () => {
         const calls = board();
-        mount({ deploymentMode: 'cloud' });
+        mount({ deploymentMode: 'cloud', subscriptionToken: false });
         fireEvent.change(await keyInput(), { target: { value: 'sk-ant-oat01-abc' } });
         await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
         expect(status().textContent).toContain(
             'This is a Claude subscription token. This deployment accepts API keys only'
         );
         expect(verifies(calls)).toHaveLength(0);
+    });
+
+    it('a subscription token in a cloud org the operator allows picks the subscription card, refused nowhere', async () => {
+        board();
+        mount({ deploymentMode: 'cloud', subscriptionToken: true });
+        fireEvent.change(await keyInput(), { target: { value: 'sk-ant-oat01-abc' } });
+        await act(() => new Promise((resolve) => setTimeout(resolve, 400)));
+        expect((screen.getByRole('radio', { name: /^Claude subscription/ }) as HTMLInputElement).checked).toBe(true);
+        expect(status().textContent).not.toContain('This deployment accepts API keys only');
     });
 });
 

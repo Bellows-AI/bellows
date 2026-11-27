@@ -1,5 +1,6 @@
 import {
     CLOUD_CREDENTIAL_MESSAGE,
+    credentialRedirectMessage,
     type DeploymentMode,
     NO_MODEL_MESSAGE,
     STORED_CREDENTIAL_PREFIX,
@@ -35,7 +36,10 @@ function stores(
     orgId: string,
     deploymentMode: DeploymentMode,
     reviewer: ReviewerSpec = REVIEWER,
-    platformModelProvided = false
+    {
+        platformModelProvided = false,
+        cloudSubscriptionOrgIds = new Set<string>(),
+    }: { platformModelProvided?: boolean; cloudSubscriptionOrgIds?: ReadonlySet<string> } = {}
 ) {
     const executors = createUserExecutorStore({ sql, orgId, ...testSecretDeps(sql) });
     const env = createEnvVarStore({ sql, orgId, secrets: testSecretStore(sql), secretLog: () => {} });
@@ -43,6 +47,7 @@ function stores(
         sql,
         orgId,
         deploymentMode,
+        cloudSubscriptionOrgIds,
         platformModelProvided,
         env,
         executorConfig: executors,
@@ -192,6 +197,72 @@ describe.skipIf(!enabled)('a reviewer granted only an OpenRouter key', () => {
     });
 });
 
+describe.skipIf(!enabled)('cloud mode, an org the operator lists: a stored OAuth token claims', () => {
+    const exempt = () => stores(ORG, 'cloud', REVIEWER, { cloudSubscriptionOrgIds: new Set([ORG]) });
+
+    it('in an executor profile: claims with the token, with no model key beside it', async () => {
+        const { executors, jobs } = exempt();
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: { env: { [TOKEN]: VALUE } } }]);
+        await mustCreate(jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' }));
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBeNull();
+        expect(JSON.stringify(claim)).toContain(VALUE);
+    });
+
+    it('in a repo-scope env row: claims with the token in the env', async () => {
+        const { executors, env, jobs } = exempt();
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await env.replaceRepo('env-admin', 'acme', 'web', [{ name: TOKEN, value: VALUE, isSecret: false }]);
+        await mustCreate(jobs.create('echo hi', ALICE, { repo: 'acme/web', executor: 'main', executorScope: 'user' }));
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBeNull();
+        expect(claim?.env?.[TOKEN]).toBe(VALUE);
+    });
+
+    it('granted to a reviewer: the review claim carries it', async () => {
+        const { executors, env, jobs } = exempt();
+        const config = { env: { ANTHROPIC_API_KEY: 'sk-ant-profile' } };
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config }]);
+        await env.replaceOrg('env-admin', [{ name: TOKEN, value: VALUE, isSecret: false }]);
+        await mustCreate(jobs.create('ship it', ALICE, { repo: 'acme/api', executor: 'main', executorScope: 'user' }));
+        const caller = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
+        expect(caller.executorRefusal).toBeNull();
+
+        const review = await jobs.requestReview(caller.id, caller.leaseToken, {
+            key: 'sec-1',
+            profile: 'sec',
+            revision: 'h:1',
+            ref: reviewRefOf(caller.id, 'sec-1'),
+        });
+        const claim = 'claim' in review ? review.claim : undefined;
+        expect(claim?.executorRefusal).toBeNull();
+        expect(claim?.env?.[TOKEN]).toBe(VALUE);
+    });
+
+    it('only the listed org: a token is refused when another org is listed', async () => {
+        const { executors, jobs } = stores(ORG, 'cloud', REVIEWER, {
+            cloudSubscriptionOrgIds: new Set(['other-org']),
+        });
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: { env: { [TOKEN]: VALUE } } }]);
+        await mustCreate(jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' }));
+
+        expectRefused(await jobs.claim('w1', LEASE_SECONDS));
+    });
+
+    it('a redirect of the deployment credential is still refused', async () => {
+        const { executors, jobs } = exempt();
+        const config = { env: { [TOKEN]: VALUE, ANTHROPIC_BASE_URL: 'https://gateway.example.test' } };
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config }]);
+        await mustCreate(jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' }));
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        expect(claim?.executorRefusal).toBe(credentialRedirectMessage('ANTHROPIC_BASE_URL'));
+        expect(claim?.env).toBeUndefined();
+    });
+});
+
 describe.skipIf(!enabled)('cloud mode: a claim with no model credential is refused (NO_MODEL)', () => {
     it('a key deleted between create and claim fails the task with the fix, sending no env', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
@@ -271,7 +342,10 @@ describe.skipIf(!enabled)('cloud mode: a claim with no model credential is refus
     });
 
     it('a self-hosted board, or a cloud board whose operator supplies the model, claims with no key', async () => {
-        for (const jobs of [stores(ORG, 'self-hosted').jobs, stores(ORG, 'cloud', REVIEWER, true).jobs]) {
+        for (const jobs of [
+            stores(ORG, 'self-hosted').jobs,
+            stores(ORG, 'cloud', REVIEWER, { platformModelProvided: true }).jobs,
+        ]) {
             const { executors } = stores(ORG, 'self-hosted');
             await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
             await mustCreate(jobs.create('echo', ALICE, { repo: 'acme/web', executor: 'main', executorScope: 'user' }));

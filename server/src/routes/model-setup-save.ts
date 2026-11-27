@@ -83,13 +83,13 @@ function parseRotate(fields: Record<string, unknown>): ConnectionIntent | Refusa
 function parseCreate(
     fields: Record<string, unknown>,
     agentType: ExecutorType,
-    config: AppConfig
+    subscriptionAllowed: boolean
 ): ConnectionIntent | Refusal {
     const unknown = unknownField(fields, CREATE_FIELDS);
     if (unknown) return unknown;
     const { provider, key, name, baseUrl } = fields;
     if (!isModelProvider(provider)) return refusal('connection.provider must be one of the model providers');
-    if (!providerAvailable(provider, config.deploymentMode)) {
+    if (!providerAvailable(provider, subscriptionAllowed)) {
         return refusal(CLOUD_CREDENTIAL_MESSAGE, ERROR_CODES.CLOUD_CREDENTIAL_REFUSED);
     }
     if (!PROVIDER_AGENTS[provider].includes(agentType)) {
@@ -112,7 +112,11 @@ function parseCreate(
     };
 }
 
-function parseConnection(raw: unknown, agentType: ExecutorType, config: AppConfig): ConnectionIntent | Refusal {
+function parseConnection(
+    raw: unknown,
+    agentType: ExecutorType,
+    subscriptionAllowed: boolean
+): ConnectionIntent | Refusal {
     const fields = jsonBody(raw);
     const { intent } = fields;
     if (intent === 'none') {
@@ -124,7 +128,7 @@ function parseConnection(raw: unknown, agentType: ExecutorType, config: AppConfi
     }
     if (intent === 'rotate') return parseRotate(fields);
     if (intent !== 'create') return refusal('connection.intent must be create, reuse, rotate or none');
-    return parseCreate(fields, agentType, config);
+    return parseCreate(fields, agentType, subscriptionAllowed);
 }
 
 function parseExecutor(
@@ -154,8 +158,11 @@ function parseExecutor(
     };
 }
 
-/** The body, or the refusal; every field named, a request id the retry can repeat, no key beside an intent that holds none. */
-export function parseSetup(raw: unknown, config: AppConfig): ParsedSetup | Refusal {
+/**
+ * The body, or the refusal; every field named, a request id the retry can repeat, no key beside an intent that holds
+ * none, and a subscription only where the caller's org may hold one (`subscriptionAllowed`).
+ */
+export function parseSetup(raw: unknown, subscriptionAllowed: boolean): ParsedSetup | Refusal {
     const fields = jsonBody(raw);
     const extra = Object.keys(fields).find((name) => !FIELDS.has(name));
     if (extra !== undefined) return refusal(`unknown field ${extra}`);
@@ -172,7 +179,7 @@ export function parseSetup(raw: unknown, config: AppConfig): ParsedSetup | Refus
         return refusal(`model must be a name of 1 to ${MAX_AGENT_MODEL_LENGTH} characters`);
     }
     const type = agentType as ExecutorType;
-    const connection = parseConnection(fields.connection, type, config);
+    const connection = parseConnection(fields.connection, type, subscriptionAllowed);
     if ('error' in connection) return connection;
     const executor = parseExecutor(fields.executor, { agentType: type, model });
     if ('error' in executor) return executor;
