@@ -223,8 +223,7 @@ describe.skipIf(!enabled)('configured default selection', () => {
         await store.selectDefault(null, mine.id);
         await store.selectDefault(BOB, mine.id);
         expect(await refusal(() => store.changeScope(mine.id, 'user', ALICE))).toMatchObject({
-            organization: true,
-            members: 1,
+            selections: { organization: true, members: 1 },
         });
         expect(await store.selectedDefault(null)).toMatchObject({ executorId: mine.id, scope: 'org' });
         expect((await store.listOrg()).map((row) => row.id)).toEqual([mine.id]);
@@ -232,8 +231,7 @@ describe.skipIf(!enabled)('configured default selection', () => {
         // Another member's selection refuses too, until the demotion carries an explicit clear.
         await store.clearDefault(null);
         expect(await refusal(() => store.changeScope(mine.id, 'user', ALICE))).toMatchObject({
-            organization: false,
-            members: 1,
+            selections: { organization: false, members: 1 },
         });
         expect(await store.selectedDefault(BOB)).toMatchObject({ executorId: mine.id });
         await store.changeScope(mine.id, 'user', ALICE, { clear: true });
