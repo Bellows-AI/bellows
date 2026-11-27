@@ -642,6 +642,128 @@ describe('fake GitLab: discussions and notes', () => {
     });
 });
 
+describe('fake GitLab: what the review loop reads', () => {
+    const FAST = 150;
+    const HEAD_SHA = 'a'.repeat(40);
+    const listed = async (token: string, query = '') =>
+        gl.send('GET', api(`/merge_requests/1/discussions${query}`), { token });
+    const mrUpdatedAt = async (token: string) =>
+        (await gl.send('GET', api('/merge_requests/1'), { token })).body.updated_at as string;
+    const started = async () => {
+        await seed();
+        const { access_token: token } = await gl.signIn('dev');
+        await openMr(token);
+        return token;
+    };
+
+    it('pages the discussions listing', async () => {
+        const token = await started();
+        for (const body of ['one', 'two', 'three']) {
+            await gl.send('POST', api('/merge_requests/1/discussions'), { token, body: { body } });
+        }
+        const first = await listed(token, '?per_page=2&page=1');
+        const second = await listed(token, '?per_page=2&page=2');
+        expect(first.body).toHaveLength(2);
+        expect(second.body).toHaveLength(1);
+        expect(first.headers['x-next-page']).toBe('2');
+    });
+
+    it('serves a seeded position on each note, and a system note flagged as one', async () => {
+        const token = await started();
+        const position = {
+            position_type: 'text',
+            new_path: 'README.md',
+            old_path: 'README.md',
+            new_line: 3,
+            old_line: null,
+            head_sha: HEAD_SHA,
+        };
+        await gl.control('gitlab/discussion', { project: PROJECT, iid: 1, login: 'rev-one', body: 'here', position });
+        await gl.control('gitlab/discussion', {
+            project: PROJECT,
+            iid: 1,
+            login: 'rev-one',
+            body: 'added 1 commit',
+            system: true,
+            individual: true,
+        });
+        const { body } = await listed(token);
+        expect(body[0].notes[0]).toMatchObject({ author: { username: 'rev-one' }, position, system: false });
+        expect(body[0].individual_note).toBe(false);
+        expect(body[1].notes[0]).toMatchObject({ system: true, resolvable: false });
+        expect(body[1].individual_note).toBe(true);
+    });
+
+    it('moves the merge request updated_at when a note is added or a discussion resolved', async () => {
+        const token = await started();
+        const thread = await gl.send('POST', api('/merge_requests/1/discussions'), { token, body: { body: 'x' } });
+        const touched = async (send: () => Promise<unknown>) => {
+            const before = await mrUpdatedAt(token);
+            await gl.control('clock', { advanceMs: 1000 });
+            await send();
+            expect(await mrUpdatedAt(token)).not.toBe(before);
+        };
+        await touched(() =>
+            gl.send('POST', api(`/merge_requests/1/discussions/${thread.body.id}/notes`), {
+                token,
+                body: { body: 'y' },
+            })
+        );
+        await touched(() => gl.send('POST', api('/merge_requests/1/notes'), { token, body: { body: 'z' } }));
+        await touched(() =>
+            gl.send('PUT', api(`/merge_requests/1/discussions/${thread.body.id}?resolved=true`), { token })
+        );
+    });
+
+    it('resolves on a query parameter (pin)', async () => {
+        const token = await started();
+        const thread = await gl.send('POST', api('/merge_requests/1/discussions'), { token, body: { body: 'x' } });
+        const done = await gl.send('PUT', api(`/merge_requests/1/discussions/${thread.body.id}?resolved=true`), {
+            token,
+        });
+        expect(done.body.notes[0].resolved).toBe(true);
+    });
+
+    it('answers the reviewers a control seeds, with their states', async () => {
+        const token = await started();
+        expect((await gl.send('GET', api('/merge_requests/1/reviewers'), { token })).body).toEqual([]);
+        await gl.control('gitlab/reviewers', {
+            project: PROJECT,
+            iid: 1,
+            reviewers: [
+                { login: 'rev-one', state: 'unreviewed' },
+                { login: 'rev-two', state: 'requested_changes' },
+            ],
+        });
+        const { body } = await gl.send('GET', api('/merge_requests/1/reviewers'), { token });
+        expect(body).toMatchObject([
+            { user: { username: 'rev-one' }, state: 'unreviewed' },
+            { user: { username: 'rev-two' }, state: 'requested_changes' },
+        ]);
+    });
+
+    it('applies the fault controls to the discussion and note routes (pin)', async () => {
+        const token = await started();
+        const thread = await gl.send('POST', api('/merge_requests/1/discussions'), { token, body: { body: 'x' } });
+        await gl.control('gitlab/faults', { pathIncludes: '/discussions', mode: 'status', status: 502, count: 1 });
+        expect((await listed(token)).status).toBe(502);
+        await gl.control('gitlab/faults', { pathIncludes: '/notes', mode: 'status', status: 503, count: 1 });
+        const note = await gl.send('POST', api('/merge_requests/1/notes'), { token, body: { body: 'z' } });
+        expect(note.status).toBe(503);
+        await gl.control('gitlab/faults', { pathIncludes: '/discussions', mode: 'lost', count: 1 });
+        await expect(
+            fetch(`${gl.base}${api(`/merge_requests/1/discussions/${thread.body.id}/notes`)}`, {
+                method: 'POST',
+                headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+                body: JSON.stringify({ body: 'lost' }),
+                signal: AbortSignal.timeout(FAST),
+            })
+        ).rejects.toThrow();
+        const after = await listed(token);
+        expect(after.body[0].notes.map((n: { body: string }) => n.body)).toContain('lost');
+    });
+});
+
 describe('fake GitLab: pipelines and commit statuses', () => {
     it('lists pipelines for a ref or sha, and shows one by id', async () => {
         await seed();
