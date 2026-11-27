@@ -39,6 +39,7 @@ import type { ProviderKeys } from './provider-keys/verify.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
+import { providerConnectionRoutes } from './routes/provider-connections.js';
 import { createConnectorRegistry, type ConnectorRegistry } from './notifications/connector.js';
 import { notificationSubscriptionRoutes } from './routes/notification-subscriptions.js';
 import { orgMemberRoutes } from './routes/org-members.js';
@@ -339,8 +340,9 @@ async function registerRunnerCredentialRoutes(
 }
 
 /**
- * The routes that exist only with their dependency — commerce (and COMMERCE_ENABLED), the provider key check — and
- * the model setup the key check serves, which every board has.
+ * The routes that exist only with their dependency — commerce (and COMMERCE_ENABLED), the provider
+ * key check — the model setup the key check serves, which every board has, and the provider
+ * connections whose discovery spends the stored key through it.
  */
 async function registerOptionalRoutes(
     app: FastifyInstance,
@@ -350,6 +352,7 @@ async function registerOptionalRoutes(
 ): Promise<void> {
     if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
     if (providerKeys) await app.register(modelSetupVerifyRoutes({ providerKeys, now }));
+    await app.register(providerConnectionRoutes({ orgs, deploymentMode: config.deploymentMode, providerKeys, now }));
     await app.register(modelSetupRoutes({ config, orgs }));
 }
 

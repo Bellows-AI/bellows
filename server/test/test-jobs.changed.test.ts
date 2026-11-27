@@ -320,6 +320,23 @@ describe('test-jobs --changed path-to-phase map', () => {
         expect(classify(['scripts/mcp-kind-client.mjs']).selected).toEqual([]);
     });
 
+    it('runs every phase for the files a profile connection reaches a claim through', () => {
+        for (const file of [
+            'server/src/db/provider-connection-store.ts',
+            'server/src/db/provider-connection-secrets.ts',
+            'server/src/db/jobs/job-store-claim-executor.ts',
+            'server/src/db/user-executor-store.ts',
+            'server/src/db/executor-connection-selection.ts',
+            'server/src/db/executor-default-store.ts',
+            'server/migrations/168_executor_provider_connection.sql',
+            'core/src/model-providers.ts',
+            'core/src/provider-connections.ts',
+            'server/src/routes/executor-fields.ts',
+        ]) {
+            expect(classify([file]).selected, file).toBe('full');
+        }
+    });
+
     it('runs the image-checks phase for an executor image file and for either image check script', () => {
         for (const file of [
             'docker/claude-executor/test.sh',

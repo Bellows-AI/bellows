@@ -3,7 +3,9 @@ import {
     ADMIN_ROLE,
     type DeploymentMode,
     ERROR_CODES,
+    executorConnectionFields,
     ORG_SCOPE,
+    type ProviderConnectionMeta,
     USER_SCOPE,
     type ExecutorScope,
 } from '@factory-ai/core';
@@ -17,10 +19,17 @@ import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import {
     executorFieldRefusal,
     executorFieldStatus,
+    HTTP_CONNECTION_REFUSED,
+    isConnectionRefusal,
+    type LifecycleRefusal,
+    lifecycleRefusal,
     MAX_EXECUTORS_PER_ORG,
     MAX_EXECUTORS_PER_USER,
     orgRunnerClassRefusal,
+    parseDefaultResolution,
     parseExecutorFields,
+    selectionRefusal,
+    visibleConnections,
 } from './executor-fields.js';
 
 const HTTP_OK = 200;
@@ -86,21 +95,35 @@ function idParam(request: FastifyRequest, reply: FastifyReply): string | null {
     return id;
 }
 
-/** Runs a write, answering `{ taken: true }` for the unique-name violation and `{ ok }` otherwise. */
+/**
+ * Runs a write, answering `{ taken: true }` for the unique-name violation, `{ refused }` for a provider connection
+ * selection the store refused and `{ ok }` otherwise.
+ */
 function saveOrTaken<T>(request: FastifyRequest, reply: FastifyReply, write: () => Promise<T>) {
     return guard(
         reply,
         (e) => request.log.error({ err: e }),
-        async (): Promise<{ ok: T } | { taken: true }> => {
+        async (): Promise<{ ok: T } | { taken: true } | { refused: string } | { blocked: LifecycleRefusal }> => {
             try {
                 return { ok: await write() };
             } catch (error) {
+                if (isConnectionRefusal(error)) return { refused: error.message };
+                const refusal = lifecycleRefusal(error);
+                if (refusal) return { blocked: refusal };
                 if (isNameTaken(error)) return { taken: true };
                 throw error;
             }
         }
     );
 }
+
+/** The refusal a write answers when a default still names the executor (or its id is not the caller's). */
+const blocked = (reply: FastifyReply, refusal: LifecycleRefusal) =>
+    bad(reply, refusal.code, refusal.message, refusal.status);
+
+/** The 409 a refused connection selection answers, once the write's answer says so. */
+const connectionRefused = (reply: FastifyReply, message: string) =>
+    bad(reply, ERROR_CODES.PROVIDER_CONNECTION_REFUSED, message, HTTP_CONNECTION_REFUSED);
 
 /**
  * The route-level name rules for an org profile, restating the row check the way the personal PUT
@@ -111,15 +134,37 @@ function badProfileName(name: string): string | null {
     return badSegment('name', name);
 }
 
+type VisibleConnections = ReadonlyMap<string, ProviderConnectionMeta>;
+
+/**
+ * A row's connection fields beside its id, when the read knows the caller's visible connections: safe name, provider
+ * and scope, and whether the pasted config overrides the connection — never a key or a secret reference.
+ */
+function connectionFields(
+    row: { providerConnectionId: string | null; configOverridesConnection?: boolean },
+    visible: VisibleConnections | undefined
+) {
+    if (visible === undefined) return {};
+    return {
+        ...executorConnectionFields(row.providerConnectionId, visible),
+        configOverridesConnection: row.configOverridesConnection === true,
+    };
+}
+
 /** Selection metadata every member may see. */
-function selectionMetadata(row: {
-    id: string;
-    name: string;
-    type: string;
-    createdAt: string;
-    suspended: boolean;
-    runnerClass: string | null;
-}): Record<string, unknown> {
+function selectionMetadata(
+    row: {
+        id: string;
+        name: string;
+        type: string;
+        createdAt: string;
+        suspended: boolean;
+        runnerClass: string | null;
+        providerConnectionId: string | null;
+        configOverridesConnection?: boolean;
+    },
+    visible?: VisibleConnections
+): Record<string, unknown> {
     return {
         id: row.id,
         name: row.name,
@@ -127,6 +172,8 @@ function selectionMetadata(row: {
         createdAt: row.createdAt,
         suspended: row.suspended,
         runnerClass: row.runnerClass,
+        providerConnectionId: row.providerConnectionId,
+        ...connectionFields(row, visible),
     };
 }
 
@@ -158,18 +205,23 @@ function parseOrgFields(
 }
 
 /** The admin list's row: the metadata plus the configuration and the audit fields. */
-function adminRow(row: {
-    id: string;
-    name: string;
-    type: string;
-    createdAt: string;
-    updatedAt: string;
-    gateFixRounds: number;
-    createdBy: string | null;
-    suspended: boolean;
-    runnerClass: string | null;
-    config: Record<string, unknown>;
-}): Record<string, unknown> {
+function adminRow(
+    row: {
+        id: string;
+        name: string;
+        type: string;
+        createdAt: string;
+        updatedAt: string;
+        gateFixRounds: number;
+        createdBy: string | null;
+        suspended: boolean;
+        runnerClass: string | null;
+        providerConnectionId: string | null;
+        configOverridesConnection?: boolean;
+        config: Record<string, unknown>;
+    },
+    visible?: VisibleConnections
+): Record<string, unknown> {
     return {
         id: row.id,
         name: row.name,
@@ -180,13 +232,17 @@ function adminRow(row: {
         gateFixRounds: row.gateFixRounds,
         createdBy: row.createdBy,
         runnerClass: row.runnerClass,
+        providerConnectionId: row.providerConnectionId,
+        ...connectionFields(row, visible),
         config: row.config,
     };
 }
 
 async function handleListOrgExecutors(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeOf(orgs, request);
+    const rt = await orgs.for(orgOf(request));
+    const store = rt?.userExecutors;
     if (!store) return noStore(reply);
+    const connections = rt.providerConnections;
     const caller = callerOf(request);
     if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
 
@@ -197,18 +253,20 @@ async function handleListOrgExecutors(orgs: OrgRegistry, request: FastifyRequest
         const loaded = await guard(
             reply,
             (e) => request.log.error({ err: e }),
-            () => store.listOrgWithConfigs()
+            async () => Promise.all([store.listOrgWithConfigs(), visibleConnections(connections, caller.user.id)])
         );
         if (!loaded.ok) return reply;
-        return reply.code(HTTP_OK).send({ executors: loaded.value.map(adminRow) });
+        const [rows, visible] = loaded.value;
+        return reply.code(HTTP_OK).send({ executors: rows.map((row) => adminRow(row, visible)) });
     }
     const loaded = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => store.listOrg()
+        async () => Promise.all([store.listOrg(), visibleConnections(connections, caller.user.id)])
     );
     if (!loaded.ok) return reply;
-    return reply.code(HTTP_OK).send({ executors: loaded.value.map(selectionMetadata) });
+    const [rows, visible] = loaded.value;
+    return reply.code(HTTP_OK).send({ executors: rows.map((row) => selectionMetadata(row, visible)) });
 }
 
 async function handleCreateOrgExecutor(deps: OrgExecutorRoutesDeps, request: FastifyRequest, reply: FastifyReply) {
@@ -235,6 +293,8 @@ async function handleCreateOrgExecutor(deps: OrgExecutorRoutesDeps, request: Fas
 
     const saved = await saveOrTaken(request, reply, () => store.createOrg({ ...fields, createdBy: caller.user.id }));
     if (!saved.ok) return reply;
+    if ('refused' in saved.value) return connectionRefused(reply, saved.value.refused);
+    if ('blocked' in saved.value) return blocked(reply, saved.value.blocked);
     if ('taken' in saved.value) {
         return bad(
             reply,
@@ -264,6 +324,8 @@ async function handleUpdateOrgExecutor(deps: OrgExecutorRoutesDeps, request: Fas
 
     const saved = await saveOrTaken(request, reply, () => store.updateOrg(id, fields));
     if (!saved.ok) return reply;
+    if ('refused' in saved.value) return connectionRefused(reply, saved.value.refused);
+    if ('blocked' in saved.value) return blocked(reply, saved.value.blocked);
     if ('taken' in saved.value) {
         return bad(
             reply,
@@ -283,14 +345,25 @@ async function handleDeleteOrgExecutor(orgs: OrgRegistry, request: FastifyReques
     const id = idParam(request, reply);
     if (id === null) return reply;
 
+    const resolution = parseDefaultResolution(request.query as Record<string, unknown>);
+    if (resolution && 'refusal' in resolution) return bad(reply, ERROR_CODES.BAD_BODY, resolution.refusal);
     const removed = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => store.deleteOrg(id)
+        async () => {
+            try {
+                return { removed: await store.deleteOrg(id, resolution) };
+            } catch (error) {
+                const refusal = lifecycleRefusal(error);
+                if (refusal) return { refusal };
+                throw error;
+            }
+        }
     );
     if (!removed.ok) return reply;
-    if (!removed.value) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such organization executor' });
-    return reply.code(HTTP_OK).send({ id, removed: removed.value });
+    if ('refusal' in removed.value) return blocked(reply, removed.value.refusal);
+    if (!removed.value.removed) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such organization executor' });
+    return reply.code(HTTP_OK).send({ id, removed: true });
 }
 
 /** Suspends or resumes an org profile for every member (issue 440): admin-gated, id-keyed. */
@@ -311,6 +384,58 @@ async function handleSuspendOrgExecutor(orgs: OrgRegistry, request: FastifyReque
     if (!updated.ok) return reply;
     if (!updated.value) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such organization executor' });
     return reply.code(HTTP_OK).send(selectionMetadata(updated.value));
+}
+
+/**
+ * Configures the organization's default executor `{ executorId }`: an organization profile only, which every member
+ * without a default of their own then launches on. Replacing it is this same call; clearing it is the DELETE.
+ */
+async function handlePutOrgDefault(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await adminContext(orgs, request, reply);
+    if (!ctx) return reply;
+    const { executorId } = jsonBody(request.body);
+    if (typeof executorId !== 'string' || !executorId) {
+        return bad(reply, ERROR_CODES.BAD_BODY, 'executorId must be a string');
+    }
+    try {
+        const selected = await ctx.store.selectDefault(null, executorId);
+        return reply.code(HTTP_OK).send({ defaultExecutorId: selected.executorId, name: selected.name });
+    } catch (error) {
+        const refused = selectionRefusal(reply, error, `the organization executor "${executorId}"`);
+        if (refused) return refused;
+        throw error;
+    }
+}
+
+async function handleClearOrgDefault(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await adminContext(orgs, request, reply);
+    if (!ctx) return reply;
+    const cleared = await guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        () => ctx.store.clearDefault(null)
+    );
+    if (!cleared.ok) return reply;
+    return reply.code(HTTP_OK).send({ cleared: cleared.value });
+}
+
+/** The cap refusal for the list a move lands the row in, or null while that list has room. */
+function capRefusal(reply: FastifyReply, scope: ExecutorScope, counts: { org: number; personal: number }) {
+    if (scope === ORG_SCOPE && counts.org >= MAX_EXECUTORS_PER_ORG) {
+        return bad(
+            reply,
+            ERROR_CODES.TOO_MANY_EXECUTORS,
+            `at most ${MAX_EXECUTORS_PER_ORG} organization executors can be configured at once`
+        );
+    }
+    if (scope === USER_SCOPE && counts.personal >= MAX_EXECUTORS_PER_USER) {
+        return bad(
+            reply,
+            ERROR_CODES.TOO_MANY_EXECUTORS,
+            `at most ${MAX_EXECUTORS_PER_USER} executors can be configured at once`
+        );
+    }
+    return null;
 }
 
 /**
@@ -342,23 +467,15 @@ async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyR
         })
     );
     if (!caps.ok) return reply;
-    if (scope === ORG_SCOPE && caps.value.org >= MAX_EXECUTORS_PER_ORG) {
-        return bad(
-            reply,
-            ERROR_CODES.TOO_MANY_EXECUTORS,
-            `at most ${MAX_EXECUTORS_PER_ORG} organization executors can be configured at once`
-        );
-    }
-    if (scope === USER_SCOPE && caps.value.personal >= MAX_EXECUTORS_PER_USER) {
-        return bad(
-            reply,
-            ERROR_CODES.TOO_MANY_EXECUTORS,
-            `at most ${MAX_EXECUTORS_PER_USER} executors can be configured at once`
-        );
-    }
+    const capped = capRefusal(reply, scope, caps.value);
+    if (capped) return capped;
 
-    const moved = await saveOrTaken(request, reply, () => store.changeScope(id, scope, caller.user.id));
+    const resolution = parseDefaultResolution(raw);
+    if (resolution && 'refusal' in resolution) return bad(reply, ERROR_CODES.BAD_BODY, resolution.refusal);
+    const moved = await saveOrTaken(request, reply, () => store.changeScope(id, scope, caller.user.id, resolution));
     if (!moved.ok) return reply;
+    if ('refused' in moved.value) return connectionRefused(reply, moved.value.refused);
+    if ('blocked' in moved.value) return blocked(reply, moved.value.blocked);
     if ('taken' in moved.value) {
         return bad(
             reply,
@@ -381,7 +498,8 @@ async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyR
  *   the full configuration answers to admins only.
  * - `POST /api/org/executors` — create, admin-gated; `runnerClass` names a declared class or null.
  * - `PUT /api/org/executors/:id` — edit, admin-gated; `scope` in the body is a BAD_SCOPE refusal.
- * - `DELETE /api/org/executors/:id` — delete, admin-gated.
+ * - `DELETE /api/org/executors/:id` — delete, admin-gated; refused while it is the organization default.
+ * - `PUT /api/org/executors/default` `{executorId}` / `DELETE` — configure or clear the organization default, admin-gated.
  * - `POST /api/org/executors/:id/suspension` — suspend/resume `{suspended}`, admin-gated.
  * - `POST /api/org/executors/:id/scope` — promote/demote, admin-gated; the store only ever moves
  *   the calling admin's own personal row up.
@@ -406,6 +524,12 @@ export const orgExecutorRoutes =
         );
         app.put('/api/org/executors/:id', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleUpdateOrgExecutor(deps, request, reply)
+        );
+        app.put('/api/org/executors/default', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handlePutOrgDefault(orgs, request, reply)
+        );
+        app.delete('/api/org/executors/default', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleClearOrgDefault(orgs, request, reply)
         );
         app.delete('/api/org/executors/:id', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleDeleteOrgExecutor(orgs, request, reply)

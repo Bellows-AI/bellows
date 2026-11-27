@@ -176,11 +176,11 @@ export async function launchChecks(
 }
 
 /**
- * In cloud, each task's agent must have a model credential for its repository (`refusedAsNoModel`), judged once per
- * repository × executor or agent: 409 `NO_MODEL`, or 503 when the env cannot be read. False once a refusal is sent.
+ * Each task's agent must have a model credential for its repository where the board requires one, and the connection
+ * its profile selects must be usable anywhere (`refusedAsNoModel`), judged once per repository × executor or agent:
+ * 409 `NO_MODEL` or `PROVIDER_CONNECTION_REFUSED`, or 503 when the env cannot be read. False once a refusal is sent.
  */
 async function modelKeysPresent(ctx: Context, request: FastifyRequest, reply: FastifyReply, plan: ResolvedBatchPlan) {
-    if (!ctx.runtime.modelRequired) return true;
     const repoOf = new Map(plan.targets.map((target) => [target.key, target.repo]));
     const seen = new Set<string>();
     for (const task of plan.stages.flatMap((stage) => stage.tasks)) {
@@ -190,7 +190,7 @@ async function modelKeysPresent(ctx: Context, request: FastifyRequest, reply: Fa
         seen.add(key);
         const profile =
             task.agentType !== undefined
-                ? { type: executorTypeOf(task.agentType), config: null }
+                ? { type: executorTypeOf(task.agentType), config: null, connection: null }
                 : await refusedAsUnusable(request, reply, {
                       executors: ctx.runtime.userExecutors,
                       createdBy: ctx.createdBy,

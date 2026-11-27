@@ -1,9 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-selection.js';
+import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import {
     createUserExecutorStore,
-    ExecutorSuspendedError,
+    ExecutorDefaultProtectedError,
+    ExecutorIdentityError,
     type ExecutorDefault,
     type ResolvedDefault,
     type UserExecutorStore,
@@ -104,6 +107,32 @@ describe.skipIf(!enabled)('the user executor store', () => {
             suspended: false,
             runnerClass: null,
         });
+    });
+
+    it('reads whether a pasted config overrides a connection from the stored markers, on every list read', async () => {
+        await store.replace(ALICE, [
+            { name: 'plain', type: 'opencode', config: { model: 'anthropic/claude-sonnet-4-5' } },
+            { name: 'keyed', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: 'sk-test-override' } } },
+            { name: 'ref', type: 'opencode', config: { provider: { p: { options: { apiKey: '{env:MY_KEY}' } } } } },
+            {
+                name: 'endpoint',
+                type: 'opencode',
+                config: { provider: { p: { options: { baseURL: 'https://x.test' } } } },
+            },
+        ]);
+        const flags = (rows: { name: string; configOverridesConnection?: boolean }[]) =>
+            Object.fromEntries(rows.map((row) => [row.name, row.configOverridesConnection]));
+        const expected = { plain: false, keyed: true, ref: true, endpoint: true };
+        expect(flags(await store.list(ALICE))).toEqual(expected);
+        expect(flags(await store.listWithConfigs(ALICE))).toEqual(expected);
+        await store.createOrg({
+            name: 'org-keyed',
+            type: 'claude-code',
+            config: { env: { ANTHROPIC_API_KEY: 'sk-test-org' } },
+            createdBy: ALICE,
+        });
+        expect(flags(await store.listOrg())).toEqual({ 'org-keyed': true });
+        expect(flags(await store.listOrgWithConfigs())).toEqual({ 'org-keyed': true });
     });
 
     /**
@@ -389,7 +418,15 @@ describe.skipIf(!enabled)('removing and suspending profiles by id (issue 440)', 
     });
 });
 
-describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
+/** Legacy rows are only read now: a fixture writes the old name-keyed preference the way 047 left it. */
+const legacyDefault = (userId: string, def: ExecutorDefault) =>
+    sql`
+        insert into user_executor_default (org_id, user_id, scope, name)
+        values (${ORG}, ${userId}, ${def.scope}, ${def.name})
+        on conflict (org_id, user_id) do update set scope = excluded.scope, name = excluded.name
+    `;
+
+describe.skipIf(!enabled)('the legacy per-user default preference (read only)', () => {
     const pref = (scope: ExecutorDefault['scope'], name: string): ExecutorDefault => ({ scope, name });
     const profile = (scope: ExecutorDefault['scope'], name: string): ResolvedDefault => ({
         kind: 'profile',
@@ -397,46 +434,16 @@ describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
         name,
     });
 
-    it('stores one preference per member and reads it back', async () => {
+    it('reads one preference per member', async () => {
         await store.createOrg({ name: 'shared', type: 'claude-code', config: {}, createdBy: ALICE });
-        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
-
-        await store.setDefault(ALICE, pref('org', 'shared'));
+        await legacyDefault(ALICE, pref('org', 'shared'));
         expect(await store.defaultOf(ALICE)).toEqual(pref('org', 'shared'));
         // Per-user: Alice's preference never becomes Bob's.
         expect(await store.defaultOf(BOB)).toBeNull();
-
-        await store.setDefault(ALICE, pref('user', 'mine'));
-        expect(await store.defaultOf(ALICE)).toEqual(pref('user', 'mine'));
     });
 
-    /** Each row refuses every named preference, and neither refusal writes the preference row. */
-    it.each<{
-        name: string;
-        suspend: boolean;
-        prefs: ExecutorDefault[];
-        error?: typeof ExecutorSuspendedError;
-    }>([
-        {
-            name: 'refuses a preference naming no accessible profile in that scope',
-            suspend: false,
-            prefs: [pref('user', 'ghost'), pref('org', 'ghost')],
-        },
-        {
-            name: 'refuses a suspended profile as the preference and writes nothing (issue 440)',
-            suspend: true,
-            prefs: [pref('user', 'mine')],
-            error: ExecutorSuspendedError,
-        },
-    ])('$name', async ({ suspend, prefs, error }) => {
-        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
-        if (suspend) await store.setPersonalSuspended(ALICE, (await store.list(ALICE))[0]!.id, true);
-
-        for (const preference of prefs) {
-            const refused = expect(store.setDefault(ALICE, preference)).rejects;
-            await (error === undefined ? refused.toThrow() : refused.toBeInstanceOf(error));
-        }
-        expect(await store.defaultOf(ALICE)).toBeNull();
+    it('has no write path: the store no longer sets a name-keyed preference', () => {
+        expect('setDefault' in store).toBe(false);
     });
 
     it('falls back deterministically: stored preference, first personal row, first org row, null', async () => {
@@ -452,7 +459,7 @@ describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
         expect(await store.resolvedDefault(BOB)).toEqual(profile('org', 'org-a'));
 
         // A stored preference wins while it still resolves — either scope.
-        await store.setDefault(ALICE, pref('org', 'org-b'));
+        await legacyDefault(ALICE, pref('org', 'org-b'));
         expect(await store.resolvedDefault(ALICE)).toEqual(profile('org', 'org-b'));
 
         // The preferred profile is removed: the chain answers from what remains.
@@ -474,7 +481,7 @@ describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
             { name: 'first', type: 'claude-code', config: {} },
             { name: 'second', type: 'claude-code', config: {} },
         ]);
-        await store.setDefault(ALICE, pref('user', 'second'));
+        await legacyDefault(ALICE, pref('user', 'second'));
         const byName = async (name: string) => (await store.list(ALICE)).find((row) => row.name === name)!;
 
         await store.setPersonalSuspended(ALICE, (await byName('second')).id, true);
@@ -543,7 +550,7 @@ describe.skipIf(!enabled)('the agent default', () => {
         await store.createOrg({ name: 'org-a', type: 'claude-code', config: {}, createdBy: ALICE });
         await store.createOrg({ name: 'org-b', type: 'opencode', config: {}, createdBy: ALICE });
         await store.replace(ALICE, [{ name: 'zulu', type: 'claude-code', config: {} }]);
-        await store.setDefault(ALICE, { scope: 'org', name: 'org-b' });
+        await legacyDefault(ALICE, { scope: 'org', name: 'org-b' });
         await store.setAgentDefault(ALICE, opencode);
         await store.setAgentDefault(null, claude);
 
@@ -573,5 +580,280 @@ describe.skipIf(!enabled)('the agent default', () => {
         const orgA = (await store.listOrg()).find((row) => row.name === 'org-a')!;
         await store.setOrgSuspended(orgA.id, true);
         expect(await store.resolvedDefault(ALICE)).toBeNull();
+    });
+});
+
+describe.skipIf(!enabled)('executor writes and the provider connection they select', () => {
+    const connections = () => createProviderConnectionStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
+    const connect = (over: Partial<Parameters<ReturnType<typeof connections>['create']>[0]> = {}) =>
+        connections().create({
+            scope: 'personal',
+            userId: ALICE,
+            provider: 'anthropic',
+            name: `c-${randomUUID().slice(0, 8)}`,
+            baseUrl: null,
+            key: 'sk-ant-store-test-key',
+            ...over,
+        });
+    const refusal = async (write: () => Promise<unknown>) => {
+        const error = await write().then(
+            () => null,
+            (e: unknown) => e
+        );
+        expect(error).toBeInstanceOf(ExecutorConnectionRefusedError);
+        return (error as ExecutorConnectionRefusedError).reason;
+    };
+
+    it('all writes enforce provider scope and compatibility', async () => {
+        const mine = await connect();
+        const bobs = await connect({ userId: BOB });
+        const org = await connect({ scope: 'org' });
+        const openai = await connect({ scope: 'org', provider: 'openai' });
+        const personalOpenai = await connect({ provider: 'openai' });
+
+        // Personal whole-list PUT: own and org connections pass; another member's, unsupported pairs and unknown ids do not.
+        await store.replace(ALICE, [
+            { name: 'a', type: 'claude-code', config: {}, providerConnectionId: mine.id },
+            { name: 'b', type: 'opencode', config: {}, providerConnectionId: org.id },
+        ]);
+        expect((await store.list(ALICE)).map((row) => row.providerConnectionId)).toEqual([mine.id, org.id]);
+        expect(
+            await refusal(() =>
+                store.replace(ALICE, [{ name: 'x', type: 'claude-code', config: {}, providerConnectionId: bobs.id }])
+            )
+        ).toBe('missing');
+        expect(
+            await refusal(() =>
+                store.replace(ALICE, [{ name: 'x', type: 'claude-code', config: {}, providerConnectionId: openai.id }])
+            )
+        ).toBe('incompatible');
+        expect(
+            await refusal(() =>
+                store.replace(ALICE, [{ name: 'x', type: 'opencode', config: {}, providerConnectionId: randomUUID() }])
+            )
+        ).toBe('missing');
+        // A refused save leaves the list as it was.
+        expect((await store.list(ALICE)).map((row) => row.name)).toEqual(['a', 'b']);
+
+        // Org create/update: an org connection only.
+        expect(
+            await refusal(() =>
+                store.createOrg({
+                    name: 'o1',
+                    type: 'claude-code',
+                    config: {},
+                    createdBy: ALICE,
+                    providerConnectionId: mine.id,
+                })
+            )
+        ).toBe('scope');
+        const created = await store.createOrg({
+            name: 'o2',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+            providerConnectionId: org.id,
+        });
+        expect(created.providerConnectionId).toBe(org.id);
+        expect(
+            await refusal(() =>
+                store.updateOrg(created.id, { type: 'claude-code', providerConnectionId: personalOpenai.id })
+            )
+        ).toBe('scope');
+        expect(await refusal(() => store.updateOrg(created.id, { providerConnectionId: openai.id }))).toBe(
+            'incompatible'
+        );
+        // A type change alone is a selection write too: the connection stays, the pair must still hold.
+        const subscription = await connect({ scope: 'org', provider: 'subscription' });
+        const claudeOnly = await store.createOrg({
+            name: 'o3',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+            providerConnectionId: subscription.id,
+        });
+        expect(await refusal(() => store.updateOrg(claudeOnly.id, { type: 'opencode' }))).toBe('incompatible');
+    });
+
+    it('promotion refuses a personal connection', async () => {
+        const mine = await connect();
+        const org = await connect({ scope: 'org' });
+        await store.replace(ALICE, [
+            { name: 'p-personal', type: 'claude-code', config: {}, providerConnectionId: mine.id },
+            { name: 'p-org', type: 'claude-code', config: {}, providerConnectionId: org.id },
+        ]);
+        const [personal, shared] = await store.list(ALICE);
+
+        expect(await refusal(() => store.changeScope(personal!.id, 'org', ALICE))).toBe('scope');
+        expect((await store.changeScope(shared!.id, 'org', ALICE))?.providerConnectionId).toBe(org.id);
+        // Demotion into a personal list: the org connection is visible there.
+        expect((await store.changeScope(shared!.id, 'user', ALICE))?.providerConnectionId).toBe(org.id);
+    });
+
+    it('connection switching requires a valid or explicitly reselected model', async () => {
+        const anthropic = await connect({ provider: 'anthropic' });
+        const openai = await connect({ provider: 'openai' });
+        await store.replace(ALICE, [
+            {
+                name: 'sw',
+                type: 'opencode',
+                config: { model: 'anthropic/claude-x' },
+                providerConnectionId: anthropic.id,
+            },
+        ]);
+
+        // Switching with a model the board knows belongs to the old provider is refused ...
+        expect(
+            await refusal(() =>
+                store.replace(ALICE, [
+                    {
+                        name: 'sw',
+                        type: 'opencode',
+                        config: { model: 'anthropic/claude-x' },
+                        providerConnectionId: openai.id,
+                    },
+                ])
+            )
+        ).toBe('model');
+        // ... explicit reselection passes, and so does a model with no known prefix (discovery proves nothing).
+        await store.replace(ALICE, [
+            { name: 'sw', type: 'opencode', config: { model: 'openai/gpt-x' }, providerConnectionId: openai.id },
+        ]);
+        await store.replace(ALICE, [
+            { name: 'sw', type: 'opencode', config: { model: 'house-model' }, providerConnectionId: anthropic.id },
+        ]);
+        // Re-saving the same connection does not re-judge the model.
+        await store.replace(ALICE, [
+            { name: 'sw', type: 'opencode', config: { model: 'openai/gpt-x' }, providerConnectionId: anthropic.id },
+        ]);
+    });
+
+    it('a row with no connection is unchanged', async () => {
+        await store.replace(ALICE, [{ name: 'plain', type: 'claude-code', config: { model: 'm' } }]);
+        expect((await store.list(ALICE))[0]?.providerConnectionId).toBeNull();
+        // The claim-time read omits the key entirely, so a profile without a connection reads exactly as it always did.
+        expect(await store.configFor(ALICE, 'plain')).not.toHaveProperty('providerConnectionId');
+    });
+});
+
+describe.skipIf(!enabled)('stable personal executor identities', () => {
+    const connect = (over: Partial<Parameters<ReturnType<typeof createProviderConnectionStore>['create']>[0]> = {}) =>
+        createProviderConnectionStore({ sql, orgId: ORG, ...testSecretDeps(sql) }).create({
+            scope: 'personal',
+            userId: ALICE,
+            provider: 'anthropic',
+            name: `c-${randomUUID().slice(0, 8)}`,
+            baseUrl: null,
+            key: 'sk-ant-store-test-key',
+            ...over,
+        });
+    const idsByName = async (userId: string) => new Map((await store.list(userId)).map((row) => [row.name, row.id]));
+
+    it('whole-list saves preserve surviving executor IDs', async () => {
+        await store.replace(ALICE, [
+            { name: 'a', type: 'claude-code', config: {} },
+            { name: 'b', type: 'claude-code', config: {} },
+        ]);
+        const before = await idsByName(ALICE);
+        const created = (await store.list(ALICE)).map((row) => row.createdAt);
+
+        // Reordered, one omitted, one new: the survivors keep their identity, by name when no id is sent.
+        await store.replace(ALICE, [
+            { name: 'b', type: 'claude-code', config: {} },
+            { name: 'c', type: 'claude-code', config: {} },
+        ]);
+        const after = await idsByName(ALICE);
+        expect(after.get('b')).toBe(before.get('b'));
+        expect(after.get('c')).toBeDefined();
+        expect(after.get('c')).not.toBe(before.get('a'));
+        expect([...after.keys()]).toEqual(['b', 'c']);
+        expect((await store.list(ALICE))[0]!.createdAt).toBe(created[1]);
+
+        // And by explicit id, whatever the name says.
+        await store.replace(ALICE, [{ id: after.get('b')!, name: 'b', type: 'claude-code', config: {} }]);
+        expect((await idsByName(ALICE)).get('b')).toBe(before.get('b'));
+    });
+
+    it('rename by ID preserves connection and default references', async () => {
+        const connection = await connect();
+        await store.replace(ALICE, [
+            { name: 'main', type: 'claude-code', config: {}, providerConnectionId: connection.id },
+        ]);
+        const [row] = await store.list(ALICE);
+        await store.selectDefault(ALICE, row!.id);
+
+        await store.replace(ALICE, [{ id: row!.id, name: 'renamed', type: 'claude-code', config: {} }]);
+
+        const [renamed] = await store.list(ALICE);
+        expect(renamed).toMatchObject({ id: row!.id, name: 'renamed', providerConnectionId: connection.id });
+        expect(await store.selectedDefault(ALICE)).toMatchObject({ executorId: row!.id, name: 'renamed' });
+        expect(await store.resolvedDefault(ALICE)).toMatchObject({ kind: 'profile', scope: 'user', name: 'renamed' });
+    });
+
+    it('swaps two names by ID in one save', async () => {
+        await store.replace(ALICE, [
+            { name: 'a', type: 'claude-code', config: {} },
+            { name: 'b', type: 'claude-code', config: {} },
+        ]);
+        const ids = await idsByName(ALICE);
+        await store.replace(ALICE, [
+            { id: ids.get('a')!, name: 'b', type: 'claude-code', config: {} },
+            { id: ids.get('b')!, name: 'a', type: 'claude-code', config: {} },
+        ]);
+        const swapped = await idsByName(ALICE);
+        expect(swapped.get('b')).toBe(ids.get('a'));
+        expect(swapped.get('a')).toBe(ids.get('b'));
+    });
+
+    it('rejects another owners executor ID', async () => {
+        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
+        await store.replace(BOB, [{ name: 'his', type: 'claude-code', config: {} }]);
+        const org = await store.createOrg({ name: 'shared', type: 'claude-code', config: {}, createdBy: ALICE });
+        const [mine] = await store.list(ALICE);
+        const [his] = await store.list(BOB);
+
+        for (const foreign of [mine!.id, org.id, randomUUID()]) {
+            await expect(
+                store.replace(BOB, [{ id: foreign, name: 'his', type: 'claude-code', config: {} }])
+            ).rejects.toBeInstanceOf(ExecutorIdentityError);
+        }
+        // The same id twice in one body is a duplicate identity.
+        await expect(
+            store.replace(BOB, [
+                { id: his!.id, name: 'his', type: 'claude-code', config: {} },
+                { id: his!.id, name: 'other', type: 'claude-code', config: {} },
+            ])
+        ).rejects.toBeInstanceOf(ExecutorIdentityError);
+        // Nothing moved.
+        expect((await store.list(BOB)).map((row) => row.id)).toEqual([his!.id]);
+        expect((await store.list(ALICE)).map((row) => row.id)).toEqual([mine!.id]);
+    });
+
+    it('omitting a configured default refuses until explicitly replaced or cleared', async () => {
+        await store.replace(ALICE, [
+            { name: 'a', type: 'claude-code', config: {} },
+            { name: 'b', type: 'claude-code', config: {} },
+        ]);
+        const ids = await idsByName(ALICE);
+        await store.selectDefault(ALICE, ids.get('a')!);
+
+        await expect(store.replace(ALICE, [{ name: 'b', type: 'claude-code', config: {} }])).rejects.toBeInstanceOf(
+            ExecutorDefaultProtectedError
+        );
+        await expect(store.removePersonal(ALICE, ids.get('a')!)).rejects.toBeInstanceOf(ExecutorDefaultProtectedError);
+        // The refused saves left both rows and the selection.
+        expect([...(await idsByName(ALICE)).keys()]).toEqual(['a', 'b']);
+        expect(await store.selectedDefault(ALICE)).toMatchObject({ executorId: ids.get('a') });
+
+        // Replaced explicitly, the old row may go.
+        await store.selectDefault(ALICE, ids.get('b')!);
+        await store.replace(ALICE, [{ name: 'b', type: 'claude-code', config: {} }]);
+        expect([...(await idsByName(ALICE)).keys()]).toEqual(['b']);
+
+        // Or cleared.
+        await store.clearDefault(ALICE);
+        await store.replace(ALICE, []);
+        expect(await store.list(ALICE)).toEqual([]);
+        expect(await store.selectedDefault(ALICE)).toBeNull();
     });
 });

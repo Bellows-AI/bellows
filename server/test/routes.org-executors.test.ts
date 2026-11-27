@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { connectionSelectionRefusal, type SelectedConnection } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import { bridgedRequestClass } from '../src/auth/bridge-binding.js';
 import type { AppConfig } from '../src/config.js';
@@ -39,13 +40,18 @@ const CLAUDE_CODE = { name: 'team-runner', type: 'claude-code', config: { model:
 
 async function boot(
     executors: MemoryUserExecutorStore = memoryUserExecutorStore(),
-    overrides: Partial<AppConfig> = {}
+    overrides: Partial<AppConfig> = {},
+    providerConnections?: Parameters<typeof staticRegistry>[0] extends infer P
+        ? P extends { providerConnections?: infer C }
+            ? C
+            : never
+        : never
 ) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
     const config = testConfig({ auth: githubAuth(), ...overrides });
-    const instance = await build(executors, auth, config);
+    const instance = await build(executors, auth, config, providerConnections);
     track(instance);
     return {
         instance,
@@ -58,12 +64,18 @@ async function boot(
 }
 
 /** Boots the app with the given executor store. */
-function build(executors: MemoryUserExecutorStore, auth: AuthStore, config: AppConfig) {
+function build(
+    executors: MemoryUserExecutorStore,
+    auth: AuthStore,
+    config: AppConfig,
+    providerConnections?: Parameters<typeof boot>[2]
+) {
     return buildApp({
         config,
         orgs: staticRegistry({
             config,
             userExecutors: executors,
+            providerConnections,
             telemetry: stubTelemetryClient(),
         }),
         auth,
@@ -641,49 +653,50 @@ describe('the workspace poll and the personal routes after 391', () => {
         expect(body.defaultExecutor).toEqual({ scope: 'user', name: 'mine' });
     });
 
-    it('PUT /api/workspace/executors/default stores a per-member preference naming its scope', async () => {
-        const { instance, adminCookie, memberCookie, executors } = await boot();
-        await instance.inject({
+    it('PUT /api/workspace/executors/default selects an org executor by id for the member', async () => {
+        const { instance, adminCookie, memberCookie, member, executors } = await boot();
+        const created = await instance.inject({
             method: 'POST',
             url: '/api/org/executors',
             headers: { cookie: adminCookie },
             payload: CLAUDE_CODE,
         });
+        const id = created.json().id as string;
 
         const response = await instance.inject({
             method: 'PUT',
             url: '/api/workspace/executors/default',
             headers: { cookie: memberCookie },
-            payload: { executor: 'team-runner', executorScope: 'org' },
+            payload: { executorId: id },
         });
         expect(response.statusCode).toBe(HTTP_OK);
-        expect(executors.defaults()).toEqual([expect.objectContaining({ scope: 'org', name: 'team-runner' })]);
+        expect(await executors.selectedDefault(member.user.id)).toMatchObject({ executorId: id, scope: 'org' });
 
-        // The poll folds the stored preference in: the member now autoselects the org profile.
+        // The poll folds the selection in: the member now autoselects the org profile.
         const poll = (
             await instance.inject({ method: 'GET', url: '/api/workspace', headers: { cookie: memberCookie } })
         ).json();
         expect(poll.defaultExecutor).toEqual({ scope: 'org', name: 'team-runner' });
     });
 
-    it('the default route answers 404 for a profile the caller cannot resolve, and 400 for a bad scope', async () => {
+    it('the default route answers 404 for an id the caller cannot resolve, and 400 for a body with no executorId', async () => {
         const { instance, adminCookie } = await boot();
         const missing = await instance.inject({
             method: 'PUT',
             url: '/api/workspace/executors/default',
             headers: { cookie: adminCookie },
-            payload: { executor: 'ghost', executorScope: 'org' },
+            payload: { executorId: '99999999-9999-4999-8999-999999999999' },
         });
         expect(missing.statusCode).toBe(HTTP_NOT_FOUND);
 
-        const badScope = await instance.inject({
+        const nameOnly = await instance.inject({
             method: 'PUT',
             url: '/api/workspace/executors/default',
             headers: { cookie: adminCookie },
-            payload: { executor: 'x', executorScope: 'repo' },
+            payload: { executor: 'x', executorScope: 'org' },
         });
-        expect(badScope.statusCode).toBe(HTTP_BAD_REQUEST);
-        expect(badScope.json().code).toBe('BAD_EXECUTOR_SCOPE');
+        expect(nameOnly.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(nameOnly.json().code).toBe('BAD_BODY');
     });
 
     it('a PUT entry carrying isDefault is refused — the flag moved to the preference route', async () => {
@@ -742,5 +755,172 @@ describe('executor lists to a bridged (MCP) caller', () => {
             for (const row of cookie.json().executors as Record<string, unknown>[])
                 expect(row, url).toHaveProperty('config');
         }
+    });
+});
+
+describe('organization executors: provider connection selection', () => {
+    const ORG_CONNECTION = '66666666-6666-4666-8666-666666666666';
+    const PERSONAL_CONNECTION = '77777777-7777-4777-8777-777777777777';
+    const OPENAI_CONNECTION = '88888888-8888-4888-8888-888888888888';
+    const known: Record<string, SelectedConnection> = {
+        [ORG_CONNECTION]: { provider: 'anthropic', scope: 'org', ownerId: null },
+        [PERSONAL_CONNECTION]: { provider: 'anthropic', scope: 'personal', ownerId: 'someone' },
+        [OPENAI_CONNECTION]: { provider: 'openai', scope: 'org', ownerId: null },
+    };
+    /** The shared rule the SQL store runs in its transaction, applied by the double. */
+    const freshRules = () =>
+        memoryUserExecutorStore(({ owner, connectionId, type }) => {
+            const connection = known[connectionId];
+            return connectionSelectionRefusal({
+                // A personal connection is its saving member's own: the owner is who saves it.
+                connection:
+                    connection && connection.scope === 'personal'
+                        ? { ...connection, ownerId: owner }
+                        : (connection ?? null),
+                owner,
+                agentType: type as 'claude-code' | 'opencode',
+            });
+        });
+    const create = (cookie: string, instance: Awaited<ReturnType<typeof boot>>['instance'], extra: object) =>
+        instance.inject({
+            method: 'POST',
+            url: '/api/org/executors',
+            headers: { cookie },
+            payload: { ...CLAUDE_CODE, ...extra },
+        });
+
+    it('stores and echoes an org connection, the selection metadata every member reads', async () => {
+        const { instance, adminCookie, memberCookie } = await boot(freshRules());
+        const created = await create(adminCookie, instance, { providerConnectionId: ORG_CONNECTION });
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        expect(created.json()).toMatchObject({ providerConnectionId: ORG_CONNECTION });
+        const listed = await instance.inject({
+            method: 'GET',
+            url: '/api/org/executors',
+            headers: { cookie: memberCookie },
+        });
+        expect(listed.json().executors[0]).toMatchObject({ providerConnectionId: ORG_CONNECTION });
+        expect(listed.json().executors[0]).not.toHaveProperty('config');
+    });
+
+    it.each([
+        ['a personal connection on an organization executor', { providerConnectionId: PERSONAL_CONNECTION }],
+        ['an unsupported provider and executor type', { providerConnectionId: OPENAI_CONNECTION }],
+        ['an unknown connection', { providerConnectionId: '99999999-9999-4999-8999-999999999999' }],
+    ])('refuses %s with 409 PROVIDER_CONNECTION_REFUSED, storing nothing', async (_name, extra) => {
+        const { instance, adminCookie, executors } = await boot(freshRules());
+        const refused = await create(adminCookie, instance, extra);
+        expect(refused.statusCode).toBe(HTTP_CONFLICT);
+        expect(refused.json()).toMatchObject({ code: 'PROVIDER_CONNECTION_REFUSED' });
+        expect(executors.rows()).toEqual([]);
+    });
+
+    it('refuses a malformed connection id as a bad body, and refuses an edit that switches to a refused one', async () => {
+        const { instance, adminCookie } = await boot(freshRules());
+        expect((await create(adminCookie, instance, { providerConnectionId: 'not-an-id' })).statusCode).toBe(
+            HTTP_BAD_REQUEST
+        );
+        const created = (await create(adminCookie, instance, { providerConnectionId: ORG_CONNECTION })).json();
+        const edit = await instance.inject({
+            method: 'PUT',
+            url: `/api/org/executors/${created.id}`,
+            headers: { cookie: adminCookie },
+            payload: { ...CLAUDE_CODE, providerConnectionId: OPENAI_CONNECTION },
+        });
+        expect(edit.statusCode).toBe(HTTP_CONFLICT);
+        // Null clears the selection; omitting it keeps it.
+        const kept = await instance.inject({
+            method: 'PUT',
+            url: `/api/org/executors/${created.id}`,
+            headers: { cookie: adminCookie },
+            payload: CLAUDE_CODE,
+        });
+        expect(kept.json()).toMatchObject({ providerConnectionId: ORG_CONNECTION });
+        const cleared = await instance.inject({
+            method: 'PUT',
+            url: `/api/org/executors/${created.id}`,
+            headers: { cookie: adminCookie },
+            payload: { ...CLAUDE_CODE, providerConnectionId: null },
+        });
+        expect(cleared.json()).toMatchObject({ providerConnectionId: null });
+    });
+
+    it('refuses a promotion that would carry a personal connection into the organization', async () => {
+        const { instance, adminCookie, executors } = await boot(freshRules());
+        await instance.inject({
+            method: 'PUT',
+            url: '/api/workspace/executors',
+            headers: { cookie: adminCookie },
+            payload: {
+                executors: [
+                    { name: 'mine', type: 'claude-code', config: {}, providerConnectionId: PERSONAL_CONNECTION },
+                ],
+            },
+        });
+        const row = executors.rows()[0]!;
+        const response = await instance.inject({
+            method: 'POST',
+            url: `/api/org/executors/${row.id}/scope`,
+            headers: { cookie: adminCookie },
+            payload: { scope: 'org' },
+        });
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json()).toMatchObject({ code: 'PROVIDER_CONNECTION_REFUSED' });
+        expect(executors.rows()[0]!.userId).not.toBeNull();
+    });
+});
+
+describe('organization executors: safe connection metadata', () => {
+    const ORG_CONNECTION = '66666666-6666-4666-8666-666666666666';
+    const SECRET = 'sk-never-in-a-payload';
+    const listFor = async () => [
+        { id: ORG_CONNECTION, name: 'Team key', provider: 'anthropic', scope: 'org', baseUrl: null, hasKey: true },
+    ];
+    const seed = async () => {
+        const executors = memoryUserExecutorStore();
+        const booted = await boot(executors, {}, { listFor } as never);
+        await executors.createOrg({
+            name: 'team',
+            type: 'claude-code',
+            config: { apiKey: SECRET, model: 'sonnet' },
+            createdBy: booted.admin.user.id,
+            providerConnectionId: ORG_CONNECTION,
+        });
+        return booted;
+    };
+    const expected = {
+        providerConnectionId: ORG_CONNECTION,
+        providerConnectionName: 'Team key',
+        providerConnectionProvider: 'anthropic',
+        providerConnectionScope: 'org',
+    };
+
+    it('gives a member the connection fields and the override indicator without config or key', async () => {
+        const { instance, memberCookie } = await seed();
+        const response = await instance.inject({
+            method: 'GET',
+            url: '/api/org/executors',
+            headers: { cookie: memberCookie },
+        });
+        const row = response.json().executors[0];
+        expect(row).toMatchObject({ ...expected, configOverridesConnection: true });
+        expect(row).not.toHaveProperty('config');
+        expect(response.body).not.toContain(SECRET);
+    });
+
+    it('gives an admin the same fields beside the config, and a bridged admin the member view', async () => {
+        const { instance, adminCookie, admin } = await seed();
+        const listed = await instance.inject({
+            method: 'GET',
+            url: '/api/org/executors',
+            headers: { cookie: adminCookie },
+        });
+        expect(listed.json().executors[0]).toMatchObject({ ...expected, configOverridesConnection: true });
+        expect(listed.json().executors[0]).toHaveProperty('config');
+        const Request = bridgedRequestClass({ ...admin, scopes: ['factory:read'] });
+        const bridged = await instance.inject({ method: 'GET', url: '/api/org/executors', Request });
+        expect(bridged.json().executors[0]).toMatchObject(expected);
+        expect(bridged.json().executors[0]).not.toHaveProperty('config');
+        expect(bridged.body).not.toContain(SECRET);
     });
 });

@@ -132,6 +132,15 @@ See [Policy and reviewers](/guides/policy-and-reviewers).
 
 See [Executors](/guides/executors).
 
+## Provider connections
+
+| Limit | Value | When exceeded |
+| --- | --- | --- |
+| Connections per scope | 20, a member's own or the organization's | Refused: `TOO_MANY_CONNECTIONS` |
+| Deleting a provider connection executors still select | Not allowed | Refused with `409` and code `PROVIDER_CONNECTION_IN_USE`, naming the executors you can see |
+
+See [Connections](/guides/connections).
+
 ## Skills
 
 | Limit | Value | When exceeded |

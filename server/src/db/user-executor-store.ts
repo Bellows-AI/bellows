@@ -3,6 +3,25 @@ import { DEFAULT_GATE_FIX_ROUNDS, ORG_SCOPE, USER_SCOPE, type ExecutorScope } fr
 import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
 import { type AgentDefault, type AgentDefaults, agentDefaultMethods } from './agent-default-sql.js';
 import {
+    assertConnectionSelection,
+    assertMovedSelection,
+    lockOrgRowForUpdate,
+    modelOf,
+    selectedOf,
+} from './executor-connection-selection.js';
+import { type PersonalExecutorEntry, replacePersonalRows } from './executor-personal-replace.js';
+import {
+    assertUnselected,
+    type DefaultSelection,
+    ExecutorDefaultProtectedError,
+    isSelectionReferenceViolation,
+    protectedMessage,
+    resolveOrphanedSelections,
+    type DefaultResolution,
+    resolveConfiguredDefault,
+    selectionMethods,
+} from './executor-default-store.js';
+import {
     convertedGate,
     type ExecutorCredentialDeps,
     resolveCredentials,
@@ -13,6 +32,14 @@ import {
 } from './executor-credentials.js';
 
 export type { AgentDefault, AgentDefaults } from './agent-default-sql.js';
+export {
+    ConfiguredDefaultUnusableError,
+    ExecutorDefaultNotFoundError,
+    ExecutorDefaultProtectedError,
+    ExecutorIdentityError,
+    ExecutorSuspendedError,
+} from './executor-default-store.js';
+export type { DefaultResolution, DefaultSelection } from './executor-default-store.js';
 
 /**
  * One executor profile: a member's personal row (`userId` set) or an organization-wide row the
@@ -50,6 +77,17 @@ export interface ExecutorProfile {
      * Resolved at claim like the type, so an edit reaches every later claim.
      */
     readonly runnerClass: string | null;
+    /**
+     * The provider connection the profile runs its model on (docs/workspace.md), or null for the stacked env and
+     * the pasted config alone. An id, never a credential: the claim resolves the key from the secret store.
+     */
+    readonly providerConnectionId: string | null;
+    /**
+     * Whether the pasted config carries its own credential, endpoint or `{env:NAME}` reference, which the claim
+     * keeps above the connection's (docs/workspace.md). Read from the stored markers and the config text, never by
+     * decrypting a key; only the list reads answer it, so a write's echo omits it.
+     */
+    readonly configOverridesConnection?: boolean;
 }
 
 /** What `configFor` answers: the row's type, the raw config the member pasted, its round limit, whether it is suspended and its runner class. */
@@ -59,13 +97,14 @@ export interface UserExecutorConfig {
     readonly gateFixRounds: number;
     readonly suspended: boolean;
     readonly runnerClass: string | null;
+    /** The selected provider connection (docs/env.md); absent — not null — when the profile selects none, so a profile without one reads as it always did. */
+    readonly providerConnectionId?: string;
 }
 
 /**
- * A member's default-executor preference (issue 391): names a profile by scope and name — not by
- * the surrogate id, because `replace()` still delete-and-reinserts the personal list and an
- * id-keyed link would be severed by every save. Resolved through `resolvedDefault`, whose chain
- * covers a preference whose profile was removed.
+ * A member's legacy default-executor preference (issue 391): names a profile by scope and name. It applies only while no
+ * configured default does (`selectDefault`, which names the profile by stable id), and `resolvedDefault`'s chain covers
+ * a preference whose profile was removed.
  */
 export interface ExecutorDefault {
     readonly scope: ExecutorScope;
@@ -84,22 +123,12 @@ export interface UserExecutorStore {
     /**
      * Replaces a member's whole PERSONAL executor list.
      *
-     * The body of `PUT /api/workspace/executors` is the entire list, so this is delete-then-insert:
-     * replaying the same body changes nothing, which is what makes the route a PUT. Nothing is
-     * preserved — a row tracks no disk state, so "keeping" an omitted executor would only contradict the body the member just sent. Org-scope rows are never
+     * The body of `PUT /api/workspace/executors` is the entire list, so replaying the same body changes
+     * nothing, which is what makes the route a PUT. A surviving row is updated in place under its id; a row
+     * the body omits is deleted — a row tracks no disk state, so "keeping" an omitted executor would only contradict the body the member just sent. Org-scope rows are never
      * touched: they belong to the organization, and the admin CRUD routes are their only writers.
      */
-    replace(
-        userId: string,
-        executors: readonly {
-            name: string;
-            type: string;
-            config: Record<string, unknown>;
-            gateFixRounds?: number;
-            /** Omitted: the suspension a row of the same name already carried survives the rewrite. */
-            suspended?: boolean;
-        }[]
-    ): Promise<void>;
+    replace(userId: string, executors: readonly PersonalExecutorEntry[]): Promise<void>;
     /** Removes one of the member's OWN personal rows by id. False when the id names no such row. */
     removePersonal(userId: string, id: string): Promise<boolean>;
     /** Suspends or resumes one of the member's OWN personal rows. Null when the id names no such row. */
@@ -157,6 +186,7 @@ export interface UserExecutorStore {
         config: Record<string, unknown>;
         gateFixRounds?: number;
         runnerClass?: string | null;
+        providerConnectionId?: string | null;
         createdBy: string;
     }): Promise<ExecutorProfile & { config: Record<string, unknown> }>;
     /**
@@ -172,31 +202,51 @@ export interface UserExecutorStore {
             config?: Record<string, unknown>;
             gateFixRounds?: number;
             runnerClass?: string | null;
+            /** Omitted keeps the row's connection; null clears it. */
+            providerConnectionId?: string | null;
         }
     ): Promise<(ExecutorProfile & { config: Record<string, unknown> }) | null>;
-    /** Removes an org-scope row. False when the id names no org row of this organization. */
-    deleteOrg(id: string): Promise<boolean>;
+    /**
+     * Removes an org-scope row. False when the id names no org row of this organization. Selections naming it refuse the
+     * delete (`ExecutorDefaultProtectedError`, with counts) unless `resolution` clears them or re-points them.
+     */
+    deleteOrg(id: string, resolution?: DefaultResolution): Promise<boolean>;
     /**
      * Moves one row between scopes: a member's own personal row up to org scope (issue 391), or an
      * org row down into the calling admin's personal list. Only the caller's OWN personal row
      * promotes — the update's WHERE clause holds that, so the route's caller is the enforcement.
      * A name already taken in the target scope surfaces as the name index. A demotion clears the
-     * row's runner class: a personal profile names none.
+     * row's runner class: a personal profile names none. The row's provider connection must be visible in the target
+     * scope: a promotion refuses a personal one (`ExecutorConnectionRefusedError`). A demotion is refused while the
+     * organization default, or another member's default, names the row, unless `resolution` clears or re-points them.
      */
-    changeScope(id: string, to: ExecutorScope, userId: string): Promise<ExecutorProfile | null>;
+    changeScope(
+        id: string,
+        to: ExecutorScope,
+        userId: string,
+        resolution?: DefaultResolution
+    ): Promise<ExecutorProfile | null>;
     /** How many org-scope rows the organization holds — the cap check's read. */
     orgCount(): Promise<number>;
 
-    /** The member's stored preference, verbatim. Null when unset. */
+    /** The member's legacy name-keyed preference, verbatim — a read only; nothing writes it any more. Null when unset. */
     defaultOf(userId: string): Promise<ExecutorDefault | null>;
+    /** The configured default `owner` holds (a member's id; null: the organization's), by stable id. Null when none. */
+    selectedDefault(owner: string | null): Promise<DefaultSelection | null>;
     /**
-     * Stores the member's preference. Refuses a preference naming no profile in that scope — the
-     * route answers 404 for a selection the member cannot resolve, and this is the check under it —
-     * and a suspended one (`ExecutorSuspendedError`, a 409).
+     * Configures `executorId` as `owner`'s default, replacing any earlier one: an organization default may name an
+     * organization profile only, a member's their own or an organization's. A target the owner may not select is
+     * `ExecutorDefaultNotFoundError`, a suspended one `ExecutorSuspendedError`; nothing is written then.
      */
-    setDefault(userId: string, def: ExecutorDefault): Promise<void>;
+    selectDefault(owner: string | null, executorId: string): Promise<DefaultSelection>;
+    /** `selectDefault` inside a transaction the caller holds, so a setup writes it beside the profile it selects. */
+    selectDefaultInTx(tx: TransactionSql, owner: string | null, executorId: string): Promise<DefaultSelection>;
+    /** Clears `owner`'s configured default. False when there was none. */
+    clearDefault(owner: string | null): Promise<boolean>;
     /**
-     * What a task naming no executor runs on, through the deterministic chain: the stored preference
+     * What a task naming no executor runs on: the member's configured default, then the organization's, each by stable id
+     * — and one that is suspended refuses (`ConfiguredDefaultUnusableError`) instead of falling through. Without a
+     * configured default, the legacy chain: the stored preference
      * while it still resolves to an ACTIVE row, then the member's agent default, then the
      * organization's agent default, then the first active personal row by position, then the first
      * active org row by position, then null. A removed or suspended profile's preference falls
@@ -217,16 +267,6 @@ export interface UserExecutorStore {
     deleteAgentDefault(owner: string | null): Promise<boolean>;
 }
 
-/**
- * What `setDefault` is not (issue 391): the one refusal it raises, thrown when the preference
- * names no profile in the named scope. The route maps it to a 404; anything else it throws is a
- * failure, not an answer, and must reach the error handler as one.
- */
-export class ExecutorDefaultNotFoundError extends Error {}
-
-/** `setDefault`'s other refusal (issue 440): the preference names a suspended profile. The route maps it to a 409. */
-export class ExecutorSuspendedError extends Error {}
-
 interface Row {
     id: string;
     name: string;
@@ -237,6 +277,8 @@ interface Row {
     created_by: string | null;
     suspended: boolean;
     runner_class: string | null;
+    provider_connection_id: string | null;
+    overrides_connection?: boolean;
 }
 
 const toExecutorProfile = (row: Row): ExecutorProfile => ({
@@ -249,54 +291,9 @@ const toExecutorProfile = (row: Row): ExecutorProfile => ({
     createdBy: row.created_by,
     suspended: row.suspended,
     runnerClass: row.runner_class,
+    providerConnectionId: row.provider_connection_id,
+    ...(row.overrides_connection === undefined ? {} : { configOverridesConnection: row.overrides_connection }),
 });
-
-/**
- * `replace()`'s transaction body: the member's personal list, delete-then-insert. `sealedOf` turns the
- * stored credentials of the rows being replaced into the sealed configs (executor-credentials.ts).
- */
-async function replacePersonalRows(
-    tx: TransactionSql,
-    { orgId, userId }: { orgId: string; userId: string },
-    executors: Parameters<UserExecutorStore['replace']>[1],
-    sealedOf: (
-        previous: readonly StoredCredential[]
-    ) => { config: Record<string, unknown>; secretRefs: StoredCredential[] }[]
-): Promise<void> {
-    // Read before the delete: an entry that does not say otherwise keeps the suspension its
-    // same-named predecessor carried (issue 440), and a stored credential sent back as its marker
-    // stays stored.
-    const previous = await tx<{ name: string; suspended: boolean; secret_refs: StoredCredential[] }[]>`
-        select name, suspended, secret_refs from executor_profile
-        where org_id = ${orgId} and user_id = ${userId}
-        for update
-    `;
-    const suspendedNames = new Set(previous.filter((row) => row.suspended).map((row) => row.name));
-    const sealed = sealedOf(storedOf(previous));
-    await tx`
-        delete from executor_profile
-        where org_id = ${orgId} and user_id = ${userId}
-    `;
-    if (!executors.length) return;
-    // `position` is the member's own order, taken from the array index. It has to be stored rather
-    // than inferred: this is one transaction, so every row lands with the same `now()` and a
-    // created_at sort is a total tie (041's header).
-    const rows = executors.map((executor, index) => ({
-        org_id: orgId,
-        user_id: userId,
-        name: executor.name,
-        type: executor.type,
-        config: tx.json(sealed[index]!.config as never),
-        secret_refs: tx.json(sealed[index]!.secretRefs as never),
-        gate_fix_rounds: executor.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS,
-        position: index,
-        suspended: executor.suspended ?? suspendedNames.has(executor.name),
-    }));
-    await tx`
-        insert into executor_profile
-            ${tx(rows, 'org_id', 'user_id', 'name', 'type', 'config', 'secret_refs', 'gate_fix_rounds', 'position', 'suspended')}
-    `;
-}
 
 /**
  * The by-id writes (issue 440) address a row by its id AND its owner — `owner` null is the org
@@ -305,15 +302,39 @@ async function replacePersonalRows(
  */
 async function deleteOwnedRow(
     deps: ExecutorCredentialDeps,
-    { id, owner }: { id: string; owner: string | null }
+    { id, owner, resolution }: { id: string; owner: string | null; resolution?: DefaultResolution }
 ): Promise<boolean> {
-    const rows = await deps.sql<{ secret_refs: StoredCredential[] }[]>`
-        delete from executor_profile
-        where org_id = ${deps.orgId} and id = ${id} and user_id is not distinct from ${owner}
-        returning secret_refs
-    `;
+    const rows = await refusingSelected<{ secret_refs: StoredCredential[] }[]>(() =>
+        deps.sql.begin(async (tx): Promise<{ secret_refs: StoredCredential[] }[]> => {
+            const [target] = await tx<{ id: string; name: string }[]>`
+                select id, name from executor_profile
+                where org_id = ${deps.orgId} and id = ${id} and user_id is not distinct from ${owner}
+                for update
+            `;
+            if (!target) return [];
+            // A default naming it must be cleared or replaced first: the member's own for a personal row, every
+            // selection of an organization row — refused with counts unless `resolution` says what becomes of them.
+            if (owner === null)
+                await resolveOrphanedSelections(tx, deps.orgId, target, resolution ? { resolution } : {});
+            else await assertUnselected(tx, deps.orgId, [target], owner);
+            return tx<{ secret_refs: StoredCredential[] }[]>`
+                delete from executor_profile where org_id = ${deps.orgId} and id = ${id}
+                returning secret_refs
+            `;
+        })
+    );
     await retireCredentials(deps, storedOf(rows));
     return rows.length > 0;
+}
+
+/** Runs a write whose deferred reference may refuse at commit: a profile a default named after the pre-check ran. */
+async function refusingSelected<T>(write: () => Promise<T>): Promise<T> {
+    try {
+        return await write();
+    } catch (error) {
+        if (!isSelectionReferenceViolation(error)) throw error;
+        throw new ExecutorDefaultProtectedError('', protectedMessage());
+    }
 }
 
 async function setSuspendedRow(
@@ -323,7 +344,7 @@ async function setSuspendedRow(
     const rows = await sql<Row[]>`
         update executor_profile set suspended = ${suspended}, updated_at = now()
         where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
-        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
+        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
     `;
     return rows[0] ? toExecutorProfile(rows[0]) : null;
 }
@@ -344,9 +365,10 @@ async function readConfig(
             gate_fix_rounds: number;
             suspended: boolean;
             runner_class: string | null;
+            provider_connection_id: string | null;
         }[]
     >`
-        select type, config, gate_fix_rounds, suspended, runner_class
+        select type, config, gate_fix_rounds, suspended, runner_class, provider_connection_id
         from executor_profile
         where org_id = ${orgId} and user_id is not distinct from ${owner} and name = ${name}
     `;
@@ -358,6 +380,7 @@ async function readConfig(
               gateFixRounds: row.gate_fix_rounds,
               suspended: row.suspended,
               runnerClass: row.runner_class,
+              ...selectedOf(row.provider_connection_id),
           }
         : null;
 }
@@ -381,11 +404,14 @@ async function claimConfigRow(
     exec: Sql | TransactionSql
 ): Promise<UserExecutorConfig | null> {
     const rows = await (exec as Sql)<
-        (Pick<ConfiguredRow, 'type' | 'config' | 'gate_fix_rounds' | 'suspended' | 'runner_class'> & {
+        (Pick<
+            ConfiguredRow,
+            'type' | 'config' | 'gate_fix_rounds' | 'suspended' | 'runner_class' | 'provider_connection_id'
+        > & {
             secret_refs: StoredCredential[];
         })[]
     >`
-        select type, config, secret_refs, gate_fix_rounds, suspended, runner_class
+        select type, config, secret_refs, gate_fix_rounds, suspended, runner_class, provider_connection_id
         from executor_profile
         where org_id = ${deps.orgId} and user_id is not distinct from ${owner} and name = ${name}
     `;
@@ -401,6 +427,7 @@ async function claimConfigRow(
         gateFixRounds: row.gate_fix_rounds,
         suspended: row.suspended,
         runnerClass: row.runner_class,
+        ...selectedOf(row.provider_connection_id),
     };
 }
 
@@ -411,16 +438,24 @@ async function insertOrgRow(
 ): Promise<ConfiguredRow> {
     const rows = await writeSealed(deps, [input.config], async (tx, sealedOf) => {
         const [sealed] = sealedOf([]);
+        await assertConnectionSelection(tx, deps.orgId, {
+            owner: null,
+            connectionId: input.providerConnectionId ?? null,
+            type: input.type,
+            model: modelOf(input.config),
+            previousConnectionId: null,
+        });
         const position = await nextPosition(tx, deps.orgId, null);
         return tx<ConfiguredRow[]>`
             insert into executor_profile
-                (org_id, user_id, name, type, config, secret_refs, gate_fix_rounds, position, created_by, runner_class)
+                (org_id, user_id, name, type, config, secret_refs, gate_fix_rounds, position, created_by, runner_class,
+                 provider_connection_id)
             values (
                 ${deps.orgId}, null, ${input.name}, ${input.type}, ${tx.json(sealed!.config as never)},
                 ${tx.json(sealed!.secretRefs as never)}, ${input.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS},
-                ${position}, ${input.createdBy}, ${input.runnerClass ?? null}
+                ${position}, ${input.createdBy}, ${input.runnerClass ?? null}, ${input.providerConnectionId ?? null}
             )
-            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
+            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config
         `;
     });
     const row = rows[0];
@@ -437,13 +472,9 @@ async function updateOrgRow(
     const { orgId } = deps;
     const { config } = patch;
     const rows = await writeSealed(deps, config ? [config] : [], async (tx, sealedOf) => {
-        const previous = await tx<{ secret_refs: StoredCredential[] }[]>`
-            select secret_refs from executor_profile
-            where org_id = ${orgId} and id = ${id} and user_id is null
-            for update
-        `;
-        if (!previous[0]) return [];
-        const [sealed] = config ? sealedOf(storedOf(previous)) : [];
+        const previous = await lockOrgRowForUpdate(tx, orgId, { id, patch });
+        if (!previous) return [];
+        const [sealed] = config ? sealedOf(storedOf([previous])) : [];
         return tx<ConfiguredRow[]>`
             update executor_profile set
                 name = coalesce(${patch.name ?? null}, name),
@@ -453,9 +484,10 @@ async function updateOrgRow(
                 gate_fix_rounds = coalesce(${patch.gateFixRounds ?? null}, gate_fix_rounds),
                 runner_class = case when ${patch.runnerClass !== undefined} then ${patch.runnerClass ?? null}
                                     else runner_class end,
+                provider_connection_id = ${previous.connectionId},
                 updated_at = now()
             where org_id = ${orgId} and id = ${id} and user_id is null
-            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
+            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config
         `;
     });
     return rows[0] ?? null;
@@ -464,8 +496,11 @@ async function updateOrgRow(
 /** `resolvedDefault`'s chain over the store's own reads, in the order the interface documents. */
 async function resolveDefault(
     store: Pick<UserExecutorStore, 'defaultOf' | 'configFor' | 'agentDefaults' | 'list' | 'listOrg'>,
-    userId: string
+    userId: string,
+    configuredOf: () => Promise<DefaultSelection | null>
 ): Promise<ResolvedDefault | null> {
+    const selected = await configuredOf();
+    if (selected) return { kind: 'profile', scope: selected.scope, name: selected.name };
     const stored = await store.defaultOf(userId);
     const configured = stored ? await store.configFor(userId, stored.name, stored.scope) : null;
     if (stored && configured && !configured.suspended) {
@@ -512,10 +547,12 @@ export function createUserExecutorStore({
     return {
         async replace(userId, executors) {
             await gate();
-            await writeSealed(
-                deps,
-                executors.map((executor) => executor.config),
-                (tx, sealedOf) => replacePersonalRows(tx, { orgId, userId }, executors, sealedOf)
+            await refusingSelected(() =>
+                writeSealed(
+                    deps,
+                    executors.map((executor) => executor.config),
+                    (tx, sealedOf) => replacePersonalRows(tx, { orgId, userId }, executors, sealedOf)
+                )
             );
         },
 
@@ -539,7 +576,8 @@ export function createUserExecutorStore({
             // `config` is deliberately not selected: the routes echo these rows on every poll, and
             // pasted config may hold credentials.
             const rows = await sql<Row[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id,
+                    (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id = ${userId}
                 order by position asc, name asc
@@ -550,7 +588,8 @@ export function createUserExecutorStore({
         async listWithConfigs(userId) {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config,
+                    (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id = ${userId}
                 order by position asc, name asc
@@ -575,7 +614,8 @@ export function createUserExecutorStore({
         async listOrg() {
             await gate();
             const rows = await sql<Row[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id,
+                    (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id is null
                 order by position asc, name asc
@@ -586,7 +626,8 @@ export function createUserExecutorStore({
         async listOrgWithConfigs() {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, config
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config,
+                    (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id is null
                 order by position asc, name asc
@@ -606,25 +647,40 @@ export function createUserExecutorStore({
             return row ? { ...toExecutorProfile(row), config: row.config } : null;
         },
 
-        async deleteOrg(id) {
+        async deleteOrg(id, resolution) {
             await gate();
-            return deleteOwnedRow(deps, { id, owner: null });
+            return deleteOwnedRow(deps, { id, owner: null, ...(resolution ? { resolution } : {}) });
         },
 
-        async changeScope(id, to, userId) {
+        async changeScope(id, to, userId, resolution) {
             await gate();
             if (to === USER_SCOPE) {
                 // Org row down into the calling admin's personal list, at the end of it.
-                const rows = await sql.begin(async (tx) => {
-                    const position = await nextPosition(tx, orgId, userId);
-                    return tx<Row[]>`
+                const rows = await refusingSelected(() =>
+                    sql.begin(async (tx) => {
+                        await assertMovedSelection(tx, orgId, { id, from: null, to: userId });
+                        // An organization default cannot become one member's personal profile, and other members'
+                        // defaults would be orphaned: refused unless the request resolves them. The caller's own
+                        // selection stays valid on their own row.
+                        const [moving] = await tx<{ id: string; name: string }[]>`
+                        select id, name from executor_profile where org_id = ${orgId} and id = ${id} and user_id is null
+                    `;
+                        if (moving) {
+                            await resolveOrphanedSelections(tx, orgId, moving, {
+                                keep: userId,
+                                ...(resolution ? { resolution } : {}),
+                            });
+                        }
+                        const position = await nextPosition(tx, orgId, userId);
+                        return tx<Row[]>`
                         update executor_profile set
                             user_id = ${userId}, position = ${position}, created_by = null, runner_class = null,
                             updated_at = now()
                         where org_id = ${orgId} and id = ${id} and user_id is null
-                        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
+                        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
                     `;
-                });
+                    })
+                );
                 const row = rows[0];
                 return row ? toExecutorProfile(row) : null;
             }
@@ -632,12 +688,13 @@ export function createUserExecutorStore({
             // the ownership enforcement at the row: another member's row does not match, and the
             // route's caller check rests on this.
             const rows = await sql.begin(async (tx) => {
+                await assertMovedSelection(tx, orgId, { id, from: userId, to: null });
                 const position = await nextPosition(tx, orgId, null);
                 return tx<Row[]>`
                     update executor_profile set
                         user_id = null, position = ${position}, created_by = ${userId}, updated_at = now()
                     where org_id = ${orgId} and id = ${id} and user_id = ${userId}
-                    returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class
+                    returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
                 `;
             });
             const row = rows[0];
@@ -663,35 +720,11 @@ export function createUserExecutorStore({
             return row ? { scope: row.scope, name: row.name } : null;
         },
 
-        async setDefault(userId, def) {
-            await gate();
-            await sql.begin(async (tx) => {
-                // The preference must name an accessible profile NOW: a member cannot select —
-                // even by default — a profile they could not have picked in the first place.
-                const named = await tx<{ name: string; suspended: boolean }[]>`
-                    select name, suspended from executor_profile
-                    where org_id = ${orgId}
-                      and user_id is not distinct from ${def.scope === USER_SCOPE ? userId : null}
-                      and name = ${def.name}
-                `;
-                if (!named[0]) {
-                    throw new ExecutorDefaultNotFoundError(`No ${def.scope} executor named "${def.name}"`);
-                }
-                if (named[0].suspended) {
-                    throw new ExecutorSuspendedError(`The ${def.scope} executor "${def.name}" is suspended`);
-                }
-                await tx`
-                    insert into user_executor_default (org_id, user_id, scope, name)
-                    values (${orgId}, ${userId}, ${def.scope}, ${def.name})
-                    on conflict (org_id, user_id) do update
-                    set scope = excluded.scope, name = excluded.name, updated_at = now()
-                `;
-            });
-        },
+        ...selectionMethods(sql, orgId, gate),
 
         async resolvedDefault(userId) {
             await gate();
-            return resolveDefault(this, userId);
+            return resolveDefault(this, userId, () => resolveConfiguredDefault(sql, orgId, userId));
         },
 
         ...agentDefaultMethods(sql, orgId, gate),

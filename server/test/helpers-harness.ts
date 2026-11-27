@@ -53,9 +53,13 @@ export function staticRegistry(
         /** The org's own runtime store, when a test needs two orgs that do not share one. */
         batchesByOrg?: Readonly<Record<string, NonNullable<OrgRuntime['batches']>>>;
         connections?: OrgRuntime['connections'];
+        /** Present when the org's board lists provider connections. */
+        providerConnections?: OrgRuntime['providerConnections'];
         /** The org's installation mint, behind the runner GitHub credential route. */
         githubToken?: OrgRuntime['githubToken'];
         userExecutors?: OrgRuntime['userExecutors'];
+        /** Present when the org's board applies the model setup command. */
+        modelSetup?: OrgRuntime['modelSetup'];
         skills?: OrgRuntime['skills'];
         /** When set, `for()` answers null for every id not in it. */
         orgsFor?: readonly string[];
@@ -82,8 +86,10 @@ export function staticRegistry(
         listBranches: parts.listBranches,
         repoSkills: parts.repoSkills,
         connections: parts.connections,
+        providerConnections: parts.providerConnections,
         githubToken: parts.githubToken,
         userExecutors: parts.userExecutors,
+        modelSetup: parts.modelSetup,
         skills: parts.skills,
     };
     return {
@@ -114,6 +120,7 @@ export async function harness({
     installationListing,
     orgsFor,
     workflows,
+    providerConnections,
 }: {
     config?: Partial<AppConfig>;
     /** Defaults to the fixture stub, so route tests get a populated payload without a database. */
@@ -148,6 +155,8 @@ export async function harness({
     orgsFor?: readonly string[];
     /** Absent by default, which leaves the workflow routes answering 503. */
     workflows?: WorkflowStore;
+    /** Absent by default, which leaves the connection fields on executor rows null. */
+    providerConnections?: OrgRuntime['providerConnections'];
 } = {}) {
     const config = testConfig(overrides);
     const telemetry = telemetryOption ?? stubTelemetryClient();
@@ -170,6 +179,7 @@ export async function harness({
         envVars,
         workflows,
         userExecutors: executors,
+        providerConnections,
         ...(orgsFor ? { orgsFor } : {}),
     });
     const app = await buildApp({

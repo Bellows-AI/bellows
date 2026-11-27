@@ -1,5 +1,5 @@
 import type { ExecutorType, ModelProvider } from '@factory-ai/core';
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { VerifyAnswer } from '../model-setup/providers.js';
 import { request } from './request.js';
 import { useResource } from './useResource.js';
@@ -16,21 +16,58 @@ export interface ModelScopeView {
     baseUrlSet?: true;
 }
 
+export type SetupScope = 'org' | 'personal';
+
+/** The default executor in `GET /api/model-setup`: ids and names, the connection's safe metadata, never a credential. */
+export interface SelectedExecutorView {
+    scope: SetupScope;
+    executorId: string;
+    name: string;
+    agentType: ExecutorType;
+    model: string | null;
+    suspended: boolean;
+    /** The executor's revision: a save of this executor sends it back, so an older read cannot overwrite a newer save. */
+    updatedAt: string;
+    /** The connection the executor runs on, when the member may see it; null for the platform model or the environment's keys. */
+    connection: { id: string; name: string; provider: ModelProvider; scope: SetupScope; baseUrl: string | null } | null;
+}
+
 export interface ModelSetupView {
     /** The deployment supplies a model (`PLATFORM_MODEL_PROVIDED`). */
     platform: boolean;
     org: ModelScopeView | null;
     personal: ModelScopeView | null;
-    effective: 'personal' | 'org' | 'platform' | null;
+    /** The configured default executor (the member's, else the organization's); absent when none is configured. */
+    selected?: SelectedExecutorView;
+    effective: 'executor' | 'personal' | 'org' | 'platform' | null;
 }
 
-export type SetupScope = 'org' | 'personal';
+/** What a setup does about the connection: seal a new one, select one, replace one's key, or use none (platform or the environment's). */
+export type ConnectionBody =
+    | { intent: 'create'; provider: ModelProvider; key: string; baseUrl?: string; name: string }
+    | { intent: 'reuse'; id: string }
+    | { intent: 'rotate'; id: string; key: string; baseUrl?: string }
+    | { intent: 'none' };
 
-/** `PUT /api/model-setup`: a key with its agent default, or the agent default alone on the platform or a held key. */
-export type ModelSetupSave = { scope: SetupScope; agentType: ExecutorType; model: string } & (
-    | { provider: ModelProvider; key: string; baseUrl?: string; keepBaseUrl?: true }
-    | { provider: 'platform' | 'existing' }
-);
+/** `PUT /api/model-setup` (the request id is the hook's): the connection intent and the executor it runs, made the default. */
+export interface ModelSetupSave {
+    scope: SetupScope;
+    agentType: ExecutorType;
+    model: string;
+    connection: ConnectionBody;
+    /** An edit names the executor by its stable id; a new one needs a name. */
+    executor: { id?: string; name?: string; expectedUpdatedAt?: string };
+}
+
+/** What a save answers: the stable identities the next save carries. */
+export interface SavedSetup {
+    scope: SetupScope;
+    executorId: string;
+    executorName: string;
+    connectionId: string | null;
+    connectionName: string | null;
+    replayed: boolean;
+}
 
 const SETUP_URL = '/api/model-setup';
 const asView = (body: ModelSetupView) => body;
@@ -43,8 +80,8 @@ export interface UseModelSetup {
     loading: boolean;
     error: string | null;
     refresh: () => void;
-    /** Writes the setup; the refusal's sentence on failure. */
-    save: (body: ModelSetupSave) => Promise<{ ok: true } | { ok: false; error: string }>;
+    /** Writes the setup; the saved identities, or the refusal's sentence on failure. */
+    save: (body: ModelSetupSave) => Promise<{ ok: true; saved: SavedSetup } | { ok: false; error: string }>;
     /** Re-reads the setup and settles once it has landed (or failed): a save hands over only after it. */
     reread: () => Promise<void>;
 }
@@ -57,12 +94,21 @@ export function useModelSetup(): UseModelSetup {
             readers.delete(refresh);
         };
     }, [refresh]);
+    // The same body keeps one request id until it lands, so a retry after an unknown outcome replays instead of writing twice.
+    const attempt = useRef<{ body: string; requestId: string } | null>(null);
     const save = useCallback(
         async (body: ModelSetupSave) => {
-            const result = await request(SETUP_URL, { method: 'PUT', body, verb: 'Could not save the model' });
+            const text = JSON.stringify(body);
+            if (attempt.current?.body !== text) attempt.current = { body: text, requestId: crypto.randomUUID() };
+            const result = await request<SavedSetup>(SETUP_URL, {
+                method: 'PUT',
+                body: { ...body, requestId: attempt.current.requestId },
+                verb: 'Could not save the model',
+            });
             if (!result.ok) return { ok: false, error: result.error } as const;
+            attempt.current = null;
             for (const reader of readers) if (reader !== refresh) reader();
-            return { ok: true } as const;
+            return { ok: true, saved: result.value } as const;
         },
         [refresh]
     );

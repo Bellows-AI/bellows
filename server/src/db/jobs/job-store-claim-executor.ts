@@ -7,8 +7,13 @@
 
 import {
     CLAUDE_CODE,
+    applyConnectionLayer,
     claimCredentialEnv,
     CLOUD,
+    type ConnectionCredential,
+    type ConnectionSelectionRefusal,
+    connectionOpenCodeProvider,
+    connectionSelectionRefusal,
     CLOUD_CREDENTIAL_MESSAGE,
     credentialRedirectMessage,
     type DeploymentMode,
@@ -27,12 +32,39 @@ import {
     redirectsPlatformCredential,
     resolveProviderReferences,
     RUNNER_MANAGED_KEYS,
+    type SelectedConnection,
 } from '@factory-ai/core';
-import type { TransactionSql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import type { CreateJobStoreDeps } from './job-store-types.js';
 
+/** What a profile naming a connection is refused with on a board that wired no connection reader. */
+const CONNECTIONS_UNAVAILABLE_MESSAGE = 'Provider connections are unavailable on this board; the executor cannot run.';
+
+/** `over` laid on `base`, plain objects merged key by key and anything else taken from `over`: pasted config wins. */
+function mergeUnder(base: Record<string, unknown>, over: Record<string, unknown>): Record<string, unknown> {
+    const merged: Record<string, unknown> = { ...base };
+    for (const [key, value] of Object.entries(over)) {
+        const lower = merged[key];
+        merged[key] = isRecord(lower) && isRecord(value) ? mergeUnder(lower, value) : value;
+    }
+    return merged;
+}
+
 /** The env name Claude Code reads its model from, over its settings' `model`; OpenCode reads none. */
-const CLAUDE_MODEL_ENV = 'ANTHROPIC_MODEL';
+export const CLAUDE_MODEL_ENV = 'ANTHROPIC_MODEL';
+
+/**
+ * The provider connection store's claim-time reader, declared here like `executorConfig`: a profile's selected
+ * connection is judged by the shared rules and its CURRENT key read on the claim's transaction, fail-closed (an
+ * unconfirmed read throws and the claim rolls back).
+ */
+export interface ClaimConnectionReader {
+    claimCredentialFor(
+        exec: Sql | TransactionSql,
+        id: string,
+        check: (connection: SelectedConnection | null) => ConnectionSelectionRefusal | null
+    ): Promise<{ refusal: ConnectionSelectionRefusal } | { credential: ConnectionCredential }>;
+}
 
 export interface ResolvedClaimExecutor {
     claimEnv: Record<string, string> | undefined;
@@ -96,6 +128,68 @@ function grantedEnv(
 }
 
 /**
+ * The selected provider connection as the highest scope of the env: above the stacked scopes (explicit beats ambient)
+ * and below the pasted config merged next. A reviewer's grant filtered the ambient env before and does not filter this:
+ * the executor's own model credential is not a member secret the grant withholds. A stale, foreign or incompatible
+ * reference is a refusal — never recovered from by ambient credentials — and a failed secret read throws, rolling the
+ * claim back. A custom OpenCode endpoint's provider options go BENEATH the pasted config (`mergeUnder`).
+ */
+async function layerConnection(
+    tx: TransactionSql,
+    reader: ClaimConnectionReader | undefined,
+    input: {
+        id: string | null;
+        owner: string | null;
+        executorType: ExecutorType | null;
+        claimEnv: Record<string, string> | undefined;
+        source: { type: string; config: Record<string, unknown> } | null;
+    }
+): Promise<
+    | { refusal: string }
+    | {
+          claimEnv: Record<string, string> | undefined;
+          source: { type: string; config: Record<string, unknown> } | null;
+          blanks: string[];
+          /** The selected OpenRouter connection's endpoint, which Claude Code's route to OpenRouter must use. */
+          openRouterBaseUrl: string | null;
+      }
+> {
+    const { id, owner, executorType, source } = input;
+    // No selection (a frozen agent default never has one, nor an unknown agent): the env is the stacked scopes' alone.
+    if (id === null || executorType === null)
+        return { claimEnv: input.claimEnv, source, blanks: [], openRouterBaseUrl: null };
+    if (!reader) return { refusal: CONNECTIONS_UNAVAILABLE_MESSAGE };
+    const selected = await reader.claimCredentialFor(tx, id, (connection) =>
+        connectionSelectionRefusal({ connection, owner, agentType: executorType })
+    );
+    if ('refusal' in selected) return { refusal: selected.refusal.message };
+    const { credential } = selected;
+    const layered = applyConnectionLayer(input.claimEnv, executorType, credential);
+    const block =
+        executorType === OPENCODE ? connectionOpenCodeProvider(credential.provider, credential.baseUrl) : null;
+    return {
+        claimEnv: layered.env,
+        blanks: layered.blanks,
+        openRouterBaseUrl: credential.provider === 'openrouter' ? credential.baseUrl : null,
+        source: block !== null && source !== null ? { ...source, config: mergeUnder(block, source.config) } : source,
+    };
+}
+
+/** The profile's `{env:NAME}` provider keys resolved from the env that travels (`resolveProviderReferences`); the names it lacks. */
+function withResolvedReferences<T extends { config: Record<string, unknown> }>(
+    source: T | null,
+    env: Record<string, string> | undefined
+): { source: T | null; missing: string[] } {
+    if (source === null) return { source, missing: [] };
+    const resolved = resolveProviderReferences(source.config, env ?? {});
+    return { source: { ...source, config: resolved.config }, missing: resolved.missing };
+}
+
+/** What a connection replaced, carried empty beneath the env's own names (`applyConnectionLayer`). */
+const withBlanks = (env: Record<string, string> | undefined, blanks: readonly string[]) =>
+    blanks.length === 0 ? env : { ...Object.fromEntries(blanks.map((name) => [name, ''])), ...env };
+
+/**
  * claim()'s env + executor resolution: the stacked env and the author's executor row merged over
  * the runner's config env name. Resolved ON THE TRANSACTION, so a claim holds one connection rather
  * than two, and a resolver failure rolls the whole claim back (docs/env.md).
@@ -105,6 +199,7 @@ export async function resolveClaimExecutor(
     deps: {
         env: CreateJobStoreDeps['env'];
         executorConfig: CreateJobStoreDeps['executorConfig'];
+        providerConnections?: ClaimConnectionReader | undefined;
         deploymentMode: DeploymentMode;
         /** The operator supplies the model: cloud claims need no member model credential. */
         platformModelProvided?: boolean;
@@ -117,36 +212,53 @@ export async function resolveClaimExecutor(
     },
     row: ClaimExecutorRow
 ): Promise<ResolvedClaimExecutor> {
-    const { env, executorConfig, deploymentMode, platformModelProvided = false, grant } = deps;
+    const { env, executorConfig, providerConnections, deploymentMode, platformModelProvided = false, grant } = deps;
     const claimExecutor = await claimExecutorOf(tx, executorConfig, row);
     let { source } = claimExecutor;
-    const { executorType, executorRefusal, runnerClass } = claimExecutor;
+    const { executorType, executorRefusal, runnerClass, providerConnectionId, owner } = claimExecutor;
     // Read once the agent is known: a Claude Code run takes its model names from one scope (`stackClaudeCodeEnv`).
     const resolvedEnv = withoutGithubToken(
-        env ? await env.resolveFor({ userId: row.run_as, repo: row.repo }, tx, { agentType: executorType }) : undefined
+        env
+            ? await env.resolveFor({ userId: row.run_as, repo: row.repo }, tx, {
+                  agentType: executorType,
+              })
+            : undefined
     );
     let claimEnv = grant !== undefined ? grantedEnv(resolvedEnv, grant) : resolvedEnv;
+    const layered = await layerConnection(tx, providerConnections, {
+        id: providerConnectionId,
+        owner,
+        executorType,
+        claimEnv,
+        source,
+    });
+    if ('refusal' in layered) {
+        return { claimEnv: undefined, executorType, executorRefusal: layered.refusal, runModel: null, runnerClass };
+    }
+    const { blanks, openRouterBaseUrl } = layered;
+    ({ claimEnv, source } = layered);
     // A custom provider's `{env:NAME}` key is the board's to resolve: the value comes from the scopes
     // the claim merged — the env that travels, a reviewer's grant applied — never from the runner's
     // own environment, so a deployment `RUNNER_ENV` value cannot be named into a member endpoint. An
     // unresolved reference fails the task before the agent starts, naming the missing secret.
-    let profileConfig: unknown = source?.config;
-    if (source !== null) {
-        const resolved = resolveProviderReferences(source.config, claimEnv ?? {});
-        source = { ...source, config: resolved.config };
-        profileConfig = resolved.config;
-        if (resolved.missing.length > 0) {
-            return {
-                claimEnv: undefined,
-                executorType,
-                executorRefusal: missingProviderSecretMessage(resolved.missing),
-                runModel: null,
-                runnerClass,
-            };
-        }
+    const resolved = withResolvedReferences(source, claimEnv);
+    ({ source } = resolved);
+    const profileConfig: unknown = source?.config;
+    if (resolved.missing.length > 0) {
+        return {
+            claimEnv: undefined,
+            executorType,
+            executorRefusal: missingProviderSecretMessage(resolved.missing),
+            runModel: null,
+            runnerClass,
+        };
     }
     if (source !== null) claimEnv = mergeExecutorConfigEnv(claimEnv, source);
-    claimEnv = withClaimCredentials(claimEnv, profileConfig, executorType, deploymentMode);
+    claimEnv = withClaimCredentials(claimEnv, profileConfig, {
+        type: executorType,
+        mode: deploymentMode,
+        openRouterBaseUrl,
+    });
     // Claude Code takes `$ANTHROPIC_MODEL` over its settings' `model`: a chosen model rides under that name too, so no
     // member value outranks it.
     if (executorType === CLAUDE_CODE && row.agent_model !== null) {
@@ -163,7 +275,16 @@ export async function resolveClaimExecutor(
             ? noModelRefusal(claimEnv, profileConfig, executorType)
             : null);
     if (refusal !== null)
-        return { claimEnv: undefined, executorType, executorRefusal: refusal, runModel: null, runnerClass };
+        return {
+            claimEnv: undefined,
+            executorType,
+            executorRefusal: refusal,
+            runModel: null,
+            runnerClass,
+        };
+    // What the connection replaced travels EMPTY, judged only now so the checks above never see a blank as a member's
+    // credential: the driver forwards its own `RUNNER_ENV` under these names, and the claim's name wins over it.
+    claimEnv = withBlanks(claimEnv, blanks);
     const runModel = runModelOf(source, executorType, claimEnv);
     // And whatever resolved is pinned there, so the model recorded is the one the CLI runs: the claim env wins over an
     // `ANTHROPIC_MODEL` the driver forwards (RUNNER_ENV), which the board cannot see. Nothing resolved sends nothing.
@@ -191,7 +312,10 @@ function runModelOf(
 
 /** The env a Claude Code run gets: the claim env with the settings' own `env` over it. */
 function claudeEnvOf(config: unknown, claimEnv: Record<string, string> | undefined): Record<string, unknown> {
-    return { ...claimEnv, ...(isRecord(config) && isRecord(config.env) ? config.env : {}) };
+    return {
+        ...claimEnv,
+        ...(isRecord(config) && isRecord(config.env) ? config.env : {}),
+    };
 }
 
 /**
@@ -223,11 +347,26 @@ async function claimExecutorOf(
     executorRefusal: string | null;
     source: { type: string; config: Record<string, unknown> } | null;
     runnerClass: string | null;
+    /** The connection the profile selects; always null for a frozen agent default, which never acquires one. */
+    providerConnectionId: string | null;
+    /** The profile's owner for the connection's visibility rule: the author for a personal row, null for an org row. */
+    owner: string | null;
 }> {
+    const none = {
+        executorRefusal: null,
+        providerConnectionId: null,
+        owner: null,
+    };
     const agent = frozenAgentOf(row);
-    if (agent !== null) return { executorType: agent.type, executorRefusal: null, source: agent, runnerClass: null };
+    if (agent !== null)
+        return {
+            ...none,
+            executorType: agent.type,
+            source: agent,
+            runnerClass: null,
+        };
     if (!executorConfig || row.executor === null || row.run_as === null) {
-        return { executorType: null, executorRefusal: null, source: null, runnerClass: null };
+        return { ...none, executorType: null, source: null, runnerClass: null };
     }
     const scope = (row.executor_scope ?? USER_SCOPE) as ExecutorScope;
     const configured = await executorConfig.claimConfigFor(row.run_as, row.executor, scope, tx);
@@ -236,12 +375,20 @@ async function claimExecutorOf(
         // claim: the driver fails the task with this sentence before any runner starts, for a
         // fresh task, a retry and a follow-up alike — they all claim through here.
         const executorRefusal = executorSuspendedMessage(scope, row.executor);
-        return { executorType: null, executorRefusal, source: null, runnerClass: null };
+        return {
+            ...none,
+            executorType: null,
+            executorRefusal,
+            source: null,
+            runnerClass: null,
+        };
     }
     const known = configured && EXECUTOR_TYPES.includes(configured.type as ExecutorType);
     return {
         executorType: known ? (configured.type as ExecutorType) : null,
         executorRefusal: null,
+        providerConnectionId: configured?.providerConnectionId ?? null,
+        owner: scope === USER_SCOPE ? row.run_as : null,
         source: withChosenModel(configured, row.agent_model),
         // Resolved here, at claim, like the type: an admin's edit reaches every later claim. The
         // driver is the authority on the name, and fails the task when it declares no such class.
@@ -261,7 +408,11 @@ function withChosenModel<T extends { type: string; config: Record<string, unknow
     if (configured === null || model === null) return configured;
     const { env } = configured.config;
     const pinsEnv = configured.type === CLAUDE_CODE && isRecord(env) && CLAUDE_MODEL_ENV in env;
-    const config = { ...configured.config, model, ...(pinsEnv ? { env: { ...env, [CLAUDE_MODEL_ENV]: model } } : {}) };
+    const config = {
+        ...configured.config,
+        model,
+        ...(pinsEnv ? { env: { ...env, [CLAUDE_MODEL_ENV]: model } } : {}),
+    };
     return { ...configured, config };
 }
 
@@ -288,7 +439,10 @@ export interface ClaimExecutorRow extends FrozenAgentColumns {
 function frozenAgentOf(row: ClaimExecutorRow): { type: ExecutorType; config: Record<string, unknown> } | null {
     if (row.executor !== null || row.agent_type === null) return null;
     if (!EXECUTOR_TYPES.includes(row.agent_type as ExecutorType)) return null;
-    return { type: row.agent_type as ExecutorType, config: row.agent_model === null ? {} : { model: row.agent_model } };
+    return {
+        type: row.agent_type as ExecutorType,
+        config: row.agent_model === null ? {} : { model: row.agent_model },
+    };
 }
 
 /**
@@ -296,17 +450,21 @@ function frozenAgentOf(row: ClaimExecutorRow): { type: ExecutorType; config: Rec
  * a member's OpenRouter key alone (both modes), and in cloud mode an empty platform key beside any
  * member redirect without its member key, so the driver's own key never follows it. Judged on the env that TRAVELS (after a
  * reviewer's grant) with a claude-code config's `env` applied last, as `redirectsPlatformCredential`
- * reads it. Recomputed on every claim; nothing is stored.
+ * reads it. A selected OpenRouter connection's endpoint is the route's, never the public one. Recomputed on every
+ * claim; nothing is stored.
  */
 function withClaimCredentials(
     claimEnv: Record<string, string> | undefined,
     config: unknown,
-    type: ExecutorType | null,
-    mode: DeploymentMode
+    {
+        type,
+        mode,
+        openRouterBaseUrl,
+    }: { type: ExecutorType | null; mode: DeploymentMode; openRouterBaseUrl: string | null }
 ): Record<string, string> | undefined {
     if (type === null) return claimEnv;
     const configEnv = type === CLAUDE_CODE && isRecord(config) && isRecord(config.env) ? config.env : {};
-    const added = claimCredentialEnv({ ...claimEnv, ...configEnv }, type, mode);
+    const added = claimCredentialEnv({ ...claimEnv, ...configEnv }, type, mode, openRouterBaseUrl);
     return Object.keys(added).length === 0 ? claimEnv : { ...claimEnv, ...added };
 }
 

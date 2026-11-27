@@ -81,6 +81,62 @@ here**. A name no scope holds fails the task before the agent starts, with a mes
 missing variable. The deployment's own model credential is never a source for it: a reference
 resolves only from your own scopes.
 
+### Setting up the default executor
+
+**Connect a model**, during setup or under **Settings → Model**, creates the executor for you: it seals the key in a provider connection, creates an executor that runs on it with the agent and model you chose, and makes it the default for you (**Only me**) or for the organization (**Everyone in**, admins only). The executor appears under **Settings → Executors** and survives a reload; the first task you start runs on it, and so does every task that names no executor until you choose another default. Naming an executor yourself always wins.
+
+- Using an existing connection, or changing only the agent or model, never touches the key. **Replace the key** swaps the key of that executor's own connection; tasks already running keep the key they started with.
+- **Connect another provider** adds a second connection and executor and makes it the default. The first executor, its connection and tasks already queued are unchanged.
+- A save made from an older tab than the latest change to that executor is refused with a message to reload, so it never restores older values; after a **Connect another provider** or a key replacement the form returns to the executor summary with the key cleared. A member who connects another provider always creates a personal connection; only an admin can choose **Everyone in**.
+- Changing the model on a Claude Code executor also updates a model pinned through `ANTHROPIC_MODEL` in its environment, so the model shown is the model that runs.
+- A setup that came before this step, with a key in **Settings → Environment** or an agent default, keeps running as it was. **Continue** on it creates a real executor that runs on those same credentials and leaves them in place; nothing is moved or deleted for you. On a deployment that provides the model, the executor uses no connection.
+- The default executor of an organization is usable by every member without seeing its key. A member cannot create or change it, or use another member's personal connection.
+- Deleting a connection an executor selects, or an executor that is a default, is refused until you choose another default or remove the reference.
+
+### Run an executor on a provider connection
+
+A profile can select one **provider connection** — a named model key with its endpoint, set up under
+**Settings → Model** — instead of relying on keys set in the environment. In the executor dialog, choose
+it in the **Provider connection** field beside **Agent**; **None (environment keys)** is the default
+and keeps a profile exactly as it was. This is separate from **Connect a provider** under it, which
+writes a key and endpoint into this one profile's own configuration. Several profiles can share
+one connection, and each profile picks its own connection and model, so one connection's key
+rotation reaches every profile that selects it on its next task, while a task already running keeps
+the key it started with. Switching one profile to another connection changes nothing about the other
+profiles or the connection itself.
+
+- The field lists only the connections this profile's scope and agent can use, with each one's name,
+  provider and whether it is yours or the organization's, and says why the others are not offered. The
+  server checks the same rules when you save, so the list is a convenience, not the guard.
+- The **Model** control lists the selected connection's own models when its provider can list them.
+  It says apart a list still loading, a list with nothing in it, a provider that does not list its
+  models, and a listing that failed; in the last two it offers suggestions and you can always type a
+  model name. Switching connection reloads the list, and a model that clearly belongs to another
+  provider is cleared so you choose again. The composer's and a follow-up's **Model** chip follow the
+  executor's connection the same way.
+- When the profile's own configuration sets a key or endpoint, a note beside the field says it takes
+  precedence over the connection. The note never shows the value; remove it from the configuration to
+  run on the connection.
+- An organization profile can use organization connections only. A personal profile can use your own
+  connections or the organization's. Promoting a personal profile to the organization is refused while
+  it selects a personal connection.
+- The connection's provider must be able to run the profile's agent: Anthropic, OpenRouter and LiteLLM
+  run Claude Code and OpenCode, OpenAI runs OpenCode, and a Claude subscription runs Claude Code.
+  A save, a task preflight and the task's start all refuse a pair that does not fit, and a connection
+  that was deleted or is no longer yours is refused the same way — a task never falls back to a key from
+  the environment.
+- Switching a profile to another connection checks its model: a model that clearly belongs to another
+  provider (for example `anthropic/…` on an OpenAI connection) is refused until you choose a model for
+  the new connection. A model Bellows cannot place is kept; an unreachable model list never rejects one.
+- A connection alone is a model credential: a profile that selects one needs no model key in the
+  environment, in Bellows Cloud too.
+- A connection's key and endpoint travel together. A connection on its provider's default endpoint
+  never picks up a custom endpoint set elsewhere, and the keys, endpoints and routing settings it
+  replaces are not passed to the task. Settings you paste into the profile's configuration are applied
+  last and still win; that is deliberate, so a pasted endpoint or key overrides the connection.
+- A connection that executors still select cannot be deleted. The refusal names the executors you can
+  see and says only that others exist when you can't see them; remove or switch the executors first.
+
 ### Advanced configuration
 
 Open **Advanced configuration** to edit the **Configuration JSON** directly. It must be a JSON object up to 32 KiB. A blank configuration is the same as `{}`. **Format JSON** tidies it.
@@ -140,11 +196,15 @@ In the **New task** composer, the **Executor** chip next to **Repository** lists
 
 If you don't pick one, Bellows uses the first of these that exists:
 
-1. Your default profile, while it is usable.
-2. Your agent default: an agent and a model, with no profile. Set it under **Settings → Model**, or in the **Connect a model** setup step.
-3. Your organization's agent default, which an admin sets.
-4. Your first usable personal profile.
-5. Your organization's first usable profile.
+1. Your default executor, if you chose one with **Make default** or by connecting a model (see [Setting up the default executor](#setting-up-the-default-executor)).
+2. Your organization's default executor, if an admin chose one.
+3. Your older name-based default preference, if you still have one and its profile is usable. It is only read; **Make default** replaces it.
+4. Your agent default: an agent and a model, with no profile. Only boards set up before the model step created executors have one; it keeps working until you choose a default executor.
+5. Your organization's agent default, which an admin sets.
+6. Your first usable personal profile.
+7. Your organization's first usable profile.
+
+A default executor that is suspended is not skipped: Bellows refuses a task that names no executor until you resume it or choose another default. Naming an executor yourself always works.
 
 With none of these, Bellows refuses the task and links to **Add an executor in Settings**. A task on an agent default keeps that agent and model: changing the default later doesn't change a queued task, its retry or its follow-up.
 
@@ -158,9 +218,10 @@ From the CLI, pass `--model <name>` to `bellows job create` or `bellows job foll
 
 ## Defaults and suspending
 
-- **Make default** in a row's actions saves your own preference. The default row shows a **Default** tag, and the composer selects it for you. Each member chooses their own default, including among organization profiles.
-- **Suspend** stops a profile from launching tasks. A suspended profile can't be a default. **Resume** brings it back.
-- **Remove** deletes a personal profile. Admins can **Delete** an organization profile, or **Make personal** to move it into their own list.
+- **Make default** in a row's actions saves your own default. The default row shows a **Default** tag, and the composer selects it for you. Each member chooses their own default, including among organization profiles. Renaming a profile keeps it the default.
+- **Make organization default** (admins, in an organization row's actions) sets the default for every member who has not chosen their own; the row shows an **Organization default** tag. **Clear organization default** removes it. Only organization profiles can be the organization default.
+- **Suspend** stops a profile from launching tasks. A suspended profile can't be chosen as a default. **Resume** brings it back.
+- **Remove** deletes a personal profile. Admins can **Delete** an organization profile, or **Make personal** to move it into their own list. A default is never removed or moved out from under its setting: choose another default first. When an admin deletes or makes personal an organization profile that is the organization default or a member's default, Bellows says how many selections name it and asks whether to clear them or replace them with another organization profile.
 
 Follow-ups and retries keep the executor of the original task.
 

@@ -1,28 +1,40 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
-import { type DeploymentMode, ERROR_CODES, type ExecutorScope, ORG_SCOPE, USER_SCOPE } from '@factory-ai/core';
+import {
+    type DeploymentMode,
+    ERROR_CODES,
+    executorConnectionFields,
+    type ProviderConnectionMeta,
+} from '@factory-ai/core';
 import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import {
     executorFieldRefusal,
     executorFieldStatus,
+    HTTP_CONNECTION_REFUSED,
+    isConnectionRefusal,
+    lifecycleRefusal,
+    selectionRefusal,
     MAX_EXECUTORS_PER_USER,
     parseExecutorFields,
+    parseExecutorId,
     personalRunnerClassRefusal,
+    visibleConnections,
 } from './executor-fields.js';
 import {
-    ExecutorDefaultNotFoundError,
-    ExecutorSuspendedError,
+    ConfiguredDefaultUnusableError,
+    type DefaultSelection,
     type ExecutorProfile,
+    type ResolvedDefault,
 } from '../db/user-executor-store.js';
 import type { UserExecutorStore } from '../db/user-executor-store.js';
+import type { ProviderConnectionStore } from '../db/provider-connection-store.js';
 import type { RunnerClassOption } from '../config-runner-classes.js';
 import type { OrgRegistry } from '../orgs.js';
 import { agentDefaultRoutes } from './agent-default.js';
 
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
-const HTTP_CONFLICT = 409;
 const HTTP_NOT_FOUND = 404;
 const HTTP_UNAVAILABLE = 503;
 
@@ -54,13 +66,15 @@ function parseExecutorEntry(entry: unknown, deploymentMode: DeploymentMode): Exe
     }
     const fields = parseExecutorFields(entry, deploymentMode);
     if (typeof fields === 'string') return fields;
+    const id = parseExecutorId(entry);
+    if (typeof id === 'object') return id.refusal;
     const classRefusal = personalRunnerClassRefusal(fields.runnerClass);
     if (classRefusal) return classRefusal;
     // Optional (issue 440): the edit dialog carries a row's suspension through a rename; an entry
     // that omits it keeps whatever its same-named predecessor carried.
     const { suspended } = entry as { suspended?: unknown };
     if (suspended !== undefined && typeof suspended !== 'boolean') return 'suspended must be a boolean';
-    return suspended === undefined ? fields : { ...fields, suspended };
+    return { ...fields, ...(id === undefined ? {} : { id }), ...(suspended === undefined ? {} : { suspended }) };
 }
 
 /**
@@ -86,15 +100,29 @@ function parseExecutors(raw: unknown, deploymentMode: DeploymentMode): ExecutorE
 }
 
 type ExecutorEntry = {
+    id?: string;
     name: string;
     type: string;
     config: Record<string, unknown>;
     gateFixRounds: number;
     suspended?: boolean;
+    providerConnectionId?: string | null;
 };
 
+/**
+ * The connection fields a row carries when the read knows the caller's visible connections: the name, provider and
+ * scope beside the id, and whether the pasted config overrides the connection. Safe metadata only (docs/api.md).
+ */
+function connectionFields(row: ExecutorProfile, visible: ReadonlyMap<string, ProviderConnectionMeta> | undefined) {
+    if (visible === undefined) return {};
+    return {
+        ...executorConnectionFields(row.providerConnectionId, visible),
+        configOverridesConnection: row.configOverridesConnection === true,
+    };
+}
+
 /** A personal row as the poll and the PUT answer it — never `config`, which may hold credentials. */
-function personalRow(row: ExecutorProfile) {
+function personalRow(row: ExecutorProfile, visible?: ReadonlyMap<string, ProviderConnectionMeta>) {
     return {
         id: row.id,
         name: row.name,
@@ -102,7 +130,22 @@ function personalRow(row: ExecutorProfile) {
         createdAt: row.createdAt,
         gateFixRounds: row.gateFixRounds,
         suspended: row.suspended,
+        providerConnectionId: row.providerConnectionId,
+        ...connectionFields(row, visible),
     };
+}
+
+/** `resolvedDefault`, with a configured default that cannot run now answered as itself rather than failing the poll. */
+async function resolvedOrUnusable(
+    executors: Pick<UserExecutorStore, 'resolvedDefault'>,
+    userId: string
+): Promise<ResolvedDefault | ConfiguredDefaultUnusableError | null> {
+    try {
+        return await executors.resolvedDefault(userId);
+    } catch (error) {
+        if (error instanceof ConfiguredDefaultUnusableError) return error;
+        throw error;
+    }
 }
 
 interface WorkspaceDeps {
@@ -115,7 +158,10 @@ interface WorkspaceDeps {
 async function runtimeOf(
     orgs: OrgRegistry,
     request: Parameters<typeof callerOf>[0]
-): Promise<{ userExecutors: UserExecutorStore | undefined } | { error: string; code: string; status: number }> {
+): Promise<
+    | { userExecutors: UserExecutorStore | undefined; providerConnections: ProviderConnectionStore | undefined }
+    | { error: string; code: string; status: number }
+> {
     const rt = await orgs.for(orgOf(request));
     if (!rt) {
         return {
@@ -124,7 +170,7 @@ async function runtimeOf(
             status: HTTP_UNAVAILABLE,
         };
     }
-    return { userExecutors: rt.userExecutors };
+    return { userExecutors: rt.userExecutors, providerConnections: rt.providerConnections };
 }
 
 /** `list`'s per-entry name-shape and duplicate-name checks, in one place. */
@@ -176,31 +222,52 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
                 ? Promise.all([
                       executors.list(caller.user.id),
                       executors.listOrg(),
-                      executors.resolvedDefault(caller.user.id),
+                      resolvedOrUnusable(executors, caller.user.id),
+                      visibleConnections(rt.providerConnections, caller.user.id),
+                      executors.selectedDefault(null),
                   ])
-                : ([[], [], null] as [ExecutorProfile[], ExecutorProfile[], null])
+                : ([[], [], null, new Map(), null] as [
+                      ExecutorProfile[],
+                      ExecutorProfile[],
+                      ResolvedDefault | ConfiguredDefaultUnusableError | null,
+                      ReadonlyMap<string, ProviderConnectionMeta>,
+                      DefaultSelection | null,
+                  ])
     );
     if (!loaded.ok) return reply;
 
-    const [executorRows, orgExecutorRows, resolved] = loaded.value;
+    const [executorRows, orgExecutorRows, resolvedOrRefused, visible, orgDefault] = loaded.value;
+    const unusable = resolvedOrRefused instanceof ConfiguredDefaultUnusableError ? resolvedOrRefused : null;
+    const resolved = resolvedOrRefused instanceof ConfiguredDefaultUnusableError ? null : resolvedOrRefused;
 
     return reply.code(HTTP_OK).send({
         // `config` is deliberately absent from these rows: it may hold credentials the member
         // pasted, and this payload is fetched by a poll that can run every two seconds. The org
         // rows are selection metadata for the same reason — their configuration answers to the
         // admin list, never to the poll every member's browser runs.
-        executors: executorRows.map(personalRow),
+        executors: executorRows.map((row) => personalRow(row, visible)),
         orgExecutors: orgExecutorRows.map((row: ExecutorProfile) => ({
+            id: row.id,
             name: row.name,
             type: row.type,
             createdAt: row.createdAt,
             suspended: row.suspended,
             runnerClass: row.runnerClass,
+            // Whether the organization's configured default names this row: the admin's Clear action reads it.
+            orgDefault: orgDefault?.executorId === row.id,
+            providerConnectionId: row.providerConnectionId,
+            ...connectionFields(row, visible),
         })),
         // The member's resolved default: their stored preference while it still resolves, else the
         // deterministic fallback the store computes — what a new task draft autoselects. When an agent default wins,
         // no profile is the default: `agentDefault` names the agent, the model and whose row it is.
-        defaultExecutor: resolved?.kind === 'profile' ? { scope: resolved.scope, name: resolved.name } : null,
+        // A configured default that cannot run now (suspended) is still named, with the reason: the poll never invents
+        // another default in its place.
+        defaultExecutor: unusable
+            ? { scope: unusable.scope, name: unusable.executorName, unusable: unusable.reason }
+            : resolved?.kind === 'profile'
+              ? { scope: resolved.scope, name: resolved.name }
+              : null,
         agentDefault:
             resolved?.kind === 'agent'
                 ? { agentType: resolved.agentType, model: resolved.model, from: resolved.from }
@@ -223,14 +290,16 @@ async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
     const loaded = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => executors.listWithConfigs(userId)
+        async () =>
+            Promise.all([executors.listWithConfigs(userId), visibleConnections(ctx.providerConnections, userId)])
     );
     if (!loaded.ok) return reply;
+    const [rows, visible] = loaded.value;
 
     return reply.code(HTTP_OK).send({
         // A bridged (MCP) caller never reads the configuration, which may hold provider credentials.
-        executors: loaded.value.map((row) =>
-            isBridged(request.raw) ? personalRow(row) : { ...personalRow(row), config: row.config }
+        executors: rows.map((row) =>
+            isBridged(request.raw) ? personalRow(row, visible) : { ...personalRow(row, visible), config: row.config }
         ),
         // The classes an org profile may name (RUNNER_CLASSES), each with whether it gets a docker daemon.
         runnerClasses: deps.runnerClasses,
@@ -252,15 +321,28 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
         reply,
         (e) => request.log.error({ err: e }),
         async () => {
-            await executors.replace(userId, list);
+            try {
+                await executors.replace(userId, list);
+            } catch (error) {
+                if (isConnectionRefusal(error) || lifecycleRefusal(error)) return { refused: error as Error };
+                throw error;
+            }
             // Answered from the store, not echoed from the body: created_at is the database's.
-            return executors.list(userId);
+            return { rows: await executors.list(userId) };
         }
     );
     if (!saved.ok) return reply;
+    if ('refused' in saved.value) {
+        const { refused } = saved.value;
+        if (isConnectionRefusal(refused)) {
+            return bad(reply, ERROR_CODES.PROVIDER_CONNECTION_REFUSED, refused.message, HTTP_CONNECTION_REFUSED);
+        }
+        const refusal = lifecycleRefusal(refused)!;
+        return bad(reply, refusal.code, refusal.message, refusal.status);
+    }
 
     // 200, not 202: nothing runs in the background — the rows are written by the time this returns.
-    return reply.code(HTTP_OK).send({ executors: saved.value.map(personalRow) });
+    return reply.code(HTTP_OK).send({ executors: saved.value.rows.map((row) => personalRow(row)) });
 }
 
 /** Resolves the caller and the executor store the personal by-id routes share. */
@@ -279,7 +361,7 @@ async function personalExecutorContext(deps: WorkspaceDeps, request: FastifyRequ
         reply.code(HTTP_UNAVAILABLE).send(NO_EXECUTOR_STORE);
         return null;
     }
-    return { userId: caller.user.id, executors: rt.userExecutors };
+    return { userId: caller.user.id, executors: rt.userExecutors, providerConnections: rt.providerConnections };
 }
 
 /**
@@ -295,9 +377,21 @@ async function handleDeleteExecutor(deps: WorkspaceDeps, request: FastifyRequest
     const removed = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => ctx.executors.removePersonal(ctx.userId, id)
+        async () => {
+            try {
+                return await ctx.executors.removePersonal(ctx.userId, id);
+            } catch (error) {
+                // A default still names it: the caller clears or replaces the default first.
+                const refusal = lifecycleRefusal(error);
+                if (refusal) return refusal;
+                throw error;
+            }
+        }
     );
     if (!removed.ok) return reply;
+    if (typeof removed.value === 'object') {
+        return bad(reply, removed.value.code, removed.value.message, removed.value.status);
+    }
     if (!removed.value) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such executor' });
     return reply.code(HTTP_OK).send({ id, removed: true });
 }
@@ -321,47 +415,43 @@ async function handleSuspendExecutor(deps: WorkspaceDeps, request: FastifyReques
 }
 
 /**
- * The member's default-executor preference (issue 391): names a profile by scope and name, either
- * scope, without touching the shared profile or anyone else's default. The store refuses a
- * preference naming no accessible profile, which is this route's 404 — a selection the caller
- * cannot resolve is not a default they can hold.
+ * Configures the member's default executor by the profile's stable id (`{ executorId }`): a rename never severs it, and
+ * it outranks the legacy preference and the fallback chain. Every default write names an id; a body without one is a
+ * 400. The store refuses a profile the caller may not select; its typed refusals are 404 and 409 answers, not failures.
  */
+type PersonalContext = NonNullable<Awaited<ReturnType<typeof personalExecutorContext>>>;
+
+async function putDefaultById({ userId, executors }: PersonalContext, reply: FastifyReply, executorId: unknown) {
+    if (typeof executorId !== 'string' || !executorId) {
+        return bad(reply, ERROR_CODES.BAD_BODY, 'executorId must be a string');
+    }
+    try {
+        const selected = await executors.selectDefault(userId, executorId);
+        return reply.code(HTTP_OK).send({ defaultExecutor: { scope: selected.scope, name: selected.name } });
+    } catch (error) {
+        const refused = selectionRefusal(reply, error, `executor "${executorId}"`);
+        if (refused) return refused;
+        throw error;
+    }
+}
+
 async function handlePutDefaultExecutor(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
     const ctx = await personalExecutorContext(deps, request, reply);
     if (!ctx) return reply;
-    const { userId, executors } = ctx;
+    return putDefaultById(ctx, reply, jsonBody(request.body).executorId);
+}
 
-    const fields = jsonBody(request.body);
-    const name = fields.executor;
-    const scope = fields.executorScope;
-    if (typeof name !== 'string' || !name) return bad(reply, ERROR_CODES.BAD_BODY, 'executor must be a string');
-    if (scope !== USER_SCOPE && scope !== ORG_SCOPE) {
-        return bad(reply, ERROR_CODES.BAD_EXECUTOR_SCOPE, `executorScope must be one of: ${USER_SCOPE}, ${ORG_SCOPE}`);
-    }
-
-    // Not under `guard`: a preference naming no accessible profile is a 404 answer, not a
-    // failure — the store throws the typed refusal, this route names it; anything else is a real
-    // failure and reaches the error handler as one.
-    try {
-        await executors.setDefault(userId, { scope: scope as ExecutorScope, name });
-    } catch (error) {
-        if (error instanceof ExecutorSuspendedError) {
-            return bad(
-                reply,
-                ERROR_CODES.EXECUTOR_SUSPENDED,
-                `the ${scope} executor "${name}" is suspended; resume it before making it the default`,
-                HTTP_CONFLICT
-            );
-        }
-        if (!(error instanceof ExecutorDefaultNotFoundError)) throw error;
-        return bad(
-            reply,
-            ERROR_CODES.NOT_FOUND,
-            `no ${scope} executor named "${name}" is available to you`,
-            HTTP_NOT_FOUND
-        );
-    }
-    return reply.code(HTTP_OK).send({ defaultExecutor: { scope, name } });
+/** Clears the member's configured default; the organization's, then the legacy chain, apply again. */
+async function handleClearDefaultExecutor(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
+    const ctx = await personalExecutorContext(deps, request, reply);
+    if (!ctx) return reply;
+    const cleared = await guard(
+        reply,
+        (e) => request.log.error({ err: e }),
+        () => ctx.executors.clearDefault(ctx.userId)
+    );
+    if (!cleared.ok) return reply;
+    return reply.code(HTTP_OK).send({ cleared: cleared.value });
 }
 
 export interface WorkspaceRoutesDeps {
@@ -385,6 +475,9 @@ export const workspaceRoutes =
         );
         app.put('/api/workspace/executors/default', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handlePutDefaultExecutor(deps, request, reply)
+        );
+        app.delete('/api/workspace/executors/default', (request, reply) =>
+            handleClearDefaultExecutor(deps, request, reply)
         );
         app.delete('/api/workspace/executors/:id', (request, reply) => handleDeleteExecutor(deps, request, reply));
         app.post('/api/workspace/executors/:id/suspension', { bodyLimit: BODY_LIMIT }, (request, reply) =>

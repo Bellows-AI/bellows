@@ -2,8 +2,10 @@ import { type ReactNode, useId, useState } from 'react';
 import { useModelSetup } from '../api/useModelSetup.js';
 import type { Session } from '../api/useSession.js';
 import { StateNote } from '../components/StateNote.js';
-import { bannerOf, ConfiguredView, useConfigured } from './ConfiguredBanner.js';
+import { ADMIN_ROLE } from '@factory-ai/core';
+import { bannerOf, canRotate, ConfiguredView, useConfigured } from './ConfiguredBanner.js';
 import { KeyFormView, useKeyForm } from './KeyForm.js';
+import { RotateView, useRotate } from './RotateKey.js';
 import { SavePrimary } from './SavePrimary.js';
 
 /** The primary's words: on the key form, and on a configured banner. */
@@ -12,11 +14,16 @@ export interface ModelSetupLabels {
     banner: string;
 }
 
+/** Which view the setup shows: the configured banner, the key form (a new connection), or the key replacement. */
+type Mode = 'banner' | 'form' | 'rotate';
+
 /**
  * Connect a model — the onboarding step and Settings → Model render this one component. It reads the setup first: a
- * failed read is an error with Retry, never the empty form; a model already there shows its banner
- * (`ConfiguredView`), and "Use a personal key" opens the key form at Only me. The page's action row (`footer`) stays
- * mounted at one place through every state, so a press never lands on a row that was just replaced.
+ * failed read is an error with Retry, never the empty form; a default executor already there shows its banner
+ * (`ConfiguredView`) with "Connect another provider" (the key form, a new connection and executor) and "Replace the key"
+ * (explicit rotation). A save creates or selects the connection and the executor and makes it the default in one call.
+ * The page's action row (`footer`) stays mounted at one place through every state, so a press never lands on a row that
+ * was just replaced.
  */
 export function ModelSetup({
     session,
@@ -36,14 +43,25 @@ export function ModelSetup({
 }) {
     const setup = useModelSetup();
     const ids = useId();
-    const [ownKey, setOwnKey] = useState(false);
-    const form = useKeyForm(session, setup, onSaved);
+    const [mode, setMode] = useState<Mode>('banner');
+    // A save of a new connection or a new key is done: the banner of what is now saved comes back.
+    const savedToBanner = async () => {
+        setMode('banner');
+        await onSaved();
+    };
+    const form = useKeyForm(session, setup, savedToBanner);
     const configured = useConfigured({ session, view: setup.data, setup, onSaved, saveExisting });
     const view = setup.data;
-    const banner = ownKey || !view ? null : bannerOf(view);
+    const rotate = useRotate(session, setup, savedToBanner, view?.selected);
+    const banner = mode !== 'banner' || !view ? null : bannerOf(view);
 
     let body: ReactNode;
-    let primary = { label: labels.form, reason: form.reason, busy: form.save.busy, press: form.press };
+    let primary: { label: string; reason: string | null; busy: boolean; press: () => void } = {
+        label: labels.form,
+        reason: form.reason,
+        busy: form.save.busy,
+        press: form.press,
+    };
     if (!session || !view) {
         const failed = Boolean(session && setup.error);
         primary = {
@@ -63,10 +81,13 @@ export function ModelSetup({
     } else if (banner) {
         const { reason, save, press } = configured;
         primary = { label: labels.banner, reason, busy: save.busy, press };
+        const admin = session.role === ADMIN_ROLE;
         const openForm = () => {
-            form.setScope('personal');
-            setOwnKey(true);
+            // Only an admin inherits the organization's scope: a member's save there is refused.
+            form.setScope(admin ? (view.selected?.scope ?? 'personal') : 'personal');
+            setMode('form');
         };
+        const allowed = canRotate(view.selected, admin);
         body = (
             <ConfiguredView
                 ids={ids}
@@ -75,8 +96,12 @@ export function ModelSetup({
                 state={configured}
                 orgName={session.organization.name}
                 onOwnKey={openForm}
+                onRotate={allowed ? () => setMode('rotate') : null}
             />
         );
+    } else if (mode === 'rotate' && view) {
+        primary = { label: 'Replace key', reason: rotate.reason, busy: rotate.save.busy, press: rotate.press };
+        body = <RotateView ids={ids} state={rotate} onCancel={() => setMode('banner')} />;
     } else {
         body = <KeyFormView ids={ids} form={form} orgName={session.organization.name} />;
     }

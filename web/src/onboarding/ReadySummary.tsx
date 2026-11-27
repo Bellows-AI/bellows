@@ -78,7 +78,21 @@ function modelRow(
             lamp: 'ok',
         };
     }
-    const scope = view[view.effective];
+    if (view.effective === 'executor' && view.selected) {
+        const { selected } = view;
+        const who = selected.scope === 'org' ? `everyone in ${organization ?? 'the organization'}` : 'only you';
+        return {
+            detail: joined([
+                selected.name,
+                agentLabel(selected.agentType),
+                providerLabel(selected.connection?.provider),
+                selected.model,
+                who,
+            ]),
+            lamp: 'ok',
+        };
+    }
+    const scope = view.effective === 'executor' ? null : view[view.effective];
     const who = view.effective === 'org' ? `everyone in ${organization ?? 'the organization'}` : 'only you';
     return {
         detail: joined([agentLabel(scope?.agentType), providerLabel(scope?.provider), scope?.model, who]),

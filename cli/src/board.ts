@@ -16,6 +16,7 @@ import {
 } from './transport.js';
 import type { BoardClock } from './transport.js';
 import type { TaskUsage, Tokens, UsageBlock } from './usage-types.js';
+import type { WorkspaceView } from './workspace-view.js';
 
 /**
  * The board client for the person routes the CLI speaks to: the two reads
@@ -407,14 +408,6 @@ export interface VisibleRepos {
     repos: { owner: string; name: string; private: boolean; defaultBranch: string | null; pushedAt: string | null }[];
     installation: unknown;
     meta: { fetchedAt: string | null; error: string | null };
-}
-
-/** The slice of the workspace read discovery shows: executor selection metadata. */
-export interface WorkspaceView {
-    executors: { name: string; type: string; suspended?: boolean }[];
-    /** `runnerClass`: the named runner class the org profile's tasks run on; null or absent means the default. */
-    orgExecutors: { name: string; type: string; runnerClass?: string | null; suspended?: boolean }[];
-    defaultExecutor: { scope: string; name: string } | null;
 }
 
 export interface SkillView {

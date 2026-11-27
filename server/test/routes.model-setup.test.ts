@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { AppConfig } from '../src/config.js';
+import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-selection.js';
+import {
+    ModelSetupConflict,
+    ModelSetupNameConflict,
+    type ModelSetupStore,
+    type SelectedSetup,
+    type SetupCommand,
+} from '../src/db/model-setup-store.js';
 import {
     githubAuth,
     memoryAuthStore,
@@ -10,18 +18,57 @@ import {
     staticRegistry,
     testConfig,
 } from './helpers.js';
-import { HTTP_BAD_REQUEST, HTTP_FORBIDDEN, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, trackApps } from './helpers-http.js';
+import {
+    HTTP_BAD_REQUEST,
+    HTTP_CONFLICT,
+    HTTP_FORBIDDEN,
+    HTTP_OK,
+    HTTP_SERVICE_UNAVAILABLE,
+    trackApps,
+} from './helpers-http.js';
 import { storeOutage } from './helpers-outage.js';
 
 /**
- * Offline: the HTTP contract of `GET` / `PUT /api/model-setup` against the in-memory env and executor store doubles.
- * The transaction (a failed secret write leaves the agent default unwritten, and the reverse) is covered by
- * server/test-db/model-setup.store.test.ts.
+ * Offline: the HTTP contract of `GET` / `PUT /api/model-setup` against the in-memory env and executor store doubles and
+ * a recording double of the setup command. The command's transaction (a failed publication step leaves the previous
+ * default usable, a retry replays) is covered by server/test-db/model-setup.store.test.ts, and the route over the real
+ * stores by server/test-db/model-setup.routes.test.ts.
  */
 const track = trackApps();
 
 const ANTHROPIC_KEY = 'sk-ant-test-value';
 const OPENROUTER_KEY = 'sk-or-test-value';
+
+/** The setup command's double: records what the route asked for and answers fixed identities, or what a test scripts. */
+function recordingSetup() {
+    const commands: SetupCommand[] = [];
+    let selected: SelectedSetup | null = null;
+    const double = {
+        commands,
+        fail: null as Error | null,
+        setSelected: (value: SelectedSetup | null) => {
+            selected = value;
+        },
+        store: {
+            async apply(command: SetupCommand) {
+                if (double.fail) throw double.fail;
+                commands.push(command);
+                return {
+                    scope: command.scope,
+                    executorId: command.executor.id ?? 'executor-1',
+                    executorName: command.executor.name ?? 'kept',
+                    connectionId: command.connection.intent === 'none' ? null : 'connection-1',
+                    connectionName: command.connection.intent === 'create' ? command.connection.name : null,
+                    replayed: false,
+                };
+            },
+            async selectedFor() {
+                return selected;
+            },
+        } satisfies ModelSetupStore,
+    };
+    return double;
+}
 
 async function boot(overrides: Partial<AppConfig> = {}) {
     const auth = memoryAuthStore();
@@ -29,13 +76,20 @@ async function boot(overrides: Partial<AppConfig> = {}) {
     const member = auth.seedMember('test-org', 'octocat');
     const envVars = memoryEnvVarStore();
     const executors = memoryUserExecutorStore();
+    const setup = recordingSetup();
     const config = testConfig({ auth: githubAuth(), ...overrides });
-    const app = await buildApp({ config, orgs: staticRegistry({ config, envVars, userExecutors: executors }), auth });
+    const app = await buildApp({
+        config,
+        orgs: staticRegistry({ config, envVars, userExecutors: executors, modelSetup: setup.store }),
+        auth,
+    });
     track(app);
     return {
         app,
         envVars,
         executors,
+        setup,
+        admin,
         member,
         adminCookie: await signedIn(auth, admin),
         memberCookie: await signedIn(auth, member),
@@ -50,11 +104,15 @@ const put = (b: Booted, cookie: string, payload: object) =>
 
 const anthropicPersonal = {
     scope: 'personal',
-    provider: 'anthropic',
-    key: ANTHROPIC_KEY,
+    requestId: 'request-1',
     agentType: 'claude-code',
     model: 'claude-sonnet-4-5',
+    connection: { intent: 'create', provider: 'anthropic', key: ANTHROPIC_KEY, name: 'Anthropic' },
+    executor: { name: 'Claude' },
 };
+const withConnection = (connection: object, over: object = {}) => ({ ...anthropicPersonal, connection, ...over });
+const CONNECTION_ID = '11111111-1111-4111-8111-111111111111';
+const EXECUTOR_ID = '22222222-2222-4222-8222-222222222222';
 
 describe('GET /api/model-setup', () => {
     it('answers nothing configured on a fresh board', async () => {
@@ -66,7 +124,14 @@ describe('GET /api/model-setup', () => {
 
     it('shows a saved personal setup by names only, the personal scope effective', async () => {
         const b = await boot();
-        expect((await put(b, b.memberCookie, anthropicPersonal)).statusCode).toBe(HTTP_OK);
+        await b.envVars.replaceWorkspace(b.member.user.id, [
+            { name: 'ANTHROPIC_API_KEY', value: ANTHROPIC_KEY, isSecret: true },
+        ]);
+        await b.executors.setAgentDefault(b.member.user.id, {
+            agentType: 'claude-code',
+            model: 'claude-sonnet-4-5',
+            provider: 'anthropic',
+        });
 
         const response = await get(b, b.memberCookie);
         expect(response.json()).toEqual({
@@ -104,7 +169,9 @@ describe('GET /api/model-setup', () => {
             personal: null,
             effective: 'platform',
         });
-        await put(b, b.memberCookie, anthropicPersonal);
+        await b.envVars.replaceWorkspace(b.member.user.id, [
+            { name: 'ANTHROPIC_API_KEY', value: ANTHROPIC_KEY, isSecret: true },
+        ]);
         expect((await get(b, b.memberCookie)).json()).toMatchObject({ platform: true, effective: 'personal' });
     });
 
@@ -129,313 +196,268 @@ describe('GET /api/model-setup', () => {
     });
 });
 
-describe('PUT /api/model-setup with a key', () => {
-    it('refuses a member writing the org scope with 403 and writes nothing', async () => {
+describe('GET /api/model-setup with a default executor', () => {
+    const selected: SelectedSetup = {
+        scope: 'org',
+        executorId: 'executor-1',
+        executorName: 'Claude',
+        agentType: 'claude-code',
+        model: 'claude-sonnet-4-5',
+        suspended: false,
+        updatedAt: '2026-01-02T03:04:05.678Z',
+        connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'org', baseUrl: null },
+    };
+
+    it('reports the selected executor and its connection, effective before any env key, with no value', async () => {
+        const b = await boot();
+        b.setup.setSelected(selected);
+        await b.envVars.replaceWorkspace(b.member.user.id, [
+            { name: 'OPENAI_API_KEY', value: 'sk-env-key', isSecret: true },
+        ]);
+        const response = await get(b, b.memberCookie);
+        expect(response.json()).toMatchObject({
+            effective: 'executor',
+            selected: {
+                scope: 'org',
+                executorId: 'executor-1',
+                name: 'Claude',
+                agentType: 'claude-code',
+                model: 'claude-sonnet-4-5',
+                connection: { id: 'connection-1', provider: 'anthropic', scope: 'org' },
+            },
+            personal: { provider: 'openai' },
+        });
+        expect(response.body).not.toContain('sk-env-key');
+    });
+
+    it('leaves the legacy source effective while the default executor is suspended', async () => {
+        const b = await boot();
+        b.setup.setSelected({ ...selected, suspended: true });
+        const response = await get(b, b.memberCookie);
+        expect(response.json()).toMatchObject({ effective: null, selected: { suspended: true } });
+    });
+
+    it('is a 503, never "nothing configured", when the default executor read fails', async () => {
+        const b = await boot();
+        b.setup.store.selectedFor = async () => {
+            throw storeOutage();
+        };
+        const response = await get(b, b.memberCookie);
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(response.json()).not.toHaveProperty('effective');
+    });
+});
+
+describe('PUT /api/model-setup', () => {
+    it('refuses a member writing the org scope with 403 and applies nothing', async () => {
         const b = await boot();
         const response = await put(b, b.memberCookie, { ...anthropicPersonal, scope: 'org' });
         expect(response.statusCode).toBe(HTTP_FORBIDDEN);
-        expect(b.envVars.rows()).toEqual([]);
-        expect(await b.executors.agentDefaults(b.member.user.id)).toEqual({ org: null, personal: null });
+        expect(b.setup.commands).toEqual([]);
     });
 
     it('lets an admin write the org scope', async () => {
         const b = await boot();
         expect((await put(b, b.adminCookie, { ...anthropicPersonal, scope: 'org' })).statusCode).toBe(HTTP_OK);
-        expect((await get(b, b.memberCookie)).json()).toMatchObject({
-            org: { provider: 'anthropic', keyNames: ['ANTHROPIC_API_KEY'] },
-            effective: 'org',
-        });
+        expect(b.setup.commands[0]).toMatchObject({ scope: 'org', userId: b.admin.user.id });
     });
 
-    it('stores the key as a secret and answers no value', async () => {
+    it('answers the stable identities and never the key, and writes no env row or agent default', async () => {
         const b = await boot();
         const response = await put(b, b.memberCookie, anthropicPersonal);
+        expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json()).toEqual({
+            saved: true,
+            scope: 'personal',
+            executorId: 'executor-1',
+            executorName: 'Claude',
+            connectionId: 'connection-1',
+            connectionName: 'Anthropic',
+            replayed: false,
+        });
         expect(response.body).not.toContain(ANTHROPIC_KEY);
-        expect(b.envVars.rows()).toEqual([
-            {
-                userId: b.member.user.id,
-                owner: null,
-                repoName: null,
-                name: 'ANTHROPIC_API_KEY',
-                value: ANTHROPIC_KEY,
-                isSecret: true,
+        expect(b.envVars.rows()).toEqual([]);
+        expect(await b.executors.agentDefaults(b.member.user.id)).toEqual({ org: null, personal: null });
+        expect(b.setup.commands[0]).toMatchObject({
+            requestId: 'request-1',
+            connection: {
+                intent: 'create',
+                provider: 'anthropic',
+                key: ANTHROPIC_KEY,
+                name: 'Anthropic',
+                baseUrl: null,
             },
-        ]);
+            executor: { name: 'Claude', agentType: 'claude-code', model: 'claude-sonnet-4-5' },
+        });
     });
 
     it('refuses an agent the provider does not run', async () => {
         const b = await boot();
-        const response = await put(b, b.memberCookie, {
-            scope: 'personal',
-            provider: 'openai',
-            key: 'sk-openai',
-            agentType: 'claude-code',
-            model: 'gpt-5',
-        });
-        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
-        expect(b.envVars.rows()).toEqual([]);
-    });
-
-    it('runs Claude Code on an OpenRouter key, the model kept as given', async () => {
-        const b = await boot();
-        const response = await put(b, b.memberCookie, {
-            scope: 'personal',
-            provider: 'openrouter',
-            key: OPENROUTER_KEY,
-            agentType: 'claude-code',
-            model: 'anthropic/claude-sonnet-4.5',
-        });
-        expect(response.statusCode).toBe(HTTP_OK);
-        expect((await b.executors.agentDefaults(b.member.user.id)).personal).toEqual({
-            agentType: 'claude-code',
-            model: 'anthropic/claude-sonnet-4.5',
-            provider: 'openrouter',
-        });
-    });
-
-    it('prefixes an OpenCode model with its provider', async () => {
-        const b = await boot();
-        await put(b, b.memberCookie, {
-            scope: 'personal',
-            provider: 'openrouter',
-            key: OPENROUTER_KEY,
-            agentType: 'opencode',
-            model: 'anthropic/claude-sonnet-4.5',
-        });
-        expect((await b.executors.agentDefaults(b.member.user.id)).personal?.model).toBe(
-            'openrouter/anthropic/claude-sonnet-4.5'
+        const response = await put(
+            b,
+            b.memberCookie,
+            withConnection(
+                { intent: 'create', provider: 'openai', key: 'sk-openai', name: 'OpenAI' },
+                { model: 'gpt-5' }
+            )
         );
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(b.setup.commands).toEqual([]);
     });
 
     it('refuses a subscription token in cloud with CLOUD_CREDENTIAL_REFUSED', async () => {
         const b = await boot({ deploymentMode: 'cloud' });
-        const response = await put(b, b.memberCookie, {
-            scope: 'personal',
-            provider: 'subscription',
-            key: 'sk-ant-oat-test',
-            agentType: 'claude-code',
-            model: 'claude-sonnet-4-5',
-        });
+        const response = await put(
+            b,
+            b.memberCookie,
+            withConnection({ intent: 'create', provider: 'subscription', key: 'sk-ant-oat-test', name: 'Sub' })
+        );
         expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('CLOUD_CREDENTIAL_REFUSED');
-        expect(b.envVars.rows()).toEqual([]);
+        expect(b.setup.commands).toEqual([]);
     });
 
-    it('refuses LiteLLM without a base URL, and stores the base URL as plain text with one', async () => {
+    it('refuses LiteLLM without a base URL, and passes the base URL on with one', async () => {
         const b = await boot();
-        const litellm = {
-            scope: 'personal',
-            provider: 'litellm',
-            key: 'sk-litellm',
-            agentType: 'claude-code',
-            model: 'claude-sonnet-4-5',
-        };
-        expect((await put(b, b.memberCookie, litellm)).statusCode).toBe(HTTP_BAD_REQUEST);
-        expect(b.envVars.rows()).toEqual([]);
+        const litellm = { intent: 'create', provider: 'litellm', key: 'sk-litellm', name: 'Proxy' };
+        expect((await put(b, b.memberCookie, withConnection(litellm))).statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(b.setup.commands).toEqual([]);
 
-        const saved = await put(b, b.memberCookie, { ...litellm, baseUrl: 'https://llm.example.test' });
+        const saved = await put(b, b.memberCookie, withConnection({ ...litellm, baseUrl: 'https://llm.example.test' }));
         expect(saved.statusCode).toBe(HTTP_OK);
-        expect(b.envVars.rows().map(({ name, value, isSecret }) => ({ name, value, isSecret }))).toEqual([
-            { name: 'ANTHROPIC_API_KEY', value: 'sk-litellm', isSecret: true },
-            { name: 'ANTHROPIC_BASE_URL', value: 'https://llm.example.test', isSecret: false },
-        ]);
-        expect((await get(b, b.memberCookie)).json().personal.provider).toBe('litellm');
+        expect(b.setup.commands[0]?.connection).toMatchObject({ baseUrl: 'https://llm.example.test' });
     });
 
-    it('a provider switch removes the old provider’s key and base URL in that scope only', async () => {
+    it('refuses a malformed body: unknown fields, intents, request ids and keys', async () => {
         const b = await boot();
-        await b.envVars.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: 'org-key', isSecret: true }]);
-        await put(b, b.memberCookie, { ...anthropicPersonal, baseUrl: 'https://proxy.example.test' });
-        await b.envVars.writeScoped(
-            { kind: 'workspace', userId: b.member.user.id },
-            { upsert: [{ name: 'UNRELATED', value: 'kept', isSecret: false }], remove: [] },
-            b.member.user.id
+        const refused = [
+            { ...anthropicPersonal, extra: 1 },
+            { ...anthropicPersonal, requestId: '' },
+            { ...anthropicPersonal, requestId: undefined },
+            withConnection({ intent: 'steal', id: 'x' }),
+            withConnection({ intent: 'reuse' }),
+            withConnection({ intent: 'reuse', id: CONNECTION_ID, key: 'sk-x' }),
+            // An id that is not a row id never reaches a uuid column.
+            withConnection({ intent: 'reuse', id: 'not-a-uuid' }),
+            withConnection({ intent: 'rotate', id: 'not-a-uuid', key: 'sk-x' }),
+            withConnection({ intent: 'none', key: 'sk-x' }),
+            withConnection({ intent: 'rotate', id: CONNECTION_ID, key: 'has space' }),
+            withConnection({ intent: 'create', provider: 'anthropic', key: 'sk-x' }),
+            { ...anthropicPersonal, executor: { name: 'Claude', id: '' } },
+            { ...anthropicPersonal, executor: { id: 'not-a-uuid' } },
+        ];
+        for (const body of refused) {
+            const response = await put(b, b.memberCookie, body);
+            expect(response.statusCode, JSON.stringify(body)).toBe(HTTP_BAD_REQUEST);
+            expect(response.body).not.toContain(ANTHROPIC_KEY);
+        }
+        expect(b.setup.commands).toEqual([]);
+    });
+
+    it('passes reuse and rotate intents on by id, an edit naming its executor id', async () => {
+        const b = await boot();
+        await put(
+            b,
+            b.memberCookie,
+            withConnection(
+                { intent: 'reuse', id: CONNECTION_ID },
+                { executor: { id: EXECUTOR_ID, expectedUpdatedAt: '2026-01-01T00:00:00.000Z' } }
+            )
         );
-
-        const switched = await put(b, b.memberCookie, {
-            scope: 'personal',
-            provider: 'openrouter',
-            key: OPENROUTER_KEY,
-            agentType: 'opencode',
-            model: 'openai/gpt-5',
-        });
-
-        expect(switched.statusCode).toBe(HTTP_OK);
-        const names = (userId: string | null) =>
-            b.envVars
-                .rows()
-                .filter((row) => row.userId === userId)
-                .map((row) => row.name)
-                .sort();
-        expect(names(b.member.user.id)).toEqual(['OPENROUTER_API_KEY', 'UNRELATED']);
-        expect(names(null)).toEqual(['ANTHROPIC_API_KEY']);
-        expect((await get(b, b.memberCookie)).json().personal).toEqual({
-            provider: 'openrouter',
-            agentType: 'opencode',
-            model: 'openrouter/openai/gpt-5',
-            keyNames: ['OPENROUTER_API_KEY'],
+        await put(b, b.memberCookie, withConnection({ intent: 'rotate', id: CONNECTION_ID, key: 'sk-ant-new' }));
+        expect(b.setup.commands.map((c) => c.connection.intent)).toEqual(['reuse', 'rotate']);
+        expect(b.setup.commands[0]?.executor).toMatchObject({
+            id: EXECUTOR_ID,
+            expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
         });
     });
 
-    it('a key replaced by hand outranks the recorded provider: GET shows it and a switch removes it', async () => {
+    it('answers a name collision 409 NAME_TAKEN, a stale setup 409, and a refused selection 409', async () => {
         const b = await boot();
-        const scope = { kind: 'workspace' as const, userId: b.member.user.id };
-        await put(b, b.memberCookie, anthropicPersonal);
-        await b.envVars.writeScoped(
-            scope,
-            { upsert: [{ name: 'OPENAI_API_KEY', value: 'sk-openai', isSecret: true }], remove: ['ANTHROPIC_API_KEY'] },
-            b.member.user.id
+        b.setup.fail = new ModelSetupNameConflict('connection');
+        const taken = await put(b, b.memberCookie, anthropicPersonal);
+        expect(taken.statusCode).toBe(HTTP_CONFLICT);
+        expect(taken.json().code).toBe('NAME_TAKEN');
+        expect(taken.body).not.toContain(ANTHROPIC_KEY);
+
+        b.setup.fail = new ModelSetupConflict('The executor changed since you read it');
+        const stale = await put(b, b.memberCookie, anthropicPersonal);
+        expect(stale.statusCode).toBe(HTTP_CONFLICT);
+        expect(stale.json().code).toBe('MODEL_SETUP_CONFLICT');
+
+        b.setup.fail = new ExecutorConnectionRefusedError(
+            'scope',
+            'An organization executor can only use an organization provider connection.'
         );
-        expect((await get(b, b.memberCookie)).json().personal).toMatchObject({
-            provider: 'openai',
-            keyNames: ['OPENAI_API_KEY'],
-        });
-
-        await put(b, b.memberCookie, {
-            scope: 'personal',
-            provider: 'openrouter',
-            key: OPENROUTER_KEY,
-            agentType: 'opencode',
-            model: 'openai/gpt-5',
-        });
-
-        expect(b.envVars.rows().map((row) => row.name)).toEqual(['OPENROUTER_API_KEY']);
+        const refused = await put(b, b.memberCookie, anthropicPersonal);
+        expect(refused.statusCode).toBe(HTTP_CONFLICT);
+        expect(refused.json().code).toBe('PROVIDER_CONNECTION_REFUSED');
     });
 
-    it('keeps an unrelated provider key the member saved beside the current one', async () => {
+    it('a failing store answers 503 and no key leaks', async () => {
         const b = await boot();
-        await put(b, b.memberCookie, anthropicPersonal);
-        await b.envVars.writeScoped(
-            { kind: 'workspace', userId: b.member.user.id },
-            { upsert: [{ name: 'OPENAI_API_KEY', value: 'sk-openai', isSecret: true }], remove: [] },
-            b.member.user.id
-        );
-        await put(b, b.memberCookie, {
-            scope: 'personal',
-            provider: 'openrouter',
-            key: OPENROUTER_KEY,
-            agentType: 'opencode',
-            model: 'openai/gpt-5',
-        });
-        expect(
-            b.envVars
-                .rows()
-                .map((row) => row.name)
-                .sort()
-        ).toEqual(['OPENAI_API_KEY', 'OPENROUTER_API_KEY']);
-    });
-
-    it('a personal key makes the personal scope effective over an org key of another provider', async () => {
-        const b = await boot();
-        await b.envVars.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: 'org', isSecret: true }]);
-        await put(b, b.memberCookie, {
-            scope: 'personal',
-            provider: 'openrouter',
-            key: OPENROUTER_KEY,
-            agentType: 'claude-code',
-            model: 'anthropic/claude-sonnet-4.5',
-        });
-        expect((await get(b, b.memberCookie)).json().effective).toBe('personal');
-    });
-
-    it('a failing write answers 503 and leaves the agent default unwritten', async () => {
-        const b = await boot();
-        b.envVars.broken = true;
+        b.setup.fail = storeOutage();
         const response = await put(b, b.memberCookie, anthropicPersonal);
         expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
-        expect((await b.executors.agentDefaults(b.member.user.id)).personal).toBeNull();
+        expect(response.body).not.toContain(ANTHROPIC_KEY);
     });
 });
 
-describe('PUT /api/model-setup without a key', () => {
-    const platform = { scope: 'personal', provider: 'platform', agentType: 'claude-code', model: 'claude-sonnet-4-5' };
+describe('PUT /api/model-setup with no connection', () => {
+    const none = withConnection({ intent: 'none' }, { executor: { name: 'Platform' } });
 
-    it('with the platform model on, writes only the agent default', async () => {
+    it('with the platform model on, applies an executor on the platform model', async () => {
         const b = await boot({ platformModelProvided: true });
-        const response = await put(b, b.memberCookie, platform);
+        const response = await put(b, b.memberCookie, none);
         expect(response.statusCode).toBe(HTTP_OK);
+        expect(response.json().connectionId).toBeNull();
+        expect(b.setup.commands[0]?.connection).toEqual({ intent: 'none', source: 'platform' });
         expect(b.envVars.rows()).toEqual([]);
-        expect((await b.executors.agentDefaults(b.member.user.id)).personal).toEqual({
-            agentType: 'claude-code',
-            model: 'claude-sonnet-4-5',
-            provider: 'platform',
-        });
-        expect((await get(b, b.memberCookie)).json()).toMatchObject({
-            personal: { provider: 'platform', keyNames: [] },
-            effective: 'platform',
-        });
     });
 
-    it('refuses the platform provider when the deployment supplies no model', async () => {
-        const b = await boot();
-        expect((await put(b, b.memberCookie, platform)).statusCode).toBe(HTTP_BAD_REQUEST);
-        expect((await b.executors.agentDefaults(b.member.user.id)).personal).toBeNull();
-    });
-
-    it('refuses a key or a base URL beside the platform provider', async () => {
-        const b = await boot({ platformModelProvided: true });
-        expect((await put(b, b.memberCookie, { ...platform, key: 'sk-x' })).statusCode).toBe(HTTP_BAD_REQUEST);
-        expect((await put(b, b.memberCookie, { ...platform, baseUrl: 'https://x.example.test' })).statusCode).toBe(
-            HTTP_BAD_REQUEST
-        );
-        expect((await b.executors.agentDefaults(b.member.user.id)).personal).toBeNull();
-    });
-
-    it('saves only the agent default on the org’s existing key, with the platform model off', async () => {
+    it('adopts the org’s existing key with the platform model off, leaving the env as it was', async () => {
         const b = await boot();
         await b.envVars.replaceOrg('env-admin', [
             { name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true },
         ]);
         const before = b.envVars.rows();
-        const response = await put(b, b.memberCookie, {
-            scope: 'personal',
-            provider: 'existing',
-            agentType: 'opencode',
-            model: 'anthropic/claude-sonnet-4.5',
-        });
+        const response = await put(
+            b,
+            b.memberCookie,
+            withConnection({ intent: 'none' }, { agentType: 'opencode', model: 'anthropic/claude-sonnet-4.5' })
+        );
         expect(response.statusCode).toBe(HTTP_OK);
         expect(b.envVars.rows()).toEqual(before);
-        expect((await b.executors.agentDefaults(b.member.user.id)).personal).toEqual({
-            agentType: 'opencode',
-            model: 'openrouter/anthropic/claude-sonnet-4.5',
-        });
+        expect(b.setup.commands[0]?.connection).toEqual({ intent: 'none', source: 'openrouter' });
     });
 
-    it('refuses the existing-key save with no key in view, an agent the key cannot run, or the platform model on', async () => {
-        const none = await boot();
-        const existing = { scope: 'personal', provider: 'existing', agentType: 'opencode', model: 'gpt-5' };
-        expect((await put(none, none.memberCookie, existing)).statusCode).toBe(HTTP_BAD_REQUEST);
+    it('refuses it with no key in view or an agent the key cannot run', async () => {
+        const none_ = await boot();
+        expect((await put(none_, none_.memberCookie, none)).statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(none_.setup.commands).toEqual([]);
 
         const b = await boot();
         await b.envVars.replaceOrg('env-admin', [{ name: 'OPENAI_API_KEY', value: 'sk-openai', isSecret: true }]);
-        expect((await put(b, b.memberCookie, { ...existing, agentType: 'claude-code' })).statusCode).toBe(
-            HTTP_BAD_REQUEST
-        );
+        expect((await put(b, b.memberCookie, none)).statusCode).toBe(HTTP_BAD_REQUEST);
         // The org's key is not in the org scope's view of a personal key; only the member's own is.
-        await b.envVars.replaceWorkspace(b.member.user.id, [{ name: 'OPENAI_API_KEY', value: 'mine', isSecret: true }]);
-        const orgScope = { ...existing, scope: 'org' };
         await b.envVars.replaceOrg('env-admin', []);
-        expect((await put(b, b.adminCookie, orgScope)).statusCode).toBe(HTTP_BAD_REQUEST);
-
-        const flagged = await boot({ platformModelProvided: true });
-        await flagged.envVars.replaceOrg('env-admin', [{ name: 'OPENAI_API_KEY', value: 'k', isSecret: true }]);
-        expect((await put(flagged, flagged.memberCookie, existing)).statusCode).toBe(HTTP_BAD_REQUEST);
-        expect((await flagged.executors.agentDefaults(flagged.member.user.id)).personal).toBeNull();
+        await b.envVars.replaceWorkspace(b.member.user.id, [{ name: 'OPENAI_API_KEY', value: 'mine', isSecret: true }]);
+        expect((await put(b, b.adminCookie, { ...none, scope: 'org' })).statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(b.setup.commands).toEqual([]);
     });
 
-    it('refuses the existing-key save with 503 when the names cannot be read', async () => {
+    it('refuses it with 503 when the names cannot be read', async () => {
         const b = await boot();
         b.envVars.listOrg = async () => {
             throw storeOutage();
         };
-        const response = await put(b, b.memberCookie, {
-            scope: 'personal',
-            provider: 'existing',
-            agentType: 'opencode',
-            model: 'gpt-5',
-        });
+        const response = await put(
+            b,
+            b.memberCookie,
+            withConnection({ intent: 'none' }, { agentType: 'opencode', model: 'gpt-5' })
+        );
         expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
-        expect((await b.executors.agentDefaults(b.member.user.id)).personal).toBeNull();
+        expect(b.setup.commands).toEqual([]);
     });
 });
 

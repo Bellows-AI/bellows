@@ -12,6 +12,7 @@ import type { FastifyBaseLogger, FastifyPluginAsync, FastifyReply, FastifyReques
 import { callerOf, orgOf } from '../../auth/plugin.js';
 import { BINDABLE_PROVIDERS, type Resolution, type ResolveRefusal } from '../../db/connection-bindings.js';
 import type { ConnectionView } from '../../db/connection-store.js';
+import { ConfiguredDefaultUnusableError, type UserExecutorStore } from '../../db/user-executor-store.js';
 import type { OrgRegistry } from '../../orgs.js';
 import {
     abortOnClose,
@@ -20,7 +21,12 @@ import {
     type EffectiveCatalog,
     type ExecutorTypeRead,
 } from '../../skill-catalog.js';
-import { executorTypeOf, modelStanding } from './executor-usable.js';
+import {
+    executorTypeOf,
+    modelStanding,
+    type SelectedProfileConnection,
+    selectedConnectionOf,
+} from './executor-usable.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body } from '../helpers.js';
 import { parseConnectionIds } from '../connections.js';
@@ -139,6 +145,69 @@ interface ExecutorStanding {
     type: ExecutorTypeRead;
     /** The resolved profile's config, which may hold the model credential; absent when no profile resolved. */
     config?: Record<string, unknown>;
+    /** The provider connection the resolved profile selects; absent when it selects none. */
+    connection?: SelectedProfileConnection | null;
+}
+
+/** `resolvedDefault`, answering a configured default that cannot run as itself: a verdict, as create refuses it, not an unreadable default. */
+async function defaultOrRefusal(store: Pick<UserExecutorStore, 'resolvedDefault'>, userId: string) {
+    try {
+        return await store.resolvedDefault(userId);
+    } catch (error) {
+        if (error instanceof ConfiguredDefaultUnusableError) return error;
+        throw error;
+    }
+}
+
+/**
+ * What a task naming no executor resolves to: the profile create will stamp, or the standing that already answers (an
+ * agent default, no default, a configured default that cannot run, an unreadable default). Create stamps the caller's
+ * resolved default (executor-usable.ts), so that is the verdict.
+ */
+async function defaultStanding(
+    log: FastifyBaseLogger,
+    store: Pick<UserExecutorStore, 'resolvedDefault'>,
+    userId: string
+): Promise<ExecutorStanding | { name: string; scope: ExecutorScope }> {
+    const fallback = await attempt(log, 'default executor', () => defaultOrRefusal(store, userId));
+    if (!fallback.ok) {
+        return {
+            check: {
+                subject: 'executor',
+                name: null,
+                status: 'unverified',
+                detail: 'the default executor could not be read',
+            },
+            type: { state: 'unconfirmed', error: 'the default executor could not be read' },
+        };
+    }
+    if (fallback.value instanceof ConfiguredDefaultUnusableError) {
+        const detail = fallback.value.message;
+        return {
+            check: { subject: 'executor', name: fallback.value.executorName, status: 'blocked', detail },
+            type: { state: 'unconfirmed', error: detail },
+        };
+    }
+    if (fallback.value === null) {
+        return {
+            check: { subject: 'executor', name: null, status: 'blocked', detail: noExecutorMessage },
+            type: { state: 'unconfirmed', error: noExecutorMessage },
+        };
+    }
+    if (fallback.value.kind === 'agent') {
+        const { agentType, model, from } = fallback.value;
+        const whose = from === 'personal' ? 'your agent default' : "the organization's agent default";
+        return {
+            check: {
+                subject: 'executor',
+                name: null,
+                status: 'ok',
+                detail: `none selected: the task runs on ${whose}, ${agentType} with model ${model}`,
+            },
+            type: executorTypeOf(agentType),
+        };
+    }
+    return { name: fallback.value.name, scope: fallback.value.scope };
 }
 
 async function executorCheck(
@@ -164,39 +233,9 @@ async function executorCheck(
     let name = executor;
     let at = scope;
     if (name === null) {
-        // Create stamps the caller's resolved default on a task naming none (executor-usable.ts), so that is the verdict.
-        const fallback = await attempt(log, 'default executor', () => store.resolvedDefault(userId));
-        if (!fallback.ok) {
-            return {
-                check: {
-                    subject: 'executor',
-                    name: null,
-                    status: 'unverified',
-                    detail: 'the default executor could not be read',
-                },
-                type: { state: 'unconfirmed', error: 'the default executor could not be read' },
-            };
-        }
-        if (fallback.value === null) {
-            return {
-                check: { subject: 'executor', name: null, status: 'blocked', detail: noExecutorMessage },
-                type: { state: 'unconfirmed', error: noExecutorMessage },
-            };
-        }
-        if (fallback.value.kind === 'agent') {
-            const { agentType, model, from } = fallback.value;
-            const whose = from === 'personal' ? 'your agent default' : "the organization's agent default";
-            return {
-                check: {
-                    subject: 'executor',
-                    name: null,
-                    status: 'ok',
-                    detail: `none selected: the task runs on ${whose}, ${agentType} with model ${model}`,
-                },
-                type: executorTypeOf(agentType),
-            };
-        }
-        ({ name, scope: at } = fallback.value);
+        const resolved = await defaultStanding(log, store, userId);
+        if ('check' in resolved) return resolved;
+        ({ name, scope: at } = resolved);
     }
     const row = await attempt(log, 'executor profile', () => store.configFor(userId, name, at));
     if (!row.ok) {
@@ -226,6 +265,7 @@ async function executorCheck(
         check: { subject: 'executor', name, status: 'ok', detail },
         type: executorTypeOf(row.value.type),
         config: row.value.config,
+        connection: selectedConnectionOf(row.value.providerConnectionId, at),
     };
 }
 
@@ -240,8 +280,14 @@ async function modelCheck(
     userId: string,
     { rt, executor }: { rt: Runtime; executor: ExecutorStanding }
 ): Promise<Check | null> {
-    if (!rt.modelRequired) return null;
-    const subject = { userId, repo: selection.repo, type: executor.type, config: executor.config ?? null };
+    if (!rt.modelRequired && !executor.connection) return null;
+    const subject = {
+        userId,
+        repo: selection.repo,
+        type: executor.type,
+        config: executor.config ?? null,
+        connection: executor.connection ?? null,
+    };
     const read = await attempt(log, 'model credential names', () => modelStanding(rt, subject));
     if (!read.ok || read.value === 'unverified') {
         return {
@@ -249,6 +295,24 @@ async function modelCheck(
             name: null,
             status: 'unverified',
             detail: 'the model credential could not be checked',
+        };
+    }
+    // A selected connection the shared rules refuse blocks whether the board requires a key or not: the claim refuses it too.
+    if (typeof read.value === 'object') {
+        return {
+            subject: 'model',
+            name: null,
+            status: 'blocked',
+            code: ERROR_CODES.PROVIDER_CONNECTION_REFUSED,
+            detail: read.value.refused.message,
+        };
+    }
+    if (read.value === 'not-required') {
+        return {
+            subject: 'model',
+            name: null,
+            status: 'ok',
+            detail: 'the selected provider connection can run this executor',
         };
     }
     if (read.value === 'missing') {

@@ -1,9 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ExecutorScope, ExecutorType } from '@factory-ai/core';
+import type { ExecutorScope, ExecutorType, ModelProvider, ProviderConnectionScope } from '@factory-ai/core';
 import { usePersonalExecutorWrites } from './usePersonalExecutorWrites.js';
 import { request } from './request.js';
 
-export interface WorkspaceExecutor {
+/**
+ * The safe connection fields an executor row carries (docs/api.md): the id, and the name, provider and scope when the
+ * caller may see the connection. Never a key or a secret reference.
+ */
+export interface ExecutorConnectionFields {
+    /** The provider connection the profile runs its model on; null or absent is the environment keys. */
+    providerConnectionId?: string | null;
+    providerConnectionName?: string | null;
+    providerConnectionProvider?: ModelProvider | null;
+    providerConnectionScope?: ProviderConnectionScope | null;
+    /** Pasted configuration credentials or endpoints take precedence over the connection. */
+    configOverridesConnection?: boolean;
+}
+
+export interface WorkspaceExecutor extends ExecutorConnectionFields {
     /** The row's id: the by-id remove and suspend routes address it (issue 440). */
     id: string;
     name: string;
@@ -22,19 +36,25 @@ export interface WorkspaceExecutor {
  * member's browser runs — the full organization configuration answers to the admin list
  * (`listOrgExecutorConfigs`), never to the poll.
  */
-export interface OrgExecutor {
+export interface OrgExecutor extends ExecutorConnectionFields {
+    /** The stable id a default selection names, so a rename never severs it. */
+    id: string;
     name: string;
     type: string;
     createdAt: string;
     suspended: boolean;
     /** The runner class the profile's tasks run in; null for the deployment's default. */
     runnerClass: string | null;
+    /** Whether the organization's configured default names this profile. */
+    orgDefault?: boolean;
 }
 
-/** The member's default-executor preference as the poll resolves it (issue 391). */
+/** The member's default executor as the poll resolves it (issue 391). */
 export interface DefaultExecutor {
     scope: ExecutorScope;
     name: string;
+    /** Present when a configured default cannot run now: a task naming no executor is refused until it is resumed or replaced. */
+    unusable?: 'suspended' | 'missing';
 }
 
 /**
@@ -82,17 +102,26 @@ export interface UseWorkspace {
     error: string | null;
     saving: boolean;
     saveExecutors: (
-        executors: { name: string; type: string; config: object; gateFixRounds: number; suspended?: boolean }[]
+        executors: {
+            /** The row's stable identity: a row sent with it keeps its connection and default under a new name. */
+            id?: string;
+            name: string;
+            type: string;
+            config: object;
+            gateFixRounds: number;
+            suspended?: boolean;
+            providerConnectionId?: string | null;
+        }[]
     ) => Promise<string | null>;
     /** Removes ONE personal profile by id (issue 440); the by-id route cannot clobber other rows. */
     removeExecutor: (id: string) => Promise<string | null>;
     /** Suspends or resumes ONE personal profile by id (issue 440). */
     suspendExecutor: (id: string, suspended: boolean) => Promise<string | null>;
     /**
-     * Stores the member's default-executor preference (issue 391): names a profile by scope and
-     * name, either scope, without touching the shared profile or anyone else's default.
+     * Configures the member's default executor by the profile's stable id, either scope, without touching the shared
+     * profile or anyone else's default.
      */
-    setDefaultExecutor: (scope: ExecutorScope, name: string) => Promise<string | null>;
+    setDefaultExecutor: (id: string) => Promise<string | null>;
     /**
      * The whole executor list with configs — the read the dialog opens with. Never part of the
      * poll: the payload holds the credentials the member pasted, so it is fetched once per dialog
@@ -163,19 +192,11 @@ export const listExecutorConfigs = async (): Promise<ExecutorConfigsRead> => {
 };
 
 /**
- * The default-executor preference (issue 391). A refusal is the dialog's error message; a
- * preference naming no accessible profile is the route's 404. Module-level like the other
- * on-demand fetches above: it captures no hook state.
+ * The configured default executor, by id. A refusal is the dialog's error message; a profile the member may not
+ * select is the route's 404. Module-level like the other on-demand fetches above: it captures no hook state.
  */
-export const putDefaultExecutor = (
-    scope: ExecutorScope,
-    name: string
-): Promise<{ ok: true } | { ok: false; error: string }> =>
-    putJson(
-        '/api/workspace/executors/default',
-        { executor: name, executorScope: scope },
-        'Could not save the default executor'
-    );
+export const putDefaultExecutor = (id: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+    putJson('/api/workspace/executors/default', { executorId: id }, 'Could not save the default executor');
 
 export function useWorkspace(): UseWorkspace {
     const [data, setData] = useState<WorkspacePayload | null>(null);
@@ -217,9 +238,7 @@ export function useWorkspace(): UseWorkspace {
      * The executor PUT is not asynchronous — nothing clones — so no re-arm timing is needed.
      */
     const saveExecutors = useCallback(
-        async (
-            executors: { name: string; type: string; config: object; gateFixRounds: number; suspended?: boolean }[]
-        ): Promise<string | null> => {
+        async (executors: Parameters<UseWorkspace['saveExecutors']>[0]): Promise<string | null> => {
             setSaving(true);
             try {
                 const result = await putJson('/api/workspace/executors', { executors }, 'Could not save the executors');
@@ -237,8 +256,8 @@ export function useWorkspace(): UseWorkspace {
 
     /** The preference write, with the poll re-arm the other writes share. */
     const setDefaultExecutor = useCallback(
-        async (scope: ExecutorScope, name: string): Promise<string | null> => {
-            const result = await putDefaultExecutor(scope, name);
+        async (id: string): Promise<string | null> => {
+            const result = await putDefaultExecutor(id);
             if (result.ok) {
                 start();
                 return null;

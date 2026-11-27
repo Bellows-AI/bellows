@@ -132,17 +132,19 @@ describe('executors: listing and replacing', () => {
         expect(executors.rows().map((row) => row.userId)).toEqual([a.user.id]);
     });
 
-    it('persists the preference and echoes it on the poll; rows carry no default flag', async () => {
-        // Issue 391: the default is a per-member preference naming a scope, not a flag on a row —
-        // one org row is shared by every member, so the flag had to move off the row.
+    const idOf = async (app: FastifyInstance, cookie: string, name: string) =>
+        (
+            (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json() as {
+                executors: { id: string; name: string }[];
+            }
+        ).executors.find((row) => row.name === name)!.id;
+    const putDefault = (app: FastifyInstance, cookie: string, payload: Record<string, unknown>) =>
+        app.inject({ method: 'PUT', url: '/api/workspace/executors/default', headers: { cookie }, payload });
+
+    it('persists the default by id and echoes it on the poll; rows carry no default flag', async () => {
         const { app, cookie } = await boot();
         await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
-        const put = await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors/default',
-            headers: { cookie },
-            payload: { executor: 'oc', executorScope: 'user' },
-        });
+        const put = await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'oc') });
         expect(put.statusCode).toBe(HTTP_OK);
         expect(put.json().defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
 
@@ -152,7 +154,6 @@ describe('executors: listing and replacing', () => {
             expect.objectContaining({ name: 'main' }),
             expect.objectContaining({ name: 'oc' }),
         ]);
-        // No row carries a default flag any more — the preference is the whole mechanism.
         expect(JSON.stringify(poll.executors)).not.toContain('isDefault');
 
         const config = (
@@ -164,7 +165,7 @@ describe('executors: listing and replacing', () => {
         ]);
     });
 
-    it('a row sent without a preference resolves the first row on the poll', async () => {
+    it('a row sent without a default resolves the first row on the poll', async () => {
         const { app, cookie } = await boot();
         const put = await putExecutors(app, cookie, [CLAUDE_CODE]);
         expect(put.json().executors).toEqual([expect.objectContaining({ name: 'main' })]);
@@ -173,37 +174,41 @@ describe('executors: listing and replacing', () => {
         expect(poll.defaultExecutor).toEqual({ scope: 'user', name: 'main' });
     });
 
-    it('a later preference move re-points the default', async () => {
+    it('a later selection re-points the default', async () => {
         const { app, cookie } = await boot();
         await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
-        await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors/default',
-            headers: { cookie },
-            payload: { executor: 'main', executorScope: 'user' },
-        });
-        const second = await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors/default',
-            headers: { cookie },
-            payload: { executor: 'oc', executorScope: 'user' },
-        });
+        await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'main') });
+        const second = await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'oc') });
         expect(second.json().defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
     });
 
-    it('dropping the preferred row falls back to the first remaining row, never a ghost', async () => {
+    it('refuses a name-only body with 400 and leaves the resolved default alone', async () => {
         const { app, cookie } = await boot();
         await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
-        await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors/default',
-            headers: { cookie },
-            payload: { executor: 'main', executorScope: 'user' },
-        });
-        await putExecutors(app, cookie, [{ name: 'oc', type: 'opencode', config: {} }]);
+        await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'main') });
 
-        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
-        expect(body.defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
+        const refused = await putDefault(app, cookie, { executor: 'oc', executorScope: 'user' });
+        expect(refused.statusCode).toBe(HTTP_BAD_REQUEST);
+        const poll = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(poll.defaultExecutor).toEqual({ scope: 'user', name: 'main' });
+    });
+
+    it('answers 404 for an executor id the caller cannot select', async () => {
+        const { app, cookie } = await boot();
+        const missing = await putDefault(app, cookie, { executorId: '99999999-9999-4999-8999-999999999999' });
+        expect(missing.statusCode).toBe(HTTP_NOT_FOUND);
+    });
+
+    it('reads a legacy name-keyed preference, and dropping its row falls back to the first remaining row', async () => {
+        const { app, cookie, caller, executors } = await boot();
+        await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
+        executors.seedLegacyDefault(caller.user.id, { scope: 'user', name: 'oc' });
+        const poll = async () =>
+            (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect((await poll()).defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
+
+        await putExecutors(app, cookie, [CLAUDE_CODE]);
+        expect((await poll()).defaultExecutor).toEqual({ scope: 'user', name: 'main' });
     });
 
     it('persists gateFixRounds and echoes it on the PUT response, the poll and the config read', async () => {
@@ -445,5 +450,93 @@ describe('executors: GET /api/workspace/executors', () => {
         const response = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
 
         expect(response.statusCode).toBe(HTTP_OK);
+    });
+});
+
+describe('executor rows: safe provider connection metadata', () => {
+    const ORG_CONNECTION = '66666666-6666-4666-8666-666666666666';
+    const OWN_CONNECTION = '77777777-7777-4777-8777-777777777777';
+    const SECRET = 'sk-never-in-a-payload';
+    const visible = [
+        { id: ORG_CONNECTION, name: 'Team key', provider: 'anthropic', scope: 'org', baseUrl: null, hasKey: true },
+        { id: OWN_CONNECTION, name: 'My key', provider: 'openrouter', scope: 'personal', baseUrl: null, hasKey: true },
+    ];
+
+    async function bootWithConnections() {
+        const auth = memoryAuthStore();
+        const caller = auth.seedMember('test-org', 'octocat');
+        const executors = memoryUserExecutorStore();
+        const h = await harness({
+            auth,
+            userExecutors: executors,
+            repos: REPOS,
+            config: { auth: githubAuth() },
+            providerConnections: { listFor: async () => visible } as never,
+        });
+        track(h.app);
+        await executors.replace(caller.user.id, [
+            { name: 'plain', type: 'claude-code', config: {} },
+            { name: 'shared', type: 'claude-code', config: {}, providerConnectionId: ORG_CONNECTION },
+            {
+                name: 'pasted',
+                type: 'opencode',
+                config: {
+                    provider: { custom: { options: { baseURL: 'https://llm.example.test/v1', apiKey: SECRET } } },
+                },
+                providerConnectionId: OWN_CONNECTION,
+            },
+        ]);
+        await executors.createOrg({
+            name: 'team',
+            type: 'claude-code',
+            config: {},
+            createdBy: caller.user.id,
+            providerConnectionId: ORG_CONNECTION,
+        });
+        return { app: h.app, cookie: await signedIn(auth, caller) };
+    }
+
+    it('names the connection, its provider and scope, and flags a config override, on the poll', async () => {
+        const { app, cookie } = await bootWithConnections();
+        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        const byName = Object.fromEntries(body.executors.map((row: { name: string }) => [row.name, row]));
+        expect(byName.plain).toMatchObject({
+            providerConnectionId: null,
+            providerConnectionName: null,
+            providerConnectionProvider: null,
+            providerConnectionScope: null,
+            configOverridesConnection: false,
+        });
+        expect(byName.shared).toMatchObject({
+            providerConnectionId: ORG_CONNECTION,
+            providerConnectionName: 'Team key',
+            providerConnectionProvider: 'anthropic',
+            providerConnectionScope: 'org',
+            configOverridesConnection: false,
+        });
+        expect(byName.pasted).toMatchObject({
+            providerConnectionName: 'My key',
+            providerConnectionScope: 'personal',
+            configOverridesConnection: true,
+        });
+        expect(body.orgExecutors[0]).toMatchObject({
+            providerConnectionName: 'Team key',
+            providerConnectionProvider: 'anthropic',
+            providerConnectionScope: 'org',
+        });
+        const text = JSON.stringify(body);
+        expect(text).not.toContain(SECRET);
+        expect(text).not.toContain('baseURL');
+        expect(body.executors[0]).not.toHaveProperty('config');
+    });
+
+    it('reads a connection the caller cannot see as absent, never as an error or a leak', async () => {
+        const { app, cookie } = await bootWithConnections();
+        // Another member's personal connection is not in the caller's list: the id travels, the details do not.
+        const hidden = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(hidden.executors.length).toBeGreaterThan(0);
+        const edit = await app.inject({ method: 'GET', url: '/api/workspace/executors', headers: { cookie } });
+        const row = edit.json().executors.find((r: { name: string }) => r.name === 'shared');
+        expect(row).toMatchObject({ providerConnectionName: 'Team key', providerConnectionScope: 'org' });
     });
 });

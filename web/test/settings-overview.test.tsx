@@ -259,6 +259,7 @@ describe('deriveReadiness — executors', () => {
                             executors: [],
                             orgExecutors: [
                                 {
+                                    id: 'org-1',
                                     name: 'team-runner',
                                     type: 'claude',
                                     createdAt: '2026-01-02T00:00:00Z',

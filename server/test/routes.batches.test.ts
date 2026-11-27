@@ -3,7 +3,8 @@ import { emptyBlock, NO_MODEL_MESSAGE, noExecutorMessage } from '@factory-ai/cor
 import { buildApp } from '../src/app.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
-import type { UserExecutorStore } from '../src/db/user-executor-store.js';
+import { ConfiguredDefaultUnusableError, type UserExecutorStore } from '../src/db/user-executor-store.js';
+import type { OrgRuntime } from '../src/orgs.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import {
     githubAuth,
@@ -104,6 +105,8 @@ async function setup(
         batchesEnabled?: boolean;
         /** Bellows Cloud: a task needs a model credential, judged on this env store. */
         cloudEnv?: EnvVarStore;
+        /** The org's provider connections, answering the metadata a profile's selection is judged on. */
+        providerConnections?: OrgRuntime['providerConnections'];
     } = {}
 ) {
     const auth = memoryAuthStore();
@@ -154,6 +157,7 @@ async function setup(
                 : {}),
             ...(options.userExecutors ? { userExecutors: options.userExecutors } : {}),
             ...(options.cloudEnv ? { envVars: options.cloudEnv } : {}),
+            ...(options.providerConnections ? { providerConnections: options.providerConnections } : {}),
         }),
         auth,
     });
@@ -608,6 +612,67 @@ describe('launch checks: validate and start', () => {
         expect((await call('POST', `/api/batches/${id}/validate`, {})).statusCode).toBe(HTTP_OK);
     });
 
+    describe('a profile that selects a provider connection', () => {
+        const CONNECTION = '55555555-5555-4555-8555-555555555555';
+        const profileExecutors = {
+            async configFor() {
+                return { type: 'claude-code', config: {}, suspended: false, providerConnectionId: CONNECTION };
+            },
+            async resolvedDefault() {
+                return { kind: 'profile', scope: 'user', name: 'Main' };
+            },
+        } as unknown as UserExecutorStore;
+        const connectionOf = (provider: string, read: () => unknown = () => null) =>
+            ({
+                async forUser() {
+                    const failed = read();
+                    if (failed instanceof Error) throw failed;
+                    return { id: CONNECTION, name: 'c', provider, scope: 'personal', baseUrl: null, hasKey: true };
+                },
+            }) as unknown as OrgRuntime['providerConnections'];
+
+        it('in cloud, the connection alone satisfies the model check on validate and on start', async () => {
+            const { call, create } = await setup({
+                userExecutors: profileExecutors,
+                cloudEnv: memoryEnvVarStore(),
+                providerConnections: connectionOf('anthropic'),
+            });
+            const { id } = await create(plan());
+            expect((await call('POST', `/api/batches/${id}/validate`, {})).statusCode).toBe(HTTP_OK);
+            expect((await call('POST', `/api/batches/${id}/start`, { version: 1 })).statusCode).toBe(HTTP_OK);
+        });
+
+        it('refuses an unsupported provider and executor pair with PROVIDER_CONNECTION_REFUSED, on any board, starting nothing', async () => {
+            const { call, create, batches } = await setup({
+                userExecutors: profileExecutors,
+                providerConnections: connectionOf('openai'),
+            });
+            const { id } = await create(plan());
+            for (const route of ['validate', 'start']) {
+                const response = await call(
+                    'POST',
+                    `/api/batches/${id}/${route}`,
+                    route === 'start' ? { version: 1 } : {}
+                );
+                expect(response.statusCode, route).toBe(HTTP_CONFLICT);
+                expect(response.json(), route).toMatchObject({ code: 'PROVIDER_CONNECTION_REFUSED' });
+            }
+            expect(batches.writes).toEqual(['create']);
+        });
+
+        it('answers a failure, never NO_MODEL, when the connection cannot be read', async () => {
+            const { call, create } = await setup({
+                userExecutors: profileExecutors,
+                cloudEnv: memoryEnvVarStore(),
+                providerConnections: connectionOf('anthropic', () => new Error('unreadable')),
+            });
+            const { id } = await create(plan());
+            const response = await call('POST', `/api/batches/${id}/validate`, {});
+            expect(response.statusCode).toBeGreaterThanOrEqual(500);
+            expect(response.json()).not.toMatchObject({ code: 'NO_MODEL' });
+        });
+    });
+
     it('in cloud, answers 503 and never NO_MODEL when the env cannot be read', async () => {
         const userExecutors = {
             async resolvedDefault() {
@@ -638,6 +703,25 @@ describe('launch checks: validate and start', () => {
             const response = await call('POST', `/api/batches/${id}/${route}`, route === 'start' ? { version: 1 } : {});
             expect(response.statusCode, route).toBe(HTTP_CONFLICT);
             expect(response.json(), route).toMatchObject({ code: 'NO_EXECUTOR', error: noExecutorMessage });
+        }
+        expect(batches.writes).toEqual(['create']);
+    });
+
+    it('refuses a plan that names no executor with 409 EXECUTOR_SUSPENDED when the configured default is suspended, on validate and on start', async () => {
+        const userExecutors = {
+            async configFor() {
+                return null;
+            },
+            async resolvedDefault() {
+                throw new ConfiguredDefaultUnusableError('suspended', 'org', 'Main', 'default Main is suspended');
+            },
+        } as unknown as UserExecutorStore;
+        const { call, create, batches } = await setup({ userExecutors });
+        const { id } = await create(plan());
+        for (const route of ['validate', 'start']) {
+            const response = await call('POST', `/api/batches/${id}/${route}`, route === 'start' ? { version: 1 } : {});
+            expect(response.statusCode, route).toBe(HTTP_CONFLICT);
+            expect(response.json(), route).toMatchObject({ code: 'EXECUTOR_SUSPENDED' });
         }
         expect(batches.writes).toEqual(['create']);
     });

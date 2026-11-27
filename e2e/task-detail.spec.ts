@@ -731,8 +731,9 @@ test.describe('the follow-up composer attachments', () => {
         await expect(chips.getByText('Ready')).toBeVisible();
 
         // Settings must finish its first reads before the trip back, or leaving it cancels them mid-flight.
+        // A response resolves on its headers; `finished()` waits for the body too, which a navigation would abort.
         const settingsLoaded = ['/api/workspace', '/api/repos', '/api/env'].map((path) =>
-            page.waitForResponse((r) => new URL(r.url()).pathname === path)
+            page.waitForResponse((r) => new URL(r.url()).pathname === path).then((r) => r.finished())
         );
         await page.locator('.sidenav-link', { hasText: 'Settings' }).click();
         await expect(page).toHaveURL(/\/settings$/);

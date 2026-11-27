@@ -10,7 +10,12 @@ import {
     runnerClassOptionLabel,
     SAVE_LABEL,
 } from '../web/src/workspace/executors.js';
-import { DEMOTE_LABEL } from '../web/src/panels/OrgExecutorsPanel.js';
+import {
+    CLEAR_ORG_DEFAULT_LABEL,
+    DEMOTE_LABEL,
+    ORG_DEFAULT_LABEL,
+    SET_ORG_DEFAULT_LABEL,
+} from '../web/src/panels/OrgExecutorsPanel.js';
 import {
     MAKE_DEFAULT_LABEL,
     REMOVE_LABEL,
@@ -333,4 +338,93 @@ test('an OpenAI-compatible executor is created through the guided provider, with
     expect(JSON.parse(await edit.getByLabel('Configuration JSON').inputValue())).toEqual(JSON.parse(generated));
     await page.keyboard.press('Escape');
     await deleteProfile(page, name);
+});
+
+/** A refused removal reads from the page's one error line: the default names the executor until it is replaced or cleared. */
+const REFUSED = /is a default executor/;
+const ORG_DEFAULT_REFUSED = /is the organization default/;
+
+test('a rename keeps the personal default, and the default cannot be removed until another is chosen', async ({
+    page,
+}) => {
+    await asAdmin(page);
+    for (const name of ['Alpha', 'Beta']) await addPersonal(page, name);
+    await personalAction(page, 'Beta', MAKE_DEFAULT_LABEL);
+    await expect(personalRow(page, 'Beta').getByText('Default', { exact: true })).toBeVisible();
+
+    // A rename changes the label, never the identity: the default follows the row.
+    await personalRow(page, 'Beta').getByRole('button', { name: 'Edit' }).click();
+    const edit = page.getByRole('dialog', { name: 'Edit executor' });
+    await edit.getByLabel('Name', { exact: true }).fill('Gamma');
+    await edit.getByRole('button', { name: SAVE_LABEL }).click();
+    await expect(edit).toHaveCount(0);
+    await page.reload();
+    await expect(personalRow(page, 'Gamma').getByText('Default', { exact: true })).toBeVisible();
+    await expect(personalRow(page, 'Alpha').getByText('Default', { exact: true })).toHaveCount(0);
+
+    // Removing the default is refused, with the row left in place.
+    await personalAction(page, 'Gamma', REMOVE_LABEL);
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('button', { name: confirmLabel({ action: 'remove', name: 'Gamma' }) }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByText(REFUSED)).toBeVisible();
+    await expect(personalRow(page, 'Gamma')).toBeVisible();
+    await page.screenshot({ path: `${SHOTS}/settings-executors-default-protected.png` });
+
+    // Replaced explicitly, the old row goes.
+    await personalAction(page, 'Alpha', MAKE_DEFAULT_LABEL);
+    await expect(personalRow(page, 'Alpha').getByText('Default', { exact: true })).toBeVisible();
+    await removePersonal(page, 'Gamma');
+
+    // Cleared through the API (the poll cannot tell a configured default from the fallback), Alpha goes too.
+    expect((await page.request.delete('/api/workspace/executors/default')).ok()).toBe(true);
+    await page.reload();
+    await removePersonal(page, 'Alpha');
+});
+
+/** An org row's overflow entry, scrolled to the end first: the menu opens below the fold otherwise. */
+async function orgAction(page: Page, name: string, action: string) {
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await trigger(page, name).click();
+    await page.getByRole('menu').getByRole('menuitem', { name: action }).click();
+}
+
+test('an admin sets, protects and clears the organization default, resolving it explicitly on delete', async ({
+    page,
+}) => {
+    await asAdmin(page);
+    for (const name of PROFILES) await addProfile(page, name);
+    const [main, reviewer] = PROFILES as [string, string];
+
+    await orgAction(page, reviewer, SET_ORG_DEFAULT_LABEL);
+    await expect(row(page, reviewer).getByText(ORG_DEFAULT_LABEL)).toBeVisible();
+    await page.reload();
+    await expect(row(page, reviewer).getByText(ORG_DEFAULT_LABEL)).toBeVisible();
+    await expect(row(page, main).getByText(ORG_DEFAULT_LABEL)).toHaveCount(0);
+
+    // Deleting the default is refused, and the dialog asks what becomes of it: nothing happens until the admin chooses.
+    await orgAction(page, reviewer, 'Delete');
+    const confirm = page.getByRole('dialog');
+    const confirmDelete = confirm.getByRole('button', { name: confirmLabel({ action: 'delete', name: reviewer }) });
+    await confirmDelete.click();
+    await expect(confirm.getByRole('alert')).toContainText(ORG_DEFAULT_REFUSED);
+    await expect(confirmDelete).toBeDisabled();
+    await page.screenshot({ path: `${SHOTS}/settings-executors-org-default.png` });
+    await confirm.getByRole('button', { name: 'Cancel' }).click();
+    await expect(confirm).toHaveCount(0);
+    await expect(row(page, reviewer)).toBeVisible();
+
+    // Replaced explicitly, the default moves to the other organization executor as the delete lands.
+    await orgAction(page, reviewer, 'Delete');
+    await confirmDelete.click();
+    await confirm.getByLabel('What happens to those defaults').selectOption({ label: `Replace with ${main}` });
+    await confirmDelete.click();
+    await expect(confirm).toHaveCount(0);
+    await expect(row(page, reviewer)).toHaveCount(0);
+    await expect(row(page, main).getByText(ORG_DEFAULT_LABEL)).toBeVisible();
+
+    // Cleared from the row, the last executor deletes without a question.
+    await orgAction(page, main, CLEAR_ORG_DEFAULT_LABEL);
+    await expect(row(page, main).getByText(ORG_DEFAULT_LABEL)).toHaveCount(0);
+    await deleteProfile(page, main);
 });

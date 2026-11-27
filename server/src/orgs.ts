@@ -17,11 +17,14 @@ import type { BatchStore } from './db/batches/batch-store-types.js';
 import { createConnectionGrants, type ConnectionGrants } from './db/connection-grants.js';
 import { createConnectionStore, type ConnectionStore } from './db/connection-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
+import { createProviderConnectionStore, type ProviderConnectionStore } from './db/provider-connection-store.js';
 import type { SecretDiagnostic, SecretStore } from './secrets/secret-store.js';
 import { createJobStore } from './db/jobs/job-store.js';
 import type { ClaimObserver } from './db/jobs/job-store-admission.js';
 import type { JobStore } from './db/jobs/job-store-types.js';
 import { storedRepoNames } from './db/stored-repos.js';
+import { createModelSetupStore, type ModelSetupStore } from './db/model-setup-store.js';
+import { MAX_EXECUTORS_PER_ORG, MAX_EXECUTORS_PER_USER } from './routes/executor-fields.js';
 import { createUserExecutorStore, type UserExecutorStore } from './db/user-executor-store.js';
 import {
     createNotificationSubscriptionStore,
@@ -97,11 +100,15 @@ export interface OrgRuntime {
     retention?: (() => Promise<RetentionView>) | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
+    /** The provider connections (167) a member may bring and an executor may reference; present with the other stores. */
+    providerConnections?: ProviderConnectionStore | undefined;
     /** The integration grants (094) connections hang off: the refresh lineage store; present with the other stores. */
     connectionGrants?: ConnectionGrants | undefined;
     /** The org's installation mint, behind the runner GitHub credential route; absent offline or uninstalled. */
     githubToken?: InstallationTokenProvider | undefined;
     userExecutors?: UserExecutorStore | undefined;
+    /** The model setup command (170): a connection, its executor and the default in one transaction; present with the other stores. */
+    modelSetup?: ModelSetupStore | undefined;
     /** The org's notification subscriptions (103); present with the other stores. */
     notificationSubscriptions?: NotificationSubscriptionStore | undefined;
     /** The org's notification outbox (104); present with the other stores. */
@@ -193,7 +200,9 @@ function buildOrgStores({
     batchMerger: BatchMerger | undefined;
     connections: ConnectionStore;
     connectionGrants: ConnectionGrants;
+    providerConnections: ProviderConnectionStore;
     userExecutors: UserExecutorStore;
+    modelSetup: ModelSetupStore;
     notificationSubscriptions: NotificationSubscriptionStore;
     notificationOutbox: NotificationOutboxStore;
     prs: PrLifecycleStore;
@@ -205,7 +214,16 @@ function buildOrgStores({
     const envVars = createEnvVarStore({ sql, orgId, ready, secrets, secretLog });
     const connections = createConnectionStore({ sql, orgId, ready });
     const connectionGrants = createConnectionGrants({ sql, orgId, ready });
+    const providerConnections = createProviderConnectionStore({ sql, orgId, ready, secrets, secretLog });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready, secrets, secretLog });
+    const modelSetup = createModelSetupStore({
+        sql,
+        orgId,
+        ready,
+        secrets,
+        secretLog,
+        executorLimits: { org: MAX_EXECUTORS_PER_ORG, personal: MAX_EXECUTORS_PER_USER },
+    });
     const notificationSubscriptions = createNotificationSubscriptionStore({ sql, orgId, ready, secrets, secretLog });
     const notificationOutbox = createNotificationOutboxStore({ sql, orgId, ready, secrets });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
@@ -218,6 +236,7 @@ function buildOrgStores({
         ready,
         env: envVars,
         executorConfig: userExecutors,
+        providerConnections,
         // The execution plan is read per claim through the org's installation, at the tip of the
         // thread's base branch — never from a checkout on disk. The code-only `none` arm has no
         // client: with `REPO_CLONE_BASE` it reads the plan from the origin by git instead.
@@ -298,7 +317,9 @@ function buildOrgStores({
         batchMerger,
         connections,
         connectionGrants,
+        providerConnections,
         userExecutors,
+        modelSetup,
         notificationSubscriptions,
         notificationOutbox,
         prs,
@@ -318,7 +339,9 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.batchMerger = stores.batchMerger;
     runtime.connections = stores.connections;
     runtime.connectionGrants = stores.connectionGrants;
+    runtime.providerConnections = stores.providerConnections;
     runtime.userExecutors = stores.userExecutors;
+    runtime.modelSetup = stores.modelSetup;
     runtime.notificationSubscriptions = stores.notificationSubscriptions;
     runtime.notificationOutbox = stores.notificationOutbox;
     runtime.jobs = stores.jobs;

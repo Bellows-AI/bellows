@@ -1,8 +1,6 @@
-import type { ModelProvider } from '@factory-ai/core';
 import { useState } from 'react';
 import type { SetupScope } from '../api/useModelSetup.js';
 import type { ProviderMeta } from './providers.js';
-import { secretNames } from './providers.js';
 import type { KeyCheck } from './useKeyCheck.js';
 
 const MARK: Partial<Record<KeyCheck['kind'], string>> = { ok: '✓ ', warn: '▲ ', bad: '✕ ' };
@@ -157,28 +155,15 @@ export function AdvancedBase({
     );
 }
 
-/** Where the key goes: the env names a save writes, in which scope, and that nobody reads it back. */
-export function SecretNote({
-    provider,
-    scope,
-    withBase,
-}: {
-    provider: ModelProvider;
-    scope: SetupScope;
-    withBase: boolean;
-}) {
-    const names = secretNames(provider, withBase);
+/** Where the key goes: a sealed provider connection in which scope, and that nobody reads it back. */
+export function SecretNote({ scope }: { scope: SetupScope }) {
     return (
         <p className="model-secret-note">
-            {scope === 'org' ? 'Saved as an organization secret ' : 'Saved as your personal secret '}
-            {names.map((name, index) => (
-                <span key={name}>
-                    {index > 0 ? ' + ' : null}
-                    <span className="mono">{name}</span>
-                </span>
-            ))}{' '}
-            (Settings → Environment). Nobody — admins included — can read it back; you can only replace it.
-            {scope === 'personal' ? ' A personal key wins over the organization’s.' : null}
+            {scope === 'org'
+                ? 'Saved as an organization provider connection. '
+                : 'Saved as your personal provider connection. '}
+            Nobody — admins included — can read the key back; you can only replace it (Settings → Model).
+            {scope === 'personal' ? ' A personal executor wins over the organization’s default.' : null}
         </p>
     );
 }
