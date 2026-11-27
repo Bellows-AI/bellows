@@ -10,6 +10,7 @@ import {
 } from '../github/pr-write.js';
 import type { GitlabApi } from '../gitlab/gitlab-api.js';
 import type { ActingCredential, ForgeClient } from './forge-client.js';
+import { asRead, readMergeRequestPart } from './gitlab-change-request-read.js';
 
 /**
  * The GitLab adapter (docs/gitlab.md): the change-request writes of `ForgeClient` over REST v4, as the acting member's
@@ -230,9 +231,9 @@ export function createGitLabForgeClient(
         readFile: unread('files'),
         listSkills: unread('skills'),
         readChangeRequest: unread('a merge request'),
-        async mergeChangeRequest() {
-            throw new GitHubMergeError(unconfirmed('a merge'), 'uncertain');
-        },
+        readChangeRequestPart: (number, part, signal) =>
+            readMergeRequestPart(asRead(call), { project, number }, part, signal),
+        mergeChangeRequest: () => Promise.reject(new GitHubMergeError(unconfirmed('a merge'), 'uncertain')),
         async findChangeRequest(branch, signal) {
             const found = await find(branch, signal);
             return found && publicFacts(found);

@@ -153,6 +153,29 @@ export const createRepos = (root) => {
             await text(id, ['update-ref', `refs/heads/${target}`, sha, into]);
             return sha;
         },
+        /** What `target...source` changed, one entry per file as GitLab's MR diffs list them: null when either branch is gone. */
+        async diff(id, source, target) {
+            const to = await resolve(id, `refs/heads/${source}`);
+            const from = await resolve(id, `refs/heads/${target}`);
+            if (!to || !from) return null;
+            const out = await text(id, ['diff', '--no-color', '--no-ext-diff', '-M', `${from}...${to}`]);
+            return out
+                .split(/^diff --git /m)
+                .filter(Boolean)
+                .map((chunk) => {
+                    const [head, ...rest] = chunk.split(/^@@/m);
+                    const field = (name) => new RegExp(`^${name} (.*)$`, 'm').exec(head)?.[1];
+                    const [a, b] = /^a\/(.*) b\/(.*)$/m.exec(head.split('\n')[0]).slice(1);
+                    return {
+                        old_path: field('rename from') ?? a,
+                        new_path: field('rename to') ?? b,
+                        new_file: /^new file mode/m.test(head),
+                        deleted_file: /^deleted file mode/m.test(head),
+                        renamed_file: /^rename from/m.test(head),
+                        diff: rest.length ? `@@${rest.join('@@')}` : '',
+                    };
+                });
+        },
         /** Every ref and the commit it points at, as `{ 'refs/heads/main': sha }`. */
         async refs(id) {
             const out = await text(id, ['for-each-ref', `--format=%(refname)${FIELD}%(objectname)`]);

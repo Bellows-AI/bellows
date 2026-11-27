@@ -115,6 +115,7 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['GET', '/api/jobs/:id/activity', 'read', MEMBER_ROLE],
     ['GET', '/api/jobs/:id/artifacts', 'read', MEMBER_ROLE],
     ['GET', '/api/jobs/:id/artifacts/read', 'read', MEMBER_ROLE],
+    ['GET', '/api/jobs/:id/change-request', 'read', MEMBER_ROLE],
     ['GET', '/api/jobs/:id/thread', 'read', MEMBER_ROLE],
     ['GET', '/api/model-setup', 'read', MEMBER_ROLE],
     ['GET', '/api/oauth/consent/:id', 'none', MEMBER_ROLE],

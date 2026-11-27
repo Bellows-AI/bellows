@@ -323,6 +323,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/activity', 'user'],
     ['/api/jobs/:id/artifacts', 'user'],
     ['/api/jobs/:id/artifacts/read', 'user'],
+    // A member's read of the task's recorded GitLab merge request, as the thread's starter.
+    ['/api/jobs/:id/change-request', 'user'],
     // The Jira proxy is gone: nothing under /connectors/ takes the attempt pair any more, so the path is an
     // unmatched person-side URL like any other and answers 404 unauthenticated-or-not.
     ['/api/jobs/:id/connectors/jira/rest/api/3/myself', 'user'],
@@ -340,6 +342,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/operations/:receiptId', 'connector'],
     // The agent's own title write: the attempt pair alone, the same class.
     ['/api/jobs/:id/agent-title', 'connector'],
+    // The same read by the attempt: the pair alone.
+    ['/api/jobs/:id/agent-change-request', 'connector'],
     // A member's own uploads: a person's act, so 'user' (an organization token is refused).
     ['/api/attachments', 'user'],
     ['/api/attachments/limits', 'user'],

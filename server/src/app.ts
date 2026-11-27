@@ -51,7 +51,7 @@ import { operatorRoutes } from './routes/operator.js';
 import { operatorDriverCredentialRoutes } from './routes/operator-driver-credentials.js';
 import { orgExportRoutes } from './routes/org-export.js';
 import { authRoutes } from './routes/auth.js';
-import { createForgeGate, type ForgeGate, type GitlabAccess } from './forge/forge-gate.js';
+import { createForgeGate, type ForgeGate, gitlabAccessOf } from './forge/forge-gate.js';
 import { createPrTokenSource } from './forge/pr-token.js';
 import { createPrWriter, type PrWriter } from './github/pr-write.js';
 import { forgeGrantRoutes } from './routes/forge-grants.js';
@@ -346,6 +346,11 @@ const jobRouteDepsOf = (
             forge: { github: { writer: prWriter ?? (apiUrl === null ? undefined : createPrWriter({ apiUrl })) } },
             gitlab: gitlabAccessOf(orgs, gitlabApi),
         },
+        changeRequests: {
+            memberGrants,
+            gitlab: gitlabAccessOf(orgs, gitlabApi),
+            publicUrl: config.auth.mode === 'github' ? config.auth.publicUrl : '',
+        },
         ...(metrics ? { claimPoll: metrics.claimPoll } : {}),
     };
 };
@@ -522,6 +527,7 @@ export async function buildApp({
         githubMint,
         githubRevoke,
         memberGrants,
+        gitlabApi,
         config,
     });
     await app.register(workspaceRoutes(executorRouteDeps(config, orgs)));
@@ -587,12 +593,6 @@ async function registerAttachments(
         })
     );
 }
-
-/** What the start gate reads a GitLab member's project access through: the org's connection and the board's client. */
-const gitlabAccessOf = (orgs: OrgRegistry, api: GitlabApi = createGitlabApi()): GitlabAccess => ({
-    connectionsOf: async (orgId) => (await orgs.for(orgId))?.forgeConnections,
-    api,
-});
 
 /** The built SPA, when there is one: static files, and every non-API path falling through to `index.html`. */
 async function registerStaticWeb(app: FastifyInstance, config: AppConfig): Promise<void> {

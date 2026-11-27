@@ -3,6 +3,7 @@ import type { GitHubAppClient } from '../github/app-client.js';
 import { GitHubMergeError } from '../github/pr-merge.js';
 import { GitHubReadError } from '../github/pr-read.js';
 import { GitHubWriteError, type PrAuth, type PrWriter } from '../github/pr-write.js';
+import { ChangeRequestReadUnsupportedError } from './change-request-read.js';
 import type { ActingCredential, ForgeClient } from './forge-client.js';
 
 const NO_INSTALLATION = 'this board holds no GitHub installation to read through';
@@ -44,6 +45,9 @@ export function createGitHubForgeClient(
         readFile: (branch, path) => reads().readFileAtBranchTip(repo, branch, path),
         listSkills: (branch, dirs, signal) => reads().listRepoSkills(repo, branch, dirs, signal),
         readChangeRequest: (number) => reads().readPullRequest(repo, number),
+        async readChangeRequestPart() {
+            throw new ChangeRequestReadUnsupportedError(ref.forge);
+        },
         async mergeChangeRequest(number, request) {
             if (credential.kind !== 'token') {
                 throw new GitHubMergeError(`${NO_TOKEN}: ${formatRepoRef(ref)}`, MERGE_ERR_FORBIDDEN);

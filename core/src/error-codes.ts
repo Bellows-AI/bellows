@@ -127,6 +127,10 @@ export const ERROR_CODES = {
     /** The acting member holds no live grant for the repo's forge: connect it (docs/connections.md). */
     FORGE_GRANT_REQUIRED: 'FORGE_GRANT_REQUIRED',
     GITHUB_UNAVAILABLE: 'GITHUB_UNAVAILABLE',
+    /** The task's thread has recorded no change request to read (docs/gitlab.md). */
+    NO_CHANGE_REQUEST: 'NO_CHANGE_REQUEST',
+    /** The board reads a change request's diff, notes and pipeline for GitLab tasks only; a GitHub task keeps `gh`. */
+    CHANGE_REQUEST_READ_UNSUPPORTED: 'CHANGE_REQUEST_READ_UNSUPPORTED',
     /** The organization already has a connection to that GitLab host (docs/connections.md). */
     GITLAB_CONNECTION_EXISTS: 'GITLAB_CONNECTION_EXISTS',
     /** The GitLab connection a save was validated against was removed or replaced meanwhile (docs/gitlab.md). */

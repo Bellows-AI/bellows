@@ -1,7 +1,8 @@
 import { formatRepoRef, gitlabHostOf, type RepoRef } from '@factory-ai/core';
 import type { ForgeConnectionStore } from '../db/forge-connections.js';
-import { GITLAB_DEVELOPER_LEVEL, type GitlabApi } from '../gitlab/gitlab-api.js';
+import { createGitlabApi, GITLAB_DEVELOPER_LEVEL, type GitlabApi } from '../gitlab/gitlab-api.js';
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
+import type { OrgRegistry } from '../orgs.js';
 import { forgeConnectPath, forgeOfRepo } from './forges.js';
 
 /**
@@ -23,6 +24,12 @@ export interface GitlabAccess {
     connectionsOf(orgId: string): Promise<ForgeConnectionStore | undefined>;
     api: GitlabApi;
 }
+
+/** What the board reads and writes GitLab through: the org's connection and the board's client. */
+export const gitlabAccessOf = (orgs: OrgRegistry, api: GitlabApi = createGitlabApi()): GitlabAccess => ({
+    connectionsOf: async (orgId) => (await orgs.for(orgId))?.forgeConnections,
+    api,
+});
 
 const ACCESS_DEADLINE_MS = 30_000;
 

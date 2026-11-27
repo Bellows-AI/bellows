@@ -4,7 +4,9 @@ import type { AttemptOfLease } from '../db/attempt-of-lease.js';
 import type { OrgRegistry } from '../orgs.js';
 import { agentTitleRoutes } from './agent-title.js';
 import { connectionCredentialRoutes } from './connection-credential.js';
+import { gitlabAccessOf } from '../forge/forge-gate.js';
 import { forgeCredentialRoutes } from './forge-credential.js';
+import { agentChangeRequestRoutes } from './jobs/job-handlers-change-request.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './github-credential.js';
 import { integrationRoutes } from './integrations.js';
 import { operationReceiptRoutes } from './operation-receipts.js';
@@ -38,6 +40,7 @@ type RunnerCredentialDeps = Pick<
     | 'githubMint'
     | 'githubRevoke'
     | 'memberGrants'
+    | 'gitlabApi'
     | 'config'
 >;
 
@@ -63,6 +66,7 @@ async function registerAttemptRoutes(
         const publicUrl = config.auth.mode === 'github' ? config.auth.publicUrl : '';
         const forgeDeps = { attemptOfLease, memberGrants: deps.memberGrants, orgs, publicUrl };
         await app.register(forgeCredentialRoutes(forgeDeps));
+        await app.register(agentChangeRequestRoutes({ ...forgeDeps, gitlab: gitlabAccessOf(orgs, deps.gitlabApi) }));
     }
     if (pairMatches && operationReceipts) {
         await app.register(operationReceiptRoutes({ attemptOfLease, pairMatches, receipts: operationReceipts }));
