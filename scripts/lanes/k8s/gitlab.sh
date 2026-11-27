@@ -148,6 +148,17 @@ if [ -n "$glk_ready" ]; then
         ok 'the fake GitLab holds a project and the member profile' ||
         { bad 'the fake GitLab holds a project and the member profile' 'a control call failed'; glk_ready=''; }
 fi
+if [ -n "$glk_ready" ]; then
+    # The offline board reads every claim's plan from REPO_CLONE_BASE, and an absent origin is an outage it retries
+    # forever: the origin holds the project with no .bellows.yaml, so the claim reads "no plan".
+    glk_origin_repo="/origins/$GLK_HOST/$GLK_PROJECT.git"
+    glk_seeded="$(bounded 40 kubectl exec "pod/$RELEASE-origin" -n "$NAMESPACE" --request-timeout=30s -- sh -c \
+        "set -e; rm -rf /tmp/glk-seed; git init -q --bare -b main '$glk_origin_repo'; git init -q -b main /tmp/glk-seed;
+        git -C /tmp/glk-seed -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m init;
+        git -C /tmp/glk-seed push -q '$glk_origin_repo' main" 2>&1)" &&
+        ok 'the plan origin holds the GitLab project with no plan' ||
+        { bad 'the plan origin holds the GitLab project with no plan' "$glk_seeded"; glk_ready=''; }
+fi
 
 glk_connected=''
 if [ -n "$glk_ready" ]; then

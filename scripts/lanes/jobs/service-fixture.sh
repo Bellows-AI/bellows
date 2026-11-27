@@ -1,5 +1,6 @@
 if selected_phase services || selected_phase orphan-reaper || selected_phase node-disruption ||
-    selected_phase driver-kill || selected_phase run-deadline || selected_phase capacity || selected_phase mcp; then
+    selected_phase driver-kill || selected_phase run-deadline || selected_phase capacity || selected_phase mcp ||
+    selected_phase gitlab; then
 begin_phase service-fixture
 mkdir -p "$work/svc"
 printf '%s\n' \

@@ -112,13 +112,17 @@ gl_psql() { # gl_psql <sql> -> psql's rows
 }
 
 mkdir -p "$GL_TLS" "$GL_STATE"
+# The fake GitLab's address is the repo's host, dialed by the board on the host and by the runner in its container.
+# LANE_HOST is that address on a native Linux daemon; Docker Desktop's is loopback, which a container never reaches,
+# so there LANE_GITLAB_HOST names a host address both sides do (a host-only interface).
+GL_ADDR="${LANE_GITLAB_HOST:-$LANE_HOST}"
 if openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=lane-gitlab' \
-    -addext "subjectAltName=IP:$LANE_HOST,DNS:localhost" -keyout "$GL_TLS/key.pem" -out "$GL_TLS/cert.pem" >/dev/null 2>&1; then
+    -addext "subjectAltName=IP:$GL_ADDR,DNS:localhost" -keyout "$GL_TLS/key.pem" -out "$GL_TLS/cert.pem" >/dev/null 2>&1; then
     ok 'the lane makes a certificate for the TLS GitLab'
 else
     bad 'the lane makes a certificate for the TLS GitLab' 'openssl failed'
 fi
-env FAKE_FORGE_HOST="$LANE_HOST" FAKE_FORGE_TLS_CERT="$GL_TLS/cert.pem" FAKE_FORGE_TLS_KEY="$GL_TLS/key.pem" \
+env FAKE_FORGE_HOST="$GL_ADDR" FAKE_FORGE_TLS_CERT="$GL_TLS/cert.pem" FAKE_FORGE_TLS_KEY="$GL_TLS/key.pem" \
     node scripts/fake-forge/server.mjs "$GL_STATE" >"$GL_TLS/port" 2>"$work/fake-gitlab.log" &
 gl_fake_pid=$!
 lane_extra_pids="$lane_extra_pids $gl_fake_pid"
@@ -127,7 +131,7 @@ for _ in $(seq 1 50); do
     [ -s "$GL_TLS/port" ] && break
     sleep 0.1
 done
-GL_URL="https://$LANE_HOST:$(cat "$GL_TLS/port")"
+GL_URL="https://$GL_ADDR:$(cat "$GL_TLS/port")"
 GL_HOST="${GL_URL#https://}"
 
 gl_ready=''
@@ -143,8 +147,10 @@ fi
 GL_DRIVER_TOKEN="drv_$(openssl rand -hex 32)" # the driver's credential; the board records only its SHA-256
 if [ -n "$gl_ready" ]; then
     gl_psql "insert into organization (id, name) values ('$GL_ORG', '$GL_ORG') on conflict do nothing" >/dev/null
+    # No REPO_CLONE_BASE: the smoke origin holds no GitLab repo, and the origin plan reader reads an absent origin as an
+    # outage, so every claim would roll back and retry forever.
     env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$GL_PORT" "${LANE_BOARD_BIND[@]}" \
-        REPO_CLONE_BASE="$PLAN_BASE" AUTH_MODE=github PUBLIC_URL="$GL_BASE" \
+        AUTH_MODE=github PUBLIC_URL="$GL_BASE" \
         GITHUB_APP_CLIENT_ID=lane-client GITHUB_APP_CLIENT_SECRET=lane-secret \
         GITHUB_WEB_URL="$LANE_FAKE_FORGE_URL" GITHUB_API_URL="$LANE_FAKE_FORGE_URL" \
         SESSION_SECRET=a-job-harness-session-secret-32-chars DRIVER_CREDENTIAL_SHA256="$(credential_sha256 "$GL_DRIVER_TOKEN")" \
