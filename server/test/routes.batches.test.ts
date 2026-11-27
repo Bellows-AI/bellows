@@ -543,6 +543,24 @@ describe('launch checks: validate and start', () => {
         expect(response.json()).toMatchObject({ id, status: 'running' });
     });
 
+    it('refuses an automerge stage on a GitLab target even on a board that can merge', async () => {
+        const gitlab = parseRepoRef('gitlab:gitlab.example.test/Bellows-AI/bellows.ai')!;
+        const { call, create, batches } = await setup({
+            canMerge: true,
+            repos: [{ owner: 'Bellows-AI', name: 'bellows.ai', defaultBranch: 'main', ref: gitlab }],
+        });
+        const { id } = await create(plan({ policy: 'automerge', targets: [{ key: 'web', repo: gitlab }] }));
+        for (const [path, payload] of [
+            ['validate', {}],
+            ['start', { version: 1 }],
+        ] as const) {
+            const response = await call('POST', `/api/batches/${id}/${path}`, payload);
+            expect(response.statusCode).toBe(HTTP_CONFLICT);
+            expect(response.json()).toMatchObject({ code: 'BATCH_UNSUPPORTED', reason: 'automerge' });
+        }
+        expect(batches.writes).toEqual(['create']);
+    });
+
     it('freezes a single-target batch through the same shape; dispatch is the store’s, not the route’s', async () => {
         const { call, create, jobCreates } = await setup();
         const { id } = await create(plan({ policy: 'human', executor: 'claude' }));
