@@ -309,7 +309,7 @@ if [ -n "$GL_CONNECTION" ]; then
     acc_until 300 b1_done && ok 'b1: a passing pipeline on the target tip completes the batch' ||
         bad 'b1: a passing pipeline on the target tip completes the batch' "$(gl_psql "select state, detail from batch_stage_verification where batch_id = '$b1_batch'")"
 
-    # R1 (BEL-539): the review loop on the merge request's discussions. A workflow (the member's own) publishes a change,
+    # R1: the review loop on the merge request's discussions. A workflow (the member's own) publishes a change,
     # holds at a barrier, then walks the `builtin/review-reconcile` block. While the barrier holds, another login opens
     # a diff discussion on the merge request, so the block's first collect finds it: the board reads the discussions as
     # the member, the stub's repair node declares a reply and a resolve for every digest key and changes the tree, the

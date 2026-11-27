@@ -332,7 +332,7 @@ describe('a github-writing helper of a GitLab job', () => {
         expectTokenless(s.steps);
     });
 
-    // The autofix block reads no forge state (BEL-539, B539-1): its probe is git-only and runs on a GitLab task as it
+    // The autofix block reads no forge state: its probe is git-only and runs on a GitLab task as it
     // is, its one body, with no board route and no `gh` or `glab` in it.
     it('runs the git-only merge-conflict-probe body, with nothing of the forge in it', async () => {
         const s = sink(() => ok('{"ok":true,"output":{}}'));
@@ -352,7 +352,7 @@ describe('a github-writing helper of a GitLab job', () => {
     });
 });
 
-describe('the attempt pair in a GitLab review helper step (BEL-539)', () => {
+describe('the attempt pair in a GitLab review helper step', () => {
     const PAIR_NAMES = ['FACTORY_STATS_URL', 'RUNNER_JOB_ID', 'RUNNER_LEASE_TOKEN'];
     const plan = (helperId: string, githubWriting = true): HelperPlan => ({
         helperId,
@@ -391,7 +391,7 @@ describe('the attempt pair in a GitLab review helper step (BEL-539)', () => {
     });
 });
 
-describe('a held grant in a review helper (BEL-539, F539-4)', () => {
+describe('a held grant in a review helper', () => {
     const FORGE_WAIT =
         '{"schema":"review-collect-probe/v1","version":1,"ok":false,"reason":"forge_wait","error":"held"}';
     const plan: HelperPlan = { helperId: REVIEW_COLLECT_PROBE_ID, phase: 'pre', input: null, githubWriting: true };

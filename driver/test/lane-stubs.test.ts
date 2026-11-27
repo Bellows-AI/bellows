@@ -843,7 +843,7 @@ describe('scripts/k8s-stub.sh factory-stub-sleep (issue #831)', () => {
     });
 });
 
-describe('the review-reconcile repair prompt in the lane stubs (BEL-539)', () => {
+describe('the review-reconcile repair prompt in the lane stubs', () => {
     const PROMPT = 'read .factory/review-reconcile/digest.json now';
     const DIGEST = {
         schema: 'review-reconcile-digest/v1',

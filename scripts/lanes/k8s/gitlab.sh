@@ -272,7 +272,7 @@ if [ -n "$glk_connected" ]; then
         *) bad 'g5: the board opened the MR as the member' "mr writes (method:status:holder): $glk_mr" ;;
         esac
     fi
-    # R1 (BEL-539): the review loop on the merge request's discussions, as in the jobs lane's step r1 (scripts/lanes/jobs/gitlab.sh):
+    # R1: the review loop on the merge request's discussions, as in the jobs lane's step r1 (scripts/lanes/jobs/gitlab.sh):
     # a workflow publishes a change, holds at a barrier, then walks `builtin/review-reconcile`. While the barrier holds another
     # login opens a diff discussion, the stub's repair node (scripts/k8s-stub.sh) declares a reply and a resolve for every digest
     # key, and the reply node answers through the board as the member. The driver change is the helper step's, shared by both

@@ -448,7 +448,7 @@ async function submitHelper(
             return { ok: false, reason: 'runner_error', message: detailOf(result, HELPER_TIMEOUT_MS) };
         }
         const parsed = parseHelperOutput(descriptor, result.stdout);
-        // A grant the board holds is no verdict (F539-4): the attempt is handed back as a credential wait.
+        // A grant the board holds is no verdict: the attempt is handed back as a credential wait.
         if (!parsed.ok && parsed.reason === 'forge_wait' && usesForgeMailbox(job)) {
             throw new ForgeWait(`the helper ${plan.helperId}`);
         }

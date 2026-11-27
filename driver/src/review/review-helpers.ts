@@ -57,7 +57,7 @@ const COLLECT_SCHEMA = 'review-collect-probe/v1';
 const REPLY_SCHEMA = 'review-reply-probe/v1';
 
 /**
- * A GitLab job's bodies (BEL-539): the same adapters, unmodified, around the board's discussion routes instead of
+ * A GitLab job's bodies: the same adapters, unmodified, around the board's discussion routes instead of
  * `gh`. The board call is async, so each unmodified piece runs in a promise callback; a held grant answers
  * `forge_wait` before any piece decides, and a throw nothing else answered is one `runner_error` envelope.
  */

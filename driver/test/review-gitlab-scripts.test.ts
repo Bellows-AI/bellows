@@ -11,7 +11,7 @@ import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review/re
 import { githubRef } from './fixtures/repo-ref.js';
 
 /**
- * The GitLab helper bodies (BEL-539): the composed `review-collect-probe` / `review-reply-probe` of a GitLab job carry
+ * The GitLab helper bodies: the composed `review-collect-probe` / `review-reply-probe` of a GitLab job carry
  * the attempt's pair to the board's review routes and decide on what it answers, with the unmodified prelude, middle and
  * postlude. A local HTTP stub plays the board. Nothing that is not a complete answer may read as a clean review.
  */

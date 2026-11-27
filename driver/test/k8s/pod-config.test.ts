@@ -169,7 +169,7 @@ describe('the block-helper transport (issue #207)', () => {
         expect(helperStepsOf(steps)[0]!.env.GITHUB_TOKEN).toBe('super-secret-token');
     });
 
-    // BEL-539: a GitLab job's review helper reaches the board's review route with the attempt pair, never a forge token.
+    // a GitLab job's review helper reaches the board's review route with the attempt pair, never a forge token.
     it('gives a GitLab job its review helper step the attempt pair, and no other helper or job', async () => {
         const gitlabJob: BoardJob = { ...job, repo: { forge: 'gitlab', host: 'board.gitlab.test', path: 'grp/web' } };
         const pairOf = async (j: BoardJob, helperId: string) => {
