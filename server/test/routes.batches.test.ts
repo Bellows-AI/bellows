@@ -23,6 +23,9 @@ import {
     testConfig,
     jobStoreSlice,
 } from './helpers.js';
+import { githubForge } from './helpers-forge.js';
+import { memberGrantsFake } from './helpers-identity.js';
+import type { GitlabApi } from '../src/gitlab/gitlab-api.js';
 import {
     HTTP_BAD_REQUEST,
     HTTP_CONFLICT,
@@ -95,12 +98,24 @@ function reposWithDefaults(
     };
 }
 
+/** Member grants that are live for every member, and an instance that gives them Developer access everywhere. */
+const liveGrants = () => ({
+    ...memberGrantsFake(),
+    standing: async () => 'live' as const,
+    accessToken: async () => ({ ok: true as const, accessToken: 'member-token', expiresAt: null }),
+});
+const accessibleApi = { projectAccess: async () => ({ ok: true, level: 40 }) } as unknown as GitlabApi;
+
 async function setup(
     options: {
         repos?: { owner: string; name: string; defaultBranch: string | null; ref?: RepoRef }[];
         userExecutors?: UserExecutorStore;
-        /** The org's board holds an installation it can merge through. */
+        /** The org's board has a merger: by default over a GitHub installation, as `gitlab` and `noGithub` say. */
         canMerge?: boolean;
+        /** The board has GitLab access and member grants (a live member, an active connection, Developer access). */
+        gitlab?: boolean;
+        /** The merger's org has no GitHub source: it can merge GitLab merge requests only. */
+        noGithub?: boolean;
         /** The branches the installation can read, on every repository; absent offline. */
         branches?: readonly string[];
         /** A branch read that throws instead of answering (forbidden, malformed): inconclusive, never "absent". */
@@ -147,6 +162,10 @@ async function setup(
             telemetry: stubTelemetryClient(),
             batchesByOrg: { [ORG]: batches, [OTHER_ORG]: otherBatches },
             ...(options.canMerge ? { batchMerger: { mergeDue: async () => 0 } } : {}),
+            ...(options.canMerge && !options.noGithub ? { forge: githubForge({}) } : {}),
+            ...(options.gitlab
+                ? { forgeConnections: { application: async () => ({ active: true, caBundle: undefined }) } as never }
+                : {}),
             ...(options.branchReadFails
                 ? {
                       branchHead: async (repo: string, branch: string) => {
@@ -167,6 +186,7 @@ async function setup(
             ...(options.cloudEnv ? { envVars: options.cloudEnv } : {}),
         }),
         auth,
+        ...(options.gitlab ? { memberGrants: liveGrants(), gitlabApi: accessibleApi } : {}),
     });
     track(app);
     const memberCookie = await signedIn(auth, member);
@@ -543,10 +563,12 @@ describe('launch checks: validate and start', () => {
         expect(response.json()).toMatchObject({ id, status: 'running' });
     });
 
-    it('starts an automerge stage on a GitLab target on a board that can merge', async () => {
+    it('starts an automerge stage on a GitLab target on a board with GitLab access that can merge', async () => {
         const gitlab = parseRepoRef('gitlab:gitlab.example.test/Bellows-AI/bellows.ai')!;
         const { call, create } = await setup({
             canMerge: true,
+            gitlab: true,
+            noGithub: true,
             repos: [{ owner: 'Bellows-AI', name: 'bellows.ai', defaultBranch: 'main', ref: gitlab }],
         });
         const { id } = await create(
@@ -560,6 +582,35 @@ describe('launch checks: validate and start', () => {
     it('refuses an automerge stage on a GitLab target on a board that cannot merge', async () => {
         const gitlab = parseRepoRef('gitlab:gitlab.example.test/Bellows-AI/bellows.ai')!;
         const { call, create, batches } = await setup({
+            repos: [{ owner: 'Bellows-AI', name: 'bellows.ai', defaultBranch: 'main', ref: gitlab }],
+        });
+        const { id } = await create(
+            plan({ policy: 'automerge', targets: [{ key: 'web', repo: gitlab, branch: 'main' }] })
+        );
+        const response = await call('POST', `/api/batches/${id}/start`, { version: 1 });
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json()).toMatchObject({ code: 'BATCH_UNSUPPORTED', reason: 'automerge' });
+        expect(batches.writes).toEqual(['create']);
+    });
+
+    it('refuses an automerge stage on a GitHub target when the merger has no GitHub source', async () => {
+        const { call, create, batches } = await setup({ canMerge: true, noGithub: true });
+        const { id } = await create(plan({ policy: 'automerge' }));
+        for (const [path, payload] of [
+            ['validate', {}],
+            ['start', { version: 1 }],
+        ] as const) {
+            const response = await call('POST', `/api/batches/${id}/${path}`, payload);
+            expect(response.statusCode).toBe(HTTP_CONFLICT);
+            expect(response.json()).toMatchObject({ code: 'BATCH_UNSUPPORTED', reason: 'automerge' });
+        }
+        expect(batches.writes).toEqual(['create']);
+    });
+
+    it('refuses an automerge stage on a GitLab target when the board has no GitLab access', async () => {
+        const gitlab = parseRepoRef('gitlab:gitlab.example.test/Bellows-AI/bellows.ai')!;
+        const { call, create, batches } = await setup({
+            canMerge: true,
             repos: [{ owner: 'Bellows-AI', name: 'bellows.ai', defaultBranch: 'main', ref: gitlab }],
         });
         const { id } = await create(

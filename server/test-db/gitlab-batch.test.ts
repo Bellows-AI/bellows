@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { claimMerges } from '../src/db/batches/batch-store-merge.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import type { ForgeSource } from '../src/forge/forge-client.js';
-import type { GitlabApi } from '../src/gitlab/gitlab-api.js';
+import { createGitlabApi, type GitlabApi } from '../src/gitlab/gitlab-api.js';
 import type { GitHubAppClient } from '../src/github/app-client.js';
 import { rootOf, setSucceeded } from './batch-fixtures.js';
 import { testSecretDeps } from './env-secrets-harness.js';
@@ -45,6 +45,12 @@ let current: string;
 let reached: string[];
 let counter = 0;
 
+/** A request timer roomy enough for the fake's git-backed answers on a loaded host; a lost answer still ends in it. */
+const roomyApi = (wrap?: (api: GitlabApi) => GitlabApi): GitlabApi => {
+    const api = createGitlabApi({ baseUrl: h.baseUrl, probeTimeoutMs: 3000 });
+    return wrap ? wrap(api) : api;
+};
+
 const spyForge = (): ForgeSource => ({
     github: {
         reads: new Proxy({} as GitHubAppClient, {
@@ -73,7 +79,7 @@ beforeEach(async () => {
         config: {},
         createdBy: org.adminId,
     });
-    board = await h.board({ forge: spyForge() });
+    board = await h.board({ forge: spyForge(), api: roomyApi() });
     connectionId = await h.connect(org, { groups: [grp] });
     expect((await board.activate(org, connectionId)).result).toBe('activated');
     expect((await board.link(org, connectionId, MEMBER)).result).toBe('linked');
@@ -224,6 +230,11 @@ const verificationOf = async (id: string) =>
         await sql<{ state: string; detail: string }[]>`
             select state, detail from batch_stage_verification where org_id = ${org.id} and batch_id = ${id}`
     )[0];
+const mergeWaitOf = async (id: string) =>
+    (
+        await sql<{ merge_wait: string | null }[]>`
+            select merge_wait from batch_pr_observation where org_id = ${org.id} and batch_id = ${id}`
+    )[0]?.merge_wait;
 const dueAgain = () =>
     sql`update batch_stage_verification set next_check_at = now() - interval '1 second' where org_id = ${org.id}`;
 const completed = async (id: string) => (await (await runtime()).batches.get(id))?.completedAt != null;
@@ -353,14 +364,24 @@ describe.skipIf(!enabled)('an automerge batch on GitLab', () => {
         expect(await prMerges()).toHaveLength(1);
     });
 
-    it('claims nothing when the starter’s grant is broken: no intent, no request, the task is not parked', async () => {
+    it('claims nothing when the starter’s grant is broken, says why on the task, and clears the note once reconnected', async () => {
         const { id } = await readyBatch();
         await breakGrant();
         const before = mark();
-        await (await runtime()).merger.mergeDue();
+        const { merger, batches } = await runtime();
+        await merger.mergeDue();
         expect(callsSince(before)).toEqual([]);
         expect(await merges(id)).toEqual([]);
         expect(await attentionOf(id)).toBeNull();
+        const note = (await batches.report(id))?.tasks[0]?.waitReason ?? '';
+        expect(note).toContain('must reconnect GitLab');
+        expect(note).not.toContain(HOST);
+        expect(note).not.toContain(MEMBER);
+        await sql`update integration_grant set status = 'active' where org_id = ${org.id}
+                  and principal_user_id = ${org.memberId}`;
+        await merger.mergeDue();
+        expect(await merges(id)).toMatchObject([{ state: 'merged' }]);
+        expect(await mergeWaitOf(id)).toBeNull();
     });
 
     it('lapses with no request when the fresh read before the merge fails', async () => {
@@ -435,7 +456,7 @@ describe.skipIf(!enabled)('an automerge batch on GitLab', () => {
 
     it('merges on an org with no GitHub source at all: the merger is GitLab’s alone', async () => {
         await board.close();
-        board = await h.board();
+        board = await h.board({ api: roomyApi() });
         const { id, mr } = await readyBatch();
         const before = mark();
         await (await runtime()).merger.mergeDue();

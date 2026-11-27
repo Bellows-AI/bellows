@@ -1,7 +1,7 @@
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import type { GithubMint } from '../routes/github-credential.js';
 import type { RepoRef } from '@factory-ai/core';
-import { forgeLabel, forgeOfRepo, isGithubRepo } from './forges.js';
+import { forgeOfRepo, isGithubRepo } from './forges.js';
 
 /**
  * The token a PR write is made with (docs/connections.md). With member grants (`AUTH_MODE=github`) it is the thread
@@ -47,11 +47,12 @@ export type MergeTokenSource = (
 ) => Promise<MergeToken>;
 
 export const MERGE_STARTER_GONE = "the batch's starter no longer exists";
-/** The details name the forge the repo lives on, never another one. */
+/** The details name the forge the repo lives on, never another one, and no host or user: a task's wait note shows them. */
+const FORGE_NAME: Record<RepoRef['forge'], string> = { github: 'GitHub', gitlab: 'GitLab' };
 export const mergeStarterReconnect = (repo: RepoRef): string =>
-    `the batch's starter must reconnect ${forgeLabel(forgeOfRepo(repo) ?? '')}`;
+    `the batch's starter must reconnect ${FORGE_NAME[repo.forge]}`;
 export const mergeTokenUnread = (repo: RepoRef): string =>
-    `the starter's ${forgeLabel(forgeOfRepo(repo) ?? '')} token could not be read`;
+    `the starter's ${FORGE_NAME[repo.forge]} token could not be read`;
 
 /**
  * Automerge merges as the batch's STARTER (docs/batches.md). With member grants that is the starter's user token; without

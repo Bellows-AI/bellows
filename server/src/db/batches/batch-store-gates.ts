@@ -50,6 +50,7 @@ interface GateRow {
     merge_detail: string | null;
     outcome: string | null;
     error_code: string | null;
+    merge_wait: string | null;
 }
 
 /** The board's own word on its merge request, as the task's wait reason carries it; null once it says nothing. */
@@ -91,7 +92,7 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
         select t.key, t.completion_kind, t.completion_condition, tg.branch as target_branch, t.pr, t.wait_reason, t.attention,
                p.forge, p.host, p.repo, p.pr_number, p.pr_url, p.base_branch, m.merged_at,
                a.attempt, a.created_at as attempt_started_at, s.policy, mg.state as merge_state,
-               mg.detail as merge_detail, o.outcome, o.error_code
+               mg.detail as merge_detail, o.outcome, o.error_code, o.merge_wait
         from batch_task t
         join batch_stage s on s.org_id = t.org_id and s.batch_id = t.batch_id and s.key = t.stage_key
         join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id and tg.key = t.target_key
@@ -127,7 +128,10 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
             attempt: row.attempt,
             attemptStartedAt: row.attempt_started_at.getTime(),
             automerge: row.policy === AUTOMERGE,
-            mergeNote: observedNoteOf(row.outcome, row.error_code) ?? mergeNoteOf(row.merge_state, row.merge_detail),
+            mergeNote:
+                observedNoteOf(row.outcome, row.error_code) ??
+                row.merge_wait ??
+                mergeNoteOf(row.merge_state, row.merge_detail),
         });
         if (judgement.pass) {
             await tx`

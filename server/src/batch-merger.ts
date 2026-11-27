@@ -34,6 +34,7 @@ import {
     type MergeOutcome,
     type VerificationJob,
 } from './db/batches/batch-store-merge.js';
+import { setMergeWait } from './db/batches/batch-store-merge-wait.js';
 import { GitHubMergeError, type MergeResult } from './github/pr-merge.js';
 import type { MergeTokenSource } from './forge/pr-token.js';
 import {
@@ -97,6 +98,8 @@ interface Run {
     clock: () => Date;
     /** The starter's token per claimed batch, resolved before its intent was claimed and held only for this pass. */
     tokens: Map<string, string>;
+    /** Why a batch's starter has no token this pass, so the next task of the batch asks nothing again. */
+    refused: Map<string, string>;
 }
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -235,19 +238,30 @@ const answersFor = (run: Run, repo: RepoRef): boolean =>
  * live, a deleted starter or an unreadable token claims nothing, so no attempt is spent and nothing parks the task.
  */
 async function admitMerge(run: Run, deps: BatchMergerDeps, candidate: MergeCandidate): Promise<boolean> {
-    if (run.tokens.has(candidate.batchId)) return true;
     // A forge no source answers for reads no credential: the dispatch records it as unbound, with no request made.
     if (!answersFor(run, candidate.repo)) return true;
+    const waiting = await tokenOf(run, deps, candidate);
+    // Why a ready PR is not merging is the task's note: set when the token is refused, cleared once one is admitted.
+    if (await setMergeWait(run.store, candidate, waiting)) await run.reconcile(candidate.batchId);
+    return waiting === null;
+}
+
+/** The starter's token for the candidate's batch, once per pass: null when held, else the refusal's detail. */
+async function tokenOf(run: Run, deps: BatchMergerDeps, candidate: MergeCandidate): Promise<string | null> {
+    if (run.tokens.has(candidate.batchId)) return null;
+    const refused = run.refused.get(candidate.batchId);
+    if (refused !== undefined) return refused;
     const token = await deps.mergeToken(
         { orgId: deps.orgId, repo: candidate.repo, startedBy: candidate.startedBy },
         AbortSignal.timeout(MERGE_TOKEN_DEADLINE_MS)
     );
     if (!token.ok) {
         logger('batches').info({ batchId: candidate.batchId, detail: token.detail }, 'a merge waits for its token');
-        return false;
+        run.refused.set(candidate.batchId, token.detail);
+        return token.detail;
     }
     run.tokens.set(candidate.batchId, token.token);
-    return true;
+    return null;
 }
 
 /** A request whose answer is unknown is read back from the PR, never sent again. */
@@ -332,6 +346,7 @@ export function createBatchMerger(deps: BatchMergerDeps): BatchMerger {
                 reconcile: deps.reconcile,
                 clock: () => (now ? now() : new Date()),
                 tokens: new Map(),
+                refused: new Map(),
             };
             const unresolved = await unresolvedMerges(store, concurrency);
             await Promise.all(

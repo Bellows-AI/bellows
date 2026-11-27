@@ -73,6 +73,8 @@ export function staticRegistry(
         /** The org's own runtime store, when a test needs two orgs that do not share one. */
         batchesByOrg?: Readonly<Record<string, NonNullable<OrgRuntime['batches']>>>;
         connections?: OrgRuntime['connections'];
+        /** The org's GitLab connection store, read by the start gate and GitLab reads. */
+        forgeConnections?: OrgRuntime['forgeConnections'];
         /** The org's installation mint, behind the runner GitHub credential route. */
         githubToken?: OrgRuntime['githubToken'];
         userExecutors?: OrgRuntime['userExecutors'];
@@ -100,6 +102,7 @@ export function staticRegistry(
         batchMerger: parts.batchMerger,
         forge: parts.forge ?? forgeOfReads(parts),
         connections: parts.connections,
+        forgeConnections: parts.forgeConnections,
         githubToken: parts.githubToken,
         userExecutors: parts.userExecutors,
         skills: parts.skills,

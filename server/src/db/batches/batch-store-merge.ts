@@ -192,6 +192,7 @@ const candidateOf = (row: CandidateRow) =>
 /** What `admit` is asked about a listed candidate: the repository to merge in and the batch's starter, whose token merges. */
 export interface MergeCandidate {
     batchId: string;
+    taskKey: string;
     repo: RepoRef;
     startedBy: string | null;
 }
@@ -237,7 +238,15 @@ async function claimIfAdmitted(
     admit: (candidate: MergeCandidate) => Promise<boolean>
 ): Promise<MergeIntent | null> {
     if (!candidateOf(row).merge) return null;
-    if (!(await admit({ batchId: row.batch_id, repo: refOfRow(prRowOf(row)), startedBy: row.started_by }))) return null;
+    if (
+        !(await admit({
+            batchId: row.batch_id,
+            taskKey: row.task_key,
+            repo: refOfRow(prRowOf(row)),
+            startedBy: row.started_by,
+        }))
+    )
+        return null;
     return claimOne(deps, now, row);
 }
 
