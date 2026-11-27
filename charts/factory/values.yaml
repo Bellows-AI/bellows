@@ -59,6 +59,9 @@ dashboard:
     # GitHub App credential is not needed. The auth wall stays up, and with no App nobody can sign
     # in — it exists for scripts/test-k8s.sh --cluster, which mints its own access token.
     offline: false
+    # Lane only, refused unless `offline`: the origin (no trailing slash) the offline board uses as both
+    # GitHub's sign-in and its API, so members sign in against the lane's fake forge. Empty is github.com.
+    offlineGithubUrl: ''
     # The shared admission budgets every claim enforces, across every driver and replica (issue
     # #831): the most tasks running at once in total, per org and per repo. Empty is unlimited.
     # A driver's `concurrency` stays a per-process cap; these are the cluster-wide ones.

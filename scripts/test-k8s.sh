@@ -423,6 +423,17 @@ offline_bases="$(render "${base_sets[@]}" | grep -c 'name: REPO_CLONE_BASE')"
 github_bases="$(render "${base_sets[@]}" --set dashboard.offline=false --set github.appId=1 --set github.appPrivateKey=pem | grep -c 'name: REPO_CLONE_BASE')"
 [ "$github_bases" = 1 ] && ok 'the GitHub-backed dashboard is told no plan origin' ||
     bad 'the GitHub-backed dashboard is told no plan origin' "REPO_CLONE_BASE rendered $github_bases times, want 1"
+# The offline board's GitHub is the lane's fake forge: one install-time value, offline only, the dashboard alone.
+fake_github=http://fake-forge:8080
+fake_github_render="$(render --set "dashboard.offlineGithubUrl=$fake_github")"
+for var in GITHUB_WEB_URL GITHUB_API_URL; do
+    expect_contains "the offline dashboard is told the fake GitHub as $var" \
+        "$(grep -A1 "name: $var" <<<"$fake_github_render")" "value: \"$fake_github\""
+    [ "$(grep -c "name: $var" <<<"$fake_github_render")" = 1 ] && ok "$var renders on the dashboard container only" ||
+        bad "$var renders on the dashboard container only" "rendered $(grep -c "name: $var" <<<"$fake_github_render") times, want 1"
+done
+expect_not_contains 'the offline dashboard is told no GitHub URL by default' "$(cat "$work/rendered.yaml")" 'name: GITHUB_WEB_URL'
+expect_not_contains 'the offline dashboard is told no GitHub API URL by default' "$(cat "$work/rendered.yaml")" 'name: GITHUB_API_URL'
 expect_not_contains 'the driver is told no workspaces claim' "$(cat "$work/rendered.yaml")" 'name: WORKSPACE_VOLUME'
 expect_contains 'the driver is told the task volume access mode' "$(cat "$work/rendered.yaml")" \
     'name: TASK_VOLUME_ACCESS_MODE'
@@ -904,6 +915,8 @@ refuses() { # refuses <name> <needle> <helm args...>
         expect_contains "$name" "$out" "$needle"
     fi
 }
+refuses 'dashboard.offlineGithubUrl is refused unless dashboard.offline' 'dashboard.offlineGithubUrl' \
+    --set dashboard.offline=false --set github.appId=1 --set github.appPrivateKey=pem --set dashboard.offlineGithubUrl=x
 refuses 'the retired dashboard.otel is refused' 'observability.' "${GH_SETS[@]}" --set-string dashboard.otel.endpoint=http://otel.example:4318
 refuses 'an enabled collector with no endpoint is refused' 'observability.endpoint' "${GH_SETS[@]}" --set observability.enabled=true
 refuses 'a headers Secret name without a key is refused' 'observability.headersSecret' "${GH_SETS[@]}" \
