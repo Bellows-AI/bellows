@@ -384,6 +384,22 @@ describe('test-jobs --changed path-to-phase map', () => {
         ).toEqual(['run-deadline']);
     });
 
+    it('selects the gitlab phase for the review-reconcile helpers, their GitLab bodies and the board discussion reader', () => {
+        for (const file of [
+            'driver/src/review/review-helpers.ts',
+            'driver/src/scripts/review-collect-gitlab.cjs',
+            'driver/src/scripts/review-reply-gitlab.cjs',
+            'server/src/forge/gitlab-review.ts',
+            'server/src/forge/review-collection.ts',
+            'server/src/routes/jobs/job-handlers-review.ts',
+            'server/src/db/workflows/workflow-blocks/review-reconcile.ts',
+        ]) {
+            // `full` runs every phase, the gitlab one included.
+            const { selected } = classify([file]);
+            expect(selected === 'full' || selected.includes('gitlab'), file).toBe(true);
+        }
+    });
+
     it('selects acceptance for the stub agent it builds, while other kubernetes-only scripts select nothing', () => {
         expect(classify(['scripts/k8s-stub.sh']).selected).toEqual(['acceptance']);
         expect(classify(['scripts/k8s-local-values.mjs']).selected).toEqual([]);

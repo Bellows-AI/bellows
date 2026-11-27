@@ -13,7 +13,19 @@ docker build -q -t "$IMAGE_SVC" "$work/svc" >/dev/null || {
     exit 1
 }
 mkdir -p "$work/run"
-printf '#!/bin/sh\nfor last in "$@"; do :; done\nexec sh -c "$last"\n' >"$work/run/run.sh"
+# The review-reconcile block's repair prompt (it names the digest) is not a shell script: the stub makes one change and, for
+# every item the digest presents, declares a reply and a resolve (scripts/k8s-stub.sh answers the same words).
+printf '%s\n' \
+    '#!/bin/sh' \
+    'for last in "$@"; do :; done' \
+    'case "$last" in' \
+    '*.factory/review-reconcile/digest.json*)' \
+    '    cd "$WORKDIR" && echo change >lane-review-change' \
+    '    exec node -e '"'"'const fs = require("fs"); const dir = ".factory/review-reconcile";' \
+    'const items = JSON.parse(fs.readFileSync(dir + "/digest.json", "utf8")).items;' \
+    'fs.writeFileSync(dir + "/intents.json", JSON.stringify({ schema: "review-reconcile-intents/v1", version: 1, items: items.map((item) => ({ key: item.key, reply: "fixed in the next push", resolve: true })) }));'"'"' ;;' \
+    'esac' \
+    'exec sh -c "$last"' >"$work/run/run.sh"
 # `sh /run.sh` rather than exec-ing it: a file written by this script has no exec bit to copy in.
 printf 'FROM %s\nCOPY run.sh /run.sh\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/run/Dockerfile"
 docker build -q -t "$IMAGE_RUN" "$work/run" >/dev/null || {

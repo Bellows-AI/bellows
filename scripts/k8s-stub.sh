@@ -30,6 +30,17 @@ case "$*" in
     echo change >"$WORKDIR/lane-change"
     ;;
 esac
+# The review-reconcile block's repair prompt (it names the digest): one change in the tree and, for every item the
+# digest presents, a reply and a resolve, written as the repair agent declares its intents. The sh prompt-executing
+# stub of scripts/lanes/jobs/service-fixture.sh answers the same words.
+case "$*" in
+*.factory/review-reconcile/digest.json*)
+    echo change >"$WORKDIR/lane-review-change"
+    node -e 'const fs = require("fs"); const dir = process.argv[1];
+const items = JSON.parse(fs.readFileSync(dir + "/digest.json", "utf8")).items;
+fs.writeFileSync(dir + "/intents.json", JSON.stringify({ schema: "review-reconcile-intents/v1", version: 1, items: items.map((item) => ({ key: item.key, reply: "fixed in the next push", resolve: true })) }));' "$WORKDIR/.factory/review-reconcile"
+    ;;
+esac
 # `factory-stub-tokenless`: what this agent can see of a forge token, as markers and never a value: its env, its
 # checkout's .git/config and the task volume. The pattern (the fake GitLab's token prefixes) is joined here, so no file of
 # the task ever holds one.
