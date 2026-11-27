@@ -1,13 +1,7 @@
 import { ERROR_CODES, formatRepoRef, type RepoRef } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { FORGE_ACCESS_REASON, type ForgeRequirementReason } from '../../db/forge-requirement.js';
-import {
-    FORGE_UNCONFIGURED,
-    resolveForgeClient,
-    writeGap,
-    type ForgeClient,
-    type ForgeSource,
-} from '../../forge/forge-client.js';
+import { resolveForgeClient, writeGap, type ForgeClient, type ForgeSource } from '../../forge/forge-client.js';
 import { forgeOfRepo } from '../../forge/forges.js';
 import type { PrTokenSource } from '../../forge/pr-token.js';
 import { GitHubWriteError, type PrCreate, type PrEdit, type PullRequestFacts } from '../../github/pr-write.js';
@@ -226,14 +220,11 @@ async function write(
 
 /**
  * Whether the board can write on this repo's forge at all, decided before any credential is read or wait opened:
- * false when it holds no API to write through (the 409), a throw for a forge no client answers for yet (nothing is
- * written, nothing concluded: a 503).
+ * false (the 409: the push landed, no PR) when it holds no API to write through, or no client writes that forge yet
+ * (GitLab, until its merge-request writer lands).
  */
 function canWrite(forge: ForgeSource, repo: RepoRef): boolean {
-    const gap = writeGap(forge, repo);
-    if (gap === null) return true;
-    if (gap.reason === FORGE_UNCONFIGURED) return false;
-    throw new Error(`no client answers for ${gap.forge} repositories`);
+    return writeGap(forge, repo) === null;
 }
 
 /** The client the PR is written through under the confirmed `token`; the forge was checked by `canWrite`. */
