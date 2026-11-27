@@ -70,6 +70,7 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['DELETE', '/api/env/org/vars/:name', 'none', ADMIN_ROLE],
     ['DELETE', '/api/env/workspace/vars/:name', 'none', MEMBER_ROLE],
     ['DELETE', '/api/org/executors/:id', 'none', ADMIN_ROLE],
+    ['DELETE', '/api/org/executors/default', 'none', ADMIN_ROLE],
     ['DELETE', '/api/org/skills/:id', 'none', ADMIN_ROLE],
     ['DELETE', '/api/org/members/:userId', 'none', ADMIN_ROLE],
     ['DELETE', '/api/org/members/removed/:userId', 'none', ADMIN_ROLE],
@@ -77,6 +78,7 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['DELETE', '/api/provider-connections/:id', 'none', MEMBER_ROLE],
     ['DELETE', '/api/workflows/:id', 'write', MEMBER_ROLE],
     ['DELETE', '/api/workspace/executors/:id', 'none', MEMBER_ROLE],
+    ['DELETE', '/api/workspace/executors/default', 'none', MEMBER_ROLE],
     ['DELETE', '/api/workspace/skills/:id', 'none', MEMBER_ROLE],
     ['DELETE', '/api/workspace/notification-subscriptions/:id', 'none', MEMBER_ROLE],
     ['GET', '/api/agent-default', 'read', MEMBER_ROLE],
@@ -212,6 +214,7 @@ export const ROUTE_CLASSES: readonly (readonly [
     // the handler's.
     ['PUT', '/api/model-setup', 'none', MEMBER_ROLE],
     ['PUT', '/api/org/executors/:id', 'none', ADMIN_ROLE],
+    ['PUT', '/api/org/executors/default', 'none', ADMIN_ROLE],
     ['PUT', '/api/org/skills/:id/enabled', 'none', ADMIN_ROLE],
     ['PUT', '/api/org/skills/builtin/:name/enabled', 'none', ADMIN_ROLE],
     ['PUT', '/api/org/members/:userId/role', 'none', ADMIN_ROLE],

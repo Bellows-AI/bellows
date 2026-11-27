@@ -14,7 +14,12 @@ import {
     noExecutorMessage,
 } from '@factory-ai/core';
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from 'fastify';
-import type { AgentDefault, ResolvedDefault, UserExecutorStore } from '../../db/user-executor-store.js';
+import {
+    type AgentDefault,
+    ConfiguredDefaultUnusableError,
+    type ResolvedDefault,
+    type UserExecutorStore,
+} from '../../db/user-executor-store.js';
 import type { OrgRuntime } from '../../orgs.js';
 import type { ExecutorTypeRead } from '../../skill-catalog.js';
 import { bad, guard } from '../helpers.js';
@@ -121,8 +126,9 @@ export async function refusedAsUnusable(
 }
 
 /**
- * What a selection naming no executor runs on: the caller's resolved default (their stored preference, else their own
- * agent default, else the organization's, else the first active personal profile, else the first active org one). A
+ * What a selection naming no executor runs on: the caller's resolved default (their configured default, else the
+ * organization's — a suspended one refuses with 409 `EXECUTOR_SUSPENDED`, never falling through — else their stored
+ * preference, their own agent default, else the organization's, else the first active personal profile, else the first active org one). A
  * profile is stamped as the label; an agent default is frozen on the task as its agent and model. The claim
  * reads only what was stamped, so a task queued with neither would fail there. Null when there is nothing to resolve
  * against (no executor store, no caller); `refused` once the refusal is on `reply`: 409 `NO_EXECUTOR` for a caller with
@@ -138,9 +144,26 @@ export async function defaultExecutorOf(
     const resolved = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'default executor read failed'),
-        () => executors.resolvedDefault(createdBy)
+        async () => {
+            try {
+                return await executors.resolvedDefault(createdBy);
+            } catch (error) {
+                // A configured default that cannot run is an answer, never a fall through to another default.
+                if (error instanceof ConfiguredDefaultUnusableError) return error;
+                throw error;
+            }
+        }
     );
     if (!resolved.ok) return 'refused';
+    if (resolved.value instanceof ConfiguredDefaultUnusableError) {
+        const { reason, scope, executorName: name, message } = resolved.value;
+        if (reason === 'suspended') {
+            bad(reply, ERROR_CODES.EXECUTOR_SUSPENDED, message, HTTP_CONFLICT);
+        } else {
+            bad(reply, ERROR_CODES.UNKNOWN_EXECUTOR, executorMissingMessage(scope, name), HTTP_NOT_FOUND);
+        }
+        return 'refused';
+    }
     if (resolved.value !== null) return resolved.value;
     bad(reply, ERROR_CODES.NO_EXECUTOR, noExecutorMessage, HTTP_CONFLICT);
     return 'refused';
