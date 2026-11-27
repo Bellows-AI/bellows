@@ -109,8 +109,7 @@ const executors = await hop(`${BOARD}/api/workspace/executors`, {
         ],
     }),
 });
-// A second member of an org is no admin and the org's first member stored the executors already: a refusal is confirmed.
-if (executors.status !== 200 && executors.status !== 403) fail(`storing the task executors answered ${executors.status}`);
+if (executors.status !== 200) fail(`storing the task executors answered ${executors.status}`);
 
 const minted = await hop(`${BOARD}/api/tokens`, {
     method: 'POST',

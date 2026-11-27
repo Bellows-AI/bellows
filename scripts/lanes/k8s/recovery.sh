@@ -342,6 +342,7 @@ skills_release="/task/.lane-skills"
 # The admin is a second member of the smoke org: signed in through the fake GitHub like the first, then promoted by the
 # org's admin (the smoke member, FACTORY_TOKEN) through the role route.
 skills_admin_ok=''
+skills_admin_token=''
 if lane_member "$member_login-admin" "$member" >"$work/recovery-admin.out" 2>&1; then
     skills_admin_token="$MINTED_TOKEN"
     [ "$(http_status PUT "$BASE/api/org/members/$MINTED_USER/role" '{"role":"admin"}')" = 200 ] && skills_admin_ok=1

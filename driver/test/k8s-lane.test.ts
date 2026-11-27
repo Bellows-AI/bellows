@@ -1077,6 +1077,19 @@ describe('kind lane members hold a GitHub grant', () => {
         expect(script).toContain('\'a job was queued\' "no id came back (last status: ${status:-none}): ${refusal:-}"');
     });
 
+    it('recovery initialises the admin token before the sign-in, so a failed one is a bad line under set -u', () => {
+        const text = laneFiles[0] ?? '';
+        const init = text.indexOf("skills_admin_token=''");
+        expect(init).toBeGreaterThan(-1);
+        expect(init).toBeLessThan(text.indexOf('lane_member "$member_login-admin"'));
+    });
+
+    it('the client fails when storing the executors is refused, whatever the status', () => {
+        const client = readRepoFile('scripts/publish-member-client.mjs');
+        expect(client).toContain('if (executors.status !== 200) fail(');
+        expect(client).not.toContain('403');
+    });
+
     it('the workspace PVC label quotes the org id', () => {
         expect(laneFiles[2]).toContain('labels: {factory.task-org: "$member"}');
     });
