@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
     assessChecks,
     assessPullRequest,
+    changeRequestIs,
     errorFingerprint,
     nextObservationDelayMs,
     observationFingerprint,
@@ -164,5 +165,20 @@ describe('nextObservationDelayMs', () => {
         expect(nextObservationDelayMs({ ok: false, failures: 1, retryAfterMs: 300_000 })).toBe(300_000);
         expect(nextObservationDelayMs({ ok: false, failures: 1, retryAfterMs: 3_600_000 })).toBe(3_600_000);
         expect(nextObservationDelayMs({ ok: false, failures: 3, retryAfterMs: 1000 })).toBe(240_000);
+    });
+});
+
+describe('changeRequestIs', () => {
+    const gitlab = { forge: 'gitlab', host: 'board.gitlab.test', path: 'Grp/Web' } as const;
+
+    it('compares a GitLab path exactly and a GitHub path case-insensitively', () => {
+        expect(changeRequestIs(facts({ repo: 'Grp/Web', number: 3 }), gitlab, 3)).toBe(true);
+        expect(changeRequestIs(facts({ repo: 'grp/web', number: 3 }), gitlab, 3)).toBe(false);
+        const github = { forge: 'github', host: 'github.com', path: 'Acme/Web' } as const;
+        expect(changeRequestIs(facts({ repo: 'acme/web', number: 3 }), github, 3)).toBe(true);
+    });
+
+    it('is false for another number', () => {
+        expect(changeRequestIs(facts({ repo: 'Grp/Web', number: 4 }), gitlab, 3)).toBe(false);
     });
 });
