@@ -223,7 +223,7 @@ describe.skipIf(!enabled)('the model setup routes', () => {
             })
         );
         expect(second.status).toBe(CONFLICT);
-        expect(second.json.code).toBe('NAME_CONFLICT');
+        expect(second.json.code).toBe('NAME_TAKEN');
         expect(second.body).not.toContain(KEY_B);
         await launch(admin);
         expect((await claim('w1'))?.env?.ANTHROPIC_API_KEY).toBe(KEY_A);

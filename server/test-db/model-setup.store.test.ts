@@ -210,6 +210,7 @@ describe.skipIf(!enabled)('the model setup command', () => {
                         baseUrl: null,
                         name: 'OpenAI',
                     },
+                    executor: { name: 'Claude', agentType: 'opencode', model: 'gpt-5' },
                 })
             )
         ).rejects.toBeInstanceOf(ModelSetupNameConflict);
@@ -295,7 +296,7 @@ describe.skipIf(!enabled)('the model setup command', () => {
             setup.apply(
                 command({
                     connection: { intent: 'reuse', id: first.connectionId! },
-                    executor: { name: 'Bad', agentType: 'opencode', model: 'openai/gpt-5' },
+                    executor: { name: 'Bad', agentType: 'claude-code', model: 'openai/gpt-5' },
                 })
             )
         ).rejects.toBeInstanceOf(ExecutorConnectionRefusedError);

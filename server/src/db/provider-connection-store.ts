@@ -195,7 +195,7 @@ const scopeLockKey = (orgId: string, owner: string | null) => `provider-connecti
  * rotation — the fresh reference and version in one statement, and answer what the superseded
  * secret is. `null` when no such row: the caller releases what it minted.
  */
-async function replaceConnectionRow(
+export async function replaceConnectionRow(
     tx: TransactionSql,
     {
         orgId,
@@ -234,6 +234,74 @@ async function replaceConnectionRow(
     };
 }
 
+/**
+ * The create's one transaction body: under the scope's lock, refuse a scope at the cap, then insert the row holding
+ * the minted reference. The setup command (model-setup-store.ts) runs it inside its own transaction beside the executor
+ * and the default selection, so a connection never commits apart from them.
+ */
+export async function insertConnectionRow(
+    tx: TransactionSql,
+    {
+        orgId,
+        id,
+        owner,
+        input,
+        made,
+    }: {
+        orgId: string;
+        id: string;
+        owner: string | null;
+        input: ProviderConnectionInput;
+        made: Awaited<ReturnType<typeof mintConnectionSecret>>;
+    }
+): Promise<ProviderConnectionMeta> {
+    await waitAdvisoryXactLock(tx, scopeLockKey(orgId, owner));
+    const counted = await tx<{ count: number }[]>`
+        select count(*)::int as count from provider_connection
+        where org_id = ${orgId} and user_id is not distinct from ${owner}
+    `;
+    if ((counted[0]?.count ?? 0) >= MAX_PROVIDER_CONNECTIONS_PER_SCOPE) throw new ProviderConnectionCapError();
+    const rows = await tx<Row[]>`
+        insert into provider_connection
+            (org_id, id, user_id, name, provider, base_url, secret_ref, secret_version, created_by)
+        values (
+            ${orgId}, ${id}, ${owner}, ${input.name}, ${input.provider}, ${input.baseUrl},
+            ${made.ref}, ${made.version}, ${input.userId}
+        )
+        returning id, name, provider, user_id, base_url, secret_ref
+    `;
+    return toMeta(rows[0]!);
+}
+
+/** The secret helpers' dependencies for one organization, with the compensation's fresh read of its references. */
+export function connectionSecretDeps({
+    sql,
+    orgId,
+    secrets,
+    secretLog,
+    writeDeadlineMs = 30_000,
+    cleanupDeadlineMs = 10_000,
+}: {
+    sql: Sql;
+    orgId: string;
+    secrets: SecretStore;
+    secretLog: (diagnostic: SecretDiagnostic) => void;
+    writeDeadlineMs?: number;
+    cleanupDeadlineMs?: number;
+}): ProviderConnectionSecretDeps {
+    return {
+        orgId,
+        secrets,
+        secretLog,
+        writeDeadlineMs,
+        cleanupDeadlineMs,
+        referencedRefs: () =>
+            sql<{ secret_ref: string | null }[]>`
+                select secret_ref from provider_connection where org_id = ${orgId}
+            `,
+    };
+}
+
 export function createProviderConnectionStore({
     sql,
     orgId,
@@ -253,17 +321,7 @@ export function createProviderConnectionStore({
     writeDeadlineMs?: number;
     cleanupDeadlineMs?: number;
 }): ProviderConnectionStore {
-    const deps: ProviderConnectionSecretDeps = {
-        orgId,
-        secrets,
-        secretLog,
-        writeDeadlineMs,
-        cleanupDeadlineMs,
-        referencedRefs: () =>
-            sql<{ secret_ref: string | null }[]>`
-                select secret_ref from provider_connection where org_id = ${orgId}
-            `,
-    };
+    const deps = connectionSecretDeps({ sql, orgId, secrets, secretLog, writeDeadlineMs, cleanupDeadlineMs });
     const gate = async () => {
         if (ready) await ready;
     };
@@ -306,26 +364,7 @@ export function createProviderConnectionStore({
             const owner = input.scope === 'org' ? null : input.userId;
             const made = await mintConnectionSecret(deps, identityOf(id, owner), input.key);
             try {
-                const rows = await sql.begin(async (tx) => {
-                    await waitAdvisoryXactLock(tx, scopeLockKey(orgId, owner));
-                    const counted = await tx<{ count: number }[]>`
-                        select count(*)::int as count from provider_connection
-                        where org_id = ${orgId} and user_id is not distinct from ${owner}
-                    `;
-                    if ((counted[0]?.count ?? 0) >= MAX_PROVIDER_CONNECTIONS_PER_SCOPE) {
-                        throw new ProviderConnectionCapError();
-                    }
-                    return tx<Row[]>`
-                        insert into provider_connection
-                            (org_id, id, user_id, name, provider, base_url, secret_ref, secret_version, created_by)
-                        values (
-                            ${orgId}, ${id}, ${owner}, ${input.name}, ${input.provider}, ${input.baseUrl},
-                            ${made.ref}, ${made.version}, ${input.userId}
-                        )
-                        returning id, name, provider, user_id, base_url, secret_ref
-                    `;
-                });
-                return toMeta(rows[0]!);
+                return await sql.begin((tx) => insertConnectionRow(tx, { orgId, id, owner, input, made }));
             } catch (error) {
                 await releaseConnectionSecrets(deps, [made]);
                 throw error;
