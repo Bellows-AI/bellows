@@ -20,7 +20,7 @@ import { useTestDb } from './harness.js';
  * Every read through the forge boundary for a tracked GitLab repo (docs/gitlab.md): GitLab repositories are listed now,
  * and the board can read nothing from them yet, so each read answers unsupported-inconclusive — never GitHub's client,
  * and never a confirmed absence (an empty branch list, a missing branch, a skill the repository does not have, a
- * repository with no default branch). The GitHub client is a spy that fails the test when it is reached.
+ * repository with no default branch). A batch launch reads the default branch as the launcher (gitlab-observe.test.ts). The GitHub client is a spy that fails the test when it is reached.
  */
 const enabled = Boolean(process.env.DATABASE_URL);
 const db = useTestDb({ max: 12 });
@@ -150,36 +150,6 @@ describe.skipIf(!enabled)('reads of a tracked GitLab repository', () => {
         const { checks } = res.json<{ checks: { subject: string; status: string }[] }>();
         expect(checks.find((c) => c.subject === 'repo')).toMatchObject({ status: 'ok' });
         expect(checks.filter((c) => c.status === 'blocked')).toEqual([]);
-        expect(reached).toEqual([]);
-        expect(repositoryReads()).toEqual([]);
-    });
-
-    it('answers a batch launch with 503, not with "reports no default branch"', async () => {
-        const plan = {
-            planVersion: 1,
-            title: 'One repo',
-            targets: [{ key: 'web', repo: ref() }],
-            defaultTarget: 'web',
-            stages: [
-                {
-                    key: 'one',
-                    tasks: [{ key: 'a', objective: 'do a', acceptance: 'it works', verification: 'npm test' }],
-                },
-            ],
-        };
-        const drafted = await post('/api/batches', { plan });
-        expect(drafted.statusCode, drafted.body).toBe(201);
-        const { id } = drafted.json<{ id: string }>();
-        for (const [url, payload] of [
-            [`/api/batches/${id}/validate`, {}],
-            [`/api/batches/${id}/start`, { version: 1 }],
-        ] as const) {
-            const res = await post(url, payload);
-            expect(res.statusCode, `${url}: ${res.body}`).toBe(UNAVAILABLE);
-            expect(res.json()).not.toMatchObject({ code: 'BATCH_NO_DEFAULT_BRANCH' });
-        }
-        const [jobs] = await sql<{ count: string }[]>`select count(*) from job where org_id = ${org.id}`;
-        expect(Number(jobs?.count)).toBe(0);
         expect(reached).toEqual([]);
         expect(repositoryReads()).toEqual([]);
     });

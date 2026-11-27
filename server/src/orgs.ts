@@ -13,6 +13,7 @@ import type { ArtifactBackend } from './artifacts/backend.js';
 import type { AppConfig } from './config.js';
 import { createBatchMerger, type BatchMerger } from './batch-merger.js';
 import { createBatchPrObserver, createReadPause, type BatchPrObserver } from './batch-pr-observer.js';
+import type { GitlabReads } from './forge/forge-reads.js';
 import { createPrFollower, type PrFollower } from './pr-follower.js';
 import { createBatchStore } from './db/batches/batch-store.js';
 import type { BatchStore } from './db/batches/batch-store-types.js';
@@ -284,11 +285,16 @@ function buildOrgStores({
     // lets the gate judge them. Offline there is no client, so it only keeps rows and hints.
     // One rate-limit pause for both readers of this installation.
     const pause = createReadPause();
+    // GitLab is read as the task's starter, so it needs the members' grants; AUTH_MODE=none has none and reads no GitLab.
+    const gitlab: GitlabReads | undefined = memberGrants
+        ? { gitlab: { connectionsOf: async () => forgeConnections, api: gitlabApi }, memberGrants }
+        : undefined;
     const batchObserver = createBatchPrObserver({
         sql,
         orgId,
         ready,
         forge,
+        gitlab,
         pause,
         recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
         reconcile: (batchId) => batches.reconcile(batchId),
@@ -300,6 +306,7 @@ function buildOrgStores({
         orgId,
         ready,
         forge,
+        gitlab,
         prs,
         pause,
         recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),

@@ -355,6 +355,20 @@ const jobRouteDepsOf = (
     };
 };
 
+/** The batch routes' deps: GitLab targets are read as the launcher, so they need the members' grants (none under AUTH_MODE=none). */
+const batchDepsOf = ({
+    config,
+    orgs,
+    forgeGate,
+    memberGrants,
+    gitlabApi,
+}: Pick<AppDeps, 'config' | 'orgs' | 'memberGrants' | 'gitlabApi'> & { forgeGate: ForgeGate | undefined }) => ({
+    orgs,
+    enabled: config.batches.enabled,
+    forgeGate,
+    gitlab: memberGrants ? { gitlab: gitlabAccessOf(orgs, gitlabApi), memberGrants } : undefined,
+});
+
 /**
  * The routes that exist only with their dependency — commerce (and COMMERCE_ENABLED), the provider key check — and
  * the model setup the key check serves and the org's GitLab connection (pending until activated), which every board has.
@@ -505,7 +519,7 @@ export async function buildApp({
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.
-    await app.register(batchRoutes({ orgs, enabled: config.batches.enabled, forgeGate }));
+    await app.register(batchRoutes(batchDepsOf({ config, orgs, forgeGate, memberGrants, gitlabApi })));
     await app.register(envRoutes({ config, orgs }));
     // The provider catalog exists on every board; where no OAuth client is wired every OAuth provider reads `unavailable`.
     await app.register(integrationCatalogRoutes({ orgs, configured: integrations?.configured }));

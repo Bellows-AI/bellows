@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
+import type { GitlabReads } from '../../forge/forge-reads.js';
 import type { ForgeGate } from '../../forge/forge-gate.js';
 import type { OrgRegistry } from '../../orgs.js';
 import {
@@ -27,10 +28,12 @@ export const batchRoutes =
         orgs,
         enabled,
         forgeGate,
+        gitlab,
     }: {
         orgs: OrgRegistry;
         enabled: boolean;
         forgeGate?: ForgeGate | undefined;
+        gitlab?: GitlabReads | undefined;
     }): FastifyPluginAsync =>
     async (app) => {
         // Off (BATCHES_ENABLED): the routes stay registered behind the auth wall and answer a coded 404 before any
@@ -44,13 +47,13 @@ export const batchRoutes =
         app.get('/api/batches/:id/report', (request, reply) => handleReport(orgs, request, reply));
         app.put('/api/batches/:id', { bodyLimit: BODY_LIMIT }, (request, reply) => handleReplace(orgs, request, reply));
         app.post('/api/batches/:id/validate', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleValidate({ orgs, forgeGate }, request, reply)
+            handleValidate({ orgs, forgeGate, gitlab }, request, reply)
         );
         app.post('/api/batches/:id/start', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleStart({ orgs, forgeGate }, request, reply)
+            handleStart({ orgs, forgeGate, gitlab }, request, reply)
         );
         app.post('/api/batches/:id/tasks/:key/retry', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleRetry({ orgs, forgeGate }, request, reply)
+            handleRetry({ orgs, forgeGate, gitlab }, request, reply)
         );
         app.post('/api/batches/:id/tasks/:key/accept', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleAccept(orgs, request, reply)

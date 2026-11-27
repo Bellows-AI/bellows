@@ -13,7 +13,7 @@ import {
     RECOVERY_REPAIR,
     formatRepoRef,
     githubRepo,
-    sameRepo,
+    changeRequestIs,
     TASK_RETRY,
     TASK_SUCCEEDED,
     type CheckEvidence,
@@ -44,6 +44,8 @@ export interface ObservationClaim {
     targetRepo: RepoRef;
     prNumber: number;
     attempt: number;
+    /** The member who started the batch: whose grant reads a GitLab change request; null once the member is gone. */
+    startedBy: string | null;
     token: string;
     hintSeq: number;
 }
@@ -131,6 +133,7 @@ interface ClaimRow {
     target_repo: string;
     pr_number: number;
     attempt: number;
+    started_by: string | null;
     hint_seq: string;
 }
 
@@ -171,7 +174,7 @@ export async function claimDue(deps: ObservationDeps, limit: number): Promise<Ob
         const due = await tx<ClaimRow[]>`
             select o.batch_id, o.task_key, o.forge, o.host, o.repo, tg.forge as target_forge, tg.host as target_host,
                    tg.repo as target_repo, o.pr_number, o.attempt,
-                   o.hint_seq::text as hint_seq
+                   b.started_by, o.hint_seq::text as hint_seq
             from batch_pr_observation o
             join batch_task t on t.org_id = o.org_id and t.batch_id = o.batch_id and t.key = o.task_key
             join batch b on b.org_id = t.org_id and b.id = t.batch_id
@@ -202,6 +205,7 @@ export async function claimDue(deps: ObservationDeps, limit: number): Promise<Ob
                 targetRepo: refOfRow({ forge: row.target_forge, host: row.target_host, repo: row.target_repo }),
                 prNumber: row.pr_number,
                 attempt: row.attempt,
+                startedBy: row.started_by,
                 token,
                 hintSeq: Number(row.hint_seq),
             });
@@ -260,11 +264,11 @@ export async function commitObservation(
         const stale = Number(row.hint_seq) !== claim.hintSeq;
         const at = { orgId, batchId: claim.batchId, taskKey: claim.taskKey };
         if (result.kind === 'error') return writeError(tx, { at, row, result, now, stale });
-        if (!sameRepo(githubRepo(result.facts.repo), claim.repo) || result.facts.number !== claim.prNumber) {
+        if (!changeRequestIs(result.facts, claim.repo, claim.prNumber)) {
             const mismatch: ObservationResult = {
                 kind: 'error',
                 error: 'binding',
-                detail: `${formatRepoRef(claim.repo)}#${claim.prNumber} resolved to ${result.facts.repo}#${result.facts.number}`,
+                detail: `${formatRepoRef(claim.repo)}#${claim.prNumber} resolved to ${formatRepoRef({ ...claim.repo, path: result.facts.repo })}#${result.facts.number}`,
                 retryAfterMs: null,
             };
             return writeError(tx, { at, row, result: mismatch, now, stale });
