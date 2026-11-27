@@ -23,7 +23,9 @@ import {
     unavailable,
 } from './lineage-types.js';
 import type { ExchangeResult, OAuthProviderHooks, OAuthProviderLookup } from './oauth-provider.js';
+import { SYSTEM_ACTOR } from '../auth/member-removal.js';
 import type { LineageKind } from '../db/connection-grants.js';
+import { revokeConnectionsInTx } from '../db/connection-revocation.js';
 
 /**
  * One grant is one refresh lineage. Whoever holds the lineage CLAIM (a lease token on the grant row) may
@@ -98,10 +100,13 @@ async function failedExchange(
     ctx: LineageCtx,
     claim: LineageClaim,
     answer: Extract<ExchangeResult, { ok: false }>,
-    options: { rotating: boolean; aborted: boolean }
+    options: { rotating: boolean; aborted: boolean; revokes: boolean }
 ): Promise<{ result: RefreshResult; settled: boolean }> {
     if (answer.failure === 'not-sent') {
         return { result: unavailable(options.aborted ? 'aborted' : 'transport'), settled: false };
+    }
+    if (answer.failure === 'definitive' && options.revokes && (await revokeRefused(ctx, claim))) {
+        return { result: required('reconnect', claim.provider), settled: true };
     }
     if (answer.failure === 'definitive' || options.rotating) {
         // A spent (or possibly spent) rotating token is never replayed: the person must reconnect.
@@ -111,6 +116,28 @@ async function failedExchange(
     }
     await endClaim(ctx, claim, {});
     return { result: unavailable(options.aborted ? 'aborted' : 'timeout'), settled: true };
+}
+
+/**
+ * A provider that refuses the refresh for good has no grant left: the grant's connections are revoked, like a member's
+ * leaving (`db/connection-revocation.ts`), and the claim ends. False when the revocation did not commit, so the
+ * caller falls back to `reconnect_required`, which a reconnect can still heal.
+ */
+async function revokeRefused(ctx: LineageCtx, claim: LineageClaim): Promise<boolean> {
+    try {
+        await ctx.sql.begin((tx) =>
+            revokeConnectionsInTx(
+                tx,
+                { kind: 'grant', orgId: claim.orgId, grantId: claim.grantId },
+                { actor: SYSTEM_ACTOR, reason: 'grant-refused' }
+            )
+        );
+        await endClaim(ctx, claim, {});
+        ctx.log('revoked', claim.grantId);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 const commitOutcome = (committed: CommitResult, provider: string): RefreshResult => {
@@ -162,6 +189,7 @@ async function exchangeUnderClaim(
             const failed = await failedExchange(ctx, claim, answer, {
                 rotating: hooks.rotatesRefreshToken,
                 aborted: signal?.aborted === true,
+                revokes: hooks.revokesOnRefusal === true,
             });
             settled = failed.settled;
             return failed.result;

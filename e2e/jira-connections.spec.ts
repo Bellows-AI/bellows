@@ -16,7 +16,8 @@ import { throughSignIn } from './signin.js';
 
 const SHOTS = 'artifacts/ui';
 const SITE = 'e2e-site.atlassian.net';
-const ACCOUNT_A = 'stub-account-a@example.com';
+// A Jira connection stores no email or name: its account label is the site host.
+const ACCOUNT_A = SITE;
 
 async function withSql<T>(run: (sql: postgres.Sql) => Promise<T>): Promise<T> {
     const sql = postgres(AUTH_DATABASE_URL, { max: 1 });
@@ -123,7 +124,7 @@ test('reconnecting as another account is refused and the row keeps the first acc
     await expect(page).toHaveURL(detailUrl);
     const detail = page.getByRole('region', { name: 'Jira connection' });
     await expect(detail).toContainText(ACCOUNT_A);
-    await expect(detail).not.toContainText('stub-account-b');
+    await expect(detail).not.toContainText('@example.com');
     await page.screenshot({ path: `${SHOTS}/settings-jira-connections-mismatch.png`, fullPage: true });
 });
 
@@ -197,7 +198,7 @@ test('two accounts of one site are two cards with their own addresses, and each 
 
     await page.goto(hrefs[1]!);
     const detail = page.getByRole('region', { name: 'Jira connection' });
-    await expect(detail).toContainText('stub-account-');
+    await expect(detail).toContainText(SITE);
     const account = await detail.textContent();
     await page.reload();
     await expect(page.getByRole('region', { name: 'Jira connection' })).toHaveText(account!);

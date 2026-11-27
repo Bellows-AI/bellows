@@ -51,6 +51,24 @@ Both or neither: one alone refuses to boot, naming the missing one. Restart the 
 Refusals come back as one sentence on the page the consent started from; the codes are `AuthorizationFailure` in
 `server/src/integrations/authorization-types.ts`.
 
+## 5. When access ends
+
+Atlassian sends a 3LO app no event when a person loses a site, revokes the app or leaves the Atlassian
+organization, so the board looks (`docs/connections.md`, `server/src/integrations/account-recheck.ts`):
+
+- **Periodic re-check.** Every replica runs a cycle each five minutes behind the `account-recheck` lease; one runs it
+  at a time. It reads `GET /oauth/token/accessible-resources` for each Jira grant not confirmed in the last hour. A
+  connection whose site is absent from a well-formed, non-empty list is revoked; a failed, timed-out, empty or
+  malformed answer changes nothing and is retried.
+- **Refresh refusal.** A refresh Atlassian refuses with `invalid_grant` revokes the grant's connections. A refresh that
+  gets no answer leaves the grant to the existing `reconnect_required` handling.
+- **Revoking** disconnects the connection, blanks its stored label, retires the grant's secret and writes a
+  `connection.revoke` audit row naming the reason (`site-access-lost`, `grant-refused`, or `member-removed` when the
+  person leaves the Bellows organization). The person connects again from Settings → Integrations.
+
+A Jira connection stores the account id and the site host only, no email or display name (Atlassian's user privacy
+guide asks apps not to store them). The Integrations page shows the site host as the account.
+
 ## Limits
 
 - The token reaches every site the account can reach; naming a site narrows what Bellows records, not what the token

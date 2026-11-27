@@ -37,6 +37,10 @@ export interface IntegrationRuntimeDeps {
 export interface IntegrationRuntime {
     /** The cross-org pool the recovery pass enumerates on. */
     readonly sql: Sql;
+    readonly secrets: SecretStore;
+    readonly providers: OAuthProviderLookup;
+    /** The org's request-pool handle: what a pass over another org's rows runs its statements on. */
+    orgSqlOf(orgId: string): Sql;
     readonly log: (line: Record<string, unknown>) => void;
     lineageOf(orgId: string): GrantLineage;
     flowOf(orgId: string): AuthorizationFlow;
@@ -100,6 +104,9 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
     };
     return {
         sql: deps.crossOrgSql,
+        secrets: deps.secrets,
+        providers: deps.providers,
+        orgSqlOf: (orgId) => orgSql(deps.sql, orgId),
         log,
         lineageOf,
         flowOf,

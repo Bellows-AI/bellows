@@ -112,7 +112,7 @@ describe.skipIf(!enabled)('jira lineage', () => {
         expect((await grantsOf(db.sql, tag))[0]!.status).toBe('reconnect_required');
     });
 
-    it('invalid_grant on refresh is reconnect at the broker; a 403 from Jira on an operation stays provider-denied and the grant active', async () => {
+    it('invalid_grant on refresh is reconnect at the broker and revokes the grant; a 403 from Jira on an operation stays provider-denied and the grant active', async () => {
         const tag = newTag();
         const { a, requests } = await expiring(tag);
         refreshAnswer(fake, () => ({ status: 403, json: { error: 'invalid_grant' } }));
@@ -120,6 +120,9 @@ describe.skipIf(!enabled)('jira lineage', () => {
             ok: false,
             outcome: { outcome: 'integration_required', reason: 'reconnect' },
         });
+        // Atlassian refused the grant for good: its connections are revoked, not left for a reconnect.
+        expect((await grantsOf(db.sql, tag))[0]!.status).toBe('revoked');
+        expect((await connectionsOf(db.sql, tag)).map((c) => [c.status, c.email])).toEqual([['disconnected', '']]);
 
         const healthy = newTag();
         script(fake, { tag: healthy });

@@ -16,6 +16,7 @@ Bellows keeps an audit log for each organization. Every row says when something 
 | An admin removes or restores a member, or GitHub membership ends and Bellows removes the member | `member.remove`, `member.restore` | The member. The row names the cause when the system removed them |
 | Variables or secrets are saved for the organization, a workspace or a repository | `env.write` | `org`, `workspace/<member>` or `repo/<owner>/<name>`. The row lists the variable names |
 | A connection is connected, disconnected or changes access | `connection.connect`, `connection.disconnect`, `connection.access` | The connection |
+| A Jira connection is revoked because its member left the organization or lost access to its Atlassian site | `connection.revoke` | The connection. The row names the reason |
 | An admin follows up, retries or controls the wait of another member's task | `task.admin_action` | The task. The row names the action and the task's owner |
 | An admin downloads the [organization export](/guides/export) | `org.export` | The organization |
 | The plan lowers the [retention window](/guides/retention); it applies 30 days later | `org.retention_downgrade` | The organization. The row names the old and the new days and when the new ones apply |

@@ -32,6 +32,7 @@ import { createOrgRegistry, type OrgRegistry } from './orgs.js';
 import type { GithubMint, GithubRevoke } from './routes/github-credential.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
+import { recheckAccounts, startAccountRecheck } from './integrations/account-recheck.js';
 import {
     createIntegrationRuntime,
     recoverIntegrations,
@@ -195,6 +196,7 @@ function startRecovery({
     metrics,
     ready,
     integrations,
+    registry,
     track,
 }: {
     config: AppConfig;
@@ -202,6 +204,7 @@ function startRecovery({
     metrics: ServerMetrics;
     ready: Promise<unknown>;
     integrations: ReturnType<typeof createIntegrationRuntime>;
+    registry: ProviderRegistry;
     track: Track;
 }): void {
     // Dispatch survives a missed callback or a restart: the first pass runs now, then on an interval. The batch
@@ -221,6 +224,18 @@ function startRecovery({
         track(() =>
             startIntegrationRecovery((signal) =>
                 metrics.timedPass('integration_recover', () => recoverIntegrations(integrations, { signal }))
+            )
+        )
+    );
+
+    // What each connection's account still reaches is asked of its provider (no provider pushes a revocation): on every
+    // replica, one at a time behind a lease.
+    void ready.then(() =>
+        track(() =>
+            startAccountRecheck((signal) =>
+                metrics.timedPass('account_recheck', () =>
+                    recheckAccounts(integrations, { providers: recheckable(registry), signal })
+                )
             )
         )
     );
@@ -265,6 +280,10 @@ const migrateLog = logger('migrate');
 const orgLog = logger('org');
 
 /** Every outbound OAuth provider: Jira by ATLASSIAN_CLIENT_ID/SECRET, Linear by LINEAR_CLIENT_ID/SECRET. */
+/** The providers whose hooks can say what an account still reaches (`account-recheck.ts`). */
+const recheckable = ({ ids, providers }: ProviderRegistry): string[] =>
+    ids.filter((id) => providers(id)?.accessibleResources);
+
 const providerRegistry = ({ callbackOrigin, jira, linear }: AppConfig['integrations']): ProviderRegistry =>
     combineRegistrations([jiraProvider(jira, callbackOrigin), linearProvider(linear, callbackOrigin)]);
 
@@ -444,7 +463,7 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     void ready.then(() => orgs.warmAll()).catch((e: Error) => logger('orgs').error({ err: e }, 'warm failed'));
 
     startCollectors({ crossOrg, secrets, artifacts, config, metrics, ...mcp, track: stops.add });
-    startRecovery({ config, orgs, metrics, ready, integrations, track: stops.add });
+    startRecovery({ config, orgs, metrics, ready, integrations, registry, track: stops.add });
 
     startDeliveries({ config, orgs, metrics, ready, track: stops.add });
     void ready.then(() => stops.add(() => membership.start(metrics.timedPass)));

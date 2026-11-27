@@ -48,6 +48,7 @@ export interface LineageEvent {
     event:
         | 'refresh-joined'
         | 'reconnect-required'
+        | 'revoked'
         | 'secret-wedged'
         | 'persistence-lost'
         | 'persistence-pending'
