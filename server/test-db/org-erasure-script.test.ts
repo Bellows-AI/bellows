@@ -94,7 +94,9 @@ const purgePass = async () =>
     runOrgPurgePass({
         sql,
         secrets: {
-            issueOperationId: async () => randomUUID(),
+            issueOperationId: async () => {
+                throw new Error('the org owns no secret');
+            },
             delete: async () => {
                 throw new Error('the org owns no secret');
             },
