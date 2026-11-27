@@ -239,4 +239,41 @@ describe.skipIf(!enabled)('configured default selection', () => {
         // The caller's own selection stays valid on their own row.
         expect(await store.selectedDefault(ALICE)).toMatchObject({ executorId: mine.id, scope: 'user' });
     });
+
+    /**
+     * A concurrent PUT moves a member's default off the executor being deleted after the delete read the selections but
+     * before it wrote: the member's new choice must survive, whether the delete clears or re-points the old ones.
+     */
+    it.each([
+        { name: 'clear', resolution: (_: string) => ({ clear: true as const }) },
+        { name: 'replace', resolution: (other: string) => ({ replaceWith: other }) },
+    ])('a default switched mid-delete survives the $name resolution', async ({ resolution }) => {
+        const gone = await shared('gone');
+        const other = await shared('other');
+        const chosen = await shared('chosen');
+        await store.selectDefault(BOB, gone.id);
+
+        let release: () => void = () => {};
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let switched: () => void = () => {};
+        const hasSwitched = new Promise<void>((resolve) => {
+            switched = resolve;
+        });
+        // The member's PUT is in flight: written, uncommitted, holding their selection row.
+        const putting = sql.begin(async (tx) => {
+            await store.selectDefaultInTx(tx, BOB, chosen.id);
+            switched();
+            await gate;
+        });
+        await hasSwitched;
+        const deleting = store.deleteOrg(gone.id, resolution(other.id));
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        release();
+        await putting;
+        await deleting.catch(() => undefined);
+
+        expect(await store.selectedDefault(BOB)).toMatchObject({ executorId: chosen.id, name: 'chosen' });
+    });
 });
