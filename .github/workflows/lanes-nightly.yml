@@ -23,7 +23,7 @@ jobs:
             fail-fast: false
             matrix:
                 # Every phase `scripts/test-k8s.sh --help` names, bench excepted: it takes an hour or more.
-                phase: [smoke, admission, workspace, recovery, services, takeover, control, acceptance, capacity, mcp, observability, drain, replicas]
+                phase: [smoke, admission, workspace, recovery, services, takeover, control, acceptance, gitlab, capacity, mcp, observability, drain, replicas]
         steps:
             - uses: actions/checkout@v4
             - name: install helm by checksum
