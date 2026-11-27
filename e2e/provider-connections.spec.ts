@@ -81,14 +81,15 @@ async function addExecutor(page: Page, input: { name: string; agent: string; con
     await expect(dialog).toHaveCount(0);
 }
 
-async function selectedConnection(page: Page, executor: string): Promise<string> {
+/** The executor's dialog shows `expected` as its selected connection, once the connection list has loaded. */
+async function expectSelectedConnection(page: Page, executor: string, expected: string): Promise<void> {
     const dialog = await openExecutorDialog(page, executor);
     const select = dialog.getByLabel('Provider connection', { exact: true });
     await expect(select).not.toHaveValue('');
-    const label = await select.locator('option:checked').innerText();
+    // Until the list arrives the stored id renders as "Selected connection (not listed)": wait for the real label.
+    await expect(select.locator('option:checked')).toHaveText(expected);
     await dialog.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).toHaveCount(0);
-    return label;
 }
 
 /** Removes the spec's executors and then its connections, through the routes. */
@@ -159,9 +160,9 @@ test('two providers, two executors and a shared connection switch independently 
         // Reload: the references are what the board stored.
         await page.reload();
         await expect(page.getByRole('region', { name: 'Executors' })).toBeVisible();
-        expect(await selectedConnection(page, EXECUTORS.claude)).toBe(TEAM_OPTION);
-        expect(await selectedConnection(page, EXECUTORS.open)).toBe(OPENAI_OPTION);
-        expect(await selectedConnection(page, EXECUTORS.shared)).toBe(OPENAI_OPTION);
+        await expectSelectedConnection(page, EXECUTORS.claude, TEAM_OPTION);
+        await expectSelectedConnection(page, EXECUTORS.open, OPENAI_OPTION);
+        await expectSelectedConnection(page, EXECUTORS.shared, OPENAI_OPTION);
         await page.screenshot({ path: `${SHOTS}/settings-executors-connections.png`, fullPage: true });
 
         // Rotation says what happened, and the executors still reference the connection by name.
