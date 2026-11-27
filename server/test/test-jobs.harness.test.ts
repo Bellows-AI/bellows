@@ -434,7 +434,8 @@ describe('the test-jobs harness', () => {
         // Rotation, adoption and the places a token must never be.
         expect(phase).toContain('distinct tokens');
         expect(phase).toContain('DRIVER_REAP_INTERVAL_MS=2000');
-        for (const place of ['gl-no-env-token', 'gl-no-config-token', 'gl-no-volume-token']) expect(phase).toContain(place);
+        for (const place of ['gl-no-env-token', 'gl-no-config-token', 'gl-no-volume-token'])
+            expect(phase).toContain(place);
         // The fake's token prefixes are split so the lane never holds one.
         expect(phase).not.toMatch(/gloas-fake|glrt-fake/);
     });
