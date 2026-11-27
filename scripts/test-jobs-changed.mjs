@@ -142,6 +142,7 @@ export const RULES = [
     [/^(server\/src\/github\/pr-write|server\/src\/forge\/pr-token|server\/src\/routes\/jobs\/job-handlers-pull-request|server\/src\/db\/jobs\/job-store-pr-write)\.ts$/, ['publish-member'], 'the board\'s PR write as the member'],
     [/^scripts\/publish-member-client\.mjs$/, ['publish-member', 'gitlab'], 'the member the publish-member and gitlab phases sign in'],
     [/^scripts\/gitlab-member-client\.mjs$/, ['gitlab'], 'the gitlab phase connection and link client'],
+    [/^scripts\/lane-hosts\.cjs$/, ['gitlab'], 'the resolver the gitlab phase board preloads for host.docker.internal'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
     [/^driver\/src\/(loop\/loop-gates|loop\/loop-gate-pass|loop\/loop-finish|loop\/loop-run-control|gate-manager|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|loop\/gate-settled|gate-record|gate-excerpt|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs|dockerd-loss|tools|tool-control)\.ts$/, ['driver', 'workflows', 'finish-gate'], 'gates and phases'],
     [/^driver\/src\/gate-result\.ts$/, ['driver', 'workflows'], 'gates'],
