@@ -2357,7 +2357,7 @@ describe('the executor images commit identity', () => {
 // common packages live there and ripgrep, opencode's alone, sits in its own step below it.
 describe('the executor image tools (issue #1022)', () => {
     const aptLayer = (file: string) =>
-        /^RUN apt-get update \\\n {4}&& apt-get install -y --no-install-recommends ([^\\\n]+) \\\n {4}&& rm -rf [^\n]+$/m.exec(
+        /^RUN apt-get update \\\n {4}&& apt-get upgrade -y --no-install-recommends \\\n {4}&& apt-get install -y --no-install-recommends ([^\\\n]+) \\\n {4}&& rm -rf [^\n]+$/m.exec(
             read(file)
         );
 
