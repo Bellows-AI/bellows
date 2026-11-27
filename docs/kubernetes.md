@@ -65,6 +65,7 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
   board's GitHub token are a step's own `env`; a GitLab job's token is never in one, its `forgeHost` steps ask through
   a mailbox in the supervisor's tmpdir. `driver/test/supervised-steps.test.ts`, `driver/test/forge-credential.test.ts`,
   `driver/test/supervisor-forge-step.test.ts`.
+- **The kind lane proves a GitLab task end to end** (`scripts/test-k8s.sh --cluster --phase gitlab`, `scripts/lanes/k8s/gitlab.sh`): the member's token is the one git sends, rotates inside a task, survives a lost runner pod and a lost driver, and is in no env, `.git/config`, task volume, pod spec, output or log; the fake GitLab is its own TLS pod whose certificate is the connection's CA bundle. `scripts/gitlab-member-client.mjs`, `driver/test/k8s-lane.test.ts`.
 - **A GitLab job's private CA rides the pod spec as docker's argv carries it**: `RUNNER_FORGE_CA` on the agent
   (`runner-plan.ts`), `SUPERVISOR_FORGE_CA` on the supervisor (`supervisorLiterals`), `FACTORY_FORGE_CA` in a gate's
   step env (`gateStepEnv`). `driver/test/forge-ca.test.ts`, `driver/test/k8s/gates-and-reviewer.test.ts`.
