@@ -51,7 +51,7 @@ function mergeUnder(base: Record<string, unknown>, over: Record<string, unknown>
 }
 
 /** The env name Claude Code reads its model from, over its settings' `model`; OpenCode reads none. */
-const CLAUDE_MODEL_ENV = 'ANTHROPIC_MODEL';
+export const CLAUDE_MODEL_ENV = 'ANTHROPIC_MODEL';
 
 /**
  * The provider connection store's claim-time reader, declared here like `executorConfig`: a profile's selected

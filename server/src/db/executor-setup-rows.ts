@@ -1,7 +1,8 @@
-import type { TransactionSql } from 'postgres';
-import { DEFAULT_GATE_FIX_ROUNDS, type ExecutorType } from '@factory-ai/core';
+import type { JSONValue, TransactionSql } from 'postgres';
+import { CLAUDE_CODE, DEFAULT_GATE_FIX_ROUNDS, type ExecutorType } from '@factory-ai/core';
 import { assertConnectionSelection } from './executor-connection-selection.js';
 import { ExecutorIdentityError } from './executor-default-store.js';
+import { CLAUDE_MODEL_ENV } from './jobs/job-store-claim-executor.js';
 
 /**
  * The model setup's executor write, as a transaction body (model-setup-store.ts): one profile created or edited by its
@@ -52,8 +53,8 @@ export async function writeSetupExecutor(
         await assertSelection(tx, orgId, input);
         return insertRow(tx, orgId, { ...input, name: input.name });
     }
-    const [previous] = await tx<{ updated_at: Date }[]>`
-        select updated_at from executor_profile
+    const [previous] = await tx<{ updated_at: Date; config: Record<string, JSONValue> | null }[]>`
+        select updated_at, config from executor_profile
         where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
         for update
     `;
@@ -70,12 +71,30 @@ export async function writeSetupExecutor(
     const [row] = await tx<{ id: string; name: string }[]>`
         update executor_profile set
             name = coalesce(${input.name ?? null}, name), type = ${input.agentType},
-            config = coalesce(config, '{}'::jsonb) || ${tx.json({ model: input.model })},
+            config = ${tx.json(configWithModel(previous.config, input.agentType, input.model))},
             provider_connection_id = ${input.connectionId}, updated_at = now()
         where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
         returning id, name
     `;
     return row!;
+}
+
+/**
+ * The profile's config with the saved model laid over it. Claude Code runs `env.ANTHROPIC_MODEL` over the config's
+ * `model`, so a pin there is moved to the new model (or dropped for an agent that reads none): the model saved is the
+ * one that runs. Every other key stays.
+ */
+function configWithModel(
+    config: Record<string, JSONValue> | null,
+    agentType: ExecutorType,
+    model: string
+): Record<string, JSONValue> {
+    const next: Record<string, JSONValue> = { ...config, model };
+    const { env } = next;
+    if (typeof env !== 'object' || env === null || Array.isArray(env) || !(CLAUDE_MODEL_ENV in env)) return next;
+    const { [CLAUDE_MODEL_ENV]: _pinned, ...rest } = env as Record<string, JSONValue>;
+    next.env = agentType === CLAUDE_CODE ? { ...rest, [CLAUDE_MODEL_ENV]: model } : rest;
+    return next;
 }
 
 /** The shared selection rule, always judging the model too: a model-only edit is still a selection of that pair. */

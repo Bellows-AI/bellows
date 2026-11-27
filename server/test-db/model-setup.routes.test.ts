@@ -264,6 +264,31 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         });
     });
 
+    it('a saved model is the one that runs, even where the profile pins its model through env', async () => {
+        const first = await save(admin, orgBody());
+        await sql`
+            update executor_profile set config = config || '{"env": {"ANTHROPIC_MODEL": "claude-sonnet-4-5", "KEEP_ME": "1"}}'::jsonb
+            where org_id = ${org} and id = ${first.json.executorId}
+        `;
+        const edited = await save(
+            admin,
+            orgBody({
+                model: 'claude-opus-4-5',
+                connection: { intent: 'reuse', id: first.json.connectionId },
+                executor: { id: first.json.executorId },
+            })
+        );
+        expect(edited.status).toBe(OK);
+        expect((await call(admin, 'GET', '/api/model-setup')).json.selected.model).toBe('claude-opus-4-5');
+
+        await launch(admin);
+        const claimed = await claim('w-model');
+        expect(claimed?.env?.ANTHROPIC_MODEL).toBe('claude-opus-4-5');
+        const [row] =
+            await sql`select config from executor_profile where org_id = ${org} and id = ${first.json.executorId}`;
+        expect(row!.config.env).toEqual({ ANTHROPIC_MODEL: 'claude-opus-4-5', KEEP_ME: '1' });
+    });
+
     it('personal onboarding yields a personal connection executor and default', async () => {
         const saved = await save(
             member,

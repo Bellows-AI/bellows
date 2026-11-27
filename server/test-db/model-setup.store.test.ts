@@ -619,6 +619,47 @@ describe.skipIf(!enabled)('the model setup command', () => {
         expect(await count('executor_profile')).toBe(2);
     });
 
+    it('a model pin in the profile env follows the saved model, and goes when the agent has no such setting', async () => {
+        const { setup } = stores();
+        const first = await setup.apply(command({ scope: 'personal' }));
+        await sql`
+            update executor_profile set config = config || '{"env": {"ANTHROPIC_MODEL": "claude-sonnet-4-5", "KEEP_ME": "1"}}'::jsonb
+            where org_id = ${ORG} and id = ${first.executorId}
+        `;
+        const envOf = async () =>
+            (
+                await sql<
+                    { env: Record<string, string> }[]
+                >`select config->'env' as env from executor_profile where id = ${first.executorId}`
+            )[0]!.env;
+
+        await setup.apply(
+            command({
+                scope: 'personal',
+                connection: { intent: 'reuse', id: first.connectionId! },
+                executor: { id: first.executorId, agentType: 'claude-code', model: 'claude-opus-4-5' },
+            })
+        );
+        expect(await envOf()).toEqual({ ANTHROPIC_MODEL: 'claude-opus-4-5', KEEP_ME: '1' });
+
+        // OpenCode has no `ANTHROPIC_MODEL` to honour: a pin left behind would resurface when the agent switches back.
+        const openrouter = await setup.apply(
+            command({
+                scope: 'personal',
+                connection: {
+                    intent: 'create',
+                    provider: 'openrouter',
+                    key: 'sk-or-pin',
+                    baseUrl: null,
+                    name: 'Router',
+                },
+                executor: { id: first.executorId, agentType: 'opencode', model: 'openai/gpt-5.1' },
+            })
+        );
+        expect(openrouter.executorId).toBe(first.executorId);
+        expect(await envOf()).toEqual({ KEEP_ME: '1' });
+    });
+
     it('default replacement and protected deletion cannot leave dangling references', async () => {
         const { setup, executors, connections } = stores();
         const first = await setup.apply(command());
