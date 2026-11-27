@@ -381,21 +381,26 @@ test('a rename keeps the personal default, and the default cannot be removed unt
     await removePersonal(page, 'Alpha');
 });
 
+/** An org row's overflow entry, scrolled to the end first: the menu opens below the fold otherwise. */
+async function orgAction(page: Page, name: string, action: string) {
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await trigger(page, name).click();
+    await page.getByRole('menu').getByRole('menuitem', { name: action }).click();
+}
+
 test('an admin sets, protects and clears the organization default', async ({ page }) => {
     await asAdmin(page);
     for (const name of PROFILES) await addProfile(page, name);
     const [main, reviewer] = PROFILES as [string, string];
 
-    await trigger(page, reviewer).click();
-    await page.getByRole('menu').getByRole('menuitem', { name: SET_ORG_DEFAULT_LABEL }).click();
+    await orgAction(page, reviewer, SET_ORG_DEFAULT_LABEL);
     await expect(row(page, reviewer).getByText(ORG_DEFAULT_LABEL)).toBeVisible();
     await page.reload();
     await expect(row(page, reviewer).getByText(ORG_DEFAULT_LABEL)).toBeVisible();
     await expect(row(page, main).getByText(ORG_DEFAULT_LABEL)).toHaveCount(0);
 
     // Deleting the default is refused until it is cleared.
-    await trigger(page, reviewer).click();
-    await page.getByRole('menu').getByRole('menuitem', { name: 'Delete' }).click();
+    await orgAction(page, reviewer, 'Delete');
     const confirm = page.getByRole('dialog');
     await confirm.getByRole('button', { name: confirmLabel({ action: 'delete', name: reviewer }) }).click();
     await expect(confirm).toHaveCount(0);
@@ -403,8 +408,7 @@ test('an admin sets, protects and clears the organization default', async ({ pag
     await expect(row(page, reviewer)).toBeVisible();
     await page.screenshot({ path: `${SHOTS}/settings-executors-org-default.png` });
 
-    await trigger(page, reviewer).click();
-    await page.getByRole('menu').getByRole('menuitem', { name: CLEAR_ORG_DEFAULT_LABEL }).click();
+    await orgAction(page, reviewer, CLEAR_ORG_DEFAULT_LABEL);
     await expect(row(page, reviewer).getByText(ORG_DEFAULT_LABEL)).toHaveCount(0);
     for (const name of PROFILES) await deleteProfile(page, name);
 });
