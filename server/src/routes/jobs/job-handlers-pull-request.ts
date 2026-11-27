@@ -40,6 +40,8 @@ const REFUSED_REPO = 'This attempt may not write a pull request: its task names 
 export interface PullRequestDeps extends ForgeWriteDeps {
     /** The token a write is made with: the starter's grant, or the installation's under `AUTH_MODE=none`. */
     tokens: PrTokenSource;
+    /** The call's wall clock; a test shortens it. */
+    deadlineMs?: number | undefined;
 }
 
 /** What a create carries: GitHub's fields, and the branch the new PR targets. */
@@ -239,7 +241,11 @@ export async function handlePullRequest(
         const who = await contextOf(store, reply, attempt);
         if (!who) return reply;
         if (!canWrite(deps, who.repo)) return bad(reply, ERROR_CODES.GITHUB_UNAVAILABLE, NO_FORGE, HTTP_CONFLICT);
-        const signal = AbortSignal.any([AbortSignal.timeout(PR_WRITE_DEADLINE_MS), request.closing, closedBy(reply)]);
+        const signal = AbortSignal.any([
+            AbortSignal.timeout(deps.deadlineMs ?? PR_WRITE_DEADLINE_MS),
+            request.closing,
+            closedBy(reply),
+        ]);
         const token = await deps.tokens(who, signal);
         if (!token.ok) {
             if (token.answer === 'no-forge') return bad(reply, ERROR_CODES.GITHUB_UNAVAILABLE, NO_FORGE, HTTP_CONFLICT);

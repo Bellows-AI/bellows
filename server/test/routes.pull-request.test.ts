@@ -111,10 +111,10 @@ describe('POST /api/jobs/:id/pull-request', () => {
         expect(reads).toEqual([]);
     });
 
-    describe('a task on a forge no client answers for (GitLab)', () => {
+    describe('a task on GitLab', () => {
         const GITLAB = parseRepoRef('gitlab:gl.example/acme/widgets')!;
 
-        it('is unconfirmed (503): no mint, no grant read, no wait opened, no GitHub request', async () => {
+        it('never mints for the GitLab path under AUTH_MODE=none: 409, no wait, no GitHub request', async () => {
             const reads: string[] = [];
             const waits: unknown[] = [];
             const requests: string[] = [];
@@ -128,31 +128,47 @@ describe('POST /api/jobs/:id/pull-request', () => {
                 reads.push(`mint ${path}`);
                 return null;
             };
-            const grants = {
-                accessToken: async () => {
-                    reads.push('grant');
-                    return { ok: false, outcome: { outcome: 'integration_required', reason: 'missing' } };
-                },
-            } as unknown as MemberForgeGrants;
-            for (const options of [{ mint }, { memberGrants: grants }]) {
-                const res = await post(
-                    await harness({
-                        ...options,
-                        writer,
-                        repo: GITLAB,
-                        store: {
-                            openPrForgeWait: async (...args) => {
-                                waits.push(args);
-                                return { result: 'ok' };
-                            },
+            const res = await post(
+                await harness({
+                    mint,
+                    writer,
+                    repo: GITLAB,
+                    store: {
+                        openPrForgeWait: async (...args) => {
+                            waits.push(args);
+                            return { result: 'ok' };
                         },
-                    }),
-                    ASK
-                );
-                expect(res.statusCode).toBe(503);
-                expect(res.json()).toMatchObject({ code: 'UNAVAILABLE' });
-            }
+                    },
+                }),
+                ASK
+            );
+            expect(res.statusCode).toBe(409);
             expect({ reads, waits, requests }).toEqual({ reads: [], waits: [], requests: [] });
+        });
+
+        it('waits on the starter’s missing GitLab grant, with no mint and no GitHub request', async () => {
+            const waits: unknown[] = [];
+            const grants = {
+                accessToken: async () => ({
+                    ok: false,
+                    outcome: { outcome: 'integration_required', reason: 'missing' },
+                }),
+            } as unknown as MemberForgeGrants;
+            const res = await post(
+                await harness({
+                    memberGrants: grants,
+                    repo: GITLAB,
+                    store: {
+                        openPrForgeWait: async (...args) => {
+                            waits.push(args);
+                            return { result: 'ok' };
+                        },
+                    },
+                }),
+                ASK
+            );
+            expect(res.json()).toMatchObject({ answer: 'waiting', forge: 'gitlab:gl.example', reason: 'missing' });
+            expect(waits).toHaveLength(1);
         });
     });
 
