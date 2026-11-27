@@ -864,7 +864,7 @@ describe('POST /api/jobs/preflight repo skills follow the executor', () => {
     it("the repo read receives the default profile's dirs when no executor is named", async () => {
         const seen: (readonly string[])[] = [];
         const booted = await bootWithOpencode({ repoSkills: dirAware(seen) });
-        await booted.executors.setDefault(booted.member.user.id, { scope: 'user', name: 'oc' });
+        booted.executors.seedLegacyDefault(booted.member.user.id, { scope: 'user', name: 'oc' });
         const { check } = await verdict(booted, base, 'skill');
         expect(seen).toEqual([OPENCODE_DIRS]);
         expect(check).toMatchObject({ name: 'oc-only', status: 'ok' });

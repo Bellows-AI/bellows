@@ -34,8 +34,8 @@ export interface MemoryUserExecutorStore extends UserExecutorStore {
         suspended: boolean;
         runnerClass: string | null;
     }[];
-    /** The stored per-member default preferences, so a test can assert what a route wrote. */
-    defaults(): { userId: string; scope: ExecutorScope; name: string }[];
+    /** Plants a legacy name-keyed preference, which the store only reads: the old row a deployment may still hold. */
+    seedLegacyDefault(userId: string, def: ExecutorDefault): void;
 }
 
 /**
@@ -165,7 +165,9 @@ export function memoryUserExecutorStore(
                 runnerClass: r.runnerClass,
             })),
 
-        defaults: () => [...preferences.entries()].map(([key, def]) => ({ userId: key, ...def })),
+        seedLegacyDefault: (userId, def) => {
+            preferences.set(userId, { ...def });
+        },
 
         async replace(userId, executors) {
             const own = rows.filter((r) => r.userId === userId);

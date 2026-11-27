@@ -46,6 +46,12 @@ const personal = async (userId: string, name: string) => {
     ]);
     return (await store.list(userId)).find((row) => row.name === name)!;
 };
+const legacyDefault = (userId: string, def: { scope: string; name: string }) =>
+    sql`
+        insert into user_executor_default (org_id, user_id, scope, name)
+        values (${ORG}, ${userId}, ${def.scope}, ${def.name})
+        on conflict (org_id, user_id) do update set scope = excluded.scope, name = excluded.name
+    `;
 const shared = (name: string) => store.createOrg({ name, ...claude, createdBy: ALICE });
 
 describe.skipIf(!enabled)('configured default selection', () => {
@@ -64,7 +70,7 @@ describe.skipIf(!enabled)('configured default selection', () => {
     it('configured defaults precede legacy fallback', async () => {
         const first = await personal(ALICE, 'first');
         const chosen = await shared('chosen');
-        await store.setDefault(ALICE, { scope: 'user', name: 'first' });
+        await legacyDefault(ALICE, { scope: 'user', name: 'first' });
         await store.setAgentDefault(null, { agentType: 'opencode', model: 'x/y' });
         expect(first.id).toBeDefined();
 
@@ -76,10 +82,10 @@ describe.skipIf(!enabled)('configured default selection', () => {
         await personal(ALICE, 'first');
         const org = await shared('org-row');
         expect(await store.resolvedDefault(ALICE)).toEqual({ kind: 'profile', scope: 'user', name: 'first' });
-        await store.setDefault(ALICE, { scope: 'org', name: 'org-row' });
+        await legacyDefault(ALICE, { scope: 'org', name: 'org-row' });
         expect(await store.resolvedDefault(ALICE)).toEqual({ kind: 'profile', scope: 'org', name: 'org-row' });
         await store.setAgentDefault(null, { agentType: 'opencode', model: 'x/y' });
-        await store.setDefault(ALICE, { scope: 'user', name: 'first' });
+        await legacyDefault(ALICE, { scope: 'user', name: 'first' });
         expect(await store.resolvedDefault(BOB)).toMatchObject({ kind: 'agent', from: 'org' });
         expect(org.id).toBeDefined();
     });
@@ -148,16 +154,60 @@ describe.skipIf(!enabled)('configured default selection', () => {
         }
     });
 
-    it('refuses deleting an organization default until it is cleared, and releases members’ own preferences', async () => {
+    const refusal = async (write: () => Promise<unknown>) => {
+        const error = await write().then(
+            () => null,
+            (e: unknown) => e
+        );
+        expect(error).toBeInstanceOf(ExecutorDefaultProtectedError);
+        return error as ExecutorDefaultProtectedError;
+    };
+
+    it('refuses deleting an executor any default names, counting the selections and never naming members', async () => {
         const org = await shared('org-row');
         await store.selectDefault(null, org.id);
-        await expect(store.deleteOrg(org.id)).rejects.toBeInstanceOf(ExecutorDefaultProtectedError);
-        expect(await store.orgCount()).toBe(1);
-
-        await store.clearDefault(null);
         await store.selectDefault(BOB, org.id);
-        await expect(store.deleteOrg(org.id)).resolves.toBe(true);
+        const refused = await refusal(() => store.deleteOrg(org.id));
+        expect(refused).toMatchObject({ organization: true, members: 1 });
+        expect(refused.message).not.toContain(BOB);
+        expect(await store.orgCount()).toBe(1);
+        expect(await store.selectedDefault(null)).toMatchObject({ executorId: org.id });
+        expect(await store.selectedDefault(BOB)).toMatchObject({ executorId: org.id });
+
+        // A member's selection alone refuses too: it is never released silently.
+        await store.clearDefault(null);
+        expect(await refusal(() => store.deleteOrg(org.id))).toMatchObject({ organization: false, members: 1 });
+        expect(await store.selectedDefault(BOB)).toMatchObject({ executorId: org.id });
+    });
+
+    it('deletes with an explicit clear, which clears every selection naming it in one transaction', async () => {
+        const org = await shared('org-row');
+        await store.selectDefault(null, org.id);
+        await store.selectDefault(BOB, org.id);
+        await expect(store.deleteOrg(org.id, { clear: true })).resolves.toBe(true);
+        expect(await store.selectedDefault(null)).toBeNull();
         expect(await store.selectedDefault(BOB)).toBeNull();
+    });
+
+    it('deletes with an explicit replacement, re-pointing every selection, or refuses atomically', async () => {
+        const gone = await shared('gone');
+        const next = await shared('next');
+        const suspended = await shared('suspended');
+        const mine = await personal(ALICE, 'mine');
+        await store.setOrgSuspended(suspended.id, true);
+        await store.selectDefault(null, gone.id);
+        await store.selectDefault(BOB, gone.id);
+
+        for (const target of [mine.id, suspended.id, gone.id, randomUUID()]) {
+            await expect(store.deleteOrg(gone.id, { replaceWith: target })).rejects.toThrow();
+        }
+        expect(await store.orgCount()).toBe(3);
+        expect(await store.selectedDefault(null)).toMatchObject({ executorId: gone.id });
+        expect(await store.selectedDefault(BOB)).toMatchObject({ executorId: gone.id });
+
+        await expect(store.deleteOrg(gone.id, { replaceWith: next.id })).resolves.toBe(true);
+        expect(await store.selectedDefault(null)).toMatchObject({ executorId: next.id, name: 'next' });
+        expect(await store.selectedDefault(BOB)).toMatchObject({ executorId: next.id });
     });
 
     it('scope changes preserve valid defaults or refuse atomically', async () => {
@@ -169,15 +219,24 @@ describe.skipIf(!enabled)('configured default selection', () => {
 
         // The organization default cannot be demoted into one member's personal list.
         await store.selectDefault(null, mine.id);
-        await expect(store.changeScope(mine.id, 'user', ALICE)).rejects.toBeInstanceOf(ExecutorDefaultProtectedError);
+        await store.selectDefault(BOB, mine.id);
+        expect(await refusal(() => store.changeScope(mine.id, 'user', ALICE))).toMatchObject({
+            organization: true,
+            members: 1,
+        });
         expect(await store.selectedDefault(null)).toMatchObject({ executorId: mine.id, scope: 'org' });
         expect((await store.listOrg()).map((row) => row.id)).toEqual([mine.id]);
 
-        // Cleared, the demotion goes through; another member's preference for it is released, the caller's stays valid.
+        // Another member's selection refuses too, until the demotion carries an explicit clear.
         await store.clearDefault(null);
-        await store.selectDefault(BOB, mine.id);
-        await store.changeScope(mine.id, 'user', ALICE);
+        expect(await refusal(() => store.changeScope(mine.id, 'user', ALICE))).toMatchObject({
+            organization: false,
+            members: 1,
+        });
+        expect(await store.selectedDefault(BOB)).toMatchObject({ executorId: mine.id });
+        await store.changeScope(mine.id, 'user', ALICE, { clear: true });
         expect(await store.selectedDefault(BOB)).toBeNull();
+        // The caller's own selection stays valid on their own row.
         expect(await store.selectedDefault(ALICE)).toMatchObject({ executorId: mine.id, scope: 'user' });
     });
 });

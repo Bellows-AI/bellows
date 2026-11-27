@@ -225,7 +225,7 @@ describe('GET /api/repos/:owner/:name/skills follows the executor', () => {
 
     it("no executor named uses the caller's default profile's CLI", async () => {
         const b = await bootWithExecutors(dirAware());
-        await b.executors.setDefault(b.member.user.id, { scope: 'user', name: 'oc' });
+        b.executors.seedLegacyDefault(b.member.user.id, { scope: 'user', name: 'oc' });
         expect(names((await asMember(b, '')).json())).toEqual(['oc-only']);
     });
 

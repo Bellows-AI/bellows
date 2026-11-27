@@ -7,7 +7,6 @@ import {
     createUserExecutorStore,
     ExecutorDefaultProtectedError,
     ExecutorIdentityError,
-    ExecutorSuspendedError,
     type ExecutorDefault,
     type ResolvedDefault,
     type UserExecutorStore,
@@ -419,7 +418,15 @@ describe.skipIf(!enabled)('removing and suspending profiles by id (issue 440)', 
     });
 });
 
-describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
+/** Legacy rows are only read now: a fixture writes the old name-keyed preference the way 047 left it. */
+const legacyDefault = (userId: string, def: ExecutorDefault) =>
+    sql`
+        insert into user_executor_default (org_id, user_id, scope, name)
+        values (${ORG}, ${userId}, ${def.scope}, ${def.name})
+        on conflict (org_id, user_id) do update set scope = excluded.scope, name = excluded.name
+    `;
+
+describe.skipIf(!enabled)('the legacy per-user default preference (read only)', () => {
     const pref = (scope: ExecutorDefault['scope'], name: string): ExecutorDefault => ({ scope, name });
     const profile = (scope: ExecutorDefault['scope'], name: string): ResolvedDefault => ({
         kind: 'profile',
@@ -427,46 +434,16 @@ describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
         name,
     });
 
-    it('stores one preference per member and reads it back', async () => {
+    it('reads one preference per member', async () => {
         await store.createOrg({ name: 'shared', type: 'claude-code', config: {}, createdBy: ALICE });
-        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
-
-        await store.setDefault(ALICE, pref('org', 'shared'));
+        await legacyDefault(ALICE, pref('org', 'shared'));
         expect(await store.defaultOf(ALICE)).toEqual(pref('org', 'shared'));
         // Per-user: Alice's preference never becomes Bob's.
         expect(await store.defaultOf(BOB)).toBeNull();
-
-        await store.setDefault(ALICE, pref('user', 'mine'));
-        expect(await store.defaultOf(ALICE)).toEqual(pref('user', 'mine'));
     });
 
-    /** Each row refuses every named preference, and neither refusal writes the preference row. */
-    it.each<{
-        name: string;
-        suspend: boolean;
-        prefs: ExecutorDefault[];
-        error?: typeof ExecutorSuspendedError;
-    }>([
-        {
-            name: 'refuses a preference naming no accessible profile in that scope',
-            suspend: false,
-            prefs: [pref('user', 'ghost'), pref('org', 'ghost')],
-        },
-        {
-            name: 'refuses a suspended profile as the preference and writes nothing (issue 440)',
-            suspend: true,
-            prefs: [pref('user', 'mine')],
-            error: ExecutorSuspendedError,
-        },
-    ])('$name', async ({ suspend, prefs, error }) => {
-        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
-        if (suspend) await store.setPersonalSuspended(ALICE, (await store.list(ALICE))[0]!.id, true);
-
-        for (const preference of prefs) {
-            const refused = expect(store.setDefault(ALICE, preference)).rejects;
-            await (error === undefined ? refused.toThrow() : refused.toBeInstanceOf(error));
-        }
-        expect(await store.defaultOf(ALICE)).toBeNull();
+    it('has no write path: the store no longer sets a name-keyed preference', () => {
+        expect('setDefault' in store).toBe(false);
     });
 
     it('falls back deterministically: stored preference, first personal row, first org row, null', async () => {
@@ -482,7 +459,7 @@ describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
         expect(await store.resolvedDefault(BOB)).toEqual(profile('org', 'org-a'));
 
         // A stored preference wins while it still resolves — either scope.
-        await store.setDefault(ALICE, pref('org', 'org-b'));
+        await legacyDefault(ALICE, pref('org', 'org-b'));
         expect(await store.resolvedDefault(ALICE)).toEqual(profile('org', 'org-b'));
 
         // The preferred profile is removed: the chain answers from what remains.
@@ -504,7 +481,7 @@ describe.skipIf(!enabled)('the per-user default preference (issue 391)', () => {
             { name: 'first', type: 'claude-code', config: {} },
             { name: 'second', type: 'claude-code', config: {} },
         ]);
-        await store.setDefault(ALICE, pref('user', 'second'));
+        await legacyDefault(ALICE, pref('user', 'second'));
         const byName = async (name: string) => (await store.list(ALICE)).find((row) => row.name === name)!;
 
         await store.setPersonalSuspended(ALICE, (await byName('second')).id, true);
@@ -573,7 +550,7 @@ describe.skipIf(!enabled)('the agent default', () => {
         await store.createOrg({ name: 'org-a', type: 'claude-code', config: {}, createdBy: ALICE });
         await store.createOrg({ name: 'org-b', type: 'opencode', config: {}, createdBy: ALICE });
         await store.replace(ALICE, [{ name: 'zulu', type: 'claude-code', config: {} }]);
-        await store.setDefault(ALICE, { scope: 'org', name: 'org-b' });
+        await legacyDefault(ALICE, { scope: 'org', name: 'org-b' });
         await store.setAgentDefault(ALICE, opencode);
         await store.setAgentDefault(null, claude);
 
