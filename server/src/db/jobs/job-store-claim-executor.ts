@@ -31,6 +31,7 @@ import {
     OPENCODE,
     redirectsPlatformCredential,
     resolveProviderReferences,
+    subscriptionTokenAllowed,
     RUNNER_MANAGED_KEYS,
     type SelectedConnection,
 } from '@factory-ai/core';
@@ -200,7 +201,10 @@ export async function resolveClaimExecutor(
         env: CreateJobStoreDeps['env'];
         executorConfig: CreateJobStoreDeps['executorConfig'];
         providerConnections?: ClaimConnectionReader | undefined;
+        /** The claiming org: with `cloudSubscriptionOrgIds`, whether it may run on a subscription token. */
+        orgId: string;
         deploymentMode: DeploymentMode;
+        cloudSubscriptionOrgIds: ReadonlySet<string>;
         /** The operator supplies the model: cloud claims need no member model credential. */
         platformModelProvided?: boolean;
         /**
@@ -213,6 +217,7 @@ export async function resolveClaimExecutor(
     row: ClaimExecutorRow
 ): Promise<ResolvedClaimExecutor> {
     const { env, executorConfig, providerConnections, deploymentMode, platformModelProvided = false, grant } = deps;
+    const subscriptionAllowed = subscriptionTokenAllowed(deps, deps.orgId);
     const claimExecutor = await claimExecutorOf(tx, executorConfig, row);
     let { source } = claimExecutor;
     const { executorType, executorRefusal, runnerClass, providerConnectionId, owner } = claimExecutor;
@@ -265,12 +270,12 @@ export async function resolveClaimExecutor(
         claimEnv = { ...claimEnv, [CLAUDE_MODEL_ENV]: row.agent_model };
     }
     // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
-    // token, or a redirect of the deployment's model credential with no member key, saved before
+    // token (unless the operator lists the org), or a redirect of the deployment's model credential with no member key, saved before
     // cloud mode or split across scopes and profile, never travels; nor does a run with no model key
     // (`NO_MODEL`, unless the operator supplies the model). The driver fails the task with the
     // sentence before anything spawns; a throw here would roll the claim back and re-claim it forever.
     const refusal =
-        (deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType) : null) ??
+        (deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType, subscriptionAllowed) : null) ??
         (modelKeyRequired(deploymentMode, platformModelProvided)
             ? noModelRefusal(claimEnv, profileConfig, executorType)
             : null);
@@ -483,9 +488,17 @@ function noModelRefusal(env: Record<string, string> | undefined, config: unknown
     return hasModelKey(names, config, type) ? null : NO_MODEL_MESSAGE;
 }
 
-/** The sentence cloud mode refuses an effective env with, or null. Names keys only, never a value. */
-function cloudRefusal(env: Record<string, string> | undefined, config: unknown, type: ExecutorType | null) {
-    if (forbiddenCredentialIn(env, config) !== null) return CLOUD_CREDENTIAL_MESSAGE;
+/**
+ * The sentence cloud mode refuses an effective env with, or null. Names keys only, never a value. A listed org
+ * (`subscriptionAllowed`) skips only the token refusal; the redirect refusal always runs.
+ */
+function cloudRefusal(
+    env: Record<string, string> | undefined,
+    config: unknown,
+    type: ExecutorType | null,
+    subscriptionAllowed: boolean
+) {
+    if (!subscriptionAllowed && forbiddenCredentialIn(env, config) !== null) return CLOUD_CREDENTIAL_MESSAGE;
     const redirect = redirectsPlatformCredential(env, config, type ?? undefined);
     return redirect === null ? null : credentialRedirectMessage(redirect);
 }

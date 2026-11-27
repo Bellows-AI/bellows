@@ -7,6 +7,7 @@ import {
     isModelProvider,
     PLATFORM_PROVIDER,
     PROVIDER_BASE_URL_ENV,
+    subscriptionTokenAllowed,
 } from '@factory-ai/core';
 import type { FastifyError, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
@@ -220,7 +221,7 @@ function refusedSetup(error: unknown): { status: number; error: string; code: st
 async function handlePut(config: AppConfig, orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const ctx = await contextOf(orgs, request, reply);
     if (!ctx) return reply;
-    const parsed = parseSetup(request.body, config);
+    const parsed = parseSetup(request.body, subscriptionTokenAllowed(config, orgOf(request)));
     if ('error' in parsed) return bad(reply, parsed.code, parsed.error);
     // The scope is in the body, so the route class admits any member and the org scope's admin check is here.
     if (parsed.scope === 'org' && !ctx.admin) {

@@ -317,6 +317,21 @@ describe('PUT /api/model-setup', () => {
         expect(b.setup.commands).toEqual([]);
     });
 
+    it('saves a subscription token in cloud for an org the operator lists, and refuses it for another', async () => {
+        const body = withConnection({
+            intent: 'create',
+            provider: 'subscription',
+            key: 'sk-ant-oat-test',
+            name: 'Sub',
+        });
+        const listed = await boot({ deploymentMode: 'cloud', cloudSubscriptionOrgIds: new Set(['test-org']) });
+        const saved = await put(listed, listed.memberCookie, body);
+        expect(saved.statusCode).toBe(HTTP_OK);
+        expect(listed.setup.commands).toHaveLength(1);
+        const other = await boot({ deploymentMode: 'cloud', cloudSubscriptionOrgIds: new Set(['other-org']) });
+        expect((await put(other, other.memberCookie, body)).json().code).toBe('CLOUD_CREDENTIAL_REFUSED');
+    });
+
     it('refuses LiteLLM without a base URL, and passes the base URL on with one', async () => {
         const b = await boot();
         const litellm = { intent: 'create', provider: 'litellm', key: 'sk-litellm', name: 'Proxy' };

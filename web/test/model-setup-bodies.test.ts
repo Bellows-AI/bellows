@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
+    CLOUD,
     type DeploymentMode,
     EXECUTOR_TYPES,
     isModelProvider,
@@ -58,7 +59,7 @@ function connectionAccepted(connection: Record<string, unknown>, agentType: unkn
     }
     if (intent !== 'create' || !known(connection, ['intent', 'provider', 'key', 'baseUrl', 'name'])) return false;
     const { provider, key, name, baseUrl } = connection;
-    if (!isModelProvider(provider) || !providerAvailable(provider, mode)) return false;
+    if (!isModelProvider(provider) || !providerAvailable(provider, mode !== CLOUD)) return false;
     if (!(PROVIDER_AGENTS[provider] as readonly unknown[]).includes(agentType)) return false;
     if (typeof key !== 'string' || !KEY_SHAPE.test(key)) return false;
     if (!text(name)) return false;

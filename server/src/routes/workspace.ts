@@ -4,6 +4,7 @@ import {
     ERROR_CODES,
     executorConnectionFields,
     type ProviderConnectionMeta,
+    subscriptionTokenAllowed,
 } from '@factory-ai/core';
 import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
@@ -48,7 +49,11 @@ const BODY_LIMIT = BODY_LIMIT_KIB * BYTES_PER_KIB;
  * old default flag is refused loudly rather than rewritten (issue 391): scope and ownership are
  * decided by the route, never by the body.
  */
-function parseExecutorEntry(entry: unknown, deploymentMode: DeploymentMode): ExecutorEntry | string {
+function parseExecutorEntry(
+    entry: unknown,
+    deploymentMode: DeploymentMode,
+    subscriptionAllowed: boolean
+): ExecutorEntry | string {
     const item = entry as {
         scope?: unknown;
         userId?: unknown;
@@ -64,7 +69,7 @@ function parseExecutorEntry(entry: unknown, deploymentMode: DeploymentMode): Exe
     if (item?.isDefault !== undefined) {
         return 'isDefault is set through PUT /api/workspace/executors/default, not on the row';
     }
-    const fields = parseExecutorFields(entry, deploymentMode);
+    const fields = parseExecutorFields(entry, deploymentMode, subscriptionAllowed);
     if (typeof fields === 'string') return fields;
     const id = parseExecutorId(entry);
     if (typeof id === 'object') return id.refusal;
@@ -84,7 +89,11 @@ function parseExecutorEntry(entry: unknown, deploymentMode: DeploymentMode): Exe
  * deepening validation belongs to the day an actual consumer exists and can be wrong about the
  * fields. The route guards shape; the check constraints guard the row.
  */
-function parseExecutors(raw: unknown, deploymentMode: DeploymentMode): ExecutorEntry[] | string {
+function parseExecutors(
+    raw: unknown,
+    deploymentMode: DeploymentMode,
+    subscriptionAllowed: boolean
+): ExecutorEntry[] | string {
     const list = jsonBody(raw).executors;
     if (!Array.isArray(list)) return 'executors must be an array of { name, type, config }';
     if (list.length > MAX_EXECUTORS_PER_USER) {
@@ -92,7 +101,7 @@ function parseExecutors(raw: unknown, deploymentMode: DeploymentMode): ExecutorE
     }
     const parsed: ExecutorEntry[] = [];
     for (const entry of list) {
-        const one = parseExecutorEntry(entry, deploymentMode);
+        const one = parseExecutorEntry(entry, deploymentMode, subscriptionAllowed);
         if (typeof one === 'string') return one;
         parsed.push(one);
     }
@@ -152,6 +161,7 @@ interface WorkspaceDeps {
     orgs: OrgRegistry;
     runnerClasses: readonly RunnerClassOption[];
     deploymentMode: DeploymentMode;
+    cloudSubscriptionOrgIds: ReadonlySet<string>;
 }
 
 /** The caller's org's executor store, or the reason a route cannot serve them. */
@@ -176,9 +186,10 @@ async function runtimeOf(
 /** `list`'s per-entry name-shape and duplicate-name checks, in one place. */
 function validateExecutorList(
     raw: unknown,
-    deploymentMode: DeploymentMode
+    deploymentMode: DeploymentMode,
+    subscriptionAllowed: boolean
 ): { ok: true; value: ExecutorEntry[] } | { ok: false; code: string; message: string; status?: number | undefined } {
-    const list = parseExecutors(raw, deploymentMode);
+    const list = parseExecutors(raw, deploymentMode, subscriptionAllowed);
     if (typeof list === 'string') {
         return { ok: false, code: executorFieldRefusal(list), message: list, status: executorFieldStatus(list) };
     }
@@ -313,7 +324,11 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
     if (!ctx) return reply;
     const { userId, executors } = ctx;
 
-    const parsed = validateExecutorList(request.body, deps.deploymentMode);
+    const parsed = validateExecutorList(
+        request.body,
+        deps.deploymentMode,
+        subscriptionTokenAllowed(deps, orgOf(request))
+    );
     if (!parsed.ok) return bad(reply, parsed.code, parsed.message, parsed.status);
     const { value: list } = parsed;
 
@@ -459,14 +474,16 @@ export interface WorkspaceRoutesDeps {
     readonly orgs: OrgRegistry;
     /** `config.deploymentMode`: cloud refuses a Claude subscription OAuth token in a config. */
     readonly deploymentMode: DeploymentMode;
+    /** `config.cloudSubscriptionOrgIds`: the cloud orgs exempt from that refusal (`subscriptionTokenAllowed`). */
+    readonly cloudSubscriptionOrgIds: ReadonlySet<string>;
     /** The board's runner classes (RUNNER_CLASSES), listed for the executor dialog. */
     readonly runnerClasses: readonly RunnerClassOption[];
 }
 
 export const workspaceRoutes =
-    ({ orgs, deploymentMode, runnerClasses }: WorkspaceRoutesDeps): FastifyPluginAsync =>
+    ({ orgs, deploymentMode, cloudSubscriptionOrgIds, runnerClasses }: WorkspaceRoutesDeps): FastifyPluginAsync =>
     async (app) => {
-        const deps: WorkspaceDeps = { orgs, deploymentMode, runnerClasses };
+        const deps: WorkspaceDeps = { orgs, deploymentMode, cloudSubscriptionOrgIds, runnerClasses };
 
         app.get('/api/workspace', (request, reply) => handleGetWorkspace(deps, request, reply));
         app.get('/api/workspace/executors', (request, reply) => handleGetExecutors(deps, request, reply));

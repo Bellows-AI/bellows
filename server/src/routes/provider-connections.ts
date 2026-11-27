@@ -1,13 +1,13 @@
 import {
     ADMIN_ROLE,
     CLOUD_CREDENTIAL_MESSAGE,
-    type DeploymentMode,
     ERROR_CODES,
     isModelProvider,
     type ModelProvider,
     type ProviderConnectionModels,
     type ProviderConnectionScope,
     providerAvailable,
+    subscriptionTokenAllowed,
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
@@ -73,8 +73,8 @@ interface ParsedCreate {
     baseUrl: string | null;
 }
 
-/** The create body, or the refusal: a listed provider this mode offers, a header-safe key, a base URL where one fits. */
-function parseCreate(raw: unknown, deploymentMode: DeploymentMode): ParsedCreate | { error: string; code: string } {
+/** The create body, or the refusal: a listed provider this org may use, a header-safe key, a base URL where one fits. */
+function parseCreate(raw: unknown, subscriptionAllowed: boolean): ParsedCreate | { error: string; code: string } {
     const fields = jsonBody(raw);
     const extra = Object.keys(fields).find((name) => !CREATE_FIELDS.has(name));
     if (extra !== undefined) return refusal(`unknown field ${extra}`);
@@ -84,7 +84,7 @@ function parseCreate(raw: unknown, deploymentMode: DeploymentMode): ParsedCreate
     if (nameReason) return refusal(nameReason, ERROR_CODES.BAD_NAME);
     const connectionName = name as string;
     if (!isModelProvider(provider)) return refusal('provider must be one of the model providers');
-    if (!providerAvailable(provider, deploymentMode)) {
+    if (!providerAvailable(provider, subscriptionAllowed)) {
         return refusal(CLOUD_CREDENTIAL_MESSAGE, ERROR_CODES.CLOUD_CREDENTIAL_REFUSED);
     }
     if (!validKey(key)) return refusal('key must be a provider key: printable characters, no spaces');
@@ -237,7 +237,7 @@ async function handleList(orgs: OrgRegistry, request: FastifyRequest, reply: Fas
 async function handleCreate(deps: ProviderConnectionRoutesDeps, request: FastifyRequest, reply: FastifyReply) {
     const ctx = await contextOf(deps.orgs, request, reply);
     if (!ctx) return reply;
-    const parsed = parseCreate(request.body, deps.deploymentMode);
+    const parsed = parseCreate(request.body, subscriptionTokenAllowed(deps, orgOf(request)));
     if ('error' in parsed) return bad(reply, parsed.code, parsed.error);
     // The scope is in the body, so the route class admits any member and the org scope's admin check is here.
     if (parsed.scope === 'org' && !ctx.admin) {
@@ -388,7 +388,12 @@ async function handleModels(
         if (!reply.raw.writableFinished) abort.abort();
     });
     const checked = await deps.providerKeys!.verify(
-        { provider: connection.provider, key, baseUrl: connection.baseUrl ?? undefined },
+        {
+            provider: connection.provider,
+            key,
+            baseUrl: connection.baseUrl ?? undefined,
+            subscriptionAllowed: subscriptionTokenAllowed(deps, orgOf(request)),
+        },
         abort.signal
     );
     return reply.code(HTTP_OK).send(discoveryOf(checked));
@@ -401,8 +406,9 @@ async function handleModels(
  */
 interface ProviderConnectionRoutesDeps {
     readonly orgs: OrgRegistry;
-    /** Cloud refuses a `subscription` connection at create. */
+    /** Cloud refuses a `subscription` connection at create, unless the org is in `cloudSubscriptionOrgIds`. */
     readonly deploymentMode: AppConfig['deploymentMode'];
+    readonly cloudSubscriptionOrgIds: AppConfig['cloudSubscriptionOrgIds'];
     /** The provider key check behind discovery; absent, the models route does not exist. */
     readonly providerKeys: ProviderKeys | undefined;
     readonly now?: (() => number) | undefined;

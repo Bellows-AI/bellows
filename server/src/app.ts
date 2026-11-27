@@ -351,15 +351,19 @@ async function registerOptionalRoutes(
     { commercePlanWriter: writer, providerKeys, now }: Pick<AppDeps, 'commercePlanWriter' | 'providerKeys' | 'now'>
 ): Promise<void> {
     if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
-    if (providerKeys) await app.register(modelSetupVerifyRoutes({ providerKeys, now }));
-    await app.register(providerConnectionRoutes({ orgs, deploymentMode: config.deploymentMode, providerKeys, now }));
+    const { deploymentMode, cloudSubscriptionOrgIds } = config;
+    if (providerKeys) {
+        await app.register(modelSetupVerifyRoutes({ providerKeys, deploymentMode, cloudSubscriptionOrgIds, now }));
+    }
+    await app.register(providerConnectionRoutes({ orgs, deploymentMode, cloudSubscriptionOrgIds, providerKeys, now }));
     await app.register(modelSetupRoutes({ config, orgs }));
 }
 
-/** What the personal and the organization executor routes share: the deployment mode and the runner classes. */
+/** What the personal and the organization executor routes share: the deployment mode, its exempt orgs and the runner classes. */
 const executorRouteDeps = (config: AppConfig, orgs: OrgRegistry) => ({
     orgs,
     deploymentMode: config.deploymentMode,
+    cloudSubscriptionOrgIds: config.cloudSubscriptionOrgIds,
     runnerClasses: config.runnerClasses,
 });
 

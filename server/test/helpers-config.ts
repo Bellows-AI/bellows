@@ -66,6 +66,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         // The production default: a batch test opts in, so a forgotten opt-in fails loudly.
         batches: { enabled: false },
         deploymentMode: 'self-hosted',
+        cloudSubscriptionOrgIds: new Set(),
         platformModelProvided: false,
         operatorGithubIds: [],
         driverCredentialBootstrap: null,

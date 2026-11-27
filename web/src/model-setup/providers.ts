@@ -85,7 +85,7 @@ export const PROVIDER_META: Readonly<Record<ModelProvider, ProviderMeta>> = {
 
 /** The cards this deployment offers, in core's order: cloud has no subscription card. */
 export const providerChoices = (mode: DeploymentMode): ModelProvider[] =>
-    MODEL_PROVIDERS.filter((provider) => providerAvailable(provider, mode));
+    MODEL_PROVIDERS.filter((provider) => providerAvailable(provider, mode !== CLOUD));
 
 const SUBSCRIPTION_PREFIX = 'sk-ant-oat';
 const OPENAI_PREFIX = /^sk-(proj|svcacct|admin)-/;

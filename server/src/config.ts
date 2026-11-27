@@ -201,9 +201,15 @@ export interface AppConfig {
     /**
      * Where this board runs (DEPLOYMENT_MODE): `self-hosted` (unset) or `cloud`. Server environment
      * only — no request can change it. Cloud refuses a Claude subscription OAuth token in executor
-     * settings, member env and at claim (`forbiddenCredentialIn`).
+     * settings, member env and at claim (`forbiddenCredentialIn`), except for `cloudSubscriptionOrgIds`.
      */
     readonly deploymentMode: DeploymentMode;
+    /**
+     * CLOUD_SUBSCRIPTION_ORG_IDS: the organization ids a cloud board lets configure a Claude subscription token
+     * (`subscriptionTokenAllowed`). Empty is none; a self-hosted board ignores it. Read once at boot, so a change
+     * needs a restart.
+     */
+    readonly cloudSubscriptionOrgIds: ReadonlySet<string>;
     /**
      * PLATFORM_MODEL_PROVIDED: the operator supplies the model credential in the runner env, so a member may run on
      * it without bringing a key (`PUT /api/model-setup` with `provider: 'platform'`). Off by default. It only
@@ -250,6 +256,19 @@ function loadOperatorGithubIds(raw: string | undefined, deploymentMode: Deployme
         );
     }
     return ids.map(Number);
+}
+
+const ORG_ID = /^\S+$/;
+
+/** A malformed list refuses a cloud boot without echoing any id; a self-hosted board ignores the list, so never refuses. */
+function loadCloudSubscriptionOrgIds(raw: string | undefined, deploymentMode: DeploymentMode): ReadonlySet<string> {
+    if (raw === undefined || raw.trim() === '') return new Set();
+    const ids = raw.split(',').map((part) => part.trim());
+    if (ids.every((id) => ORG_ID.test(id))) return new Set(ids);
+    if (deploymentMode !== CLOUD) return new Set();
+    throw new Error(
+        'CLOUD_SUBSCRIPTION_ORG_IDS must be a comma-separated list of organization ids, none empty or holding whitespace'
+    );
 }
 
 function loadDeploymentMode(raw: string | undefined): DeploymentMode {
@@ -734,6 +753,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         batches: { enabled: bool(env.BATCHES_ENABLED, false, 'BATCHES_ENABLED') },
         runnerClasses: loadRunnerClassOptions(env.RUNNER_CLASSES),
         deploymentMode,
+        cloudSubscriptionOrgIds: loadCloudSubscriptionOrgIds(env.CLOUD_SUBSCRIPTION_ORG_IDS, deploymentMode),
         platformModelProvided: bool(env.PLATFORM_MODEL_PROVIDED, false, 'PLATFORM_MODEL_PROVIDED'),
         operatorGithubIds: loadOperatorGithubIds(env.OPERATOR_GITHUB_IDS, deploymentMode),
         driverCredentialBootstrap: loadDriverCredentialBootstrap(env.DRIVER_CREDENTIAL_SHA256),

@@ -220,6 +220,16 @@ describe('POST /api/provider-connections', () => {
         expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(res.json()).toMatchObject({ code: 'CLOUD_CREDENTIAL_REFUSED' });
     });
+
+    it('cloud creates a subscription connection for an org the operator lists, and only for it', async () => {
+        const body = { scope: 'personal', name: 'x', provider: 'subscription', key: 'sk-ant-oat01-a' };
+        const listed = await boot({ deploymentMode: 'cloud', cloudSubscriptionOrgIds: new Set(['test-org']) });
+        expect((await listed.inject(listed.member, 'POST', BASE, body)).statusCode).toBe(HTTP_CREATED);
+        const other = await boot({ deploymentMode: 'cloud', cloudSubscriptionOrgIds: new Set(['other-org']) });
+        expect((await other.inject(other.member, 'POST', BASE, body)).json()).toMatchObject({
+            code: 'CLOUD_CREDENTIAL_REFUSED',
+        });
+    });
 });
 
 describe('PUT and DELETE /api/provider-connections/:id', () => {

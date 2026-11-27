@@ -8,6 +8,7 @@ import {
     type ProviderConnectionMeta,
     USER_SCOPE,
     type ExecutorScope,
+    subscriptionTokenAllowed,
 } from '@factory-ai/core';
 import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
@@ -184,9 +185,14 @@ function selectionMetadata(
 function parseOrgFields(
     request: FastifyRequest,
     reply: FastifyReply,
-    { deploymentMode, runnerClasses }: Pick<OrgExecutorRoutesDeps, 'deploymentMode' | 'runnerClasses'>
+    deps: Pick<OrgExecutorRoutesDeps, 'deploymentMode' | 'cloudSubscriptionOrgIds' | 'runnerClasses'>
 ) {
-    const fields = parseExecutorFields(jsonBody(request.body), deploymentMode);
+    const { deploymentMode, runnerClasses } = deps;
+    const fields = parseExecutorFields(
+        jsonBody(request.body),
+        deploymentMode,
+        subscriptionTokenAllowed(deps, orgOf(request))
+    );
     if (typeof fields === 'string') {
         bad(reply, executorFieldRefusal(fields), fields, executorFieldStatus(fields));
         return null;
@@ -508,6 +514,8 @@ interface OrgExecutorRoutesDeps {
     readonly orgs: OrgRegistry;
     /** `config.deploymentMode`: cloud refuses a Claude subscription OAuth token in a config. */
     readonly deploymentMode: DeploymentMode;
+    /** `config.cloudSubscriptionOrgIds`: the cloud orgs exempt from that refusal (`subscriptionTokenAllowed`). */
+    readonly cloudSubscriptionOrgIds: ReadonlySet<string>;
     /** The classes an org profile may name (RUNNER_CLASSES): any other is a 422 naming `runnerClass`. */
     readonly runnerClasses: readonly RunnerClassOption[];
 }

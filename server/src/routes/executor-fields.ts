@@ -186,11 +186,15 @@ export function personalRunnerClassRefusal(runnerClass: string | null): string |
 
 /**
  * The fields every executor payload entry carries: the name/type/config shape, the known type and
- * the round limit — and, in cloud mode, no Claude subscription OAuth token anywhere in `config` and
- * no redirect of the deployment's model credential without the member's own key beside it.
+ * the round limit — and, in cloud mode, no Claude subscription OAuth token anywhere in `config` unless
+ * the org may hold one (`subscriptionAllowed`), and no redirect of the deployment's model credential without the member's own key beside it.
  * A string return is the refusal message; the caller stops at the first.
  */
-export function parseExecutorFields(entry: unknown, deploymentMode: DeploymentMode): ExecutorFields | string {
+export function parseExecutorFields(
+    entry: unknown,
+    deploymentMode: DeploymentMode,
+    subscriptionAllowed: boolean
+): ExecutorFields | string {
     const item = entry as {
         name?: unknown;
         type?: unknown;
@@ -208,7 +212,7 @@ export function parseExecutorFields(entry: unknown, deploymentMode: DeploymentMo
     if (!(EXECUTOR_TYPES as readonly string[]).includes(item.type)) {
         return `unknown executor type "${item.type}" (known: ${EXECUTOR_TYPES.join(', ')})`;
     }
-    if (deploymentMode === CLOUD && forbiddenCredentialIn(undefined, item.config) !== null) {
+    if (!subscriptionAllowed && forbiddenCredentialIn(undefined, item.config) !== null) {
         return CLOUD_CREDENTIAL_MESSAGE;
     }
     const redirect = deploymentMode === CLOUD ? redirectsPlatformCredential(undefined, item.config, item.type) : null;

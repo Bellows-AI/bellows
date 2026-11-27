@@ -13,6 +13,8 @@ import {
     MAX_ENV_VARS_PER_SCOPE,
     redirectsPlatformCredential,
     STORED_CREDENTIAL_PREFIX,
+    type SubscriptionTokenPolicy,
+    subscriptionTokenAllowed,
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
@@ -106,13 +108,15 @@ const TOO_MANY = `at most ${MAX_ENV_VARS_PER_SCOPE} variables can be configured 
  * refused. The whole-list PUT runs it on its body; a single-name or multi-name write runs it inside the store's
  * transaction on the list the scope would hold, read under the scope lock.
  */
-export function validateScopeList(parsed: readonly EnvVarEntry[], deploymentMode: DeploymentMode): string | null {
+export function validateScopeList(
+    parsed: readonly EnvVarEntry[],
+    deploymentMode: DeploymentMode,
+    subscriptionAllowed: boolean
+): string | null {
     if (parsed.length > MAX_ENV_VARS_PER_SCOPE) return TOO_MANY;
-    // Cloud refuses a Claude subscription OAuth token by NAME; the message never carries a value.
-    if (
-        deploymentMode === CLOUD &&
-        forbiddenCredentialIn(Object.fromEntries(parsed.map((v) => [v.name, '']))) !== null
-    ) {
+    // Cloud refuses a Claude subscription OAuth token by NAME, unless the org is listed; the message never
+    // carries a value.
+    if (!subscriptionAllowed && forbiddenCredentialIn(Object.fromEntries(parsed.map((v) => [v.name, '']))) !== null) {
         return CLOUD_CREDENTIAL_MESSAGE;
     }
     // A redirect of the deployment's model credential needs the member's own key in the same list; a
@@ -133,7 +137,7 @@ export function validateScopeList(parsed: readonly EnvVarEntry[], deploymentMode
  * Structural validation for a vars list; the client's copy is UX only. Returns the list or the
  * reason it was refused — the workspace route's parseExecutors shape.
  */
-function parseVars(raw: unknown, deploymentMode: DeploymentMode): EnvVarEntry[] | string {
+function parseVars(raw: unknown, deploymentMode: DeploymentMode, subscriptionAllowed: boolean): EnvVarEntry[] | string {
     const list = jsonBody(raw).vars;
     if (!Array.isArray(list)) return 'vars must be an array of { name, value, isSecret }';
     if (list.length > MAX_ENV_VARS_PER_SCOPE) return TOO_MANY;
@@ -143,7 +147,7 @@ function parseVars(raw: unknown, deploymentMode: DeploymentMode): EnvVarEntry[] 
         if (typeof one === 'string') return one;
         parsed.push(one);
     }
-    return validateScopeList(parsed, deploymentMode) ?? parsed;
+    return validateScopeList(parsed, deploymentMode, subscriptionAllowed) ?? parsed;
 }
 
 const NAMED_SHAPE = 'each write must be { value: string, secret: boolean } for a name';
@@ -211,7 +215,8 @@ function repoSegmentReason(repo: Repo): string | null {
 async function validatePutRepoRequest(
     request: FastifyRequest,
     repos: OrgRuntime['repos'],
-    deploymentMode: DeploymentMode
+    deploymentMode: DeploymentMode,
+    subscriptionAllowed: boolean
 ): Promise<
     { ok: true; repo: Repo; vars: EnvVarEntry[] } | { ok: false; code: string; message: string; status?: number }
 > {
@@ -219,7 +224,7 @@ async function validatePutRepoRequest(
     if (typeof repo === 'string') return { ok: false, code: ERROR_CODES.BAD_BODY, message: repo };
     const segmentReason = repoSegmentReason(repo);
     if (segmentReason) return { ok: false, code: ERROR_CODES.BAD_REPO_NAME, message: segmentReason };
-    const vars = parseVars(request.body, deploymentMode);
+    const vars = parseVars(request.body, deploymentMode, subscriptionAllowed);
     if (typeof vars === 'string') return { ok: false, code: varsCode(vars), message: vars };
     const visible = await checkReposVisible(repos, [repo], { subject: 'the repository' });
     if (!visible.ok) return visible;
@@ -255,7 +260,7 @@ async function writeNames(
     reply: FastifyReply,
     env: {
         runtimeOf: (request: FastifyRequest) => Promise<{ envVars: EnvVarStore } | null>;
-        deploymentMode: DeploymentMode;
+        config: SubscriptionTokenPolicy;
     },
     op: NamedScope & { write: ScopeWrite | string }
 ) {
@@ -266,7 +271,9 @@ async function writeNames(
     const { write } = op;
     if (typeof write === 'string') return bad(reply, varsCode(write), write);
 
-    const validate = (resulting: readonly EnvVarEntry[]) => validateScopeList(resulting, env.deploymentMode);
+    const subscriptionAllowed = subscriptionTokenAllowed(env.config, orgOf(request));
+    const validate = (resulting: readonly EnvVarEntry[]) =>
+        validateScopeList(resulting, env.config.deploymentMode, subscriptionAllowed);
     const saved = await guard(
         reply,
         (e) => request.log.error({ err: e }),
@@ -317,7 +324,11 @@ export const envRoutes =
             const rt = await runtimeOf(request);
             if (!rt) return noEnvStore(reply);
 
-            const vars = parseVars(request.body, config.deploymentMode);
+            const vars = parseVars(
+                request.body,
+                config.deploymentMode,
+                subscriptionTokenAllowed(config, orgOf(request))
+            );
             if (typeof vars === 'string') {
                 return bad(reply, varsCode(vars), vars);
             }
@@ -375,7 +386,7 @@ export const envRoutes =
 
         // One name, several names or one removal in the org or the caller's workspace scope, the rest kept as
         // stored. The org paths are `admin` rows like the whole-list PUT; the workspace paths any member's.
-        const env = { runtimeOf, deploymentMode: config.deploymentMode };
+        const env = { runtimeOf, config };
         for (const target of NAMED_SCOPES) {
             app.put<{ Params: { name: string } }>(`/api/env/${target.path}/vars/:name`, async (request, reply) => {
                 const entry = parseNamedEntry(request.params.name, request.body);
@@ -401,7 +412,12 @@ export const envRoutes =
             if (!rt) return noEnvStore(reply);
             const store = rt.envVars;
 
-            const parsed = await validatePutRepoRequest(request, rt.repos, config.deploymentMode);
+            const parsed = await validatePutRepoRequest(
+                request,
+                rt.repos,
+                config.deploymentMode,
+                subscriptionTokenAllowed(config, orgOf(request))
+            );
             if (!parsed.ok) return bad(reply, parsed.code, parsed.message, parsed.status);
             const { repo, vars } = parsed;
 
