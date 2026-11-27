@@ -37,6 +37,8 @@ export interface SettingsBoard {
     linearConfigured: boolean;
     /** `/api/auth/me`'s deployment mode. */
     deploymentMode: DeploymentMode;
+    /** `/api/auth/me`'s subscriptionToken: whether the session org may configure a Claude subscription token. */
+    subscriptionToken: boolean;
 }
 
 const AT = '2026-09-01T00:00:00.000Z';
@@ -59,6 +61,7 @@ export function settingsBoard(overrides: Partial<SettingsBoard> = {}): SettingsB
         jiraConfigured: true,
         linearConfigured: true,
         deploymentMode: 'self-hosted',
+        subscriptionToken: true,
         ...overrides,
     };
 }
@@ -153,6 +156,7 @@ function session(board: SettingsBoard): Session {
         mcp: false,
         batches: false,
         deploymentMode: board.deploymentMode,
+        subscriptionToken: board.subscriptionToken,
         platformModel: false,
     };
 }

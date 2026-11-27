@@ -1,14 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import {
-    CLOUD,
-    type DeploymentMode,
-    EXECUTOR_TYPES,
-    isModelProvider,
-    MODEL_PROVIDERS,
-    PROVIDER_AGENTS,
-    providerAvailable,
-} from '@factory-ai/core';
+import { EXECUTOR_TYPES, isModelProvider, MODEL_PROVIDERS, PROVIDER_AGENTS, providerAvailable } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import type { ModelSetupSave, SelectedExecutorView } from '../src/api/useModelSetup.js';
 import { savedModelChoice } from '../src/model-setup/AgentModelFields.js';
@@ -44,7 +36,11 @@ const EXECUTOR_ID = '22222222-2222-4222-8222-222222222222';
 const REVISION = '2026-01-02T03:04:05.678Z';
 
 /** The route's acceptance of a connection intent, mirrored. */
-function connectionAccepted(connection: Record<string, unknown>, agentType: unknown, mode: DeploymentMode): boolean {
+function connectionAccepted(
+    connection: Record<string, unknown>,
+    agentType: unknown,
+    subscriptionAllowed: boolean
+): boolean {
     const { intent } = connection;
     if (intent === 'none') return known(connection, ['intent']);
     if (intent === 'reuse') return known(connection, ['intent', 'id']) && isId(connection.id);
@@ -59,7 +55,7 @@ function connectionAccepted(connection: Record<string, unknown>, agentType: unkn
     }
     if (intent !== 'create' || !known(connection, ['intent', 'provider', 'key', 'baseUrl', 'name'])) return false;
     const { provider, key, name, baseUrl } = connection;
-    if (!isModelProvider(provider) || !providerAvailable(provider, mode !== CLOUD)) return false;
+    if (!isModelProvider(provider) || !providerAvailable(provider, subscriptionAllowed)) return false;
     if (!(PROVIDER_AGENTS[provider] as readonly unknown[]).includes(agentType)) return false;
     if (typeof key !== 'string' || !KEY_SHAPE.test(key)) return false;
     if (!text(name)) return false;
@@ -68,13 +64,14 @@ function connectionAccepted(connection: Record<string, unknown>, agentType: unkn
 }
 
 /** The route's acceptance, mirrored: fields, request id, scope, agent, model, the connection intent and the executor. */
-function routeAccepts(body: ModelSetupSave, mode: DeploymentMode): boolean {
+function routeAccepts(body: ModelSetupSave, subscriptionAllowed: boolean): boolean {
     const sent: Record<string, unknown> = { ...body, requestId: 'a-request-id' };
     if (!known(sent, FIELDS)) return false;
     if (sent.scope !== 'org' && sent.scope !== 'personal') return false;
     if (!(EXECUTOR_TYPES as readonly unknown[]).includes(sent.agentType)) return false;
     if (typeof sent.model !== 'string' || !sent.model.trim()) return false;
-    if (!connectionAccepted(body.connection as unknown as Record<string, unknown>, sent.agentType, mode)) return false;
+    if (!connectionAccepted(body.connection as unknown as Record<string, unknown>, sent.agentType, subscriptionAllowed))
+        return false;
     const { executor } = body;
     if (!known(executor, ['id', 'name', 'expectedUpdatedAt'])) return false;
     return executor.id !== undefined ? isId(executor.id) : text(executor.name);
@@ -116,7 +113,7 @@ describe('the bodies the model setup sends', () => {
                         agentType,
                         model: 'm',
                     });
-                    expect(routeAccepts(body, 'self-hosted'), JSON.stringify(body)).toBe(true);
+                    expect(routeAccepts(body, true), JSON.stringify(body)).toBe(true);
                     expect(body.connection).toMatchObject({ intent: 'create', key: 'sk-x', name: 'Mine' });
                     expect(body.executor).toEqual({ name: 'Mine' });
                 }
@@ -143,7 +140,7 @@ describe('the bodies the model setup sends', () => {
             for (const agentType of agents) {
                 for (const scope of ['org', 'personal'] as const) {
                     const body = adoptBody({ scope, name: 'Adopted', source, agentType, model: 'some-model' });
-                    expect(routeAccepts(body, 'self-hosted'), JSON.stringify(body)).toBe(true);
+                    expect(routeAccepts(body, true), JSON.stringify(body)).toBe(true);
                     expect(body.connection).toEqual({ intent: 'none' });
                 }
             }
@@ -152,12 +149,12 @@ describe('the bodies the model setup sends', () => {
 
     it('an edit names the executor by id and its connection by id, and carries no key', () => {
         const body = editBody({ selected: selected(), agentType: 'opencode', model: 'm' });
-        expect(routeAccepts(body, 'self-hosted')).toBe(true);
+        expect(routeAccepts(body, true)).toBe(true);
         expect(body.connection).toEqual({ intent: 'reuse', id: CONNECTION_ID });
         expect(body.executor).toEqual({ id: EXECUTOR_ID, expectedUpdatedAt: REVISION });
         expect(JSON.stringify(body)).not.toContain('key');
         const none = editBody({ selected: selected({ connection: null }), agentType: 'claude-code', model: 'm' });
-        expect(routeAccepts(none, 'self-hosted')).toBe(true);
+        expect(routeAccepts(none, true)).toBe(true);
         expect(none.connection).toEqual({ intent: 'none' });
     });
 
@@ -169,7 +166,7 @@ describe('the bodies the model setup sends', () => {
             agentType: 'claude-code',
             model: 'claude-sonnet-5-5',
         });
-        expect(routeAccepts(body, 'self-hosted')).toBe(true);
+        expect(routeAccepts(body, true)).toBe(true);
         expect(body.connection).toEqual({ intent: 'rotate', id: CONNECTION_ID, key: 'sk-new' });
         expect(body.executor).toEqual({ id: EXECUTOR_ID, expectedUpdatedAt: REVISION });
     });

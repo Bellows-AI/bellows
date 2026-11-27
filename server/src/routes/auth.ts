@@ -1,4 +1,4 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { ERROR_CODES, subscriptionTokenAllowed } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { createUserResolver, resolveBearer } from '../auth/plugin.js';
 import { apiResourceOf } from '../auth/route-class.js';
@@ -421,6 +421,9 @@ export const authRoutes =
                 batches: config.batches.enabled,
                 // Where this board runs: cloud settings explain why an OAuth token is refused.
                 deploymentMode: config.deploymentMode,
+                // Whether this org may configure a Claude subscription token: a boolean for the session's
+                // org only, never the operator's allowlist itself.
+                subscriptionToken: subscriptionTokenAllowed(config, caller.org.id),
                 // Whether the operator supplies the model: onboarding offers running on it without a key.
                 platformModel: config.platformModelProvided,
             });

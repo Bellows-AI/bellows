@@ -17,32 +17,36 @@ import {
 
 describe('provider detection from the key prefix', () => {
     it('reads a subscription token, an Anthropic, an OpenRouter and an OpenAI key', () => {
-        expect(detectProvider('sk-ant-oat01-abc', 'anthropic', 'self-hosted')).toBe('subscription');
-        expect(detectProvider('sk-ant-api03-abc', 'openrouter', 'self-hosted')).toBe('anthropic');
-        expect(detectProvider('sk-or-v1-abc', 'anthropic', 'self-hosted')).toBe('openrouter');
+        expect(detectProvider('sk-ant-oat01-abc', 'anthropic', true)).toBe('subscription');
+        expect(detectProvider('sk-ant-api03-abc', 'openrouter', true)).toBe('anthropic');
+        expect(detectProvider('sk-or-v1-abc', 'anthropic', true)).toBe('openrouter');
         for (const key of ['sk-proj-abc', 'sk-svcacct-abc', 'sk-admin-abc']) {
-            expect(detectProvider(key, 'anthropic', 'self-hosted')).toBe('openai');
+            expect(detectProvider(key, 'anthropic', true)).toBe('openai');
         }
     });
 
     it('keeps LiteLLM for an OpenAI-shaped virtual key, and the choice for a key with no known prefix', () => {
-        expect(detectProvider('sk-proj-abc', 'litellm', 'self-hosted')).toBe('litellm');
-        expect(detectProvider('sk-plain', 'openrouter', 'self-hosted')).toBe('openrouter');
+        expect(detectProvider('sk-proj-abc', 'litellm', true)).toBe('litellm');
+        expect(detectProvider('sk-plain', 'openrouter', true)).toBe('openrouter');
     });
 
-    it('never switches to a subscription in cloud: the token is refused with the sentence instead', () => {
-        expect(detectProvider('sk-ant-oat01-abc', 'anthropic', 'cloud')).toBe('anthropic');
-        expect(keyRefusal('sk-ant-oat01-abc', 'cloud')).toContain(
+    it('never switches to a subscription where it is refused: the token is refused with the sentence instead', () => {
+        expect(detectProvider('sk-ant-oat01-abc', 'anthropic', false)).toBe('anthropic');
+        expect(keyRefusal('sk-ant-oat01-abc', false)).toContain(
             'This is a Claude subscription token. This deployment accepts API keys only'
         );
-        expect(keyRefusal('sk-ant-oat01-abc', 'self-hosted')).toBeNull();
-        expect(keyRefusal('sk-ant-api03-abc', 'cloud')).toBeNull();
+        expect(keyRefusal('sk-ant-api03-abc', false)).toBeNull();
     });
 
-    it('offers the subscription card only self-hosted', () => {
-        expect(providerChoices('self-hosted')).toContain('subscription');
-        expect(providerChoices('cloud')).not.toContain('subscription');
-        expect(providerChoices('cloud')).toEqual(['anthropic', 'openrouter', 'openai', 'litellm']);
+    it('switches to a subscription and refuses nothing where the org may use one', () => {
+        expect(detectProvider('sk-ant-oat01-abc', 'anthropic', true)).toBe('subscription');
+        expect(keyRefusal('sk-ant-oat01-abc', true)).toBeNull();
+    });
+
+    it('offers the subscription card only where the org may use one', () => {
+        expect(providerChoices(true)).toContain('subscription');
+        expect(providerChoices(false)).not.toContain('subscription');
+        expect(providerChoices(false)).toEqual(['anthropic', 'openrouter', 'openai', 'litellm']);
     });
 });
 

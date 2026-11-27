@@ -1,4 +1,4 @@
-import type { DeploymentMode, ModelProvider } from '@factory-ai/core';
+import type { ModelProvider } from '@factory-ai/core';
 import { useEffect, useState } from 'react';
 import { verifyKey } from '../api/useModelSetup.js';
 import { type CheckKind, checkLine, keyRefusal, PROVIDER_META } from './providers.js';
@@ -27,18 +27,19 @@ export function useKeyCheck(input: {
     provider: ModelProvider;
     key: string;
     baseUrl: string;
-    mode: DeploymentMode;
+    /** Whether the org may configure a Claude subscription token: when not, a pasted one is refused unchecked. */
+    subscriptionAllowed: boolean;
 }): KeyCheck & { retry: () => void } {
-    const { provider, mode } = input;
+    const { provider, subscriptionAllowed } = input;
     const key = input.key.trim();
     const baseUrl = provider === 'subscription' ? '' : input.baseUrl.trim();
     const [attempt, setAttempt] = useState(0);
-    const tag = JSON.stringify([provider, key, baseUrl, mode, attempt]);
+    const tag = JSON.stringify([provider, key, baseUrl, subscriptionAllowed, attempt]);
     const [state, setState] = useState<Tagged>({ tag: '', kind: 'idle', text: '' });
 
     useEffect(() => {
-        const own = JSON.stringify([provider, key, baseUrl, mode, attempt]);
-        const refusal = keyRefusal(key, mode);
+        const own = JSON.stringify([provider, key, baseUrl, subscriptionAllowed, attempt]);
+        const refusal = keyRefusal(key, subscriptionAllowed);
         if (!key || (provider === 'litellm' && !baseUrl)) {
             setState({ tag: own, kind: 'idle', text: '' });
             return;
@@ -63,7 +64,7 @@ export function useKeyCheck(input: {
             clearTimeout(timer);
             abort.abort();
         };
-    }, [provider, key, baseUrl, mode, attempt]);
+    }, [provider, key, baseUrl, subscriptionAllowed, attempt]);
 
     const retry = () => setAttempt((n) => n + 1);
     // Between an input change and its effect, the state still answers the previous input: show it as pending.

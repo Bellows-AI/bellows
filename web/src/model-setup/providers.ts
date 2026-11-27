@@ -1,7 +1,5 @@
 import {
     CLAUDE_CODE,
-    CLOUD,
-    type DeploymentMode,
     ERROR_CODES,
     type ExecutorType,
     MODEL_PROVIDERS,
@@ -83,28 +81,28 @@ export const PROVIDER_META: Readonly<Record<ModelProvider, ProviderMeta>> = {
     },
 };
 
-/** The cards this deployment offers, in core's order: cloud has no subscription card. */
-export const providerChoices = (mode: DeploymentMode): ModelProvider[] =>
-    MODEL_PROVIDERS.filter((provider) => providerAvailable(provider, mode !== CLOUD));
+/** The cards this org is offered, in core's order: no subscription card unless the org may use one. */
+export const providerChoices = (subscriptionAllowed: boolean): ModelProvider[] =>
+    MODEL_PROVIDERS.filter((provider) => providerAvailable(provider, subscriptionAllowed));
 
 const SUBSCRIPTION_PREFIX = 'sk-ant-oat';
 const OPENAI_PREFIX = /^sk-(proj|svcacct|admin)-/;
 
 /**
  * The provider a pasted key names by its prefix, else the current choice. A LiteLLM virtual key may look like an
- * OpenAI key, so that prefix moves nothing while LiteLLM is chosen; cloud never switches to a subscription.
+ * OpenAI key, so that prefix moves nothing while LiteLLM is chosen; an org refused subscriptions never switches to one.
  */
-export function detectProvider(key: string, current: ModelProvider, mode: DeploymentMode): ModelProvider {
-    if (key.startsWith(SUBSCRIPTION_PREFIX)) return mode === CLOUD ? current : 'subscription';
+export function detectProvider(key: string, current: ModelProvider, subscriptionAllowed: boolean): ModelProvider {
+    if (key.startsWith(SUBSCRIPTION_PREFIX)) return subscriptionAllowed ? 'subscription' : current;
     if (key.startsWith('sk-ant-')) return 'anthropic';
     if (key.startsWith('sk-or-')) return 'openrouter';
     if (OPENAI_PREFIX.test(key) && current !== 'litellm') return 'openai';
     return current;
 }
 
-/** A key this deployment refuses before any check: a subscription token in cloud. */
-export const keyRefusal = (key: string, mode: DeploymentMode): string | null =>
-    mode === CLOUD && key.startsWith(SUBSCRIPTION_PREFIX)
+/** A key this org is refused before any check: a subscription token where subscriptions are not allowed. */
+export const keyRefusal = (key: string, subscriptionAllowed: boolean): string | null =>
+    !subscriptionAllowed && key.startsWith(SUBSCRIPTION_PREFIX)
         ? 'This is a Claude subscription token. This deployment accepts API keys only — create one at console.anthropic.com.'
         : null;
 

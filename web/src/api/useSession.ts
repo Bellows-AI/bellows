@@ -30,6 +30,11 @@ export interface Session {
     batches: boolean;
     /** Where this board runs (`DEPLOYMENT_MODE`); cloud refuses a Claude subscription OAuth token in settings. */
     deploymentMode: DeploymentMode;
+    /**
+     * Whether this org may configure a Claude subscription token: always on self-hosted, and in cloud only for an org
+     * the operator listed (`CLOUD_SUBSCRIPTION_ORG_IDS`). Read as `=== true`: an absent flag never allows one.
+     */
+    subscriptionToken: boolean;
     /** Whether the operator supplies the model (`PLATFORM_MODEL_PROVIDED`): a member may run on it without a key. */
     platformModel: boolean;
 }

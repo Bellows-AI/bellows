@@ -1,4 +1,3 @@
-import { SELF_HOSTED } from '@factory-ai/core';
 import { useState } from 'react';
 import type { SelectedExecutorView, UseModelSetup } from '../api/useModelSetup.js';
 import type { Session } from '../api/useSession.js';
@@ -25,7 +24,7 @@ export function useRotate(
         provider: connection?.provider ?? 'anthropic',
         key,
         baseUrl: connection?.baseUrl ?? '',
-        mode: session?.deploymentMode ?? SELF_HOSTED,
+        subscriptionAllowed: session?.subscriptionToken === true,
     });
     const save = useSaveRun(setup, async () => {
         setKey('');

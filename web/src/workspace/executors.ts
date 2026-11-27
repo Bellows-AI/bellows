@@ -630,7 +630,7 @@ export const INHERITED_NOTE =
 export const CREDENTIALS_NOTE =
     'A key here is stored in the secret store; the configuration keeps only a reference. Environment variables work too — set them in';
 
-/** Shown in Bellows Cloud only: the board refuses a Claude subscription OAuth token everywhere. */
+/** Shown in Bellows Cloud only, to an org the operator has not allowed one: the board refuses its subscription OAuth token. */
 export const CLOUD_OAUTH_NOTE =
     'Bellows Cloud does not accept a Claude subscription OAuth token (CLAUDE_CODE_OAUTH_TOKEN). Use your own Anthropic API key (ANTHROPIC_API_KEY) instead.';
 

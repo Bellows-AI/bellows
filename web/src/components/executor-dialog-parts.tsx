@@ -314,17 +314,17 @@ export function modelBlockedNote(parsedOk: boolean, unsupported: boolean): strin
 }
 
 /**
- * Where credentials go instead of the configuration, with the composer's return forwarded; in
- * Bellows Cloud, also that an OAuth token is refused and an API key is the way.
+ * Where credentials go instead of the configuration, with the composer's return forwarded; for a
+ * Bellows Cloud org not allowed one, also that an OAuth token is refused and an API key is the way.
  */
 export function CredentialsNote({
     href,
     onFollow,
-    cloud = false,
+    subscriptionRefused = false,
 }: {
     href: string;
     onFollow: (event: MouseEvent<HTMLAnchorElement>) => void;
-    cloud?: boolean;
+    subscriptionRefused?: boolean;
 }) {
     return (
         <>
@@ -335,7 +335,7 @@ export function CredentialsNote({
                 </Link>
                 .
             </p>
-            {cloud && <p className="picker-help">{CLOUD_OAUTH_NOTE}</p>}
+            {subscriptionRefused && <p className="picker-help">{CLOUD_OAUTH_NOTE}</p>}
         </>
     );
 }

@@ -92,8 +92,8 @@ export interface ExecutorDialogProps {
      * nothing to offer — no declared class, and none on the row — renders none either.
      */
     runnerClasses?: readonly RunnerClassOption[];
-    /** Bellows Cloud: the credentials note adds that an OAuth token is refused. */
-    cloud?: boolean;
+    /** A cloud org not allowed a subscription token: the credentials note adds that an OAuth token is refused. */
+    subscriptionRefused?: boolean;
     /**
      * Whose profile this is: an organization profile may select an organization connection only, a personal one its
      * own or the organization's. Defaults to personal.
@@ -113,7 +113,7 @@ export function ExecutorDialog({
     onSaved,
     saving,
     runnerClasses,
-    cloud = false,
+    subscriptionRefused: noSub = false,
     executorScope = USER_SCOPE,
 }: ExecutorDialogProps) {
     const [baseline, setBaseline] = useState<ExecutorDraft>(() => initialExecutorDraft(undefined));
@@ -147,7 +147,7 @@ export function ExecutorDialog({
     const { type } = draft;
     const step = useConnectionStep({ open, draft, setDraft, scope: executorScope });
     const view = executorEditorView({ draft, baseline, existing, editing, nameTouched, connections: step.choices });
-    const { guided, check, suggestions, setGuided, pickProvider, removeGuided } = useGuidedStep(draft, setDraft, cloud);
+    const { guided, check, suggestions, setGuided, pickProvider, removeGuided } = useGuidedStep(draft, setDraft, noSub);
 
     const setConfig = (text: string, customModel: boolean) =>
         setDraft((current) => ({
@@ -229,7 +229,7 @@ export function ExecutorDialog({
                         isEdit={isEdit}
                         runnerClasses={runnerClasses}
                         envHref={envHref}
-                        cloud={cloud}
+                        subscriptionRefused={noSub}
                         failure={failure}
                         saving={saving}
                         onName={(name) => setDraft({ ...draft, name })}
@@ -280,7 +280,7 @@ function DialogFields(props: {
     isEdit: boolean;
     runnerClasses?: readonly RunnerClassOption[] | undefined;
     envHref: string;
-    cloud: boolean;
+    subscriptionRefused: boolean;
     failure: string | null;
     saving: boolean;
     onName: (name: string) => void;
@@ -386,7 +386,11 @@ function DialogFields(props: {
                 declared={props.runnerClasses}
                 onChange={props.onRunnerClass}
             />
-            <CredentialsNote href={props.envHref} onFollow={props.onFollowEnvLink} cloud={props.cloud} />
+            <CredentialsNote
+                href={props.envHref}
+                onFollow={props.onFollowEnvLink}
+                subscriptionRefused={props.subscriptionRefused}
+            />
 
             <AdvancedConfiguration
                 ids={ids}
