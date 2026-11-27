@@ -389,11 +389,8 @@ describe('GitLabClient reads the board does not make yet', () => {
         const { api, seen } = scripted(() => json(200, []));
         const c = clientOn(api);
         const calls: Array<() => Promise<unknown>> = [
-            () => c.readChangeRequest(1),
             () => c.mergeChangeRequest(1, { sha: 'a', method: 'merge' }),
             () => c.listBranches({}),
-            () => c.readBranchHead('main'),
-            () => c.readBranchState('main', []),
             () => c.readFile('main', 'a'),
             () => c.listSkills('main', []),
             () => c.listRepositories(),

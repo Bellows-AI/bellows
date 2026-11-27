@@ -726,7 +726,9 @@ describe('fake GitLab: what the batch reads ask', () => {
         expect((await jobsOf(token, created.id, '?per_page=2&page=2')).body).toHaveLength(1);
         const lint = (await jobsOf(token, created.id)).body.find((job: { name: string }) => job.name === 'lint');
         expect(lint).toMatchObject({ allow_failure: true, failure_reason: 'script_failure' });
-        const updated = await gl.control(`gitlab/pipelines/${created.id}`, { jobs: [{ name: 'test', status: 'failed' }] });
+        const updated = await gl.control(`gitlab/pipelines/${created.id}`, {
+            jobs: [{ name: 'test', status: 'failed' }],
+        });
         expect(updated.body.status).toBe('failed');
         expect((await gl.send('GET', api('/pipelines/424242/jobs'), { token })).status).toBe(404);
     });
@@ -773,9 +775,13 @@ describe('fake GitLab: what the batch reads ask', () => {
             token,
         });
         expect(base.body).toEqual({ id: main });
-        const unknown = await gl.send('GET', `${api('/repository/merge_base')}?refs[]=${main}&refs[]=${'0'.repeat(40)}`, {
-            token,
-        });
+        const unknown = await gl.send(
+            'GET',
+            `${api('/repository/merge_base')}?refs[]=${main}&refs[]=${'0'.repeat(40)}`,
+            {
+                token,
+            }
+        );
         expect(unknown.status).toBe(400);
     });
 
