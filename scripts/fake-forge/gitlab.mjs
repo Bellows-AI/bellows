@@ -878,7 +878,9 @@ export const registerGitlab = (forge) => {
         finished_at: null,
         allow_failure: false,
         coverage: null,
-        author: userJson(entry.author),
+        pipeline_id: entry.pipelineId ?? null,
+        stage: entry.stage ?? null,
+        author: entry.author ? userJson(entry.author) : null,
     });
 
     const pipelinesPath = '/projects/:id/pipelines';
@@ -970,6 +972,8 @@ export const registerGitlab = (forge) => {
         if (!base) return badRequest(ctx.response, '400 Bad request - Invalid refs');
         forge.json(ctx.response, 200, { id: base });
     });
+    const externalOf = (project, sha) =>
+        pipelines.find((pipeline) => pipeline.projectId === project.id && pipeline.sha === sha && pipeline.source === 'external');
     route('GET', '/projects/:id/repository/commits/:sha/statuses', async (ctx) => {
         const project = guard(ctx, GUEST);
         if (!project) return;
@@ -980,7 +984,26 @@ export const registerGitlab = (forge) => {
             ctx,
             project.statuses
                 .filter((entry) => entry.sha === sha && (!ref || entry.ref === ref) && (!name || entry.name === name))
-                .map(statusJson)
+                .map((entry) => statusJson({ ...entry, pipelineId: externalOf(project, sha)?.id, stage: 'external' }))
+                // As real GitLab: the CI jobs of every pipeline on the sha are commit statuses too.
+                .concat(
+                    pipelines
+                        .filter((pipeline) => pipeline.projectId === project.id && pipeline.sha === sha)
+                        .flatMap((pipeline) => (pipeline.jobs ?? []).map((job) => ({ pipeline, job })))
+                        .filter(({ job }) => !name || job.name === name)
+                        .map(({ pipeline, job }) =>
+                            statusJson({
+                                id: job.id,
+                                sha,
+                                ref: pipeline.ref,
+                                status: job.status,
+                                name: job.name,
+                                pipelineId: pipeline.id,
+                                stage: job.stage,
+                                createdAt: pipeline.createdAt,
+                            })
+                        )
+                )
         );
     });
 

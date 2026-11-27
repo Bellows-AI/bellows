@@ -482,3 +482,76 @@ describe('GitLabClient.readBranchState', () => {
         expect(await kindOf(clientWith(state(5).api).readBranchState('main', []))).toBe('transport');
     });
 });
+
+describe('a member who lost access to the project', () => {
+    // GitLab answers a project the member can no longer see with `404 Project Not Found`, not 403: no verdict.
+    const LOST = 'lost/access';
+    const lostRef = parseRepoRef(`gitlab:board.gitlab.test/${LOST}`) as RepoRef;
+    let lostClient: ForgeClient;
+    let iid: number;
+    beforeAll(async () => {
+        await gl.control('gitlab/projects', { path: LOST, files: { 'README.md': 'x\n' } });
+        await gl.control('gitlab/commit', { project: LOST, branch: 'topic', files: { 'a.txt': 'x' }, message: 'w' });
+        const made = await gl.send('POST', `/api/v4/projects/${encodeURIComponent(LOST)}/merge_requests`, {
+            token,
+            body: { source_branch: 'topic', target_branch: 'main', title: 'T' },
+        });
+        iid = (made.body as { iid: number }).iid;
+        await gl.control('gitlab/members', { project: LOST, login: 'dev' });
+        const api = createGitlabApi({ baseUrl: () => gl.base, probeTimeoutMs: 10_000 });
+        lostClient = createGitLabForgeClient({ api, caBundle: undefined }, lostRef, { kind: 'token', token });
+    });
+
+    it('reads an MR as transport, never not_found', async () => {
+        expect(await kindOf(lostClient.readChangeRequest(iid))).toBe('transport');
+    });
+    it('throws on a branch head, never null', async () => {
+        expect(await kindOf(lostClient.readBranchHead('main'))).toBe('transport');
+    });
+    it('reads a branch state as transport, never not_found', async () => {
+        expect(await kindOf(lostClient.readBranchState('main', []))).toBe('transport');
+    });
+    it('still reads a missing branch of a readable project as absent', async () => {
+        expect(await onFake().readBranchHead('no-such-branch')).toBeNull();
+    });
+});
+
+describe('statuses of a pipeline that is not the head', () => {
+    it('leave the MR ready when a push pipeline beside the MR pipeline fails', async () => {
+        const mr = await openMr();
+        await pipeline(mr.branch, { headOf: mr.iid, jobs: [{ name: 'test', status: 'success' }] });
+        await pipeline(mr.branch, {
+            jobs: [
+                { name: 'push-build', status: 'failed' },
+                { name: 'push-deploy', status: 'manual' },
+            ],
+        });
+        await gl.send('POST', `/api/v4/projects/${ENCODED}/statuses/${mr.sha}`, {
+            token,
+            body: { name: 'ci/ext', state: 'success' },
+        });
+        const facts = await onFake().readChangeRequest(mr.iid);
+        expect(facts.checks.map((check) => check.name).sort()).toEqual(['ci/ext', 'pipeline', 'test']);
+        expect(assessPullRequest(facts).outcome).toBe('ready');
+    });
+
+    it('still counts a failing external status', async () => {
+        const mr = await openMr();
+        await pipeline(mr.branch, { headOf: mr.iid, jobs: [{ name: 'test', status: 'success' }] });
+        await gl.send('POST', `/api/v4/projects/${ENCODED}/statuses/${mr.sha}`, {
+            token,
+            body: { name: 'ci/ext', state: 'failed' },
+        });
+        expect(assessPullRequest(await onFake().readChangeRequest(mr.iid)).outcome).toBe('checks_failing');
+    });
+
+    it('applies the same rule to a branch state: only the newest pipeline’s jobs count', async () => {
+        const tip = await mainTip();
+        await pipeline('main', { jobs: [{ name: 'test', status: 'success' }] });
+        await pipeline('main', { jobs: [{ name: 'other-run', status: 'failed' }] });
+        const answer = await onFake().readBranchState('main', []);
+        expect(answer.headSha).toBe(tip);
+        expect(answer.checks.some((check) => check.name === 'other-run' && check.state === 'failing')).toBe(true);
+        expect(answer.checks.some((check) => check.name === 'test')).toBe(false);
+    });
+});

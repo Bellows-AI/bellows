@@ -64,12 +64,17 @@ interface Ctx {
 const branchPath = (ctx: Ctx, branch: string) => `${ctx.project}/repository/branches/${encodeURIComponent(branch)}`;
 const failed = (path: string, status: number) => fail(`GET ${path.split('?')[0]} failed with ${status}`);
 
+const PROJECT_NOT_FOUND = /project/i;
+const namesProject = (json: unknown): boolean =>
+    isObject(json) && typeof json.message === 'string' && PROJECT_NOT_FOUND.test(json.message);
+
 async function send(ctx: Ctx, path: string, signal: AbortSignal): Promise<Sent> {
     const answer = await ctx.call('GET', path, signal);
     if (!answer.ok) throw fail(`GET ${path.split('?')[0]}: no answer (${answer.reason})`);
     const { status, json } = answer;
     if (isSuccess(status)) return { kind: 'ok', json };
-    if (status === HTTP_NOT_FOUND) return { kind: 'absent' };
+    // A project the member can no longer see answers 404 too: only a 404 that does not name the project is the object's.
+    if (status === HTTP_NOT_FOUND) return namesProject(json) ? { kind: 'refused', status } : { kind: 'absent' };
     if (status === HTTP_FORBIDDEN) return { kind: 'denied' };
     if (status === HTTP_TOO_MANY_REQUESTS)
         throw fail(`GET ${path.split('?')[0]} failed with ${status}`, READ_RATE_LIMITED);
@@ -116,12 +121,16 @@ async function listed<T>(
 interface Entry {
     id: number;
     item: CheckItem;
+    /** The pipeline a commit status belongs to, and its stage; both absent on a status that has none. */
+    pipelineId: number | null;
+    stage: string | null;
 }
 
 const entryOf = (entry: unknown, own: (entry: Json) => Omit<GitlabCheck, 'name' | 'status'>): Entry | null => {
     if (!isObject(entry) || !Number.isInteger(entry.id) || !text(entry.name) || !text(entry.status)) return null;
     const check = { name: entry.name, status: entry.status, ...own(entry) };
-    return { id: entry.id as number, item: gitlabCheckItem(check) };
+    const pipelineId = Number.isInteger(entry.pipeline_id) ? (entry.pipeline_id as number) : null;
+    return { id: entry.id as number, item: gitlabCheckItem(check), pipelineId, stage: textOrNull(entry.stage) };
 };
 const jobOf = (entry: unknown) =>
     entryOf(entry, (job) => ({
@@ -151,7 +160,21 @@ async function pipelineChecks(
     ];
 }
 
-/** The commit's external statuses: of one name the newest, and a job's name is the job's. */
+const EXTERNAL = 'external';
+
+/** The ids of the pipelines on `sha` that external statuses made. */
+async function externalPipelines(ctx: Ctx, sha: string, signal: AbortSignal): Promise<Set<number>> {
+    const query = new URLSearchParams({ sha });
+    const listing = await listed(ctx, `${ctx.project}/pipelines?${query}`, pipelineEntryOf, signal);
+    return new Set(listing.filter((entry) => entry.source === EXTERNAL).map((entry) => entry.id as number));
+}
+
+/**
+ * The commit's external statuses: GitLab lists every CI job of every pipeline on the sha as a status too, and those
+ * belong to their own pipelines (a push pipeline beside the MR's, an earlier run), never to this MR. A status counts
+ * when it has no pipeline, is in the `external` stage, or belongs to a pipeline of source `external`. Of one name the
+ * newest, and a job's name is the job's.
+ */
 async function statusChecks(
     ctx: Ctx,
     sha: string,
@@ -159,8 +182,12 @@ async function statusChecks(
     signal: AbortSignal
 ): Promise<CheckItem[]> {
     const statuses = await listed(ctx, `${ctx.project}/repository/commits/${sha}/statuses`, statusOf, signal);
+    const needLookup = statuses.some((entry) => entry.pipelineId !== null && entry.stage !== EXTERNAL);
+    const external = needLookup ? await externalPipelines(ctx, sha, signal) : new Set<number>();
     const newest = new Map<string, Entry>();
     for (const entry of statuses) {
+        const mine = entry.pipelineId === null || entry.stage === EXTERNAL || external.has(entry.pipelineId);
+        if (!mine) continue;
         const seen = newest.get(entry.item.name);
         if (!seen || entry.id > seen.id) newest.set(entry.item.name, entry);
     }
