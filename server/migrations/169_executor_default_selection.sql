@@ -1,4 +1,4 @@
--- An explicitly configured default executor, scoped and stable (BEL-608 608a). `owner_id` NULL is the
+-- An explicitly configured default executor, scoped and stable. `owner_id` NULL is the
 -- organization's default; a member's id is their own. At most one selection per scope, by the same
 -- coalesce index shape 047 and 167 use for sibling scopes.
 --
