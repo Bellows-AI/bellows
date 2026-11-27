@@ -472,6 +472,40 @@ describe('a default executor', () => {
         expect(await screen.findByRole('button', { name: 'Replace the key' })).toBeTruthy();
     });
 
+    it('"Connect another provider" starts a member in personal scope even when the organization default is inherited', async () => {
+        const calls = board(
+            view({
+                scope: 'org',
+                connection: { id: 'c', name: 'Team', provider: 'anthropic', scope: 'org', baseUrl: null },
+            }),
+            () => ({ ok: true, models: ['claude-sonnet-5-5'] })
+        );
+        const { onSaved } = mount();
+        fireEvent.click(await screen.findByRole('button', { name: 'Connect another provider' }));
+        fireEvent.change(await keyInput(), { target: { value: 'sk-ant-api03-mine' } });
+        await waitFor(() => expect(saveButton().getAttribute('aria-disabled')).toBeNull());
+        fireEvent.click(saveButton());
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(puts(calls)[0]?.body).toMatchObject({ scope: 'personal', connection: { intent: 'create' } });
+    });
+
+    it('"Connect another provider" lets an admin inherit the organization scope', async () => {
+        const calls = board(
+            view({
+                scope: 'org',
+                connection: { id: 'c', name: 'Team', provider: 'anthropic', scope: 'org', baseUrl: null },
+            }),
+            () => ({ ok: true, models: ['claude-sonnet-5-5'] })
+        );
+        const { onSaved } = mount({ role: 'admin' });
+        fireEvent.click(await screen.findByRole('button', { name: 'Connect another provider' }));
+        fireEvent.change(await keyInput(), { target: { value: 'sk-ant-api03-team' } });
+        await waitFor(() => expect(saveButton().getAttribute('aria-disabled')).toBeNull());
+        fireEvent.click(saveButton());
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(puts(calls)[0]?.body).toMatchObject({ scope: 'org' });
+    });
+
     it('"Connect another provider" opens the key form for a second connection and executor', async () => {
         const calls = board(view(), () => ({ ok: true, models: ['claude-sonnet-5-5'] }));
         const { onSaved } = mount();

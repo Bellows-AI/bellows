@@ -76,11 +76,13 @@ export function ModelSetup({
     } else if (banner) {
         const { reason, save, press } = configured;
         primary = { label: labels.banner, reason, busy: save.busy, press };
+        const admin = session.role === ADMIN_ROLE;
         const openForm = () => {
-            form.setScope(view.selected?.scope ?? 'personal');
+            // Only an admin inherits the organization's scope: a member's save there is refused.
+            form.setScope(admin ? (view.selected?.scope ?? 'personal') : 'personal');
             setMode('form');
         };
-        const allowed = canRotate(view.selected, session.role === ADMIN_ROLE);
+        const allowed = canRotate(view.selected, admin);
         body = (
             <ConfiguredView
                 ids={ids}

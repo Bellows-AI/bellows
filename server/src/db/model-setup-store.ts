@@ -378,7 +378,8 @@ async function sealKey(sql: Sql, run: Run): Promise<Sealed> {
 }
 
 interface SelectedRow {
-    owner_id: string | null;
+    /** The executor's own owner: its scope. The selection's owner may be a member who chose an organization executor. */
+    executor_user_id: string | null;
     id: string;
     name: string;
     type: string;
@@ -393,7 +394,7 @@ interface SelectedRow {
 }
 
 const toSelected = (row: SelectedRow): SelectedSetup => ({
-    scope: row.owner_id === null ? 'org' : 'personal',
+    scope: row.executor_user_id === null ? 'org' : 'personal',
     executorId: row.id,
     executorName: row.name,
     agentType: row.type,
@@ -437,7 +438,7 @@ export function createModelSetupStore({
         async selectedFor(userId) {
             if (ready) await ready;
             const [row] = await sql<SelectedRow[]>`
-                select s.owner_id, p.id, p.name, p.type, p.config->>'model' as model, p.suspended, p.updated_at,
+                select p.user_id as executor_user_id, p.id, p.name, p.type, p.config->>'model' as model, p.suspended, p.updated_at,
                     c.id as connection_id, c.name as connection_name, c.provider as connection_provider,
                     c.user_id as connection_user_id, c.base_url as connection_base_url
                 from executor_default_selection s

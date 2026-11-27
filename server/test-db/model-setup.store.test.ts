@@ -575,6 +575,18 @@ describe.skipIf(!enabled)('the model setup command', () => {
         expect(Date.parse(selected!.updatedAt)).toBe(Date.parse(row!.updatedAt));
     });
 
+    it("an organization executor a member selected as their own default is still the organization's", async () => {
+        const { setup, executors } = stores();
+        const shared = await setup.apply(command());
+        await executors.selectDefault(BOB, shared.executorId);
+        expect(await selection(BOB)).toBe(shared.executorId);
+
+        const selected = await setup.selectedFor(BOB);
+
+        expect(selected).toMatchObject({ executorId: shared.executorId, scope: 'org' });
+        expect(selected?.connection).toMatchObject({ id: shared.connectionId, scope: 'org' });
+    });
+
     it('default replacement and protected deletion cannot leave dangling references', async () => {
         const { setup, executors, connections } = stores();
         const first = await setup.apply(command());
