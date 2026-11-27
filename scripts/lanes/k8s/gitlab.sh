@@ -28,7 +28,7 @@ GLK_GROUP='lane-group'
 GLK_PROJECT="$GLK_GROUP/web"
 GLK_TTL_S=75
 GLK_TLS="$work/gitlab-tls"
-GLK_D=/task/.lane-gitlab
+GLK_D=/task/.lane-gitlab- # flat files under /task, as every other phase's barriers: the stub makes no directory
 GLK_PAT='gloas'"-fake"'\|glrt'"-fake" # the fake's token prefixes, split so this file never holds one
 glk_saved_token="${FACTORY_TOKEN:-}"
 glk_pf_pid=''
@@ -189,17 +189,17 @@ fi
 if [ -n "$glk_connected" ]; then
     # G1 + G2: clone, probe, wait past the refresh window, publish.
     glk_calls0="$(glk_line calls "$(glk_summary)")"
-    g1="$(glk_queue "factory-stub-change factory-stub-tokenless factory-stub-wait-$GLK_D/g1")"
+    g1="$(glk_queue "factory-stub-change factory-stub-tokenless factory-stub-wait-${GLK_D}g1")"
     if [ -z "$g1" ]; then
         bad 'g1: the board queues the GitLab task' 'it refused the create'
     else
         g1_pod="$(await_runner_pod "$g1")"
-        [ -n "$g1_pod" ] && await_blocked "$g1_pod" "$GLK_D/g1" && ok 'g1: the agent is running on the checkout cloned from the TLS GitLab' ||
+        [ -n "$g1_pod" ] && await_blocked "$g1_pod" "${GLK_D}g1" && ok 'g1: the agent is running on the checkout cloned from the TLS GitLab' ||
             bad 'g1: the agent is running on the checkout cloned from the TLS GitLab' "runner pod '$g1_pod'"
         sleep 20 # inside the 75 s life of the token the clone used, past the board's 60 s refresh window
         glk_held="$(glk_volume_leak "$g1_pod")"
         [ -z "$glk_held" ] && ok 'g1: the task volume held no token from outside, mid-task' || bad 'g1: the task volume held no token from outside, mid-task' "files: $glk_held"
-        release_stub "$GLK_D/g1"
+        release_stub "${GLK_D}g1"
         await_brief "$g1" 'succeeded|*' 240 >/dev/null && ok 'g1: the task succeeds' || bad 'g1: the task succeeds' "$(job_brief "$g1")"
         g1_out="$(job_output "$g1")"
         expect_contains 'g1: the agent env holds no token' "$g1_out" gl-no-env-token
@@ -227,14 +227,14 @@ if [ -n "$glk_connected" ]; then
 
     # G3: the runner pod is lost mid-task; the replacement restores the checkout and asks the board again.
     glk_calls3="$(glk_line calls "$(glk_summary)")"
-    g3="$(glk_queue "factory-stub-change factory-stub-wait-$GLK_D/g3")"
+    g3="$(glk_queue "factory-stub-change factory-stub-wait-${GLK_D}g3")"
     if [ -z "$g3" ]; then
         bad 'g3: the board queues the GitLab task' 'it refused the create'
     else
         g3_pod="$(await_runner_pod "$g3")"
-        [ -n "$g3_pod" ] && await_blocked "$g3_pod" "$GLK_D/g3" && ok 'g3: the agent is running' || bad 'g3: the agent is running' "runner pod '$g3_pod'"
+        [ -n "$g3_pod" ] && await_blocked "$g3_pod" "${GLK_D}g3" && ok 'g3: the agent is running' || bad 'g3: the agent is running' "runner pod '$g3_pod'"
         kubectl delete pod "$g3_pod" -n "$NAMESPACE" --grace-period=0 --force --request-timeout=30s >/dev/null 2>&1
-        release_stub "$GLK_D/g3"
+        release_stub "${GLK_D}g3"
         await_brief "$g3" 'succeeded|*' "$ORPHANED_S" >/dev/null && ok 'g3: the task finishes after the runner was lost' || bad 'g3: the task finishes after the runner was lost' "$(job_brief "$g3")"
         g3_brief="$(job_brief "$g3")"
         case "$g3_brief" in
@@ -251,16 +251,16 @@ if [ -n "$glk_connected" ]; then
 
     # G4: the driver is lost mid-task; its replacement takes the running agent over, which asks again.
     glk_calls4="$(glk_line calls "$(glk_summary)")"
-    g4="$(glk_queue "factory-stub-change factory-stub-patient factory-stub-wait-$GLK_D/g4")"
+    g4="$(glk_queue "factory-stub-change factory-stub-patient factory-stub-wait-${GLK_D}g4")"
     if [ -z "$g4" ]; then
         bad 'g4: the board queues the GitLab task' 'it refused the create'
     else
         g4_pod="$(await_runner_pod "$g4")"
-        [ -n "$g4_pod" ] && await_blocked "$g4_pod" "$GLK_D/g4" && ok 'g4: the agent is running' || bad 'g4: the agent is running' "runner pod '$g4_pod'"
+        [ -n "$g4_pod" ] && await_blocked "$g4_pod" "${GLK_D}g4" && ok 'g4: the agent is running' || bad 'g4: the agent is running' "runner pod '$g4_pod'"
         kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force --request-timeout=30s >/dev/null 2>&1
         await_brief "$g4" "*|*|1|*|$EXPIRED*" "$ORPHANED_S" >/dev/null && ok 'g4: the replacement driver records the lost one as an interruption' ||
             bad 'g4: the replacement driver records the lost one as an interruption' "$(job_brief "$g4")"
-        release_stub "$GLK_D/g4"
+        release_stub "${GLK_D}g4"
         await_brief "$g4" 'succeeded|*' "$ORPHANED_S" >/dev/null && ok 'g4: the task finishes under the replacement driver' || bad 'g4: the task finishes under the replacement driver' "$(job_brief "$g4")"
         glk_sum4="$(glk_summary "$glk_calls4")"
         [ "$(glk_line pushes "$glk_sum4")" = 1 ] && ok 'g4: the branch was pushed once' || bad 'g4: the branch was pushed once' "$(glk_line pushes "$glk_sum4")"

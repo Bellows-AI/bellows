@@ -605,7 +605,7 @@ describe('test-jobs board launches boot config-valid', () => {
         'SECRET_STORE_ENV=(LANE_CONFIG_CHECK=1) # never empty: bash 3.2 reads an empty array as unbound under -u',
         'DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_jobs_test',
         'PORT=8129 CAP_LIGHT_PORT=8130 MINT_PORT=8131 AUTH_PORT=8132 MCP_PORT=8133 MCP_IDP_PORT=8134 PM_PORT=8136 GL_PORT=8137',
-        'LANE_FAKE_FORGE_URL=http://127.0.0.1:8138',
+        `LANE_FAKE_FORGE_URL=http://127.0.0.1:8138 REPO=${ROOT}`,
         `PLAN_BASE=git://127.0.0.1:9418 CAP_TOKEN=${token} MCP_TOKEN=${token} PS_TOKEN=${token} PM_TOKEN=${token} GL_DRIVER_TOKEN=${token}`,
         'set -- 8130 /dev/null',
         ...derived.map((l) => l.trim()),

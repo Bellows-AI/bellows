@@ -113,7 +113,7 @@ gl_psql() { # gl_psql <sql> -> psql's rows
 
 mkdir -p "$GL_TLS" "$GL_STATE"
 if openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=lane-gitlab' \
-    -addext "subjectAltName=IP:$LANE_HOST,DNS:localhost" -keyout "$GL_TLS/key.pem" -out "$GL_TLS/cert.pem" >/dev/null 2>&1; then
+    -addext "subjectAltName=IP:$LANE_HOST,DNS:localhost,DNS:host.docker.internal" -keyout "$GL_TLS/key.pem" -out "$GL_TLS/cert.pem" >/dev/null 2>&1; then
     ok 'the lane makes a certificate for the TLS GitLab'
 else
     bad 'the lane makes a certificate for the TLS GitLab' 'openssl failed'
@@ -127,8 +127,11 @@ for _ in $(seq 1 50); do
     [ -s "$GL_TLS/port" ] && break
     sleep 0.1
 done
+# The lane reaches the fake at the lane host; the board and the runners name it host.docker.internal (the one name every
+# daemon gives a container, which the host's own board resolves through scripts/lane-hosts.cjs): on Docker Desktop the
+# lane host is the loopback and a container reaches the host only by that name.
 GL_URL="https://$LANE_HOST:$(cat "$GL_TLS/port")"
-GL_HOST="${GL_URL#https://}"
+GL_HOST="host.docker.internal:${GL_URL##*:}"
 
 gl_ready=''
 if [ -s "$GL_TLS/port" ] && [ -s "$GL_TLS/cert.pem" ]; then
@@ -148,6 +151,7 @@ if [ -n "$gl_ready" ]; then
         GITHUB_APP_CLIENT_ID=lane-client GITHUB_APP_CLIENT_SECRET=lane-secret \
         GITHUB_WEB_URL="$LANE_FAKE_FORGE_URL" GITHUB_API_URL="$LANE_FAKE_FORGE_URL" \
         SESSION_SECRET=a-job-harness-session-secret-32-chars DRIVER_CREDENTIAL_SHA256="$(credential_sha256 "$GL_DRIVER_TOKEN")" \
+        NODE_OPTIONS="--require $REPO/scripts/lane-hosts.cjs" LANE_HOSTS="host.docker.internal=$LANE_HOST" \
         node server/dist/offline.js >>"$work/gitlab-server.log" 2>&1 &
     gl_server_pid=$!
     lane_extra_pids="$lane_extra_pids $gl_server_pid"
@@ -165,7 +169,7 @@ if [ -n "${gl_up:-}" ]; then
 fi
 GL_CONNECTION=''
 if [ -n "$GL_MEMBER" ]; then
-    GL_CONNECTION="$(NODE_EXTRA_CA_CERTS="$GL_TLS/cert.pem" node scripts/gitlab-member-client.mjs connect "$GL_BASE" "$GL_MEMBER" "$GL_URL" "$GL_TLS/cert.pem" "$GL_GROUP" "$GL_PROJECT" "$GL_LOGIN" 2>"$work/gitlab-connect.err")" || GL_CONNECTION=''
+    GL_CONNECTION="$(GITLAB_FAKE_REACH_URL="$GL_URL" NODE_EXTRA_CA_CERTS="$GL_TLS/cert.pem" node scripts/gitlab-member-client.mjs connect "$GL_BASE" "$GL_MEMBER" "https://$GL_HOST" "$GL_TLS/cert.pem" "$GL_GROUP" "$GL_PROJECT" "$GL_LOGIN" 2>"$work/gitlab-connect.err")" || GL_CONNECTION=''
     [ -n "$GL_CONNECTION" ] && ok 'the org connects the TLS GitLab and the member links their account' ||
         bad 'the org connects the TLS GitLab and the member links their account' "$(tail -3 "$work/gitlab-connect.err")"
 fi

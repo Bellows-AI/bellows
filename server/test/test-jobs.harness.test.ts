@@ -429,6 +429,11 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('FAKE_FORGE_TLS_CERT="$GL_TLS/cert.pem"');
         expect(phase).toContain('node scripts/gitlab-member-client.mjs connect');
         expect(phase).toContain('gitlab/token-ttl');
+        // Runners reach the host only as host.docker.internal (the lane host is the loopback on Docker Desktop): the
+        // certificate, the connection's host and the board's resolver all use that name.
+        expect(phase).toContain('DNS:host.docker.internal');
+        expect(phase).toContain('GL_HOST="host.docker.internal:');
+        expect(phase).toContain('--require $REPO/scripts/lane-hosts.cjs');
         // The author is the member's GitLab profile; the committer is the bot.
         expect(phase).toContain('Lane Member|lane.member@example.test|factory-ai');
         // Rotation, adoption and the places a token must never be.

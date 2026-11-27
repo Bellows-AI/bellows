@@ -105,6 +105,10 @@ exec ${JSON.stringify(realDirname)} "$@"
         expect(script).toContain('Lane Member|lane.member@example.test|factory-ai');
         for (const c of ['g1', 'g2', 'g3', 'g4']) expect(script).toContain(`'${c}: `);
         expect(script).toContain('fake_gitlab_created=1');
+        // Barriers are flat files under /task, as every other phase's: the stub makes no directory for a release path.
+        expect(script).toContain('GLK_D=/task/.lane-gitlab- ');
+        expect(script).not.toContain('$GLK_D/');
+        expect(script).not.toContain('${GLK_D}/');
         // The stub joins the token prefixes itself, so no file of the task ever holds one.
         expect(stub).toMatch(/\*factory-stub-tokenless\*\)[\s\S]*gl-no-env-token[\s\S]*gl-no-volume-token/);
         expect(script + stub).not.toMatch(/gloas-fake|glrt-fake/);
