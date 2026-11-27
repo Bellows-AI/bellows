@@ -704,7 +704,10 @@ describe('fake GitLab: what the review loop reads', () => {
             expect(await mrUpdatedAt(token)).not.toBe(before);
         };
         await touched(() =>
-            gl.send('POST', api(`/merge_requests/1/discussions/${thread.body.id}/notes`), { token, body: { body: 'y' } })
+            gl.send('POST', api(`/merge_requests/1/discussions/${thread.body.id}/notes`), {
+                token,
+                body: { body: 'y' },
+            })
         );
         await touched(() => gl.send('POST', api('/merge_requests/1/notes'), { token, body: { body: 'z' } }));
         await touched(() =>

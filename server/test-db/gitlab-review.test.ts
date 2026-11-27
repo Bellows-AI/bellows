@@ -54,6 +54,8 @@ let grp: string;
 let reached: string[];
 let counter = 0;
 /** Runs before the board's every GitLab request: how a test changes the world in the middle of a call. */
+/** How many calls the fake had logged when the test began: the log outlives a test. */
+let since = 0;
 let onRequest: ((request: GitlabRequest) => Promise<void>) | null;
 
 const spyForge = (): ForgeSource => ({
@@ -83,6 +85,7 @@ beforeEach(async () => {
     sql = db.sql;
     reached = [];
     onRequest = null;
+    since = h.fake.forge.calls().length;
     await resetHarness(h, sql);
     org = await h.newOrg();
     grp = `g${randomUUID().slice(0, 8)}`;
@@ -140,7 +143,7 @@ const snapshot = {
 };
 /** Marks the attempt as running the workflow node `name` of the review block. */
 const asNode = (id: string, name: string) =>
-    sql`update job set workflow_node = ${name}, workflow_snapshot = ${sql.json(snapshot)} where id = ${id}`;
+    sql`update job set mode = 'workflow', workflow_name = 'review', workflow_node = ${name}, workflow_snapshot = ${sql.json(snapshot)} where id = ${id}`;
 
 /** A running attempt on its own branch, and (when `publish`) the MR the thread recorded for it. */
 async function task({ publish = true, node = REPLY_NODE }: { publish?: boolean; node?: string | null } = {}) {
@@ -224,11 +227,12 @@ const plan = (run: Run, targets: object[], number = run.number) => ({
     targets,
 });
 const marked = (key: string, text = 'fixed') => `${text}\n\n${addressedMarker(key)}`;
-/** The fake's writes on any merge request, as `METHOD path`. */
+/** The fake's writes of a review (notes, replies, resolves) on any merge request, as `METHOD path`. */
 const writes = () =>
     gl()
         .forge.calls()
-        .filter((call) => call.method !== 'GET' && call.path.includes('/merge_requests/'))
+        .slice(since)
+        .filter((call) => call.method !== 'GET' && /\/merge_requests\/\d+\/(discussions|notes)/.test(call.path))
         .map((call) => `${call.method} ${call.path}`);
 const readsOf = (run: Run) =>
     gl()
@@ -337,8 +341,9 @@ describe.skipIf(!enabled)('the attempt reads the merge request’s review collec
         const run = await task();
         await discuss(run, diffNote(run, { body: 'x' }));
         onRequest = async (request) => {
+            if (!request.path.includes('/discussions')) return;
             onRequest = null;
-            if (request.path.includes('/discussions')) await takeOver(run);
+            await takeOver(run);
         };
         const res = await collect(run);
         expect(res.statusCode).toBe(UNAVAILABLE);
@@ -392,7 +397,8 @@ describe.skipIf(!enabled)('the block’s reply node replies and resolves as the 
         expect(
             gl()
                 .forge.calls()
-                .filter((call) => call.method !== 'GET' && call.path.includes('/merge_requests/'))
+                .slice(since)
+                .filter((call) => call.method !== 'GET' && /\/merge_requests\/\d+\/(discussions|notes)/.test(call.path))
                 .every((call) => call.holder === MEMBER)
         ).toBe(true);
         expect(reached).toEqual([]);
@@ -471,8 +477,9 @@ describe.skipIf(!enabled)('the block’s reply node replies and resolves as the 
         const run = await task();
         const thread = await discuss(run, diffNote(run, { body: 'x' }));
         onRequest = async (request) => {
+            if (!request.path.includes('/discussions')) return;
             onRequest = null;
-            if (request.path.includes('/discussions')) await takeOver(run);
+            await takeOver(run);
         };
         const res = await reply(
             run,
@@ -525,7 +532,7 @@ describe.skipIf(!enabled)('a thread parked on the review wait wakes on a new Git
             root: run.id,
             repo: project(),
             prNumber: iid,
-            prUrl: (mr.body as { web_url: string }).web_url,
+            prUrl: `https://${HOST}/${project()}/-/merge_requests/${iid}`,
             headBranch: run.branch,
             baseBranch: 'main',
         });
