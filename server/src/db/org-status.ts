@@ -95,6 +95,16 @@ export interface OperatorOrgView {
     status: OrgStatus;
 }
 
+/** What deleting an org removes, and how far its purge has come (`org_purge`; null until a delete is queued). */
+export interface OperatorOrgSummary extends OperatorOrgView {
+    members: number;
+    /** Root tasks: one per thread. */
+    threads: number;
+    /** Artifact manifests: the index of the org's stored objects. */
+    objects: number;
+    purge: { step: string; attempts: number; lastError: string | null; requestedAt: string } | null;
+}
+
 export type OrgStatusChange =
     | { outcome: 'changed' | 'unchanged'; org: OperatorOrgView }
     /** A suspend of a refused org: a refusal is lifted only by an activate. */
@@ -105,6 +115,8 @@ export type OrgStatusChange =
 export interface OrgStatusStore {
     /** Every organization with its status, for the operator (`routes/operator.ts`). */
     listOrganizations(): Promise<OperatorOrgView[]>;
+    /** One organization with what a purge removes and its purge's progress; null for an unknown org. */
+    describeOrganization(orgId: string): Promise<OperatorOrgSummary | null>;
     /** The operator's suspend, refuse or activate, with one `operator` audit row per change. */
     setOrgStatus(orgId: string, action: OperatorAction, operatorId: string): Promise<OrgStatusChange>;
     /** What a GitHub `installation` delivery does to its org (`routes/webhook.ts`), with one `system` audit row per change. */
@@ -132,6 +144,10 @@ export function buildOrgStatusMethods(sql: Sql, gate: () => Promise<void>): OrgS
         async listOrganizations() {
             await gate();
             return listOrganizations(sql);
+        },
+        async describeOrganization(orgId) {
+            await gate();
+            return describeOrganization(sql, orgId);
         },
         async setOrgStatus(orgId, action, operatorId) {
             await gate();
@@ -177,6 +193,40 @@ async function requestOrgDelete(sql: Sql, orgId: string, operatorId: string): Pr
 
 async function listOrganizations(sql: Sql): Promise<OperatorOrgView[]> {
     return sql<OperatorOrgView[]>`select id, name, status from organization order by id`;
+}
+
+async function describeOrganization(sql: Sql, orgId: string): Promise<OperatorOrgSummary | null> {
+    const [row] = await sql<
+        (OperatorOrgView & {
+            members: number;
+            threads: number;
+            objects: number;
+            purge_step: string | null;
+            attempts: number | null;
+            last_error: string | null;
+            requested_at: Date | null;
+        })[]
+    >`
+        select o.id, o.name, o.status,
+               (select count(*)::int from org_membership m where m.org_id = o.id) as members,
+               (select count(*)::int from job j where j.org_id = o.id and j.id = j.root_job_id) as threads,
+               (select count(*)::int from artifact_manifest a where a.org_id = o.id) as objects,
+               p.step as purge_step, p.attempts, p.last_error, p.requested_at
+        from organization o left join org_purge p on p.org_id = o.id
+        where o.id = ${orgId}
+    `;
+    if (!row) return null;
+    const { purge_step, attempts, last_error, requested_at, ...org } = row;
+    const purge =
+        purge_step === null
+            ? null
+            : {
+                  step: purge_step,
+                  attempts: attempts ?? 0,
+                  lastError: last_error,
+                  requestedAt: requested_at!.toISOString(),
+              };
+    return { ...org, purge };
 }
 
 /**

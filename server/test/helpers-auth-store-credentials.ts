@@ -337,6 +337,9 @@ export function memoryAuthStore(): MemoryAuthStore {
         async listOrganizations() {
             return [];
         },
+        async describeOrganization() {
+            return null;
+        },
         async setOrgStatus() {
             return { outcome: 'missing' as const };
         },
