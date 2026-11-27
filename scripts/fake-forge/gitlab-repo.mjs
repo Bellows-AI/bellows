@@ -135,6 +135,11 @@ export const createRepos = (root) => {
                 return null;
             }
         },
+        /** The best common ancestor of two commits, or null when either is unknown or they share none. */
+        async mergeBase(id, a, b) {
+            const [one, two] = await Promise.all([resolve(id, a), resolve(id, b)]);
+            return one && two ? attempt(id, ['merge-base', one, two]) : null;
+        },
         /** Three-way merge of the source into the target: the merged tree's id, or null when the two conflict. */
         async mergeTree(id, source, target) {
             const into = await resolve(id, `refs/heads/${target}`);

@@ -524,8 +524,10 @@ export const registerGitlab = (forge) => {
         created_at: pipeline.createdAt,
         updated_at: pipeline.updatedAt,
     });
-    const headPipeline = (project, sha) =>
-        pipelines.findLast((pipeline) => pipeline.projectId === project.id && pipeline.sha === sha) ?? null;
+    const headPipeline = (project, sha, mr) =>
+        (mr?.headPipelineId && pipelines.find((pipeline) => pipeline.id === mr.headPipelineId)) ||
+        pipelines.findLast((pipeline) => pipeline.projectId === project.id && pipeline.sha === sha) ||
+        null;
     /** The source branch's head, or the last one seen once the branch is gone. */
     const headSha = async (project, mr) => {
         const branch = await repos.branch(project.id, mr.source);
@@ -540,7 +542,7 @@ export const registerGitlab = (forge) => {
         if (conflict) return 'conflict';
         if (project.onlyDiscussions && hasUnresolved(mr)) return 'discussions_not_resolved';
         if (project.onlyPipeline) {
-            const head = headPipeline(project, sha);
+            const head = headPipeline(project, sha, mr);
             if (head && UNFINISHED.includes(head.status)) return 'ci_still_running';
             if (!head || head.status !== 'success') return 'ci_must_pass';
         }
@@ -556,7 +558,7 @@ export const registerGitlab = (forge) => {
     const mrJson = async (project, mr, request) => {
         const sha = await headSha(project, mr);
         const status = mergeStatus(project, mr, sha, await mergeFacts(project, mr));
-        const head = headPipeline(project, sha);
+        const head = headPipeline(project, sha, mr);
         return {
             id: mr.id,
             iid: mr.iid,
@@ -849,9 +851,20 @@ export const registerGitlab = (forge) => {
     };
     const foldStatuses = (statuses) => {
         const states = statuses.map((entry) => entry.status);
-        for (const state of ['failed', 'running', 'pending', 'canceled']) if (states.includes(state)) return state;
+        for (const state of ['failed', 'running', 'pending', 'created', 'manual', 'canceled']) if (states.includes(state)) return state;
         return states.every((state) => state === 'skipped') ? 'skipped' : 'success';
     };
+    // A failed job that may fail does not fail its pipeline.
+    const foldJobs = (jobs) => foldStatuses(jobs.filter((job) => !(job.allowFailure && job.status === 'failed')));
+    const jobJson = (project, job, request) => ({
+        id: job.id,
+        name: job.name,
+        stage: job.stage,
+        status: job.status,
+        allow_failure: job.allowFailure,
+        failure_reason: job.status === 'failed' ? 'script_failure' : null,
+        web_url: `${origin(request)}/${project.path}/-/jobs/${job.id}`,
+    });
     const statusJson = (entry) => ({
         id: entry.id,
         sha: entry.sha,
@@ -895,6 +908,24 @@ export const registerGitlab = (forge) => {
         if (!found) return notFound(ctx.response, 'Not found');
         forge.json(ctx.response, 200, pipelineJson(found, ctx.request));
     });
+    route('GET', `${pipelinesPath}/:pipeline/jobs`, (ctx) => {
+        const project = guard(ctx, GUEST);
+        if (!project) return;
+        const found = pipelines.find((entry) => entry.projectId === project.id && entry.id === Number(ctx.params.pipeline));
+        if (!found) return notFound(ctx.response, 'Not found');
+        page(ctx, (found.jobs ?? []).map((job) => jobJson(project, job, ctx.request)));
+    });
+    route('GET', `${mrs}/:iid/approvals`, (ctx) => {
+        const project = guard(ctx, GUEST);
+        const mr = project && findMr(ctx, project);
+        if (!mr) return;
+        const { required = 0, by = [] } = mr.approvals ?? {};
+        forge.json(ctx.response, 200, {
+            approvals_required: required,
+            approvals_left: Math.max(required - by.length, 0),
+            approved_by: by.map((login) => ({ user: userJson(login) })),
+        });
+    });
     route('GET', `${mrs}/:iid/pipelines`, async (ctx) => {
         const project = guard(ctx, GUEST);
         const mr = project && findMr(ctx, project);
@@ -930,6 +961,14 @@ export const registerGitlab = (forge) => {
         if (external) Object.assign(external, { status, updatedAt: now() });
         else newPipeline(project, { ref: entry.ref ?? '', sha, status, source: 'external' });
         forge.json(ctx.response, 201, statusJson(entry));
+    });
+    route('GET', '/projects/:id/repository/merge_base', async (ctx) => {
+        const project = guard(ctx, GUEST);
+        if (!project) return;
+        const refs = new URL(ctx.url).searchParams.getAll('refs[]');
+        const base = refs.length === 2 ? await repos.mergeBase(project.id, refs[0], refs[1]) : null;
+        if (!base) return badRequest(ctx.response, '400 Bad request - Invalid refs');
+        forge.json(ctx.response, 200, { id: base });
     });
     route('GET', '/projects/:id/repository/commits/:sha/statuses', async (ctx) => {
         const project = guard(ctx, GUEST);
@@ -1220,16 +1259,47 @@ export const registerGitlab = (forge) => {
     control('pipelines', async (ctx) => {
         const project = controlProject(ctx);
         if (!project) return;
-        const { ref, status } = ctx.body;
+        // `jobs` seeds `[{ name, status, allowFailure?, stage? }]` and folds the pipeline's status from them; `headOf` is an
+        // MR iid the pipeline is served as head pipeline of, whatever its sha.
+        const { ref, jobs, headOf } = ctx.body;
         const sha = ctx.body.sha ?? (await repos.resolve(project.id, ref));
+        const status = jobs ? foldJobs(jobs) : ctx.body.status;
         const pipeline = newPipeline(project, { ref, sha, status, source: 'push' });
+        if (jobs) {
+            pipeline.jobs = jobs.map((job) => ({
+                id: forge.nextId(),
+                name: job.name,
+                stage: job.stage ?? 'test',
+                status: job.status,
+                allowFailure: flag(job.allowFailure),
+            }));
+        }
+        const mr = headOf && project.mrs.find((entry) => entry.iid === Number(headOf));
+        if (headOf && !mr) return notFound(ctx.response, 'Merge Request Not Found');
+        if (mr) mr.headPipelineId = pipeline.id;
         forge.json(ctx.response, 200, pipelineJson(pipeline, ctx.request));
     });
     control('pipelines/:id', (ctx) => {
         const pipeline = pipelines.find((entry) => entry.id === Number(ctx.params.id));
         if (!pipeline) return notFound(ctx.response, 'Not found');
-        Object.assign(pipeline, { status: ctx.body.status, updatedAt: now() });
+        // `jobs: [{ name, status }]` sets those jobs and folds the pipeline's status; else `status` sets it directly.
+        for (const update of ctx.body.jobs ?? []) {
+            const job = pipeline.jobs?.find((entry) => entry.name === update.name);
+            if (!job) return notFound(ctx.response, `Job ${update.name} Not Found`);
+            job.status = update.status;
+        }
+        const status = ctx.body.jobs ? foldJobs(pipeline.jobs) : ctx.body.status;
+        Object.assign(pipeline, { status, updatedAt: now() });
         forge.json(ctx.response, 200, pipelineJson(pipeline, ctx.request));
+    });
+    // The approvals an MR needs and has: `required` and the logins that `approvedBy`.
+    control('approvals', (ctx) => {
+        const project = controlProject(ctx);
+        const mr = project && project.mrs.find((entry) => entry.iid === Number(ctx.body.iid));
+        if (project && !mr) return notFound(ctx.response, 'Merge Request Not Found');
+        if (!mr) return;
+        mr.approvals = { required: Number(ctx.body.required ?? 0), by: ctx.body.approvedBy ?? [] };
+        forge.json(ctx.response, 200, mr.approvals);
     });
     control('merge_status', (ctx) => {
         const project = controlProject(ctx);
