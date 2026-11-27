@@ -24,7 +24,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
     name: $volume
-    labels: {factory.task-org: $member}
+    labels: {factory.task-org: "$member"}
 spec:
     accessModes: [ReadWriteOnce]
     resources: {requests: {storage: 1Gi}}

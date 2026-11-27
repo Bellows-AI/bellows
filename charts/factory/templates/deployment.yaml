@@ -208,6 +208,13 @@ spec:
                                 name: {{ include "factory.secretName" . }}
                                 key: linear-client-secret
                                 optional: true
+                      {{- if and .Values.dashboard.offline .Values.dashboard.offlineGithubUrl }}
+                      # The lane's fake GitHub is the offline board's sign-in and API (scripts/test-k8s.sh).
+                      - name: GITHUB_WEB_URL
+                        value: {{ .Values.dashboard.offlineGithubUrl | quote }}
+                      - name: GITHUB_API_URL
+                        value: {{ .Values.dashboard.offlineGithubUrl | quote }}
+                      {{- end }}
                       {{- if and .Values.dashboard.offline .Values.driver.repoCloneBase }}
                       # The offline entry reads each repo's .bellows.yaml from this origin.
                       - name: REPO_CLONE_BASE

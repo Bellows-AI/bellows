@@ -196,6 +196,11 @@ cleanup() {
         wait "$pf_pid" 2>/dev/null
         pf_pid=''
     fi
+    if [ -n "${fake_pf_pid:-}" ]; then
+        kill "$fake_pf_pid" 2>/dev/null
+        wait "$fake_pf_pid" 2>/dev/null
+        fake_pf_pid=''
+    fi
     # Before anything is uninstalled: events outlive their pods, not their namespace's cleanup.
     if [ -n "${deploy_started_at:-}" ]; then
         # This release's pods and the ones its driver names; bounded, so a stalled read never holds cleanup.
@@ -423,6 +428,17 @@ offline_bases="$(render "${base_sets[@]}" | grep -c 'name: REPO_CLONE_BASE')"
 github_bases="$(render "${base_sets[@]}" --set dashboard.offline=false --set github.appId=1 --set github.appPrivateKey=pem | grep -c 'name: REPO_CLONE_BASE')"
 [ "$github_bases" = 1 ] && ok 'the GitHub-backed dashboard is told no plan origin' ||
     bad 'the GitHub-backed dashboard is told no plan origin' "REPO_CLONE_BASE rendered $github_bases times, want 1"
+# The offline board's GitHub is the lane's fake forge: one install-time value, offline only, the dashboard alone.
+fake_github=http://fake-forge:8080
+fake_github_render="$(render --set "dashboard.offlineGithubUrl=$fake_github")"
+for var in GITHUB_WEB_URL GITHUB_API_URL; do
+    expect_contains "the offline dashboard is told the fake GitHub as $var" \
+        "$(grep -A1 "name: $var" <<<"$fake_github_render")" "value: \"$fake_github\""
+    [ "$(grep -c "name: $var" <<<"$fake_github_render")" = 1 ] && ok "$var renders on the dashboard container only" ||
+        bad "$var renders on the dashboard container only" "rendered $(grep -c "name: $var" <<<"$fake_github_render") times, want 1"
+done
+expect_not_contains 'the offline dashboard is told no GitHub URL by default' "$(cat "$work/rendered.yaml")" 'name: GITHUB_WEB_URL'
+expect_not_contains 'the offline dashboard is told no GitHub API URL by default' "$(cat "$work/rendered.yaml")" 'name: GITHUB_API_URL'
 expect_not_contains 'the driver is told no workspaces claim' "$(cat "$work/rendered.yaml")" 'name: WORKSPACE_VOLUME'
 expect_contains 'the driver is told the task volume access mode' "$(cat "$work/rendered.yaml")" \
     'name: TASK_VOLUME_ACCESS_MODE'
@@ -904,6 +920,8 @@ refuses() { # refuses <name> <needle> <helm args...>
         expect_contains "$name" "$out" "$needle"
     fi
 }
+refuses 'dashboard.offlineGithubUrl is refused unless dashboard.offline' 'dashboard.offlineGithubUrl' \
+    "${GH_SETS[@]}" --set dashboard.offlineGithubUrl=x
 refuses 'the retired dashboard.otel is refused' 'observability.' "${GH_SETS[@]}" --set-string dashboard.otel.endpoint=http://otel.example:4318
 refuses 'an enabled collector with no endpoint is refused' 'observability.endpoint' "${GH_SETS[@]}" --set observability.enabled=true
 refuses 'a headers Secret name without a key is refused' 'observability.headersSecret' "${GH_SETS[@]}" \
@@ -2464,13 +2482,17 @@ BASE="http://127.0.0.1:$PORT"
 secret_store_sets "$(openssl rand -base64 32)" "$(openssl rand -base64 32)" "$(openssl rand -base64 32)"
 CREDENTIAL="drv_$(openssl rand -hex 32)"
 auth_sets "$BASE" "$(openssl rand -hex 32)" "$CREDENTIAL"
-# FAKE_FORGE=1: the fake forge (scripts/fake-forge) as a pod and Service in the release's namespace, for the
-# phases that talk to GitHub's REST API: http://$RELEASE-fake-forge:8080. The files are mounted from a
-# ConfigMap, never inlined. Off until the publish switch flips it.
-if [ "${FAKE_FORGE:-0}" = 1 ]; then
-    fake_forge_created=1 # set first: cleanup() deletes what a partial setup left
-    kubectl create configmap "$RELEASE-fake-forge" -n "$NAMESPACE" --from-file=scripts/fake-forge >/dev/null &&
-        kubectl apply -n "$NAMESPACE" -f - >/dev/null <<FORGE || {
+# The fake forge (scripts/fake-forge) as a pod and Service in the release's namespace: the board's GitHub (members
+# sign in through it, dashboard.offlineGithubUrl below) and the API the phases talk to: http://$RELEASE-fake-forge:8080.
+# The files are mounted from a ConfigMap, never inlined. On the multi-node layout it sits with the board on the
+# control plane, like the origin: it keeps every grant's refresh token in memory, and a drain case moves the driver.
+forge_place=''
+[ -z "$shared_nodes" ] || forge_place='    nodeSelector: {node-role.kubernetes.io/control-plane: ""}
+    tolerations: [{key: node-role.kubernetes.io/control-plane, operator: Exists, effect: NoSchedule}]
+'
+fake_forge_created=1 # set first: cleanup() deletes what a partial setup left
+kubectl create configmap "$RELEASE-fake-forge" -n "$NAMESPACE" --from-file=scripts/fake-forge >/dev/null &&
+    kubectl apply -n "$NAMESPACE" -f - >/dev/null <<FORGE || {
 apiVersion: v1
 kind: Pod
 metadata:
@@ -2478,7 +2500,7 @@ metadata:
     labels:
         app.kubernetes.io/name: $RELEASE-fake-forge
 spec:
-    containers:
+$forge_place    containers:
         - name: forge
           image: $STUB_REF
           command: ["node", "/forge/server.mjs", "/tmp/forge-state", "8080"]
@@ -2505,19 +2527,18 @@ spec:
     ports:
         - port: 8080
 FORGE
-        echo 'test-k8s: could not create the fake forge'
-        exit 1
-    }
-    kubectl wait --for=condition=Ready --timeout=120s "pod/$RELEASE-fake-forge" -n "$NAMESPACE" >/dev/null 2>&1 || {
-        echo 'test-k8s: the fake forge did not become ready'
-        exit 1
-    }
-    # The same pod serves the fake GitLab, git smart-HTTP included, through `git http-backend` in the stub image.
-    # Run bare it answers a CGI error; an image without it answers "not a git command".
-    case "$(kubectl exec "pod/$RELEASE-fake-forge" -n "$NAMESPACE" --request-timeout=20s -- git http-backend </dev/null 2>&1)" in
-    *'is not a git command'*) echo 'test-k8s: note: the stub image has no git http-backend; the in-cluster fake GitLab serves REST only' ;;
-    esac
-fi
+    echo 'test-k8s: could not create the fake forge'
+    exit 1
+}
+kubectl wait --for=condition=Ready --timeout=120s "pod/$RELEASE-fake-forge" -n "$NAMESPACE" >/dev/null 2>&1 || {
+    echo 'test-k8s: the fake forge did not become ready'
+    exit 1
+}
+# The same pod serves the fake GitLab, git smart-HTTP included, through `git http-backend` in the stub image.
+# Run bare it answers a CGI error; an image without it answers "not a git command".
+case "$(kubectl exec "pod/$RELEASE-fake-forge" -n "$NAMESPACE" --request-timeout=20s -- git http-backend </dev/null 2>&1)" in
+*'is not a git command'*) echo 'test-k8s: note: the stub image has no git http-backend; the in-cluster fake GitLab serves REST only' ;;
+esac
 
 REPLICA_SETS=()
 if [ "$PHASE" = replicas ]; then
@@ -2599,6 +2620,7 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" ${RE
     --set "database.waitImage=$POSTGRES_REF" \
     --set driver.reapIntervalMs=3000 --set driver.reapGraceMs=1000 \
     --set "driver.repoCloneBase=git://$RELEASE-origin:9418" \
+    --set "dashboard.offlineGithubUrl=http://$RELEASE-fake-forge:8080" \
     --set-string driver.leaseSeconds="$LANE_LEASE_S" --set driver.terminationGracePeriodSeconds=70 \
     --set-string driver.handoverMs=10000 \
     --set-string driver.orphanMinMs="$((LANE_ORPHAN_S * 1000))" --set-string driver.stepWaitMs="$LANE_STEP_WAIT_MS" \
@@ -2653,6 +2675,11 @@ begin_phase smoke
 PF_LOG="$work/portforward.log"
 kubectl port-forward "svc/$RELEASE-factory" "$PORT:8080" -n "$NAMESPACE" >"$PF_LOG" 2>&1 &
 pf_pid=$!
+# The fake forge, reached from this shell: the members' sign-in hop and the lane's control calls.
+FAKE_FWD=18081
+FAKE_REACH="http://127.0.0.1:$FAKE_FWD"
+kubectl port-forward "pod/$RELEASE-fake-forge" "$FAKE_FWD:8080" -n "$NAMESPACE" >>"$PF_LOG" 2>&1 &
+fake_pf_pid=$!
 
 # Every human route needs a member behind it. The node calls below read the member's personal
 # access token from FACTORY_TOKEN — the environment, not argv, so it never shows in a process
@@ -2670,7 +2697,7 @@ fetch(process.argv[2], { method: process.argv[1], headers, body: process.argv[3]
 ' "$@"
 }
 give_up() {
-    kill "$pf_pid" 2>/dev/null
+    kill "$pf_pid" "${fake_pf_pid:-}" 2>/dev/null
     # What the lane was standing on when it stopped: the port-forward and this release's pods.
     echo '--- port-forward'
     tail -5 "$PF_LOG" 2>/dev/null
@@ -2765,68 +2792,97 @@ anon="$(http_status POST "$BASE/api/jobs" "$JOB_BODY")"
 [ "$anon" = '401' ] && ok 'an unauthenticated POST /api/jobs is refused 401' ||
     bad 'an unauthenticated POST /api/jobs is refused 401' "got $anon"
 
-# A member, minted where sign-in would have put one. With no App nobody can sign in, so the rows go
-# in directly: an organization, a user, the membership that binds them, and a personal access token
-# — `fat_` + 32 CSPRNG bytes base64url, stored only as the sha-256 of the whole token
-# (server/src/auth/access-token.ts, hashToken in session.ts). Every id is generated here or by the
-# database; psql variables carry the values, so nothing is spliced into the SQL text.
-read -r FACTORY_TOKEN token_hash < <(node -e '
-const c = require("node:crypto");
-const t = "fat_" + c.randomBytes(32).toString("base64url");
-process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
-')
-member="k8s-test-$(openssl rand -hex 6)"
-minted="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-    psql -q -v ON_ERROR_STOP=1 -v "member=$member" -v "hash=$token_hash" \
-    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
-with o as (
-    insert into organization (id, name) values (:'member', :'member') returning id
-), u as (
-    insert into app_user (github_user_id, github_login)
-    values ((1000000000 + floor(random() * 1000000000000))::bigint, :'member') returning id
-), m as (
-    insert into org_membership (org_id, github_login, user_id, role, claimed_at)
-    select o.id, :'member', u.id, 'member', now() from o, u
-)
-insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
-select o.id, 'personal', u.id, u.id, 'test-k8s', decode(:'hash', 'hex') from o, u;
-SQL
-)" && ok 'a member and a personal access token are minted' || {
-    bad 'a member and a personal access token are minted' "$minted"
-    give_up
-}
-export FACTORY_TOKEN
-
-# The tracked repo: POST /api/jobs refuses a create whose repo the board does not track, and the
-# offline board's tracked list is its session_branch rows. With no GitHub the fixture is one such
-# row — and, for the runner's own clone, an origin served inside the
-# cluster: a git daemon pod and Service named for REPO_CLONE_BASE (`driver.repoCloneBase` above)
-# whose `<owner>/<name>.git` is a bare repository with one commit, so every task clones and
-# publishes with no network. scripts/test-jobs.sh serves its origin the same way, from a container.
-member_user="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-    psql -qtA -v ON_ERROR_STOP=1 -v "member=$member" \
-    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
-select user_id from org_membership where org_id = :'member';
-SQL
-)"
-case "$member_user" in
-????????-????-????-????-????????????) ;;
-*) bad 'the member has a user id' "$member_user"
-    give_up
-    ;;
-esac
-selected="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-    psql -q -v ON_ERROR_STOP=1 -v "member=$member" \
-    -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" \
-    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+# The members sign in the way a person does: through the board's GitHub sign-in, against the fake GitHub the board is
+# installed with (dashboard.offlineGithubUrl). The callback stores the member's GitHub grant, which the forge start
+# gate reads at every create, through the board's own secret store: no row is written here for a member, a membership,
+# a token or a grant. lane_member seeds only what GitHub would have: the organization and the repository it tracks.
+# The org id is the installation id (numeric); the first member of an org is its admin.
+lane_member() { # lane_member <login> [org] -> MINTED_TOKEN, MINTED_ORG and MINTED_USER of <login> signed in (a new org, or <org>); non-zero with the reason
+    local login="$1" org="${2:-}" id seeded out
+    MINTED_TOKEN=''
+    MINTED_ORG=''
+    MINTED_USER=''
+    # An organization is a GitHub App installation id and an account a GitHub user id (app_user.github_user_id is unique).
+    [ -n "$org" ] || org="$(bounded 10 node -e 'process.stdout.write(String(require("node:crypto").randomInt(1000000000, 2000000000)))')"
+    id="$(bounded 10 node -e 'process.stdout.write(String(require("node:crypto").randomInt(1000000000, 1000000000000)))')"
+    case "$org$id" in '' | *[!0-9]*) printf 'lane_member: no numeric ids (org %s, id %s)' "$org" "$id"; return 1 ;; esac
+    seeded="$(bounded 40 kubectl exec -i -n "$NAMESPACE" --request-timeout=20s "statefulset/$STATE_RELEASE-postgres" -- \
+        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -q -v ON_ERROR_STOP=1 -v "org=$org" -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" \
+        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+insert into organization (id, name) values (:'org', :'org') on conflict do nothing;
 insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
-values (:'member', 'claude-code', 'test-k8s-fixture', :'owner' || '/' || :'name', 'main', now(), now())
+values (:'org', 'claude-code', 'test-k8s-lane', :'owner' || '/' || :'name', 'main', now(), now())
 on conflict do nothing;
 SQL
-)" && ok 'the board tracks the smoke repository' || {
-    bad 'the board tracks the smoke repository' "$selected"
+    )" || {
+        printf 'seeding the organization: %s' "$seeded"
+        return 1
+    }
+    out="$(bounded 20 node -e '
+const [url, login, id, org] = process.argv.slice(1);
+fetch(url + "/_control/github/members", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ login, id: Number(id), installation: { id: Number(org), account: login } }),
+    signal: AbortSignal.timeout(10000),
+}).then((r) => { if (r.status !== 200) { console.error("answered " + r.status); process.exit(1); } })
+    .catch((e) => { console.error(e.message); process.exit(1); });
+' "$FAKE_REACH" "$login" "$id" "$org" 2>&1)" || {
+        printf 'registering %s at the fake GitHub: %s' "$login" "$out"
+        return 1
+    }
+    # stdout is the token; stderr is the reason, kept apart so it never reads as one.
+    MINTED_TOKEN="$(bounded 90 env FAKE_FORGE_REACH_URL="$FAKE_REACH" node scripts/publish-member-client.mjs "$BASE" "$login" 2>"$work/lane-member.err" </dev/null)" || {
+        printf 'signing %s in: %s' "$login" "$(cat "$work/lane-member.err")"
+        MINTED_TOKEN=''
+        return 1
+    }
+    # By org and login: a second member of an org is not the first.
+    MINTED_USER="$(bounded 20 kubectl exec -i -n "$NAMESPACE" --request-timeout=10s "statefulset/$STATE_RELEASE-postgres" -- \
+        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 -v "org=$org" -v "login=$login" \
+        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+select user_id from org_membership where org_id = :'org' and github_login = :'login';
+SQL
+    )"
+    case "$MINTED_USER" in
+    ????????-????-????-????-????????????) MINTED_ORG="$org" ;;
+    *)
+        printf 'the user id of %s in %s: %s' "$login" "$org" "$MINTED_USER"
+        MINTED_USER=''
+        return 1
+        ;;
+    esac
+}
+
+# The fake GitHub must answer through its port-forward before anyone signs in.
+fake_up=''
+for _ in $(seq 1 30); do
+    [ "$(http_status GET "$FAKE_REACH/_control/calls")" = '200' ] && {
+        fake_up=1
+        break
+    }
+    sleep 1
+done
+[ -n "$fake_up" ] && ok 'the fake GitHub answers through its port-forward' || {
+    bad 'the fake GitHub answers through its port-forward' "$(tail -3 "$PF_LOG")"
     give_up
 }
+member_login="k8s-test-$(openssl rand -hex 6)"
+# Not inside $(...): the helper's MINTED_* would be lost with the subshell.
+lane_member "$member_login" >"$work/lane-member.out" 2>&1 && ok 'a member signs in through the fake GitHub and holds a personal access token' || {
+    bad 'a member signs in through the fake GitHub and holds a personal access token' "$(cat "$work/lane-member.out")"
+    give_up
+}
+FACTORY_TOKEN="$MINTED_TOKEN"
+export FACTORY_TOKEN
+member="$MINTED_ORG"
+member_user="$MINTED_USER"
+
+# The tracked repo: POST /api/jobs refuses a create whose repo the board does not track, and the
+# offline board's tracked list is its session_branch rows (seeded by lane_member). For the runner's own clone, an
+# origin served inside the cluster: a git daemon pod and Service named for REPO_CLONE_BASE (`driver.repoCloneBase` above)
+# whose `<owner>/<name>.git` is a bare repository with one commit, so every task clones and
+# publishes with no network. scripts/test-jobs.sh serves its origin the same way, from a container.
 # One line, no double quotes or backslashes: it is interpolated into the JSON override below.
 origin_script="set -e; mkdir -p /origins/github.com/${SMOKE_REPO%%/*}; git init -q --bare -b main /origins/github.com/$SMOKE_REPO.git;
 git init -q -b main /tmp/seed;
@@ -2939,11 +2995,13 @@ for _ in $(seq 1 60); do
     if [ "$reconcile" = '0' ]; then
         response="$(node -e "$JS_HEADERS"'
 fetch(process.argv[1], { method: "POST", headers, body: process.argv[2] })
-    .then(async (r) => { const b = await r.text(); let id = ""; try { id = String(JSON.parse(b).id ?? ""); } catch {} process.stdout.write(r.status + "|" + id); })
-    .catch(() => process.stdout.write("000|"));
+    .then(async (r) => { const b = await r.text(); let id = ""; try { id = String(JSON.parse(b).id ?? ""); } catch {} process.stdout.write(r.status + "|" + id + "|" + b.slice(0, 600).replace(/\s+/g, " ")); })
+    .catch(() => process.stdout.write("000||"));
 ' "$BASE/api/jobs" "$JOB_BODY")"
         status="${response%%|*}"
         id="${response#*|}"
+        refusal="${id#*|}"
+        id="${id%%|*}"
         case "$status" in
         000 | 5*) reconcile=1 ;;
         *) break ;;
@@ -2972,7 +3030,7 @@ fetch(process.argv[1], { headers })
 done
 case "$id" in
 *-*) ok 'a job was queued' ;;
-*) bad 'a job was queued' "no id came back (last status: ${status:-none})"
+*) bad 'a job was queued' "no id came back (last status: ${status:-none}): ${refusal:-}"
     give_up
     ;;
 esac
@@ -3269,35 +3327,8 @@ queue_job() { # queue_job <command> -> the new job's id, empty when the board re
     case "$id" in unread:* | refused:*) ;; *) printf '%s' "$id" ;; esac
 }
 
-mint_member() { # mint_member <login> -> MINTED_TOKEN of a new org member tracking $SMOKE_REPO; non-zero with psql's answer
-    local hash out
-    # The token is made here, not inside bounded: bounded backgrounds its command and a variable set there is lost.
-    read -r MINTED_TOKEN hash < <(node -e '
-const c = require("node:crypto");
-const t = "fat_" + c.randomBytes(32).toString("base64url");
-process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
-')
-    out="$(bounded 40 kubectl exec -i -n "$NAMESPACE" --request-timeout=20s "statefulset/$STATE_RELEASE-postgres" -- \
-        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -q -v ON_ERROR_STOP=1 -v "login=$1" -v "hash=$hash" -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" \
-        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
-with o as (
-    insert into organization (id, name) values (:'login', :'login') returning id
-), u as (
-    insert into app_user (github_user_id, github_login)
-    values ((1000000000 + floor(random() * 1000000000000))::bigint, :'login') returning id
-), m as (
-    insert into org_membership (org_id, github_login, user_id, role, claimed_at)
-    select o.id, :'login', u.id, 'member', now() from o, u
-)
-insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
-select o.id, 'personal', u.id, u.id, 'test-k8s', decode(:'hash', 'hex') from o, u;
-insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
-values (:'login', 'claude-code', 'test-k8s-capacity', :'owner' || '/' || :'name', 'main', now(), now());
-SQL
-    )" || {
-        printf '%s' "$out"
-        return 1
-    }
+mint_member() { # mint_member <login> -> MINTED_TOKEN of a new org's member, signed in through the fake GitHub and tracking $SMOKE_REPO; non-zero with the reason
+    lane_member "$1"
 }
 
 store_executor() { # store_executor -> the current FACTORY_TOKEN's member stores the executor its tasks run under
@@ -3420,9 +3451,11 @@ driver_logs() { kubectl logs -l "$DRIVER_SEL" -n "$NAMESPACE" --tail=-1 --reques
 
 . "$REPO/scripts/lanes/k8s/bench.sh"
 
-kill "$pf_pid" 2>/dev/null
+kill "$pf_pid" "${fake_pf_pid:-}" 2>/dev/null
 wait "$pf_pid" 2>/dev/null
 pf_pid=''
+wait "${fake_pf_pid:-}" 2>/dev/null
+fake_pf_pid=''
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

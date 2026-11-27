@@ -342,6 +342,9 @@ the exempt namespaces the admission policy reads (templates/sandbox-admission.ya
 {{- fail "driver.credential.sha256 is for an existingSecret; with value the chart computes it" }}
 {{- end }}
 {{- end }}
+{{- if and .Values.dashboard.offlineGithubUrl (not .Values.dashboard.offline) }}
+{{- fail "dashboard.offlineGithubUrl points the offline board at a fake GitHub: it needs dashboard.offline=true" }}
+{{- end }}
 {{- if not .Values.dashboard.offline }}
 {{- if not .Values.github.appId }}
 {{- fail "github.appId is required: the repo list and the repo-read credential are the GitHub App's (set dashboard.offline=true for the code-only no-fetch entry)" }}

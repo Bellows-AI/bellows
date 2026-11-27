@@ -152,29 +152,15 @@ fi
 
 glk_connected=''
 if [ -n "$glk_ready" ]; then
-    # An admin member, minted where sign-in would have put one (the smoke phase's rows, with the admin role).
-    read -r glk_token glk_hash < <(node -e '
-const c = require("node:crypto");
-const t = "fat_" + c.randomBytes(32).toString("base64url");
-process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
-')
-    glk_org="glk-$(openssl rand -hex 4)"
-    glk_minted="$(bounded 40 kubectl exec -i -n "$NAMESPACE" --request-timeout=20s "statefulset/$STATE_RELEASE-postgres" -- \
-        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -q -v ON_ERROR_STOP=1 -v "login=$glk_org" -v "hash=$glk_hash" \
-        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
-with o as (
-    insert into organization (id, name) values (:'login', :'login') returning id
-), u as (
-    insert into app_user (github_user_id, github_login)
-    values ((1000000000 + floor(random() * 1000000000000))::bigint, :'login') returning id
-), m as (
-    insert into org_membership (org_id, github_login, user_id, role, claimed_at)
-    select o.id, :'login', u.id, 'admin', now() from o, u
-)
-insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
-select o.id, 'personal', u.id, u.id, 'test-k8s-gitlab', decode(:'hash', 'hex') from o, u;
-SQL
-    )" && ok 'an admin member and a personal access token are minted' || bad 'an admin member and a personal access token are minted' "$glk_minted"
+    # An admin member: the first to sign in to a new org, through the fake GitHub like the smoke member.
+    glk_login="glk-$(openssl rand -hex 4)"
+    if lane_member "$glk_login" >"$work/glk-member.out" 2>&1; then
+        ok 'an admin member signs in and holds a personal access token'
+    else
+        bad 'an admin member signs in and holds a personal access token' "$(cat "$work/glk-member.out")"
+    fi
+    glk_token="$MINTED_TOKEN"
+    glk_org="$MINTED_ORG"
     FACTORY_TOKEN="$glk_token"
     export FACTORY_TOKEN
     store_executor && ok 'the member stores the task executor' || bad 'the member stores the task executor' 'the PUT never answered 200'
