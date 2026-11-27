@@ -74,6 +74,15 @@ export function repoReason(value: string): string | null {
     return null;
 }
 
+/**
+ * The `repo` a publication or an operation reports: the path of the change request's own forge, `owner/name` on GitHub or
+ * a nested group chain on GitLab. Shape only; the url it is reported beside decides which forge and whether it is the same.
+ */
+export function reportedRepoReason(value: string): string | null {
+    if (value.split('/').length < 2) return 'repo must be owner/name';
+    return repoRefReason({ forge: 'gitlab', host: '', path: value });
+}
+
 /** The segment rules over a ref's whole path (GitLab nests groups), with `repoReason`'s messages. */
 export function repoRefReason(ref: RepoRef): string | null {
     for (const part of ref.path.split('/')) {

@@ -41,7 +41,7 @@ import {
     leaseSeconds,
 } from './job-limits.js';
 import { changeRequestProblem } from './change-request-check.js';
-import { repoFilterOf, repoReason, repoRefReason } from '../helpers.js';
+import { repoFilterOf, repoRefReason, reportedRepoReason } from '../helpers.js';
 import { MS_PER_SECOND } from '../auth-shared.js';
 import { MAX_AGENT_MODEL_LENGTH } from '../agent-default.js';
 
@@ -501,7 +501,7 @@ export function validatePublication(
         return { ok: false, code: malformed, message: 'publication must be an object or null' };
     const pub = raw as Record<string, unknown>;
     const { repo, prNumber, prUrl, headBranch, baseBranch } = pub;
-    if (typeof repo !== 'string' || repoReason(repo) !== null) {
+    if (typeof repo !== 'string' || reportedRepoReason(repo) !== null) {
         return { ok: false, code: malformed, message: 'publication.repo must be an owner/name' };
     }
     if (!Number.isInteger(prNumber) || (prNumber as number) < 1 || (prNumber as number) > INT4_MAX) {

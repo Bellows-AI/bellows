@@ -1,16 +1,16 @@
-import { parseChangeRequestUrl, type RepoRef } from '@factory-ai/core';
+import { parseChangeRequestUrl, type RepoRef, sameRepo } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
 import { refOfNullableRow } from '../repo-ref-row.js';
 
 /** The refusal of a verdict or staged conclusion whose publication is not on the leased task's own repository. */
 export type WrongRepo = { result: 'wrong_repo' };
 
-/** Whether the url names a change request on `task`: forge and host exactly, the path as GitHub treats it. */
+/** Whether the url names a change request on `task`: forge and host exactly, the path as the forge folds case. */
 export function changeRequestOnRepo(url: string, task: RepoRef | null): boolean {
     const parsed = parseChangeRequestUrl(url);
     if (parsed === null || task === null) return false;
     const { ref } = parsed;
-    return ref.forge === task.forge && ref.host === task.host && ref.path.toLowerCase() === task.path.toLowerCase();
+    return sameRepo(ref, task);
 }
 
 /**

@@ -309,7 +309,7 @@ describe('createGitlabApi.projectAccess', () => {
 
 describe('createGitlabApi.request', () => {
     it('sends a PUT with its body', async () => {
-        const seen: Array<{ method?: string; body: string }> = [];
+        const seen: Array<{ method: string | undefined; body: string }> = [];
         const host = await serve((req, res) => {
             let body = '';
             req.on('data', (chunk) => (body += chunk));

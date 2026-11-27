@@ -142,16 +142,6 @@ describe('POST /api/jobs/:id/conclusion', () => {
     });
 
     it.each<[string, string, Record<string, unknown>]>([
-        [
-            'a GitLab merge request url',
-            'FORGE_UNSUPPORTED',
-            publicationOf('https://gitlab.example.com/acme/web/-/merge_requests/7'),
-        ],
-        [
-            'a nested GitLab merge request url',
-            'FORGE_UNSUPPORTED',
-            publicationOf('https://gitlab.example.com:8443/a/b/web/-/merge_requests/7'),
-        ],
         ['a malformed url', 'BAD_PUBLICATION', publicationOf('https://gitlab.example.com/acme/web/-/merge_requests/x')],
         ['a url for another repo', 'BAD_PUBLICATION', publicationOf('https://github.com/acme/other/pull/7')],
         ['a url for another number', 'BAD_PUBLICATION', publicationOf('https://github.com/acme/web/pull/8')],
@@ -166,6 +156,32 @@ describe('POST /api/jobs/:id/conclusion', () => {
         expect([completed.statusCode, completed.json().code]).toEqual([400, code]);
         expect(store.staged).toEqual([]);
         expect(store.completed).toEqual([]);
+    });
+
+    it.each<[string, Record<string, unknown>]>([
+        ['a GitLab merge request url', publicationOf('https://gitlab.example.com/acme/web/-/merge_requests/7')],
+        [
+            'a nested GitLab merge request url',
+            publicationOf('https://gitlab.example.com:8443/a/b/web/-/merge_requests/7', { repo: 'a/b/web' }),
+        ],
+    ])('accepts %s on complete and conclusion', async (_label, fields) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const staged = await post(instance, `/api/jobs/${ID}/conclusion`, { ...done, ...fields });
+        const completed = await post(instance, `/api/jobs/${ID}/complete`, { ...done, ...fields });
+
+        expect([staged.statusCode, completed.statusCode]).toEqual([200, 200]);
+        expect(store.staged).toHaveLength(1);
+        expect(store.completed).toHaveLength(1);
+    });
+
+    it('refuses a GitLab url whose path is not the reported repo, staging nothing', async () => {
+        const store = stubStore();
+        const fields = publicationOf('https://gitlab.example.com/a/b/web/-/merge_requests/7', { repo: 'a/b/Web' });
+        const res = await post(await harnessWith(store), `/api/jobs/${ID}/conclusion`, { ...done, ...fields });
+        expect([res.statusCode, res.json().code]).toEqual([400, 'BAD_PUBLICATION']);
+        expect(store.staged).toEqual([]);
     });
 
     it('answers a publication the store refused as another repository’s with BAD_PUBLICATION, on complete and conclusion', async () => {

@@ -122,11 +122,33 @@ describe('POST /api/jobs/:id/pr-operation', () => {
         expect(written).toEqual([]);
     });
 
-    it('refuses a well-formed GitLab merge request url as FORGE_UNSUPPORTED and stores nothing', async () => {
-        const { store, written } = stubStore();
-        const prUrl = 'https://gl.example/acme/web/-/merge_requests/42';
-        const res = await post(await harnessWith(store), { ...good, prUrl });
-        expect([res.statusCode, res.json().code]).toEqual([400, 'FORGE_UNSUPPORTED']);
+    it.each([
+        ['a two-segment path', 'acme/web', 'https://gl.example/acme/web/-/merge_requests/42'],
+        ['a nested path', 'grp/sub/web', 'https://gl.example/grp/sub/web/-/merge_requests/42'],
+    ])('records a GitLab merge request on the task’s own GitLab repo: %s', async (_label, path, prUrl) => {
+        const { store, written } = stubStore('ok', { forge: 'gitlab', host: 'gl.example', path });
+        const res = await post(await harnessWith(store), { ...good, repo: path, prUrl });
+        expect(res.statusCode).toBe(200);
+        expect(written).toEqual([[ID, TOKEN, { ...FIELDS, repo: path, prUrl }]]);
+    });
+
+    it.each([
+        ['a GitHub task', GITHUB_TASK],
+        ['a GitLab task on another host', { forge: 'gitlab', host: 'other.example', path: 'grp/sub/web' } as RepoRef],
+        ['a GitLab task on another path', { forge: 'gitlab', host: 'gl.example', path: 'grp/web' } as RepoRef],
+    ])('refuses a GitLab merge request url off %s and stores nothing', async (_label, task) => {
+        const { store, written } = stubStore('ok', task);
+        const prUrl = 'https://gl.example/grp/sub/web/-/merge_requests/42';
+        const res = await post(await harnessWith(store), { ...good, repo: 'grp/sub/web', prUrl });
+        expect([res.statusCode, res.json().code]).toEqual([400, 'BAD_BODY']);
+        expect(written).toEqual([]);
+    });
+
+    it('keeps GitLab’s case-sensitive paths apart', async () => {
+        const { store, written } = stubStore('ok', { forge: 'gitlab', host: 'gl.example', path: 'Grp/Sub/web' });
+        const prUrl = 'https://gl.example/grp/sub/web/-/merge_requests/42';
+        const res = await post(await harnessWith(store), { ...good, repo: 'grp/sub/web', prUrl });
+        expect(res.statusCode).toBe(400);
         expect(written).toEqual([]);
     });
 

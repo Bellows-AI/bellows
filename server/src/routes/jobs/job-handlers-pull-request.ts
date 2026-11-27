@@ -1,13 +1,7 @@
-import { ERROR_CODES, formatRepoRef, type RepoRef } from '@factory-ai/core';
+import { ERROR_CODES, formatRepoRef } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { FORGE_ACCESS_REASON, type ForgeRequirementReason } from '../../db/forge-requirement.js';
-import {
-    FORGE_UNCONFIGURED,
-    resolveForgeClient,
-    writeGap,
-    type ForgeClient,
-    type ForgeSource,
-} from '../../forge/forge-client.js';
+import type { ForgeClient } from '../../forge/forge-client.js';
 import { forgeOfRepo } from '../../forge/forges.js';
 import type { PrTokenSource } from '../../forge/pr-token.js';
 import { GitHubWriteError, type PrCreate, type PrEdit, type PullRequestFacts } from '../../github/pr-write.js';
@@ -15,18 +9,19 @@ import type { JobStore } from '../../db/jobs/job-store-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad } from '../helpers.js';
 import { resolveLeasedRoute } from '../route-guards.js';
+import { canWrite, type ForgeWriteDeps, sourceOf, writerFor } from './pull-request-forge.js';
 import { isBranchField } from './job-field-validation.js';
 import { BODY_LIMIT, HTTP_OK, leaseLost, notFoundJob } from './job-limits.js';
 
 /**
- * `POST /api/jobs/:id/pull-request` (docs/connections.md): the board views, opens, retargets and edits the task's PR as
+ * `POST /api/jobs/:id/pull-request` (docs/connections.md): the board views, opens, retargets and edits the task's PR (a GitLab MR the same way) as
  * the thread's starter, with their user token (the installation token under `AUTH_MODE=none`). A worker route: the
  * driver asks under the attempt's lease, and the runner never holds the token. The answer is `pr` (the PR and whether
  * this ask `created` or `reused` it), `none` (a view-only ask found nothing), `waiting` (the starter's grant cannot
  * serve, or the member's token is refused a 403/404: the forge requirement is open), `denied` or `refused` (GitHub's
  * own word); anything unconfirmed is a 503. A member's refusal (not the installation's, whose denial is plain `denied`)
  * waits as `forge-access` and a later successful write closes it; a 401 is the authorization itself refused.
- * One absolute deadline covers the grant read, the refresh and every GitHub call; no lock is held across them.
+ * One absolute deadline covers the grant read, the refresh, the connection read and every forge call; no lock is held across them.
  */
 
 /** The whole call's wall clock; shorter than the driver's ask deadline, so the driver sees this answer, not its own timeout. */
@@ -38,15 +33,13 @@ const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_SERVICE_UNAVAILABLE = 503;
-const NO_FORGE = 'This board holds no GitHub credential for the organization, so it opens no pull request.';
-const NOT_CONFIRMED = 'The pull request could not be written just now. Retry shortly.';
+const NO_FORGE = "This board holds no credential for the repository's forge, so it opens no change request.";
+const NOT_CONFIRMED = 'The change request could not be written just now. Retry shortly.';
 const REFUSED_REPO = 'This attempt may not write a pull request: its task names no repository, or not its thread root.';
 
-export interface PullRequestDeps {
+export interface PullRequestDeps extends ForgeWriteDeps {
     /** The token a write is made with: the starter's grant, or the installation's under `AUTH_MODE=none`. */
     tokens: PrTokenSource;
-    /** What a change request is written through (the REST writer over the configured API); no writer is no forge. */
-    forge: ForgeSource;
 }
 
 /** What a create carries: GitHub's fields, and the branch the new PR targets. */
@@ -224,25 +217,6 @@ async function write(
     return outcome;
 }
 
-/**
- * Whether the board can write on this repo's forge at all, decided before any credential is read or wait opened:
- * false when it holds no API to write through (the 409), a throw for a forge no client answers for yet (nothing is
- * written, nothing concluded: a 503).
- */
-function canWrite(forge: ForgeSource, repo: RepoRef): boolean {
-    const gap = writeGap(forge, repo);
-    if (gap === null) return true;
-    if (gap.reason === FORGE_UNCONFIGURED) return false;
-    throw new Error(`no client answers for ${gap.forge} repositories`);
-}
-
-/** The client the PR is written through under the confirmed `token`; the forge was checked by `canWrite`. */
-function writerFor(forge: ForgeSource, repo: RepoRef, token: string): ForgeClient {
-    const resolution = resolveForgeClient(forge, repo, { kind: 'token', token });
-    if (!resolution.ok) throw new Error(`no client answers for ${resolution.forge} repositories`);
-    return resolution.client;
-}
-
 export async function handlePullRequest(
     orgs: OrgRegistry,
     deps: PullRequestDeps,
@@ -264,7 +238,7 @@ export async function handlePullRequest(
     try {
         const who = await contextOf(store, reply, attempt);
         if (!who) return reply;
-        if (!canWrite(deps.forge, who.repo)) return bad(reply, ERROR_CODES.GITHUB_UNAVAILABLE, NO_FORGE, HTTP_CONFLICT);
+        if (!canWrite(deps, who.repo)) return bad(reply, ERROR_CODES.GITHUB_UNAVAILABLE, NO_FORGE, HTTP_CONFLICT);
         const signal = AbortSignal.any([AbortSignal.timeout(PR_WRITE_DEADLINE_MS), request.closing, closedBy(reply)]);
         const token = await deps.tokens(who, signal);
         if (!token.ok) {
@@ -272,7 +246,7 @@ export async function handlePullRequest(
             if (token.answer === 'unavailable') throw new Error('the member token is not confirmed');
             return await openWait(store, reply, attempt, { forge: token.forge, reason: token.reason });
         }
-        const client = writerFor(deps.forge, who.repo, token.token);
+        const client = writerFor(await sourceOf(deps, who.orgId, who.repo, signal), who.repo, token.token);
         const done = await write(client, { store, who, token, ask: asked.value, signal });
         if (done.answer === 'no-access') {
             return await openWait(store, reply, attempt, { forge: done.forge, reason: FORGE_ACCESS_REASON });
