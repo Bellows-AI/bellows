@@ -75,8 +75,15 @@ export interface ForgeSource {
         /** The change-request writer, over whichever API the board is configured for. */
         readonly writer?: PrWriter | undefined;
     };
-    /** What a GitLab change request is written through: the board's client and the connection's CA bundle. */
-    readonly gitlab?: { readonly api: GitlabApi; readonly caBundle: string | undefined };
+    /**
+     * What a GitLab change request is read and written through: the board's client and the connection's CA bundle.
+     * `signal` is the absolute deadline of the caller's pass; a read without one makes its own.
+     */
+    readonly gitlab?: {
+        readonly api: GitlabApi;
+        readonly caBundle: string | undefined;
+        readonly signal?: AbortSignal | undefined;
+    };
 }
 
 /** The ref names a forge or host no client answers for (GitLab reads, and GitLab with no token to act as). */

@@ -1,4 +1,4 @@
-import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, READ_TRANSPORT, type RepoRef } from '@factory-ai/core';
+import { READ_TRANSPORT, type RepoRef } from '@factory-ai/core';
 import { GitHubMergeError } from '../github/pr-merge.js';
 import { GitHubReadError } from '../github/pr-read.js';
 import {
@@ -10,31 +10,28 @@ import {
 } from '../github/pr-write.js';
 import type { GitlabApi } from '../gitlab/gitlab-api.js';
 import type { ActingCredential, ForgeClient } from './forge-client.js';
+import { gitlabRequest, isSuccess, NO_TOKEN as NO_TOKEN_REASON } from './gitlab-call.js';
 import { asRead, readMergeRequestPart } from './gitlab-change-request-read.js';
+import { createGitLabReads } from './gitlab-reads.js';
 
 /**
  * The GitLab adapter (docs/gitlab.md): the change-request writes of `ForgeClient` over REST v4, as the acting member's
  * token. The project is named by its URL-encoded full path. A draft is the `Draft: ` title prefix (v4 has no create
  * field for it). Failures reuse `GitHubWriteError`, the publish route's contract: `denied` (403/404), `refused`
  * (400/422), and `uncertain` for everything that is no answer to trust (401, 409, 5xx, transport, a body of the wrong
- * shape). The reads the board does not make on GitLab yet reject; none answers null or empty.
+ * shape). The reads of a change request, a branch and a branch state are `gitlab-reads.ts`'s; the reads the board does not make on
+ * GitLab yet reject, and none answers null or empty.
  */
 
 const NO_TOKEN = 'no acting token was given for this write';
 const DRAFT_PREFIX = 'Draft: ';
 /** GitLab's own limit on a merge request title. */
 const TITLE_LIMIT = 255;
-/** A page of merge requests carries their descriptions: far past a version document. */
-const BYTES_PER_KIB = 1024;
-const BYTES_PER_MIB = BYTES_PER_KIB * BYTES_PER_KIB;
-const BODY_LIMIT_BYTES = 2 * BYTES_PER_MIB;
 const ERROR_DETAIL_LIMIT = 200;
 const HTTP_FORBIDDEN = 403;
 const HTTP_NOT_FOUND = 404;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNPROCESSABLE = 422;
-const HTTP_MULTIPLE_CHOICES = 300;
-const HTTP_OK = 200;
 const OPENED = 'opened';
 const ALREADY_EXISTS = /already exists/i;
 /** GitLab's own reading of a title as a draft. */
@@ -103,13 +100,14 @@ const unread = (what: string) => async (): Promise<never> => {
 };
 
 export function createGitLabForgeClient(
-    deps: { api: GitlabApi; caBundle: string | undefined },
+    deps: { api: GitlabApi; caBundle: string | undefined; signal?: AbortSignal | undefined },
     ref: RepoRef,
     credential: ActingCredential
 ): ForgeClient {
     const project = `/api/v4/projects/${encodeURIComponent(ref.path)}`;
     const mrs = `${project}/merge_requests`;
 
+    const send = gitlabRequest(deps, ref, credential.kind === 'token' ? credential.token : null);
     /** One call: the parsed JSON of a 2xx, or the classified failure. The token is in no error text. */
     const call = async (
         method: 'GET' | 'POST' | 'PUT',
@@ -117,30 +115,14 @@ export function createGitLabForgeClient(
         signal: AbortSignal,
         body?: object
     ): Promise<unknown> => {
-        if (credential.kind !== 'token') throw new GitHubWriteError(NO_TOKEN, 'denied');
         const what = `${method} ${path.split('?')[0]}`;
-        const answer = await deps.api.request({
-            host: ref.host,
-            path,
-            method,
-            headers: {
-                authorization: `Bearer ${credential.token}`,
-                ...(body === undefined ? {} : { [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE }),
-            },
-            ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-            caBundle: deps.caBundle,
-            signal,
-            maxBytes: BODY_LIMIT_BYTES,
-        });
-        if (!answer.ok) throw new GitHubWriteError(`${what}: no answer (${answer.reason})`, 'uncertain');
-        if (answer.status < HTTP_OK || answer.status >= HTTP_MULTIPLE_CHOICES) {
-            throw failureOf(what, answer.status, answer.text);
+        const answer = await send(method, path, signal, body);
+        if (!answer.ok) {
+            if (answer.reason === NO_TOKEN_REASON) throw new GitHubWriteError(NO_TOKEN, 'denied');
+            throw new GitHubWriteError(`${what}: no answer (${answer.reason})`, 'uncertain');
         }
-        try {
-            return JSON.parse(answer.text);
-        } catch {
-            throw new GitHubWriteError(`${what}: the answer was not JSON`, 'uncertain');
-        }
+        if (!isSuccess(answer.status)) throw failureOf(what, answer.status, answer.text);
+        return answer.json;
     };
 
     const owned = (payload: unknown, what: string): MergeRequest => {
@@ -222,15 +204,17 @@ export function createGitLabForgeClient(
         return put(number, fields, signal);
     };
 
+    const reads = createGitLabReads(send, ref, () => deps.signal);
+
     return {
         forge: ref.forge,
         listRepositories: unread('the repository listing'),
         listBranches: unread('branches'),
-        readBranchHead: unread('a branch'),
-        readBranchState: unread('a branch'),
+        readBranchHead: reads.readBranchHead,
+        readBranchState: reads.readBranchState,
         readFile: unread('files'),
         listSkills: unread('skills'),
-        readChangeRequest: unread('a merge request'),
+        readChangeRequest: reads.readChangeRequest,
         readChangeRequestPart: (number, part, signal) =>
             readMergeRequestPart(asRead(call), { project, number }, part, signal),
         mergeChangeRequest: () => Promise.reject(new GitHubMergeError(unconfirmed('a merge'), 'uncertain')),

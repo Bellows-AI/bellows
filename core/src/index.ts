@@ -93,6 +93,7 @@ export type {
 } from './batch-observation.js';
 export {
     assessChecks,
+    changeRequestIs,
     assessPullRequest,
     CHECKS_FAILING,
     CHECKS_MISSING,
@@ -341,6 +342,7 @@ export type { DisplayTitleOrigin, TaskTitleOrigin } from './task-title.js';
 export * from './notifications.js';
 export * from './batch-plan-schema.js';
 export * from './branch-name.js';
+export * from './gitlab-checks.js';
 export {
     UNKNOWN_BUCKET,
     bucketTimedContributions,

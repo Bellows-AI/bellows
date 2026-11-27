@@ -693,6 +693,131 @@ describe('fake GitLab: pipelines and commit statuses', () => {
     });
 });
 
+describe('fake GitLab: what the batch reads ask', () => {
+    const jobsOf = (token: string, id: number, query = '') =>
+        gl.send('GET', api(`/pipelines/${id}/jobs${query}`), { token });
+
+    it('serves the jobs seeded on a pipeline, paged, and folds a job update into the pipeline', async () => {
+        await seed();
+        const { access_token: token } = await gl.signIn();
+        const created = (
+            await gl.control('gitlab/pipelines', {
+                project: PROJECT,
+                ref: 'feature',
+                jobs: [
+                    { name: 'build', status: 'success', stage: 'build' },
+                    { name: 'test', status: 'running' },
+                    { name: 'lint', status: 'failed', allowFailure: true },
+                ],
+            })
+        ).body;
+        expect(created.status).toBe('running');
+        const first = await jobsOf(token, created.id, '?per_page=2');
+        expect(first.status).toBe(200);
+        expect(first.body).toHaveLength(2);
+        expect(first.body[0]).toMatchObject({
+            name: 'build',
+            stage: 'build',
+            status: 'success',
+            allow_failure: false,
+            failure_reason: null,
+        });
+        expect(first.body[0].web_url).toContain(`/-/jobs/${first.body[0].id}`);
+        expect((await jobsOf(token, created.id, '?per_page=2&page=2')).body).toHaveLength(1);
+        const lint = (await jobsOf(token, created.id)).body.find((job: { name: string }) => job.name === 'lint');
+        expect(lint).toMatchObject({ allow_failure: true, failure_reason: 'script_failure' });
+        const updated = await gl.control(`gitlab/pipelines/${created.id}`, {
+            jobs: [{ name: 'test', status: 'failed' }],
+        });
+        expect(updated.body.status).toBe('failed');
+        expect((await gl.send('GET', api('/pipelines/424242/jobs'), { token })).status).toBe(404);
+    });
+
+    it('serves a head pipeline on another sha when asked', async () => {
+        await seed();
+        const { access_token: token } = await gl.signIn();
+        const mr = (await openMr(token)).body;
+        const stale = (
+            await gl.control('gitlab/pipelines', {
+                project: PROJECT,
+                ref: 'feature',
+                sha: '1'.repeat(40),
+                status: 'success',
+                headOf: mr.iid,
+            })
+        ).body;
+        const read = (await gl.send('GET', api(`/merge_requests/${mr.iid}`), { token })).body;
+        expect(read.head_pipeline).toMatchObject({ id: stale.id, sha: '1'.repeat(40) });
+        expect(read.sha).not.toBe('1'.repeat(40));
+    });
+
+    it('answers the approvals an MR has and needs', async () => {
+        await seed();
+        const { access_token: token } = await gl.signIn();
+        const mr = (await openMr(token)).body;
+        const none = await gl.send('GET', api(`/merge_requests/${mr.iid}/approvals`), { token });
+        expect(none.body).toEqual({ approvals_required: 0, approvals_left: 0, approved_by: [] });
+        await gl.control('gitlab/approvals', { project: PROJECT, iid: mr.iid, required: 2, approvedBy: ['dev-one'] });
+        const some = (await gl.send('GET', api(`/merge_requests/${mr.iid}/approvals`), { token })).body;
+        expect(some).toMatchObject({ approvals_required: 2, approvals_left: 1 });
+        expect(some.approved_by.map((entry: { user: { username: string } }) => entry.user.username)).toEqual([
+            'dev-one',
+        ]);
+        expect((await gl.send('GET', api('/merge_requests/99/approvals'), { token })).status).toBe(404);
+    });
+
+    it('answers the merge base of two commits, and 400 for an unknown one', async () => {
+        await seed();
+        const { access_token: token } = await gl.signIn();
+        const main = (await gl.send('GET', api('/repository/branches/main'), { token })).body.commit.id;
+        const feature = (await gl.send('GET', api('/repository/branches/feature'), { token })).body.commit.id;
+        const base = await gl.send('GET', `${api('/repository/merge_base')}?refs[]=${main}&refs[]=${feature}`, {
+            token,
+        });
+        expect(base.body).toEqual({ id: main });
+        const unknown = await gl.send(
+            'GET',
+            `${api('/repository/merge_base')}?refs[]=${main}&refs[]=${'0'.repeat(40)}`,
+            {
+                token,
+            }
+        );
+        expect(unknown.status).toBe(400);
+    });
+
+    it('pages the commit statuses', async () => {
+        await seed();
+        const { access_token: token } = await gl.signIn();
+        const sha = (await gl.send('GET', api('/repository/branches/feature'), { token })).body.commit.id;
+        for (const name of ['a', 'b', 'c']) {
+            await gl.send('POST', api(`/statuses/${sha}`), { token, body: { state: 'success', name } });
+        }
+        const listing = await gl.send('GET', api(`/repository/commits/${sha}/statuses?per_page=2`), { token });
+        expect(listing.body).toHaveLength(2);
+        expect(listing.headers['x-next-page']).toBe('2');
+        expect(
+            (await gl.send('GET', api(`/repository/commits/${sha}/statuses?per_page=2&page=2`), { token })).body
+        ).toHaveLength(1);
+    });
+
+    it('pins the merge route: a stale sha is 409, squash_option and branch removal are honoured', async () => {
+        await seed({ squashOption: 'never' });
+        const { access_token: token } = await gl.signIn();
+        const mr = (await openMr(token)).body;
+        const stale = await gl.send('PUT', api(`/merge_requests/${mr.iid}/merge`), {
+            token,
+            body: { sha: '2'.repeat(40) },
+        });
+        expect(stale.status).toBe(409);
+        const merged = await gl.send('PUT', api(`/merge_requests/${mr.iid}/merge`), {
+            token,
+            body: { sha: mr.sha, squash: true, should_remove_source_branch: true },
+        });
+        expect(merged.body).toMatchObject({ state: 'merged', squash: false });
+        expect((await gl.send('GET', api('/repository/branches/feature'), { token })).status).toBe(404);
+    });
+});
+
 describe('fake GitLab: project hooks', () => {
     it('creates, lists and deletes hooks without ever returning the secret token', async () => {
         await seed();

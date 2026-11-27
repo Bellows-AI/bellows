@@ -4,6 +4,7 @@
  * provider outside any lock, asks here, and commits the answer only if the task is still bound to
  * what was read. Observation supplies facts; recovery (batch-recovery.ts) decides what to do.
  */
+import { sameRepo, type RepoRef } from './repo-ref.js';
 import { BATCH_RETRY_BACKOFF_BASE_MS, MAX_EVIDENCE_ITEMS, recoveryBackoffMs } from './batch-recovery.js';
 
 export const PR_OPEN = 'open';
@@ -252,3 +253,7 @@ export function nextObservationDelayMs(
     if (state.ok) return state.mergeabilityUnknown ? OBSERVE_MERGEABILITY_RETRY_MS : OBSERVE_INTERVAL_MS;
     return Math.max(recoveryBackoffMs(state.failures), state.retryAfterMs ?? 0);
 }
+
+/** Whether `facts` describe change request `number` of `ref`: the forge's own case rule for the path, a number alone names nothing. */
+export const changeRequestIs = (facts: Pick<PrFacts, 'repo' | 'number'>, ref: RepoRef, number: number): boolean =>
+    sameRepo({ ...ref, path: facts.repo }, ref) && facts.number === number;
