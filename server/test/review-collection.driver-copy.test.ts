@@ -9,19 +9,19 @@ const middleConst = (name: string) => new RegExp(`const ${name} = '([^']*)';`).e
 
 describe('the board copy of the review collection', () => {
     it.each([
-        'BODY_MAX',
-        'ERROR_MAX',
-        'GENERAL_LIMIT',
-        'INLINE_LIMIT',
-        'REVIEWS_LIMIT',
-        'THREADS_LIMIT',
-        'THREAD_COMMENTS_LIMIT',
-        'TOTAL_OUTPUT_BYTES',
-        'PLAN_TARGETS_MAX',
-        'PLAN_BYTES_MAX',
-        'TRUNCATED_MARKER',
-    ] as const)('%s equals the driver value', (name) => {
-        expect(board[name]).toBe(driver[name]);
+        ['BODY_MAX', board.BODY_MAX, driver.BODY_MAX],
+        ['ERROR_MAX', board.ERROR_MAX, driver.ERROR_MAX],
+        ['GENERAL_LIMIT', board.GENERAL_LIMIT, driver.GENERAL_LIMIT],
+        ['INLINE_LIMIT', board.INLINE_LIMIT, driver.INLINE_LIMIT],
+        ['REVIEWS_LIMIT', board.REVIEWS_LIMIT, driver.REVIEWS_LIMIT],
+        ['THREADS_LIMIT', board.THREADS_LIMIT, driver.THREADS_LIMIT],
+        ['THREAD_COMMENTS_LIMIT', board.THREAD_COMMENTS_LIMIT, driver.THREAD_COMMENTS_LIMIT],
+        ['TOTAL_OUTPUT_BYTES', board.TOTAL_OUTPUT_BYTES, driver.TOTAL_OUTPUT_BYTES],
+        ['PLAN_TARGETS_MAX', board.PLAN_TARGETS_MAX, driver.PLAN_TARGETS_MAX],
+        ['PLAN_BYTES_MAX', board.PLAN_BYTES_MAX, driver.PLAN_BYTES_MAX],
+        ['TRUNCATED_MARKER', board.TRUNCATED_MARKER, driver.TRUNCATED_MARKER],
+    ])('%s equals the driver value', (_name, copy, original) => {
+        expect(copy).toBe(original);
     });
 
     it("carries the middle's addressed-marker prefix and suffix", () => {

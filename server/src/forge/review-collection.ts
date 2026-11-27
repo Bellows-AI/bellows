@@ -14,9 +14,11 @@ export const REVIEWS_LIMIT = 20;
 export const THREADS_LIMIT = 100;
 export const THREAD_COMMENTS_LIMIT = 10;
 const BYTES_PER_KB = 1024;
-export const TOTAL_OUTPUT_BYTES = 256 * BYTES_PER_KB;
+const TOTAL_OUTPUT_MAX_KB = 256;
+const PLAN_BYTES_MAX_KB = 128;
+export const TOTAL_OUTPUT_BYTES = TOTAL_OUTPUT_MAX_KB * BYTES_PER_KB;
 export const PLAN_TARGETS_MAX = 32;
-export const PLAN_BYTES_MAX = 128 * BYTES_PER_KB;
+export const PLAN_BYTES_MAX = PLAN_BYTES_MAX_KB * BYTES_PER_KB;
 
 export const ADDRESSED_PREFIX = '<!-- factory-review-reconcile addressed ';
 export const ADDRESSED_SUFFIX = ' -->';
@@ -152,5 +154,80 @@ export function boundCollection(full: ReviewCollection): ReviewCollection {
         threads: [],
         addressed: [],
         truncated: { sections: [], bodies: 0, diffHunks: 0, threads: 0, total: true },
+    };
+}
+
+export type ReplyKind = 'general' | 'inline' | 'thread' | 'resolve';
+
+export interface ReviewPlanTarget {
+    id: string;
+    kind: ReplyKind;
+    /** Reply body for general/inline/thread targets; null for resolve targets. */
+    reply: string | null;
+    resolve: boolean;
+    /** The thread's first comment, the reply anchor of a GitHub thread; unused on GitLab. */
+    firstCommentId: number | null;
+    status: 'planned' | 'refused';
+    reason: string | null;
+}
+
+export interface ReviewPlan {
+    version: 1;
+    schema: typeof REVIEW_PLAN_SCHEMA;
+    ref: ReviewRef;
+    targets: ReviewPlanTarget[];
+}
+
+const KINDS: readonly string[] = ['general', 'inline', 'thread', 'resolve'];
+const STATUSES: readonly string[] = ['planned', 'refused'];
+const isObject = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+const optional = (value: unknown, is: (v: unknown) => boolean) => value === undefined || value === null || is(value);
+
+const isText = (v: unknown) => typeof v === 'string';
+const isFlag = (v: unknown) => typeof v === 'boolean';
+
+/** Whether the optional fields of a plan target are what the planner writes. */
+const legible = (raw: Record<string, unknown>): boolean =>
+    optional(raw.reply, isText) &&
+    optional(raw.reason, isText) &&
+    optional(raw.firstCommentId, Number.isInteger) &&
+    optional(raw.resolve, isFlag);
+
+function targetOf(raw: unknown): ReviewPlanTarget | null {
+    if (!isObject(raw) || !legible(raw)) return null;
+    const { id, kind, reply, resolve, firstCommentId, status, reason } = raw;
+    if (typeof id !== 'string' || id === '' || typeof kind !== 'string' || !KINDS.includes(kind)) return null;
+    if (typeof status !== 'string' || !STATUSES.includes(status)) return null;
+    // A planned reply target without a body can only be a malformed plan, as the GitHub script's own check.
+    if (kind !== 'resolve' && status === 'planned' && (typeof reply !== 'string' || reply.trim() === '')) return null;
+    return {
+        id,
+        kind: kind as ReplyKind,
+        reply: typeof reply === 'string' ? reply : null,
+        resolve: resolve === true,
+        firstCommentId: typeof firstCommentId === 'number' ? firstCommentId : null,
+        status: status as ReviewPlanTarget['status'],
+        reason: typeof reason === 'string' ? reason : null,
+    };
+}
+
+/**
+ * The plan `value` is, or null when any part of it is not legible: a malformed target anywhere refuses the whole plan
+ * before a write, never a partial run. The plan's own `ref` is only shape-checked; a caller never picks the request.
+ */
+export function parseReviewPlan(value: unknown): ReviewPlan | null {
+    if (!isObject(value) || value.schema !== REVIEW_PLAN_SCHEMA || value.version !== 1) return null;
+    const { ref, targets } = value;
+    const refOk =
+        isObject(ref) && typeof ref.owner === 'string' && typeof ref.repo === 'string' && Number.isInteger(ref.number);
+    if (!refOk || !Array.isArray(targets) || targets.length > PLAN_TARGETS_MAX) return null;
+    const parsed = targets.map(targetOf);
+    if (parsed.some((target) => target === null)) return null;
+    return {
+        version: 1,
+        schema: REVIEW_PLAN_SCHEMA,
+        ref: ref as unknown as ReviewRef,
+        targets: parsed as ReviewPlanTarget[],
     };
 }

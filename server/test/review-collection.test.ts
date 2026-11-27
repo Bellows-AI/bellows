@@ -3,6 +3,8 @@ import {
     addressedKeys,
     BODY_MAX,
     boundCollection,
+    parseReviewPlan,
+    PLAN_TARGETS_MAX,
     GENERAL_LIMIT,
     type ReviewCollection,
     TOTAL_OUTPUT_BYTES,
@@ -71,7 +73,7 @@ describe('boundCollection', () => {
         expect(bounded.truncated.sections).toEqual(['general', 'threads']);
     });
 
-    it('caps a thread\'s comments and cuts a long body, counting both', () => {
+    it("caps a thread's comments and cuts a long body, counting both", () => {
         const comments = Array.from({ length: THREAD_COMMENTS_LIMIT + 1 }, (_, i) => note(i + 1));
         const long = 'x'.repeat(BODY_MAX + 5);
         const bounded = boundCollection({
@@ -87,7 +89,10 @@ describe('boundCollection', () => {
     it('collapses a collection past the total bound to `truncated.total`, with no section', () => {
         const big = 'y'.repeat(BODY_MAX);
         const threads = Array.from({ length: THREADS_LIMIT }, (_, i) =>
-            thread(i + 1, Array.from({ length: THREAD_COMMENTS_LIMIT }, (_, j) => note(i * 100 + j + 1, big)))
+            thread(
+                i + 1,
+                Array.from({ length: THREAD_COMMENTS_LIMIT }, (_, j) => note(i * 100 + j + 1, big))
+            )
         );
         const bounded = boundCollection({ ...empty(), threads, addressed: ['thread:d1'] });
         expect(bounded.truncated.total).toBe(true);
@@ -103,5 +108,60 @@ describe('addressedKeys', () => {
             'general:3',
             'thread:b',
         ]);
+    });
+});
+
+describe('parseReviewPlan', () => {
+    const target = (extra: object = {}) => ({
+        id: 'd1',
+        kind: 'thread',
+        reply: 'ok',
+        resolve: false,
+        firstCommentId: 4,
+        status: 'planned',
+        reason: null,
+        ...extra,
+    });
+    const plan = (targets: unknown[] = [target()], extra: object = {}) => ({
+        version: 1,
+        schema: 'review-reply/plan/v1',
+        ref: { owner: 'grp/sub', repo: 'web', number: 3 },
+        targets,
+        ...extra,
+    });
+
+    it('reads a legible plan, resolve targets and refused targets included', () => {
+        const read = parseReviewPlan(
+            plan([
+                target(),
+                target({ kind: 'resolve', reply: null, resolve: true }),
+                target({ status: 'refused', reply: null, reason: 'unknown_target' }),
+            ])
+        );
+        expect(read?.targets.map((t) => [t.kind, t.status])).toEqual([
+            ['thread', 'planned'],
+            ['resolve', 'planned'],
+            ['thread', 'refused'],
+        ]);
+    });
+
+    it.each([
+        ['not an object', 'plan'],
+        ['another schema', plan([], { schema: 'other' })],
+        ['another version', plan([], { version: 2 })],
+        ['no ref', plan([], { ref: null })],
+        ['targets that are not a list', plan([], { targets: {} })],
+        ['too many targets', plan(Array.from({ length: PLAN_TARGETS_MAX + 1 }, () => target()))],
+        ['a target without an id', plan([target({ id: '' })])],
+        ['a target of an unknown kind', plan([target({ kind: 'delete' })])],
+        ['a target of an unknown status', plan([target({ status: 'done' })])],
+        ['a planned reply without a body', plan([target({ reply: '  ' })])],
+        ['a target that is not an object', plan([4])],
+    ])('refuses the whole plan for %s', (_what, value) => {
+        expect(parseReviewPlan(value)).toBeNull();
+    });
+
+    it('refuses the whole plan when one target among good ones is malformed', () => {
+        expect(parseReviewPlan(plan([target(), target({ id: 7 })]))).toBeNull();
     });
 });
