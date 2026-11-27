@@ -121,7 +121,11 @@ describe('fake GitHub: the user-token flow', () => {
     });
 
     const register = (login: string, id: number, installation: number) =>
-        send('POST', '/_control/github/members', undefined, { login, id, installation: { id: installation, account: login } });
+        send('POST', '/_control/github/members', undefined, {
+            login,
+            id,
+            installation: { id: installation, account: login },
+        });
 
     it('signs in a registered identity by the login hint: /user and /user/installations answer it', async () => {
         await register('lane-a', 42, 4242);
