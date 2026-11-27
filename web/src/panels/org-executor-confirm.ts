@@ -58,10 +58,13 @@ export function confirmBusyLabel({ action }: ConfirmRequest): string {
  * The confirmed write, and the only call site of the two routes: nothing else in the section may
  * reach them, which is what keeps the gate from being bypassed by a later edit.
  */
-export function confirmedWrite(
+export function confirmedWrite<R>(
     action: OrgRowAction,
     row: { id: string },
-    api: { remove: (id: string) => Promise<string | null>; demote: (id: string) => Promise<string | null> }
-): Promise<string | null> {
+    api: { remove: (id: string) => Promise<R>; demote: (id: string) => Promise<R> }
+): Promise<R> {
     return action === 'delete' ? api.remove(row.id) : api.demote(row.id);
 }
+
+/** The select's value for "clear the defaults": not an executor id, so it never reads as a replacement. */
+export const CLEAR_DEFAULTS_CHOICE = 'clear';

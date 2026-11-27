@@ -67,6 +67,25 @@ export const listOrgExecutorConfigs = async (): Promise<
     return result.ok ? { ok: true, executors: result.value.executors } : { ok: false, error: result.error };
 };
 
+/** A refused write: the sentence to show, and the board's refusal code when it named one. */
+export interface ExecutorWriteRefusal {
+    error: string;
+    code?: string;
+}
+
+/** `executorWrite`, keeping the refusal's code for a caller that acts on it. */
+export async function executorWriteRefusal(
+    url: string,
+    method: 'POST' | 'PUT' | 'DELETE',
+    body: unknown,
+    fallbackError: string
+): Promise<ExecutorWriteRefusal | null> {
+    // A bodyless write (DELETE) sends no content type either: `request` only declares JSON with a body.
+    const result = await request(url, { method, body, verb: fallbackError, empty: true });
+    if (result.ok) return null;
+    return { error: result.error, ...(result.code === undefined ? {} : { code: result.code }) };
+}
+
 /** One executor write, shared by the org CRUD and the personal by-id routes (issue 440). */
 export async function executorWrite(
     url: string,
@@ -74,10 +93,14 @@ export async function executorWrite(
     body: unknown,
     fallbackError: string
 ): Promise<string | null> {
-    // A bodyless write (DELETE) sends no content type either: `request` only declares JSON with a body.
-    const result = await request(url, { method, body, verb: fallbackError, empty: true });
-    return result.ok ? null : result.error;
+    return (await executorWriteRefusal(url, method, body, fallbackError))?.error ?? null;
 }
+
+/**
+ * What becomes of the defaults naming an organization executor that is deleted or made personal: cleared, or re-pointed
+ * at another organization executor. Without one the board refuses while any default names it.
+ */
+export type DefaultsResolution = { clearDefaults: true } | { replaceDefaultsWith: string };
 
 export const createOrgExecutor = (input: OrgExecutorInput): Promise<string | null> =>
     executorWrite('/api/org/executors', 'POST', input, 'Could not save the executor');
@@ -85,8 +108,22 @@ export const createOrgExecutor = (input: OrgExecutorInput): Promise<string | nul
 export const updateOrgExecutor = (id: string, input: OrgExecutorInput): Promise<string | null> =>
     executorWrite(`/api/org/executors/${id}`, 'PUT', input, 'Could not save the executor');
 
-export const deleteOrgExecutor = (id: string): Promise<string | null> =>
-    executorWrite(`/api/org/executors/${id}`, 'DELETE', undefined, 'Could not delete the executor');
+export const deleteOrgExecutor = (
+    id: string,
+    resolution?: DefaultsResolution
+): Promise<ExecutorWriteRefusal | null> => {
+    const query = resolution
+        ? 'clearDefaults' in resolution
+            ? '?clearDefaults=true'
+            : `?replaceDefaultsWith=${encodeURIComponent(resolution.replaceDefaultsWith)}`
+        : '';
+    return executorWriteRefusal(
+        `/api/org/executors/${id}${query}`,
+        'DELETE',
+        undefined,
+        'Could not delete the executor'
+    );
+};
 
 /** Suspends or resumes an org profile for every member (issue 440). */
 export const suspendOrgExecutor = (id: string, suspended: boolean): Promise<string | null> =>
@@ -98,8 +135,17 @@ export const suspendOrgExecutor = (id: string, suspended: boolean): Promise<stri
     );
 
 /** The one route a profile's scope moves through: promote the admin's own row, or demote to it. */
-export const changeOrgExecutorScope = (id: string, scope: ExecutorScope): Promise<string | null> =>
-    executorWrite(`/api/org/executors/${id}/scope`, 'POST', { scope }, 'Could not move the executor');
+export const changeOrgExecutorScope = (
+    id: string,
+    scope: ExecutorScope,
+    resolution?: DefaultsResolution
+): Promise<ExecutorWriteRefusal | null> =>
+    executorWriteRefusal(
+        `/api/org/executors/${id}/scope`,
+        'POST',
+        { scope, ...resolution },
+        'Could not move the executor'
+    );
 
 /** Configures the organization's default executor by id: the profile every member without a default of their own launches on. */
 export const setOrgDefaultExecutor = (id: string): Promise<string | null> =>

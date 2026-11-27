@@ -3,10 +3,7 @@ import {
     type DeploymentMode,
     ERROR_CODES,
     executorConnectionFields,
-    type ExecutorScope,
-    ORG_SCOPE,
     type ProviderConnectionMeta,
-    USER_SCOPE,
 } from '@factory-ai/core';
 import { isBridged } from '../auth/bridge-binding.js';
 import { callerOf, orgOf } from '../auth/plugin.js';
@@ -418,12 +415,9 @@ async function handleSuspendExecutor(deps: WorkspaceDeps, request: FastifyReques
 }
 
 /**
- * The member's default executor. Two bodies:
- * - `{ executorId }` configures it by the profile's stable id (the stable-default table): a rename never severs it, and
- *   it outranks the legacy preference and the fallback chain. The store refuses a profile the caller may not select.
- * - `{ executor, executorScope }` is the legacy name-keyed preference (issue 391); it applies only while no configured
- *   default does.
- * The store's typed refusals are 404 and 409 answers, not failures; anything else reaches the error handler as one.
+ * Configures the member's default executor by the profile's stable id (`{ executorId }`): a rename never severs it, and
+ * it outranks the legacy preference and the fallback chain. Every default write names an id; a body without one is a
+ * 400. The store refuses a profile the caller may not select; its typed refusals are 404 and 409 answers, not failures.
  */
 type PersonalContext = NonNullable<Awaited<ReturnType<typeof personalExecutorContext>>>;
 
@@ -441,34 +435,10 @@ async function putDefaultById({ userId, executors }: PersonalContext, reply: Fas
     }
 }
 
-async function putDefaultByName(
-    { userId, executors }: PersonalContext,
-    reply: FastifyReply,
-    fields: { executor?: unknown; executorScope?: unknown }
-) {
-    const name = fields.executor;
-    const scope = fields.executorScope;
-    if (typeof name !== 'string' || !name) return bad(reply, ERROR_CODES.BAD_BODY, 'executor must be a string');
-    if (scope !== USER_SCOPE && scope !== ORG_SCOPE) {
-        return bad(reply, ERROR_CODES.BAD_EXECUTOR_SCOPE, `executorScope must be one of: ${USER_SCOPE}, ${ORG_SCOPE}`);
-    }
-    try {
-        await executors.setDefault(userId, { scope: scope as ExecutorScope, name });
-    } catch (error) {
-        const refused = selectionRefusal(reply, error, `the ${scope} executor "${name}"`);
-        if (refused) return refused;
-        throw error;
-    }
-    return reply.code(HTTP_OK).send({ defaultExecutor: { scope, name } });
-}
-
 async function handlePutDefaultExecutor(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
     const ctx = await personalExecutorContext(deps, request, reply);
     if (!ctx) return reply;
-    const fields = jsonBody(request.body);
-    return fields.executorId === undefined
-        ? putDefaultByName(ctx, reply, fields)
-        : putDefaultById(ctx, reply, fields.executorId);
+    return putDefaultById(ctx, reply, jsonBody(request.body).executorId);
 }
 
 /** Clears the member's configured default; the organization's, then the legacy chain, apply again. */

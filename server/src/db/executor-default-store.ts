@@ -23,19 +23,33 @@ export class ExecutorDefaultNotFoundError extends Error {}
 /** `selectDefault`'s other refusal (issue 440): the target is suspended. The route answers 409. */
 export class ExecutorSuspendedError extends Error {}
 
+/** How many selections still name an executor: the organization's, and members' own (a count, never who). */
+export interface SelectionCounts {
+    readonly organization: boolean;
+    readonly members: number;
+}
+
 /**
- * A write that would delete, omit or move a profile a default still names. Never cascaded: the owner clears or
- * replaces the default first. The route answers 409.
+ * A write that would delete, omit or move a profile a default still names. Never cascaded and never released silently:
+ * the owner clears or replaces the default first, or the request carries an explicit `DefaultResolution`. The route
+ * answers 409 with the counts in the message.
  */
 export class ExecutorDefaultProtectedError extends Error {
     constructor(
         readonly executorId: string,
-        message: string
+        message: string,
+        readonly selections: SelectionCounts = { organization: false, members: 0 }
     ) {
         super(message);
         this.name = 'ExecutorDefaultProtectedError';
     }
 }
+
+/**
+ * The explicit answer to the selections naming an organization executor that is being deleted or moved to personal
+ * scope: clear them all, or re-point them all at another active organization executor, in the same transaction.
+ */
+export type DefaultResolution = { readonly clear: true } | { readonly replaceWith: string };
 
 /**
  * A personal save naming an executor id the caller does not own, or one id twice. Identity is never guessed from the
@@ -69,6 +83,17 @@ const SELECTION_FK = 'executor_default_selection_executor_fk';
 export const isSelectionReferenceViolation = (error: unknown): boolean =>
     (error as { code?: string }).code === FOREIGN_KEY_VIOLATION &&
     (error as { constraint_name?: string }).constraint_name === SELECTION_FK;
+
+const memberCount = (count: number) => (count === 1 ? `${count} member` : `${count} members`);
+
+/** The refusal naming what still selects the executor: the organization default and a count of members, no identities. */
+export const selectedMessage = (name: string, { organization, members }: SelectionCounts) => {
+    const holders = [
+        ...(organization ? ['the organization default'] : []),
+        ...(members > 0 ? [`the default of ${memberCount(members)}`] : []),
+    ].join(' and ');
+    return `The executor "${name}" is ${holders}; clear or replace ${organization || members > 1 ? 'them' : 'it'} first (clearDefaults, or replaceDefaultsWith an organization executor)`;
+};
 
 export const protectedMessage = (name?: string) =>
     `${name === undefined ? 'An executor in this change' : `The executor "${name}"`} is a default executor; select or clear another default before removing or moving it`;
@@ -198,21 +223,48 @@ export async function assertUnselected(
 }
 
 /**
- * Releases the members' personal preferences for `ids`, except `keep`'s: a preference for a profile that is leaving the
- * organization scope is a member's own, and an administrator cannot clear it by hand. The organization's own default is
- * never released here — `assertUnselected` refuses it first.
+ * The guard an organization executor's deletion or move to personal scope runs inside its transaction. Selections naming
+ * it — the organization's, and members' own except `keep`'s (the actor keeps their selection on the row they now own) —
+ * refuse the write with their counts, unless `resolution` clears them or re-points them at `replaceWith`, which must be
+ * an active organization executor other than the targets. Nothing is released without that explicit word.
  */
-export async function releaseMemberSelections(
+export async function resolveOrphanedSelections(
     tx: TransactionSql,
     orgId: string,
-    ids: readonly string[],
-    keep: string | null
+    target: { id: string; name: string },
+    options: { keep?: string; resolution?: DefaultResolution } = {}
 ): Promise<void> {
-    if (ids.length === 0) return;
+    await tx`select id from executor_profile where org_id = ${orgId} and id = ${target.id} for update`;
+    const held = (
+        await tx<{ id: string; owner_id: string | null }[]>`
+            select id, owner_id from executor_default_selection
+            where org_id = ${orgId} and executor_id = ${target.id}
+        `
+    ).filter((row) => row.owner_id === null || row.owner_id !== options.keep);
+    if (held.length === 0) return;
+    const { resolution } = options;
+    if (!resolution) {
+        const counts = {
+            organization: held.some((row) => row.owner_id === null),
+            members: held.filter((row) => row.owner_id !== null).length,
+        };
+        throw new ExecutorDefaultProtectedError(target.id, selectedMessage(target.name, counts), counts);
+    }
+    const ids = held.map((row) => row.id);
+    if ('clear' in resolution) {
+        await tx`delete from executor_default_selection where org_id = ${orgId} and id in ${tx(ids)}`;
+        return;
+    }
+    const [next] = await tx<{ name: string; suspended: boolean }[]>`
+        select name, suspended from executor_profile
+        where org_id = ${orgId} and id = ${resolution.replaceWith} and id <> ${target.id} and user_id is null
+        for share
+    `;
+    if (!next) throw new ExecutorDefaultNotFoundError('No other organization executor to replace the default with');
+    if (next.suspended) throw new ExecutorSuspendedError(`The organization executor "${next.name}" is suspended`);
     await tx`
-        delete from executor_default_selection
-        where org_id = ${orgId} and executor_id in ${tx([...ids])}
-          and owner_id is not null and owner_id is distinct from ${keep}
+        update executor_default_selection set executor_id = ${resolution.replaceWith}, updated_at = now()
+        where org_id = ${orgId} and id in ${tx(ids)}
     `;
 }
 

@@ -1,4 +1,5 @@
 import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-selection.js';
+import { type DefaultResolution, selectedMessage } from '../src/db/executor-default-store.js';
 import {
     type AgentDefault,
     ConfiguredDefaultUnusableError,
@@ -11,12 +12,7 @@ import {
     type ExecutorProfile,
     type UserExecutorStore,
 } from '../src/db/user-executor-store.js';
-import {
-    type ConnectionSelectionRefusal,
-    DEFAULT_GATE_FIX_ROUNDS,
-    USER_SCOPE,
-    type ExecutorScope,
-} from '@factory-ai/core';
+import { type ConnectionSelectionRefusal, DEFAULT_GATE_FIX_ROUNDS, USER_SCOPE } from '@factory-ai/core';
 
 export interface MemoryUserExecutorStore extends UserExecutorStore {
     /**
@@ -98,11 +94,25 @@ export function memoryUserExecutorStore(
         const held = targets.find((row) => selections.get(ownerKey(owner)) === row.id);
         if (held) throw new ExecutorDefaultProtectedError(held.id, `The executor "${held.name}" is a default executor`);
     };
-    /** Releases the members' preferences for a row leaving the organization scope, except `keep`'s. */
-    const releaseMembers = (id: string, keep: string | null) => {
-        for (const [owner, selected] of [...selections]) {
-            if (selected === id && owner !== '' && owner !== keep) selections.delete(owner);
+    /** The SQL's guard for an org row leaving the organization scope: refuse with counts unless `resolution` clears or re-points. */
+    const resolveOrphaned = (target: Row, keep: string | null, resolution?: DefaultResolution) => {
+        const held = [...selections].filter(([owner, id]) => id === target.id && (owner === '' || owner !== keep));
+        if (held.length === 0) return;
+        if (!resolution) {
+            const counts = {
+                organization: held.some(([owner]) => owner === ''),
+                members: held.filter(([owner]) => owner !== '').length,
+            };
+            throw new ExecutorDefaultProtectedError(target.id, selectedMessage(target.name, counts), counts);
         }
+        if ('clear' in resolution) {
+            for (const [owner] of held) selections.delete(owner);
+            return;
+        }
+        const next = rows.find((r) => r.id === resolution.replaceWith && r.userId === null && r.id !== target.id);
+        if (!next) throw new ExecutorDefaultNotFoundError('No other organization executor to replace the default with');
+        if (next.suspended) throw new ExecutorSuspendedError(`The organization executor "${next.name}" is suspended`);
+        for (const [owner] of held) selections.set(owner, next.id);
     };
     /** The SQL's upsert: a write without a provider keeps the one the row recorded. */
     const writeAgentDefault = (owner: string | null, value: AgentDefault) => {
@@ -325,24 +335,22 @@ export function memoryUserExecutorStore(
             return { ...toProfile(row), config: structuredClone(row.config) };
         },
 
-        async deleteOrg(id) {
+        async deleteOrg(id, resolution) {
             const index = rows.findIndex((r) => r.id === id && r.userId === null);
             if (index === -1) return false;
-            assertUnselected([rows[index]!], null);
-            releaseMembers(id, null);
+            resolveOrphaned(rows[index]!, null, resolution);
             rows.splice(index, 1);
             return true;
         },
 
-        async changeScope(id, to, userId) {
+        async changeScope(id, to, userId, resolution) {
             const row = rows.find((r) => r.id === id);
             if (!row) return null;
             if (to === USER_SCOPE) {
                 if (row.userId !== null) return null;
                 judge(userId, row.providerConnectionId, row.type, undefined);
                 assertFree(userId, row.name);
-                assertUnselected([row], null);
-                releaseMembers(id, userId);
+                resolveOrphaned(row, userId, resolution);
                 row.userId = userId;
                 row.createdBy = null;
                 // A personal profile names no runner class, as the row check holds in SQL.
@@ -367,15 +375,6 @@ export function memoryUserExecutorStore(
 
         async defaultOf(userId) {
             return preferences.get(userId) ?? null;
-        },
-
-        async setDefault(userId, def) {
-            const owner = def.scope === USER_SCOPE ? userId : null;
-            const named = rows.find((r) => r.userId === owner && r.name === def.name);
-            if (!named) throw new ExecutorDefaultNotFoundError(`No ${def.scope} executor named "${def.name}"`);
-            if (named.suspended)
-                throw new ExecutorSuspendedError(`The ${def.scope} executor "${def.name}" is suspended`);
-            preferences.set(userId, { ...def });
         },
 
         async selectedDefault(owner) {

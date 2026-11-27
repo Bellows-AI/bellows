@@ -13,12 +13,11 @@ import { type PersonalExecutorEntry, replacePersonalRows } from './executor-pers
 import {
     assertUnselected,
     type DefaultSelection,
-    ExecutorDefaultNotFoundError,
     ExecutorDefaultProtectedError,
-    ExecutorSuspendedError,
     isSelectionReferenceViolation,
     protectedMessage,
-    releaseMemberSelections,
+    resolveOrphanedSelections,
+    type DefaultResolution,
     resolveConfiguredDefault,
     selectionMethods,
 } from './executor-default-store.js';
@@ -40,7 +39,7 @@ export {
     ExecutorIdentityError,
     ExecutorSuspendedError,
 } from './executor-default-store.js';
-export type { DefaultSelection } from './executor-default-store.js';
+export type { DefaultResolution, DefaultSelection } from './executor-default-store.js';
 
 /**
  * One executor profile: a member's personal row (`userId` set) or an organization-wide row the
@@ -207,28 +206,31 @@ export interface UserExecutorStore {
             providerConnectionId?: string | null;
         }
     ): Promise<(ExecutorProfile & { config: Record<string, unknown> }) | null>;
-    /** Removes an org-scope row. False when the id names no org row of this organization. */
-    deleteOrg(id: string): Promise<boolean>;
+    /**
+     * Removes an org-scope row. False when the id names no org row of this organization. Selections naming it refuse the
+     * delete (`ExecutorDefaultProtectedError`, with counts) unless `resolution` clears them or re-points them.
+     */
+    deleteOrg(id: string, resolution?: DefaultResolution): Promise<boolean>;
     /**
      * Moves one row between scopes: a member's own personal row up to org scope (issue 391), or an
      * org row down into the calling admin's personal list. Only the caller's OWN personal row
      * promotes — the update's WHERE clause holds that, so the route's caller is the enforcement.
      * A name already taken in the target scope surfaces as the name index. A demotion clears the
      * row's runner class: a personal profile names none. The row's provider connection must be visible in the target
-     * scope: a promotion refuses a personal one (`ExecutorConnectionRefusedError`).
+     * scope: a promotion refuses a personal one (`ExecutorConnectionRefusedError`). A demotion is refused while the
+     * organization default, or another member's default, names the row, unless `resolution` clears or re-points them.
      */
-    changeScope(id: string, to: ExecutorScope, userId: string): Promise<ExecutorProfile | null>;
+    changeScope(
+        id: string,
+        to: ExecutorScope,
+        userId: string,
+        resolution?: DefaultResolution
+    ): Promise<ExecutorProfile | null>;
     /** How many org-scope rows the organization holds — the cap check's read. */
     orgCount(): Promise<number>;
 
-    /** The member's stored preference, verbatim. Null when unset. */
+    /** The member's legacy name-keyed preference, verbatim — a read only; nothing writes it any more. Null when unset. */
     defaultOf(userId: string): Promise<ExecutorDefault | null>;
-    /**
-     * Stores the member's preference. Refuses a preference naming no profile in that scope — the
-     * route answers 404 for a selection the member cannot resolve, and this is the check under it —
-     * and a suspended one (`ExecutorSuspendedError`, a 409).
-     */
-    setDefault(userId: string, def: ExecutorDefault): Promise<void>;
     /** The configured default `owner` holds (a member's id; null: the organization's), by stable id. Null when none. */
     selectedDefault(owner: string | null): Promise<DefaultSelection | null>;
     /**
@@ -300,7 +302,7 @@ const toExecutorProfile = (row: Row): ExecutorProfile => ({
  */
 async function deleteOwnedRow(
     deps: ExecutorCredentialDeps,
-    { id, owner }: { id: string; owner: string | null }
+    { id, owner, resolution }: { id: string; owner: string | null; resolution?: DefaultResolution }
 ): Promise<boolean> {
     const rows = await refusingSelected<{ secret_refs: StoredCredential[] }[]>(() =>
         deps.sql.begin(async (tx): Promise<{ secret_refs: StoredCredential[] }[]> => {
@@ -310,10 +312,11 @@ async function deleteOwnedRow(
                 for update
             `;
             if (!target) return [];
-            // The scope's own default must be cleared or replaced first; members' preferences for an organization
-            // profile are released with it.
-            await assertUnselected(tx, deps.orgId, [target], owner);
-            if (owner === null) await releaseMemberSelections(tx, deps.orgId, [id], null);
+            // A default naming it must be cleared or replaced first: the member's own for a personal row, every
+            // selection of an organization row — refused with counts unless `resolution` says what becomes of them.
+            if (owner === null)
+                await resolveOrphanedSelections(tx, deps.orgId, target, resolution ? { resolution } : {});
+            else await assertUnselected(tx, deps.orgId, [target], owner);
             return tx<{ secret_refs: StoredCredential[] }[]>`
                 delete from executor_profile where org_id = ${deps.orgId} and id = ${id}
                 returning secret_refs
@@ -644,26 +647,29 @@ export function createUserExecutorStore({
             return row ? { ...toExecutorProfile(row), config: row.config } : null;
         },
 
-        async deleteOrg(id) {
+        async deleteOrg(id, resolution) {
             await gate();
-            return deleteOwnedRow(deps, { id, owner: null });
+            return deleteOwnedRow(deps, { id, owner: null, ...(resolution ? { resolution } : {}) });
         },
 
-        async changeScope(id, to, userId) {
+        async changeScope(id, to, userId, resolution) {
             await gate();
             if (to === USER_SCOPE) {
                 // Org row down into the calling admin's personal list, at the end of it.
                 const rows = await refusingSelected(() =>
                     sql.begin(async (tx) => {
                         await assertMovedSelection(tx, orgId, { id, from: null, to: userId });
-                        // An organization default cannot become one member's personal profile; other members' own
-                        // preferences for it are released, the caller's stays valid on their own row.
+                        // An organization default cannot become one member's personal profile, and other members'
+                        // defaults would be orphaned: refused unless the request resolves them. The caller's own
+                        // selection stays valid on their own row.
                         const [moving] = await tx<{ id: string; name: string }[]>`
                         select id, name from executor_profile where org_id = ${orgId} and id = ${id} and user_id is null
                     `;
                         if (moving) {
-                            await assertUnselected(tx, orgId, [moving], null);
-                            await releaseMemberSelections(tx, orgId, [id], userId);
+                            await resolveOrphanedSelections(tx, orgId, moving, {
+                                keep: userId,
+                                ...(resolution ? { resolution } : {}),
+                            });
                         }
                         const position = await nextPosition(tx, orgId, userId);
                         return tx<Row[]>`
@@ -712,32 +718,6 @@ export function createUserExecutorStore({
             `;
             const row = rows[0];
             return row ? { scope: row.scope, name: row.name } : null;
-        },
-
-        async setDefault(userId, def) {
-            await gate();
-            await sql.begin(async (tx) => {
-                // The preference must name an accessible profile NOW: a member cannot select —
-                // even by default — a profile they could not have picked in the first place.
-                const named = await tx<{ name: string; suspended: boolean }[]>`
-                    select name, suspended from executor_profile
-                    where org_id = ${orgId}
-                      and user_id is not distinct from ${def.scope === USER_SCOPE ? userId : null}
-                      and name = ${def.name}
-                `;
-                if (!named[0]) {
-                    throw new ExecutorDefaultNotFoundError(`No ${def.scope} executor named "${def.name}"`);
-                }
-                if (named[0].suspended) {
-                    throw new ExecutorSuspendedError(`The ${def.scope} executor "${def.name}" is suspended`);
-                }
-                await tx`
-                    insert into user_executor_default (org_id, user_id, scope, name)
-                    values (${orgId}, ${userId}, ${def.scope}, ${def.name})
-                    on conflict (org_id, user_id) do update
-                    set scope = excluded.scope, name = excluded.name, updated_at = now()
-                `;
-            });
         },
 
         ...selectionMethods(sql, orgId, gate),

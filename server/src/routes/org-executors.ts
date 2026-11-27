@@ -26,6 +26,7 @@ import {
     MAX_EXECUTORS_PER_ORG,
     MAX_EXECUTORS_PER_USER,
     orgRunnerClassRefusal,
+    parseDefaultResolution,
     parseExecutorFields,
     selectionRefusal,
     visibleConnections,
@@ -344,12 +345,14 @@ async function handleDeleteOrgExecutor(orgs: OrgRegistry, request: FastifyReques
     const id = idParam(request, reply);
     if (id === null) return reply;
 
+    const resolution = parseDefaultResolution(request.query as Record<string, unknown>);
+    if (resolution && 'refusal' in resolution) return bad(reply, ERROR_CODES.BAD_BODY, resolution.refusal);
     const removed = await guard(
         reply,
         (e) => request.log.error({ err: e }),
         async () => {
             try {
-                return { removed: await store.deleteOrg(id) };
+                return { removed: await store.deleteOrg(id, resolution) };
             } catch (error) {
                 const refusal = lifecycleRefusal(error);
                 if (refusal) return { refusal };
@@ -416,6 +419,25 @@ async function handleClearOrgDefault(orgs: OrgRegistry, request: FastifyRequest,
     return reply.code(HTTP_OK).send({ cleared: cleared.value });
 }
 
+/** The cap refusal for the list a move lands the row in, or null while that list has room. */
+function capRefusal(reply: FastifyReply, scope: ExecutorScope, counts: { org: number; personal: number }) {
+    if (scope === ORG_SCOPE && counts.org >= MAX_EXECUTORS_PER_ORG) {
+        return bad(
+            reply,
+            ERROR_CODES.TOO_MANY_EXECUTORS,
+            `at most ${MAX_EXECUTORS_PER_ORG} organization executors can be configured at once`
+        );
+    }
+    if (scope === USER_SCOPE && counts.personal >= MAX_EXECUTORS_PER_USER) {
+        return bad(
+            reply,
+            ERROR_CODES.TOO_MANY_EXECUTORS,
+            `at most ${MAX_EXECUTORS_PER_USER} executors can be configured at once`
+        );
+    }
+    return null;
+}
+
 /**
  * The one route a profile's scope moves through: an administrator promotes their OWN personal row
  * to org scope, or demotes an org row into their own personal list. The store's WHERE clause holds
@@ -445,22 +467,12 @@ async function handleChangeOrgExecutorScope(orgs: OrgRegistry, request: FastifyR
         })
     );
     if (!caps.ok) return reply;
-    if (scope === ORG_SCOPE && caps.value.org >= MAX_EXECUTORS_PER_ORG) {
-        return bad(
-            reply,
-            ERROR_CODES.TOO_MANY_EXECUTORS,
-            `at most ${MAX_EXECUTORS_PER_ORG} organization executors can be configured at once`
-        );
-    }
-    if (scope === USER_SCOPE && caps.value.personal >= MAX_EXECUTORS_PER_USER) {
-        return bad(
-            reply,
-            ERROR_CODES.TOO_MANY_EXECUTORS,
-            `at most ${MAX_EXECUTORS_PER_USER} executors can be configured at once`
-        );
-    }
+    const capped = capRefusal(reply, scope, caps.value);
+    if (capped) return capped;
 
-    const moved = await saveOrTaken(request, reply, () => store.changeScope(id, scope, caller.user.id));
+    const resolution = parseDefaultResolution(raw);
+    if (resolution && 'refusal' in resolution) return bad(reply, ERROR_CODES.BAD_BODY, resolution.refusal);
+    const moved = await saveOrTaken(request, reply, () => store.changeScope(id, scope, caller.user.id, resolution));
     if (!moved.ok) return reply;
     if ('refused' in moved.value) return connectionRefused(reply, moved.value.refused);
     if ('blocked' in moved.value) return blocked(reply, moved.value.blocked);

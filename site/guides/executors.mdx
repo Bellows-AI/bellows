@@ -186,7 +186,7 @@ If you don't pick one, Bellows uses the first of these that exists:
 
 1. Your default executor, if you chose one with **Make default**.
 2. Your organization's default executor, if an admin chose one.
-3. Your older default preference, while that profile is usable.
+3. Your older name-based default preference, if you still have one and its profile is usable. It is only read; **Make default** replaces it.
 4. Your agent default: an agent and a model, with no profile. Set it under **Settings → Model**, or in the **Connect a model** setup step.
 5. Your organization's agent default, which an admin sets.
 6. Your first usable personal profile.
@@ -209,7 +209,7 @@ From the CLI, pass `--model <name>` to `bellows job create` or `bellows job foll
 - **Make default** in a row's actions saves your own default. The default row shows a **Default** tag, and the composer selects it for you. Each member chooses their own default, including among organization profiles. Renaming a profile keeps it the default.
 - **Make organization default** (admins, in an organization row's actions) sets the default for every member who has not chosen their own; the row shows an **Organization default** tag. **Clear organization default** removes it. Only organization profiles can be the organization default.
 - **Suspend** stops a profile from launching tasks. A suspended profile can't be chosen as a default. **Resume** brings it back.
-- **Remove** deletes a personal profile. Admins can **Delete** an organization profile, or **Make personal** to move it into their own list. A default is never removed or moved out from under its setting: choose another default first (an admin clears the organization default). Deleting an organization profile drops the members' own choices of it.
+- **Remove** deletes a personal profile. Admins can **Delete** an organization profile, or **Make personal** to move it into their own list. A default is never removed or moved out from under its setting: choose another default first. When an admin deletes or makes personal an organization profile that is the organization default or a member's default, Bellows says how many selections name it and asks whether to clear them or replace them with another organization profile.
 
 Follow-ups and retries keep the executor of the original task.
 

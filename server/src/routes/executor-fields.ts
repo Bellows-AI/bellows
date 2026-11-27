@@ -15,6 +15,7 @@ import type { DeploymentMode, ErrorCode } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
 import { ExecutorConnectionRefusedError } from '../db/executor-connection-selection.js';
 import {
+    type DefaultResolution,
     ExecutorDefaultNotFoundError,
     ExecutorDefaultProtectedError,
     ExecutorIdentityError,
@@ -88,6 +89,13 @@ export function lifecycleRefusal(error: unknown): LifecycleRefusal | null {
     }
     if (error instanceof ExecutorIdentityError) {
         return { code: ERROR_CODES.BAD_BODY, message: error.message, status: HTTP_BAD_IDENTITY };
+    }
+    // A replacement the store could not use: not an active organization executor of this organization.
+    if (error instanceof ExecutorDefaultNotFoundError) {
+        return { code: ERROR_CODES.NOT_FOUND, message: error.message, status: HTTP_NOT_FOUND_STATUS };
+    }
+    if (error instanceof ExecutorSuspendedError) {
+        return { code: ERROR_CODES.EXECUTOR_SUSPENDED, message: error.message, status: HTTP_CONFLICT_STATUS };
     }
     return null;
 }
@@ -243,4 +251,22 @@ export function selectionRefusal(reply: FastifyReply, error: unknown, what: stri
         return bad(reply, ERROR_CODES.NOT_FOUND, `${what} is not available to you`, HTTP_NOT_FOUND_STATUS);
     }
     return null;
+}
+
+/**
+ * The explicit word on the selections naming an organization executor that is being deleted or demoted: `clearDefaults`
+ * clears them, `replaceDefaultsWith` re-points them at another organization executor. Read from the query of a DELETE
+ * or the body of the scope route; absent is `undefined` (the write refuses while any selection names the executor),
+ * and both at once, or a malformed id, is the refusal message.
+ */
+export function parseDefaultResolution(source: {
+    clearDefaults?: unknown;
+    replaceDefaultsWith?: unknown;
+}): DefaultResolution | undefined | { refusal: string } {
+    const clear = source.clearDefaults === true || source.clearDefaults === 'true';
+    const replacement = source.replaceDefaultsWith;
+    if (replacement === undefined) return clear ? { clear: true } : undefined;
+    if (clear) return { refusal: 'clearDefaults and replaceDefaultsWith are exclusive' };
+    if (typeof replacement === 'string' && UUID.test(replacement)) return { replaceWith: replacement };
+    return { refusal: 'replaceDefaultsWith must be an organization executor id' };
 }

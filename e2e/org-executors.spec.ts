@@ -342,6 +342,7 @@ test('an OpenAI-compatible executor is created through the guided provider, with
 
 /** A refused removal reads from the page's one error line: the default names the executor until it is replaced or cleared. */
 const REFUSED = /is a default executor/;
+const ORG_DEFAULT_REFUSED = /is the organization default/;
 
 test('a rename keeps the personal default, and the default cannot be removed until another is chosen', async ({
     page,
@@ -388,7 +389,9 @@ async function orgAction(page: Page, name: string, action: string) {
     await page.getByRole('menu').getByRole('menuitem', { name: action }).click();
 }
 
-test('an admin sets, protects and clears the organization default', async ({ page }) => {
+test('an admin sets, protects and clears the organization default, resolving it explicitly on delete', async ({
+    page,
+}) => {
     await asAdmin(page);
     for (const name of PROFILES) await addProfile(page, name);
     const [main, reviewer] = PROFILES as [string, string];
@@ -399,16 +402,29 @@ test('an admin sets, protects and clears the organization default', async ({ pag
     await expect(row(page, reviewer).getByText(ORG_DEFAULT_LABEL)).toBeVisible();
     await expect(row(page, main).getByText(ORG_DEFAULT_LABEL)).toHaveCount(0);
 
-    // Deleting the default is refused until it is cleared.
+    // Deleting the default is refused, and the dialog asks what becomes of it: nothing happens until the admin chooses.
     await orgAction(page, reviewer, 'Delete');
     const confirm = page.getByRole('dialog');
-    await confirm.getByRole('button', { name: confirmLabel({ action: 'delete', name: reviewer }) }).click();
-    await expect(confirm).toHaveCount(0);
-    await expect(page.getByText(REFUSED)).toBeVisible();
-    await expect(row(page, reviewer)).toBeVisible();
+    const confirmDelete = confirm.getByRole('button', { name: confirmLabel({ action: 'delete', name: reviewer }) });
+    await confirmDelete.click();
+    await expect(confirm.getByRole('alert')).toContainText(ORG_DEFAULT_REFUSED);
+    await expect(confirmDelete).toBeDisabled();
     await page.screenshot({ path: `${SHOTS}/settings-executors-org-default.png` });
+    await confirm.getByRole('button', { name: 'Cancel' }).click();
+    await expect(confirm).toHaveCount(0);
+    await expect(row(page, reviewer)).toBeVisible();
 
-    await orgAction(page, reviewer, CLEAR_ORG_DEFAULT_LABEL);
-    await expect(row(page, reviewer).getByText(ORG_DEFAULT_LABEL)).toHaveCount(0);
-    for (const name of PROFILES) await deleteProfile(page, name);
+    // Replaced explicitly, the default moves to the other organization executor as the delete lands.
+    await orgAction(page, reviewer, 'Delete');
+    await confirmDelete.click();
+    await confirm.getByLabel('What happens to those defaults').selectOption({ label: `Replace with ${main}` });
+    await confirmDelete.click();
+    await expect(confirm).toHaveCount(0);
+    await expect(row(page, reviewer)).toHaveCount(0);
+    await expect(row(page, main).getByText(ORG_DEFAULT_LABEL)).toBeVisible();
+
+    // Cleared from the row, the last executor deletes without a question.
+    await orgAction(page, main, CLEAR_ORG_DEFAULT_LABEL);
+    await expect(row(page, main).getByText(ORG_DEFAULT_LABEL)).toHaveCount(0);
+    await deleteProfile(page, main);
 });
