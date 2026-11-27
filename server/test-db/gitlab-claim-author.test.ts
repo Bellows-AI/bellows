@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { Fragment, Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { claimAuthorFor } from '../src/db/jobs/job-store-claim-author.js';
 import type { Claim } from '../src/db/jobs/job-store-types.js';
+import { orgSql } from '../src/db/org-sql.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { testSecretDeps } from './env-secrets-harness.js';
 import { expireLease } from './fixtures.js';
@@ -78,7 +80,8 @@ async function linked(fields: Record<string, unknown>) {
         payload: { paths: [`${grp}/web`] },
     });
     expect(picked.statusCode).toBe(OK);
-    return { board, login };
+    const [connection] = await sql<{ id: string }[]>`select id from forge_connection where org_id = ${org.id}`;
+    return { board, login, connectionId: connection!.id };
 }
 
 const accountId = async (login: string) =>
@@ -123,5 +126,98 @@ describe.skipIf(!enabled)('the claim author of a GitLab task', () => {
         `;
         const { claim } = await board.running(org, repo());
         expect(claim).not.toHaveProperty('author');
+    });
+
+    describe('the fence: no live grant, no author', () => {
+        const target = (hostName = HOST) => ({ run_as: org.memberId, forge: 'gitlab', host: hostName });
+        const authorIn = (orgId: string, row = target()) =>
+            orgSql(sql, orgId).begin((tx) => claimAuthorFor(tx as never, orgId, row));
+        const named = { name: 'Fenced Member', commit_email: 'fenced@example.test' };
+        const setGrant = (login: string, set: Fragment) =>
+            sql`update integration_grant set ${set} where org_id = ${org.id} and forge_profile ->> 'username' = ${login}`;
+
+        it('names the member while the grant is live', async () => {
+            await linked(named);
+            expect(await authorIn(org.id)).toEqual({ name: 'Fenced Member', email: 'fenced@example.test' });
+        });
+
+        it('is omitted once the connection is removed', async () => {
+            const { connectionId } = await linked(named);
+            expect(await h.storeOf(org.id).remove(connectionId)).toBe(true);
+            expect(await authorIn(org.id)).toBeNull();
+        });
+
+        it('is omitted once the connection is deactivated', async () => {
+            const { connectionId } = await linked(named);
+            await sql`update forge_connection set active = false where org_id = ${org.id} and id = ${connectionId}`;
+            expect(await authorIn(org.id)).toBeNull();
+        });
+
+        it.each([
+            ['needs reconnect', "status = 'reconnect_required'"],
+            ['is revoked', "status = 'revoked'"],
+            ['has no readable secret', 'secret_wedged_at = now()'],
+            ['has lost its secret', 'secret_ref = null'],
+        ])('is omitted when the grant %s', async (_name, change) => {
+            const { login } = await linked(named);
+            await sql.unsafe(
+                `update integration_grant set ${change} where org_id = $1 and forge_profile ->> 'username' = $2`,
+                [org.id, login]
+            );
+            expect(await authorIn(org.id)).toBeNull();
+        });
+
+        it('is omitted when the grant is for another host', async () => {
+            const { login } = await linked(named);
+            await setGrant(login, sql`provider = ${'gitlab:other.gitlab.test'}`);
+            expect(await authorIn(org.id)).toBeNull();
+        });
+
+        it('is omitted for another org, whatever this org holds', async () => {
+            await linked(named);
+            const other = await h.newOrg();
+            expect(await authorIn(other.id)).toBeNull();
+        });
+
+        it('takes the new profile after a re-link', async () => {
+            const { board, login, connectionId } = await linked(named);
+            await h.fake.control('gitlab/user-profile', {
+                login,
+                fields: { name: 'Renamed Member', commit_email: 'renamed@example.test' },
+            });
+            expect((await board.link(org, connectionId, login)).result).toBe('linked');
+            expect(await authorIn(org.id)).toEqual({ name: 'Renamed Member', email: 'renamed@example.test' });
+        });
+
+        it('reads the profile of the very row the standing approved, on an updated_at tie', async () => {
+            const { login, connectionId } = await linked(named);
+            const [live] = await sql<{ id: string; updated_at: Date; forge_connection_id: string }[]>`
+                select id, updated_at, forge_connection_id from integration_grant
+                where org_id = ${org.id} and forge_profile ->> 'username' = ${login}`;
+            // An id that sorts before (or after) the live row's: uuids compare as their hex text.
+            const idOn = (side: 'before' | 'after'): string => {
+                for (;;) {
+                    const id = randomUUID();
+                    if (side === 'before' ? id < live!.id : id > live!.id) return id;
+                }
+            };
+            const rival = async (id: string) => {
+                await sql`
+                    insert into integration_grant
+                        (id, org_id, principal_kind, principal_user_id, provider, external_account_id, authority,
+                         status, forge_profile, forge_connection_id, updated_at)
+                    values (${id}, ${org.id}, 'user', ${org.memberId}, ${`gitlab:${HOST}`}, ${`rival-${id}`},
+                            ${sql.json({ scopes: [] })}, 'reconnect_required',
+                            ${sql.json({ username: 'rival', name: 'Rival' })}, ${connectionId}, ${live!.updated_at})`;
+            };
+            // The live row sorts first on the tie: its profile, and only its, is the author.
+            const behind = idOn('before');
+            await rival(behind);
+            expect(await authorIn(org.id)).toEqual({ name: 'Fenced Member', email: 'fenced@example.test' });
+            // The rival sorts first: it is the row judged, it is not live, and nothing of the other row leaks in.
+            await sql`delete from integration_grant where id = ${behind}`;
+            await rival(idOn('after'));
+            expect(await authorIn(org.id)).toBeNull();
+        });
     });
 });

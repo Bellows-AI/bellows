@@ -1,7 +1,7 @@
 import { GITLAB_FORGE, gitlabForgeOf } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
 import { type ForgeProfile, parseForgeProfile } from '../../integrations/forge-profile.js';
-import { readGrantStanding } from '../forge-grant-standing.js';
+import { readGrantStandingRow } from '../forge-grant-standing.js';
 import type { ClaimAuthor } from './job-store-types.js';
 
 /** GitHub's private-email-safe commit address: it links the commit to the profile and leaks no mailbox. */
@@ -35,18 +35,12 @@ async function gitlabAuthorFor(
     userId: string,
     host: string
 ): Promise<ClaimAuthor | null> {
-    const who = { orgId, userId, forge: gitlabForgeOf(host) };
-    // No live grant, no author: the run authors as the bot, and the credential route owns the wait.
-    if ((await readGrantStanding(tx, who)) !== 'live') return null;
-    const [grant] = await tx<{ external_account_id: string; forge_profile: unknown }[]>`
-        select external_account_id, forge_profile from integration_grant
-        where org_id = ${who.orgId} and principal_user_id = ${userId} and provider = ${who.forge}
-          and status = 'active'
-        order by updated_at desc
-        limit 1
-    `;
-    const profile = parseForgeProfile(grant?.forge_profile);
-    return grant && profile ? gitlabAuthorOf(profile, { id: grant.external_account_id, host }) : null;
+    // One read of the one row the standing judges: no live grant, no author (the credential route owns the wait).
+    const grant = await readGrantStandingRow(tx, { orgId, userId, forge: gitlabForgeOf(host) });
+    const profile = parseForgeProfile(grant?.forgeProfile);
+    return grant?.standing === 'live' && profile
+        ? gitlabAuthorOf(profile, { id: grant.externalAccountId, host })
+        : null;
 }
 
 /**
