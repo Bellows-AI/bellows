@@ -30,7 +30,7 @@ Use these to find valid values before you create a task.
 | Tool | What it does | Key inputs |
 | --- | --- | --- |
 | `list_tasks` | Lists tasks like the inbox. Sections: `attention` (default), `running`, `review`, `past`, `archived` | `state`, `q`, `author`, `repo`, `sort`, `limit` (1-50), `cursor` |
-| `get_task` | Reads one task: head run status, repo, branches, pull request, open questions, every run, attachment metadata | `taskId` |
+| `get_task` | Reads one task: head run status, repo, branches, pull request (its `kind` is `pull_request` or, on GitLab, `merge_request`), open questions, every run, attachment metadata | `taskId` |
 | `get_task_result` | The verified outcome of the head run: state, summary, pull request, gate `checks`, what you must answer, and failure cause | `taskId` |
 | `read_change_request` | Reads the merge request a GitLab task published, one `part` at a time: `diff` (every changed file), `notes` (oldest first) or `pipeline` (the head pipeline and the head commit's statuses), with the task starter's own GitLab access. Only that task's own merge request; a part is complete or an error, never shorter. A broken GitLab link answers `FORGE_GRANT_REQUIRED`, a task with no merge request `NO_CHANGE_REQUEST`, and a GitHub task `CHANGE_REQUEST_READ_UNSUPPORTED` | `taskId`, `part` |
 | `list_jobs` | Lists runs, newest first. Use `list_tasks` to page through tasks | `status`, `repo`, `limit` (1-200) |
