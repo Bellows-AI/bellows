@@ -8,6 +8,7 @@ import {
     bindingWriteArgv,
     claudeExportScript,
     gateLoopArgv,
+    nodeEvalArgv,
     reviewerLaunchArgv,
     supervisorScript,
 } from '../container-scripts.js';
@@ -143,8 +144,7 @@ export function supervisorCreateArgs(
         '--entrypoint',
         'node',
         executorImage(config, job.executorType),
-        '-e',
-        supervisorScript,
+        ...nodeEvalArgv(supervisorScript),
     ];
 }
 

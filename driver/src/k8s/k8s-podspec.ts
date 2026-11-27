@@ -46,6 +46,7 @@ import {
     dockerdStartArgv,
     gateLoopArgv,
     opencodeReadoutScript,
+    nodeEvalArgv,
     reviewerLaunchArgv,
     serviceProbeArgv,
     supervisorScript,
@@ -296,7 +297,7 @@ function supervisorContainer(
         // A fixed pair on every class: a microVM is sized by the sum of its containers' limits.
         ...fixedResourcesField(SUPERVISOR_RESOURCES),
         ...containerHardeningField(),
-        command: ['node', '-e', supervisorScript],
+        command: ['node', ...nodeEvalArgv(supervisorScript)],
         env: [
             ...supervisorLiterals(config, job, group).map(([name, value]) => ({ name, value })),
             ...supervisorControlNames(job).map((name) => ({

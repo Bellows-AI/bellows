@@ -11,6 +11,7 @@
         "driver/test/attempt-pair.test.ts",
         "driver/test/branch-reporter.test.ts",
         "driver/test/claude-bridge.test.ts",
+        "driver/test/container-argv.test.ts",
         "driver/test/credential-broker.test.ts",
         "driver/test/credential-destination.test.ts",
         "driver/test/docker-read-faults.test.ts",

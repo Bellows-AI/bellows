@@ -8,7 +8,7 @@ import {
     REVIEWER_CONTAINER,
     SUPERVISOR_CONTAINER,
 } from '../../src/supervisor-contract.js';
-import { gateLoopArgv, reviewerLaunchArgv, supervisorScript } from '../../src/container-scripts.js';
+import { gateLoopArgv, nodeEvalArgv, reviewerLaunchArgv, supervisorScript } from '../../src/container-scripts.js';
 import { ARTIFACT_LIMIT } from '../../src/runner.js';
 import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { LOG_TAIL_LINES } from '../../src/k8s/k8s-transport.js';
@@ -195,7 +195,7 @@ describe('the gate sidecar', () => {
     // The token redaction lives in the supervisor script, so the pod must run that script.
     it('runs the one supervisor script, where a gate step’s token is redacted, as the supervisor container', () => {
         const supervisor = podOf(gated).containers.find((candidate) => candidate.name === 'supervisor')!;
-        expect(supervisor.command).toEqual(['node', '-e', supervisorScript]);
+        expect(supervisor.command).toEqual(['node', ...nodeEvalArgv(supervisorScript)]);
     });
 
     it('tells the supervisor its gate container is there, and gives the gate mailbox to it alone', () => {
