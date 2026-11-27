@@ -34,7 +34,7 @@ const SQUASH_NEVER = 'never';
 /** The values of a project's `squash_option` that allow the board's squash merge. */
 const SQUASH_ALLOWED: ReadonlySet<string> = new Set(['always', 'default_on', 'default_off']);
 const MERGED = 'merged';
-/** The source branch outlives its merge, as GitHub's does (BEL-538). */
+/** The source branch outlives its merge, as GitHub's does. */
 const KEEP_SOURCE_BRANCH = false;
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
