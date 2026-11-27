@@ -92,6 +92,17 @@ async function expectSelectedConnection(page: Page, executor: string, expected: 
     await expect(dialog).toHaveCount(0);
 }
 
+/**
+ * Opens a connection row's menu and picks `action`. The menu always opens below its trigger (web/src/anchor.ts) and a
+ * click scrolls the trigger only to the viewport's edge, leaving the menu no room: the row comes to the middle first.
+ */
+async function chooseRowAction(page: Page, connection: string, action: string) {
+    const trigger = page.getByRole('button', { name: `Actions for ${connection}` });
+    await trigger.evaluate((element) => element.scrollIntoView({ block: 'center' }));
+    await trigger.click();
+    await page.getByRole('menu').getByRole('menuitem', { name: action }).click();
+}
+
 /** Removes the spec's executors and then its connections, through the routes. */
 async function cleanUp(page: Page) {
     const workspace = (await (await page.request.get('/api/workspace')).json()) as {
@@ -167,8 +178,7 @@ test('two providers, two executors and a shared connection switch independently 
 
         // Rotation says what happened, and the executors still reference the connection by name.
         await page.goto('/settings/model');
-        await page.getByRole('button', { name: `Actions for ${TEAM}` }).click();
-        await page.getByRole('menu').getByRole('menuitem', { name: 'Replace key' }).click();
+        await chooseRowAction(page, TEAM, 'Replace key');
         const rotate = page.getByRole('dialog', { name: 'Replace key' });
         await rotate.getByLabel('API key').fill('sk-ant-api03-e2e-rotated');
         await expect(rotate.getByRole('status', { name: 'Key check' })).toContainText('2 models available');
@@ -178,8 +188,7 @@ test('two providers, two executors and a shared connection switch independently 
         await page.screenshot({ path: `${SHOTS}/settings-model-connection-rotated.png`, fullPage: true });
 
         // Removal is refused while executors select it, naming them.
-        await page.getByRole('button', { name: `Actions for ${TEAM}` }).click();
-        await page.getByRole('menu').getByRole('menuitem', { name: 'Remove' }).click();
+        await chooseRowAction(page, TEAM, 'Remove');
         await page.getByRole('dialog').getByRole('button', { name: 'Remove connection' }).click();
         await expect(page.getByText(new RegExp(`“${TEAM}” is still used by .*${EXECUTORS.claude}`))).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/settings-model-connection-in-use.png`, fullPage: true });
