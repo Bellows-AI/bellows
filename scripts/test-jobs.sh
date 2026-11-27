@@ -128,7 +128,7 @@ lane_host_bind() {
 needs_board() {
     [ "$PHASE" = all ] && return 0
     for phase in ${PHASE//,/ }; do
-        case "$phase" in cooperative-stop|tool-isolation|image-checks|ask-user-question|repo-skills|gitlab) ;; *) return 0 ;; esac
+        case "$phase" in cooperative-stop|tool-isolation|image-checks|ask-user-question|repo-skills) ;; *) return 0 ;; esac
     done
     return 1
 }
@@ -144,6 +144,7 @@ AUTH_PORT=$((PORT + 3))
 MCP_PORT=$((PORT + 4))
 MCP_IDP_PORT=$((PORT + 5))
 PM_PORT=$((PORT + 7)) # the publish-member board
+GL_PORT=$((PORT + 8)) # the gitlab phase's board
 # The smoke origin's loopback port (PLAN_BASE). Fixed, not ephemeral: native Linux docker re-allocates an ephemeral
 # published port on every network connect or disconnect, which the compose-driver phase does to the origin.
 ORIGIN_PORT=$((PORT + 6))

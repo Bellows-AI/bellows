@@ -598,15 +598,15 @@ describe('test-jobs board launches boot config-valid', () => {
     });
     // What the lane itself derives from LANE_HOST and the board URLs its phase files set, taken from the script.
     const derived = lines.filter((l) =>
-        /^\s*(LANE_BOARD_BIND|\[ "\$LANE_HOST"|BASE="http)|^(AUTH_BASE|MCP_BASE|MCP_IDP|PM_BASE)=/.test(l)
+        /^\s*(LANE_BOARD_BIND|\[ "\$LANE_HOST"|BASE="http)|^(AUTH_BASE|MCP_BASE|MCP_IDP|PM_BASE|GL_BASE)=/.test(l)
     );
     const token = 'a-lane-config-check-secret-32-chars';
     const preamble = [
         'SECRET_STORE_ENV=(LANE_CONFIG_CHECK=1) # never empty: bash 3.2 reads an empty array as unbound under -u',
         'DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_jobs_test',
-        'PORT=8129 CAP_LIGHT_PORT=8130 MINT_PORT=8131 AUTH_PORT=8132 MCP_PORT=8133 MCP_IDP_PORT=8134 PM_PORT=8136',
-        'LANE_FAKE_FORGE_URL=http://127.0.0.1:8137',
-        `PLAN_BASE=git://127.0.0.1:9418 CAP_TOKEN=${token} MCP_TOKEN=${token} PS_TOKEN=${token} PM_TOKEN=${token}`,
+        'PORT=8129 CAP_LIGHT_PORT=8130 MINT_PORT=8131 AUTH_PORT=8132 MCP_PORT=8133 MCP_IDP_PORT=8134 PM_PORT=8136 GL_PORT=8137',
+        'LANE_FAKE_FORGE_URL=http://127.0.0.1:8138',
+        `PLAN_BASE=git://127.0.0.1:9418 CAP_TOKEN=${token} MCP_TOKEN=${token} PS_TOKEN=${token} PM_TOKEN=${token} GL_DRIVER_TOKEN=${token}`,
         'set -- 8130 /dev/null',
         ...derived.map((l) => l.trim()),
     ].join('\n');

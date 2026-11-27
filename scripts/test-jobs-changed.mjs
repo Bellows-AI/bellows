@@ -119,7 +119,7 @@ export const RULES = [
     [/^server\/src\/(commerce\/|db\/commerce-|routes\/commerce\.ts$)/, NONE, 'commerce, off unless COMMERCE_ENABLED, which no lane sets; not called by any jobs phase'],
     [/^server\/src\/(db\/batches\/|routes\/batches\/|batch-merger\.ts$|batch-reconciler\.ts$)/, NONE, 'batches: their loops need BATCHES_ENABLED, which no lane sets, and no phase makes one; not called by any jobs phase'],
     [/^server\/src\/db\/forge-connection-sweep\.ts$/, FULL, 'a loop every board starts at boot (server/src/main.ts)'],
-    [/^server\/src\/(gitlab\/|db\/forge-connections\.ts$|db\/forge-links\.ts$|routes\/gitlab-connections\.ts$|routes\/gitlab-links\.ts$|integrations\/gitlab-link\.ts$|integrations\/providers\/gitlab\.ts$)/, NONE, 'the org GitLab connection and link: admin and member routes and a GitLab client, not called by any jobs phase'],
+    [/^server\/src\/(gitlab\/|db\/forge-connections\.ts$|db\/forge-links\.ts$|routes\/gitlab-connections\.ts$|routes\/gitlab-links\.ts$|integrations\/gitlab-link\.ts$|integrations\/providers\/gitlab\.ts$)/, ['gitlab'], 'the org GitLab connection and link: the gitlab phase connects, activates and links through them'],
     [/^server\/src\/(routes\/(org-members|forge-grants|org-retention|audit|tokens|tasks|operator-driver-credentials|integrations|integration-catalog|attachment-uploads|attachment-ingest|model-setup|model-setup-save)\.ts|db\/org-export\.ts|attachments\/(name|sniff)\.ts)$/, NONE, 'settings, admin and dashboard routes; not called by any jobs phase'],
     [/^server\/src\/seed\//, NONE, 'synthetic data command line, not called by any jobs phase'],
 
@@ -140,7 +140,8 @@ export const RULES = [
     [/^scripts\/lane-skills\.mjs$/, ['pinned-skills'], 'the pinned-skills phase publisher'],
     [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish(-retry)?|loop\/loop-pr-operation|board\/board-pull-request)\.ts$/, ['driver', 'driver-kill', 'compose-driver', 'publish-member'], 'publish'],
     [/^(server\/src\/github\/pr-write|server\/src\/forge\/pr-token|server\/src\/routes\/jobs\/job-handlers-pull-request|server\/src\/db\/jobs\/job-store-pr-write)\.ts$/, ['publish-member'], 'the board\'s PR write as the member'],
-    [/^scripts\/publish-member-client\.mjs$/, ['publish-member'], 'the publish-member phase member'],
+    [/^scripts\/publish-member-client\.mjs$/, ['publish-member', 'gitlab'], 'the member the publish-member and gitlab phases sign in'],
+    [/^scripts\/gitlab-member-client\.mjs$/, ['gitlab'], 'the gitlab phase connection and link client'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
     [/^driver\/src\/(loop\/loop-gates|loop\/loop-gate-pass|loop\/loop-finish|loop\/loop-run-control|gate-manager|loop\/loop-no-change|gates|gate-cause|gate-token-control|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|loop\/gate-settled|gate-record|gate-excerpt|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs|dockerd-loss|tools|tool-control)\.ts$/, ['driver', 'workflows', 'finish-gate'], 'gates and phases'],
     [/^driver\/src\/gate-result\.ts$/, ['driver', 'workflows'], 'gates'],

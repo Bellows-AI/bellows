@@ -28,7 +28,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).not.toContain('127.0.0.1::9418');
         expect(SCRIPT).toContain('docker port "$ORIGIN_NAME" 9418/tcp');
         expect(origin).toBeLessThan(SCRIPT.indexOf('\nstart_open_board\n'));
-        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(7);
+        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(8);
         expect(SCRIPT).not.toContain('ORG_WORKSPACE_ROOT');
         expect(SCRIPT).not.toContain('.origins');
     });
@@ -421,6 +421,22 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain("provider = 'forge'");
         // The member's runner holds no user token: the lane never hands one to the driver or a job.
         expect(phase).not.toContain('ghu_');
+    });
+
+    // A GitLab task runs as the member (docs/connections.md): this phase is where that runs on real containers.
+    it('the gitlab phase runs tasks against a TLS fake GitLab and proves the member, the author and the absence of a token', () => {
+        const phase = readFileSync(join(ROOT, 'scripts/lanes/jobs/gitlab.sh'), 'utf8');
+        expect(phase).toContain('FAKE_FORGE_TLS_CERT="$GL_TLS/cert.pem"');
+        expect(phase).toContain('node scripts/gitlab-member-client.mjs connect');
+        expect(phase).toContain('gitlab/token-ttl');
+        // The author is the member's GitLab profile; the committer is the bot.
+        expect(phase).toContain('Lane Member|lane.member@example.test|factory-ai');
+        // Rotation, adoption and the places a token must never be.
+        expect(phase).toContain('distinct tokens');
+        expect(phase).toContain('DRIVER_REAP_INTERVAL_MS=2000');
+        for (const place of ['gl-no-env-token', 'gl-no-config-token', 'gl-no-volume-token']) expect(phase).toContain(place);
+        // The fake's token prefixes are split so the lane never holds one.
+        expect(phase).not.toMatch(/gloas-fake|glrt-fake/);
     });
 
     it('the orphan runner is removed one id at a time, not as one newline-joined argument', () => {
