@@ -143,10 +143,10 @@ describe.skipIf(!enabled)('a kind lane member signs in through the fake GitHub',
             expect(me.json()).toMatchObject({ user: { login: lane.login }, organization: { id: lane.org } });
             const [grant] = await sql<{ status: string; secret_ref: string | null }[]>`
                 select g.status, g.secret_ref from integration_grant g join app_user u on u.id = g.principal_user_id
-                where g.org_id = ${lane.org} and u.login = ${lane.login}`;
+                where g.org_id = ${lane.org} and u.github_login = ${lane.login}`;
             expect(grant?.status).toBe('active');
             expect(grant?.secret_ref).toBeTruthy();
-            const [user] = await sql<{ id: string }[]>`select id from app_user where login = ${lane.login}`;
+            const [user] = await sql<{ id: string }[]>`select id from app_user where github_login = ${lane.login}`;
             expect(await grants.accessToken(lane.org, user!.id, 'github')).toMatchObject({
                 ok: true,
                 accessToken: expect.stringMatching(/^ghu_fake/),
