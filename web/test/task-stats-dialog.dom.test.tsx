@@ -142,6 +142,23 @@ describe('TaskStatsDialog gate and PR activity', () => {
         expect(within(prs).getByText('Distinct PRs').nextSibling?.textContent).toBe('1');
     });
 
+    it('calls a GitLab task’s requests merge requests, linked as !n', () => {
+        const url = 'https://board.gitlab.test/grp/sub/web/-/merge_requests/3';
+        const dialog = open(
+            [job({ id: A })],
+            answered(NO_GATES, {
+                coverage: 'complete',
+                counts: { operations: 1, distinct: 1 },
+                operations: [{ jobId: A, operationId: 'o1', kind: 'created', repo: 'grp/sub/web', number: 3, url }],
+                distinct: [{ repo: 'grp/sub/web', number: 3, url }],
+            })
+        );
+        const mrs = within(dialog).getByRole('region', { name: 'Merge requests' });
+        expect(within(mrs).getByRole('link', { name: 'grp/sub/web!3' }).getAttribute('href')).toBe(url);
+        expect(within(mrs).getByText('Distinct MRs').nextSibling?.textContent).toBe('1');
+        expect(within(dialog).queryByRole('region', { name: 'Pull requests' })).toBeNull();
+    });
+
     it('shows a dash, never 0, for what was not recorded, and says when coverage is partial', () => {
         const dialog = open(
             [job({ id: A })],

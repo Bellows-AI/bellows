@@ -7,6 +7,7 @@ import type { BranchState } from '../github/pr-read.js';
 import type { OpenedPullRequest, PrCreate, PrEdit, PrWriter, PullRequestFacts } from '../github/pr-write.js';
 import type { RepoSkillRead } from '../github/skill-read.js';
 import type { GitlabApi } from '../gitlab/gitlab-api.js';
+import type { ChangeRequestPart, ChangeRequestPartRead } from './change-request-read.js';
 import { isGithubRepo, isGitlabRepo } from './forges.js';
 import { createGitHubForgeClient } from './github-client.js';
 import { createGitLabForgeClient } from './gitlab-client.js';
@@ -47,6 +48,12 @@ export interface ForgeClient {
     listSkills(branch: string | null, dirs: readonly string[], signal?: AbortSignal): Promise<RepoSkillRead>;
     /** One change request's state, head, target, required contexts and checks. */
     readChangeRequest(number: number): Promise<PrFacts>;
+    /**
+     * One part of the change request `number`: the whole answer or a rejection. A page that is not a clean page, a
+     * read past the byte or page cap and any non-2xx reject; none answers a shorter list. A forge the board does not
+     * read rejects with `ChangeRequestReadUnsupportedError` before any request.
+     */
+    readChangeRequestPart(number: number, part: ChangeRequestPart, signal: AbortSignal): Promise<ChangeRequestPartRead>;
     /** Merges as the acting credential's token, bound to `request.sha`; `uncertain` means it may have happened. */
     mergeChangeRequest(number: number, request: { sha: string; method: string }): Promise<MergeResult>;
     /** The open change request on `branch`, or null for a validated empty answer. */

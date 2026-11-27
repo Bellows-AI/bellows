@@ -49,21 +49,21 @@ export interface ForgeCredentialDeps {
     publicUrl: string;
 }
 
-const unavailable = (reply: FastifyReply) =>
+export const unavailable = (reply: FastifyReply) =>
     reply
         .code(HTTP_SERVICE_UNAVAILABLE)
         .header('retry-after', '1')
         .send({ error: UNREADABLE, code: ERROR_CODES.UNAVAILABLE, retryable: true });
 
-const refused = (reply: FastifyReply, message = ATTEMPT_REFUSED) =>
+export const refused = (reply: FastifyReply, message = ATTEMPT_REFUSED) =>
     bad(reply, ERROR_CODES.CONNECTION_NOT_AUTHORIZED, message, HTTP_FORBIDDEN);
 
 /** The refusal of an attempt check that is not live: a takeover window is transient, anything else is terminal. */
-const notLive = (reply: FastifyReply, check: Extract<AttemptCheck, { ok: false }>) =>
+export const notLive = (reply: FastifyReply, check: Extract<AttemptCheck, { ok: false }>) =>
     check.pending ? leasePending(reply) : refused(reply);
 
 /** The pair the headers name, or null for one that cannot be an attempt's (refused before the lease read). */
-function pairOf(request: FastifyRequest): { jobId: string; leaseToken: string } | null {
+export function pairOf(request: FastifyRequest): { jobId: string; leaseToken: string } | null {
     const jobId = (request.params as { id: string }).id;
     const leaseToken = request.headers[LEASE_TOKEN_HEADER];
     if (request.headers[JOB_ID_HEADER] !== jobId || typeof leaseToken !== 'string') return null;
@@ -78,8 +78,32 @@ function gitlabForgeOfAttempt(attempt: LiveAttempt): string | null {
     return forge !== null && gitlabHostOf(forge) !== null ? forge : null;
 }
 
+/**
+ * The `409 FORGE_GRANT_REQUIRED` body: `waiting` says whether the thread now waits on the link (the attempt's route
+ * holds it) or the answer only names the missing grant (a person's read opens no wait).
+ */
+export function grantRequiredBody(
+    publicUrl: string,
+    who: { orgId: string; rootJobId: string; forge: string; reason: 'missing' | 'reconnect'; waiting: boolean }
+) {
+    const { orgId, rootJobId, forge, reason, waiting } = who;
+    const standing = reason === 'missing' ? 'missing' : 'broken';
+    const path = forgeConnectPath(forge, { orgId, returnTo: `/tasks/${rootJobId}` });
+    const connectUrl = `${publicUrl}${path as string}`;
+    const state = standing === 'broken' ? 'needs reconnecting' : 'is missing';
+    const then = waiting ? 'this task waits until you link again' : 'link it again';
+    return {
+        error: `Your ${forgeLabel(forge)} connection ${state}; ${then}: ${connectUrl}`,
+        code: ERROR_CODES.FORGE_GRANT_REQUIRED,
+        forge,
+        standing,
+        waiting,
+        connectUrl,
+    } as const;
+}
+
 /** The starter's grant cannot serve: the thread waits (a runtime requirement) and the answer says so. */
-async function waitAnswer(
+export async function waitAnswer(
     deps: ForgeCredentialDeps,
     reply: FastifyReply,
     asked: { attempt: LiveAttempt; leaseToken: string; forge: string; reason: 'missing' | 'reconnect' }
@@ -92,18 +116,15 @@ async function waitAnswer(
     if (held.result === 'missing') return refused(reply);
     // Live again by the time the hold ran (a re-link): no wait, and the retry reads the token.
     if (held.result === 'serving') return unavailable(reply);
-    const standing = reason === 'missing' ? 'missing' : 'broken';
-    const path = forgeConnectPath(forge, { orgId: attempt.orgId, returnTo: `/tasks/${attempt.rootJobId}` });
-    const connectUrl = `${deps.publicUrl}${path as string}`;
-    const state = standing === 'broken' ? 'needs reconnecting' : 'is missing';
-    return reply.code(HTTP_CONFLICT).send({
-        error: `Your ${forgeLabel(forge)} connection ${state}; this task waits until you link again: ${connectUrl}`,
-        code: ERROR_CODES.FORGE_GRANT_REQUIRED,
-        forge,
-        standing,
-        waiting: true,
-        connectUrl,
-    });
+    return reply.code(HTTP_CONFLICT).send(
+        grantRequiredBody(deps.publicUrl, {
+            orgId: attempt.orgId,
+            rootJobId: attempt.rootJobId,
+            forge,
+            reason,
+            waiting: true,
+        })
+    );
 }
 
 /** The token, once the pair is still the live attempt's on the same claim: the refresh took time. */

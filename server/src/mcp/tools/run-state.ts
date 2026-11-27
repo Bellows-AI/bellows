@@ -1,5 +1,14 @@
+import { parseChangeRequestUrl } from '@factory-ai/core';
 import { z } from 'zod';
 import { boardRepo } from './repo-arg.js';
+
+/** What the change request a run published is: GitHub's pull request or GitLab's merge request. */
+export const CHANGE_REQUEST_KINDS = ['pull_request', 'merge_request'] as const;
+export const ChangeRequestKindSchema = z.enum(CHANGE_REQUEST_KINDS);
+
+/** The kind a publication url names; a url the parser does not read is the board's historical default, a pull request. */
+export const changeRequestKindOf = (url: string): (typeof CHANGE_REQUEST_KINDS)[number] =>
+    parseChangeRequestUrl(url)?.ref.forge === 'gitlab' ? 'merge_request' : 'pull_request';
 
 /**
  * The one status vocabulary every task and run tool speaks, shared with `core/src/batch-standing.ts`. The board's
@@ -205,7 +214,11 @@ export function runView(run: BoardRun, detail: boolean) {
                       exitCode: exitCode ?? null,
                   })),
                   pullRequest: run.publication?.prUrl
-                      ? { url: run.publication.prUrl, number: run.publication.prNumber ?? null }
+                      ? {
+                            url: run.publication.prUrl,
+                            kind: changeRequestKindOf(run.publication.prUrl),
+                            number: run.publication.prNumber ?? null,
+                        }
                       : null,
                   integrationRequirements,
                   openQuestions: (run.questions ?? []).filter((q) => q.status === 'pending' && q.answerable).length,
@@ -239,7 +252,10 @@ export const RunViewSchema = z.object({
     output: z.string().nullable().optional(),
     outputTruncated: z.boolean().optional(),
     gates: z.array(z.object({ name: z.string(), status: z.string(), exitCode: z.number().nullable() })).optional(),
-    pullRequest: z.object({ url: z.string(), number: z.number().nullable() }).nullable().optional(),
+    pullRequest: z
+        .object({ url: z.string(), kind: ChangeRequestKindSchema, number: z.number().nullable() })
+        .nullable()
+        .optional(),
     integrationRequirements: z
         .array(
             z.object({

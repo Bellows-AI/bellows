@@ -603,8 +603,18 @@ describe('bellows job done', () => {
         expect(calls[0]!.body).toEqual({ force: true });
         const text = out.join('');
         expect(text).toContain('batch b1 task a cancelled');
-        expect(text).toContain('https://github.com/o/r/pull/7');
+        expect(text).toContain('PR left open: https://github.com/o/r/pull/7');
         expect(text).toContain('settles');
+    });
+
+    it('says MR, not PR, for a GitLab merge request it left open', async () => {
+        const mr = 'https://board.gitlab.test/grp/sub/web/-/merge_requests/3';
+        const { out, io } = harness(ENV, () =>
+            json({ id: 'job-1', batch: 'b1', task: 'a', outcome: 'cancelled', pr: mr, doneAt: null }, 202)
+        );
+        expect(await run(['job', 'done', 'job-1', '--force'], io)).toBe(0);
+        expect(out.join('')).toContain(`MR left open: ${mr}`);
+        expect(out.join('')).not.toContain('PR left open');
     });
 
     it('does not call a task cancelled when it kept its outcome', async () => {

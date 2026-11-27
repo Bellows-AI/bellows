@@ -46,7 +46,7 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
                 // A new window, not a navigation over the dashboard, and rel=noopener/noreferrer
                 // so the opened PR cannot reach back into this tab.
                 <a key="pr" href={prLink} target="_blank" rel="noopener noreferrer">
-                    {prNr !== null ? `#${prNr}` : request?.label.name}
+                    {prNr !== null ? `${request?.label.sigil}${prNr}` : request?.label.name}
                 </a>
             ) : null,
         ],
@@ -58,7 +58,7 @@ export function TaskOutcome({ jobs }: { jobs: Job[] }) {
             title="Outcome"
             className="task-outcome"
             defaultOpen
-            aside={prNr !== null ? `${request?.label.short} #${prNr}` : null}
+            aside={prNr !== null ? `${request?.label.short} ${request?.label.sigil}${prNr}` : null}
         >
             {publish !== null ? (
                 <p className="task-publish">

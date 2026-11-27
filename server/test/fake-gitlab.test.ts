@@ -367,6 +367,31 @@ describe('fake GitLab: merge requests', () => {
         ).toBe('topic');
     });
 
+    it('serves the merge request diff page by page, one entry per changed file', async () => {
+        await seed();
+        await gl.control('gitlab/commit', {
+            project: PROJECT,
+            branch: 'feature',
+            files: { 'added.txt': 'new\n', 'more.txt': 'more\n' },
+        });
+        const { access_token: token } = await gl.signIn();
+        await openMr(token);
+        const all = await gl.send('GET', api('/merge_requests/1/diffs'), { token });
+        expect(all.status).toBe(200);
+        expect(all.body.map((file: { new_path: string }) => file.new_path)).toEqual([
+            'README.md',
+            'added.txt',
+            'more.txt',
+        ]);
+        expect(all.body[0]).toMatchObject({ old_path: 'README.md', new_file: false, deleted_file: false });
+        expect(all.body[0].diff).toContain('-hello');
+        expect(all.body[0].diff).toContain('+changed');
+        expect(all.body[1]).toMatchObject({ new_file: true });
+        const second = await gl.send('GET', api('/merge_requests/1/diffs?per_page=2&page=2'), { token });
+        expect(second.body.map((file: { new_path: string }) => file.new_path)).toEqual(['more.txt']);
+        expect((await gl.send('GET', api('/merge_requests/9/diffs'), { token })).status).toBe(404);
+    });
+
     it('rejects a merge request over a missing branch', async () => {
         await seed();
         const { access_token: token } = await gl.signIn();

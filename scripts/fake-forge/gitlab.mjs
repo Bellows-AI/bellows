@@ -666,6 +666,13 @@ export const registerGitlab = (forge) => {
         mr.updatedAt = now();
         forge.json(ctx.response, 200, await mrJson(project, mr, ctx.request));
     });
+    route('GET', `${mrs}/:iid/diffs`, async (ctx) => {
+        const project = guard(ctx, GUEST);
+        const mr = project && findMr(ctx, project);
+        if (!mr) return;
+        // A merged or closed MR whose source is gone has no diff left to show: an empty page, as a fresh branch has.
+        page(ctx, (await repos.diff(project.id, mr.source, mr.target)) ?? []);
+    });
     route('PUT', `${mrs}/:iid/merge`, async (ctx) => {
         const project = guard(ctx, DEVELOPER);
         const mr = project && findMr(ctx, project);
@@ -801,7 +808,7 @@ export const registerGitlab = (forge) => {
     route('GET', notes, (ctx) => {
         const project = guard(ctx, GUEST);
         const mr = project && findMr(ctx, project);
-        if (mr) forge.json(ctx.response, 200, mr.discussions.flatMap((thread) => thread.notes).map((note) => noteJson(mr, note)));
+        if (mr) page(ctx, mr.discussions.flatMap((thread) => thread.notes).map((note) => noteJson(mr, note)));
     });
     route('POST', notes, (ctx) => {
         const mr = mutable(ctx);
@@ -930,9 +937,8 @@ export const registerGitlab = (forge) => {
         const sha = await repos.resolve(project.id, ctx.params.sha);
         if (!sha) return notFound(ctx.response, 'Commit Not Found');
         const { ref, name } = ctx.query;
-        forge.json(
-            ctx.response,
-            200,
+        page(
+            ctx,
             project.statuses
                 .filter((entry) => entry.sha === sha && (!ref || entry.ref === ref) && (!name || entry.name === name))
                 .map(statusJson)

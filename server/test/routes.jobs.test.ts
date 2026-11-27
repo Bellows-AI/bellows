@@ -564,6 +564,10 @@ function stubStore(
             boom();
             return { result: 'missing' };
         },
+        async changeRequestContext() {
+            boom();
+            return { result: 'missing' };
+        },
         async openPrForgeWait() {
             boom();
             return { result: 'ok' };

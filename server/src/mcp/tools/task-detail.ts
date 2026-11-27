@@ -3,6 +3,8 @@ import { judge, success } from '../result.js';
 import { defineTool, READ_ONLY } from '../tool.js';
 import {
     BOARD_STATUSES,
+    ChangeRequestKindSchema,
+    changeRequestKindOf,
     BoardRunSchema,
     BoardStatusSchema,
     cut,
@@ -54,6 +56,7 @@ const RequirementView = z.object({
 
 const PullRequestView = z.object({
     url: z.string(),
+    kind: ChangeRequestKindSchema,
     number: z.number().nullable(),
     headBranch: z.string().nullable(),
     baseBranch: z.string().nullable(),
@@ -62,6 +65,7 @@ const pullRequestOf = (run: Pick<BoardRun, 'publication'>) =>
     run.publication?.prUrl
         ? {
               url: run.publication.prUrl,
+              kind: changeRequestKindOf(run.publication.prUrl),
               number: run.publication.prNumber ?? null,
               headBranch: run.publication.headBranch ?? null,
               baseBranch: run.publication.baseBranch ?? null,

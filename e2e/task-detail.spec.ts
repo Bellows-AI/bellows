@@ -13,6 +13,7 @@ import {
     failedGateFollowUpThread,
     failedGateThread,
     followUpThread,
+    gitlabPublishedThread,
     interruptedThread,
     longContentThread,
     measuredActivityOf,
@@ -545,6 +546,21 @@ test.describe('the task detail page', () => {
         await page.keyboard.press('ArrowUp');
         // The scroll animates, so poll rather than read on the keypress's heels.
         await expect.poll(() => output.evaluate((el) => el.scrollTop), { timeout: 2_000 }).toBeLessThan(before);
+        expect(problems).toEqual([]);
+    });
+
+    test('a GitLab task’s Outcome tile says Merge request and links the merge request as !3', async ({ page }) => {
+        const problems = watchConsole(page);
+        await routeThread(page, authoredBy(gitlabPublishedThread, await sessionAuthor(page)));
+        await page.goto(`/tasks/${gitlabPublishedThread[0]!.id}`);
+        const outcome = page.locator('.task-outcome');
+        await expect(outcome).toBeVisible();
+        const link = outcome.getByRole('link', { name: '!3' });
+        await expect(link).toHaveAttribute('href', 'https://board.gitlab.test/grp/sub/web/-/merge_requests/3');
+        await expect(outcome.getByText('Merge request', { exact: true })).toBeVisible();
+        await expect(outcome).not.toContainText('Pull request');
+        await expect(outcome.getByRole('link', { name: '#3' })).toHaveCount(0);
+        await page.screenshot({ path: `${SHOTS}/task-detail-gitlab-outcome.png`, fullPage: true });
         expect(problems).toEqual([]);
     });
 

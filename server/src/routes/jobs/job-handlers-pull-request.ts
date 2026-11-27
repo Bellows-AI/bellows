@@ -270,7 +270,7 @@ export async function handlePullRequest(
 }
 
 /** Aborts when the client hangs up before the answer is sent. */
-function closedBy(reply: FastifyReply): AbortSignal {
+export function closedBy(reply: FastifyReply): AbortSignal {
     const gone = new AbortController();
     reply.raw.once('close', () => {
         if (!reply.raw.writableFinished) gone.abort();

@@ -1,5 +1,6 @@
 import { parseRepoRef, type RepoRef } from '@factory-ai/core';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { ChangeRequestReadUnsupportedError } from '../src/forge/change-request-read.js';
 import { createGitLabForgeClient } from '../src/forge/gitlab-client.js';
 import type { ForgeClient } from '../src/forge/forge-client.js';
 import type { GitHubWriteError } from '../src/github/pr-write.js';
@@ -399,5 +400,134 @@ describe('GitLabClient reads the board does not make yet', () => {
         ];
         for (const call of calls) await expect(call()).rejects.toBeInstanceOf(Error);
         expect(seen).toEqual([]);
+    });
+});
+
+describe('GitLabClient.readChangeRequestPart', () => {
+    // A read makes several git-backed calls: a roomy request timer keeps a loaded host from reading as a lost answer.
+    const onFake = () => clientOn(createGitlabApi({ baseUrl: () => gl.base, probeTimeoutMs: 10_000 }));
+    const opened = async () => {
+        const source = await branch();
+        const made = await onFake().openChangeRequest({ branch: source, base: 'main', create: CREATE }, signal());
+        return { source, number: made.pr.number };
+    };
+    const readsOf = () => mrCalls().map((call) => call.path);
+
+    it('reads every changed file with its diff, page by page', async () => {
+        const { number } = await opened();
+        const read = await onFake().readChangeRequestPart(number, 'diff', signal());
+        expect(read).toMatchObject({
+            part: 'diff',
+            files: [{ newPath: expect.stringMatching(/^task\/b\d+\.txt$/), newFile: true }],
+        });
+        expect(readsOf().some((path) => path.includes(`/merge_requests/${number}/diffs`))).toBe(true);
+    });
+
+    it('reads the notes oldest first', async () => {
+        const { number } = await opened();
+        for (const body of ['first', 'second']) {
+            await gl.send('POST', `/api/v4/projects/${ENCODED}/merge_requests/${number}/notes`, {
+                token,
+                body: { body },
+            });
+        }
+        const read = await onFake().readChangeRequestPart(number, 'notes', signal());
+        expect(read).toMatchObject({ part: 'notes', notes: [{ body: 'first' }, { body: 'second' }] });
+    });
+
+    it('reads the head pipeline and the head commit’s statuses', async () => {
+        const { source, number } = await opened();
+        const sha = (
+            await gl.send('GET', `/api/v4/projects/${ENCODED}/repository/branches/${encodeURIComponent(source)}`, {
+                token,
+            })
+        ).body.commit.id as string;
+        await gl.send('POST', `/api/v4/projects/${ENCODED}/statuses/${sha}`, {
+            token,
+            body: { state: 'success', name: 'lint', ref: source },
+        });
+        const read = await onFake().readChangeRequestPart(number, 'pipeline', signal());
+        expect(read).toMatchObject({
+            part: 'pipeline',
+            sha,
+            pipeline: { status: 'success' },
+            statuses: [{ name: 'lint', status: 'success' }],
+        });
+    });
+
+    it('answers a null pipeline for an MR with none', async () => {
+        const { number } = await opened();
+        expect(await onFake().readChangeRequestPart(number, 'pipeline', signal())).toMatchObject({
+            pipeline: null,
+            statuses: [],
+        });
+    });
+
+    it('rejects, never answers a shorter list, for a 5xx, a malformed page, a non-list and a page past the cap', async () => {
+        const failures: GitlabResponse[] = [
+            json(500, {}),
+            json(401, {}),
+            json(404, {}),
+            { ok: false, reason: 'timeout', sent: true },
+            { ok: true, status: 200, text: '{' },
+            json(200, { not: 'a list' }),
+            json(200, [{ new_path: 1 }]),
+        ];
+        for (const answer of failures) {
+            const { api } = scripted(() => answer);
+            await expect(clientOn(api).readChangeRequestPart(7, 'diff', signal())).rejects.toBeInstanceOf(Error);
+        }
+        const endless = scripted(() => json(200, [{ id: 1, body: 'b', author: null, created_at: 'x', system: false }]));
+        await expect(clientOn(endless.api).readChangeRequestPart(7, 'notes', signal())).rejects.toThrow(/cap/);
+        const big = scripted(() =>
+            json(200, [
+                {
+                    old_path: 'a',
+                    new_path: 'a',
+                    new_file: false,
+                    deleted_file: false,
+                    renamed_file: false,
+                    diff: 'x'.repeat(1024 * 1024),
+                },
+            ])
+        );
+        await expect(clientOn(big.api).readChangeRequestPart(7, 'diff', signal())).rejects.toThrow(/cap/);
+    });
+
+    it('says a file the forge withheld is omitted', async () => {
+        const entry = {
+            old_path: 'a',
+            new_path: 'a',
+            new_file: false,
+            deleted_file: false,
+            renamed_file: false,
+            too_large: true,
+            diff: '',
+        };
+        const { api } = scripted((request) => json(200, request.path.endsWith('&page=1') ? [entry] : []));
+        expect(await clientOn(api).readChangeRequestPart(7, 'diff', signal())).toMatchObject({
+            files: [{ omitted: true, diff: '' }],
+        });
+    });
+
+    it('sends the starter’s token and the CA bundle, and the token is in no error', async () => {
+        const { api, seen } = scripted(() => json(500, {}));
+        const error = await clientOn(api, SECRET)
+            .readChangeRequestPart(7, 'notes', signal())
+            .catch((e: Error) => e);
+        expect((error as Error).message).not.toContain(SECRET);
+        expect(seen[0]?.headers?.authorization).toBe(`Bearer ${SECRET}`);
+    });
+
+    it('rejects as unsupported on GitHub, with no request', async () => {
+        const { createGitHubForgeClient } = await import('../src/forge/github-client.js');
+        const github = createGitHubForgeClient(
+            { reads: undefined, writer: undefined },
+            { forge: 'github', host: 'github.com', path: 'o/r' },
+            { kind: 'installation' }
+        );
+        await expect(github.readChangeRequestPart(1, 'diff', signal())).rejects.toBeInstanceOf(
+            ChangeRequestReadUnsupportedError
+        );
     });
 });

@@ -83,12 +83,20 @@ export const isHttpUrl = (url: string): boolean => url.startsWith('https://') ||
 export interface ChangeRequestLabel {
     /** The long name, `Pull request` or `Merge request`. */
     name: string;
+    /** The plural, `Pull requests` or `Merge requests`. */
+    plural: string;
     /** The short form, `PR` or `MR`. */
     short: string;
+    /** What precedes its number: GitHub's `#3`, GitLab's own `!3` (GitLab's `#3` names an issue). */
+    sigil: '#' | '!';
 }
 
-const PULL_REQUEST: ChangeRequestLabel = { name: 'Pull request', short: 'PR' };
-const MERGE_REQUEST: ChangeRequestLabel = { name: 'Merge request', short: 'MR' };
+const PULL_REQUEST: ChangeRequestLabel = { name: 'Pull request', plural: 'Pull requests', short: 'PR', sigil: '#' };
+const MERGE_REQUEST: ChangeRequestLabel = { name: 'Merge request', plural: 'Merge requests', short: 'MR', sigil: '!' };
+
+/** The label a forge key names (`github`, `gitlab:<host>`, as a requirement's `target` spells it). */
+export const changeRequestLabelOfForge = (forge: string | null): ChangeRequestLabel =>
+    forge !== null && forge.startsWith('gitlab:') ? MERGE_REQUEST : PULL_REQUEST;
 
 /**
  * The change request a publish url names, read back out because the board carries no structured field here, only

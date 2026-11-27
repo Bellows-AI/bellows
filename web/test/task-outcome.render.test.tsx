@@ -319,9 +319,11 @@ describe('TaskOutcome — gates, publication and services', () => {
         });
         const outcome = html.slice(html.indexOf('task-outcome'), html.indexOf('task-main'));
         expect(outcome).toContain('Merge request');
-        expect(outcome).toContain('>#12</a>');
-        expect(outcome).toContain('<span class="task-section-aside">MR #12</span>');
+        // GitLab's `#12` names an issue: a merge request is `!12`.
+        expect(outcome).toContain('>!12</a>');
+        expect(outcome).toContain('<span class="task-section-aside">MR !12</span>');
         expect(outcome).not.toContain('PR #12');
+        expect(outcome).not.toContain('>#12</a>');
     });
 
     it('links a publish url that names no number as Pull request, never a CTA verbatim', () => {

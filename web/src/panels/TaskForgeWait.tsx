@@ -1,4 +1,5 @@
 import type { JobIntegrationRequirement } from '../api/useJobs.js';
+import { changeRequestLabelOfForge } from '../task-outcome.js';
 
 const REMOVED_SENTENCE = 'This task has not started: its starter was removed. An owner or admin can stop or remove it.';
 
@@ -33,14 +34,15 @@ export function TaskForgeWait({
     owner: string | null;
     canAct: boolean;
 }) {
-    const { label, reason, connectPath } = requirement;
+    const { label, reason, connectPath, target } = requirement;
+    const noun = changeRequestLabelOfForge(target).name.toLowerCase();
     const removed = reason === 'starter-removed';
     if (reason === 'forge-access') {
         return (
             <section className="question" aria-label={`${label} connection needed`}>
                 <p>
-                    <span className="pill question-chip">{label}</span> The pull request is waiting: the member who
-                    started this task needs write access to the repository on {label}. It retries on its own.
+                    <span className="pill question-chip">{label}</span> The {noun} is waiting: the member who started
+                    this task needs write access to the repository on {label}. It retries on its own.
                 </p>
                 {canAct ? null : (
                     <p className="question-status" aria-live="polite">
