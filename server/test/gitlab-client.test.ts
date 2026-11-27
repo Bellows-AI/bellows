@@ -404,6 +404,8 @@ describe('GitLabClient reads the board does not make yet', () => {
 });
 
 describe('GitLabClient.readChangeRequestPart', () => {
+    // A read makes several git-backed calls: a roomy request timer keeps a loaded host from reading as a lost answer.
+    const onFake = () => clientOn(createGitlabApi({ baseUrl: () => gl.base, probeTimeoutMs: 10_000 }));
     const opened = async () => {
         const source = await branch();
         const made = await onFake().openChangeRequest({ branch: source, base: 'main', create: CREATE }, signal());
