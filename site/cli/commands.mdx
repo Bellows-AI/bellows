@@ -163,6 +163,8 @@ An organization whose GitHub App was uninstalled is suspended and, 30 days later
 | `bellows operator activate <org-id>` | Make the organization active again. Its queued tasks become claimable. |
 | `bellows operator delete <org-id> --yes` | Delete a suspended or refused organization for good: its tasks, logs, transcripts, settings, stored files and secrets are purged in the background, and none of it can be restored. An active organization is refused with `409 ORG_ACTIVE`; suspend or refuse it first. Without `--yes` the command sends nothing. |
 
+To handle an organization's erasure request end to end, run `scripts/org-erasure.mjs <org-id>` from the repository with `FACTORY_URL` and the operator's `FACTORY_TOKEN` set. It shows the organization's members, threads and stored objects, asks you to confirm (`--yes` skips the prompt), suspends and deletes the organization, waits until it is gone, and prints a receipt. The receipt says copies leave backups within 7 days. Revoking the GitHub App installation stays a manual step.
+
 ## Driver credentials (operator)
 
 Bellows Cloud only, for the board operator. Each driver gets its own credential, for named organizations or for the pool, which reaches every organization. A driver with an organization's credential claims only that organization's tasks, and is refused with `403 FORBIDDEN` on any other organization's task. The board keeps only a hash of each token.

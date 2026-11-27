@@ -92,6 +92,7 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['GET', '/api/batches', 'read', MEMBER_ROLE],
     // The operator's surface spans every organization: never reachable by a scoped grant or by an org role.
     ['GET', '/api/operator/orgs', 'none', OPERATOR_ROLE],
+    ['GET', '/api/operator/orgs/:id', 'none', OPERATOR_ROLE],
     ['POST', '/api/operator/orgs/:id/suspend', 'none', OPERATOR_ROLE],
     ['POST', '/api/operator/orgs/:id/refuse', 'none', OPERATOR_ROLE],
     ['POST', '/api/operator/orgs/:id/activate', 'none', OPERATOR_ROLE],

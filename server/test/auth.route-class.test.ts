@@ -109,6 +109,7 @@ describe('the route classes (what a scoped caller may do)', () => {
                 'POST /api/operator/driver-credentials/:id/revoke',
                 'POST /api/operator/driver-credentials/:id/rotate',
                 'GET /api/operator/orgs',
+                'GET /api/operator/orgs/:id',
                 'POST /api/operator/orgs/:id/activate',
                 'POST /api/operator/orgs/:id/delete',
                 'POST /api/operator/orgs/:id/refuse',

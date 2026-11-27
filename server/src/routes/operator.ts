@@ -45,6 +45,18 @@ export const operatorRoutes =
             if (listed.ok) return { orgs: listed.value };
         });
 
+        app.get<{ Params: { id: string } }>('/api/operator/orgs/:id', async (request, reply) => {
+            const { id } = request.params;
+            const described = await guard(
+                reply,
+                (e) => request.log.error(e),
+                () => store.describeOrganization(id)
+            );
+            if (!described.ok) return;
+            if (!described.value) return bad(reply, ERROR_CODES.NOT_FOUND, `No organization '${id}'`, HTTP_NOT_FOUND);
+            return { org: described.value };
+        });
+
         for (const action of OPERATOR_ACTIONS) {
             app.post<{ Params: { id: string } }>(`/api/operator/orgs/:id/${action}`, async (request, reply) => {
                 const caller = callerOf(request);
