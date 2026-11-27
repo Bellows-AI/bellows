@@ -44,7 +44,7 @@ import {
     type ForgeSource,
 } from './forge/forge-client.js';
 import { readClient, tokenClient, type GitlabReads, type ReadDeps, type Unread } from './forge/forge-reads.js';
-import { isGitlabRepo } from './forge/forges.js';
+import { forgeOfRepo, isGitlabRepo } from './forge/forges.js';
 import { MERGE_REQUEST_DEADLINE_MS } from './forge/gitlab-merge.js';
 import { FORGE_READ_DEADLINE_MS } from './forge/gitlab-reads.js';
 import { logger } from './log.js';
@@ -96,11 +96,14 @@ interface Run {
     recordMerge: BatchMergerDeps['recordMerge'];
     reconcile: BatchMergerDeps['reconcile'];
     clock: () => Date;
-    /** The starter's token per claimed batch, resolved before its intent was claimed and held only for this pass. */
+    /** The starter's token per claimed batch and forge host, resolved before its intent was claimed and held only for this pass. */
     tokens: Map<string, string>;
-    /** Why a batch's starter has no token this pass, so the next task of the batch asks nothing again. */
+    /** Why a batch's starter has no token for a forge host this pass, so the next task of the batch asks nothing again. */
     refused: Map<string, string>;
 }
+
+/** One credential per batch and forge host: a task on another forge never carries, or waits on, this one's token. */
+const credentialKey = (batchId: string, repo: RepoRef): string => `${batchId}:${forgeOfRepo(repo)}`;
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -211,7 +214,7 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
     if (await batchFenced(run.store, intent.batchId)) return void (await resolveMerge(run.store, intent, FENCED));
     // The lease covers the request itself: if another pass already reconciled this intent as expired, nothing is sent.
     if (!(await renewLease(run.store, intent))) return;
-    const token = run.tokens.get(intent.batchId);
+    const token = run.tokens.get(credentialKey(intent.batchId, intent.repo));
     if (token === undefined) {
         return settled(run, intent, { state: MERGE_LAPSED, detail: 'no merge token was resolved', retryAfterMs: null });
     }
@@ -248,8 +251,9 @@ async function admitMerge(run: Run, deps: BatchMergerDeps, candidate: MergeCandi
 
 /** The starter's token for the candidate's batch, once per pass: null when held, else the refusal's detail. */
 async function tokenOf(run: Run, deps: BatchMergerDeps, candidate: MergeCandidate): Promise<string | null> {
-    if (run.tokens.has(candidate.batchId)) return null;
-    const refused = run.refused.get(candidate.batchId);
+    const key = credentialKey(candidate.batchId, candidate.repo);
+    if (run.tokens.has(key)) return null;
+    const refused = run.refused.get(key);
     if (refused !== undefined) return refused;
     const token = await deps.mergeToken(
         { orgId: deps.orgId, repo: candidate.repo, startedBy: candidate.startedBy },
@@ -257,10 +261,10 @@ async function tokenOf(run: Run, deps: BatchMergerDeps, candidate: MergeCandidat
     );
     if (!token.ok) {
         logger('batches').info({ batchId: candidate.batchId, detail: token.detail }, 'a merge waits for its token');
-        run.refused.set(candidate.batchId, token.detail);
+        run.refused.set(key, token.detail);
         return token.detail;
     }
-    run.tokens.set(candidate.batchId, token.token);
+    run.tokens.set(key, token.token);
     return null;
 }
 

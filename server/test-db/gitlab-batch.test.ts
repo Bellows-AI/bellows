@@ -1,13 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { gitlabForgeOf } from '@factory-ai/core';
+import { formatRepoRef, githubRepo, gitlabForgeOf, resolveBatchPlan, validateBatchPlan } from '@factory-ai/core';
 import type { Sql } from 'postgres';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { claimMerges } from '../src/db/batches/batch-store-merge.js';
+import { createBatchMerger } from '../src/batch-merger.js';
+import { createBatchPrObserver } from '../src/batch-pr-observer.js';
+import { gitlabAccessOf } from '../src/forge/forge-gate.js';
+import { createMergeTokenSource } from '../src/forge/pr-token.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import type { ForgeSource } from '../src/forge/forge-client.js';
 import { createGitlabApi, type GitlabApi } from '../src/gitlab/gitlab-api.js';
 import type { GitHubAppClient } from '../src/github/app-client.js';
-import { rootOf, setSucceeded } from './batch-fixtures.js';
+import { facts, recordPr, rootOf, setSucceeded } from './batch-fixtures.js';
 import { testSecretDeps } from './env-secrets-harness.js';
 import {
     type Board,
@@ -470,5 +474,117 @@ describe.skipIf(!enabled)('an automerge batch on GitLab', () => {
         const { id } = drafted.json<{ id: string }>();
         expect((await post(`/api/batches/${id}/validate`, {})).statusCode).toBe(OK);
         expect((await post(`/api/batches/${id}/start`, { version: 1 })).statusCode).toBe(OK);
+    });
+});
+
+describe.skipIf(!enabled)('one automerge stage across two forges', () => {
+    const GITHUB_PR = 7;
+    let githubMerges: { number: number; token: string }[];
+
+    /** A GitHub installation that reads one green PR and records the token every merge is sent with. */
+    const githubForge = (): ForgeSource => ({
+        github: {
+            reads: {
+                readPullRequest: async () => facts(GITHUB_PR),
+                mergePullRequest: async (_repo: string, number: number, _request: unknown, token: string) => {
+                    githubMerges.push({ number, token });
+                    return { mergeCommitSha: 'c'.repeat(40) };
+                },
+            } as unknown as GitHubAppClient,
+        },
+    });
+
+    /** Two tasks of one stage, one on a GitHub target and one on the GitLab project, both observed ready. */
+    async function mixedBatch() {
+        githubMerges = [];
+        const mr = await openMr();
+        const github = githubRepo('acme/web');
+        const gitlab = { forge: 'gitlab' as const, host: HOST, path: current };
+        const task = (key: string, target: string) => ({
+            key,
+            target,
+            objective: `do ${key}`,
+            acceptance: `${key} works`,
+            verification: 'npm test',
+            completion: { kind: 'pr' },
+        });
+        const validated = validateBatchPlan({
+            planVersion: 1,
+            title: 'Two forges',
+            targets: [
+                { key: 'web', repo: github },
+                { key: 'api', repo: gitlab },
+            ],
+            defaultTarget: 'web',
+            executor: 'claude',
+            concurrency: 2,
+            stages: [{ key: 'one', policy: 'automerge', tasks: [task('a', 'web'), task('b', 'api')] }],
+        });
+        if (!validated.ok) throw new Error(JSON.stringify(validated.issues));
+        const { batches, prs, jobs } = await runtime();
+        const { id } = await batches.create(validated.plan, org.memberId);
+        const frozen = resolveBatchPlan(validated.plan, {
+            [formatRepoRef(github)]: 'main',
+            [formatRepoRef(gitlab)]: 'trunk',
+        });
+        await batches.start({ id, version: 1, plan: frozen, startedBy: org.memberId });
+        await batches.reconcile(id);
+        const rootA = await rootOf(batches, id, 'a');
+        const rootB = await rootOf(batches, id, 'b');
+        await recordPr(prs, rootA, GITHUB_PR);
+        await prs.recordPublication({
+            root: rootB,
+            repo: current,
+            prNumber: mr.iid,
+            prUrl: mr.url,
+            headBranch: mr.branch,
+            baseBranch: 'trunk',
+        });
+        await setSucceeded(sql, rootA);
+        await setSucceeded(sql, rootB);
+        await batches.reconcile(id);
+        // The org registry holds no GitHub installation: the pollers are built here over the GitHub source and the grants.
+        const reads = { gitlab: gitlabAccessOf(board.replica.orgs, board.replica.api), memberGrants: board.grants };
+        const recordMerge: Parameters<typeof createBatchMerger>[0]['recordMerge'] = (repo, number, deliveryId, at) =>
+            jobs!.closeMergedPr(repo, number, deliveryId, at);
+        const reconcile = (batchId: string) => batches.reconcile(batchId);
+        const base = { sql, orgId: org.id, forge: githubForge(), gitlab: reads, recordMerge, reconcile };
+        expect(await createBatchPrObserver(base).observeDue()).toBe(2);
+        const merger = createBatchMerger({
+            ...base,
+            mergeToken: createMergeTokenSource({ memberGrants: board.grants }),
+        });
+        return { id, mr, batches, merger };
+    }
+    const noteOf = async (batches: Awaited<ReturnType<typeof runtime>>['batches'], id: string, key: string) =>
+        (await batches.report(id))?.tasks.find((task) => task.key === key)?.waitReason ?? '';
+
+    it('sends each forge’s merge its own credential: the GitHub task never carries the GitLab token', async () => {
+        const { id, mr, batches, merger } = await mixedBatch();
+        const before = mark();
+        await merger.mergeDue();
+        // The starter holds a GitLab grant only: the GitLab merge request is merged with it, the GitHub PR waits.
+        expect(putsSince(before)).toHaveLength(1);
+        expect((await mrState(mr.iid)).state).toBe('merged');
+        expect(githubMerges).toEqual([]);
+        const note = await noteOf(batches, id, 'a');
+        expect(note).toContain('must reconnect GitHub');
+        expect(note).not.toContain('GitLab');
+    });
+
+    it('puts each forge’s own wait note on its task when the GitLab grant is broken', async () => {
+        const { id, batches, merger } = await mixedBatch();
+        await breakGrant();
+        const before = mark();
+        await merger.mergeDue();
+        expect(callsSince(before)).toEqual([]);
+        expect(githubMerges).toEqual([]);
+        expect(await merges(id)).toEqual([]);
+        const github = await noteOf(batches, id, 'a');
+        const gitlab = await noteOf(batches, id, 'b');
+        expect(github).toContain('must reconnect GitHub');
+        expect(github).not.toContain('GitLab');
+        expect(gitlab).toContain('must reconnect GitLab');
+        expect(gitlab).not.toContain('GitHub');
     });
 });
