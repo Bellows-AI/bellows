@@ -10,6 +10,7 @@ import type {
 import { isTerminal, type Job } from './api/useJobs.js';
 import { duration } from './format.js';
 import { figure, TOKEN_TYPE_LABELS } from './components/usage/usage-format.js';
+import { type ChangeRequestLabel, changeRequestLabelOfForge, changeRequestOf } from './task-outcome.js';
 
 /**
  * The task statistics read model (issues 530, 848): a pure view over the activity answer. The task's
@@ -282,6 +283,8 @@ const PR_KIND_LABELS: Record<PrOperation['kind'], string> = {
 
 /** How the dialog words the task's PR activity: operations and distinct PRs are separate figures. */
 export interface PrFigures {
+    /** What the task's change requests are called: merge requests when every recorded one is GitLab's. */
+    request: ChangeRequestLabel;
     recorded: boolean;
     partial: boolean;
     operations: string;
@@ -291,7 +294,13 @@ export interface PrFigures {
 }
 
 export function prFigures(prs: PrActivity): PrFigures {
+    const labels = prs.distinct.map((pr) => changeRequestOf(pr.url).label);
+    const request =
+        labels.length > 0 && labels.every((label) => label.sigil === '!')
+            ? labels[0]!
+            : changeRequestLabelOfForge(null);
     return {
+        request,
         recorded: prs.coverage !== null,
         partial: prs.coverage === 'partial',
         operations: figure(prs.counts?.operations ?? null),
@@ -300,6 +309,9 @@ export function prFigures(prs: PrActivity): PrFigures {
             const count = prs.operations.filter((o) => o.kind === kind).length;
             return count > 0 ? [{ label: PR_KIND_LABELS[kind], count }] : [];
         }),
-        links: prs.distinct.map((pr) => ({ label: `${pr.repo}#${pr.number}`, url: pr.url })),
+        links: prs.distinct.map((pr) => ({
+            label: `${pr.repo}${changeRequestOf(pr.url).label.sigil}${pr.number}`,
+            url: pr.url,
+        })),
     };
 }

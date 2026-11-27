@@ -325,14 +325,14 @@ describe('task outcome derivations', () => {
             const LARGE_PULL_NUMBER = 177;
             expect(changeRequestOf('https://github.com/o/r/pull/9')).toEqual({
                 number: PULL_NUMBER,
-                label: { name: 'Pull request', short: 'PR' },
+                label: { name: 'Pull request', plural: 'Pull requests', short: 'PR', sigil: '#' },
             });
             expect(changeRequestOf('https://github.example.com/acme/widgets/pull/177').number).toBe(LARGE_PULL_NUMBER);
         });
 
         it('reads a GitLab merge request url, nested groups and self-managed hosts included, labelled MR', () => {
             const MERGE_NUMBER = 12;
-            const label = { name: 'Merge request', short: 'MR' };
+            const label = { name: 'Merge request', plural: 'Merge requests', short: 'MR', sigil: '!' };
             expect(changeRequestOf('https://gitlab.com/g/p/-/merge_requests/12')).toEqual({
                 number: MERGE_NUMBER,
                 label,

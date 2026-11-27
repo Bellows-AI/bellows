@@ -802,6 +802,32 @@ describe('get_task', () => {
         expect(runs.data.job).toMatchObject({ repo: 'gitlab:gl.example/g/sub/p' });
     });
 
+    it('names the kind of the change request beside its url: pull_request on GitHub, merge_request on GitLab', async () => {
+        const published = (prUrl: string) => [
+            run(JOB_A, {
+                publication: { prUrl, prNumber: 3, headBranch: 'agent/x', baseBranch: 'main' },
+            }),
+        ];
+        const gitlab = 'https://board.gitlab.test/grp/sub/web/-/merge_requests/3';
+        const github = 'https://github.com/acme/web/pull/3';
+        const url = await boot({ a: { thread: published(gitlab) } });
+        const task = await call(url, 'alice', 'get_task', { taskId: JOB_A });
+        expect(task.data.pullRequest).toEqual({
+            url: gitlab,
+            kind: 'merge_request',
+            number: 3,
+            headBranch: 'agent/x',
+            baseBranch: 'main',
+        });
+        const result = await call(url, 'alice', 'get_task_result', { taskId: JOB_A });
+        expect(result.data.pullRequest).toMatchObject({ url: gitlab, kind: 'merge_request', number: 3 });
+        const hub = await boot({ a: { thread: published(github) } });
+        expect((await call(hub, 'alice', 'get_task', { taskId: JOB_A })).data.pullRequest).toMatchObject({
+            url: github,
+            kind: 'pull_request',
+        });
+    });
+
     it('describes the task from any of its runs: head run, runs, pull request, attention, attachment metadata only', async () => {
         const url = await boot({ a: { thread }, b: { thread: [run(JOB_B, { rootJobId: JOB_B })] } });
         for (const id of [JOB_A, FOLLOW_A]) {

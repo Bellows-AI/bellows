@@ -59,7 +59,7 @@ export function renderStopped(stopped: JobStopped): string {
 export function renderDone(done: JobDone | BatchThreadClosed): string {
     if (!('batch' in done)) return `done ${done.doneAt ?? DASH} ${done.id} (run ${done.status})`;
     const closed = done.doneAt ? `done ${done.doneAt}` : 'stopping — done once the run settles';
-    const pr = done.pr ? `; PR left open: ${done.pr}` : '';
+    const pr = done.pr ? `; ${changeRequestShort(done.pr)} left open: ${done.pr}` : '';
     const fate = done.outcome === 'kept' ? 'kept its outcome' : 'cancelled';
     return `${closed} ${done.id}: batch ${done.batch} task ${done.task} ${fate}${pr}`;
 }
@@ -125,9 +125,11 @@ function gateLines(job: BoardJobRecord): string[] {
     });
 }
 
+/** `MR` for a GitLab merge request url, `PR` for anything else. */
+const changeRequestShort = (url: string): string => (parseChangeRequestUrl(url)?.ref.forge === 'gitlab' ? 'MR' : 'PR');
+
 /** `mr:` for a GitLab merge request url, `pr:` for anything else. */
-const changeRequestField = (url: string): string =>
-    parseChangeRequestUrl(url)?.ref.forge === 'gitlab' ? 'mr:' : 'pr:';
+const changeRequestField = (url: string): string => `${changeRequestShort(url).toLowerCase()}:`;
 
 /** The PR the thread published, and why it is waiting or what the agent is asking a person. */
 function evidenceLines(job: BoardJobRecord): string[] {

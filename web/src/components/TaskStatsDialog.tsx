@@ -187,19 +187,19 @@ function GatesSection({ gates }: { gates: GateActivity }) {
     );
 }
 
-/** The PRs the task's runs created or reused: operation and distinct-PR counts apart, each PR linked once. */
+/** The PRs (or MRs) the task's runs created or reused: operation and distinct-PR counts apart, each PR linked once. */
 function PullRequestsSection({ prs }: { prs: PrActivity }) {
     const figures = prFigures(prs);
     return (
-        <section className="task-stats-usage" aria-label="Pull requests">
-            <h3>Pull requests</h3>
+        <section className="task-stats-usage" aria-label={figures.request.plural}>
+            <h3>{figures.request.plural}</h3>
             <dl className="task-stats-totals">
                 <div>
                     <dt>Operations</dt>
                     <dd>{figures.operations}</dd>
                 </div>
                 <div>
-                    <dt>Distinct PRs</dt>
+                    <dt>Distinct {figures.request.short}s</dt>
                     <dd>{figures.distinct}</dd>
                 </div>
                 {figures.byKind.map((kind) => (
@@ -221,7 +221,9 @@ function PullRequestsSection({ prs }: { prs: PrActivity }) {
                 </ul>
             )}
             {figures.partial ? (
-                <p className="task-stats-note">Coverage is partial: some pull-request calls were not confirmed.</p>
+                <p className="task-stats-note">
+                    Coverage is partial: some {figures.request.name.toLowerCase()} calls were not confirmed.
+                </p>
             ) : null}
         </section>
     );

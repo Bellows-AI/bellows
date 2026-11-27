@@ -227,6 +227,23 @@ describe('the forge wait on the task page', () => {
         expect(screen.queryByRole('link', { name: /GitHub/ })).toBeNull();
     });
 
+    it('says merge request, and names GitLab, for a forge-access wait on a GitLab task', async () => {
+        const jobs = held(
+            forge({
+                reason: 'forge-access',
+                label: 'GitLab (board.gitlab.test)',
+                target: 'gitlab:board.gitlab.test',
+            })
+        );
+        board({ jobs });
+        open(jobs);
+        const wait = await screen.findByRole('region', { name: 'GitLab (board.gitlab.test) connection needed' });
+        expect(wait.textContent).toMatch(
+            /merge request is waiting.*needs write access to the repository on GitLab \(board\.gitlab\.test\)/i
+        );
+        expect(wait.textContent).not.toMatch(/pull request/i);
+    });
+
     it('tells anyone else who the pull request waits for', async () => {
         const owner = { ...LOCAL_AUTHOR, id: 'cccccccc-0000-4000-8000-000000000009', name: 'Octo Owner' };
         const jobs = authoredBy(heldThread(forge({ reason: 'forge-access' })), owner);

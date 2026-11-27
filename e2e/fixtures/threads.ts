@@ -550,6 +550,22 @@ export const publishedThread = thread([
     }),
 ]);
 
+const GITLAB_REPO_PATH = 'grp/sub/web';
+const GITLAB_REPO: RepoRef = { forge: 'gitlab', host: 'board.gitlab.test', path: GITLAB_REPO_PATH };
+
+/** Succeeded and open, published to GitLab merge request 3: the Outcome tile says Merge request and `!3`. */
+export const gitlabPublishedThread = thread([
+    run({
+        id: 'aaaaaaaa-0000-4000-8000-000000000537',
+        command: 'add the export button',
+        repo: GITLAB_REPO,
+        exitCode: 0,
+        summary: 'Added the export button.',
+        output: `[driver] published task/export — https://${GITLAB_REPO.host}/${GITLAB_REPO_PATH}/-/merge_requests/3`,
+        gates: [{ name: 'test', status: 'passed', exitCode: 0, output: 'all green' }],
+    }),
+]);
+
 /** Succeeded and marked done. */
 export const doneThread = thread([
     run({
