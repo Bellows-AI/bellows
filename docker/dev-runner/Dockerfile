@@ -10,6 +10,7 @@ FROM mirror.gcr.io/library/node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e2
 
 # git for the checkout, make for `make runners`, curl and the CA bundle for the downloads below.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends ca-certificates curl git jq make postgresql-client procps python3 \
     && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale
 
