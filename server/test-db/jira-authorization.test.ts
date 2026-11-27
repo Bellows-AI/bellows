@@ -68,8 +68,8 @@ describe.skipIf(!enabled)('jira authorization', () => {
         const bobList = (await store.list(BOB.id)).filter(
             (c) => c.site.endsWith(`-${a}.atlassian.net`) || c.site.endsWith(`-${b}.atlassian.net`)
         );
-        expect(aliceList.map((c) => [c.site, c.account])).toEqual([[hostOf(a, 'one'), `${a}@example.com`]]);
-        expect(bobList.map((c) => [c.site, c.account])).toEqual([[hostOf(b, 'one'), `${b}@example.com`]]);
+        expect(aliceList.map((c) => [c.site, c.account])).toEqual([[hostOf(a, 'one'), hostOf(a, 'one')]]);
+        expect(bobList.map((c) => [c.site, c.account])).toEqual([[hostOf(b, 'one'), hostOf(b, 'one')]]);
 
         const [connA] = await connectionsOf(db.sql, a);
         const [connB] = await connectionsOf(db.sql, b);

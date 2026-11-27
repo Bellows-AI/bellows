@@ -86,4 +86,6 @@ Each person connects their own Atlassian account. The connection belongs to that
 
 - The token reaches every site the Atlassian account can reach. Naming a site narrows what Bellows records, not what the token can do.
 - One Atlassian account can connect in several Bellows organizations. Inside one organization it belongs to one member; another member who connects it is refused with `grant-conflict`.
+- Atlassian sends a 3LO app no event when a person loses a site or revokes the app. Every board replica asks Atlassian for each connection's accessible sites about once an hour, one replica at a time. A connection whose site is confirmed gone, or whose refresh Atlassian refuses with `invalid_grant`, is revoked: its token is destroyed, its stored label blanked and a `connection.revoke` audit row written. An answer that fails, times out, or comes back empty or malformed changes nothing.
+- A Jira connection stores the Atlassian account id and the site host only, no email or display name.
 - Atlassian has no token revocation endpoint. **Disconnect** destroys Bellows' copy of the token. To remove the authorization itself, revoke it in the Atlassian account settings.

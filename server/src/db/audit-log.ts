@@ -21,6 +21,7 @@ export type AuditAction =
     | 'env.write'
     | 'connection.connect'
     | 'connection.disconnect'
+    | 'connection.revoke'
     | 'connection.access'
     | 'task.admin_action'
     | 'org.suspend'

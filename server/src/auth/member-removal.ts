@@ -1,6 +1,7 @@
 import { ADMIN_ROLE } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
 import { type AuditEntry, recordAudit, userActor } from '../db/audit-log.js';
+import { revokeConnectionsInTx } from '../db/connection-revocation.js';
 import type { AuthStore } from './store.js';
 
 /**
@@ -18,8 +19,8 @@ export const SYSTEM_ACTOR: AuditEntry['actor'] = { kind: 'system', id: null };
 /**
  * THE way a membership ends, whoever ends it (the sign-in sweep, the webhook, a confirmed non-member at the
  * re-check, an admin's removal): the memberships of `orgIds`, the account's sessions in those orgs, its
- * personal tokens there and its OAuth grant families there (every access and refresh token, both audiences),
- * inside the caller's transaction — so a membership granted again later never revives an old credential. Each deleted membership writes its `member.remove` audit row there too, naming `cause`.
+ * personal tokens there, its OAuth grant families there (every access and refresh token, both audiences) and its
+ * connections there (secret retired, label blanked; `db/connection-revocation.ts`), inside the caller's transaction — so a membership granted again later never revives an old credential. Each deleted membership writes its `member.remove` audit row there too, naming `cause`.
  * Returns how many memberships were deleted.
  */
 export async function endMemberships(
@@ -55,6 +56,12 @@ export async function endMemberships(
             where family_id = any(${families.map((f) => f.id)}::uuid[]) and revoked_at is null
         `;
     }
+    // Tasks already refuse a leaver's connection at use; this is retention: its refresh secret and label do not outlive the membership.
+    await revokeConnectionsInTx(
+        tx,
+        { kind: 'leaver', userId, orgIds: ids },
+        { actor: cause.actor, reason: 'member-removed' }
+    );
     return deleted.length;
 }
 

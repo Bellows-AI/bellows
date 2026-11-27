@@ -46,7 +46,28 @@ function resourceFrom(entry: unknown): { id: string; label: string; scopes: stri
     }
 }
 
-/** Every accessible site and the account behind the token; null on anything unconfirmed, never "no sites". */
+/** The sites the token reaches; null on anything unconfirmed (a failed, empty or malformed answer), never "no sites". */
+async function listSites(
+    cfg: JiraHooksConfig,
+    fetchFn: FetchFn,
+    accessToken: string,
+    signal: AbortSignal
+): Promise<NonNullable<ReturnType<typeof resourceFrom>>[] | null> {
+    try {
+        const list = await getJson(fetchFn, `${cfg.apiOrigin}/oauth/token/accessible-resources`, accessToken, signal);
+        if (!Array.isArray(list) || list.length === 0) return null;
+        const resources = list.map(resourceFrom);
+        const sites = resources.filter((r): r is NonNullable<typeof r> => r !== null);
+        return sites.length === resources.length ? sites : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Every accessible site and the account behind the token; null on anything unconfirmed, never "no sites". Only the
+ * account id is kept from `/myself`: the email and display name are personal data the board reads when shown, never stores.
+ */
 async function discover(
     cfg: JiraHooksConfig,
     fetchFn: FetchFn,
@@ -54,18 +75,14 @@ async function discover(
     signal: AbortSignal
 ): Promise<DiscoveredIdentity | null> {
     try {
-        const list = await getJson(fetchFn, `${cfg.apiOrigin}/oauth/token/accessible-resources`, accessToken, signal);
-        if (!Array.isArray(list) || list.length === 0) return null;
-        const resources = list.map(resourceFrom);
-        const sites = resources.filter((r): r is NonNullable<typeof r> => r !== null);
-        const first = sites[0];
-        if (sites.length !== resources.length || !first) return null;
+        const sites = await listSites(cfg, fetchFn, accessToken, signal);
+        const first = sites?.[0];
+        if (!sites || !first) return null;
         const me = await getJson(fetchFn, `${jiraApiBase(cfg.apiOrigin, first.id)}/myself`, accessToken, signal);
         if (!isRecord(me) || typeof me.accountId !== 'string' || me.accountId === '') return null;
-        const label = [me.emailAddress, me.displayName].find((v) => typeof v === 'string' && v !== '');
         return {
             externalAccountId: me.accountId,
-            label: typeof label === 'string' ? label : me.accountId,
+            label: null,
             resources: sites.map(({ id, label: host }) => ({ id, label: host })),
             authority: { scopes: sortedScopes(sites.flatMap((s) => s.scopes)) },
         };
@@ -148,5 +165,9 @@ export function createJiraHooks(cfg: JiraHooksConfig, fetchFn: FetchFn = fetch):
         refresh: ({ refreshToken, signal }) =>
             tokenCall({ grant_type: 'refresh_token', refresh_token: refreshToken }, signal),
         discoverIdentity: ({ accessToken, signal }) => discover(cfg, fetchFn, accessToken, signal),
+        // Atlassian's consent is revoked by the person, and the refresh then answers `invalid_grant` for good.
+        revokesOnRefusal: true,
+        accessibleResources: async ({ accessToken, signal }) =>
+            (await listSites(cfg, fetchFn, accessToken, signal))?.map(({ id, label }) => ({ id, label })) ?? null,
     };
 }

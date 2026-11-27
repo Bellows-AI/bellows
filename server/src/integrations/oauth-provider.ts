@@ -23,8 +23,11 @@ export type ExchangeResult = { ok: true; tokens: IssuedTokens } | { ok: false; f
 
 export interface DiscoveredIdentity {
     externalAccountId: string;
-    /** What a person calls the account (an email, else a display name); shown on the connection. */
-    label: string;
+    /**
+     * What a person calls the account (an email, else a display name), stored on the connection; null stores none and
+     * each connection is labelled by its resource (Jira keeps no personal data: the site host is the label).
+     */
+    label: string | null;
     resources: { id: string; label: string }[];
     authority: GrantAuthority;
 }
@@ -54,6 +57,19 @@ export interface OAuthProviderHooks {
     /** One bounded attempt; only called when `revokeScope` is `token`. */
     revoke?(input: { token: string; signal: AbortSignal }): Promise<'revoked' | 'failed'>;
     discoverIdentity(input: { accessToken: string; signal: AbortSignal }): Promise<DiscoveredIdentity | null>;
+    /**
+     * True when a `definitive` refresh refusal means the person no longer grants this app access: the grant's
+     * connections are revoked (`db/connection-revocation.ts`) instead of waiting for a reconnect.
+     */
+    revokesOnRefusal?: boolean;
+    /**
+     * The resources the token reaches now, for the periodic site access re-check; null on anything unconfirmed: a
+     * failed, timed-out, empty or malformed answer is never "no resources".
+     */
+    accessibleResources?(input: {
+        accessToken: string;
+        signal: AbortSignal;
+    }): Promise<{ id: string; label: string }[] | null>;
 }
 
 export type OAuthProviderLookup = (provider: string) => OAuthProviderHooks | undefined;

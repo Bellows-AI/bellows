@@ -153,10 +153,31 @@ describe('jira hooks: token exchange', () => {
     });
 });
 
+describe('jira hooks: accessibleResources', () => {
+    const list = () => hooks().accessibleResources!({ accessToken: FAKE_ACCESS_TOKEN, signal: live() });
+
+    it('lists the sites the token reaches by cloud id and host, without asking /myself', async () => {
+        fake.on('GET', RESOURCES_ROUTE, () => ({ status: 200, json: [fakeResource()] }));
+        expect(await list()).toEqual([{ id: FAKE_CLOUD_ID, label: FAKE_SITE_HOST }]);
+        expect(fake.calls.some((c) => MYSELF_ROUTE.test(c.path))).toBe(false);
+    });
+
+    it.each([
+        ['a malformed resource entry', () => ({ status: 200, json: [fakeResource(), { id: 'x' }] })],
+        ['an empty list', () => ({ status: 200, json: [] })],
+        ['a non-array answer', () => ({ status: 200, json: { resources: [] } })],
+        ['a non-2xx answer', () => ({ status: 500, json: [] })],
+        ['a dropped response', () => ({ drop: true as const })],
+    ])('%s is null, never "no sites"', async (_name, reply) => {
+        fake.on('GET', RESOURCES_ROUTE, reply);
+        expect(await list()).toBeNull();
+    });
+});
+
 describe('jira hooks: discoverIdentity', () => {
     const discover = () => hooks().discoverIdentity({ accessToken: FAKE_ACCESS_TOKEN, signal: live() });
 
-    it('one site gives the account, its label (email else display name) and the cloud resource', async () => {
+    it('one site gives the account id, no stored label (no email or name) and the cloud resource', async () => {
         fake.on('GET', RESOURCES_ROUTE, () => ({ status: 200, json: [fakeResource()] }));
         fake.on('GET', MYSELF_ROUTE, () => ({
             status: 200,
@@ -164,7 +185,7 @@ describe('jira hooks: discoverIdentity', () => {
         }));
         expect(await discover()).toEqual({
             externalAccountId: FAKE_ACCOUNT_ID,
-            label: 'stub-a@example.com',
+            label: null,
             resources: [{ id: FAKE_CLOUD_ID, label: FAKE_SITE_HOST }],
             authority: { scopes: ['read:jira-user', 'read:jira-work'] },
         });
@@ -173,7 +194,7 @@ describe('jira hooks: discoverIdentity', () => {
         expect(call?.authorization).toBe(`Bearer ${FAKE_ACCESS_TOKEN}`);
     });
 
-    it('falls back to the display name, and two sites give two resources with the union of scopes', async () => {
+    it('two sites give two resources with the union of scopes', async () => {
         fake.on('GET', RESOURCES_ROUTE, () => ({
             status: 200,
             json: [
@@ -187,7 +208,7 @@ describe('jira hooks: discoverIdentity', () => {
         }));
         fake.on('GET', MYSELF_ROUTE, () => ({ status: 200, json: { accountId: 'acct', displayName: 'Stub Name' } }));
         const found = await discover();
-        expect(found?.label).toBe('Stub Name');
+        expect(found?.label).toBeNull();
         expect(found?.resources).toEqual([
             { id: FAKE_CLOUD_ID, label: FAKE_SITE_HOST },
             { id: 'cloud-stub-b', label: 'stub-site-b.atlassian.net' },

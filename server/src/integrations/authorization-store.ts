@@ -40,7 +40,7 @@ export interface AuthorizationRow {
 export interface StoredFacts {
     account: string;
     /** What a person calls the account (an email, else a display name): shown on every connection of it. */
-    label: string;
+    label: string | null;
     resources: { id: string; label: string }[];
     authority: { scopes: string[] };
     /** `write` exactly when the token's own scope holds every write scope of the client. */
@@ -412,7 +412,7 @@ async function attachResources(tx: TransactionSql, input: Activation): Promise<s
             authority: input.facts.authority,
             resource,
             access: input.facts.access,
-            email: input.facts.label,
+            email: input.facts.label ?? resource.label,
             // Only the first insert can create the grant; the rest find it.
             ...(input.newGrant && inserted === 0 ? input.newGrant : {}),
         };
