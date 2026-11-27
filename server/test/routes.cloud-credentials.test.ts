@@ -164,7 +164,18 @@ describe('cloud mode, only another org listed: every refusal holds', () => {
         expectRefused(await send('PUT', '/api/env/workspace', vars(TOKEN)));
         expectRefused(await send('PUT', '/api/env/repo', { repo: { owner: 'acme', name: 'web' }, ...vars(TOKEN) }));
         expectRefused(await send('PUT', `/api/env/org/vars/${TOKEN}`, { value: VALUE, secret: true }));
+        expectRefused(
+            await send('PUT', '/api/env/workspace/vars', { entries: [{ name: TOKEN, value: VALUE, secret: true }] })
+        );
         expect(executors.rows()).toEqual([]);
         expect(envVars.rows()).toEqual([]);
+    });
+
+    it('on the org executor update', async () => {
+        const { send, executors } = await boot('cloud', ['other-org']);
+        const created = await send('POST', '/api/org/executors', org(API_KEY));
+        expect(created.statusCode).toBe(HTTP_CREATED);
+        expectRefused(await send('PUT', `/api/org/executors/${created.json().id}`, org(NESTED)));
+        expect(executors.rows()).toEqual([expect.objectContaining({ name: 'team', config: API_KEY })]);
     });
 });
