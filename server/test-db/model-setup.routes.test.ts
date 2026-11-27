@@ -191,6 +191,104 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         expect((await call(member, 'GET', '/api/workspace')).json.executors).toEqual([]);
     });
 
+    it('an older tab cannot overwrite a newer save: the read carries the revision and an edit or a rotation sends it', async () => {
+        const first = await save(admin, orgBody());
+        const stale = (await call(admin, 'GET', '/api/model-setup')).json.selected.updatedAt;
+        expect(typeof stale).toBe('string');
+        const edit = (model: string, expectedUpdatedAt: string) =>
+            save(
+                admin,
+                orgBody({
+                    model,
+                    connection: { intent: 'reuse', id: first.json.connectionId },
+                    executor: { id: first.json.executorId, expectedUpdatedAt },
+                })
+            );
+        // Another tab saves a new model; the older tab's edit and rotation both read `stale` and are refused.
+        expect((await edit('claude-opus-4-5', stale)).status).toBe(OK);
+        const lateEdit = await edit('claude-sonnet-4-5', stale);
+        expect(lateEdit.status).toBe(CONFLICT);
+        expect(lateEdit.json.code).toBe('MODEL_SETUP_CONFLICT');
+        const lateRotation = await save(
+            admin,
+            orgBody({
+                connection: { intent: 'rotate', id: first.json.connectionId, key: KEY_B },
+                executor: { id: first.json.executorId, expectedUpdatedAt: stale },
+            })
+        );
+        expect(lateRotation.status).toBe(CONFLICT);
+        const view = (await call(admin, 'GET', '/api/model-setup')).json;
+        expect(view.selected.model).toBe('claude-opus-4-5');
+        // The fresh revision the read now carries is accepted.
+        expect((await edit('claude-sonnet-4-5', view.selected.updatedAt)).status).toBe(OK);
+    });
+
+    describe('the executor cap', () => {
+        const CAP = 10;
+        const TOO_MANY = 400;
+        /** Executors on the first save's connection, so only executors count toward the cap. */
+        async function fill(count: number) {
+            const first = await save(admin, orgBody());
+            expect(first.status).toBe(OK);
+            const reuse = { intent: 'reuse', id: first.json.connectionId };
+            const bodies = Array.from({ length: count - 1 }, (_, i) =>
+                orgBody({ connection: reuse, executor: { name: `Executor ${i + 2}` } })
+            );
+            for (const body of bodies) expect((await save(admin, body)).status).toBe(OK);
+            return { reuse, last: bodies.at(-1) ?? orgBody() };
+        }
+        const executors = async () =>
+            Number((await sql`select count(*) as n from executor_profile where org_id = ${org}`)[0]!.n);
+
+        it('a create that took the last slot replays its saved result when its response is lost', async () => {
+            const { last } = await fill(CAP);
+            const retried = await save(admin, last);
+            expect(retried.status).toBe(OK);
+            expect(retried.json.replayed).toBe(true);
+            expect(await executors()).toBe(CAP);
+            // A different create is still refused at the cap.
+            const refused = await save(admin, orgBody({ executor: { name: 'One too many' } }));
+            expect(refused.status).toBe(TOO_MANY);
+            expect(refused.json.code).toBe('TOO_MANY_EXECUTORS');
+        });
+
+        it('two creates racing for the last slot leave exactly one executor more', async () => {
+            const { reuse } = await fill(CAP - 1);
+            const results = await Promise.all(
+                ['Racer one', 'Racer two'].map((name) =>
+                    save(admin, orgBody({ connection: reuse, executor: { name } }))
+                )
+            );
+            expect(results.map((r) => r.status).sort()).toEqual([OK, TOO_MANY]);
+            expect(await executors()).toBe(CAP);
+        });
+    });
+
+    it('a saved model is the one that runs, even where the profile pins its model through env', async () => {
+        const first = await save(admin, orgBody());
+        await sql`
+            update executor_profile set config = config || '{"env": {"ANTHROPIC_MODEL": "claude-sonnet-4-5", "KEEP_ME": "1"}}'::jsonb
+            where org_id = ${org} and id = ${first.json.executorId}
+        `;
+        const edited = await save(
+            admin,
+            orgBody({
+                model: 'claude-opus-4-5',
+                connection: { intent: 'reuse', id: first.json.connectionId },
+                executor: { id: first.json.executorId },
+            })
+        );
+        expect(edited.status).toBe(OK);
+        expect((await call(admin, 'GET', '/api/model-setup')).json.selected.model).toBe('claude-opus-4-5');
+
+        await launch(admin);
+        const claimed = await claim('w-model');
+        expect(claimed?.env?.ANTHROPIC_MODEL).toBe('claude-opus-4-5');
+        const [row] =
+            await sql`select config from executor_profile where org_id = ${org} and id = ${first.json.executorId}`;
+        expect(row!.config.env).toEqual({ ANTHROPIC_MODEL: 'claude-opus-4-5', KEEP_ME: '1' });
+    });
+
     it('personal onboarding yields a personal connection executor and default', async () => {
         const saved = await save(
             member,

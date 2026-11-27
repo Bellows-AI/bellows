@@ -111,6 +111,7 @@ describe('the No model yet banner', () => {
                 agentType: 'claude-code',
                 model: 'claude-test-model',
                 suspended: false,
+                updatedAt: '2026-01-02T03:04:05.678Z',
                 connection: { id: 'c-1', name: 'Anthropic', provider: 'anthropic', scope: 'org', baseUrl: null },
             },
         };

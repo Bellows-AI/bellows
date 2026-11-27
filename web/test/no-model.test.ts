@@ -18,6 +18,7 @@ const EXECUTOR: ModelSetupView = {
         agentType: 'claude-code',
         model: 'claude-sonnet-4-5',
         suspended: false,
+        updatedAt: '2026-01-02T03:04:05.678Z',
         connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'org', baseUrl: null },
     },
 };

@@ -13,6 +13,7 @@ import { callerOf, orgOf } from '../auth/plugin.js';
 import type { AppConfig } from '../config.js';
 import type { EnvVarEntry, EnvVarStore } from '../db/env-var-store.js';
 import {
+    ModelSetupCapError,
     ModelSetupConflict,
     ModelSetupEndpointRefusal,
     type ModelSetupStore,
@@ -25,15 +26,9 @@ import { ProviderConnectionCapError } from '../db/provider-connection-store.js';
 import type { AgentDefault, UserExecutorStore } from '../db/user-executor-store.js';
 import type { OrgRegistry } from '../orgs.js';
 import { errorHandler } from './error-handler.js';
-import {
-    HTTP_CONNECTION_REFUSED,
-    isConnectionRefusal,
-    lifecycleRefusal,
-    MAX_EXECUTORS_PER_ORG,
-    MAX_EXECUTORS_PER_USER,
-} from './executor-fields.js';
+import { HTTP_CONNECTION_REFUSED, isConnectionRefusal, lifecycleRefusal } from './executor-fields.js';
 import { bad, guard } from './helpers.js';
-import { commandOf, keyNamesOf, parseSetup, type Refusal, refusal } from './model-setup-save.js';
+import { commandOf, keyNamesOf, parseSetup } from './model-setup-save.js';
 
 /**
  * `GET` / `PUT /api/model-setup` (docs/api.md): what model a member's tasks run on, and the setup command that creates or
@@ -121,6 +116,7 @@ const selectedView = (selected: SelectedSetup) => ({
     agentType: selected.agentType,
     model: selected.model,
     suspended: selected.suspended,
+    updatedAt: selected.updatedAt,
     connection: selected.connection,
 });
 
@@ -197,24 +193,6 @@ const savedView = (result: SetupResult) => ({
     replayed: result.replayed,
 });
 
-/** The cap a new executor counts against, read before the write: an edit by id adds none. */
-async function executorCapRefusal(ctx: Context, scope: 'org' | 'personal'): Promise<Refusal | null> {
-    if (scope === 'org') {
-        return (await ctx.executors.orgCount()) >= MAX_EXECUTORS_PER_ORG
-            ? refusal(
-                  `at most ${MAX_EXECUTORS_PER_ORG} organization executors can be configured at once`,
-                  ERROR_CODES.TOO_MANY_EXECUTORS
-              )
-            : null;
-    }
-    return (await ctx.executors.list(ctx.userId)).length >= MAX_EXECUTORS_PER_USER
-        ? refusal(
-              `at most ${MAX_EXECUTORS_PER_USER} executors can be configured at once`,
-              ERROR_CODES.TOO_MANY_EXECUTORS
-          )
-        : null;
-}
-
 /** What a refused setup answers: the closed set of domain refusals the store raises; any other error is an outage. */
 function refusedSetup(error: unknown): { status: number; error: string; code: string } | null {
     if (error instanceof ModelSetupNameConflict) {
@@ -225,6 +203,9 @@ function refusedSetup(error: unknown): { status: number; error: string; code: st
     }
     if (error instanceof ModelSetupConflict || error instanceof ModelSetupRequestConflict) {
         return { status: HTTP_CONFLICT, error: error.message, code: ERROR_CODES.MODEL_SETUP_CONFLICT };
+    }
+    if (error instanceof ModelSetupCapError) {
+        return { status: 400, error: error.message, code: ERROR_CODES.TOO_MANY_EXECUTORS };
     }
     if (isConnectionRefusal(error)) {
         return { status: HTTP_CONNECTION_REFUSED, error: error.message, code: ERROR_CODES.PROVIDER_CONNECTION_REFUSED };
@@ -261,10 +242,6 @@ async function handlePut(config: AppConfig, orgs: OrgRegistry, request: FastifyR
         async (): Promise<{ result: SetupResult } | { refused: { status: number; error: string; code: string } }> => {
             const command = await commandOf(parsed, { ...ctx, userId: ctx.userId, config });
             if ('error' in command) return { refused: { status: 400, ...command } };
-            if (parsed.executor.id === undefined) {
-                const capped = await executorCapRefusal(ctx, parsed.scope);
-                if (capped) return { refused: { status: 400, ...capped } };
-            }
             try {
                 return { result: await modelSetup.apply(command) };
             } catch (error) {

@@ -227,6 +227,7 @@ export async function assertUnselected(
  * it — the organization's, and members' own except `keep`'s (the actor keeps their selection on the row they now own) —
  * refuse the write with their counts, unless `resolution` clears them or re-points them at `replaceWith`, which must be
  * an active organization executor other than the targets. Nothing is released without that explicit word. The
+ * replacement is locked before the selections (profiles first, selections after, as the setup takes them), and the
  * selections are read `for update` and written under `executor_id = target`, so a default a member switches meanwhile
  * waits for this transaction and is never cleared or overwritten by it.
  */
@@ -237,6 +238,19 @@ export async function resolveOrphanedSelections(
     options: { keep?: string; resolution?: DefaultResolution } = {}
 ): Promise<void> {
     await tx`select id from executor_profile where org_id = ${orgId} and id = ${target.id} for update`;
+    // The lock order of every writer is profile rows first, selection rows after (the setup holds its executor and then
+    // upserts its selection): the replacement is locked before the selections are, so no two writers wait crosswise.
+    const { resolution } = options;
+    const replacement =
+        resolution && 'replaceWith' in resolution
+            ? (
+                  await tx<{ name: string; suspended: boolean }[]>`
+                      select name, suspended from executor_profile
+                      where org_id = ${orgId} and id = ${resolution.replaceWith} and id <> ${target.id} and user_id is null
+                      for share
+                  `
+              )[0]
+            : undefined;
     const held = (
         await tx<{ id: string; owner_id: string | null }[]>`
             select id, owner_id from executor_default_selection
@@ -245,7 +259,6 @@ export async function resolveOrphanedSelections(
         `
     ).filter((row) => row.owner_id === null || row.owner_id !== options.keep);
     if (held.length === 0) return;
-    const { resolution } = options;
     if (!resolution) {
         const counts = {
             organization: held.some((row) => row.owner_id === null),
@@ -263,13 +276,11 @@ export async function resolveOrphanedSelections(
         `;
         return;
     }
-    const [next] = await tx<{ name: string; suspended: boolean }[]>`
-        select name, suspended from executor_profile
-        where org_id = ${orgId} and id = ${resolution.replaceWith} and id <> ${target.id} and user_id is null
-        for share
-    `;
-    if (!next) throw new ExecutorDefaultNotFoundError('No other organization executor to replace the default with');
-    if (next.suspended) throw new ExecutorSuspendedError(`The organization executor "${next.name}" is suspended`);
+    if (!replacement)
+        throw new ExecutorDefaultNotFoundError('No other organization executor to replace the default with');
+    if (replacement.suspended) {
+        throw new ExecutorSuspendedError(`The organization executor "${replacement.name}" is suspended`);
+    }
     await tx`
         update executor_default_selection set executor_id = ${resolution.replaceWith}, updated_at = now()
         where org_id = ${orgId} and id in ${tx(ids)} and executor_id = ${target.id}

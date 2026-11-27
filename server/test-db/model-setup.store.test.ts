@@ -5,6 +5,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import {
     createModelSetupStore,
     ModelSetupEndpointRefusal,
+    ModelSetupCapError,
     ModelSetupNameConflict,
     ModelSetupRequestConflict,
     type SetupCommand,
@@ -44,11 +45,11 @@ beforeAll(() => {
     healthy = testSecretStore(sql);
 });
 
-function stores(secrets: SecretStore = healthy) {
+function stores(secrets: SecretStore = healthy, executorLimits?: { org: number; personal: number }) {
     const deps = { sql, orgId: ORG, secrets, secretLog: () => {} };
     const executors = createUserExecutorStore(deps);
     const connections = createProviderConnectionStore(deps);
-    const setup = createModelSetupStore(deps);
+    const setup = createModelSetupStore({ ...deps, ...(executorLimits ? { executorLimits } : {}) });
     const jobs = createJobStore({
         sql,
         orgId: ORG,
@@ -564,6 +565,99 @@ describe.skipIf(!enabled)('the model setup command', () => {
         ).rejects.toThrow(/changed/);
         const [unchanged] = await sql`select config->>'model' as model from executor_profile where org_id = ${ORG}`;
         expect(unchanged!.model).toBe('claude-sonnet-4-5');
+    });
+
+    it('the setup view carries the executor revision an edit must send back', async () => {
+        const { setup, executors } = stores();
+        await setup.apply(command());
+        const [row] = await executors.listOrg();
+        const selected = await setup.selectedFor(ALICE);
+        expect(selected?.updatedAt).toBeDefined();
+        expect(Date.parse(selected!.updatedAt)).toBe(Date.parse(row!.updatedAt));
+    });
+
+    it("an organization executor a member selected as their own default is still the organization's", async () => {
+        const { setup, executors } = stores();
+        const shared = await setup.apply(command());
+        await executors.selectDefault(BOB, shared.executorId);
+        expect(await selection(BOB)).toBe(shared.executorId);
+
+        const selected = await setup.selectedFor(BOB);
+
+        expect(selected).toMatchObject({ executorId: shared.executorId, scope: 'org' });
+        expect(selected?.connection).toMatchObject({ id: shared.connectionId, scope: 'org' });
+    });
+
+    it.each([
+        ['org', ALICE],
+        ['personal', BOB],
+    ] as const)('the %s executor cap is checked under the setup lock, after the receipt', async (scope, userId) => {
+        const { setup } = stores(healthy, { org: 2, personal: 2 });
+        const first = await setup.apply(command({ scope, userId }));
+        const reuse = { intent: 'reuse', id: first.connectionId! } as const;
+        const create = (name: string) =>
+            command({
+                scope,
+                userId,
+                connection: reuse,
+                executor: { name, agentType: 'claude-code', model: 'claude-sonnet-4-5' },
+            });
+
+        // Two creates race for the last slot: one wins, the other is refused, and the scope holds exactly the limit.
+        const commands = [create('One'), create('Two')] as const;
+        const race = await Promise.allSettled(commands.map((c) => setup.apply(c)));
+        const won = race.findIndex((r) => r.status === 'fulfilled');
+        expect(race.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+        const refused = race[1 - won] as PromiseRejectedResult;
+        expect(refused.reason).toBeInstanceOf(ModelSetupCapError);
+        expect((refused.reason as ModelSetupCapError).scope).toBe(scope);
+        expect(await count('executor_profile')).toBe(2);
+
+        // The winner's retry replays at the cap instead of being refused.
+        const again = await setup.apply(commands[won]!);
+        expect(again.replayed).toBe(true);
+        expect(await count('executor_profile')).toBe(2);
+    });
+
+    it('a model pin in the profile env follows the saved model, and goes when the agent has no such setting', async () => {
+        const { setup } = stores();
+        const first = await setup.apply(command({ scope: 'personal' }));
+        await sql`
+            update executor_profile set config = config || '{"env": {"ANTHROPIC_MODEL": "claude-sonnet-4-5", "KEEP_ME": "1"}}'::jsonb
+            where org_id = ${ORG} and id = ${first.executorId}
+        `;
+        const envOf = async () =>
+            (
+                await sql<
+                    { env: Record<string, string> }[]
+                >`select config->'env' as env from executor_profile where id = ${first.executorId}`
+            )[0]!.env;
+
+        await setup.apply(
+            command({
+                scope: 'personal',
+                connection: { intent: 'reuse', id: first.connectionId! },
+                executor: { id: first.executorId, agentType: 'claude-code', model: 'claude-opus-4-5' },
+            })
+        );
+        expect(await envOf()).toEqual({ ANTHROPIC_MODEL: 'claude-opus-4-5', KEEP_ME: '1' });
+
+        // OpenCode has no `ANTHROPIC_MODEL` to honour: a pin left behind would resurface when the agent switches back.
+        const openrouter = await setup.apply(
+            command({
+                scope: 'personal',
+                connection: {
+                    intent: 'create',
+                    provider: 'openrouter',
+                    key: 'sk-or-pin',
+                    baseUrl: null,
+                    name: 'Router',
+                },
+                executor: { id: first.executorId, agentType: 'opencode', model: 'openai/gpt-5.1' },
+            })
+        );
+        expect(openrouter.executorId).toBe(first.executorId);
+        expect(await envOf()).toEqual({ KEEP_ME: '1' });
     });
 
     it('default replacement and protected deletion cannot leave dangling references', async () => {

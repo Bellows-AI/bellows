@@ -40,6 +40,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isId = (value: unknown) => typeof value === 'string' && UUID.test(value);
 const CONNECTION_ID = '11111111-1111-4111-8111-111111111111';
 const EXECUTOR_ID = '22222222-2222-4222-8222-222222222222';
+const REVISION = '2026-01-02T03:04:05.678Z';
 
 /** The route's acceptance of a connection intent, mirrored. */
 function connectionAccepted(connection: Record<string, unknown>, agentType: unknown, mode: DeploymentMode): boolean {
@@ -94,6 +95,7 @@ const selected = (over: Partial<SelectedExecutorView> = {}): SelectedExecutorVie
     agentType: 'claude-code',
     model: 'claude-sonnet-5-5',
     suspended: false,
+    updatedAt: REVISION,
     connection: { id: CONNECTION_ID, name: 'Anthropic', provider: 'anthropic', scope: 'personal', baseUrl: null },
     ...over,
 });
@@ -151,7 +153,7 @@ describe('the bodies the model setup sends', () => {
         const body = editBody({ selected: selected(), agentType: 'opencode', model: 'm' });
         expect(routeAccepts(body, 'self-hosted')).toBe(true);
         expect(body.connection).toEqual({ intent: 'reuse', id: CONNECTION_ID });
-        expect(body.executor).toEqual({ id: EXECUTOR_ID });
+        expect(body.executor).toEqual({ id: EXECUTOR_ID, expectedUpdatedAt: REVISION });
         expect(JSON.stringify(body)).not.toContain('key');
         const none = editBody({ selected: selected({ connection: null }), agentType: 'claude-code', model: 'm' });
         expect(routeAccepts(none, 'self-hosted')).toBe(true);
@@ -168,7 +170,7 @@ describe('the bodies the model setup sends', () => {
         });
         expect(routeAccepts(body, 'self-hosted')).toBe(true);
         expect(body.connection).toEqual({ intent: 'rotate', id: CONNECTION_ID, key: 'sk-new' });
-        expect(body.executor).toEqual({ id: EXECUTOR_ID });
+        expect(body.executor).toEqual({ id: EXECUTOR_ID, expectedUpdatedAt: REVISION });
     });
 
     it('stores an OpenCode id the way core does, even on the platform model that keeps ids as given', () => {

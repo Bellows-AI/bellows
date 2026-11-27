@@ -87,6 +87,8 @@ resolves only from your own scopes.
 
 - Using an existing connection, or changing only the agent or model, never touches the key. **Replace the key** swaps the key of that executor's own connection; tasks already running keep the key they started with.
 - **Connect another provider** adds a second connection and executor and makes it the default. The first executor, its connection and tasks already queued are unchanged.
+- A save made from an older tab than the latest change to that executor is refused with a message to reload, so it never restores older values; after a **Connect another provider** or a key replacement the form returns to the executor summary with the key cleared. A member who connects another provider always creates a personal connection; only an admin can choose **Everyone in**.
+- Changing the model on a Claude Code executor also updates a model pinned through `ANTHROPIC_MODEL` in its environment, so the model shown is the model that runs.
 - A setup that came before this step, with a key in **Settings → Environment** or an agent default, keeps running as it was. **Continue** on it creates a real executor that runs on those same credentials and leaves them in place; nothing is moved or deleted for you. On a deployment that provides the model, the executor uses no connection.
 - The default executor of an organization is usable by every member without seeing its key. A member cannot create or change it, or use another member's personal connection.
 - Deleting a connection an executor selects, or an executor that is a default, is refused until you choose another default or remove the reference.

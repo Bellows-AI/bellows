@@ -44,10 +44,15 @@ export function ModelSetup({
     const setup = useModelSetup();
     const ids = useId();
     const [mode, setMode] = useState<Mode>('banner');
-    const form = useKeyForm(session, setup, onSaved);
+    // A save of a new connection or a new key is done: the banner of what is now saved comes back.
+    const savedToBanner = async () => {
+        setMode('banner');
+        await onSaved();
+    };
+    const form = useKeyForm(session, setup, savedToBanner);
     const configured = useConfigured({ session, view: setup.data, setup, onSaved, saveExisting });
     const view = setup.data;
-    const rotate = useRotate(session, setup, onSaved, view?.selected);
+    const rotate = useRotate(session, setup, savedToBanner, view?.selected);
     const banner = mode !== 'banner' || !view ? null : bannerOf(view);
 
     let body: ReactNode;
@@ -76,11 +81,13 @@ export function ModelSetup({
     } else if (banner) {
         const { reason, save, press } = configured;
         primary = { label: labels.banner, reason, busy: save.busy, press };
+        const admin = session.role === ADMIN_ROLE;
         const openForm = () => {
-            form.setScope(view.selected?.scope ?? 'personal');
+            // Only an admin inherits the organization's scope: a member's save there is refused.
+            form.setScope(admin ? (view.selected?.scope ?? 'personal') : 'personal');
             setMode('form');
         };
-        const allowed = canRotate(view.selected, session.role === ADMIN_ROLE);
+        const allowed = canRotate(view.selected, admin);
         body = (
             <ConfiguredView
                 ids={ids}

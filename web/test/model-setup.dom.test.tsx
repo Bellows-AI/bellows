@@ -367,6 +367,8 @@ describe('the configured banners', () => {
     });
 });
 
+const REVISION = '2026-01-02T03:04:05.678Z';
+
 describe('a default executor', () => {
     const selected = (over: Record<string, unknown> = {}) => ({
         scope: 'personal',
@@ -375,6 +377,7 @@ describe('a default executor', () => {
         agentType: 'claude-code',
         model: 'claude-sonnet-5-5',
         suspended: false,
+        updatedAt: REVISION,
         connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'personal', baseUrl: null },
         ...over,
     });
@@ -410,7 +413,7 @@ describe('a default executor', () => {
             agentType: 'claude-code',
             model: 'claude-opus-5-5',
             connection: { intent: 'reuse', id: 'connection-1' },
-            executor: { id: 'executor-1' },
+            executor: { id: 'executor-1', expectedUpdatedAt: REVISION },
         });
         expect(JSON.stringify(puts(calls)[0]?.body)).not.toContain('"key"');
     });
@@ -441,7 +444,7 @@ describe('a default executor', () => {
             agentType: 'claude-code',
             model: 'claude-sonnet-5-5',
             connection: { intent: 'rotate', id: 'connection-1', key: 'sk-ant-api03-new' },
-            executor: { id: 'executor-1' },
+            executor: { id: 'executor-1', expectedUpdatedAt: REVISION },
         });
     });
 
@@ -469,6 +472,40 @@ describe('a default executor', () => {
         expect(await screen.findByRole('button', { name: 'Replace the key' })).toBeTruthy();
     });
 
+    it('"Connect another provider" starts a member in personal scope even when the organization default is inherited', async () => {
+        const calls = board(
+            view({
+                scope: 'org',
+                connection: { id: 'c', name: 'Team', provider: 'anthropic', scope: 'org', baseUrl: null },
+            }),
+            () => ({ ok: true, models: ['claude-sonnet-5-5'] })
+        );
+        const { onSaved } = mount();
+        fireEvent.click(await screen.findByRole('button', { name: 'Connect another provider' }));
+        fireEvent.change(await keyInput(), { target: { value: 'sk-ant-api03-mine' } });
+        await waitFor(() => expect(saveButton().getAttribute('aria-disabled')).toBeNull());
+        fireEvent.click(saveButton());
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(puts(calls)[0]?.body).toMatchObject({ scope: 'personal', connection: { intent: 'create' } });
+    });
+
+    it('"Connect another provider" lets an admin inherit the organization scope', async () => {
+        const calls = board(
+            view({
+                scope: 'org',
+                connection: { id: 'c', name: 'Team', provider: 'anthropic', scope: 'org', baseUrl: null },
+            }),
+            () => ({ ok: true, models: ['claude-sonnet-5-5'] })
+        );
+        const { onSaved } = mount({ role: 'admin' });
+        fireEvent.click(await screen.findByRole('button', { name: 'Connect another provider' }));
+        fireEvent.change(await keyInput(), { target: { value: 'sk-ant-api03-team' } });
+        await waitFor(() => expect(saveButton().getAttribute('aria-disabled')).toBeNull());
+        fireEvent.click(saveButton());
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(puts(calls)[0]?.body).toMatchObject({ scope: 'org' });
+    });
+
     it('"Connect another provider" opens the key form for a second connection and executor', async () => {
         const calls = board(view(), () => ({ ok: true, models: ['claude-sonnet-5-5'] }));
         const { onSaved } = mount();
@@ -482,6 +519,102 @@ describe('a default executor', () => {
             connection: { intent: 'create', provider: 'openrouter', name: 'OpenRouter' },
             executor: { name: 'OpenRouter' },
         });
+    });
+});
+
+describe('after a save in Settings', () => {
+    const mine = {
+        scope: 'personal',
+        executorId: 'executor-1',
+        name: 'Anthropic',
+        agentType: 'claude-code',
+        model: 'claude-sonnet-5-5',
+        suspended: false,
+        updatedAt: '2026-01-02T03:04:05.678Z',
+        connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'personal', baseUrl: null },
+    };
+    const router = {
+        ...mine,
+        executorId: 'executor-2',
+        name: 'OpenRouter',
+        agentType: 'opencode',
+        model: 'openai/gpt-5.1',
+        connection: {
+            id: 'connection-2',
+            name: 'OpenRouter',
+            provider: 'openrouter',
+            scope: 'personal',
+            baseUrl: null,
+        },
+    };
+    const viewOf = (selected: object) => ({
+        platform: false,
+        org: null,
+        personal: null,
+        selected,
+        effective: 'executor',
+    });
+
+    /** A board whose read follows the saves: each PUT moves the default to `after`. */
+    function followingBoard(after: object) {
+        let current: object = mine;
+        return stubFetch((call) => {
+            if (call.url === '/api/model-setup' && call.method === 'GET') return viewOf(current);
+            if (call.url === '/api/model-setup' && call.method === 'PUT') {
+                current = after;
+                return {
+                    ...SAVED,
+                    executorId: (after as typeof mine).executorId,
+                    executorName: (after as typeof mine).name,
+                };
+            }
+            if (call.url === '/api/model-setup/verify') return { ok: true, models: ['openai/gpt-5.1'] };
+        });
+    }
+
+    it('a created connection returns to the banner with the key cleared, and a second save edits it', async () => {
+        const calls = followingBoard(router);
+        const { onSaved } = mount({}, vi.fn(), true);
+        fireEvent.click(await screen.findByRole('button', { name: 'Connect another provider' }));
+        fireEvent.click(screen.getByRole('radio', { name: /^OpenRouter/ }));
+        fireEvent.change(await keyInput(), { target: { value: 'sk-or-v1-abc' } });
+        await waitFor(() => expect(saveButton().getAttribute('aria-disabled')).toBeNull());
+        fireEvent.click(saveButton());
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+
+        // The banner of the new executor, not the create form.
+        expect(await screen.findByText('Your tasks run on OpenRouter.')).toBeTruthy();
+        expect(screen.queryByLabelText('API key')).toBeNull();
+
+        // Saving again edits that executor by id; it never creates the named connection a second time.
+        fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'openai/gpt-5.1' } });
+        fireEvent.click(saveButton());
+        await waitFor(() => expect(puts(calls)).toHaveLength(2));
+        expect(puts(calls)[1]?.body).toMatchObject({
+            connection: { intent: 'reuse', id: 'connection-2' },
+            executor: { id: 'executor-2' },
+        });
+
+        // Opening the form again starts without the key just saved.
+        fireEvent.click(await screen.findByRole('button', { name: 'Connect another provider' }));
+        expect(((await keyInput()) as HTMLInputElement).value).toBe('');
+    });
+
+    it('a replaced key is cleared, and replacing again starts from an empty field', async () => {
+        const calls = followingBoard(mine);
+        const { onSaved } = mount({}, vi.fn(), true);
+        fireEvent.click(await screen.findByRole('button', { name: 'Replace the key' }));
+        fireEvent.change(await keyInput(), { target: { value: 'sk-ant-api03-new' } });
+        await waitFor(() =>
+            expect(screen.getByRole('button', { name: 'Replace key' }).getAttribute('aria-disabled')).toBeNull()
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'Replace key' }));
+        await waitFor(() => expect(onSaved).toHaveBeenCalled());
+        expect(puts(calls)).toHaveLength(1);
+
+        expect(await screen.findByText('Your tasks run on Anthropic.')).toBeTruthy();
+        fireEvent.click(screen.getByRole('button', { name: 'Replace the key' }));
+        expect(((await keyInput()) as HTMLInputElement).value).toBe('');
     });
 });
 
