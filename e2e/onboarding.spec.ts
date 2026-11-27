@@ -43,7 +43,8 @@ async function removeSetup(page: Page): Promise<void> {
         executors: { id: string; name: string; providerConnectionId?: string | null }[];
         orgExecutors: { id: string; name: string; providerConnectionId?: string | null }[];
     };
-    const ours = (rows: { name: string }[]) => rows.filter((row) => SETUP_EXECUTORS.includes(row.name));
+    type Row = { id: string; name: string; providerConnectionId?: string | null };
+    const ours = (rows: Row[]) => rows.filter((row) => SETUP_EXECUTORS.includes(row.name));
     const connections: string[] = [];
     for (const row of ours(workspace.orgExecutors)) {
         await page.request.delete(`/api/org/executors/${row.id}?clearDefaults=true`);
