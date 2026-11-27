@@ -10,8 +10,10 @@ const SCRIPTS = fileURLToPath(new URL('../src/scripts/', import.meta.url));
  * its neighbours declare, so none type-checks alone. Stated limit: they join the check when the scripts are built from TS.
  */
 const FRAGMENTS = [
+    'review-collect-gitlab.cjs',
     'review-collect-probe-postlude.cjs',
     'review-collect-probe-prelude.cjs',
+    'review-reply-gitlab.cjs',
     'review-reply-probe-middle.cjs',
     'review-reply-probe-postlude.cjs',
 ];
