@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * The github-review-reconcile block's collect adapter — PRELUDE half. Maps the
+ * The review-reconcile block's collect adapter — PRELUDE half. Maps the
  * generic block-helper transport's bounded HELPER_INPUT onto the REPO/PR environment
  * issue #201's review-collect.cjs reads, and captures its one stdout verdict instead of letting it
  * reach the real stdout — review-collect-probe-postlude.cjs (concatenated after it, with the

@@ -37,7 +37,7 @@ const DESCRIPTOR: HelperDescriptor = {
 const TIGHT_DESCRIPTOR: HelperDescriptor = { ...DESCRIPTOR, outputCapBytes: 64 };
 
 describe('the helper registry', () => {
-    it('ships the noop fixture and the merge-conflict-autofix and github-review-reconcile probes', () => {
+    it('ships the noop fixture and the merge-conflict-autofix and review-reconcile probes', () => {
         expect(HELPER_REGISTRY.size).toBe(4);
     });
 

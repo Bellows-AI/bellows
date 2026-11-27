@@ -35,7 +35,7 @@
 import type { BlockDescriptor, BlockExpansion } from './types.js';
 
 // Exported for master-prompt.ts's generic capability naming — see the same note in
-// github-review-reconcile.ts.
+// review-reconcile.ts.
 export const PROBE_HELPER_ID = 'merge-conflict-probe';
 const PROBE_STATE_PATH = '.factory/merge-conflict-probe.json';
 

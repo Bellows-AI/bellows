@@ -278,7 +278,7 @@ describe('POST /api/workflows', () => {
         workflows.create = (async () => ({
             refused: true as const,
             code: 'BLOCK_UNAVAILABLE' as const,
-            message: 'node "review-comments" uses "builtin/github-review-reconcile", which is not yet available',
+            message: 'node "review-comments" uses "builtin/review-reconcile", which is not yet available',
         })) as never;
         const response = await instance.inject({
             method: 'POST',
@@ -303,7 +303,7 @@ describe('GET /api/workflow-blocks', () => {
         expect(response.statusCode).toBe(200);
         const { blocks } = response.json();
         expect(blocks.map((b: { id: string }) => b.id).sort()).toEqual(
-            ['builtin/github-review-reconcile', 'builtin/merge-conflict-autofix'].sort()
+            ['builtin/review-reconcile', 'builtin/merge-conflict-autofix'].sort()
         );
         for (const block of blocks) {
             expect(typeof block.description).toBe('string');
@@ -313,8 +313,8 @@ describe('GET /api/workflow-blocks', () => {
             expect(block).not.toHaveProperty('script');
         }
         // Both reserved ids are real and available: merge-conflict-autofix and
-        // github-review-reconcile.
-        expect(blocks.find((b: { id: string }) => b.id === 'builtin/github-review-reconcile')?.available).toBe(true);
+        // review-reconcile.
+        expect(blocks.find((b: { id: string }) => b.id === 'builtin/review-reconcile')?.available).toBe(true);
         expect(blocks.find((b: { id: string }) => b.id === 'builtin/merge-conflict-autofix')?.available).toBe(true);
     });
 });

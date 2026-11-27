@@ -1,6 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import type { ChangeRequestContext } from '../../db/jobs/job-store-change-request.js';
+import { REPLY_HELPER_ID } from '../../db/workflows/workflow-blocks/review-reconcile.js';
 import { sourceOf } from '../../forge/forge-reads.js';
 import { type GitlabCall, gitlabRequest } from '../../forge/gitlab-call.js';
 import {
@@ -33,8 +34,6 @@ import { closedBy } from './job-handlers-pull-request.js';
  * write and again before the answer goes out.
  */
 
-/** The helper the review block's `reply` node declares as its only step (its id in the block's stored `helperPlans`). */
-const REVIEW_REPLY_HELPER_ID = 'review-reply-probe';
 const PRE_PHASE = 'pre';
 const HTTP_OK = 200;
 const HTTP_CONFLICT = 409;
@@ -136,7 +135,7 @@ const collectHandler = (deps: AgentReviewDeps) => async (request: FastifyRequest
 };
 
 const isReplyStep = (who: ChangeRequestContext): boolean =>
-    who.helperPlans.some((plan) => plan.helperId === REVIEW_REPLY_HELPER_ID && plan.phase === PRE_PHASE);
+    who.helperPlans.some((plan) => plan.helperId === REPLY_HELPER_ID && plan.phase === PRE_PHASE);
 
 const repliesHandler = (deps: AgentReviewDeps) => async (request: FastifyRequest, reply: FastifyReply) => {
     reply.header('cache-control', 'no-store');
