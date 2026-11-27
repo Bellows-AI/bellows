@@ -1,7 +1,7 @@
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
 import type { GithubMint } from '../routes/github-credential.js';
 import type { RepoRef } from '@factory-ai/core';
-import { forgeOfRepo, isGithubRepo } from './forges.js';
+import { forgeLabel, forgeOfRepo, isGithubRepo } from './forges.js';
 
 /**
  * The token a PR write is made with (docs/connections.md). With member grants (`AUTH_MODE=github`) it is the thread
@@ -47,34 +47,48 @@ export type MergeTokenSource = (
 ) => Promise<MergeToken>;
 
 export const MERGE_STARTER_GONE = "the batch's starter no longer exists";
-export const MERGE_STARTER_RECONNECT = "the batch's starter must reconnect GitHub";
-export const MERGE_TOKEN_UNREAD = "the starter's GitHub token could not be read";
+/** The details name the forge the repo lives on, never another one. */
+export const mergeStarterReconnect = (repo: RepoRef): string =>
+    `the batch's starter must reconnect ${forgeLabel(forgeOfRepo(repo) ?? '')}`;
+export const mergeTokenUnread = (repo: RepoRef): string =>
+    `the starter's ${forgeLabel(forgeOfRepo(repo) ?? '')} token could not be read`;
 
 /**
  * Automerge merges as the batch's STARTER (docs/batches.md). With member grants that is the starter's user token; without
  * them (`AUTH_MODE=none`) the org's installation token, and no grant is read. Every answer that is not a token is
  * `{ ok: false }`: the merger leaves the task unclaimed for the pass, it never records an attempt for it.
  */
+/** Without member grants: the installation's token, GitHub's alone: another forge's path never gets it. */
+async function installationMergeToken(
+    installation: (() => Promise<string>) | undefined,
+    repo: RepoRef
+): Promise<MergeToken> {
+    if (!installation || !isGithubRepo(repo)) return { ok: false, detail: mergeTokenUnread(repo) };
+    return { ok: true, token: await installation() };
+}
+
 export function createMergeTokenSource(deps: {
     memberGrants: MemberForgeGrants | undefined;
-    installation: () => Promise<string>;
+    installation?: (() => Promise<string>) | undefined;
 }): MergeTokenSource {
     const { memberGrants, installation } = deps;
     return async ({ orgId, repo, startedBy }, signal) => {
         try {
-            if (!memberGrants) return { ok: true, token: await installation() };
+            if (!memberGrants) return await installationMergeToken(installation, repo);
             const forge = forgeOfRepo(repo);
             if (startedBy === null) return { ok: false, detail: MERGE_STARTER_GONE };
-            if (forge === null) return { ok: false, detail: MERGE_TOKEN_UNREAD };
+            if (forge === null) return { ok: false, detail: mergeTokenUnread(repo) };
             const member = await memberTokenOf(memberGrants, { orgId, userId: startedBy, forge }, signal);
             if (member.ok) return { ok: true, token: member.token };
             return {
                 ok: false,
                 detail:
-                    'answer' in member && member.answer === 'waiting' ? MERGE_STARTER_RECONNECT : MERGE_TOKEN_UNREAD,
+                    'answer' in member && member.answer === 'waiting'
+                        ? mergeStarterReconnect(repo)
+                        : mergeTokenUnread(repo),
             };
         } catch {
-            return { ok: false, detail: MERGE_TOKEN_UNREAD };
+            return { ok: false, detail: mergeTokenUnread(repo) };
         }
     };
 }

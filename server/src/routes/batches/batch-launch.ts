@@ -1,5 +1,4 @@
 import {
-    AUTOMERGE,
     batchExecutionCapability,
     ERROR_CODES,
     formatRepoRef,
@@ -222,7 +221,6 @@ export async function launchChecks(
 
     const resolved = resolveBatchPlan(plan, defaults);
     if (!(await targetBranchesExist(ctx, request, reply, offDefaultTargets(resolved, defaults)))) return null;
-    if (!automergeUnsupported(reply, resolved)) return null;
     const capability = batchExecutionCapability(resolved, {
         canMerge: ctx.runtime.batchMerger !== undefined,
     });
@@ -242,18 +240,6 @@ export async function launchChecks(
     return (await forgeGrantsLive(ctx, request, reply, { plan: stamped, returnTo, includes: isOtherForge }))
         ? stamped
         : null;
-}
-
-/** The board does not merge on GitLab yet: an automerge stage on a GitLab target is refused, whatever else the org holds. False once refused. */
-function automergeUnsupported(reply: FastifyReply, plan: ResolvedBatchPlan): boolean {
-    const gitlab = plan.targets.some((target) => isGitlabRepo(target.repo));
-    if (!gitlab || !plan.stages.some((stage) => stage.policy === AUTOMERGE)) return true;
-    reply.code(HTTP_CONFLICT).send({
-        error: 'The board does not merge GitLab merge requests yet; every stage must use the "human" policy',
-        code: ERROR_CODES.BATCH_UNSUPPORTED,
-        reason: AUTOMERGE,
-    });
-    return false;
 }
 
 /**

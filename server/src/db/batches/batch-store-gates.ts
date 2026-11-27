@@ -58,11 +58,11 @@ function mergeNoteOf(state: string | null, detail: string | null): string | null
         case MERGE_REFUSED:
             return `merge refused: ${detail ?? 'no reason given'}`;
         case MERGE_CHANGED:
-            return `merge held, the PR changed: ${detail ?? ''}`;
+            return `merge held, the change request changed: ${detail ?? ''}`;
         case MERGE_LAPSED:
-            return `merge not accepted by GitHub, will retry: ${detail ?? ''}`;
+            return `merge not accepted by the forge, will retry: ${detail ?? ''}`;
         case MERGE_UNCERTAIN:
-            return 'a merge request has an unknown outcome; reconciling with GitHub';
+            return 'a merge request has an unknown outcome; reconciling with the forge';
         case MERGE_DISPATCHING:
             return 'merging';
         default:
@@ -73,13 +73,13 @@ function mergeNoteOf(state: string | null, detail: string | null): string | null
 /** Why the board cannot merge an observed PR by itself (`awaitsBoardMerge`); outranks an earlier merge request's note. */
 function observedNoteOf(outcome: string | null, error: string | null): string | null {
     if (error === READ_NOT_FOUND || error === READ_FORBIDDEN || error === READ_BINDING) {
-        return `the PR cannot be read (${error}); the board cannot merge it`;
+        return `the change request cannot be read (${error}); the board cannot merge it`;
     }
     switch (outcome) {
         case OUTCOME_REVIEW_REQUIRED:
-            return 'the PR needs an approving review from a person before the board can merge it';
+            return 'the change request needs an approving review from a person before the board can merge it';
         case OUTCOME_CHECKS_MISSING:
-            return "the PR's required checks never reported; the board cannot merge it until they do";
+            return "the change request's required checks never reported; the board cannot merge it until they do";
         default:
             return null;
     }

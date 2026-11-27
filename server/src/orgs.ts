@@ -311,16 +311,18 @@ function buildOrgStores({
         pause,
         recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
     });
-    // The merger (064): needs the installation to read through; offline the board cannot merge and
-    // refuses an automerge plan at start. It merges as the batch's starter, as the installation without member grants.
+    // The merger (064): needs a source to read through, GitHub's installation or GitLab's grants; with neither the board
+    // cannot merge and refuses an automerge plan at start. It merges as the batch's starter, as the installation
+    // (GitHub only) without member grants.
     const batchMerger =
-        forge && tokens
+        (forge && tokens) || gitlab
             ? createBatchMerger({
                   sql,
                   orgId,
                   ready,
                   forge,
-                  mergeToken: createMergeTokenSource({ memberGrants, installation: () => tokens.get() }),
+                  gitlab,
+                  mergeToken: createMergeTokenSource({ memberGrants, installation: tokens && (() => tokens.get()) }),
                   recordMerge: (repo, prNumber, deliveryId, mergedAt) =>
                       jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
                   reconcile: (batchId) => batches.reconcile(batchId),
