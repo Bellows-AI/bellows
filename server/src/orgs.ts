@@ -24,6 +24,7 @@ import type { ClaimObserver } from './db/jobs/job-store-admission.js';
 import type { JobStore } from './db/jobs/job-store-types.js';
 import { storedRepoNames } from './db/stored-repos.js';
 import { createModelSetupStore, type ModelSetupStore } from './db/model-setup-store.js';
+import { MAX_EXECUTORS_PER_ORG, MAX_EXECUTORS_PER_USER } from './routes/executor-fields.js';
 import { createUserExecutorStore, type UserExecutorStore } from './db/user-executor-store.js';
 import {
     createNotificationSubscriptionStore,
@@ -215,7 +216,14 @@ function buildOrgStores({
     const connectionGrants = createConnectionGrants({ sql, orgId, ready });
     const providerConnections = createProviderConnectionStore({ sql, orgId, ready, secrets, secretLog });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready, secrets, secretLog });
-    const modelSetup = createModelSetupStore({ sql, orgId, ready, secrets, secretLog });
+    const modelSetup = createModelSetupStore({
+        sql,
+        orgId,
+        ready,
+        secrets,
+        secretLog,
+        executorLimits: { org: MAX_EXECUTORS_PER_ORG, personal: MAX_EXECUTORS_PER_USER },
+    });
     const notificationSubscriptions = createNotificationSubscriptionStore({ sql, orgId, ready, secrets, secretLog });
     const notificationOutbox = createNotificationOutboxStore({ sql, orgId, ready, secrets });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict

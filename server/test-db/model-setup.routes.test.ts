@@ -223,6 +223,47 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         expect((await edit('claude-sonnet-4-5', view.selected.updatedAt)).status).toBe(OK);
     });
 
+    describe('the executor cap', () => {
+        const CAP = 10;
+        const TOO_MANY = 400;
+        /** Executors on the first save's connection, so only executors count toward the cap. */
+        async function fill(count: number) {
+            const first = await save(admin, orgBody());
+            expect(first.status).toBe(OK);
+            const reuse = { intent: 'reuse', id: first.json.connectionId };
+            const bodies = Array.from({ length: count - 1 }, (_, i) =>
+                orgBody({ connection: reuse, executor: { name: `Executor ${i + 2}` } })
+            );
+            for (const body of bodies) expect((await save(admin, body)).status).toBe(OK);
+            return { reuse, last: bodies.at(-1) ?? orgBody() };
+        }
+        const executors = async () =>
+            Number((await sql`select count(*) as n from executor_profile where org_id = ${org}`)[0]!.n);
+
+        it('a create that took the last slot replays its saved result when its response is lost', async () => {
+            const { last } = await fill(CAP);
+            const retried = await save(admin, last);
+            expect(retried.status).toBe(OK);
+            expect(retried.json.replayed).toBe(true);
+            expect(await executors()).toBe(CAP);
+            // A different create is still refused at the cap.
+            const refused = await save(admin, orgBody({ executor: { name: 'One too many' } }));
+            expect(refused.status).toBe(TOO_MANY);
+            expect(refused.json.code).toBe('TOO_MANY_EXECUTORS');
+        });
+
+        it('two creates racing for the last slot leave exactly one executor more', async () => {
+            const { reuse } = await fill(CAP - 1);
+            const results = await Promise.all(
+                ['Racer one', 'Racer two'].map((name) =>
+                    save(admin, orgBody({ connection: reuse, executor: { name } }))
+                )
+            );
+            expect(results.map((r) => r.status).sort()).toEqual([OK, TOO_MANY]);
+            expect(await executors()).toBe(CAP);
+        });
+    });
+
     it('personal onboarding yields a personal connection executor and default', async () => {
         const saved = await save(
             member,

@@ -5,6 +5,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import {
     createModelSetupStore,
     ModelSetupEndpointRefusal,
+    ModelSetupCapError,
     ModelSetupNameConflict,
     ModelSetupRequestConflict,
     type SetupCommand,
@@ -44,11 +45,11 @@ beforeAll(() => {
     healthy = testSecretStore(sql);
 });
 
-function stores(secrets: SecretStore = healthy) {
+function stores(secrets: SecretStore = healthy, executorLimits?: { org: number; personal: number }) {
     const deps = { sql, orgId: ORG, secrets, secretLog: () => {} };
     const executors = createUserExecutorStore(deps);
     const connections = createProviderConnectionStore(deps);
-    const setup = createModelSetupStore(deps);
+    const setup = createModelSetupStore({ ...deps, ...(executorLimits ? { executorLimits } : {}) });
     const jobs = createJobStore({
         sql,
         orgId: ORG,
@@ -585,6 +586,37 @@ describe.skipIf(!enabled)('the model setup command', () => {
 
         expect(selected).toMatchObject({ executorId: shared.executorId, scope: 'org' });
         expect(selected?.connection).toMatchObject({ id: shared.connectionId, scope: 'org' });
+    });
+
+    it.each([
+        ['org', ALICE],
+        ['personal', BOB],
+    ] as const)('the %s executor cap is checked under the setup lock, after the receipt', async (scope, userId) => {
+        const { setup } = stores(healthy, { org: 2, personal: 2 });
+        const first = await setup.apply(command({ scope, userId }));
+        const reuse = { intent: 'reuse', id: first.connectionId! } as const;
+        const create = (name: string) =>
+            command({
+                scope,
+                userId,
+                connection: reuse,
+                executor: { name, agentType: 'claude-code', model: 'claude-sonnet-4-5' },
+            });
+
+        // Two creates race for the last slot: one wins, the other is refused, and the scope holds exactly the limit.
+        const commands = [create('One'), create('Two')] as const;
+        const race = await Promise.allSettled(commands.map((c) => setup.apply(c)));
+        const won = race.findIndex((r) => r.status === 'fulfilled');
+        expect(race.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+        const refused = race[1 - won] as PromiseRejectedResult;
+        expect(refused.reason).toBeInstanceOf(ModelSetupCapError);
+        expect((refused.reason as ModelSetupCapError).scope).toBe(scope);
+        expect(await count('executor_profile')).toBe(2);
+
+        // The winner's retry replays at the cap instead of being refused.
+        const again = await setup.apply(commands[won]!);
+        expect(again.replayed).toBe(true);
+        expect(await count('executor_profile')).toBe(2);
     });
 
     it('default replacement and protected deletion cannot leave dangling references', async () => {

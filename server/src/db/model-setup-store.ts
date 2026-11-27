@@ -100,6 +100,17 @@ export class ModelSetupEndpointRefusal extends Error {
     }
 }
 
+/** A create the scope's executor limit refuses, counted under the setup lock. The route answers 400 `TOO_MANY_EXECUTORS`. */
+export class ModelSetupCapError extends Error {
+    constructor(
+        readonly scope: 'org' | 'personal',
+        readonly limit: number
+    ) {
+        super(`at most ${limit} ${scope === 'org' ? 'organization ' : ''}executors can be configured at once`);
+        this.name = 'ModelSetupCapError';
+    }
+}
+
 /** The setup raced a change of the executor it edits (a stale expected revision): retried by the client after a reread. */
 export class ModelSetupConflict extends Error {
     constructor(message = 'Another model setup save changed this scope; try again') {
@@ -223,6 +234,8 @@ interface Run {
     readonly command: SetupCommand;
     readonly owner: string | null;
     readonly fingerprint: string;
+    /** The most executors the command's scope may hold; absent: no limit. */
+    readonly limit: number | undefined;
 }
 
 /** What the connection step decided: the connection the executor runs on (none), the provider that names its model, the key it superseded. */
@@ -308,6 +321,15 @@ async function publish(
     if (receipt) return { result: replayOf(receipt, command, fingerprint), superseded: undefined };
 
     const { executor } = command;
+    // A create counts against the scope's limit here: under the lock, and after the receipt, so a retried create that
+    // took the last slot replays instead of being refused, and two creates cannot both read the same count.
+    if (executor.id === undefined && run.limit !== undefined) {
+        const [held] = await tx<{ n: number }[]>`
+            select count(*)::int as n from executor_profile
+            where org_id = ${orgId} and user_id is not distinct from ${owner}
+        `;
+        if ((held?.n ?? 0) >= run.limit) throw new ModelSetupCapError(command.scope, run.limit);
+    }
     // The executor routes lock the profile and then read its connection: the setup takes the same order, so a rotation
     // and an edit of the same executor never wait on each other's second lock.
     if (executor.id !== undefined) {
@@ -422,6 +444,7 @@ export function createModelSetupStore({
     secretLog,
     writeDeadlineMs = 30_000,
     cleanupDeadlineMs = 10_000,
+    executorLimits,
 }: {
     sql: Sql;
     orgId: string;
@@ -431,6 +454,8 @@ export function createModelSetupStore({
     secretLog: (diagnostic: SecretDiagnostic) => void;
     writeDeadlineMs?: number;
     cleanupDeadlineMs?: number;
+    /** The most executors one organization, and one member, may hold; a create past it is refused (`ModelSetupCapError`). */
+    executorLimits?: { org: number; personal: number };
 }): ModelSetupStore {
     const deps = connectionSecretDeps({ sql, orgId, secrets, secretLog, writeDeadlineMs, cleanupDeadlineMs });
 
@@ -455,7 +480,14 @@ export function createModelSetupStore({
         async apply(command) {
             if (ready) await ready;
             const owner = command.scope === 'org' ? null : command.userId;
-            const run: Run = { orgId, deps, command, owner, fingerprint: fingerprintOf(command) };
+            const run: Run = {
+                orgId,
+                deps,
+                command,
+                owner,
+                fingerprint: fingerprintOf(command),
+                limit: executorLimits?.[command.scope],
+            };
             // A request this scope already applied answers from its receipt before anything is sealed.
             const earlier = await readReceipt(sql, orgId, owner, command.requestId);
             if (earlier) return replayOf(earlier, command, run.fingerprint);
