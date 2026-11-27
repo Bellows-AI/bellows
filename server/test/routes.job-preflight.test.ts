@@ -333,6 +333,24 @@ describe('POST /api/jobs/preflight executor', () => {
         expect(check?.detail).toContain('your default');
     });
 
+    it('names the configured default create will stamp, and blocks on a suspended one instead of falling through', async () => {
+        const booted = await boot();
+        const org = await booted.executors.createOrg({
+            name: 'shared',
+            type: 'claude-code',
+            config: {},
+            createdBy: booted.member.user.id,
+        });
+        await booted.executors.selectDefault(null, org.id);
+        const ok = (await verdict(booted, { repo: 'acme/web' }, 'executor')).check;
+        expect(ok).toMatchObject({ name: 'shared', status: 'ok' });
+
+        await booted.executors.setOrgSuspended(org.id, true);
+        const { check } = await verdict(booted, { repo: 'acme/web' }, 'executor');
+        expect(check).toMatchObject({ name: 'shared', status: 'blocked' });
+        expect(check?.detail).toContain('suspended');
+    });
+
     it('is blocked when nothing is selected and the caller has no usable profile, saying where to configure one', async () => {
         const booted = await boot();
         const [row] = booted.executors.rows();
