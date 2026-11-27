@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
+import type { BoardJob } from './board/board.js';
 import { parseLastJsonLine } from './json-parse.js';
 import { REVIEW_HELPER_DESCRIPTORS } from './review/review-helpers.js';
+import { usesForgeMailbox } from './repo-ref.js';
 
 /**
  * The generic block-helper transport: one allowlisted, board-owned script an
@@ -67,7 +69,8 @@ export type HelperFailureReason =
     | 'timeout'
     | 'runner_error'
     | 'invalid_control'
-    | 'invalid_composite_plan';
+    | 'invalid_composite_plan'
+    | 'forge_wait';
 
 const FAILURE_REASONS: readonly HelperFailureReason[] = [
     'unknown_helper',
@@ -79,6 +82,7 @@ const FAILURE_REASONS: readonly HelperFailureReason[] = [
     'runner_error',
     'invalid_control',
     'invalid_composite_plan',
+    'forge_wait',
 ];
 
 /**
@@ -118,7 +122,13 @@ export interface HelperDescriptor {
     version: 1;
     outputCapBytes: number;
     receipted?: true;
+    /** The body a GitLab job runs instead (`scriptBodyFor`): the same verdict schema, a board route for the forge. */
+    gitlabScriptBody?: string;
 }
+
+/** The script body `job`'s forge runs for this helper: the GitLab one for a job that asks through the forge mailbox. */
+export const scriptBodyFor = (descriptor: HelperDescriptor, job: BoardJob): string =>
+    usesForgeMailbox(job) && descriptor.gitlabScriptBody ? descriptor.gitlabScriptBody : descriptor.scriptBody;
 
 const BYTES_PER_KB = 1024;
 const NOOP_OUTPUT_CAP_KB = 8;

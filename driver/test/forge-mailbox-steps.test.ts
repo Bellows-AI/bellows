@@ -3,6 +3,7 @@ import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { createDockerRunner } from '../src/docker/docker-runner.js';
 import { lookupHelper, type HelperPlan } from '../src/helpers.js';
+import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review/review-helpers.js';
 import { syncFailureHalt } from '../src/loop/loop-fence.js';
 import { CREDENTIAL_HELPER, credentialHelperOf, FORGE_STEP_CREDENTIAL_HELPER } from '../src/publish/publish-base.js';
 import { gitProbeScript, publishCheckout, type SyncResult } from '../src/publish/publish.js';
@@ -338,6 +339,61 @@ describe('a github-writing helper of a GitLab job', () => {
             (e: unknown) => e
         );
         expect(stepLost(thrown)).toBe(true);
+    });
+});
+
+describe('the attempt pair in a GitLab review helper step (BEL-539)', () => {
+    const PAIR_NAMES = ['FACTORY_STATS_URL', 'RUNNER_JOB_ID', 'RUNNER_LEASE_TOKEN'];
+    const plan = (helperId: string, githubWriting = true): HelperPlan => ({
+        helperId,
+        phase: 'pre',
+        input: { publication: null },
+        githubWriting,
+    });
+    const run = async (job: BoardJob, helperId: string, githubWriting = true) => {
+        const s = sink(() => ok('{"ok":true,"output":{}}'));
+        await runHelperStep(s.host, job, plan(helperId, githubWriting), { token: SENTINEL });
+        return s;
+    };
+
+    it.each([REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID])('gives %s the pair, and still no forge token', async (id) => {
+        const job = gitlabJob();
+        const s = await run(job, id);
+        expect(s.steps[0]!.env).toMatchObject({
+            FACTORY_STATS_URL: config.statsUrl,
+            RUNNER_JOB_ID: job.id,
+            RUNNER_LEASE_TOKEN: job.leaseToken,
+        });
+        expectTokenless(s.steps);
+    });
+
+    it('never gives the pair to merge-conflict-probe, a read-only helper or a GitHub job', async () => {
+        for (const s of [
+            await run(gitlabJob(), 'merge-conflict-probe'),
+            await run(gitlabJob(), REVIEW_COLLECT_PROBE_ID, false),
+            await run(githubJob(), REVIEW_COLLECT_PROBE_ID),
+        ]) {
+            for (const name of PAIR_NAMES) expect(s.steps[0]!.env).not.toHaveProperty(name);
+        }
+    });
+});
+
+describe('a held grant in a review helper (BEL-539, F539-4)', () => {
+    const FORGE_WAIT = '{"schema":"review-collect-probe/v1","version":1,"ok":false,"reason":"forge_wait","error":"held"}';
+    const plan: HelperPlan = { helperId: REVIEW_COLLECT_PROBE_ID, phase: 'pre', input: null, githubWriting: true };
+
+    it('throws a lost step for a GitLab job, so the attempt is interrupted, never failed', async () => {
+        const s = sink(() => ok(FORGE_WAIT));
+        const thrown = await runHelperStep(s.host, gitlabJob(), plan).then(
+            () => null,
+            (e: unknown) => e
+        );
+        expect(stepLost(thrown)).toBe(true);
+    });
+
+    it('is an ordinary helper failure for a GitHub job', async () => {
+        const s = sink(() => ok(FORGE_WAIT));
+        expect(await runHelperStep(s.host, githubJob(), plan)).toMatchObject({ ok: false, reason: 'forge_wait' });
     });
 });
 
