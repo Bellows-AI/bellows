@@ -1024,7 +1024,7 @@ describe('kind lane observability phase', () => {
     });
 });
 
-describe('kind lane members hold a GitHub grant (BEL-617)', () => {
+describe('kind lane members hold a GitHub grant', () => {
     const script = readLaneScript('scripts/test-k8s.sh');
     const laneFiles = ['recovery', 'gitlab', 'workspace', 'takeover'].map((phase) =>
         readRepoFile(`scripts/lanes/k8s/${phase}.sh`)
