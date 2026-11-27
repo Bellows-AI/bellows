@@ -23,7 +23,7 @@ import {
     type StepSink,
     type SupervisorEndpoint,
 } from '../../src/step-control.js';
-import { REVIEW_REPLY_PROBE_ID } from '../../src/review/review-helpers.js';
+import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../../src/review/review-helpers.js';
 import { receiptedAnswer, receiptOrder } from '../fixtures/helper-receipt-steps.js';
 import { MAILBOXES, type StepRequest, type StepResult, type SupervisorReport } from '../../src/supervisor-contract.js';
 import {
@@ -189,6 +189,21 @@ describe('the block-helper transport (issue #207)', () => {
         // The minted token is the step's GitHub credential; a claim value under the name never is.
         expect(step?.env).toMatchObject({ GITHUB_TOKEN: 'fresh-install-token' });
         expect(JSON.stringify(step)).not.toContain('claim-token');
+    });
+
+    // a GitLab job's review helper reaches the board's review route with the attempt pair, never a forge token.
+    it('gives a GitLab job its review helper step the attempt pair, and no other helper or job', async () => {
+        const gitlabJob: BoardJob = { ...job, repo: { forge: 'gitlab', host: 'board.gitlab.test', path: 'grp/web' } };
+        const pairOf = async (j: BoardJob, helperId: string) => {
+            const { supervised, runner } = helperRunner();
+            await runner.runHelper(j, plan({ helperId, githubWriting: true }), { token: 'fresh-install-token' });
+            return supervised.ofKind('helper')[0]!.env;
+        };
+        const env = await pairOf(gitlabJob, REVIEW_COLLECT_PROBE_ID);
+        expect(env).toMatchObject({ RUNNER_JOB_ID: job.id, RUNNER_LEASE_TOKEN: job.leaseToken });
+        expect(env).not.toHaveProperty('GITHUB_TOKEN');
+        expect(await pairOf(gitlabJob, 'merge-conflict-probe')).not.toHaveProperty('RUNNER_LEASE_TOKEN');
+        expect(await pairOf(repoJob, REVIEW_COLLECT_PROBE_ID)).not.toHaveProperty('RUNNER_LEASE_TOKEN');
     });
 
     it('never puts the token in the daemon’s argv or the step’s — only in the step env', async () => {

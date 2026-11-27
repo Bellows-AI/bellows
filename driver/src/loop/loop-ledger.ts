@@ -57,6 +57,7 @@ const HELPER_CAUSES: Readonly<Record<HelperFailureReason, FailureCause>> = {
     invalid_composite_plan: 'config',
     malformed_output: 'unknown',
     oversized_output: 'unknown',
+    forge_wait: 'transport',
 };
 
 /** The cause a failed helper names, pre-run or post-run alike. */

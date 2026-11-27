@@ -15,6 +15,8 @@ begin_phase gitlab
 #       push, still the member's, after exactly one interruption
 #   g4  the driver is deleted mid-task: the replacement takes the running agent over, which asks again; one push
 #   g5  the board, not the runner, opens the merge request as the member (the driver asks the board; no driver change)
+#   r1  the review loop: a diff discussion by another login is answered and resolved as the member through the board, and the
+#       thread rests on REVIEW-CLEAN (the helper step's attempt pair is the driver change, shared by both executors)
 # Not exercised in the sandbox this lane was written in (no docker, no cluster): it runs with the project's end-of-run lanes.
 
 echo
@@ -270,6 +272,61 @@ if [ -n "$glk_connected" ]; then
         *) bad 'g5: the board opened the MR as the member' "mr writes (method:status:holder): $glk_mr" ;;
         esac
     fi
+    # R1: the review loop on the merge request's discussions, as in the jobs lane's step r1 (scripts/lanes/jobs/gitlab.sh):
+    # a workflow publishes a change, holds at a barrier, then walks `builtin/review-reconcile`. While the barrier holds another
+    # login opens a diff discussion, the stub's repair node (scripts/k8s-stub.sh) declares a reply and a resolve for every digest
+    # key, and the reply node answers through the board as the member. The driver change is the helper step's, shared by both
+    # executors; the fake's own view is the assertion.
+    glk_fake() { # glk_fake <path> -> the fake's v4 answer for the member's token
+        NODE_EXTRA_CA_CERTS="$GLK_TLS/cert.pem" node -e 'fetch(process.argv[1] + process.argv[2], { headers: { authorization: "Bearer " + process.argv[3] } }).then((res) => res.text()).then((text) => process.stdout.write(text))' \
+            "https://localhost:$GLK_FWD" "$1" "$glk_token"
+    }
+    glk_token="$(NODE_EXTRA_CA_CERTS="$GLK_TLS/cert.pem" node -e 'process.stdin.on("data", (d) => process.stdout.write(JSON.parse(d).access_token))' <<<"$(glk_control gitlab/sign-in "{\"login\":\"$GLK_LOGIN\"}")")"
+    glk_project_path="/api/v4/projects/$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$GLK_PROJECT")"
+    r1_def="$(node -e 'process.stdout.write(JSON.stringify({ name: "lane-review", scope: "user", definition: { entry: "work", nodes: [
+        { name: "work", kind: "agent", session: "resume", publish: true, prompt: "factory-stub-change" },
+        { name: "hold", kind: "agent", session: "resume", gates: false, prompt: "factory-stub-wait-" + process.argv[1] },
+        { name: "review", kind: "block", uses: "builtin/review-reconcile" }],
+        edges: [{ from: "work", to: "hold", when: "succeeded" }, { from: "hold", to: "review", when: "succeeded" }] } }))' "${GLK_D}r1")"
+    case "$(ACC_AUTH="Bearer $FACTORY_TOKEN" node "$REPO/scripts/acceptance-job.mjs" POST "$BASE/api/workflows" id "$r1_def")" in
+    unread:* | refused:*) bad 'r1: the member creates the review workflow' 'POST /api/workflows was refused' ;;
+    *) ok 'r1: the member creates the review workflow' ;;
+    esac
+    r1_payload="$(node -e 'process.stdout.write(JSON.stringify({ command: "review loop", executor: "claude", workflow: "lane-review", repo: { forge: "gitlab", host: process.argv[1], path: process.argv[2] } }))' "$GLK_HOST" "$GLK_PROJECT")"
+    r1="$(ACC_AUTH="Bearer $FACTORY_TOKEN" node "$REPO/scripts/acceptance-job.mjs" POST "$BASE/api/jobs" id "$r1_payload")"
+    case "$r1" in
+    unread:* | refused:*) bad 'r1: the board queues the review thread' "$r1" ;;
+    *)
+        r1_mr=''
+        r1_published() { r1_mr="$(glk_fake "$glk_project_path/merge_requests?state=opened&order_by=created_at&sort=desc&per_page=1" | node -e 'process.stdin.on("data", (d) => { const l = JSON.parse(d); if (l[0]) process.stdout.write(String(l[0].iid)); })')"; [ -n "$r1_mr" ]; }
+        r1_pod=''
+        r1_pod_ready() { r1_pod="$(kubectl get pods -n "$NAMESPACE" --request-timeout=10s -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name}{"\n"}{end}' 2>/dev/null | while read -r pod; do bounded 20 kubectl exec "$pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- test -f "${GLK_D}r1.ready-$pod" >/dev/null 2>&1 && echo "$pod"; done | sed -n 1p)"; [ -n "$r1_pod" ]; }
+        acc_until 240 r1_published && acc_until 120 r1_pod_ready && ok 'r1: the work node published the merge request and the thread holds' ||
+            bad 'r1: the work node published the merge request and the thread holds' "mr '$r1_mr', pod '$r1_pod'"
+        if [ -n "$r1_mr" ]; then
+            r1_position='{"position_type":"text","new_path":"lane-change","old_path":"lane-change","new_line":1,"old_line":null,"head_sha":"0000000000000000000000000000000000000000"}'
+            glk_control gitlab/discussion "{\"project\":\"$GLK_PROJECT\",\"iid\":$r1_mr,\"login\":\"lane-reviewer\",\"body\":\"please rename this\",\"position\":$r1_position}" >/dev/null &&
+                ok 'r1: another login opens a diff discussion on the merge request' || bad 'r1: another login opens a diff discussion on the merge request' 'the control refused'
+            release_stub "${GLK_D}r1" || bad 'r1: the thread is released' 'no pod reached the barrier'
+        fi
+        r1_view() { glk_fake "$glk_project_path/merge_requests/${r1_mr:-0}/discussions" | node -e 'process.stdin.on("data", (d) => {
+            const diff = JSON.parse(d).find((t) => !t.individual_note);
+            const notes = diff ? diff.notes : [];
+            const own = notes.filter((n) => n.author.username === process.argv[1] && n.body.includes("factory-review-reconcile addressed thread:" + diff.id));
+            console.log("notes " + notes.length + " own " + own.length + " resolved " + notes.every((n) => !n.resolvable || n.resolved));
+        })' "$GLK_LOGIN"; }
+        r1_answered() { [ "$(r1_view)" = 'notes 2 own 1 resolved true' ]; }
+        acc_until 300 r1_answered && ok 'r1: one marked reply by the member, and the discussion is resolved' ||
+            bad 'r1: one marked reply by the member, and the discussion is resolved' "$(r1_view)"
+        r1_last() { node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers }).then(async (r) => { const jobs = (await r.json()).jobs ?? []; const last = jobs[jobs.length - 1]; process.stdout.write(last ? last.status + " " + (last.output ?? "") : ""); }).catch(() => {});
+' "$BASE/api/jobs/$r1/thread"; }
+        r1_rested() { case "$(r1_last)" in succeeded*REVIEW-CLEAN*) return 0 ;; *) return 1 ;; esac; }
+        acc_until 300 r1_rested && ok 'r1: the thread rests on REVIEW-CLEAN after one repair round' ||
+            bad 'r1: the thread rests on REVIEW-CLEAN after one repair round' "$(r1_last | tail -c 200)"
+        ;;
+    esac
+
 fi
 
 glk_cleanup

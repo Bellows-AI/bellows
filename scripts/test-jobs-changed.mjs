@@ -131,6 +131,8 @@ export const RULES = [
     [/^driver\/src\/(services|loop\/loop-services|service-restart)\.ts$/, ['services', 'node-disruption'], 'service containers'],
     [/^driver\/src\/scripts\/service-generation-(bump|probe)\.sh$/, ['services'], 'service generation'],
     [/^driver\/src\/(reaper|reaper-export|docker\/docker-reaper|docker\/docker-volume-export)\.ts$/, ['orphan-reaper', 'driver-kill', 'capacity'], 'container reaper'],
+    [/^driver\/src\/review\/review-helpers\.ts$/, ['gitlab', 'review'], 'the review-reconcile helpers: the gitlab phase walks the block on a GitLab merge request (r1)'],
+    [/^driver\/src\/scripts\/review-(collect|reply)(-probe-[a-z]+|-gitlab)?\.cjs$/, ['gitlab', 'review'], 'the review-reconcile helper bodies: the gitlab phase walks the block on a GitLab merge request (r1)'],
     [/^driver\/src\/(review\/review|review\/review-[a-z-]+|loop\/loop-review)\.ts$/, ['review'], 'reviewer'],
     [/^driver\/src\/scripts\/(review-[a-z-]+\.(cjs|sh)|git-review-snapshot\.cjs)$/, ['review'], 'reviewer'],
     [/^driver\/src\/(connection-control|loop\/loop-connection)\.ts$/, ['driver', 'cooperative-stop'], 'runtime connection requirement'],

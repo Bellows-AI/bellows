@@ -15,6 +15,8 @@ begin_phase gitlab
 #       nor in the task volume after, the job output, the driver log or the board log
 #   b1  the member starts a one-task automerge batch: the task publishes a merge request, a passing pipeline on its head
 #       is the board's cue, and the merge is one PUT by the member; a passing pipeline on the target tip completes it
+#   r1  the review loop: a diff discussion by another login is answered and resolved as the member through the board, and the thread
+#       rests on REVIEW-CLEAN
 
 echo
 echo '# gitlab (fake forge fixture: OAuth, REST v4, git smart-HTTP)'
@@ -306,6 +308,47 @@ if [ -n "$GL_CONNECTION" ]; then
     b1_done() { [ "$(gl_psql "select completed_at is not null from batch where id = '$b1_batch'")" = t ]; }
     acc_until 300 b1_done && ok 'b1: a passing pipeline on the target tip completes the batch' ||
         bad 'b1: a passing pipeline on the target tip completes the batch' "$(gl_psql "select state, detail from batch_stage_verification where batch_id = '$b1_batch'")"
+
+    # R1: the review loop on the merge request's discussions. A workflow (the member's own) publishes a change,
+    # holds at a barrier, then walks the `builtin/review-reconcile` block. While the barrier holds, another login opens
+    # a diff discussion on the merge request, so the block's first collect finds it: the board reads the discussions as
+    # the member, the stub's repair node declares a reply and a resolve for every digest key and changes the tree, the
+    # push reuses the merge request, and the reply node answers through the board as the member. The next collect finds
+    # nothing and the thread rests on REVIEW-CLEAN. The fake's own view is the assertion.
+    r1_def="$(node -e 'process.stdout.write(JSON.stringify({ name: "lane-review", scope: "user", definition: { entry: "work", nodes: [
+        { name: "work", kind: "agent", session: "resume", publish: true, prompt: "cd \"$WORKDIR\" && echo x >lane-review-base" },
+        { name: "hold", kind: "agent", session: "resume", gates: false, prompt: process.argv[1] },
+        { name: "review", kind: "block", uses: "builtin/review-reconcile" }],
+        edges: [{ from: "work", to: "hold", when: "succeeded" }, { from: "hold", to: "review", when: "succeeded" }] } }))' \
+        ": >$GL_D/$RUN_ID-r1.ready; $(lane_wait "$GL_D/$RUN_ID-r1.go")")"
+    [ "$(status "$(gl_member_api POST /api/workflows "$r1_def")")" = 201 ] && ok 'r1: the member creates the review workflow' ||
+        bad 'r1: the member creates the review workflow' 'POST /api/workflows did not answer 201'
+    r1_payload="$(node -e 'process.stdout.write(JSON.stringify({ command: "review loop", executor: "claude", workflow: "lane-review", repo: { forge: "gitlab", host: process.argv[1], path: process.argv[2] } }))' "$GL_HOST" "$GL_PROJECT")"
+    r1="$(field "$(body "$(gl_member_api POST /api/jobs "$r1_payload")")" id)"
+    lane_use "$r1"
+    r1_mr=''
+    r1_published() { r1_mr="$(gl_psql "select pr_number from job_pr where root_job_id = '$r1'")"; [ -n "$r1_mr" ]; }
+    acc_until 240 r1_published && lane_await_file 120 "$GL_D/$RUN_ID-r1.ready" && ok 'r1: the work node published the merge request and the thread holds' ||
+        bad 'r1: the work node published the merge request and the thread holds' "no job_pr row for $r1"
+    if [ -n "$r1_mr" ]; then
+        r1_position='{"position_type":"text","new_path":"lane-review-base","old_path":"lane-review-base","new_line":1,"old_line":null,"head_sha":"0000000000000000000000000000000000000000"}'
+        gl_control gitlab/discussion "{\"project\":\"$GL_PROJECT\",\"iid\":$r1_mr,\"login\":\"lane-reviewer\",\"body\":\"please rename this\",\"position\":$r1_position}" >/dev/null &&
+            ok 'r1: another login opens a diff discussion on the merge request' || bad 'r1: another login opens a diff discussion on the merge request' 'the control refused'
+        lane_touch "$GL_D/$RUN_ID-r1.go" || bad 'r1: the thread is released' 'the touch failed'
+    fi
+    r1_rested() { [ "$(gl_psql "select status || ' ' || coalesce(output, '') from job where root_job_id = '$r1' order by created_at desc, id desc limit 1" | grep -c 'succeeded .*REVIEW-CLEAN')" = 1 ]; }
+    acc_until 300 r1_rested && ok 'r1: the thread rests on REVIEW-CLEAN after one repair round' ||
+        bad 'r1: the thread rests on REVIEW-CLEAN after one repair round' "$(gl_psql "select workflow_node, status from job where root_job_id = '$r1' order by created_at, id" | tr '\n' ' ')"
+    r1_token="$(field "$(gl_control gitlab/sign-in "{\"login\":\"$GL_LOGIN\"}")" access_token)"
+    r1_view="$(NODE_EXTRA_CA_CERTS="$GL_TLS/cert.pem" node -e 'fetch(process.argv[1] + "/api/v4/projects/" + encodeURIComponent(process.argv[2]) + "/merge_requests/" + process.argv[3] + "/discussions", { headers: { authorization: "Bearer " + process.argv[4] } })
+        .then((res) => res.json()).then((threads) => {
+            const diff = threads.find((t) => !t.individual_note);
+            const notes = diff ? diff.notes : [];
+            const own = notes.filter((n) => n.author.username === process.argv[5] && n.body.includes("factory-review-reconcile addressed thread:" + diff.id));
+            console.log("notes " + notes.length + " own " + own.length + " resolved " + notes.every((n) => !n.resolvable || n.resolved));
+        })' "$GL_URL" "$GL_PROJECT" "${r1_mr:-0}" "$r1_token" "$GL_LOGIN" 2>&1)"
+    [ "$r1_view" = 'notes 2 own 1 resolved true' ] && ok "r1: one marked reply by the member, and the discussion is resolved" ||
+        bad "r1: one marked reply by the member, and the discussion is resolved" "$r1_view"
     stop_driver
 fi
 kill "${gl_server_pid:-}" "${gl_fake_pid:-}" 2>/dev/null

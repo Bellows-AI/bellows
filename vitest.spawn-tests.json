@@ -50,6 +50,7 @@
         "driver/test/publish-hooks.test.ts",
         "driver/test/reaper-export.test.ts",
         "driver/test/review-collect-script.test.ts",
+        "driver/test/review-gitlab-scripts.test.ts",
         "driver/test/review-helpers.test.ts",
         "driver/test/review-reply-script.test.ts",
         "driver/test/run-async.test.ts",

@@ -9,7 +9,7 @@ import {
 } from '../../src/supervisor-contract.js';
 import { StepChannelClosed } from '../../src/step-control.js';
 import { lookupHelper } from '../../src/helpers.js';
-import { REVIEW_REPLY_PROBE_ID } from '../../src/review/review-helpers.js';
+import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../../src/review/review-helpers.js';
 import { receiptedAnswer, receiptOrder } from '../fixtures/helper-receipt-steps.js';
 import type { HelperPlan } from '../../src/helpers.js';
 import { gateRequests } from '../../src/k8s/k8s-podfields.js';
@@ -167,6 +167,26 @@ describe('the block-helper transport (issue #207)', () => {
         });
         expect(JSON.stringify(calls.map((c) => c.body))).not.toContain('super-secret-token');
         expect(helperStepsOf(steps)[0]!.env.GITHUB_TOKEN).toBe('super-secret-token');
+    });
+
+    // a GitLab job's review helper reaches the board's review route with the attempt pair, never a forge token.
+    it('gives a GitLab job its review helper step the attempt pair, and no other helper or job', async () => {
+        const gitlabJob: BoardJob = { ...job, repo: { forge: 'gitlab', host: 'board.gitlab.test', path: 'grp/web' } };
+        const pairOf = async (j: BoardJob, helperId: string) => {
+            const steps = answering();
+            await runner(fakeRequest().request, {}, undefined, steps.sink).runHelper(
+                j,
+                plan({ helperId, githubWriting: true }),
+                { token: 'fresh-install-token' }
+            );
+            return helperStepsOf(steps)[0]!.env;
+        };
+        expect(await pairOf(gitlabJob, REVIEW_COLLECT_PROBE_ID)).toMatchObject({
+            RUNNER_JOB_ID: job.id,
+            RUNNER_LEASE_TOKEN: job.leaseToken,
+        });
+        expect(await pairOf(gitlabJob, 'merge-conflict-probe')).not.toHaveProperty('RUNNER_LEASE_TOKEN');
+        expect(await pairOf(repoJob, REVIEW_COLLECT_PROBE_ID)).not.toHaveProperty('RUNNER_LEASE_TOKEN');
     });
 
     it('mints a fresh step identity on every call, even for the identical plan run twice in a row', async () => {

@@ -96,6 +96,8 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['review-collect-probe-postlude.cjs', 'node'],
     ['review-reply-probe-middle.cjs', 'node'],
     ['review-reply-probe-postlude.cjs', 'node'],
+    ['review-collect-gitlab.cjs', 'node'],
+    ['review-reply-gitlab.cjs', 'node'],
 ];
 
 describe('the container scripts', () => {
@@ -194,6 +196,35 @@ describe('the container scripts', () => {
             read('review-reply-probe-postlude.cjs'),
         ].join('\n');
         expect(HELPER_REGISTRY.get(REVIEW_REPLY_PROBE_ID)?.scriptBody).toBe(replyBody);
+    });
+
+    // A GitLab job's bodies wrap the same unmodified adapters in promise callbacks around the board's routes.
+    it('assembles the GitLab review helper bodies from their real files, byte for byte', () => {
+        const read = (name: string): string => readFileSync(pathOf(name), 'utf8');
+        const collectBody = [
+            read('review-collect-probe-prelude.cjs'),
+            read('review-collect-gitlab.cjs'),
+            '__reviewGitlabCollect().then(() => {',
+            "if (__reviewGitlabHeld('review-collect-probe/v1')) return;",
+            read('review-collect-probe-postlude.cjs'),
+            "}).catch((e) => __reviewGitlabCrashed('review-collect-probe/v1', e));",
+        ].join('\n');
+        expect(HELPER_REGISTRY.get(REVIEW_COLLECT_PROBE_ID)?.gitlabScriptBody).toBe(collectBody);
+
+        const replyBody = [
+            read('review-collect-probe-prelude.cjs'),
+            read('review-collect-gitlab.cjs'),
+            read('review-reply-gitlab.cjs'),
+            '__reviewGitlabCollect().then(() => {',
+            "if (__reviewGitlabHeld('review-reply-probe/v1')) return;",
+            read('review-reply-probe-middle.cjs'),
+            'return (__reviewReplyProbeSkip ? Promise.resolve() : __reviewGitlabReply()).then(() => {',
+            "if (__reviewGitlabHeld('review-reply-probe/v1')) return;",
+            read('review-reply-probe-postlude.cjs'),
+            '});',
+            "}).catch((e) => __reviewGitlabCrashed('review-reply-probe/v1', e));",
+        ].join('\n');
+        expect(HELPER_REGISTRY.get(REVIEW_REPLY_PROBE_ID)?.gitlabScriptBody).toBe(replyBody);
     });
 
     // The review scripts are not yet loaded by any argv builder, so a byte pin through a

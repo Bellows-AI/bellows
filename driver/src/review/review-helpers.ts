@@ -33,6 +33,8 @@ const collectPrelude = containerScript('review-collect-probe-prelude.cjs');
 const collectPostlude = containerScript('review-collect-probe-postlude.cjs');
 const replyMiddle = containerScript('review-reply-probe-middle.cjs');
 const replyPostlude = containerScript('review-reply-probe-postlude.cjs');
+const gitlabCollect = containerScript('review-collect-gitlab.cjs');
+const gitlabReply = containerScript('review-reply-gitlab.cjs');
 
 const REVIEW_COLLECT_PROBE_BODY = [collectPrelude, '{', reviewCollectScript, '}', collectPostlude].join('\n');
 
@@ -51,6 +53,38 @@ const REVIEW_REPLY_PROBE_BODY = [
     replyPostlude,
 ].join('\n');
 
+const COLLECT_SCHEMA = 'review-collect-probe/v1';
+const REPLY_SCHEMA = 'review-reply-probe/v1';
+
+/**
+ * A GitLab job's bodies: the same adapters, unmodified, around the board's discussion routes instead of
+ * `gh`. The board call is async, so each unmodified piece runs in a promise callback; a held grant answers
+ * `forge_wait` before any piece decides, and a throw nothing else answered is one `runner_error` envelope.
+ */
+const REVIEW_COLLECT_PROBE_GITLAB_BODY = [
+    collectPrelude,
+    gitlabCollect,
+    '__reviewGitlabCollect().then(() => {',
+    `if (__reviewGitlabHeld('${COLLECT_SCHEMA}')) return;`,
+    collectPostlude,
+    `}).catch((e) => __reviewGitlabCrashed('${COLLECT_SCHEMA}', e));`,
+].join('\n');
+
+const REVIEW_REPLY_PROBE_GITLAB_BODY = [
+    collectPrelude,
+    gitlabCollect,
+    gitlabReply,
+    '__reviewGitlabCollect().then(() => {',
+    `if (__reviewGitlabHeld('${REPLY_SCHEMA}')) return;`,
+    replyMiddle,
+    // The middle's skip (the fresh collect failed outright) posts nothing: its own ok:false envelope is the answer.
+    'return (__reviewReplyProbeSkip ? Promise.resolve() : __reviewGitlabReply()).then(() => {',
+    `if (__reviewGitlabHeld('${REPLY_SCHEMA}')) return;`,
+    replyPostlude,
+    '});',
+    `}).catch((e) => __reviewGitlabCrashed('${REPLY_SCHEMA}', e));`,
+].join('\n');
+
 const BYTES_PER_KB = 1024;
 /** Generous past a full collection (256 KiB, review.ts's own TOTAL_OUTPUT_BYTES) plus the digest. */
 const REVIEW_COLLECT_PROBE_OUTPUT_CAP_KB = 320;
@@ -64,14 +98,16 @@ export const REVIEW_HELPER_DESCRIPTORS: readonly HelperDescriptor[] = [
     {
         id: REVIEW_COLLECT_PROBE_ID,
         scriptBody: REVIEW_COLLECT_PROBE_BODY,
-        schema: 'review-collect-probe/v1',
+        gitlabScriptBody: REVIEW_COLLECT_PROBE_GITLAB_BODY,
+        schema: COLLECT_SCHEMA,
         version: 1,
         outputCapBytes: REVIEW_COLLECT_PROBE_OUTPUT_CAP_KB * BYTES_PER_KB,
     },
     {
         id: REVIEW_REPLY_PROBE_ID,
         scriptBody: REVIEW_REPLY_PROBE_BODY,
-        schema: 'review-reply-probe/v1',
+        gitlabScriptBody: REVIEW_REPLY_PROBE_GITLAB_BODY,
+        schema: REPLY_SCHEMA,
         version: 1,
         outputCapBytes: REVIEW_REPLY_PROBE_OUTPUT_CAP_KB * BYTES_PER_KB,
         // Its replies and resolves are the block's external effects.

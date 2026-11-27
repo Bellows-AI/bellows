@@ -10,7 +10,7 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
 | Launch parameters, safe regex subset | `server/src/db/workflows/workflow-pattern.ts` | `server/test/workflow-engine.params.test.ts` |
 | Transition engine, rest reasons (`REST_BY_KIND`) | `server/src/db/workflows/workflow-engine.ts` | `server/test/workflow-engine.next-transition.test.ts`, `workflow-engine.walkthrough.test.ts`, `workflow-engine.evidence.test.ts` |
 | Block registry and expansion compiler | `server/src/db/workflows/workflow-blocks/index.ts`, `types.ts` | `server/test/workflow-block-compiler.test.ts` |
-| Built-in blocks | `server/src/db/workflows/workflow-blocks/review-reconcile.ts`, `merge-conflict-autofix.ts`; GitLab review: `server/src/forge/gitlab-review.ts`, `server/src/routes/jobs/job-handlers-review.ts` | `server/test/workflow-block-review-reconcile.test.ts`, `workflow-block-merge-conflict-autofix.test.ts`, `server/test-db/gitlab-review.test.ts` |
+| Built-in blocks | `server/src/db/workflows/workflow-blocks/review-reconcile.ts`, `merge-conflict-autofix.ts`; GitLab review: `server/src/forge/gitlab-review.ts`, `server/src/routes/jobs/job-handlers-review.ts`; helpers on GitLab: `driver/src/scripts/review-collect-gitlab.cjs`, `review-reply-gitlab.cjs` | `server/test/workflow-block-review-reconcile.test.ts`, `workflow-block-merge-conflict-autofix.test.ts`, `server/test-db/gitlab-review.test.ts` |
 | Durable waits: park, wake, poke, settle | `server/src/db/workflows/workflow-blocks/runtime.ts`, `runtime-params.ts`, `runtime-settle.ts`, `server/src/db/pr-lifecycle-store.ts` | `server/test/workflow-block-runtime.test.ts`, `workflow-block-runtime-settle.test.ts`, `server/test-db/job-store.block-wait.test.ts` |
 | PR follower: the periodic PR read behind a lost webhook (wait wake, merged and closed PRs); a GitLab MR is read as the starter of the newest live thread bound to it, in the claim's own select | `server/src/pr-follower.ts`, `server/src/db/pr-follow-store.ts`, `server/migrations/082_pr_follow.sql`, `server/src/orgs.ts` | `server/test-db/pr-follow.test.ts`, `server/test-db/gitlab-observe.test.ts` |
 | CRUD, scope (a repo scope matches forge, host and path; a nested path has none, `BAD_SCOPE`; the create body and summaries carry `{forge, host, path}`, `?repo=` the ref's text form), compile at create | `server/src/db/workflows/workflow-store.ts`, `server/src/routes/workflows.ts` | `server/test-db/workflow-store.test.ts`, `server/test-db/env-workflow-repo-ref.test.ts`, `server/test/routes.workflows.test.ts` |
@@ -47,12 +47,12 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
   `server/test-db/pr-follow.test.ts`.
 - **A parked wait holds no `job` row and no lease**; the per-root advisory lock and the claim-time
   cancellation fence prevent a double wake — `server/test-db/job-store.block-wait.test.ts`.
+- **A review read that is not an answer is never a clean review**: on GitLab the board reads and writes the MR's discussions as the starter (the helper step carries only the attempt pair), a failed or partial read is a helper failure, a held grant is `forge_wait` (an interrupt), a lost write is read back and never re-sent — `driver/test/review-gitlab-scripts.test.ts`, `server/test-db/gitlab-review.test.ts`.
 - **A successor carries the thread's frozen executor and `agent_type`/`agent_model`**; a parked `workflow_round` stores them for the woken job — `server/src/db/workflows/workflow-blocks/runtime.ts`, `server/test-db/job-store.block-wait.test.ts`.
 
 ## Stated limits
 
-- Every declared parameter is required; `param` is a reserved node name.
-- A definition with no reachable `publish: true` node is refused at create.
+- Every declared parameter is required (`param` is a reserved node name); a definition with no reachable `publish: true` node is refused at create.
 - A missed delivery is repaired by the PR follower within `PR_FOLLOW_INTERVAL_MS` (15 min per PR, reads shared
   with the batch observer's rate-limit pause); `wait/poke` releases a wait sooner. Check events never fold a wait.
 - Two PR activities in one provider second that leave every field the read returns identical (a second comment,

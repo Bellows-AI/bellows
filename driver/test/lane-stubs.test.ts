@@ -842,3 +842,56 @@ describe('scripts/k8s-stub.sh factory-stub-sleep (issue #831)', () => {
         expect(run.stdout).not.toContain('slept in');
     });
 });
+
+describe('the review-reconcile repair prompt in the lane stubs', () => {
+    const PROMPT = 'read .factory/review-reconcile/digest.json now';
+    const DIGEST = {
+        schema: 'review-reconcile-digest/v1',
+        version: 1,
+        items: [{ key: 'thread:abc' }, { key: 'general:7' }],
+    };
+
+    /** A worktree holding a digest, to run one stub in. */
+    const worktree = (): string => {
+        const dir = mkdtempSync(join(tmpdir(), 'repair-stub-'));
+        mkdirSync(join(dir, '.factory/review-reconcile'), { recursive: true });
+        writeFileSync(join(dir, '.factory/review-reconcile/digest.json'), JSON.stringify(DIGEST));
+        return dir;
+    };
+    const expectRepaired = (dir: string): void => {
+        expect(existsSync(join(dir, 'lane-review-change'))).toBe(true);
+        const intents = JSON.parse(readFileSync(join(dir, '.factory/review-reconcile/intents.json'), 'utf8'));
+        expect(intents.schema).toBe('review-reconcile-intents/v1');
+        expect(intents.items).toEqual(
+            DIGEST.items.map(({ key }) => ({ key, reply: expect.any(String), resolve: true }))
+        );
+        rmSync(dir, { recursive: true, force: true });
+    };
+
+    it('scripts/k8s-stub.sh changes the tree and declares a reply and a resolve for every digest key', () => {
+        const dir = worktree();
+        const run = spawnSync('sh', [join(ROOT, 'scripts/k8s-stub.sh'), PROMPT], {
+            encoding: 'utf8',
+            env: { ...process.env, WORKDIR: dir },
+        });
+        expect(run.status).toBe(0);
+        expectRepaired(dir);
+    });
+
+    it('the jobs lane run.sh answers the same prompt, and still runs any other as a shell script', () => {
+        const fixture = read('scripts/lanes/jobs/service-fixture.sh');
+        const lines = fixture.slice(fixture.indexOf("# The review-reconcile block's repair prompt"));
+        const body = lines.slice(lines.indexOf('printf'), lines.indexOf('>"$work/run/run.sh"'));
+        const work = mkdtempSync(join(tmpdir(), 'repair-run-'));
+        mkdirSync(join(work, 'run'));
+        execFileSync('sh', ['-c', `${body}>"$work/run/run.sh"`], { env: { ...process.env, work } });
+        const dir = worktree();
+        const env = { ...process.env, WORKDIR: dir };
+        expect(spawnSync('sh', [join(work, 'run/run.sh'), 'sh', PROMPT], { env }).status).toBe(0);
+        expectRepaired(dir);
+        expect(spawnSync('sh', [join(work, 'run/run.sh'), 'sh', 'echo plain'], { encoding: 'utf8' }).stdout).toBe(
+            'plain\n'
+        );
+        rmSync(work, { recursive: true, force: true });
+    });
+});

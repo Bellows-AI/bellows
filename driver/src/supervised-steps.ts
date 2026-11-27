@@ -14,7 +14,9 @@ import {
     helperInputValue,
     lookupHelper,
     parseHelperOutput,
+    scriptBodyFor,
 } from './helpers.js';
+import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from './review/review-helpers.js';
 import { parseLastJsonLine } from './json-parse.js';
 import { type Bound, pollFor, type Sleep, timeLeft } from './poll.js';
 import {
@@ -402,6 +404,18 @@ export async function runHelperStep(
     return withHelperReceipt(ledger, { worktree, key, effectId }, run);
 }
 
+/**
+ * The attempt pair a GitLab job's review helper reaches the board with (`/api/jobs/:id/agent-review`): the board
+ * reads and writes the merge request's discussions as the starter, so no forge token is ever in the step. Only the
+ * two review helpers get it, never `merge-conflict-probe`, never a GitHub job's.
+ */
+const REVIEW_HELPER_IDS: ReadonlySet<string> = new Set([REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID]);
+
+const reviewPairEnv = (host: StepHost, job: BoardJob, plan: HelperPlan): Record<string, string> =>
+    plan.githubWriting && REVIEW_HELPER_IDS.has(plan.helperId) && usesForgeMailbox(job)
+        ? { FACTORY_STATS_URL: host.config.statsUrl, RUNNER_JOB_ID: job.id, RUNNER_LEASE_TOKEN: job.leaseToken }
+        : {};
+
 async function submitHelper(
     host: StepHost,
     job: BoardJob,
@@ -414,10 +428,11 @@ async function submitHelper(
             job,
             stepRequest(job, 'helper', {
                 id: randomUUID(),
-                argv: ['node', '-e', descriptor.scriptBody],
+                argv: ['node', '-e', scriptBodyFor(descriptor, job)],
                 cwd: checkoutDir(job),
                 env: {
                     ...(plan.githubWriting ? claimStepEnv(job, token) : {}),
+                    ...reviewPairEnv(host, job, plan),
                     HELPER_INPUT: helperInputValue(plan),
                 },
                 ...(plan.githubWriting ? forgeHostOf(job) : {}),
@@ -432,7 +447,12 @@ async function submitHelper(
         if (result.exitCode !== 0) {
             return { ok: false, reason: 'runner_error', message: detailOf(result, HELPER_TIMEOUT_MS) };
         }
-        return parseHelperOutput(descriptor, result.stdout);
+        const parsed = parseHelperOutput(descriptor, result.stdout);
+        // A grant the board holds is no verdict: the attempt is handed back as a credential wait.
+        if (!parsed.ok && parsed.reason === 'forge_wait' && usesForgeMailbox(job)) {
+            throw new ForgeWait(`the helper ${plan.helperId}`);
+        }
+        return parsed;
     } catch (e) {
         if (stepLost(e)) throw e;
         return { ok: false, reason: 'runner_error', message: (e as Error).message };
