@@ -88,7 +88,7 @@ describe('a scope base URL in the model setup', () => {
 
     it('PUT rotation without a baseUrl leaves the connection’s endpoint, and a baseUrl replaces it', async () => {
         const b = await boot();
-        const rotate = { intent: 'rotate', id: 'connection-1', key: 'sk-ant-new' };
+        const rotate = { intent: 'rotate', id: '11111111-1111-4111-8111-111111111111', key: 'sk-ant-new' };
         expect((await put(b, { ...save, connection: rotate })).statusCode).toBe(HTTP_OK);
         expect(b.commands[0]?.connection).toEqual(rotate);
 
@@ -99,7 +99,7 @@ describe('a scope base URL in the model setup', () => {
 
     it('refuses a rotation baseUrl that is not an http(s) URL without credentials, and keepBaseUrl, which is gone', async () => {
         const b = await boot();
-        const rotate = { intent: 'rotate', id: 'connection-1', key: 'sk-ant-new' };
+        const rotate = { intent: 'rotate', id: '11111111-1111-4111-8111-111111111111', key: 'sk-ant-new' };
         const refused = [
             { ...save, connection: { ...rotate, baseUrl: 'ftp://x.example.test' } },
             { ...save, connection: { ...rotate, baseUrl: 'https://user:pw@x.example.test' } },

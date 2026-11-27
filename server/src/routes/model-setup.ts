@@ -14,6 +14,7 @@ import type { AppConfig } from '../config.js';
 import type { EnvVarEntry, EnvVarStore } from '../db/env-var-store.js';
 import {
     ModelSetupConflict,
+    ModelSetupEndpointRefusal,
     type ModelSetupStore,
     ModelSetupNameConflict,
     ModelSetupRequestConflict,
@@ -218,6 +219,9 @@ async function executorCapRefusal(ctx: Context, scope: 'org' | 'personal'): Prom
 function refusedSetup(error: unknown): { status: number; error: string; code: string } | null {
     if (error instanceof ModelSetupNameConflict) {
         return { status: HTTP_CONFLICT, error: error.message, code: ERROR_CODES.NAME_TAKEN };
+    }
+    if (error instanceof ModelSetupEndpointRefusal) {
+        return { status: 400, error: error.message, code: ERROR_CODES.BAD_BODY };
     }
     if (error instanceof ModelSetupConflict || error instanceof ModelSetupRequestConflict) {
         return { status: HTTP_CONFLICT, error: error.message, code: ERROR_CODES.MODEL_SETUP_CONFLICT };

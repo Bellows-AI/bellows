@@ -36,16 +36,20 @@ const validBase = (raw: unknown) => {
 const known = (fields: Record<string, unknown>, allowed: readonly string[]) =>
     Object.keys(fields).every((name) => allowed.includes(name));
 const text = (value: unknown) => typeof value === 'string' && value !== '';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isId = (value: unknown) => typeof value === 'string' && UUID.test(value);
+const CONNECTION_ID = '11111111-1111-4111-8111-111111111111';
+const EXECUTOR_ID = '22222222-2222-4222-8222-222222222222';
 
 /** The route's acceptance of a connection intent, mirrored. */
 function connectionAccepted(connection: Record<string, unknown>, agentType: unknown, mode: DeploymentMode): boolean {
     const { intent } = connection;
     if (intent === 'none') return known(connection, ['intent']);
-    if (intent === 'reuse') return known(connection, ['intent', 'id']) && text(connection.id);
+    if (intent === 'reuse') return known(connection, ['intent', 'id']) && isId(connection.id);
     if (intent === 'rotate') {
         return (
             known(connection, ['intent', 'id', 'key', 'baseUrl']) &&
-            text(connection.id) &&
+            isId(connection.id) &&
             typeof connection.key === 'string' &&
             KEY_SHAPE.test(connection.key) &&
             (connection.baseUrl === undefined || validBase(connection.baseUrl))
@@ -71,7 +75,7 @@ function routeAccepts(body: ModelSetupSave, mode: DeploymentMode): boolean {
     if (!connectionAccepted(body.connection as unknown as Record<string, unknown>, sent.agentType, mode)) return false;
     const { executor } = body;
     if (!known(executor, ['id', 'name', 'expectedUpdatedAt'])) return false;
-    return executor.id !== undefined ? text(executor.id) : text(executor.name);
+    return executor.id !== undefined ? isId(executor.id) : text(executor.name);
 }
 
 describe('the route rule this file mirrors', () => {
@@ -85,12 +89,12 @@ describe('the route rule this file mirrors', () => {
 
 const selected = (over: Partial<SelectedExecutorView> = {}): SelectedExecutorView => ({
     scope: 'personal',
-    executorId: 'executor-1',
+    executorId: EXECUTOR_ID,
     name: 'Anthropic',
     agentType: 'claude-code',
     model: 'claude-sonnet-5-5',
     suspended: false,
-    connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'personal', baseUrl: null },
+    connection: { id: CONNECTION_ID, name: 'Anthropic', provider: 'anthropic', scope: 'personal', baseUrl: null },
     ...over,
 });
 
@@ -146,8 +150,8 @@ describe('the bodies the model setup sends', () => {
     it('an edit names the executor by id and its connection by id, and carries no key', () => {
         const body = editBody({ selected: selected(), agentType: 'opencode', model: 'm' });
         expect(routeAccepts(body, 'self-hosted')).toBe(true);
-        expect(body.connection).toEqual({ intent: 'reuse', id: 'connection-1' });
-        expect(body.executor).toEqual({ id: 'executor-1' });
+        expect(body.connection).toEqual({ intent: 'reuse', id: CONNECTION_ID });
+        expect(body.executor).toEqual({ id: EXECUTOR_ID });
         expect(JSON.stringify(body)).not.toContain('key');
         const none = editBody({ selected: selected({ connection: null }), agentType: 'claude-code', model: 'm' });
         expect(routeAccepts(none, 'self-hosted')).toBe(true);
@@ -157,14 +161,14 @@ describe('the bodies the model setup sends', () => {
     it('a rotation names the connection and the executor by id, and sends the key alone', () => {
         const body = rotateBody({
             selected: selected(),
-            connectionId: 'connection-1',
+            connectionId: CONNECTION_ID,
             key: ' sk-new ',
             agentType: 'claude-code',
             model: 'claude-sonnet-5-5',
         });
         expect(routeAccepts(body, 'self-hosted')).toBe(true);
-        expect(body.connection).toEqual({ intent: 'rotate', id: 'connection-1', key: 'sk-new' });
-        expect(body.executor).toEqual({ id: 'executor-1' });
+        expect(body.connection).toEqual({ intent: 'rotate', id: CONNECTION_ID, key: 'sk-new' });
+        expect(body.executor).toEqual({ id: EXECUTOR_ID });
     });
 
     it('stores an OpenCode id the way core does, even on the platform model that keeps ids as given', () => {

@@ -92,6 +92,14 @@ export class ModelSetupRequestConflict extends Error {
     }
 }
 
+/** A rotation's endpoint the connection's provider does not take (a subscription has none). The route answers 400. */
+export class ModelSetupEndpointRefusal extends Error {
+    constructor() {
+        super('a subscription takes no baseUrl');
+        this.name = 'ModelSetupEndpointRefusal';
+    }
+}
+
 /** The setup raced a change of the executor it edits (a stale expected revision): retried by the client after a reread. */
 export class ModelSetupConflict extends Error {
     constructor(message = 'Another model setup save changed this scope; try again') {
@@ -297,8 +305,17 @@ async function publish(
     const receipt = await readReceipt(tx, orgId, owner, command.requestId);
     if (receipt) return { result: replayOf(receipt, command, fingerprint), superseded: undefined };
 
-    const connection = await connectionStep(tx, run, sealed);
     const { executor } = command;
+    // The executor routes lock the profile and then read its connection: the setup takes the same order, so a rotation
+    // and an edit of the same executor never wait on each other's second lock.
+    if (executor.id !== undefined) {
+        await tx`
+            select 1 from executor_profile
+            where org_id = ${orgId} and id = ${executor.id} and user_id is not distinct from ${owner}
+            for update
+        `;
+    }
+    const connection = await connectionStep(tx, run, sealed);
     const written = await writeSetupExecutor(tx, orgId, {
         owner,
         userId: command.userId,
@@ -347,11 +364,13 @@ async function sealKey(sql: Sql, run: Run): Promise<Sealed> {
         return { id, made };
     }
     if (connection.intent !== 'rotate') return { id: null, made: null };
-    const [owned] = await sql`
-        select 1 from provider_connection
+    const [owned] = await sql<{ provider: ModelProvider }[]>`
+        select provider from provider_connection
         where org_id = ${orgId} and id = ${connection.id} and user_id is not distinct from ${owner}
     `;
     if (!owned) throw refuseMissing();
+    // The provider is immutable, so this check before the key is sealed is the rule the create and the edit apply.
+    if (connection.baseUrl !== undefined && owned.provider === 'subscription') throw new ModelSetupEndpointRefusal();
     const identity = providerConnectionSecretIdentity(orgId, connection.id, owner);
     return { id: connection.id, made: await mintConnectionSecret(deps, identity, connection.key) };
 }

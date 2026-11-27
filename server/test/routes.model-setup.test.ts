@@ -111,6 +111,8 @@ const anthropicPersonal = {
     executor: { name: 'Claude' },
 };
 const withConnection = (connection: object, over: object = {}) => ({ ...anthropicPersonal, connection, ...over });
+const CONNECTION_ID = '11111111-1111-4111-8111-111111111111';
+const EXECUTOR_ID = '22222222-2222-4222-8222-222222222222';
 
 describe('GET /api/model-setup', () => {
     it('answers nothing configured on a fresh board', async () => {
@@ -333,11 +335,15 @@ describe('PUT /api/model-setup', () => {
             { ...anthropicPersonal, requestId: undefined },
             withConnection({ intent: 'steal', id: 'x' }),
             withConnection({ intent: 'reuse' }),
-            withConnection({ intent: 'reuse', id: 'x', key: 'sk-x' }),
+            withConnection({ intent: 'reuse', id: CONNECTION_ID, key: 'sk-x' }),
+            // An id that is not a row id never reaches a uuid column.
+            withConnection({ intent: 'reuse', id: 'not-a-uuid' }),
+            withConnection({ intent: 'rotate', id: 'not-a-uuid', key: 'sk-x' }),
             withConnection({ intent: 'none', key: 'sk-x' }),
-            withConnection({ intent: 'rotate', id: 'x', key: 'has space' }),
+            withConnection({ intent: 'rotate', id: CONNECTION_ID, key: 'has space' }),
             withConnection({ intent: 'create', provider: 'anthropic', key: 'sk-x' }),
             { ...anthropicPersonal, executor: { name: 'Claude', id: '' } },
+            { ...anthropicPersonal, executor: { id: 'not-a-uuid' } },
         ];
         for (const body of refused) {
             const response = await put(b, b.memberCookie, body);
@@ -353,14 +359,14 @@ describe('PUT /api/model-setup', () => {
             b,
             b.memberCookie,
             withConnection(
-                { intent: 'reuse', id: 'connection-1' },
-                { executor: { id: 'executor-1', expectedUpdatedAt: '2026-01-01T00:00:00.000Z' } }
+                { intent: 'reuse', id: CONNECTION_ID },
+                { executor: { id: EXECUTOR_ID, expectedUpdatedAt: '2026-01-01T00:00:00.000Z' } }
             )
         );
-        await put(b, b.memberCookie, withConnection({ intent: 'rotate', id: 'connection-1', key: 'sk-ant-new' }));
+        await put(b, b.memberCookie, withConnection({ intent: 'rotate', id: CONNECTION_ID, key: 'sk-ant-new' }));
         expect(b.setup.commands.map((c) => c.connection.intent)).toEqual(['reuse', 'rotate']);
         expect(b.setup.commands[0]?.executor).toMatchObject({
-            id: 'executor-1',
+            id: EXECUTOR_ID,
             expectedUpdatedAt: '2026-01-01T00:00:00.000Z',
         });
     });

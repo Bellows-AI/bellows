@@ -19,6 +19,7 @@ import type { AppConfig } from '../config.js';
 import { MAX_AGENT_MODEL_LENGTH } from './agent-default.js';
 import { body as jsonBody } from './helpers.js';
 import { validBase, validKey } from './model-setup-verify.js';
+import { UUID } from './executor-fields.js';
 import { badConnectionName } from './provider-connections.js';
 
 /**
@@ -36,8 +37,6 @@ export const refusal = (error: string, code: string = ERROR_CODES.BAD_BODY): Ref
 const REQUEST_ID_MAX = 128;
 const FIELDS = new Set(['scope', 'requestId', 'agentType', 'model', 'connection', 'executor']);
 const EXECUTOR_FIELDS = new Set(['id', 'name', 'expectedUpdatedAt']);
-
-export const ownerOf = (scope: SetupScope, userId: string): string | null => (scope === 'org' ? null : userId);
 
 /** A parsed body: the command as the route can state it, before the `none` intent's provider is looked up. */
 export interface ParsedSetup {
@@ -59,6 +58,7 @@ function endpointRefusal(provider: ModelProvider, baseUrl: unknown): Refusal | n
 }
 
 const text = (value: unknown): value is string => typeof value === 'string' && value !== '';
+const isId = (value: unknown): value is string => typeof value === 'string' && UUID.test(value);
 
 const CREATE_FIELDS = ['intent', 'provider', 'key', 'baseUrl', 'name'];
 const ROTATE_FIELDS = ['intent', 'id', 'key', 'baseUrl'];
@@ -69,7 +69,7 @@ const unknownField = (fields: Record<string, unknown>, allowed: readonly string[
 };
 
 function parseRotate(fields: Record<string, unknown>): ConnectionIntent | Refusal {
-    if (!text(fields.id)) return refusal('intent rotate needs the connection id');
+    if (!isId(fields.id)) return refusal('intent rotate needs the connection id');
     const unknown = unknownField(fields, ROTATE_FIELDS);
     if (unknown) return unknown;
     if (!validKey(fields.key)) return refusal('key must be a provider key: printable characters, no spaces');
@@ -119,7 +119,7 @@ function parseConnection(raw: unknown, agentType: ExecutorType, config: AppConfi
         return Object.keys(fields).length > 1 ? refusal('intent none takes no other connection field') : { intent };
     }
     if (intent === 'reuse') {
-        if (!text(fields.id) || Object.keys(fields).length > 2) return refusal('intent reuse takes an id alone');
+        if (!isId(fields.id) || Object.keys(fields).length > 2) return refusal('intent reuse takes an id alone');
         return { intent, id: fields.id };
     }
     if (intent === 'rotate') return parseRotate(fields);
@@ -135,7 +135,7 @@ function parseExecutor(
     const extra = Object.keys(fields).find((name) => !EXECUTOR_FIELDS.has(name));
     if (extra !== undefined) return refusal(`unknown executor field ${extra}`);
     const { id, name, expectedUpdatedAt } = fields;
-    if (id !== undefined && !text(id)) return refusal('executor.id must be the executor id');
+    if (id !== undefined && !isId(id)) return refusal('executor.id must be the executor id');
     if (name !== undefined || id === undefined) {
         const reason = badConnectionName(name);
         if (reason) return refusal(reason.replace(/^name/, 'executor.name'), ERROR_CODES.BAD_NAME);

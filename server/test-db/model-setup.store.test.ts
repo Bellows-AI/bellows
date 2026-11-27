@@ -4,6 +4,7 @@ import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import {
     createModelSetupStore,
+    ModelSetupEndpointRefusal,
     ModelSetupNameConflict,
     ModelSetupRequestConflict,
     type SetupCommand,
@@ -285,6 +286,64 @@ describe.skipIf(!enabled)('the model setup command', () => {
         expect(running?.env?.ANTHROPIC_API_KEY).toBe('sk-ant-setup-A');
         expect(later?.env?.ANTHROPIC_API_KEY).toBe('sk-ant-setup-ROTATED');
         expect(await count('provider_connection')).toBe(1);
+    });
+
+    it('a rotation never gives a subscription an endpoint, and seals no key for the refusal', async () => {
+        const spy = spySecrets(healthy);
+        const { setup } = stores(spy.store);
+        const sub = await setup.apply(
+            command({
+                connection: {
+                    intent: 'create',
+                    provider: 'subscription',
+                    key: 'sk-ant-oat01-sub',
+                    baseUrl: null,
+                    name: 'Subscription',
+                },
+            })
+        );
+        const sealed = spy.calls.creates.length;
+        await expect(
+            setup.apply(
+                command({
+                    connection: {
+                        intent: 'rotate',
+                        id: sub.connectionId!,
+                        key: 'sk-ant-oat01-new',
+                        baseUrl: 'https://gateway.example.test',
+                    },
+                    executor: { id: sub.executorId, agentType: 'claude-code', model: 'claude-sonnet-4-5' },
+                })
+            )
+        ).rejects.toBeInstanceOf(ModelSetupEndpointRefusal);
+        expect(spy.calls.creates.length).toBe(sealed);
+        const [row] = await sql`select base_url from provider_connection where org_id = ${ORG}`;
+        expect(row!.base_url).toBeNull();
+    });
+
+    it('a rotation takes the executor lock before the connection lock, as the executor routes do', async () => {
+        const { setup } = stores();
+        const first = await setup.apply(command());
+        // The executor routes lock the profile, then read its connection `for share`. Hold that first lock, start the
+        // rotation, and take the second: with the same order the rotation waits for the profile and nothing deadlocks.
+        const rotation = await sql
+            .begin(async (tx) => {
+                await tx`select 1 from executor_profile where org_id = ${ORG} and id = ${first.executorId} for update`;
+                const pending = setup.apply(
+                    command({
+                        connection: { intent: 'rotate', id: first.connectionId!, key: 'sk-ant-ordered' },
+                        executor: { id: first.executorId, agentType: 'claude-code', model: 'claude-sonnet-4-5' },
+                    })
+                );
+                await new Promise((resolve) => setTimeout(resolve, 400));
+                await tx`select 1 from provider_connection where org_id = ${ORG} and id = ${first.connectionId} for share`;
+                // Wrapped: `begin` would await a bare promise inside the transaction, which waits for this very commit.
+                return { pending };
+            })
+            .then(({ pending }) => pending);
+        expect(rotation.executorId).toBe(first.executorId);
+        const stored = await stores().connections.credentialFor(ALICE, first.connectionId!);
+        expect(stored?.key).toBe('sk-ant-ordered');
     });
 
     it('rotation reaches only a connection the scope owns', async () => {
