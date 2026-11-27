@@ -59,6 +59,7 @@ const K8S_PHASES = [
     'takeover',
     'control',
     'acceptance',
+    'gitlab',
     'capacity',
     'mcp',
     'observability',

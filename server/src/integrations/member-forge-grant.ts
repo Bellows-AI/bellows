@@ -6,6 +6,7 @@ import { type GrantStanding, readGrantStanding } from '../db/forge-grant-standin
 import { grantSecretIdentity } from '../db/connection-grants.js';
 import { orgSql } from '../db/org-sql.js';
 import type { SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
+import type { ForgeProfile } from './forge-profile.js';
 import { grantOfAccount } from './authorization-store.js';
 import { decodeGrantPayload, type GrantPayload } from './grant-credentials.js';
 import type { GrantLineage } from './grant-lineage.js';
@@ -35,6 +36,8 @@ export interface StoreMemberGrantInput {
     /** The forge's identity of the member (the GitHub user id): what the grant's lineage is unique on in the org. */
     externalAccountId: string;
     tokens: MemberGrantTokens;
+    /** The account's public profile at sign-in (GitLab): kept with the grant for the claim's commit author. */
+    profile?: ForgeProfile | undefined;
     /**
      * The forge connection the grant is published against (GitLab). The grant row is written, and the connection row
      * locked, in one transaction; a connection that is gone (or not active, when `requireActive`) writes nothing.
@@ -218,11 +221,21 @@ async function closeOpenForgeWaits(deps: Settings, { orgId, userId, forge }: Sto
     }
 }
 
+/** The profile is public metadata: written before the lineage commit so a live grant never lacks the sign-in's. */
+async function storeProfile(deps: Settings, input: StoreMemberGrantInput, grantId: string): Promise<void> {
+    const db = orgSql(deps.sql, input.orgId);
+    await db`
+        update integration_grant set forge_profile = ${db.json({ ...input.profile })}, updated_at = now()
+        where id = ${grantId} and org_id = ${input.orgId}
+    `;
+}
+
 async function storeGrant(deps: Settings, input: StoreMemberGrantInput): Promise<StoreMemberGrantResult> {
     await deps.ready;
     const grantId = await rowForSignIn(deps, input);
     if (grantId === 'conflict') return { ok: false, reason: 'conflict' };
     if (grantId === 'changed') return { ok: false, reason: 'connection-changed' };
+    if (input.profile) await storeProfile(deps, input, grantId);
     const lineage = deps.lineageOf(input.orgId);
     // The sign-in is a fresh consent: it replaces the lineage's credentials under the same claim a reconnect takes.
     const claimed = await lineage.claimLineage(grantId, 'reconsent', { rotates: true });

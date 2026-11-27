@@ -30,6 +30,20 @@ case "$*" in
     echo change >"$WORKDIR/lane-change"
     ;;
 esac
+# `factory-stub-tokenless`: what this agent can see of a forge token, as markers and never a value: its env, its
+# checkout's .git/config and the task volume. The pattern (the fake GitLab's token prefixes) is joined here, so no file of
+# the task ever holds one.
+case "$*" in
+*factory-stub-tokenless*)
+    a=gloas
+    b=-fake
+    c=glrt
+    pat="$a$b\|$c$b"
+    if [ -n "$(env | grep -e "$pat" || true)" ]; then echo gl-env-token; else echo gl-no-env-token; fi
+    if grep -q -e "$pat" "$WORKDIR/.git/config"; then echo gl-config-token; else echo gl-no-config-token; fi
+    if [ -n "$(grep -rIl -e "$pat" /task 2>/dev/null || true)" ]; then echo gl-volume-token; else echo gl-no-volume-token; fi
+    ;;
+esac
 # `factory-stub-transcript-<n>`: the session file the
 # real CLI writes under the runner's transcript store (projects/<working dir with every non-alphanumeric
 # as '-'>/<session>.jsonl) topped up to <n> claude JSONL records, so a replacement run on the same volume

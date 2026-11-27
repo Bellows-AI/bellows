@@ -94,17 +94,24 @@ export const registerGitlab = (forge) => {
         if (!userIds.has(login)) userIds.set(login, USER_ID_BASE + userIds.size + 1);
         return userIds.get(login);
     };
+    /** login -> the profile fields a lane or test overrides (`name`, `commit_email`, `public_email`) */
+    const profiles = new Map();
     const userJson = (login) => ({
         id: userId(login),
         username: login,
         name: login,
         state: 'active',
         email: emailOf(login),
+        commit_email: emailOf(login),
+        public_email: '',
+        ...profiles.get(login),
         web_url: `https://gitlab.test/${login}`,
     });
 
     // --- OAuth ---
 
+    /** The lifetime of the pairs minted from now on; a lane shortens it so a refresh happens inside a task. */
+    let tokenTtlS = GITLAB_TOKEN_TTL_S;
     const issuePair = (login, clientId = null, scope = DEFAULT_SCOPE) => {
         const id = forge.nextId();
         const pair = { access: `gloas-fake${id}`, refresh: `glrt-fake${id}`, login, clientId, scope };
@@ -112,14 +119,14 @@ export const registerGitlab = (forge) => {
             kind: 'user',
             login,
             scopes: scope.split(' '),
-            expiresAt: forge.clock() + GITLAB_TOKEN_TTL_S * 1000,
+            expiresAt: forge.clock() + tokenTtlS * 1000,
         });
         pairs.set(pair.access, pair);
         pairs.set(pair.refresh, pair);
         return {
             access_token: pair.access,
             token_type: 'Bearer',
-            expires_in: GITLAB_TOKEN_TTL_S,
+            expires_in: tokenTtlS,
             refresh_token: pair.refresh,
             scope: pair.scope,
             created_at: Math.floor(forge.clock() / 1000),
@@ -299,7 +306,7 @@ export const registerGitlab = (forge) => {
     const notFound = (response, what = 'Not found') => forge.json(response, 404, { message: `404 ${what}` });
     const badRequest = (response, message) => forge.json(response, 400, { message });
     const inputs = (ctx) => ({ ...ctx.query, ...ctx.body });
-    const origin = (request) => `http://${request.headers.host}`;
+    const origin = (request) => `${request.socket.encrypted ? 'https' : 'http'}://${request.headers.host}`;
 
     const projectOf = (key) => {
         const text = String(key);
@@ -1130,6 +1137,16 @@ export const registerGitlab = (forge) => {
     control('sign-in', ({ response, body }) =>
         forge.json(response, 200, issuePair(body.login ?? DEFAULT_MEMBER, body.clientId ?? null, body.scope ?? DEFAULT_SCOPE))
     );
+    // Sets the lifetime, in seconds, of every pair minted after it (`seconds`; absent restores GitLab's two hours).
+    control('token-ttl', ({ response, body }) => {
+        tokenTtlS = Number.isFinite(body.seconds) && body.seconds > 0 ? body.seconds : GITLAB_TOKEN_TTL_S;
+        forge.json(response, 200, { seconds: tokenTtlS });
+    });
+    // Overrides the `/user` profile fields of a login (`name`, `commit_email`, `public_email`), as a member edits them.
+    control('user-profile', ({ response, body }) => {
+        profiles.set(body.login, { ...profiles.get(body.login), ...body.fields });
+        forge.json(response, 200, userJson(body.login));
+    });
     control('projects', async ({ response, body, request }) => {
         if (!body.path || projectOf(body.path)) return badRequest(response, 'a project path is required and must be new');
         const id = forge.nextId();

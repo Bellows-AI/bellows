@@ -68,7 +68,7 @@ exec ${JSON.stringify(realDirname)} "$@"
         const result = await runAsync('bash', ['scripts/test-k8s.sh', '--help'], { cwd: REPO_ROOT });
         expect(result.status).toBe(0);
         expect(result.stdout).toContain(
-            '|recovery|services|takeover|control|acceptance|capacity|mcp|observability|drain|replicas|bench]'
+            '|recovery|services|takeover|control|acceptance|gitlab|capacity|mcp|observability|drain|replicas|bench]'
         );
     });
 
@@ -94,6 +94,24 @@ exec ${JSON.stringify(realDirname)} "$@"
         expect(stub).toContain('view $mode');
         expect(script).toContain('view opencode lane-ws-skill /task/.factory/skills-root/.claude/skills/lane-ws-skill');
         expect(script).toContain('the opencode view holds exactly one copy of the workspace skill');
+    });
+
+    it('runs member-authenticated GitLab tasks against a TLS fake GitLab, and the stub reports the token it can see', () => {
+        const script = readLaneScript('scripts/test-k8s.sh');
+        const stub = readRepoFile('scripts/k8s-stub.sh');
+        expect(script).toContain('if selected_phase gitlab; then');
+        expect(script).toContain('FAKE_FORGE_TLS_CERT');
+        expect(script).toContain('node scripts/gitlab-member-client.mjs connect');
+        expect(script).toContain('Lane Member|lane.member@example.test|factory-ai');
+        for (const c of ['g1', 'g2', 'g3', 'g4']) expect(script).toContain(`'${c}: `);
+        expect(script).toContain('fake_gitlab_created=1');
+        // Barriers are flat files under /task, as every other phase's: the stub makes no directory for a release path.
+        expect(script).toContain('GLK_D=/task/.lane-gitlab- ');
+        expect(script).not.toContain('$GLK_D/');
+        expect(script).not.toContain('${GLK_D}/');
+        // The stub joins the token prefixes itself, so no file of the task ever holds one.
+        expect(stub).toMatch(/\*factory-stub-tokenless\*\)[\s\S]*gl-no-env-token[\s\S]*gl-no-volume-token/);
+        expect(script + stub).not.toMatch(/gloas-fake|glrt-fake/);
     });
 
     it('runs the failure-matrix acceptance phase in the full cluster run, one named check per case (issue #779)', () => {
@@ -525,7 +543,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         );
         expect(script).not.toMatch(/selected_phase drain/);
         expect(script).toMatch(
-            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|capacity\|mcp\|observability\|drain\|replicas\|bench\)/
+            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|gitlab\|capacity\|mcp\|observability\|drain\|replicas\|bench\)/
         );
     });
 

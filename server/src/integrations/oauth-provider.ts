@@ -1,3 +1,4 @@
+import type { ForgeProfile } from './forge-profile.js';
 import type { GrantAuthority } from './grant-credentials.js';
 
 /**
@@ -27,6 +28,8 @@ export interface DiscoveredIdentity {
     label: string;
     resources: { id: string; label: string }[];
     authority: GrantAuthority;
+    /** The account's public profile, for a forge whose commit author comes from it (GitLab). */
+    profile?: ForgeProfile;
 }
 
 export interface OAuthProviderHooks {
