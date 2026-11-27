@@ -37,18 +37,24 @@ export interface WorkspaceExecutor extends ExecutorConnectionFields {
  * (`listOrgExecutorConfigs`), never to the poll.
  */
 export interface OrgExecutor extends ExecutorConnectionFields {
+    /** The stable id a default selection names, so a rename never severs it. */
+    id: string;
     name: string;
     type: string;
     createdAt: string;
     suspended: boolean;
     /** The runner class the profile's tasks run in; null for the deployment's default. */
     runnerClass: string | null;
+    /** Whether the organization's configured default names this profile. */
+    orgDefault?: boolean;
 }
 
-/** The member's default-executor preference as the poll resolves it (issue 391). */
+/** The member's default executor as the poll resolves it (issue 391). */
 export interface DefaultExecutor {
     scope: ExecutorScope;
     name: string;
+    /** Present when a configured default cannot run now: a task naming no executor is refused until it is resumed or replaced. */
+    unusable?: 'suspended' | 'missing';
 }
 
 /**
@@ -97,6 +103,8 @@ export interface UseWorkspace {
     saving: boolean;
     saveExecutors: (
         executors: {
+            /** The row's stable identity: a row sent with it keeps its connection and default under a new name. */
+            id?: string;
             name: string;
             type: string;
             config: object;
@@ -110,10 +118,10 @@ export interface UseWorkspace {
     /** Suspends or resumes ONE personal profile by id (issue 440). */
     suspendExecutor: (id: string, suspended: boolean) => Promise<string | null>;
     /**
-     * Stores the member's default-executor preference (issue 391): names a profile by scope and
-     * name, either scope, without touching the shared profile or anyone else's default.
+     * Configures the member's default executor by the profile's stable id, either scope, without touching the shared
+     * profile or anyone else's default.
      */
-    setDefaultExecutor: (scope: ExecutorScope, name: string) => Promise<string | null>;
+    setDefaultExecutor: (id: string) => Promise<string | null>;
     /**
      * The whole executor list with configs — the read the dialog opens with. Never part of the
      * poll: the payload holds the credentials the member pasted, so it is fetched once per dialog
@@ -184,19 +192,11 @@ export const listExecutorConfigs = async (): Promise<ExecutorConfigsRead> => {
 };
 
 /**
- * The default-executor preference (issue 391). A refusal is the dialog's error message; a
- * preference naming no accessible profile is the route's 404. Module-level like the other
- * on-demand fetches above: it captures no hook state.
+ * The configured default executor, by id. A refusal is the dialog's error message; a profile the member may not
+ * select is the route's 404. Module-level like the other on-demand fetches above: it captures no hook state.
  */
-export const putDefaultExecutor = (
-    scope: ExecutorScope,
-    name: string
-): Promise<{ ok: true } | { ok: false; error: string }> =>
-    putJson(
-        '/api/workspace/executors/default',
-        { executor: name, executorScope: scope },
-        'Could not save the default executor'
-    );
+export const putDefaultExecutor = (id: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+    putJson('/api/workspace/executors/default', { executorId: id }, 'Could not save the default executor');
 
 export function useWorkspace(): UseWorkspace {
     const [data, setData] = useState<WorkspacePayload | null>(null);
@@ -256,8 +256,8 @@ export function useWorkspace(): UseWorkspace {
 
     /** The preference write, with the poll re-arm the other writes share. */
     const setDefaultExecutor = useCallback(
-        async (scope: ExecutorScope, name: string): Promise<string | null> => {
-            const result = await putDefaultExecutor(scope, name);
+        async (id: string): Promise<string | null> => {
+            const result = await putDefaultExecutor(id);
             if (result.ok) {
                 start();
                 return null;

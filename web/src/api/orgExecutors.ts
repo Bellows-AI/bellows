@@ -100,3 +100,11 @@ export const suspendOrgExecutor = (id: string, suspended: boolean): Promise<stri
 /** The one route a profile's scope moves through: promote the admin's own row, or demote to it. */
 export const changeOrgExecutorScope = (id: string, scope: ExecutorScope): Promise<string | null> =>
     executorWrite(`/api/org/executors/${id}/scope`, 'POST', { scope }, 'Could not move the executor');
+
+/** Configures the organization's default executor by id: the profile every member without a default of their own launches on. */
+export const setOrgDefaultExecutor = (id: string): Promise<string | null> =>
+    executorWrite('/api/org/executors/default', 'PUT', { executorId: id }, 'Could not set the organization default');
+
+/** Clears the organization's default executor; the legacy chain applies again. */
+export const clearOrgDefaultExecutor = (): Promise<string | null> =>
+    executorWrite('/api/org/executors/default', 'DELETE', undefined, 'Could not clear the organization default');

@@ -480,6 +480,8 @@ export function tokenizeJson(text: string): { kind: JsonTokenKind; text: string 
  * `isDefault` since 391: the default is a per-member preference naming a scope, not a flag here.
  */
 export type ExecutorRow = {
+    /** The row's stable id, as the dialog's read returned it: sent back, a save updates this row instead of inferring it from the name. */
+    id?: string;
     name: string;
     type: string;
     config: object;
@@ -517,7 +519,8 @@ export function mergeExecutors(
     }
     const value = existing.slice();
     // An edit changes what the row says, never whether it is suspended — a rename included.
-    value[index] = existing[index]!.suspended ? { ...next, suspended: true } : { ...next };
+    const { id, suspended } = existing[index]!;
+    value[index] = { ...next, ...(id === undefined ? {} : { id }), ...(suspended ? { suspended: true } : {}) };
     return { ok: true, value };
 }
 

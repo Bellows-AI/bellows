@@ -547,6 +547,16 @@ describe('mergeExecutors', () => {
         expect(result).toEqual({ ok: true, value: [{ ...renamed }, secondRow] });
     });
 
+    it('carries the edited row’s stable id through a rename, so the save updates that row', () => {
+        const withIds: ExecutorRow[] = [
+            { ...firstRow, id: 'id-main' },
+            { ...secondRow, id: 'id-oc' },
+        ];
+        const renamed: ValidExecutor = { ...first, name: 'renamed' };
+        const result = mergeExecutors(withIds, 'main', renamed);
+        expect(result).toEqual({ ok: true, value: [{ ...renamed, id: 'id-main' }, withIds[1]] });
+    });
+
     it('keeps the round limit the dialog saved on the edited row', () => {
         const changed: ValidExecutor = {
             name: 'main',

@@ -2,9 +2,11 @@ import { ADMIN_ROLE, CLOUD, ORG_SCOPE } from '@factory-ai/core';
 import { useState } from 'react';
 import {
     changeOrgExecutorScope,
+    clearOrgDefaultExecutor,
     createOrgExecutor,
     deleteOrgExecutor,
     listOrgExecutorConfigs,
+    setOrgDefaultExecutor,
     suspendOrgExecutor,
     updateOrgExecutor,
     type OrgExecutorFull,
@@ -165,6 +167,18 @@ export function OrgExecutorsSection({
                 onSuspend={
                     isAdmin
                         ? (name, suspended) => void withRow(name, (row) => suspendOrgExecutor(row.id, suspended))
+                        : undefined
+                }
+                onSetOrgDefault={
+                    isAdmin ? (name) => void withRow(name, (row) => setOrgDefaultExecutor(row.id)) : undefined
+                }
+                onClearOrgDefault={
+                    isAdmin
+                        ? () =>
+                              void clearOrgDefaultExecutor().then((message) => {
+                                  if (message) onError(message);
+                                  else onRefresh();
+                              })
                         : undefined
                 }
                 onMakeDefault={(name) => void onMakeDefault('org', name).then((message) => message && onError(message))}
