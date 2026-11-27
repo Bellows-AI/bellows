@@ -984,7 +984,7 @@ export const registerGitlab = (forge) => {
             ctx,
             project.statuses
                 .filter((entry) => entry.sha === sha && (!ref || entry.ref === ref) && (!name || entry.name === name))
-                .map((entry) => statusJson({ ...entry, pipelineId: externalOf(project, sha)?.id, stage: 'external' }))
+                .map((entry) => statusJson({ ...entry, pipelineId: entry.pipelineId ?? externalOf(project, sha)?.id, stage: entry.stage ?? 'external' }))
                 // As real GitLab: the CI jobs of every pipeline on the sha are commit statuses too.
                 .concat(
                     pipelines
@@ -1316,6 +1316,14 @@ export const registerGitlab = (forge) => {
         forge.json(ctx.response, 200, pipelineJson(pipeline, ctx.request));
     });
     // The approvals an MR needs and has: `required` and the logins that `approvedBy`.
+    // A commit status of a CI job of pipeline `pipelineId` in `stage`, as GitLab lists the jobs of every pipeline.
+    control('ci-status', async (ctx) => {
+        const project = controlProject(ctx);
+        if (!project) return;
+        const { sha, name, status, pipelineId, stage, ref = null } = ctx.body;
+        project.statuses.push({ id: forge.nextId(), sha, name, status, ref, pipelineId, stage, createdAt: now() });
+        forge.json(ctx.response, 200, { name });
+    });
     control('approvals', (ctx) => {
         const project = controlProject(ctx);
         const mr = project && project.mrs.find((entry) => entry.iid === Number(ctx.body.iid));

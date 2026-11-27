@@ -306,7 +306,6 @@ describe('pagination of an MR read', () => {
 
 describe('classification of an MR read', () => {
     it.each([
-        [404, 'not_found'],
         [403, 'transport'],
         [401, 'transport'],
         [429, 'rate_limited'],
@@ -315,6 +314,11 @@ describe('classification of an MR read', () => {
     ])('answers %i as %s', async (status, kind) => {
         const { api } = instance({ [MR_PATH]: () => json(status, { message: 'x' }) });
         expect(await kindOf(clientWith(api).readChangeRequest(7))).toBe(kind);
+    });
+
+    it('answers a 404 naming the MR as not_found', async () => {
+        const { api } = instance({ [MR_PATH]: () => json(404, { message: '404 Merge Request Not Found' }) });
+        expect(await kindOf(clientWith(api).readChangeRequest(7))).toBe('not_found');
     });
 
     it('answers a 404 of a nested read as transport: the MR was confirmed, the rest was not', async () => {
@@ -431,7 +435,7 @@ describe('GitLabClient.readBranchState', () => {
             const route = over[path];
             if (route) return route();
             if (path === `${base}/repository/branches/main`)
-                return tip ? json(200, { commit: { id: tip } }) : json(404, {});
+                return tip ? json(200, { commit: { id: tip } }) : json(404, { message: '404 Branch Not Found' });
             if (path === `${base}/repository/merge_base`) {
                 const refs = new URL(`https://x${request.path}`).searchParams.getAll('refs[]');
                 return json(200, { id: refs[0] });
@@ -467,7 +471,7 @@ describe('GitLabClient.readBranchState', () => {
         const other = state(TIP, { [mergeBase]: () => json(200, { id: 'c'.repeat(40) }) });
         expect((await clientWith(other.api).readBranchState('main', [SHA])).contains).toEqual({ [SHA]: false });
         for (const status of [400, 404]) {
-            const bad = state(TIP, { [mergeBase]: () => json(status, {}) });
+            const bad = state(TIP, { [mergeBase]: () => json(status, { message: '404 Commit Not Found' }) });
             expect((await clientWith(bad.api).readBranchState('main', [SHA])).contains).toEqual({ [SHA]: false });
         }
         const down = state(TIP, { [mergeBase]: () => json(500, {}) });
@@ -553,5 +557,109 @@ describe('statuses of a pipeline that is not the head', () => {
         expect(answer.headSha).toBe(tip);
         expect(answer.checks.some((check) => check.name === 'other-run' && check.state === 'failing')).toBe(true);
         expect(answer.checks.some((check) => check.name === 'test')).toBe(false);
+    });
+});
+
+describe('a 404 that does not name the object', () => {
+    const base = `/api/v4/projects/${ENCODED}`;
+    const BODIES: Array<[string, GitlabResponse]> = [
+        ['no body', { ok: true, status: 404, text: '' }],
+        ['an html body', { ok: true, status: 404, text: '<html>nope</html>' }],
+        ['an unknown message', json(404, { message: '404 Something Else' })],
+        ['the project’s message', json(404, { message: '404 Project Not Found' })],
+        ['a generic message', json(404, { message: '404 Not found' })],
+    ];
+
+    it.each(BODIES)('reads an MR as transport for %s', async (_name, answer) => {
+        const { api } = instance({ [MR_PATH]: () => answer });
+        expect(await kindOf(clientWith(api).readChangeRequest(7))).toBe('transport');
+    });
+    it.each(BODIES)('throws on a branch head for %s, never null', async (_name, answer) => {
+        const { api } = scripted(() => answer);
+        expect(await kindOf(clientWith(api).readBranchHead('main'))).toBe('transport');
+    });
+    it.each(BODIES)('reads a branch state as transport for %s', async (_name, answer) => {
+        const { api } = scripted(() => answer);
+        expect(await kindOf(clientWith(api).readBranchState('main', []))).toBe('transport');
+    });
+    it.each(BODIES)('throws on a merge base for %s, never “not held”', async (_name, answer) => {
+        const { api } = scripted((_request, path) =>
+            path === `${base}/repository/branches/main` ? json(200, { commit: { id: TIP } }) : answer
+        );
+        expect(await kindOf(clientWith(api).readBranchState('main', [SHA]))).toBe('transport');
+    });
+
+    it('still names the object: the MR, the branch and the commit messages are confirmed absences', async () => {
+        const mr = instance({ [MR_PATH]: () => json(404, { message: '404 Merge Request Not Found' }) });
+        expect(await kindOf(clientWith(mr.api).readChangeRequest(7))).toBe('not_found');
+        const branch = scripted(() => json(404, { message: '404 Branch Not Found' }));
+        expect(await clientWith(branch.api).readBranchHead('main')).toBeNull();
+        expect(await kindOf(clientWith(branch.api).readBranchState('main', []))).toBe('not_found');
+        const commit = scripted((_request, path) => {
+            if (path.endsWith('/branches/main')) return json(200, { commit: { id: TIP } });
+            if (path.endsWith('/pipelines') || path.endsWith('/statuses')) return json(200, []);
+            return json(404, { message: '404 Commit Not Found' });
+        });
+        expect((await clientWith(commit.api).readBranchState('main', [SHA])).contains).toEqual({ [SHA]: false });
+    });
+});
+
+describe('the pipelines-by-sha lookup of the statuses', () => {
+    const base = `/api/v4/projects/${ENCODED}`;
+    const CI_STATUS = { id: 3, name: 'build', status: 'success', pipeline_id: 11, stage: 'test' };
+    const FAULTS: Array<[string, () => GitlabResponse]> = [
+        ['a 500', () => json(500, { message: 'boom' })],
+        ['no answer', () => ({ ok: false, reason: 'timeout', sent: true })],
+        ['malformed json', () => ({ ok: true, status: 200, text: '{' })],
+        ['a non-list', () => json(200, { pipelines: [] })],
+        [
+            'a page past the cap',
+            () =>
+                json(
+                    200,
+                    Array.from({ length: 100 }, (_, i) => ({ id: i + 1, status: 'success' }))
+                ),
+        ],
+    ];
+    /** An open MR 7 and a branch whose tip carries a CI job status; `lookup` answers the `?sha=` pipelines request. */
+    const world = (lookup: () => GitlabResponse) =>
+        scripted((request, path) => {
+            if (path === MR_PATH) return json(200, mrBody());
+            if (path === `${base}/repository/branches/main`) return json(200, { commit: { id: TIP } });
+            if (path.endsWith('/statuses')) return json(200, [CI_STATUS]);
+            if (path === `${base}/pipelines`) return request.path.includes('ref=') ? json(200, []) : lookup();
+            return json(404, {});
+        });
+
+    it.each(FAULTS)('reads an MR as transport on %s, never with no external statuses', async (_name, fault) => {
+        const { api } = world(fault);
+        expect(await kindOf(clientWith(api).readChangeRequest(7))).toBe('transport');
+    });
+    it.each(FAULTS)('reads a branch state as transport on %s', async (_name, fault) => {
+        const { api } = world(fault);
+        expect(await kindOf(clientWith(api).readBranchState('main', []))).toBe('transport');
+    });
+
+    it('counts a failing status of a pipeline made by external statuses though its stage is not external', async () => {
+        const mr = await openMr();
+        await pipeline(mr.branch, { headOf: mr.iid, jobs: [{ name: 'test', status: 'success' }] });
+        await gl.send('POST', `/api/v4/projects/${ENCODED}/statuses/${mr.sha}`, {
+            token,
+            body: { name: 'ci/seed', state: 'success' },
+        });
+        const made = (await gl.send('GET', `/api/v4/projects/${ENCODED}/pipelines?sha=${mr.sha}`, { token }))
+            .body as Array<{ id: number; source: string }>;
+        const external = made.find((entry) => entry.source === 'external');
+        await gl.control('gitlab/ci-status', {
+            project: PATH,
+            sha: mr.sha,
+            name: 'ci/staged',
+            status: 'failed',
+            pipelineId: external?.id,
+            stage: 'deploy',
+        });
+        const facts = await onFake().readChangeRequest(mr.iid);
+        expect(facts.checks.find((check) => check.name === 'ci/staged')?.state).toBe('failing');
+        expect(assessPullRequest(facts).outcome).toBe('checks_failing');
     });
 });

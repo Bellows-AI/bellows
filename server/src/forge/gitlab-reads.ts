@@ -52,7 +52,10 @@ const unclean = (what: string) => fail(`${what}: not a clean answer`);
 /** One request of a read. `found` and `denied` are the two answers a caller may treat as absence. */
 type Sent =
     | { kind: 'ok'; json: unknown }
+    /** A 404 that names the object asked for: the only answer that is a confirmed absence. */
     | { kind: 'absent' }
+    /** Any other 404 (no body, another message, another object): GitLab said nothing about the object. */
+    | { kind: 'missing' }
     | { kind: 'denied' }
     | { kind: 'refused'; status: number };
 
@@ -64,29 +67,33 @@ interface Ctx {
 const branchPath = (ctx: Ctx, branch: string) => `${ctx.project}/repository/branches/${encodeURIComponent(branch)}`;
 const failed = (path: string, status: number) => fail(`GET ${path.split('?')[0]} failed with ${status}`);
 
-const PROJECT_NOT_FOUND = /project/i;
-const namesProject = (json: unknown): boolean =>
-    isObject(json) && typeof json.message === 'string' && PROJECT_NOT_FOUND.test(json.message);
+/** What GitLab says when the object itself is missing; a 404 saying anything else is inconclusive. */
+const MR_NOT_FOUND = /^404 Merge Request Not Found$/;
+const BRANCH_NOT_FOUND = /^404 Branch Not Found$/;
+const COMMIT_NOT_FOUND = /^404 Commit Not Found$/;
+const namesObject = (json: unknown, object: RegExp): boolean =>
+    isObject(json) && typeof json.message === 'string' && object.test(json.message);
 
-async function send(ctx: Ctx, path: string, signal: AbortSignal): Promise<Sent> {
+async function send(ctx: Ctx, path: string, signal: AbortSignal, object?: RegExp): Promise<Sent> {
     const answer = await ctx.call('GET', path, signal);
     if (!answer.ok) throw fail(`GET ${path.split('?')[0]}: no answer (${answer.reason})`);
     const { status, json } = answer;
     if (isSuccess(status)) return { kind: 'ok', json };
-    // A project the member can no longer see answers 404 too: only a 404 that does not name the project is the object's.
-    if (status === HTTP_NOT_FOUND) return namesProject(json) ? { kind: 'refused', status } : { kind: 'absent' };
+    // A project the member can no longer see answers 404 too: only a 404 that names the object is its absence.
+    if (status === HTTP_NOT_FOUND)
+        return object && namesObject(json, object) ? { kind: 'absent' } : { kind: 'missing' };
     if (status === HTTP_FORBIDDEN) return { kind: 'denied' };
     if (status === HTTP_TOO_MANY_REQUESTS)
         throw fail(`GET ${path.split('?')[0]} failed with ${status}`, READ_RATE_LIMITED);
     return { kind: 'refused', status };
 }
 
-/** The body of a 2xx. A 404 is `not_found` only when `primary` (the object asked for), else the read is unconfirmed. */
-async function get(ctx: Ctx, path: string, signal: AbortSignal, primary = false): Promise<unknown> {
-    const sent = await send(ctx, path, signal);
+/** The body of a 2xx. A 404 is `not_found` only when it names `object` (the one asked for), else the read is unconfirmed. */
+async function get(ctx: Ctx, path: string, signal: AbortSignal, object?: RegExp): Promise<unknown> {
+    const sent = await send(ctx, path, signal, object);
     if (sent.kind === 'ok') return sent.json;
-    if (sent.kind === 'absent')
-        throw fail(failed(path, HTTP_NOT_FOUND).message, primary ? READ_NOT_FOUND : READ_TRANSPORT);
+    if (sent.kind === 'absent') throw fail(failed(path, HTTP_NOT_FOUND).message, READ_NOT_FOUND);
+    if (sent.kind === 'missing') throw failed(path, HTTP_NOT_FOUND);
     throw failed(path, sent.kind === 'denied' ? HTTP_FORBIDDEN : sent.status);
 }
 
@@ -257,7 +264,7 @@ function settledFacts(ref: RepoRef, mr: Json, iid: number): PrFacts {
 
 async function readChangeRequest(ctx: Ctx, ref: RepoRef, iid: number, signal: AbortSignal): Promise<PrFacts> {
     const base = `${ctx.project}/merge_requests/${iid}`;
-    const mr = mergeRequestOf(await get(ctx, base, signal, true), iid, base);
+    const mr = mergeRequestOf(await get(ctx, base, signal, MR_NOT_FOUND), iid, base);
     const facts = settledFacts(ref, mr, iid);
     // A settled MR's pipeline may have expired, and none of the rest is consumed.
     if (mr.state !== OPENED) return facts;
@@ -285,7 +292,7 @@ function tipOf(ctx: Ctx, body: unknown, branch: string): string {
 }
 
 async function readBranchHead(ctx: Ctx, branch: string, signal: AbortSignal): Promise<string | null> {
-    const sent = await send(ctx, branchPath(ctx, branch), signal);
+    const sent = await send(ctx, branchPath(ctx, branch), signal, BRANCH_NOT_FOUND);
     if (sent.kind === 'absent') return null;
     if (sent.kind !== 'ok') throw fail(`GET ${branchPath(ctx, branch)} failed`);
     return tipOf(ctx, sent.json, branch);
@@ -299,7 +306,7 @@ async function holds(ctx: Ctx, sha: string, tip: string, signal: AbortSignal): P
         ['refs[]', tip],
     ]);
     const path = `${ctx.project}/repository/merge_base?${query}`;
-    const sent = await send(ctx, path, signal);
+    const sent = await send(ctx, path, signal, COMMIT_NOT_FOUND);
     if (sent.kind === 'absent' || (sent.kind === 'refused' && sent.status === HTTP_BAD_REQUEST)) return false;
     if (sent.kind !== 'ok') throw fail(`GET ${path.split('?')[0]} failed`);
     if (!isObject(sent.json) || !text(sent.json.id)) throw unclean(path.split('?')[0] as string);
@@ -315,7 +322,7 @@ async function readBranchState(
     shas: readonly string[],
     signal: AbortSignal
 ): Promise<BranchState> {
-    const headSha = tipOf(ctx, await get(ctx, branchPath(ctx, branch), signal, true), branch);
+    const headSha = tipOf(ctx, await get(ctx, branchPath(ctx, branch), signal, BRANCH_NOT_FOUND), branch);
     const query = new URLSearchParams({ sha: headSha, ref: branch, order_by: 'id', sort: 'desc' });
     const [listing, held] = await Promise.all([
         listed(ctx, `${ctx.project}/pipelines?${query}`, pipelineEntryOf, signal),
