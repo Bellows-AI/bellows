@@ -243,9 +243,14 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         );
         expect(second.status).toBe(OK);
 
-        const preflight = await call(admin, 'POST', '/api/jobs/preflight', { repo: REPO, command: 'work' });
+        const preflight = await call(admin, 'POST', '/api/jobs/preflight', { repo: REPO });
         expect(preflight.status).toBe(OK);
-        expect(JSON.stringify(preflight.json)).toContain('GPT');
+        expect(preflight.json.checks).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ subject: 'executor', name: 'GPT', status: 'ok' }),
+                expect.objectContaining({ subject: 'model', status: 'ok' }),
+            ])
+        );
         expect((await call(admin, 'GET', '/api/workspace')).json.defaultExecutor).toEqual({
             scope: 'org',
             name: 'GPT',

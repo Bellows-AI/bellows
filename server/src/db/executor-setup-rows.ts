@@ -25,7 +25,8 @@ export interface SetupExecutorInput {
     readonly userId: string;
     /** The stable id of the profile to edit; absent creates one. */
     readonly id?: string | undefined;
-    readonly name: string;
+    /** Required to create; an edit that omits it keeps the row's name. */
+    readonly name?: string | undefined;
     readonly agentType: ExecutorType;
     /** The model id as the executor stores it (`normalizeModelId`). */
     readonly model: string;
@@ -47,8 +48,9 @@ export async function writeSetupExecutor(
 ): Promise<SetupExecutor> {
     const { owner, id } = input;
     if (id === undefined) {
+        if (input.name === undefined) throw new Error('a new executor needs a name');
         await assertSelection(tx, orgId, input);
-        return insertRow(tx, orgId, input);
+        return insertRow(tx, orgId, { ...input, name: input.name });
     }
     const [previous] = await tx<{ updated_at: Date }[]>`
         select updated_at from executor_profile
@@ -65,7 +67,7 @@ export async function writeSetupExecutor(
     await assertSelection(tx, orgId, input);
     const [row] = await tx<{ id: string; name: string }[]>`
         update executor_profile set
-            name = ${input.name}, type = ${input.agentType},
+            name = coalesce(${input.name ?? null}, name), type = ${input.agentType},
             config = coalesce(config, '{}'::jsonb) || ${tx.json({ model: input.model })},
             provider_connection_id = ${input.connectionId}, updated_at = now()
         where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
@@ -84,7 +86,11 @@ const assertSelection = (tx: TransactionSql, orgId: string, input: SetupExecutor
         previousConnectionId: null,
     });
 
-async function insertRow(tx: TransactionSql, orgId: string, input: SetupExecutorInput): Promise<SetupExecutor> {
+async function insertRow(
+    tx: TransactionSql,
+    orgId: string,
+    input: SetupExecutorInput & { name: string }
+): Promise<SetupExecutor> {
     const { owner } = input;
     const [next] = await tx<{ next: number }[]>`
         select coalesce(max(position) + 1, 0) as next from executor_profile

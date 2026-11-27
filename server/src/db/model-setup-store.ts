@@ -61,13 +61,12 @@ export interface SetupCommand {
     readonly executor: {
         /** The stable id of the executor to edit; absent creates one. */
         readonly id?: string;
-        readonly name: string;
+        /** Required to create; an edit that omits it keeps the executor's name. */
+        readonly name?: string;
         readonly agentType: ExecutorType;
         readonly model: string;
         readonly expectedUpdatedAt?: string;
     };
-    /** Publish the executor as the scope's default; true unless a caller says otherwise. */
-    readonly makeDefault?: boolean;
 }
 
 /** What a setup answers: stable identities and names only, never a credential or a reference. */
@@ -105,7 +104,26 @@ export class ModelSetupConflict extends Error {
     }
 }
 
+/** The default executor a member's tasks run on, as the setup view reads it: names and ids only. */
+export interface SelectedSetup {
+    readonly scope: 'org' | 'personal';
+    readonly executorId: string;
+    readonly executorName: string;
+    readonly agentType: string;
+    readonly model: string | null;
+    readonly suspended: boolean;
+    /** The connection the executor selects, when the member may see it; null for none. */
+    readonly connection: {
+        readonly id: string;
+        readonly name: string;
+        readonly provider: ModelProvider;
+        readonly scope: 'org' | 'personal';
+    } | null;
+}
+
 export interface ModelSetupStore {
+    /** The member's configured default executor, else the organization's, with its connection; null when none is configured. A failed read throws. */
+    selectedFor(userId: string): Promise<SelectedSetup | null>;
     /** Applies the command atomically, or replays its receipt. Any throw leaves the previous setup and default as they were. */
     apply(command: SetupCommand): Promise<SetupResult>;
 }
@@ -138,11 +156,10 @@ function fingerprintOf(command: SetupCommand): string {
                 connection: connectionFields,
                 executor: {
                     id: executor.id ?? null,
-                    name: executor.name,
+                    name: executor.name ?? null,
                     agentType: executor.agentType,
                     model: executor.model,
                 },
-                makeDefault: command.makeDefault !== false,
             })
         )
         .digest('hex');
@@ -281,7 +298,7 @@ export function createModelSetupStore({
             connectionId,
             expectedUpdatedAt: executor.expectedUpdatedAt,
         });
-        if (command.makeDefault !== false) await selectDefaultInTx(tx, orgId, owner, written.id);
+        await selectDefaultInTx(tx, orgId, owner, written.id);
         await tx`
             delete from model_setup_operation
             where org_id = ${orgId} and owner_id is not distinct from ${owner}
@@ -305,6 +322,53 @@ export function createModelSetupStore({
     }
 
     return {
+        async selectedFor(userId) {
+            if (ready) await ready;
+            const [row] = await sql<
+                {
+                    owner_id: string | null;
+                    id: string;
+                    name: string;
+                    type: string;
+                    model: string | null;
+                    suspended: boolean;
+                    connection_id: string | null;
+                    connection_name: string | null;
+                    connection_provider: ModelProvider | null;
+                    connection_user_id: string | null;
+                }[]
+            >`
+                select s.owner_id, p.id, p.name, p.type, p.config->>'model' as model, p.suspended,
+                    c.id as connection_id, c.name as connection_name, c.provider as connection_provider,
+                    c.user_id as connection_user_id
+                from executor_default_selection s
+                join executor_profile p on p.org_id = s.org_id and p.id = s.executor_id
+                left join provider_connection c on c.org_id = p.org_id and c.id = p.provider_connection_id
+                    and (c.user_id is null or c.user_id = ${userId})
+                where s.org_id = ${orgId} and (s.owner_id = ${userId} or s.owner_id is null)
+                order by (s.owner_id is null)
+                limit 1
+            `;
+            if (!row) return null;
+            return {
+                scope: row.owner_id === null ? 'org' : 'personal',
+                executorId: row.id,
+                executorName: row.name,
+                agentType: row.type,
+                model: row.model,
+                suspended: row.suspended,
+                connection:
+                    row.connection_id === null
+                        ? null
+                        : {
+                              id: row.connection_id,
+                              name: row.connection_name!,
+                              provider: row.connection_provider!,
+                              scope: row.connection_user_id === null ? 'org' : 'personal',
+                          },
+            };
+        },
+
         async apply(command) {
             if (ready) await ready;
             const owner = command.scope === 'org' ? null : command.userId;

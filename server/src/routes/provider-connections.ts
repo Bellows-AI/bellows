@@ -58,7 +58,7 @@ const refusal = (error: string, code: string = ERROR_CODES.BAD_BODY): { error: s
 });
 
 /** The name rules a connection name follows — the same segment rules an executor name does. */
-const badConnectionName = (name: unknown): string | null => {
+export const badConnectionName = (name: unknown): string | null => {
     if (typeof name !== 'string' || name.length === 0 || name.length > NAME_MAX) {
         return `name must be 1 to ${NAME_MAX} characters`;
     }

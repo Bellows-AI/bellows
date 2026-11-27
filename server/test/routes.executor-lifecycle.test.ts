@@ -434,15 +434,14 @@ describe('POST /api/jobs naming no executor', () => {
         ]);
     });
 
-    it('runs on the platform model once the model setup saved it: no profile, no key, no NO_EXECUTOR', async () => {
+    it('runs on the platform model once an agent default is saved on it: no profile, no key, no NO_EXECUTOR', async () => {
         const b = await boot(undefined, { platformModelProvided: true });
-        const saved = await b.instance.inject({
-            method: 'PUT',
-            url: '/api/model-setup',
-            headers: { cookie: b.memberCookie },
-            payload: { scope: 'personal', provider: 'platform', agentType: 'claude-code', model: 'claude-sonnet-4-5' },
+        // The setup no longer writes an agent default (it creates an executor); a saved legacy one keeps resolving.
+        await b.executors.setAgentDefault(b.memberId, {
+            agentType: 'claude-code',
+            model: 'claude-sonnet-4-5',
+            provider: 'platform',
         });
-        expect(saved.statusCode).toBe(200);
 
         expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
         expect(b.queued).toEqual([

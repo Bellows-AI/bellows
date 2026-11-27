@@ -1,42 +1,43 @@
 import {
     ADMIN_ROLE,
     type AgentProvider,
-    CLOUD_CREDENTIAL_MESSAGE,
     currentProvider,
     ERROR_CODES,
-    EXECUTOR_TYPES,
     type ExecutorType,
     isModelProvider,
-    type ModelProvider,
-    normalizeModelId,
     PLATFORM_PROVIDER,
-    PROVIDER_AGENTS,
     PROVIDER_BASE_URL_ENV,
-    providerAvailable,
 } from '@factory-ai/core';
 import type { FastifyError, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { AppConfig } from '../config.js';
-import { EnvScopeRefusal, type EnvVarEntry, type EnvVarStore } from '../db/env-var-store.js';
+import type { EnvVarEntry, EnvVarStore } from '../db/env-var-store.js';
+import {
+    ModelSetupConflict,
+    type ModelSetupStore,
+    ModelSetupNameConflict,
+    ModelSetupRequestConflict,
+    type SelectedSetup,
+    type SetupResult,
+} from '../db/model-setup-store.js';
+import { ProviderConnectionCapError } from '../db/provider-connection-store.js';
 import type { AgentDefault, UserExecutorStore } from '../db/user-executor-store.js';
 import type { OrgRegistry } from '../orgs.js';
-import { MAX_AGENT_MODEL_LENGTH } from './agent-default.js';
-import { varsCode } from './env.js';
 import { errorHandler } from './error-handler.js';
-import { bad, guard, body as jsonBody } from './helpers.js';
 import {
-    keyNamesOf,
-    ModelSetupConflict,
-    ownerOf,
-    providerInView,
-    saveModelKey,
-    type SetupScope,
-} from './model-setup-save.js';
-import { validBase, validKey } from './model-setup-verify.js';
+    HTTP_CONNECTION_REFUSED,
+    isConnectionRefusal,
+    lifecycleRefusal,
+    MAX_EXECUTORS_PER_ORG,
+    MAX_EXECUTORS_PER_USER,
+} from './executor-fields.js';
+import { bad, guard } from './helpers.js';
+import { commandOf, keyNamesOf, parseSetup, type Refusal, refusal } from './model-setup-save.js';
 
 /**
- * `GET` / `PUT /api/model-setup` (docs/api.md): what model a member's tasks run on, and saving a provider key with the
- * agent default in one call. Names only: no answer carries a secret value, and a body carrying a key is never echoed.
+ * `GET` / `PUT /api/model-setup` (docs/api.md): what model a member's tasks run on, and the setup command that creates or
+ * selects a provider connection, writes the executor on it and makes it the default in one transaction. Names only: no
+ * answer carries a secret value, and a body carrying a key is never echoed.
  */
 
 const PATH = '/api/model-setup';
@@ -46,9 +47,6 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
 const HTTP_CONFLICT = 409;
 const HTTP_UNAVAILABLE = 503;
-/** The agent-only save on a key the scope's view already holds, when the deployment supplies no model. */
-const EXISTING = 'existing';
-const FIELDS = new Set(['scope', 'provider', 'key', 'baseUrl', 'keepBaseUrl', 'agentType', 'model']);
 const HTTP_FIRST_SERVER_ERROR = 500;
 
 /** A body the parser refused (malformed, too large) answers fixed text: the parser's message may quote the key. */
@@ -56,84 +54,6 @@ const refuseUnparsed = (error: FastifyError, request: FastifyRequest, reply: Fas
     error.statusCode !== undefined && error.statusCode < HTTP_FIRST_SERVER_ERROR
         ? bad(reply, ERROR_CODES.BAD_BODY, 'The model setup body could not be read', error.statusCode)
         : errorHandler(error, request, reply);
-
-interface Common {
-    readonly scope: SetupScope;
-    readonly agentType: ExecutorType;
-    readonly model: string;
-}
-type Parsed =
-    | (Common & {
-          readonly provider: ModelProvider;
-          readonly key: string;
-          readonly baseUrl?: string;
-          readonly keepBaseUrl?: true;
-      })
-    | (Common & { readonly provider: typeof PLATFORM_PROVIDER | typeof EXISTING });
-type Refusal = { readonly error: string; readonly code: string };
-
-const refusal = (error: string, code: string = ERROR_CODES.BAD_BODY): Refusal => ({ error, code });
-
-function parseCommon(fields: Record<string, unknown>): Common | Refusal {
-    const { scope, agentType } = fields;
-    if (scope !== 'org' && scope !== 'personal') return refusal('scope must be org or personal');
-    if (!(EXECUTOR_TYPES as readonly unknown[]).includes(agentType)) {
-        return refusal(`agentType must be one of ${EXECUTOR_TYPES.join(', ')}`, ERROR_CODES.BAD_EXECUTOR_TYPE);
-    }
-    const model = typeof fields.model === 'string' ? fields.model.trim() : '';
-    if (!model || model.length > MAX_AGENT_MODEL_LENGTH) {
-        return refusal(`model must be a name of 1 to ${MAX_AGENT_MODEL_LENGTH} characters`);
-    }
-    return { scope, agentType: agentType as ExecutorType, model };
-}
-
-/** A key provider's body: an agent it runs, a header-safe key, a base URL where one fits (LiteLLM needs one). */
-function parseKeyed(common: Common, provider: ModelProvider, fields: Record<string, unknown>, config: AppConfig) {
-    if (!providerAvailable(provider, config.deploymentMode)) {
-        return refusal(CLOUD_CREDENTIAL_MESSAGE, ERROR_CODES.CLOUD_CREDENTIAL_REFUSED);
-    }
-    if (!PROVIDER_AGENTS[provider].includes(common.agentType)) {
-        return refusal(
-            `${provider} runs ${PROVIDER_AGENTS[provider].join(' or ')}, not ${common.agentType}`,
-            ERROR_CODES.BAD_EXECUTOR_TYPE
-        );
-    }
-    if (!validKey(fields.key)) return refusal('key must be a provider key: printable characters, no spaces');
-    const { baseUrl, keepBaseUrl } = fields;
-    if (keepBaseUrl !== undefined) {
-        // Keeps the base URL the scope holds (stored as a secret, so the member cannot send it back): hosted providers.
-        if (keepBaseUrl !== true || baseUrl !== undefined || provider === 'litellm' || provider === 'subscription') {
-            return refusal('keepBaseUrl is true or absent, never beside a baseUrl, and only for a hosted provider');
-        }
-        return { ...common, provider, key: fields.key, keepBaseUrl: true as const };
-    }
-    if (baseUrl === undefined) {
-        return provider === 'litellm' ? refusal('LiteLLM needs a baseUrl') : { ...common, provider, key: fields.key };
-    }
-    if (provider === 'subscription' || typeof baseUrl !== 'string' || !validBase(baseUrl)) {
-        return refusal('baseUrl must be an http(s) URL without credentials, and a subscription takes none');
-    }
-    return { ...common, provider, key: fields.key, baseUrl };
-}
-
-/** The body, or the refusal: only the agent-only variant this deployment offers is accepted. */
-function parseSave(raw: unknown, config: AppConfig): Parsed | Refusal {
-    const fields = jsonBody(raw);
-    const extra = Object.keys(fields).find((name) => !FIELDS.has(name));
-    if (extra !== undefined) return refusal(`unknown field ${extra}`);
-    const common = parseCommon(fields);
-    if ('error' in common) return common;
-    const { provider } = fields;
-    if (isModelProvider(provider)) return parseKeyed(common, provider, fields, config);
-    const agentOnly = config.platformModelProvided ? PLATFORM_PROVIDER : EXISTING;
-    if (provider !== agentOnly) {
-        return refusal(`provider must be one of the key providers or ${agentOnly}`);
-    }
-    if (fields.key !== undefined || fields.baseUrl !== undefined) {
-        return refusal(`provider ${agentOnly} saves the agent default alone: no key, no baseUrl`);
-    }
-    return { ...common, provider: agentOnly };
-}
 
 interface ScopeView {
     provider: AgentProvider | null;
@@ -176,18 +96,39 @@ function viewOf(rows: readonly EnvVarEntry[], agent: AgentDefault | null): Scope
     };
 }
 
-/** Which source a task naming no executor runs on: a key in the member's scope, then the org's, then the platform. */
-function effectiveOf(org: ScopeView | null, personal: ScopeView | null, platform: boolean) {
+/**
+ * Which source a task naming no executor runs on: the configured default executor, then a key in the member's scope, then
+ * the org's, then the platform. A suspended default refuses launches, so it is not effective: the legacy source shows.
+ */
+function effectiveOf(
+    selected: SelectedSetup | null,
+    org: ScopeView | null,
+    personal: ScopeView | null,
+    platform: boolean
+) {
+    if (selected !== null && !selected.suspended) return 'executor';
     if (personal?.keyNames.length) return 'personal';
     if (org?.keyNames.length) return 'org';
     return platform ? 'platform' : null;
 }
+
+/** The default executor as the view shows it: ids and names, the connection's safe metadata, never a credential. */
+const selectedView = (selected: SelectedSetup) => ({
+    scope: selected.scope,
+    executorId: selected.executorId,
+    name: selected.executorName,
+    agentType: selected.agentType,
+    model: selected.model,
+    suspended: selected.suspended,
+    connection: selected.connection,
+});
 
 interface Context {
     readonly userId: string;
     readonly admin: boolean;
     readonly envVars: EnvVarStore | undefined;
     readonly executors: UserExecutorStore;
+    readonly modelSetup: ModelSetupStore | undefined;
 }
 
 async function contextOf(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply): Promise<Context | null> {
@@ -206,6 +147,7 @@ async function contextOf(orgs: OrgRegistry, request: FastifyRequest, reply: Fast
         admin: caller.role === ADMIN_ROLE,
         envVars: rt.envVars,
         executors: rt.userExecutors,
+        modelSetup: rt.modelSetup,
     };
 }
 
@@ -222,72 +164,110 @@ async function handleGet(config: AppConfig, orgs: OrgRegistry, request: FastifyR
         reply,
         (e) => request.log.error({ err: e }, 'model setup read failed'),
         () =>
-            Promise.all([envVars.listOrg(), envVars.listWorkspace(ctx.userId), ctx.executors.agentDefaults(ctx.userId)])
+            Promise.all([
+                envVars.listOrg(),
+                envVars.listWorkspace(ctx.userId),
+                ctx.executors.agentDefaults(ctx.userId),
+                ctx.modelSetup?.selectedFor(ctx.userId) ?? null,
+            ])
     );
     if (!read.ok) return reply;
-    const [orgRows, personalRows, defaults] = read.value;
+    const [orgRows, personalRows, defaults, selected] = read.value;
     const platform = config.platformModelProvided;
     const org = viewOf(orgRows, defaults.org);
     const personal = viewOf(personalRows, defaults.personal);
-    return reply.code(HTTP_OK).send({ platform, org, personal, effective: effectiveOf(org, personal, platform) });
+    return reply.code(HTTP_OK).send({
+        platform,
+        org,
+        personal,
+        ...(selected === null ? {} : { selected: selectedView(selected) }),
+        effective: effectiveOf(selected, org, personal, platform),
+    });
 }
 
-/** The agent default alone: on the platform model, or on a key the scope's view holds (re-read here, never trusted). */
-async function saveAgentOnly(ctx: Context, parsed: Parsed): Promise<Refusal | null> {
-    const owner = ownerOf(parsed.scope, ctx.userId);
-    if (parsed.provider === PLATFORM_PROVIDER) {
-        await ctx.executors.setAgentDefault(owner, { ...parsed, provider: PLATFORM_PROVIDER });
-        return null;
+/** The answer a save sends: the stable identities the client carries into its next save, no credential. */
+const savedView = (result: SetupResult) => ({
+    saved: true,
+    scope: result.scope,
+    executorId: result.executorId,
+    executorName: result.executorName,
+    connectionId: result.connectionId,
+    connectionName: result.connectionName,
+    replayed: result.replayed,
+});
+
+/** The cap a new executor counts against, read before the write: an edit by id adds none. */
+async function executorCapRefusal(ctx: Context, scope: 'org' | 'personal'): Promise<Refusal | null> {
+    if (scope === 'org') {
+        return (await ctx.executors.orgCount()) >= MAX_EXECUTORS_PER_ORG
+            ? refusal(
+                  `at most ${MAX_EXECUTORS_PER_ORG} organization executors can be configured at once`,
+                  ERROR_CODES.TOO_MANY_EXECUTORS
+              )
+            : null;
     }
-    if (!ctx.envVars) throw new Error('no env store');
-    const provider = await providerInView({ envVars: ctx.envVars, executors: ctx.executors }, parsed.scope, ctx.userId);
-    if (provider === null) return refusal('no provider key is configured in this scope yet');
-    if (!PROVIDER_AGENTS[provider].includes(parsed.agentType)) {
-        return refusal(
-            `the configured ${provider} key does not run ${parsed.agentType}`,
-            ERROR_CODES.BAD_EXECUTOR_TYPE
-        );
-    }
-    const model = normalizeModelId(provider, parsed.agentType, parsed.model);
-    await ctx.executors.setAgentDefault(owner, { agentType: parsed.agentType, model });
-    return null;
+    return (await ctx.executors.list(ctx.userId)).length >= MAX_EXECUTORS_PER_USER
+        ? refusal(`at most ${MAX_EXECUTORS_PER_USER} executors can be configured at once`, ERROR_CODES.TOO_MANY_EXECUTORS)
+        : null;
 }
 
-async function save(ctx: Context, config: AppConfig, parsed: Parsed): Promise<Refusal | null> {
-    if (!isModelProvider(parsed.provider)) return saveAgentOnly(ctx, parsed);
-    if (!ctx.envVars || !('key' in parsed)) throw new Error('no env store');
-    const stores = { envVars: ctx.envVars, executors: ctx.executors, deploymentMode: config.deploymentMode };
-    try {
-        await saveModelKey(stores, { ...parsed, provider: parsed.provider, userId: ctx.userId });
-    } catch (error) {
-        if (error instanceof EnvScopeRefusal) return refusal(error.reason, varsCode(error.reason));
-        if (error instanceof ModelSetupConflict) return refusal(error.message, ERROR_CODES.MODEL_SETUP_CONFLICT);
-        throw error;
+/** What a refused setup answers: the closed set of domain refusals the store raises; any other error is an outage. */
+function refusedSetup(error: unknown): { status: number; error: string; code: string } | null {
+    if (error instanceof ModelSetupNameConflict) {
+        return { status: HTTP_CONFLICT, error: error.message, code: ERROR_CODES.NAME_TAKEN };
     }
-    return null;
+    if (error instanceof ModelSetupConflict || error instanceof ModelSetupRequestConflict) {
+        return { status: HTTP_CONFLICT, error: error.message, code: ERROR_CODES.MODEL_SETUP_CONFLICT };
+    }
+    if (isConnectionRefusal(error)) {
+        return { status: HTTP_CONNECTION_REFUSED, error: error.message, code: ERROR_CODES.PROVIDER_CONNECTION_REFUSED };
+    }
+    if (error instanceof ProviderConnectionCapError) {
+        return { status: 400, error: error.message, code: ERROR_CODES.TOO_MANY_CONNECTIONS };
+    }
+    const lifecycle = lifecycleRefusal(error);
+    return lifecycle ? { status: lifecycle.status, error: lifecycle.message, code: lifecycle.code } : null;
 }
 
 async function handlePut(config: AppConfig, orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const ctx = await contextOf(orgs, request, reply);
     if (!ctx) return reply;
-    const parsed = parseSave(request.body, config);
+    const parsed = parseSetup(request.body, config);
     if ('error' in parsed) return bad(reply, parsed.code, parsed.error);
     // The scope is in the body, so the route class admits any member and the org scope's admin check is here.
     if (parsed.scope === 'org' && !ctx.admin) {
         return bad(reply, ERROR_CODES.FORBIDDEN, 'Only an admin sets up the organization model', HTTP_FORBIDDEN);
     }
-    if (parsed.provider !== PLATFORM_PROVIDER && !ctx.envVars) return noEnvStore(reply);
+    const { modelSetup } = ctx;
+    if (!modelSetup) {
+        return bad(reply, ERROR_CODES.WORKSPACE_UNAVAILABLE, 'No model setup store for this organization', HTTP_UNAVAILABLE);
+    }
+    if (parsed.connection.intent === 'none' && !config.platformModelProvided && !ctx.envVars) return noEnvStore(reply);
     const saved = await guard(
         reply,
-        (e) => request.log.error({ err: e }, 'model setup save failed'),
-        () => save(ctx, config, parsed)
+        (e) => (refusedSetup(e) ? undefined : request.log.error({ err: e }, 'model setup save failed')),
+        async (): Promise<{ result: SetupResult } | { refused: { status: number; error: string; code: string } }> => {
+            const command = await commandOf(parsed, { ...ctx, userId: ctx.userId, config });
+            if ('error' in command) return { refused: { status: 400, ...command } };
+            if (parsed.executor.id === undefined) {
+                const capped = await executorCapRefusal(ctx, parsed.scope);
+                if (capped) return { refused: { status: 400, ...capped } };
+            }
+            try {
+                return { result: await modelSetup.apply(command) };
+            } catch (error) {
+                const refused = refusedSetup(error);
+                if (refused) return { refused };
+                throw error;
+            }
+        }
     );
     if (!saved.ok) return reply;
-    if (saved.value !== null) {
-        const status = saved.value.code === ERROR_CODES.MODEL_SETUP_CONFLICT ? HTTP_CONFLICT : undefined;
-        return bad(reply, saved.value.code, saved.value.error, status);
+    if ('refused' in saved.value) {
+        const { status, code, error } = saved.value.refused;
+        return bad(reply, code, error, status);
     }
-    return reply.code(HTTP_OK).send({ saved: true });
+    return reply.code(HTTP_OK).send(savedView(saved.value.result));
 }
 
 export const modelSetupRoutes =
