@@ -6,6 +6,7 @@ import { expectNoPlaceholder } from './fixtures.js';
 
 describe('the organization executors panel', () => {
     const executor = (name: string, type: string, createdAt = '2026-09-01T00:00:00.000Z') => ({
+        id: `id-${name}`,
         name,
         type,
         createdAt,
@@ -60,6 +61,15 @@ describe('the organization executors panel', () => {
         });
         expect(html).toMatch(/>Make default<\/button>/);
         expect(html).toContain('disabled');
+    });
+
+    it('tags the row the organization default names, beside the member’s own Default tag', () => {
+        const html = renderPanel({
+            executors: [{ ...executor('team-runner', 'claude-code'), orgDefault: true }, executor('oc', 'opencode')],
+            defaultName: 'team-runner',
+        });
+        expect(html.match(/<span class="pill">Organization default<\/span>/g)?.length).toBe(1);
+        expect(html.match(/<span class="pill">Default<\/span>/g)?.length).toBe(1);
     });
 
     it('heads the list with a count, and an admin gets Add organization executor in that head', () => {

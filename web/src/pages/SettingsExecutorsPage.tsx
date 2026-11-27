@@ -83,7 +83,11 @@ export function SettingsExecutorsPage() {
      */
     const makeDefault = async (scope: 'user' | 'org', name: string): Promise<string | null> => {
         setExecutorDialogError(null);
-        return setDefaultExecutor(scope, name);
+        // The write names the row by its stable id, so a rename never severs the default.
+        const rows = scope === 'org' ? (data?.orgExecutors ?? []) : (data?.executors ?? []);
+        const id = rows.find((row) => row.name === name)?.id;
+        if (id === undefined) return `"${name}" no longer exists — refresh the page.`;
+        return setDefaultExecutor(id);
     };
 
     /** The personal panel's write, with the failure surfaced on the page's shared error line. */
@@ -118,6 +122,13 @@ export function SettingsExecutorsPage() {
                 {savedMessage}
             </p>
             {error ? <StateNote state="error">{error}</StateNote> : null}
+            {data?.defaultExecutor?.unusable ? (
+                <StateNote state="error">
+                    The default executor "{data.defaultExecutor.name}" is{' '}
+                    {data.defaultExecutor.unusable === 'suspended' ? 'suspended' : 'not available'}: a task that names
+                    no executor is refused until you resume it or choose another default.
+                </StateNote>
+            ) : null}
 
             {/* Requiring `data` keeps the failed-poll state honest: with no response there is no
                 list to reason about, and the empty sentence beside the error would claim

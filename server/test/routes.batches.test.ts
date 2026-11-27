@@ -3,7 +3,7 @@ import { emptyBlock, NO_MODEL_MESSAGE, noExecutorMessage } from '@factory-ai/cor
 import { buildApp } from '../src/app.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-action-types.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
-import type { UserExecutorStore } from '../src/db/user-executor-store.js';
+import { ConfiguredDefaultUnusableError, type UserExecutorStore } from '../src/db/user-executor-store.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import {
@@ -703,6 +703,25 @@ describe('launch checks: validate and start', () => {
             const response = await call('POST', `/api/batches/${id}/${route}`, route === 'start' ? { version: 1 } : {});
             expect(response.statusCode, route).toBe(HTTP_CONFLICT);
             expect(response.json(), route).toMatchObject({ code: 'NO_EXECUTOR', error: noExecutorMessage });
+        }
+        expect(batches.writes).toEqual(['create']);
+    });
+
+    it('refuses a plan that names no executor with 409 EXECUTOR_SUSPENDED when the configured default is suspended, on validate and on start', async () => {
+        const userExecutors = {
+            async configFor() {
+                return null;
+            },
+            async resolvedDefault() {
+                throw new ConfiguredDefaultUnusableError('suspended', 'org', 'Main', 'default Main is suspended');
+            },
+        } as unknown as UserExecutorStore;
+        const { call, create, batches } = await setup({ userExecutors });
+        const { id } = await create(plan());
+        for (const route of ['validate', 'start']) {
+            const response = await call('POST', `/api/batches/${id}/${route}`, route === 'start' ? { version: 1 } : {});
+            expect(response.statusCode, route).toBe(HTTP_CONFLICT);
+            expect(response.json(), route).toMatchObject({ code: 'EXECUTOR_SUSPENDED' });
         }
         expect(batches.writes).toEqual(['create']);
     });

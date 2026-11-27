@@ -653,49 +653,50 @@ describe('the workspace poll and the personal routes after 391', () => {
         expect(body.defaultExecutor).toEqual({ scope: 'user', name: 'mine' });
     });
 
-    it('PUT /api/workspace/executors/default stores a per-member preference naming its scope', async () => {
-        const { instance, adminCookie, memberCookie, executors } = await boot();
-        await instance.inject({
+    it('PUT /api/workspace/executors/default selects an org executor by id for the member', async () => {
+        const { instance, adminCookie, memberCookie, member, executors } = await boot();
+        const created = await instance.inject({
             method: 'POST',
             url: '/api/org/executors',
             headers: { cookie: adminCookie },
             payload: CLAUDE_CODE,
         });
+        const id = created.json().id as string;
 
         const response = await instance.inject({
             method: 'PUT',
             url: '/api/workspace/executors/default',
             headers: { cookie: memberCookie },
-            payload: { executor: 'team-runner', executorScope: 'org' },
+            payload: { executorId: id },
         });
         expect(response.statusCode).toBe(HTTP_OK);
-        expect(executors.defaults()).toEqual([expect.objectContaining({ scope: 'org', name: 'team-runner' })]);
+        expect(await executors.selectedDefault(member.user.id)).toMatchObject({ executorId: id, scope: 'org' });
 
-        // The poll folds the stored preference in: the member now autoselects the org profile.
+        // The poll folds the selection in: the member now autoselects the org profile.
         const poll = (
             await instance.inject({ method: 'GET', url: '/api/workspace', headers: { cookie: memberCookie } })
         ).json();
         expect(poll.defaultExecutor).toEqual({ scope: 'org', name: 'team-runner' });
     });
 
-    it('the default route answers 404 for a profile the caller cannot resolve, and 400 for a bad scope', async () => {
+    it('the default route answers 404 for an id the caller cannot resolve, and 400 for a body with no executorId', async () => {
         const { instance, adminCookie } = await boot();
         const missing = await instance.inject({
             method: 'PUT',
             url: '/api/workspace/executors/default',
             headers: { cookie: adminCookie },
-            payload: { executor: 'ghost', executorScope: 'org' },
+            payload: { executorId: '99999999-9999-4999-8999-999999999999' },
         });
         expect(missing.statusCode).toBe(HTTP_NOT_FOUND);
 
-        const badScope = await instance.inject({
+        const nameOnly = await instance.inject({
             method: 'PUT',
             url: '/api/workspace/executors/default',
             headers: { cookie: adminCookie },
-            payload: { executor: 'x', executorScope: 'repo' },
+            payload: { executor: 'x', executorScope: 'org' },
         });
-        expect(badScope.statusCode).toBe(HTTP_BAD_REQUEST);
-        expect(badScope.json().code).toBe('BAD_EXECUTOR_SCOPE');
+        expect(nameOnly.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(nameOnly.json().code).toBe('BAD_BODY');
     });
 
     it('a PUT entry carrying isDefault is refused — the flag moved to the preference route', async () => {

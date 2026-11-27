@@ -132,17 +132,19 @@ describe('executors: listing and replacing', () => {
         expect(executors.rows().map((row) => row.userId)).toEqual([a.user.id]);
     });
 
-    it('persists the preference and echoes it on the poll; rows carry no default flag', async () => {
-        // Issue 391: the default is a per-member preference naming a scope, not a flag on a row —
-        // one org row is shared by every member, so the flag had to move off the row.
+    const idOf = async (app: FastifyInstance, cookie: string, name: string) =>
+        (
+            (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json() as {
+                executors: { id: string; name: string }[];
+            }
+        ).executors.find((row) => row.name === name)!.id;
+    const putDefault = (app: FastifyInstance, cookie: string, payload: Record<string, unknown>) =>
+        app.inject({ method: 'PUT', url: '/api/workspace/executors/default', headers: { cookie }, payload });
+
+    it('persists the default by id and echoes it on the poll; rows carry no default flag', async () => {
         const { app, cookie } = await boot();
         await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
-        const put = await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors/default',
-            headers: { cookie },
-            payload: { executor: 'oc', executorScope: 'user' },
-        });
+        const put = await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'oc') });
         expect(put.statusCode).toBe(HTTP_OK);
         expect(put.json().defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
 
@@ -152,7 +154,6 @@ describe('executors: listing and replacing', () => {
             expect.objectContaining({ name: 'main' }),
             expect.objectContaining({ name: 'oc' }),
         ]);
-        // No row carries a default flag any more — the preference is the whole mechanism.
         expect(JSON.stringify(poll.executors)).not.toContain('isDefault');
 
         const config = (
@@ -164,7 +165,7 @@ describe('executors: listing and replacing', () => {
         ]);
     });
 
-    it('a row sent without a preference resolves the first row on the poll', async () => {
+    it('a row sent without a default resolves the first row on the poll', async () => {
         const { app, cookie } = await boot();
         const put = await putExecutors(app, cookie, [CLAUDE_CODE]);
         expect(put.json().executors).toEqual([expect.objectContaining({ name: 'main' })]);
@@ -173,37 +174,41 @@ describe('executors: listing and replacing', () => {
         expect(poll.defaultExecutor).toEqual({ scope: 'user', name: 'main' });
     });
 
-    it('a later preference move re-points the default', async () => {
+    it('a later selection re-points the default', async () => {
         const { app, cookie } = await boot();
         await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
-        await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors/default',
-            headers: { cookie },
-            payload: { executor: 'main', executorScope: 'user' },
-        });
-        const second = await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors/default',
-            headers: { cookie },
-            payload: { executor: 'oc', executorScope: 'user' },
-        });
+        await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'main') });
+        const second = await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'oc') });
         expect(second.json().defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
     });
 
-    it('dropping the preferred row falls back to the first remaining row, never a ghost', async () => {
+    it('refuses a name-only body with 400 and leaves the resolved default alone', async () => {
         const { app, cookie } = await boot();
         await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
-        await app.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors/default',
-            headers: { cookie },
-            payload: { executor: 'main', executorScope: 'user' },
-        });
-        await putExecutors(app, cookie, [{ name: 'oc', type: 'opencode', config: {} }]);
+        await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'main') });
 
-        const body = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
-        expect(body.defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
+        const refused = await putDefault(app, cookie, { executor: 'oc', executorScope: 'user' });
+        expect(refused.statusCode).toBe(HTTP_BAD_REQUEST);
+        const poll = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect(poll.defaultExecutor).toEqual({ scope: 'user', name: 'main' });
+    });
+
+    it('answers 404 for an executor id the caller cannot select', async () => {
+        const { app, cookie } = await boot();
+        const missing = await putDefault(app, cookie, { executorId: '99999999-9999-4999-8999-999999999999' });
+        expect(missing.statusCode).toBe(HTTP_NOT_FOUND);
+    });
+
+    it('reads a legacy name-keyed preference, and dropping its row falls back to the first remaining row', async () => {
+        const { app, cookie, caller, executors } = await boot();
+        await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
+        executors.seedLegacyDefault(caller.user.id, { scope: 'user', name: 'oc' });
+        const poll = async () =>
+            (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
+        expect((await poll()).defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
+
+        await putExecutors(app, cookie, [CLAUDE_CODE]);
+        expect((await poll()).defaultExecutor).toEqual({ scope: 'user', name: 'main' });
     });
 
     it('persists gateFixRounds and echoes it on the PUT response, the poll and the config read', async () => {

@@ -12,6 +12,7 @@ import type { FastifyBaseLogger, FastifyPluginAsync, FastifyReply, FastifyReques
 import { callerOf, orgOf } from '../../auth/plugin.js';
 import { BINDABLE_PROVIDERS, type Resolution, type ResolveRefusal } from '../../db/connection-bindings.js';
 import type { ConnectionView } from '../../db/connection-store.js';
+import { ConfiguredDefaultUnusableError, type UserExecutorStore } from '../../db/user-executor-store.js';
 import type { OrgRegistry } from '../../orgs.js';
 import {
     abortOnClose,
@@ -148,6 +149,67 @@ interface ExecutorStanding {
     connection?: SelectedProfileConnection | null;
 }
 
+/** `resolvedDefault`, answering a configured default that cannot run as itself: a verdict, as create refuses it, not an unreadable default. */
+async function defaultOrRefusal(store: Pick<UserExecutorStore, 'resolvedDefault'>, userId: string) {
+    try {
+        return await store.resolvedDefault(userId);
+    } catch (error) {
+        if (error instanceof ConfiguredDefaultUnusableError) return error;
+        throw error;
+    }
+}
+
+/**
+ * What a task naming no executor resolves to: the profile create will stamp, or the standing that already answers (an
+ * agent default, no default, a configured default that cannot run, an unreadable default). Create stamps the caller's
+ * resolved default (executor-usable.ts), so that is the verdict.
+ */
+async function defaultStanding(
+    log: FastifyBaseLogger,
+    store: Pick<UserExecutorStore, 'resolvedDefault'>,
+    userId: string
+): Promise<ExecutorStanding | { name: string; scope: ExecutorScope }> {
+    const fallback = await attempt(log, 'default executor', () => defaultOrRefusal(store, userId));
+    if (!fallback.ok) {
+        return {
+            check: {
+                subject: 'executor',
+                name: null,
+                status: 'unverified',
+                detail: 'the default executor could not be read',
+            },
+            type: { state: 'unconfirmed', error: 'the default executor could not be read' },
+        };
+    }
+    if (fallback.value instanceof ConfiguredDefaultUnusableError) {
+        const detail = fallback.value.message;
+        return {
+            check: { subject: 'executor', name: fallback.value.executorName, status: 'blocked', detail },
+            type: { state: 'unconfirmed', error: detail },
+        };
+    }
+    if (fallback.value === null) {
+        return {
+            check: { subject: 'executor', name: null, status: 'blocked', detail: noExecutorMessage },
+            type: { state: 'unconfirmed', error: noExecutorMessage },
+        };
+    }
+    if (fallback.value.kind === 'agent') {
+        const { agentType, model, from } = fallback.value;
+        const whose = from === 'personal' ? 'your agent default' : "the organization's agent default";
+        return {
+            check: {
+                subject: 'executor',
+                name: null,
+                status: 'ok',
+                detail: `none selected: the task runs on ${whose}, ${agentType} with model ${model}`,
+            },
+            type: executorTypeOf(agentType),
+        };
+    }
+    return { name: fallback.value.name, scope: fallback.value.scope };
+}
+
 async function executorCheck(
     log: FastifyBaseLogger,
     selection: Selection,
@@ -171,39 +233,9 @@ async function executorCheck(
     let name = executor;
     let at = scope;
     if (name === null) {
-        // Create stamps the caller's resolved default on a task naming none (executor-usable.ts), so that is the verdict.
-        const fallback = await attempt(log, 'default executor', () => store.resolvedDefault(userId));
-        if (!fallback.ok) {
-            return {
-                check: {
-                    subject: 'executor',
-                    name: null,
-                    status: 'unverified',
-                    detail: 'the default executor could not be read',
-                },
-                type: { state: 'unconfirmed', error: 'the default executor could not be read' },
-            };
-        }
-        if (fallback.value === null) {
-            return {
-                check: { subject: 'executor', name: null, status: 'blocked', detail: noExecutorMessage },
-                type: { state: 'unconfirmed', error: noExecutorMessage },
-            };
-        }
-        if (fallback.value.kind === 'agent') {
-            const { agentType, model, from } = fallback.value;
-            const whose = from === 'personal' ? 'your agent default' : "the organization's agent default";
-            return {
-                check: {
-                    subject: 'executor',
-                    name: null,
-                    status: 'ok',
-                    detail: `none selected: the task runs on ${whose}, ${agentType} with model ${model}`,
-                },
-                type: executorTypeOf(agentType),
-            };
-        }
-        ({ name, scope: at } = fallback.value);
+        const resolved = await defaultStanding(log, store, userId);
+        if ('check' in resolved) return resolved;
+        ({ name, scope: at } = resolved);
     }
     const row = await attempt(log, 'executor profile', () => store.configFor(userId, name, at));
     if (!row.ok) {

@@ -18,6 +18,17 @@ import { ScrollRegion } from '../components/ScrollRegion.js';
 /** The demote action: the shared profile becomes the calling admin's own personal row. */
 export const DEMOTE_LABEL = 'Make personal';
 
+/** The admin's organization-default actions: the default every member without a default of their own launches on. */
+export const SET_ORG_DEFAULT_LABEL = 'Make organization default';
+export const CLEAR_ORG_DEFAULT_LABEL = 'Clear organization default';
+export const ORG_DEFAULT_LABEL = 'Organization default';
+
+/** The admin's organization-default entries, or none where the page passes no handlers. */
+interface OrgDefaultHandlers {
+    onSetOrgDefault?: ((name: string) => void) | undefined;
+    onClearOrgDefault?: (() => void) | undefined;
+}
+
 /** An admin's overflow entries in menu order; the destructive Delete sorts last in `RowActions` itself. */
 function adminOverflow(
     executor: OrgExecutor,
@@ -26,11 +37,18 @@ function adminOverflow(
         onDelete: ((name: string) => void) | undefined;
         onDemote: ((name: string) => void) | undefined;
         onSuspend: ((name: string, suspended: boolean) => void) | undefined;
-    }
+    } & OrgDefaultHandlers
 ): RowAction[] {
-    const { onDelete, onDemote, onSuspend } = handlers;
+    const { onDelete, onDemote, onSuspend, onSetOrgDefault, onClearOrgDefault } = handlers;
     const entries: (RowAction | null)[] = [
         makeDefault,
+        executor.orgDefault
+            ? onClearOrgDefault
+                ? { label: CLEAR_ORG_DEFAULT_LABEL, onSelect: onClearOrgDefault }
+                : null
+            : onSetOrgDefault && !executor.suspended
+              ? { label: SET_ORG_DEFAULT_LABEL, onSelect: () => onSetOrgDefault(executor.name) }
+              : null,
         onSuspend
             ? {
                   label: executor.suspended ? RESUME_LABEL : SUSPEND_LABEL,
@@ -54,6 +72,8 @@ function OrgExecutorActions({
     onDemote,
     onSuspend,
     onMakeDefault,
+    onSetOrgDefault,
+    onClearOrgDefault,
 }: {
     executor: OrgExecutor;
     isAdmin: boolean;
@@ -65,7 +85,7 @@ function OrgExecutorActions({
     onDemote: ((name: string) => void) | undefined;
     onSuspend: ((name: string, suspended: boolean) => void) | undefined;
     onMakeDefault: (name: string) => void;
-}) {
+} & OrgDefaultHandlers) {
     // The row's common action is the one the viewer does most: an admin edits, a member picks a
     // default. Everything else collapses into the overflow, and the destructive Delete sorts last.
     // A suspended profile cannot be a default (issue 440), so it offers no Make default.
@@ -77,7 +97,13 @@ function OrgExecutorActions({
     // A member's overflow is empty, so the member sees one button and no trigger — never an empty
     // menu. Make default joins the admin's overflow only when Edit took the inline slot from it.
     const overflow: RowAction[] = isAdmin
-        ? adminOverflow(executor, edit && makeDefault ? makeDefault : null, { onDelete, onDemote, onSuspend })
+        ? adminOverflow(executor, edit && makeDefault ? makeDefault : null, {
+              onDelete,
+              onDemote,
+              onSuspend,
+              onSetOrgDefault,
+              onClearOrgDefault,
+          })
         : [];
     // No label on an empty cell: a member on the default row has no action, and the card reflow's
     // `data-label` caption would otherwise write "Actions" over nothing at all.
@@ -86,6 +112,78 @@ function OrgExecutorActions({
         <td data-label={empty ? undefined : 'Actions'}>
             <RowActions rowName={executor.name} primary={edit ?? makeDefault} actions={overflow} disabled={saving} />
         </td>
+    );
+}
+
+type OrgExecutorHandlers = {
+    onEdit: ((name: string) => void) | undefined;
+    onDelete: ((name: string) => void) | undefined;
+    onDemote: ((name: string) => void) | undefined;
+    onSuspend: ((name: string, suspended: boolean) => void) | undefined;
+    onMakeDefault: (name: string) => void;
+} & OrgDefaultHandlers;
+
+/** One organization row: the name with its tags, the type with its runner class, the date and the actions. */
+function OrgExecutorRow({
+    executor,
+    isAdmin,
+    saving,
+    defaultName,
+    handlers,
+}: {
+    executor: OrgExecutor;
+    isAdmin: boolean;
+    saving: boolean;
+    defaultName: string | null;
+    handlers: OrgExecutorHandlers;
+}) {
+    const { onEdit, onDelete, onDemote, onSuspend, onMakeDefault, onSetOrgDefault, onClearOrgDefault } = handlers;
+    return (
+        <tr>
+            <td data-label="Name">
+                <span className="member-identity">
+                    <Avatar author={{ login: executor.name, avatarUrl: null }} size={28} />
+                    <span className="member-login" title={executor.name}>
+                        {executor.name}
+                    </span>
+                    {defaultName === executor.name || executor.suspended || executor.orgDefault ? (
+                        <span className="pill-list">
+                            {defaultName === executor.name ? <span className="pill">{DEFAULT_LABEL}</span> : null}
+                            {executor.orgDefault ? <span className="pill">{ORG_DEFAULT_LABEL}</span> : null}
+                            {executor.suspended ? <span className="pill">{SUSPENDED_LABEL}</span> : null}
+                        </span>
+                    ) : null}
+                </span>
+            </td>
+            <td data-label="Type">
+                {/* The runner class sits beside the agent, not in a column of its
+                                            own: a profile in the deployment's default class shows none. */}
+                <span className="pill-list">
+                    <span className="pill">{executorTypeLabel(executor.type)}</span>
+                    {executor.runnerClass ? (
+                        <span className="pill" title={RUNNER_CLASS_LABEL}>
+                            {executor.runnerClass}
+                        </span>
+                    ) : null}
+                </span>
+            </td>
+            <td data-label="Added" className="muted">
+                {commitDate(executor.createdAt)}
+            </td>
+            <OrgExecutorActions
+                executor={executor}
+                isAdmin={isAdmin}
+                saving={saving}
+                isDefault={defaultName === executor.name}
+                onEdit={onEdit}
+                onDelete={onDelete}
+                onDemote={onDemote}
+                onSuspend={onSuspend}
+                onMakeDefault={onMakeDefault}
+                onSetOrgDefault={onSetOrgDefault}
+                onClearOrgDefault={onClearOrgDefault}
+            />
+        </tr>
     );
 }
 
@@ -100,6 +198,8 @@ export function OrgExecutorsPanel({
     onDemote,
     onSuspend,
     onMakeDefault,
+    onSetOrgDefault,
+    onClearOrgDefault,
 }: {
     executors: readonly OrgExecutor[];
     isAdmin: boolean;
@@ -113,7 +213,7 @@ export function OrgExecutorsPanel({
     /** Admin-only: suspends (true) or resumes (false) the profile for every member. */
     onSuspend: ((name: string, suspended: boolean) => void) | undefined;
     onMakeDefault: (name: string) => void;
-}) {
+} & OrgDefaultHandlers) {
     return (
         <section className="panel">
             <div className="panel-head">
@@ -156,52 +256,22 @@ export function OrgExecutorsPanel({
                         </thead>
                         <tbody>
                             {executors.map((executor) => (
-                                <tr key={executor.name}>
-                                    <td data-label="Name">
-                                        <span className="member-identity">
-                                            <Avatar author={{ login: executor.name, avatarUrl: null }} size={28} />
-                                            <span className="member-login" title={executor.name}>
-                                                {executor.name}
-                                            </span>
-                                            {defaultName === executor.name || executor.suspended ? (
-                                                <span className="pill-list">
-                                                    {defaultName === executor.name ? (
-                                                        <span className="pill">{DEFAULT_LABEL}</span>
-                                                    ) : null}
-                                                    {executor.suspended ? (
-                                                        <span className="pill">{SUSPENDED_LABEL}</span>
-                                                    ) : null}
-                                                </span>
-                                            ) : null}
-                                        </span>
-                                    </td>
-                                    <td data-label="Type">
-                                        {/* The runner class sits beside the agent, not in a column of its
-                                            own: a profile in the deployment's default class shows none. */}
-                                        <span className="pill-list">
-                                            <span className="pill">{executorTypeLabel(executor.type)}</span>
-                                            {executor.runnerClass ? (
-                                                <span className="pill" title={RUNNER_CLASS_LABEL}>
-                                                    {executor.runnerClass}
-                                                </span>
-                                            ) : null}
-                                        </span>
-                                    </td>
-                                    <td data-label="Added" className="muted">
-                                        {commitDate(executor.createdAt)}
-                                    </td>
-                                    <OrgExecutorActions
-                                        executor={executor}
-                                        isAdmin={isAdmin}
-                                        saving={saving}
-                                        isDefault={defaultName === executor.name}
-                                        onEdit={onEdit}
-                                        onDelete={onDelete}
-                                        onDemote={onDemote}
-                                        onSuspend={onSuspend}
-                                        onMakeDefault={onMakeDefault}
-                                    />
-                                </tr>
+                                <OrgExecutorRow
+                                    key={executor.name}
+                                    executor={executor}
+                                    isAdmin={isAdmin}
+                                    saving={saving}
+                                    defaultName={defaultName}
+                                    handlers={{
+                                        onEdit,
+                                        onDelete,
+                                        onDemote,
+                                        onSuspend,
+                                        onMakeDefault,
+                                        onSetOrgDefault,
+                                        onClearOrgDefault,
+                                    }}
+                                />
                             ))}
                         </tbody>
                     </table>

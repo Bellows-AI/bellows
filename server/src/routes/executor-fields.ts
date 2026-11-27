@@ -12,7 +12,16 @@ import {
     redirectsPlatformCredential,
 } from '@factory-ai/core';
 import type { DeploymentMode, ErrorCode } from '@factory-ai/core';
+import type { FastifyReply } from 'fastify';
 import { ExecutorConnectionRefusedError } from '../db/executor-connection-selection.js';
+import {
+    type DefaultResolution,
+    ExecutorDefaultNotFoundError,
+    ExecutorDefaultProtectedError,
+    ExecutorIdentityError,
+    ExecutorSuspendedError,
+} from '../db/executor-default-store.js';
+import { bad } from './helpers.js';
 import type { ProviderConnectionStore } from '../db/provider-connection-store.js';
 
 /**
@@ -52,6 +61,44 @@ export const HTTP_CONNECTION_REFUSED = 409;
 /** Whether a write failed because its connection selection was refused (`ExecutorConnectionRefusedError`). */
 export const isConnectionRefusal = (error: unknown): error is ExecutorConnectionRefusedError =>
     error instanceof ExecutorConnectionRefusedError;
+
+/** One entry's optional stable id, as the personal whole-list PUT takes it: absent, or an executor id. */
+export function parseExecutorId(entry: unknown): string | undefined | { refusal: string } {
+    const { id } = entry as { id?: unknown };
+    if (id === undefined) return undefined;
+    if (typeof id === 'string' && UUID.test(id)) return id;
+    return { refusal: 'id must be an executor id' };
+}
+
+/** A write refused because a default still names the executor answers 409; an id the caller does not own, 400. */
+export const HTTP_EXECUTOR_IS_DEFAULT = 409;
+const HTTP_BAD_IDENTITY = 400;
+const HTTP_CONFLICT_STATUS = 409;
+const HTTP_NOT_FOUND_STATUS = 404;
+
+/** The answer for the store's lifecycle refusals (`ExecutorDefaultProtectedError`, `ExecutorIdentityError`); null for any other error. */
+export interface LifecycleRefusal {
+    code: ErrorCode;
+    message: string;
+    status: number;
+}
+
+export function lifecycleRefusal(error: unknown): LifecycleRefusal | null {
+    if (error instanceof ExecutorDefaultProtectedError) {
+        return { code: ERROR_CODES.EXECUTOR_IS_DEFAULT, message: error.message, status: HTTP_EXECUTOR_IS_DEFAULT };
+    }
+    if (error instanceof ExecutorIdentityError) {
+        return { code: ERROR_CODES.BAD_BODY, message: error.message, status: HTTP_BAD_IDENTITY };
+    }
+    // A replacement the store could not use: not an active organization executor of this organization.
+    if (error instanceof ExecutorDefaultNotFoundError) {
+        return { code: ERROR_CODES.NOT_FOUND, message: error.message, status: HTTP_NOT_FOUND_STATUS };
+    }
+    if (error instanceof ExecutorSuspendedError) {
+        return { code: ERROR_CODES.EXECUTOR_SUSPENDED, message: error.message, status: HTTP_CONFLICT_STATUS };
+    }
+    return null;
+}
 
 /** A runner-class refusal answers 422: the body is well formed, the class is not one this board offers. */
 export const HTTP_UNPROCESSABLE = 422;
@@ -188,4 +235,38 @@ export async function visibleConnections(
 ): Promise<ReadonlyMap<string, ProviderConnectionMeta>> {
     if (!store) return new Map();
     return new Map((await store.listFor(userId)).map((connection) => [connection.id, connection]));
+}
+
+/** The answer for a selection the store refused: a target the owner may not select is a 404, a suspended one a 409. */
+export function selectionRefusal(reply: FastifyReply, error: unknown, what: string): FastifyReply | null {
+    if (error instanceof ExecutorSuspendedError) {
+        return bad(
+            reply,
+            ERROR_CODES.EXECUTOR_SUSPENDED,
+            `${what} is suspended; resume it before making it the default`,
+            HTTP_CONFLICT_STATUS
+        );
+    }
+    if (error instanceof ExecutorDefaultNotFoundError) {
+        return bad(reply, ERROR_CODES.NOT_FOUND, `${what} is not available to you`, HTTP_NOT_FOUND_STATUS);
+    }
+    return null;
+}
+
+/**
+ * The explicit word on the selections naming an organization executor that is being deleted or demoted: `clearDefaults`
+ * clears them, `replaceDefaultsWith` re-points them at another organization executor. Read from the query of a DELETE
+ * or the body of the scope route; absent is `undefined` (the write refuses while any selection names the executor),
+ * and both at once, or a malformed id, is the refusal message.
+ */
+export function parseDefaultResolution(source: {
+    clearDefaults?: unknown;
+    replaceDefaultsWith?: unknown;
+}): DefaultResolution | undefined | { refusal: string } {
+    const clear = source.clearDefaults === true || source.clearDefaults === 'true';
+    const replacement = source.replaceDefaultsWith;
+    if (replacement === undefined) return clear ? { clear: true } : undefined;
+    if (clear) return { refusal: 'clearDefaults and replaceDefaultsWith are exclusive' };
+    if (typeof replacement === 'string' && UUID.test(replacement)) return { replaceWith: replacement };
+    return { refusal: 'replaceDefaultsWith must be an organization executor id' };
 }

@@ -363,6 +363,7 @@ describe('Settings executors page', () => {
                     ],
                     orgExecutors: [
                         {
+                            id: 'org-1',
                             name: 'team-runner',
                             type: 'claude-code',
                             createdAt: '2026-09-03T00:00:00.000Z',

@@ -270,37 +270,31 @@ describe('organization profiles: suspend and resume', () => {
 });
 
 describe('defaults and the fallback chain', () => {
+    const putDefaultById = (b: Booted, cookie: string, executorId: string) =>
+        b.instance.inject({
+            method: 'PUT',
+            url: '/api/workspace/executors/default',
+            headers: { cookie },
+            payload: { executorId },
+        });
+
     it('refuses a suspended profile as the default with EXECUTOR_SUSPENDED and stores nothing', async () => {
         const b = await boot();
         await putPersonal(b, b.memberCookie, [entry('mine')]);
-        await suspend(
-            b,
-            `/api/workspace/executors/${await personalId(b, 'mine', b.memberCookie)}/suspension`,
-            b.memberCookie,
-            true
-        );
+        const id = await personalId(b, 'mine', b.memberCookie);
+        await suspend(b, `/api/workspace/executors/${id}/suspension`, b.memberCookie, true);
 
-        const response = await b.instance.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors/default',
-            headers: { cookie: b.memberCookie },
-            payload: { executor: 'mine', executorScope: 'user' },
-        });
+        const response = await putDefaultById(b, b.memberCookie, id);
         expect(response.statusCode).toBe(HTTP_CONFLICT);
         expect(response.json().code).toBe('EXECUTOR_SUSPENDED');
-        expect(b.executors.defaults()).toEqual([]);
+        expect(await b.executors.selectedDefault(b.memberId)).toBeNull();
     });
 
-    it('falls back past suspended rows, personal before org, and restores the stored preference on resume', async () => {
+    it('falls back past suspended rows, personal before org, and restores a legacy preference on resume', async () => {
         const b = await boot();
         const orgId = await createOrg(b, 'shared');
         await putPersonal(b, b.memberCookie, [entry('first'), entry('second')]);
-        await b.instance.inject({
-            method: 'PUT',
-            url: '/api/workspace/executors/default',
-            headers: { cookie: b.memberCookie },
-            payload: { executor: 'second', executorScope: 'user' },
-        });
+        b.executors.seedLegacyDefault(b.memberId, { scope: 'user', name: 'second' });
         const secondId = await personalId(b, 'second', b.memberCookie);
         const firstId = await personalId(b, 'first', b.memberCookie);
 
@@ -594,5 +588,206 @@ describe('POST /api/jobs selecting a repo skill that only the executor CLI scans
         expect(response.statusCode).toBe(HTTP_NOT_FOUND);
         expect(response.json().code).toBe('UNKNOWN_SKILL');
         expect(b.queued).toEqual([]);
+    });
+});
+
+describe('configured default executors', () => {
+    const putDefault = (b: Booted, cookie: string, payload: Record<string, unknown>) =>
+        b.instance.inject({ method: 'PUT', url: '/api/workspace/executors/default', headers: { cookie }, payload });
+    const putOrgDefault = (b: Booted, cookie: string, executorId: string) =>
+        b.instance.inject({
+            method: 'PUT',
+            url: '/api/org/executors/default',
+            headers: { cookie },
+            payload: { executorId },
+        });
+    const clearOrgDefault = (b: Booted, cookie: string) =>
+        b.instance.inject({ method: 'DELETE', url: '/api/org/executors/default', headers: { cookie } });
+    const queueBare = (b: Booted, cookie: string) =>
+        b.instance.inject({
+            method: 'POST',
+            url: '/api/jobs',
+            headers: { cookie },
+            payload: { command: 'echo hi', repo: `${READY_REPO.owner}/${READY_REPO.name}` },
+        });
+
+    it('a member selects a default by id: it outranks the legacy chain and survives a rename by id', async () => {
+        const b = await boot();
+        await putPersonal(b, b.memberCookie, [entry('first'), entry('second')]);
+        const secondId = await personalId(b, 'second', b.memberCookie);
+        const firstId = await personalId(b, 'first', b.memberCookie);
+
+        const put = await putDefault(b, b.memberCookie, { executorId: secondId });
+        expect(put.statusCode).toBe(HTTP_OK);
+        expect(put.json().defaultExecutor).toEqual({ scope: 'user', name: 'second' });
+        expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued.at(-1)).toMatchObject({ executor: 'second', scope: 'user' });
+
+        // The rename keeps the identity: the same row is still the default under its new label.
+        await putPersonal(b, b.memberCookie, [entry('first', { id: firstId }), entry('renamed', { id: secondId })]);
+        expect((await poll(b, b.memberCookie)).defaultExecutor).toEqual({ scope: 'user', name: 'renamed' });
+        expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued.at(-1)).toMatchObject({ executor: 'renamed', scope: 'user' });
+
+        // An explicit executor still wins.
+        await queue(b, b.memberCookie, 'first', 'user');
+        expect(b.queued.at(-1)).toMatchObject({ executor: 'first', scope: 'user' });
+    });
+
+    it('refuses an omitted default until it is replaced or cleared, and an id the caller does not own', async () => {
+        const b = await boot();
+        await putPersonal(b, b.memberCookie, [entry('keep'), entry('drop')]);
+        const dropId = await personalId(b, 'drop', b.memberCookie);
+        await putDefault(b, b.memberCookie, { executorId: dropId });
+
+        const omitted = await putPersonal(b, b.memberCookie, [entry('keep')]);
+        expect(omitted.statusCode).toBe(HTTP_CONFLICT);
+        expect(omitted.json().code).toBe('EXECUTOR_IS_DEFAULT');
+        const removed = await b.instance.inject({
+            method: 'DELETE',
+            url: `/api/workspace/executors/${dropId}`,
+            headers: { cookie: b.memberCookie },
+        });
+        expect(removed.statusCode).toBe(HTTP_CONFLICT);
+        expect((await poll(b, b.memberCookie)).executors).toHaveLength(2);
+
+        const foreign = await putPersonal(b, b.otherCookie, [entry('mine', { id: dropId })]);
+        expect(foreign.statusCode).toBe(HTTP_BAD_REQUEST);
+
+        const cleared = await b.instance.inject({
+            method: 'DELETE',
+            url: '/api/workspace/executors/default',
+            headers: { cookie: b.memberCookie },
+        });
+        expect(cleared.json()).toEqual({ cleared: true });
+        expect((await putPersonal(b, b.memberCookie, [entry('keep')])).statusCode).toBe(HTTP_OK);
+    });
+
+    it('an admin configures the organization default: members launch on it, personal beats it, only admins write it', async () => {
+        const b = await boot();
+        const orgId = await createOrg(b, 'shared');
+        await putPersonal(b, b.memberCookie, [entry('mine')]);
+
+        expect((await putOrgDefault(b, b.memberCookie, orgId)).statusCode).toBe(HTTP_FORBIDDEN);
+        expect((await putOrgDefault(b, b.adminCookie, orgId)).statusCode).toBe(HTTP_OK);
+        // The poll marks the organization's configured default for the admin's Clear action.
+        expect((await poll(b, b.otherCookie)).orgExecutors).toEqual([
+            expect.objectContaining({ id: orgId, name: 'shared', orgDefault: true }),
+        ]);
+
+        // The member has a personal executor but never chose it: the configured org default beats the legacy first row.
+        expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued.at(-1)).toMatchObject({ executor: 'shared', scope: 'org' });
+        expect((await queueBare(b, b.otherCookie)).statusCode).toBe(HTTP_CREATED);
+        expect(b.queued.at(-1)).toMatchObject({ executor: 'shared', scope: 'org' });
+
+        await putDefault(b, b.memberCookie, { executorId: await personalId(b, 'mine', b.memberCookie) });
+        await queueBare(b, b.memberCookie);
+        expect(b.queued.at(-1)).toMatchObject({ executor: 'mine', scope: 'user' });
+
+        // A personal executor cannot be the organization default, and the organization default is protected.
+        const personalTarget = await putOrgDefault(b, b.adminCookie, await personalId(b, 'mine', b.memberCookie));
+        expect(personalTarget.statusCode).toBe(HTTP_NOT_FOUND);
+        const removed = await b.instance.inject({
+            method: 'DELETE',
+            url: `/api/org/executors/${orgId}`,
+            headers: { cookie: b.adminCookie },
+        });
+        expect(removed.statusCode).toBe(HTTP_CONFLICT);
+        expect(removed.json().code).toBe('EXECUTOR_IS_DEFAULT');
+
+        expect((await clearOrgDefault(b, b.adminCookie)).json()).toEqual({ cleared: true });
+        const after = await b.instance.inject({
+            method: 'DELETE',
+            url: `/api/org/executors/${orgId}`,
+            headers: { cookie: b.adminCookie },
+        });
+        expect(after.statusCode).toBe(HTTP_OK);
+    });
+
+    it('a suspended configured default refuses a bare launch instead of falling through, and resuming restores it', async () => {
+        const b = await boot();
+        const orgId = await createOrg(b, 'shared');
+        await putPersonal(b, b.memberCookie, [entry('mine')]);
+        await putOrgDefault(b, b.adminCookie, orgId);
+        const queuedBefore = b.queued.length;
+
+        await suspend(b, `/api/org/executors/${orgId}/suspension`, b.adminCookie, true);
+        const refused = await queueBare(b, b.otherCookie);
+        expect(refused.statusCode).toBe(HTTP_CONFLICT);
+        expect(refused.json().code).toBe('EXECUTOR_SUSPENDED');
+        expect(b.queued).toHaveLength(queuedBefore);
+        // The poll names the stale default, with the reason, rather than inventing another.
+        expect((await poll(b, b.otherCookie)).defaultExecutor).toEqual({
+            scope: 'org',
+            name: 'shared',
+            unusable: 'suspended',
+        });
+        // An explicit executor is not a bare launch: it still wins.
+        expect((await queue(b, b.otherCookie, 'shared', 'org')).statusCode).toBe(HTTP_CONFLICT);
+
+        await suspend(b, `/api/org/executors/${orgId}/suspension`, b.adminCookie, false);
+        expect((await queueBare(b, b.otherCookie)).statusCode).toBe(HTTP_CREATED);
+    });
+
+    it('refuses a name-only default body with 400 and leaves the resolved default alone', async () => {
+        const b = await boot();
+        await putPersonal(b, b.memberCookie, [entry('a'), entry('b')]);
+        await putDefault(b, b.memberCookie, { executorId: await personalId(b, 'a', b.memberCookie) });
+
+        const refused = await putDefault(b, b.memberCookie, { executor: 'b', executorScope: 'user' });
+        expect(refused.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect((await poll(b, b.memberCookie)).defaultExecutor).toEqual({ scope: 'user', name: 'a' });
+        await queueBare(b, b.memberCookie);
+        expect(b.queued.at(-1)).toMatchObject({ executor: 'a', scope: 'user' });
+    });
+
+    it('refuses deleting or demoting an org executor members default, counting them, until an explicit clear or replacement', async () => {
+        const b = await boot();
+        const orgId = await createOrg(b, 'shared');
+        const nextId = await createOrg(b, 'next');
+        await putDefault(b, b.memberCookie, { executorId: orgId });
+        await putDefault(b, b.otherCookie, { executorId: orgId });
+        const del = (query = '') =>
+            b.instance.inject({
+                method: 'DELETE',
+                url: `/api/org/executors/${orgId}${query}`,
+                headers: { cookie: b.adminCookie },
+            });
+
+        const refused = await del();
+        expect(refused.statusCode).toBe(HTTP_CONFLICT);
+        expect(refused.json().code).toBe('EXECUTOR_IS_DEFAULT');
+        expect(refused.json().error).toContain('2 members');
+        expect(refused.json().error).not.toContain('octocat');
+        const demote = await b.instance.inject({
+            method: 'POST',
+            url: `/api/org/executors/${orgId}/scope`,
+            headers: { cookie: b.adminCookie },
+            payload: { scope: 'user' },
+        });
+        expect(demote.statusCode).toBe(HTTP_CONFLICT);
+        expect((await poll(b, b.memberCookie)).defaultExecutor).toEqual({ scope: 'org', name: 'shared' });
+
+        // A replacement re-points both members' defaults; a bad one changes nothing.
+        expect((await del('?replaceDefaultsWith=99999999-9999-4999-8999-999999999999')).statusCode).toBe(
+            HTTP_NOT_FOUND
+        );
+        expect((await poll(b, b.memberCookie)).defaultExecutor).toEqual({ scope: 'org', name: 'shared' });
+        expect((await del(`?replaceDefaultsWith=${nextId}`)).statusCode).toBe(HTTP_OK);
+        expect((await poll(b, b.memberCookie)).defaultExecutor).toEqual({ scope: 'org', name: 'next' });
+        expect((await poll(b, b.otherCookie)).defaultExecutor).toEqual({ scope: 'org', name: 'next' });
+
+        // An explicit clear removes the selections with the executor.
+        expect(
+            (
+                await b.instance.inject({
+                    method: 'DELETE',
+                    url: `/api/org/executors/${nextId}?clearDefaults=true`,
+                    headers: { cookie: b.adminCookie },
+                })
+            ).statusCode
+        ).toBe(HTTP_OK);
+        expect(await b.executors.selectedDefault(b.memberId)).toBeNull();
     });
 });

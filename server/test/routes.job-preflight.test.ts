@@ -333,6 +333,24 @@ describe('POST /api/jobs/preflight executor', () => {
         expect(check?.detail).toContain('your default');
     });
 
+    it('names the configured default create will stamp, and blocks on a suspended one instead of falling through', async () => {
+        const booted = await boot();
+        const org = await booted.executors.createOrg({
+            name: 'shared',
+            type: 'claude-code',
+            config: {},
+            createdBy: booted.member.user.id,
+        });
+        await booted.executors.selectDefault(null, org.id);
+        const ok = (await verdict(booted, { repo: 'acme/web' }, 'executor')).check;
+        expect(ok).toMatchObject({ name: 'shared', status: 'ok' });
+
+        await booted.executors.setOrgSuspended(org.id, true);
+        const { check } = await verdict(booted, { repo: 'acme/web' }, 'executor');
+        expect(check).toMatchObject({ name: 'shared', status: 'blocked' });
+        expect(check?.detail).toContain('suspended');
+    });
+
     it('is blocked when nothing is selected and the caller has no usable profile, saying where to configure one', async () => {
         const booted = await boot();
         const [row] = booted.executors.rows();
@@ -846,7 +864,7 @@ describe('POST /api/jobs/preflight repo skills follow the executor', () => {
     it("the repo read receives the default profile's dirs when no executor is named", async () => {
         const seen: (readonly string[])[] = [];
         const booted = await bootWithOpencode({ repoSkills: dirAware(seen) });
-        await booted.executors.setDefault(booted.member.user.id, { scope: 'user', name: 'oc' });
+        booted.executors.seedLegacyDefault(booted.member.user.id, { scope: 'user', name: 'oc' });
         const { check } = await verdict(booted, base, 'skill');
         expect(seen).toEqual([OPENCODE_DIRS]);
         expect(check).toMatchObject({ name: 'oc-only', status: 'ok' });

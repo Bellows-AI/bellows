@@ -1,10 +1,10 @@
 import { ADMIN_ROLE, CLOUD, ORG_SCOPE } from '@factory-ai/core';
 import { useState } from 'react';
 import {
-    changeOrgExecutorScope,
+    clearOrgDefaultExecutor,
     createOrgExecutor,
-    deleteOrgExecutor,
     listOrgExecutorConfigs,
+    setOrgDefaultExecutor,
     suspendOrgExecutor,
     updateOrgExecutor,
     type OrgExecutorFull,
@@ -18,7 +18,7 @@ import {
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { OrgExecutorConfirmDialog } from '../components/OrgExecutorConfirmDialog.js';
 import type { Session } from '../api/useSession.js';
-import { confirmedWrite, type OrgRowConfirm } from './org-executor-confirm.js';
+import { useOrgRowConfirm } from './useOrgRowConfirm.js';
 import { OrgExecutorsPanel } from './OrgExecutorsPanel.js';
 
 /**
@@ -64,9 +64,7 @@ export function OrgExecutorsSection({
     const [dialog, setDialog] = useState<OrgDialogState | null>(null);
     const [list, setList] = useState<OrgExecutorFull[]>([]);
     const [runnerClasses, setRunnerClasses] = useState<RunnerClassOption[]>([]);
-    /** The pending ownership-changing action, or null: no confirmation, no write (issue 411). */
-    const [confirm, setConfirm] = useState<OrgRowConfirm | null>(null);
-    const [confirming, setConfirming] = useState(false);
+    const rowConfirm = useOrgRowConfirm({ executors, onError, onRefresh });
 
     /**
      * The dialog opens with the org list — configs included for an admin — and the board's declared
@@ -133,24 +131,6 @@ export function OrgExecutorsSection({
         onRefresh();
     };
 
-    /**
-     * The confirmed write (issue 411): the only place Delete and Make personal reach their routes.
-     * A row click opens the confirmation and nothing else — both actions are org-wide and take the
-     * profile away from every other member, so neither may happen on one unguarded click.
-     */
-    const runConfirmed = async (): Promise<void> => {
-        if (!confirm) return;
-        setConfirming(true);
-        await withRow(confirm.name, (row) =>
-            confirmedWrite(confirm.action, row, {
-                remove: deleteOrgExecutor,
-                demote: (id) => changeOrgExecutorScope(id, 'user'),
-            })
-        );
-        setConfirming(false);
-        setConfirm(null);
-    };
-
     return (
         <>
             <OrgExecutorsPanel
@@ -160,21 +140,28 @@ export function OrgExecutorsSection({
                 defaultName={defaultExecutor?.scope === 'org' ? defaultExecutor.name : null}
                 onAdd={isAdmin ? () => void openDialog(null) : undefined}
                 onEdit={isAdmin ? (name) => void openDialog(name) : undefined}
-                onDelete={isAdmin ? (name) => setConfirm({ action: 'delete', name }) : undefined}
-                onDemote={isAdmin ? (name) => setConfirm({ action: 'demote', name }) : undefined}
+                onDelete={isAdmin ? (name) => rowConfirm.ask({ action: 'delete', name }) : undefined}
+                onDemote={isAdmin ? (name) => rowConfirm.ask({ action: 'demote', name }) : undefined}
                 onSuspend={
                     isAdmin
                         ? (name, suspended) => void withRow(name, (row) => suspendOrgExecutor(row.id, suspended))
                         : undefined
                 }
+                onSetOrgDefault={
+                    isAdmin ? (name) => void withRow(name, (row) => setOrgDefaultExecutor(row.id)) : undefined
+                }
+                onClearOrgDefault={
+                    isAdmin
+                        ? () =>
+                              void clearOrgDefaultExecutor().then((message) => {
+                                  if (message) onError(message);
+                                  else onRefresh();
+                              })
+                        : undefined
+                }
                 onMakeDefault={(name) => void onMakeDefault('org', name).then((message) => message && onError(message))}
             />
-            <OrgExecutorConfirmDialog
-                confirm={confirm}
-                busy={confirming}
-                onClose={() => setConfirm(null)}
-                onConfirm={() => void runConfirmed()}
-            />
+            <OrgExecutorConfirmDialog {...rowConfirm.dialog} />
             <ExecutorDialog
                 open={dialog !== null}
                 existing={list}

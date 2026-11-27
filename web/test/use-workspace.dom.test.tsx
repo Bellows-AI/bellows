@@ -43,6 +43,20 @@ describe('useWorkspace', () => {
         await waitFor(() => expect(reads(calls)).toHaveLength(2));
     });
 
+    it('writes the default executor by its stable id, then re-fetches once', async () => {
+        const calls = stubFetch(({ method, url }) => {
+            if (url === '/api/workspace') return payload;
+            if (method === 'PUT' && url === '/api/workspace/executors/default') return {};
+        });
+        const { result } = renderHook(() => useWorkspace());
+        await waitFor(() => expect(result.current.data).not.toBeNull());
+        await act(async () => {
+            expect(await result.current.setDefaultExecutor('id-1')).toBeNull();
+        });
+        await waitFor(() => expect(reads(calls)).toHaveLength(2));
+        expect(calls.find((call) => call.method === 'PUT')?.body).toEqual({ executorId: 'id-1' });
+    });
+
     it('exposes no repository selection or purge', async () => {
         stubFetch(({ url }) => (url === '/api/workspace' ? payload : undefined));
         const { result } = renderHook(() => useWorkspace());
