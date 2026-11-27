@@ -19,7 +19,7 @@ import { readGitlabDefaultBranch } from '../../forge/forge-reads.js';
 import { FORGE_READ_DEADLINE_MS } from '../../forge/gitlab-reads.js';
 import { forgeOfRepo, isGithubRepo, isGitlabRepo, refOfListed } from '../../forge/forges.js';
 import { refusedAsNoForgeGrant } from '../jobs/forge-usable.js';
-import { readBranchHead } from '../../forge/forge-client.js';
+import { INSTALLATION_CREDENTIAL, readBranchHead, resolveForgeClient } from '../../forge/forge-client.js';
 import { defaultExecutorOf, executorTypeOf, refusedAsNoModel, refusedAsUnusable } from '../jobs/executor-usable.js';
 import { validateExecutorField } from '../jobs/job-field-validation.js';
 
@@ -222,9 +222,8 @@ export async function launchChecks(
 
     const resolved = resolveBatchPlan(plan, defaults);
     if (!(await targetBranchesExist(ctx, request, reply, offDefaultTargets(resolved, defaults)))) return null;
-    if (!automergeUnsupported(reply, resolved)) return null;
     const capability = batchExecutionCapability(resolved, {
-        canMerge: ctx.runtime.batchMerger !== undefined,
+        canMerge: canMergeTargets(ctx, resolved),
     });
     if (!capability.ok) {
         reply.code(HTTP_CONFLICT).send({
@@ -244,16 +243,23 @@ export async function launchChecks(
         : null;
 }
 
-/** The board does not merge on GitLab yet: an automerge stage on a GitLab target is refused, whatever else the org holds. False once refused. */
-function automergeUnsupported(reply: FastifyReply, plan: ResolvedBatchPlan): boolean {
-    const gitlab = plan.targets.some((target) => isGitlabRepo(target.repo));
-    if (!gitlab || !plan.stages.some((stage) => stage.policy === AUTOMERGE)) return true;
-    reply.code(HTTP_CONFLICT).send({
-        error: 'The board does not merge GitLab merge requests yet; every stage must use the "human" policy',
-        code: ERROR_CODES.BATCH_UNSUPPORTED,
-        reason: AUTOMERGE,
-    });
-    return false;
+/**
+ * Whether the board can merge every target an automerge stage lands on: it needs a merger, and a source for the target's
+ * forge: GitLab's grants and connections, or GitHub's installation. Another combination would read an unbound PR on
+ * every pass instead of merging.
+ */
+function canMergeTargets(ctx: Context, plan: ResolvedBatchPlan): boolean {
+    if (ctx.runtime.batchMerger === undefined) return false;
+    const merged = new Set(
+        plan.stages.filter((stage) => stage.policy === AUTOMERGE).flatMap((stage) => stage.tasks.map((t) => t.target))
+    );
+    return plan.targets
+        .filter((target) => merged.has(target.key))
+        .every((target) =>
+            isGitlabRepo(target.repo)
+                ? ctx.gitlab !== undefined
+                : resolveForgeClient(ctx.runtime.forge, target.repo, INSTALLATION_CREDENTIAL).ok
+        );
 }
 
 /**

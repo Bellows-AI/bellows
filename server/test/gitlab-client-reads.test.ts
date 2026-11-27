@@ -663,3 +663,181 @@ describe('the pipelines-by-sha lookup of the statuses', () => {
         expect(assessPullRequest(facts).outcome).toBe('checks_failing');
     });
 });
+
+describe('GitLabClient.mergeChangeRequest', () => {
+    const SQUASH = { sha: SHA, method: 'squash' };
+    const PROJECT_PATH = `/api/v4/projects/${ENCODED}`;
+    const MERGE_PATH = `${MR_PATH}/merge`;
+    let projects = 0;
+
+    /** An MR on a project of its own with `squashOption`, so each case merges into a target it owns. */
+    async function mergeable(squashOption: string) {
+        const path = `grp/merge${++projects}`;
+        await gl.control('gitlab/projects', { path, squashOption, files: { 'README.md': 'x\n' } });
+        await gl.control('gitlab/commit', { project: path, branch: 'work', files: { 'w.txt': 'x' }, message: 'work' });
+        const encoded = encodeURIComponent(path);
+        const made = await gl.send('POST', `/api/v4/projects/${encoded}/merge_requests`, {
+            token,
+            body: { source_branch: 'work', target_branch: 'main', title: 'Change' },
+        });
+        const mr = made.body as { iid: number; sha: string };
+        const ref = parseRepoRef(`gitlab:board.gitlab.test/${path}`) as RepoRef;
+        const client = createGitLabForgeClient(
+            { api: createGitlabApi({ baseUrl: () => gl.base, probeTimeoutMs: 10_000 }), caBundle: undefined },
+            ref,
+            { kind: 'token', token }
+        );
+        const stateOf = async () =>
+            (await gl.send('GET', `/api/v4/projects/${encoded}/merge_requests/${mr.iid}`, { token })).body as {
+                state: string;
+                merged_by: { username: string } | null;
+            };
+        const puts = () =>
+            gl.forge.calls().filter((call) => call.method === 'PUT' && call.path.includes(`${encoded}/merge_requests`));
+        return { path, encoded, iid: mr.iid, sha: mr.sha, client, stateOf, puts };
+    }
+
+    it('sends the observed sha as the acting member and answers the merge commit', async () => {
+        const mr = await mergeable('default_off');
+        const result = await mr.client.mergeChangeRequest(mr.iid, { sha: mr.sha, method: 'squash' });
+        expect(mr.puts()).toHaveLength(1);
+        const body = await mr.stateOf();
+        expect(body.state).toBe('merged');
+        expect(body.merged_by?.username).toBe('dev');
+        const merged = (await gl.send('GET', `/api/v4/projects/${mr.encoded}/merge_requests/${mr.iid}`, { token }))
+            .body as { merge_commit_sha: string | null; squash_commit_sha: string | null; squash: boolean };
+        expect(merged.squash).toBe(true);
+        expect(result.mergeCommitSha).toBe(merged.merge_commit_sha ?? merged.squash_commit_sha);
+        expect(result.mergeCommitSha).toMatch(/^[0-9a-f]{40}$/);
+    });
+
+    it('sends sha, squash and a kept source branch, and nothing else of the board’s method', async () => {
+        const { api, seen } = scripted((_request, path) =>
+            path === PROJECT_PATH
+                ? json(200, { squash_option: 'default_off' })
+                : json(200, mrBody({ state: 'merged', merge_commit_sha: TIP }))
+        );
+        const result = await clientWith(api).mergeChangeRequest(7, SQUASH);
+        const put = seen.find((request) => request.method === 'PUT');
+        expect(put?.path).toBe(MERGE_PATH);
+        expect(JSON.parse(put?.body as string)).toEqual({ sha: SHA, squash: true, should_remove_source_branch: false });
+        expect(result).toEqual({ mergeCommitSha: TIP });
+    });
+
+    it('takes the squash commit when the merge has no merge commit', async () => {
+        const { api } = scripted((_request, path) =>
+            path === PROJECT_PATH
+                ? json(200, { squash_option: 'always' })
+                : json(200, mrBody({ state: 'merged', squash_commit_sha: TIP }))
+        );
+        expect(await clientWith(api).mergeChangeRequest(7, SQUASH)).toEqual({ mergeCommitSha: TIP });
+    });
+
+    it('refuses with nothing sent when the project forbids squash merges', async () => {
+        const mr = await mergeable('never');
+        const error = await mr.client.mergeChangeRequest(mr.iid, { sha: mr.sha, method: 'squash' }).catch((e) => e);
+        expect(error).toMatchObject({ kind: 'refused' });
+        expect(error.message).toContain('the project forbids squash merges; the board merges by squash');
+        expect(mr.puts()).toEqual([]);
+        expect((await mr.stateOf()).state).toBe('opened');
+    });
+
+    it.each(['always', 'default_on', 'default_off'])('merges by squash where the project says %s', async (option) => {
+        const mr = await mergeable(option);
+        await mr.client.mergeChangeRequest(mr.iid, { sha: mr.sha, method: 'squash' });
+        expect(mr.puts()).toHaveLength(1);
+        expect((await mr.stateOf()).state).toBe('merged');
+    });
+
+    it.each([
+        ['a missing squash_option', () => json(200, {})],
+        ['an unknown squash_option', () => json(200, { squash_option: 'sometimes' })],
+        ['a 500', () => json(500, {})],
+        ['a 401', () => json(401, {})],
+        ['no answer', (): GitlabResponse => ({ ok: false, reason: 'timeout', sent: true })],
+    ])('sends nothing and is not_sent on %s of the project read', async (_name, answer) => {
+        const { api, seen } = scripted((_request, path) => (path === PROJECT_PATH ? answer() : json(200, mrBody())));
+        expect(await kindOf(clientWith(api).mergeChangeRequest(7, SQUASH))).toBe('not_sent');
+        expect(seen.filter((request) => request.method === 'PUT')).toEqual([]);
+    });
+
+    it('refuses a head that moved, and the MR stays open', async () => {
+        const mr = await mergeable('default_off');
+        await gl.control('gitlab/commit', {
+            project: mr.path,
+            branch: 'work',
+            files: { 'later.txt': 'y' },
+            message: 'later',
+        });
+        const error = await mr.client.mergeChangeRequest(mr.iid, { sha: mr.sha, method: 'squash' }).catch((e) => e);
+        expect(error).toMatchObject({ kind: 'refused' });
+        expect((await mr.stateOf()).state).toBe('opened');
+    });
+
+    describe('classification of the merge answer', () => {
+        const afterProject = (answer: () => GitlabResponse) =>
+            scripted((request, path) =>
+                request.method === 'GET' && path === PROJECT_PATH
+                    ? json(200, { squash_option: 'default_on' })
+                    : answer()
+            );
+        it.each([
+            [405, 'refused'],
+            [406, 'refused'],
+            [422, 'refused'],
+            [403, 'forbidden'],
+            [404, 'forbidden'],
+            [429, 'rate_limited'],
+            [401, 'uncertain'],
+            [500, 'uncertain'],
+            [502, 'uncertain'],
+        ])('answers %i as %s', async (status, kind) => {
+            const { api } = afterProject(() => json(status, { message: 'x' }));
+            expect(await kindOf(clientWith(api).mergeChangeRequest(7, SQUASH))).toBe(kind);
+        });
+
+        it('answers a timeout after the send as uncertain', async () => {
+            const { api } = afterProject(() => ({ ok: false, reason: 'timeout', sent: true }));
+            expect(await kindOf(clientWith(api).mergeChangeRequest(7, SQUASH))).toBe('uncertain');
+        });
+
+        it('answers a refused connection as not_sent', async () => {
+            const { api } = afterProject(() => ({ ok: false, reason: 'unreachable', sent: false }));
+            expect(await kindOf(clientWith(api).mergeChangeRequest(7, SQUASH))).toBe('not_sent');
+        });
+
+        it.each([
+            ['not a merged MR', () => json(200, mrBody({ state: 'opened' }))],
+            ['an unreadable body', (): GitlabResponse => ({ ok: true, status: 200, text: '<html>' })],
+            ['a list', () => json(200, [])],
+            ['a cut answer', (): GitlabResponse => ({ ok: false, reason: 'malformed', sent: true })],
+        ])('answers a 2xx with %s as uncertain, never merged', async (_name, answer) => {
+            const { api } = afterProject(answer);
+            expect(await kindOf(clientWith(api).mergeChangeRequest(7, SQUASH))).toBe('uncertain');
+        });
+
+        it('puts the token in no error text', async () => {
+            const { api } = afterProject(() => json(500, { message: 'x' }));
+            await expect(clientWith(api).mergeChangeRequest(7, SQUASH)).rejects.not.toThrow(token);
+        });
+    });
+
+    it('is forbidden with no request when no token was given', async () => {
+        const { api, seen } = scripted(() => json(200, {}));
+        const client = createGitLabForgeClient({ api, caBundle: undefined }, REF, { kind: 'installation' });
+        expect(await kindOf(client.mergeChangeRequest(7, SQUASH))).toBe('forbidden');
+        expect(seen).toEqual([]);
+    });
+
+    it('carries the caller’s signal on both requests', async () => {
+        const controller = new AbortController();
+        const { api, seen } = scripted((_request, path) =>
+            path === PROJECT_PATH
+                ? json(200, { squash_option: 'default_on' })
+                : json(200, mrBody({ state: 'merged', merge_commit_sha: TIP }))
+        );
+        await clientWith(api, { signal: controller.signal }).mergeChangeRequest(7, SQUASH);
+        expect(seen).toHaveLength(2);
+        expect(seen.every((request) => request.signal === controller.signal)).toBe(true);
+    });
+});

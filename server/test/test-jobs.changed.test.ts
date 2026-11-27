@@ -219,14 +219,28 @@ describe('test-jobs --changed path-to-phase map', () => {
             'server/src/commerce/commerce-client.ts',
             'server/src/db/commerce-store.ts',
             'server/src/routes/commerce.ts',
-            'server/src/db/batches/batch-store.ts',
-            'server/src/routes/batches/batch-handlers.ts',
             'server/src/routes/tokens.ts',
             'server/src/routes/audit.ts',
             'server/src/seed/cli.ts',
             'site/docs.json',
         ]) {
             expect(classify([file]).selected, file).toEqual([]);
+        }
+    });
+
+    it('maps the batch routes, stores, reconciler and merger to the gitlab phase, which starts a batch', () => {
+        for (const file of [
+            'server/src/batch-merger.ts',
+            'server/src/db/batches/batch-store-merge.ts',
+            'server/src/routes/batches/batch-launch.ts',
+            'server/src/routes/batches/batch-handlers.ts',
+            'server/src/routes/batches/batch-http.ts',
+            'server/src/db/batches/batch-store.ts',
+            'server/src/db/batches/batch-store-schedule.ts',
+            'server/src/db/batches/batch-store-gates.ts',
+            'server/src/batch-reconciler.ts',
+        ]) {
+            expect(classify([file]).selected, file).toEqual(['gitlab']);
         }
     });
 

@@ -50,6 +50,7 @@ interface GateRow {
     merge_detail: string | null;
     outcome: string | null;
     error_code: string | null;
+    merge_wait: string | null;
 }
 
 /** The board's own word on its merge request, as the task's wait reason carries it; null once it says nothing. */
@@ -58,11 +59,11 @@ function mergeNoteOf(state: string | null, detail: string | null): string | null
         case MERGE_REFUSED:
             return `merge refused: ${detail ?? 'no reason given'}`;
         case MERGE_CHANGED:
-            return `merge held, the PR changed: ${detail ?? ''}`;
+            return `merge held, the change request changed: ${detail ?? ''}`;
         case MERGE_LAPSED:
-            return `merge not accepted by GitHub, will retry: ${detail ?? ''}`;
+            return `merge not accepted by the forge, will retry: ${detail ?? ''}`;
         case MERGE_UNCERTAIN:
-            return 'a merge request has an unknown outcome; reconciling with GitHub';
+            return 'a merge request has an unknown outcome; reconciling with the forge';
         case MERGE_DISPATCHING:
             return 'merging';
         default:
@@ -73,13 +74,13 @@ function mergeNoteOf(state: string | null, detail: string | null): string | null
 /** Why the board cannot merge an observed PR by itself (`awaitsBoardMerge`); outranks an earlier merge request's note. */
 function observedNoteOf(outcome: string | null, error: string | null): string | null {
     if (error === READ_NOT_FOUND || error === READ_FORBIDDEN || error === READ_BINDING) {
-        return `the PR cannot be read (${error}); the board cannot merge it`;
+        return `the change request cannot be read (${error}); the board cannot merge it`;
     }
     switch (outcome) {
         case OUTCOME_REVIEW_REQUIRED:
-            return 'the PR needs an approving review from a person before the board can merge it';
+            return 'the change request needs an approving review from a person before the board can merge it';
         case OUTCOME_CHECKS_MISSING:
-            return "the PR's required checks never reported; the board cannot merge it until they do";
+            return "the change request's required checks never reported; the board cannot merge it until they do";
         default:
             return null;
     }
@@ -91,7 +92,7 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
         select t.key, t.completion_kind, t.completion_condition, tg.branch as target_branch, t.pr, t.wait_reason, t.attention,
                p.forge, p.host, p.repo, p.pr_number, p.pr_url, p.base_branch, m.merged_at,
                a.attempt, a.created_at as attempt_started_at, s.policy, mg.state as merge_state,
-               mg.detail as merge_detail, o.outcome, o.error_code
+               mg.detail as merge_detail, o.outcome, o.error_code, o.merge_wait
         from batch_task t
         join batch_stage s on s.org_id = t.org_id and s.batch_id = t.batch_id and s.key = t.stage_key
         join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id and tg.key = t.target_key
@@ -127,7 +128,10 @@ export async function judgeGates(tx: TransactionSql, orgId: string, id: string):
             attempt: row.attempt,
             attemptStartedAt: row.attempt_started_at.getTime(),
             automerge: row.policy === AUTOMERGE,
-            mergeNote: observedNoteOf(row.outcome, row.error_code) ?? mergeNoteOf(row.merge_state, row.merge_detail),
+            mergeNote:
+                observedNoteOf(row.outcome, row.error_code) ??
+                row.merge_wait ??
+                mergeNoteOf(row.merge_state, row.merge_detail),
         });
         if (judgement.pass) {
             await tx`

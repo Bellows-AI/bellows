@@ -71,6 +71,8 @@ export interface MergeIntent {
     prNumber: number;
     targetBranch: string;
     headSha: string;
+    /** The batch's starter, whose grant reads and merges the PR; null once the user is gone. */
+    startedBy: string | null;
 }
 
 interface CandidateRow {
@@ -190,6 +192,7 @@ const candidateOf = (row: CandidateRow) =>
 /** What `admit` is asked about a listed candidate: the repository to merge in and the batch's starter, whose token merges. */
 export interface MergeCandidate {
     batchId: string;
+    taskKey: string;
     repo: RepoRef;
     startedBy: string | null;
 }
@@ -235,7 +238,15 @@ async function claimIfAdmitted(
     admit: (candidate: MergeCandidate) => Promise<boolean>
 ): Promise<MergeIntent | null> {
     if (!candidateOf(row).merge) return null;
-    if (!(await admit({ batchId: row.batch_id, repo: refOfRow(prRowOf(row)), startedBy: row.started_by }))) return null;
+    if (
+        !(await admit({
+            batchId: row.batch_id,
+            taskKey: row.task_key,
+            repo: refOfRow(prRowOf(row)),
+            startedBy: row.started_by,
+        }))
+    )
+        return null;
     return claimOne(deps, now, row);
 }
 
@@ -283,6 +294,7 @@ async function claimOne(deps: MergeDeps, now: Date, row: CandidateRow): Promise<
             prNumber: fresh.pr_number,
             targetBranch: fresh.target_branch,
             headSha: fresh.head_sha!,
+            startedBy: fresh.started_by,
         };
     });
 }
@@ -402,13 +414,16 @@ export async function unresolvedMerges(deps: MergeDeps, limit: number): Promise<
             pr_number: number;
             target_branch: string;
             head_sha: string;
+            started_by: string | null;
         }[]
     >`
-        select id::text as id, batch_id, task_key, attempt, forge, host, repo, pr_number, target_branch, head_sha
-        from batch_merge
-        where org_id = ${deps.orgId}
-          and (state = ${MERGE_UNCERTAIN} or (state = ${MERGE_DISPATCHING} and lease_until <= ${nowOf(deps)}))
-        order by id limit ${limit}
+        select m.id::text as id, m.batch_id, m.task_key, m.attempt, m.forge, m.host, m.repo, m.pr_number,
+               m.target_branch, m.head_sha, b.started_by
+        from batch_merge m
+        join batch b on b.org_id = m.org_id and b.id = m.batch_id
+        where m.org_id = ${deps.orgId}
+          and (m.state = ${MERGE_UNCERTAIN} or (m.state = ${MERGE_DISPATCHING} and m.lease_until <= ${nowOf(deps)}))
+        order by m.id limit ${limit}
     `;
     return rows.map((row) => ({
         id: row.id,
@@ -419,6 +434,7 @@ export async function unresolvedMerges(deps: MergeDeps, limit: number): Promise<
         prNumber: row.pr_number,
         targetBranch: row.target_branch,
         headSha: row.head_sha,
+        startedBy: row.started_by,
     }));
 }
 
@@ -428,6 +444,8 @@ export interface VerificationJob {
     stageKey: string;
     repo: RepoRef;
     branch: string;
+    /** The batch's starter, whose grant reads the target and the merges. */
+    startedBy: string | null;
     merges: { task: string; repo: RepoRef; prNumber: number; mergeCommitSha: string | null }[];
 }
 
@@ -440,10 +458,18 @@ export async function dueVerifications(deps: MergeDeps, limit: number): Promise<
     const { sql, orgId } = deps;
     const now = nowOf(deps);
     const stages = await sql<
-        { batch_id: string; stage_key: string; forge: string; host: string; repo: string; branch: string }[]
+        {
+            batch_id: string;
+            stage_key: string;
+            forge: string;
+            host: string;
+            repo: string;
+            branch: string;
+            started_by: string | null;
+        }[]
     >`
         select distinct b.id as batch_id, s.key as stage_key, s.position, tg.forge, tg.host, tg.repo, tg.branch,
-               b.started_at
+               b.started_at, b.started_by
         from batch b
         join batch_stage s on s.org_id = b.org_id and s.batch_id = b.id
         join batch_task t on t.org_id = s.org_id and t.batch_id = s.batch_id and t.stage_key = s.key
@@ -500,6 +526,7 @@ export async function dueVerifications(deps: MergeDeps, limit: number): Promise<
             stageKey: stage.stage_key,
             repo: target,
             branch: stage.branch,
+            startedBy: stage.started_by,
             merges: merges.map((row) => ({
                 task: row.task,
                 repo: refOfRow(row),

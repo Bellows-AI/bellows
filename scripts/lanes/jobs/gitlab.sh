@@ -13,6 +13,8 @@ begin_phase gitlab
 #   m3  the driver dies mid-task: the next driver adopts the runner, which asks again; one push, still the member's
 #   m4  no token the fake issued is in the runner's env, its .git/config or the task volume while the task runs,
 #       nor in the task volume after, the job output, the driver log or the board log
+#   b1  the member starts a one-task automerge batch: the task publishes a merge request, a passing pipeline on its head
+#       is the board's cue, and the merge is one PUT by the member; a passing pipeline on the target tip completes it
 
 echo
 echo '# gitlab (fake forge fixture: OAuth, REST v4, git smart-HTTP)'
@@ -90,6 +92,12 @@ gl_running() { [ "$(field "$(gl_read "$1")" status)" = running ]; }
 gl_driver() { # gl_driver [VAR=value ...] -> a driver on the GitLab board; the runner reaches the board's credential route at the lane host
     disruption_driver JOB_BOARD_URL="$GL_BASE" DRIVER_CREDENTIAL="$GL_DRIVER_TOKEN" RUNNER_STATS_URL="http://host.docker.internal:$GL_PORT" "$@"
 }
+gl_batch_plan() { # gl_batch_plan -> a one-task automerge plan on the lane's project; the task's text is a shell script the stub runs
+    node -e 'process.stdout.write(JSON.stringify({ planVersion: 1, title: "lane batch", targets: [{ key: "web", repo: { forge: "gitlab", host: process.argv[1], path: process.argv[2] } }], defaultTarget: "web", stages: [{ key: "one", policy: "automerge", tasks: [{ key: "a", objective: process.argv[3], acceptance: ":", verification: "true", completion: { kind: "pr" } }] }] }))' "$GL_HOST" "$GL_PROJECT" "$1"
+}
+gl_member_api() { # gl_member_api <method> <path> [json] -> the member's answer, status TAB body
+    BASE="$GL_BASE" AUTH_HEADER="Bearer $GL_MEMBER" api "$@"
+}
 gl_kill_driver() {
     kill -9 "$driver_pid" 2>/dev/null
     wait "$driver_pid" 2>/dev/null
@@ -147,7 +155,7 @@ GL_DRIVER_TOKEN="drv_$(openssl rand -hex 32)" # the driver's credential; the boa
 if [ -n "$gl_ready" ]; then
     gl_psql "insert into organization (id, name) values ('$GL_ORG', '$GL_ORG') on conflict do nothing" >/dev/null
     env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$GL_PORT" "${LANE_BOARD_BIND[@]}" \
-        REPO_CLONE_BASE="$PLAN_BASE" AUTH_MODE=github PUBLIC_URL="$GL_BASE" \
+        REPO_CLONE_BASE="$PLAN_BASE" AUTH_MODE=github PUBLIC_URL="$GL_BASE" BATCHES_ENABLED=true \
         GITHUB_APP_CLIENT_ID=lane-client GITHUB_APP_CLIENT_SECRET=lane-secret \
         GITHUB_WEB_URL="$LANE_FAKE_FORGE_URL" GITHUB_API_URL="$LANE_FAKE_FORGE_URL" \
         SESSION_SECRET=a-job-harness-session-secret-32-chars DRIVER_CREDENTIAL_SHA256="$(credential_sha256 "$GL_DRIVER_TOKEN")" \
@@ -263,6 +271,41 @@ if [ -n "$GL_CONNECTION" ]; then
     succeeded) ok 'm3: the interruption did not fail the task' ;;
     *) bad 'm3: the interruption did not fail the task' "$(gl_psql "select status from job where id = '$m3'")" ;;
     esac
+
+    # B1: the member starts an automerge batch on the GitLab project. The task's text is a shell script for the stub
+    # (`Acceptance:` and `Verification:` are commands it does not find, and the last line decides the exit); the board
+    # publishes the merge request as the member, observes it once a passing pipeline is seeded on its head, and merges it
+    # as the member with the observed sha. A passing pipeline on the target tip then completes the batch.
+    gl_calls_b1="$(gl_line calls "$(gl_summary)")"
+    b1_plan="$(gl_batch_plan 'cd "$WORKDIR" && echo x >lane-batch-change')"
+    b1_batch="$(field "$(body "$(gl_member_api POST /api/batches "{\"plan\":$b1_plan}")")" id)"
+    b1_start="$(status "$(gl_member_api POST "/api/batches/$b1_batch/start" '{"version":1}')")"
+    [ "$b1_start" = 200 ] && ok 'b1: the member starts an automerge batch on the GitLab project' ||
+        bad 'b1: the member starts an automerge batch on the GitLab project' "start answered $b1_start"
+    b1_root=''
+    b1_rooted() { b1_root="$(gl_psql "select root_job_id from batch_task where batch_id = '$b1_batch' and root_job_id is not null")"; [ -n "$b1_root" ]; }
+    acc_until 120 b1_rooted && ok 'b1: the batch launched its task' || bad 'b1: the batch launched its task' 'no root job'
+    [ -n "$b1_root" ] && expect_contains 'b1: the task succeeds' "$(gl_settled "$b1_root" 240)" succeeded
+    b1_mr=''
+    b1_published() { b1_mr="$(gl_psql "select pr_number || ' ' || head_branch from job_pr where root_job_id = '$b1_root'")"; [ -n "$b1_mr" ]; }
+    acc_until 60 b1_published && ok 'b1: the task published a merge request' || bad 'b1: the task published a merge request' 'no job_pr row'
+    b1_iid="${b1_mr%% *}"
+    b1_branch="${b1_mr#* }"
+    if [ -n "$b1_mr" ]; then
+        gl_control gitlab/pipelines "{\"project\":\"$GL_PROJECT\",\"ref\":\"$b1_branch\",\"jobs\":[{\"name\":\"test\",\"status\":\"success\"}],\"headOf\":$b1_iid}" >/dev/null
+    fi
+    b1_merged() { [ "$(gl_psql "select state from batch_merge where batch_id = '$b1_batch' order by id desc limit 1")" = merged ]; }
+    acc_until 300 b1_merged && ok 'b1: the board merged the merge request' ||
+        bad 'b1: the board merged the merge request' "$(gl_psql "select state, detail from batch_merge where batch_id = '$b1_batch'")"
+    b1_sum="$(gl_summary "$gl_calls_b1")"
+    b1_puts="$(printf '%s\n' "$b1_sum" | sed -n 's/^mr //p' | grep -c '^PUT:' || true)"
+    b1_holder="$(printf '%s\n' "$b1_sum" | sed -n 's/^mr //p' | grep '^PUT:200:' || true)"
+    [ "$b1_puts" = 1 ] && [ "$b1_holder" = "PUT:200:$GL_LOGIN" ] && ok "b1: one merge PUT was made, by the member's own token" ||
+        bad "b1: one merge PUT was made, by the member's own token" "mr writes: $(printf '%s\n' "$b1_sum" | sed -n 's/^mr //p' | tr '\n' ' ')"
+    gl_control gitlab/pipelines "{\"project\":\"$GL_PROJECT\",\"ref\":\"main\",\"jobs\":[{\"name\":\"test\",\"status\":\"success\"}]}" >/dev/null
+    b1_done() { [ "$(gl_psql "select completed_at is not null from batch where id = '$b1_batch'")" = t ]; }
+    acc_until 300 b1_done && ok 'b1: a passing pipeline on the target tip completes the batch' ||
+        bad 'b1: a passing pipeline on the target tip completes the batch' "$(gl_psql "select state, detail from batch_stage_verification where batch_id = '$b1_batch'")"
     stop_driver
 fi
 kill "${gl_server_pid:-}" "${gl_fake_pid:-}" 2>/dev/null

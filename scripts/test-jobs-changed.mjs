@@ -115,9 +115,9 @@ export const RULES = [
     [/^server\/src\/skills\//, ['pinned-skills'], 'stored-skill bundles, read only when a skill is published'],
     [/^server\/src\/(oauth\/|attachments\/upload-capability-store\.ts$)/, ['mcp'], 'the MCP OAuth server and the sweep only an MCP board starts'],
     [/^server\/src\/offline-mint\.ts$/, ['github-credential'], 'the board with a stand-in mint'],
+    [/^server\/src\/(db\/batches\/|routes\/batches\/|batch-reconciler\.ts$|batch-merger\.ts$)/, ['gitlab'], 'batches: only the gitlab phase starts one (b1, BATCHES_ENABLED), and it drives the launch, reconciler, store, merger and verification'],
     // Not called by any jobs phase.
     [/^server\/src\/(commerce\/|db\/commerce-|routes\/commerce\.ts$)/, NONE, 'commerce, off unless COMMERCE_ENABLED, which no lane sets; not called by any jobs phase'],
-    [/^server\/src\/(db\/batches\/|routes\/batches\/|batch-merger\.ts$|batch-reconciler\.ts$)/, NONE, 'batches: their loops need BATCHES_ENABLED, which no lane sets, and no phase makes one; not called by any jobs phase'],
     [/^server\/src\/db\/forge-connection-sweep\.ts$/, FULL, 'a loop every board starts at boot (server/src/main.ts)'],
     [/^server\/src\/(gitlab\/|db\/forge-connections\.ts$|db\/forge-links\.ts$|routes\/gitlab-connections\.ts$|routes\/gitlab-links\.ts$|integrations\/gitlab-link\.ts$|integrations\/providers\/gitlab\.ts$)/, ['gitlab'], 'the org GitLab connection and link: the gitlab phase connects, activates and links through them'],
     [/^server\/src\/(routes\/(org-members|forge-grants|org-retention|audit|tokens|tasks|operator-driver-credentials|integrations|integration-catalog|attachment-uploads|attachment-ingest|model-setup|model-setup-save)\.ts|db\/org-export\.ts|attachments\/(name|sniff)\.ts)$/, NONE, 'settings, admin and dashboard routes; not called by any jobs phase'],

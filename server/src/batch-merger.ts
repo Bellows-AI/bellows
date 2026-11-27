@@ -1,6 +1,7 @@
 import {
     judgeFreshFacts,
     judgeStageVerification,
+    changeRequestIs,
     MERGE_CHANGED,
     MERGE_ERR_FORBIDDEN,
     MERGE_ERR_NOT_SENT,
@@ -13,9 +14,6 @@ import {
     MERGE_REFUSED,
     MERGE_UNCERTAIN,
     reconcileUncertainMerge,
-    formatRepoRef,
-    githubRepo,
-    sameRepo,
     VERIFY_UNKNOWN,
     type PrFacts,
     type RepoRef,
@@ -36,22 +34,27 @@ import {
     type MergeOutcome,
     type VerificationJob,
 } from './db/batches/batch-store-merge.js';
+import { setMergeWait } from './db/batches/batch-store-merge-wait.js';
 import { GitHubMergeError, type MergeResult } from './github/pr-merge.js';
 import type { MergeTokenSource } from './forge/pr-token.js';
 import {
     INSTALLATION_CREDENTIAL,
     resolveForgeClient,
-    type ActingCredential,
     type ForgeClient,
     type ForgeSource,
 } from './forge/forge-client.js';
+import { readClient, tokenClient, type GitlabReads, type ReadDeps, type Unread } from './forge/forge-reads.js';
+import { forgeOfRepo, isGitlabRepo } from './forge/forges.js';
+import { MERGE_REQUEST_DEADLINE_MS } from './forge/gitlab-merge.js';
+import { FORGE_READ_DEADLINE_MS } from './forge/gitlab-reads.js';
 import { logger } from './log.js';
 
 /**
  * The batch merger (docs/batches.md): merges the PRs of automerge stages the observer found ready,
  * and verifies each merged stage as a whole. It never decides what GitHub requires — it asks, bound
  * to the head it observed — and it never repeats a request whose answer it does not know: that
- * intent is reconciled against the PR first. Every decision is a durable row written before the
+ * intent is reconciled against the PR first. Each task is read and merged as its batch's starter on GitLab (the
+ * member's grant), and a grant the board cannot confirm leaves the merge for a later pass, never a verdict. Every decision is a durable row written before the
  * provider is called, so a restart, a second replica or a timeout cannot merge twice or lose a merge.
  */
 
@@ -70,11 +73,13 @@ export interface BatchMergerDeps {
     ready?: Promise<unknown> | undefined;
     /** What the org's PRs are read and merged through; absent offline: nothing is merged or verified. */
     forge?: ForgeSource | undefined;
+    /** What GitLab is read and merged through, as the starter; absent on a board with no GitLab access. */
+    gitlab?: GitlabReads | undefined;
     /** Records a merge in the ledger: the job store's `closeMergedPr`. */
     recordMerge: (repo: RepoRef, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
     /** Lets the gate judge the merge just recorded and the scheduler advance a verified stage. */
     reconcile: (batchId: string) => Promise<unknown>;
-    /** The token a merge is sent with: the batch starter's (docs/batches.md). Reads stay on the installation. */
+    /** The token a merge is sent with: the batch starter's (docs/batches.md). GitHub reads stay on the installation. */
     mergeToken: MergeTokenSource;
     now?: (() => Date) | undefined;
     concurrency?: number | undefined;
@@ -87,13 +92,18 @@ export interface BatchMerger {
 
 interface Run {
     store: MergeDeps;
-    forge: ForgeSource;
+    reads: ReadDeps;
     recordMerge: BatchMergerDeps['recordMerge'];
     reconcile: BatchMergerDeps['reconcile'];
     clock: () => Date;
-    /** The starter's token per claimed batch, resolved before its intent was claimed and held only for this pass. */
+    /** The starter's token per claimed batch and forge host, resolved before its intent was claimed and held only for this pass. */
     tokens: Map<string, string>;
+    /** Why a batch's starter has no token for a forge host this pass, so the next task of the batch asks nothing again. */
+    refused: Map<string, string>;
 }
+
+/** One credential per batch and forge host: a task on another forge never carries, or waits on, this one's token. */
+const credentialKey = (batchId: string, repo: RepoRef): string => `${batchId}:${forgeOfRepo(repo)}`;
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -144,32 +154,44 @@ function outcomeOfMergeError(e: unknown): MergeOutcome {
  */
 class UnboundRead extends Error {}
 
-/** The client for `repo` acting as `credential`; a forge no client answers for is an unbound read, no request made. */
-const clientFor = (run: Run, repo: RepoRef, credential: ActingCredential): ForgeClient => {
-    const resolution = resolveForgeClient(run.forge, repo, credential);
-    if (!resolution.ok) {
-        throw new UnboundRead(`${formatRepoRef(repo)} is not a repository the GitHub reader answers for`);
-    }
-    return resolution.client;
-};
+/** The board holds no grant, connection or starter to read as: no request was made, and nothing is concluded. */
+class UnconfirmedRead extends Error {}
 
-/** The one place a pull request is read: the answer is returned only when it is for this repository and number. */
-async function readBound(run: Run, repo: RepoRef, prNumber: number): Promise<PrFacts> {
-    const facts = await clientFor(run, repo, INSTALLATION_CREDENTIAL).readChangeRequest(prNumber);
-    if (!sameRepo(githubRepo(facts.repo), repo) || facts.number !== prNumber) {
-        throw new UnboundRead('GitHub answered for another pull request');
-    }
+const unreadOf = (unread: Unread): Error =>
+    unread.kind === 'binding' ? new UnboundRead(unread.detail) : new UnconfirmedRead(unread.detail);
+
+/** The client for `repo` read as the batch's `starter`; one no client answers for is unbound, an unread grant unconfirmed. */
+async function clientFor(run: Run, repo: RepoRef, starter: string | null, signal: AbortSignal): Promise<ForgeClient> {
+    const resolved = await readClient(run.reads, repo, starter, signal);
+    if (!resolved.ok) throw unreadOf(resolved);
+    return resolved.client;
+}
+
+/** A change request and the starter whose grant reads it. */
+interface Subject {
+    repo: RepoRef;
+    prNumber: number;
+    startedBy: string | null;
+}
+
+/** The one place a change request is read: the answer is returned only when it is for this repository and number. */
+async function readBound({ repo, prNumber, startedBy }: Subject, run: Run, signal: AbortSignal): Promise<PrFacts> {
+    const facts = await (await clientFor(run, repo, startedBy, signal)).readChangeRequest(prNumber);
+    if (!changeRequestIs(facts, repo, prNumber)) throw new UnboundRead('the forge answered for another change request');
     return facts;
 }
+
+/** One read deadline per unit of work: it covers the token read, the connection read and every request. */
+const readSignal = (): AbortSignal => AbortSignal.timeout(FORGE_READ_DEADLINE_MS);
 
 /** A fresh read of the PR, or the outcome that records why none was possible: nothing was requested. */
 async function readFresh(run: Run, intent: MergeIntent): Promise<{ facts: PrFacts } | { unread: MergeOutcome }> {
     try {
-        return { facts: await readBound(run, intent.repo, intent.prNumber) };
+        return { facts: await readBound(intent, run, readSignal()) };
     } catch (e) {
         if (e instanceof UnboundRead) return { unread: { state: MERGE_CHANGED, detail: e.message } };
         const retryAfterMs = (e as { retryAfterMs?: number | null }).retryAfterMs ?? null;
-        const detail = `the PR could not be read: ${errorMessage(e)}`;
+        const detail = `the change request could not be read: ${errorMessage(e)}`;
         return { unread: { state: MERGE_LAPSED, detail, retryAfterMs } };
     }
 }
@@ -192,50 +214,68 @@ async function dispatch(run: Run, intent: MergeIntent): Promise<void> {
     if (await batchFenced(run.store, intent.batchId)) return void (await resolveMerge(run.store, intent, FENCED));
     // The lease covers the request itself: if another pass already reconciled this intent as expired, nothing is sent.
     if (!(await renewLease(run.store, intent))) return;
-    const token = run.tokens.get(intent.batchId);
+    const token = run.tokens.get(credentialKey(intent.batchId, intent.repo));
     if (token === undefined) {
         return settled(run, intent, { state: MERGE_LAPSED, detail: 'no merge token was resolved', retryAfterMs: null });
     }
+    // The request has its own deadline, under the lease; a connection that cannot be read means nothing was sent.
+    const acting = await tokenClient(run.reads, intent.repo, token, AbortSignal.timeout(MERGE_REQUEST_DEADLINE_MS));
+    if (!acting.ok) return settled(run, intent, { state: MERGE_LAPSED, detail: acting.detail, retryAfterMs: null });
     let result: MergeResult;
     try {
-        result = await clientFor(run, intent.repo, { kind: 'token', token }).mergeChangeRequest(intent.prNumber, {
-            sha: fresh.headSha,
-            method: MERGE_METHOD,
-        });
+        result = await acting.client.mergeChangeRequest(intent.prNumber, { sha: fresh.headSha, method: MERGE_METHOD });
     } catch (e) {
         return settled(run, intent, outcomeOfMergeError(e));
     }
     return merged(run, intent, { mergeCommitSha: result.mergeCommitSha, mergedAt: undefined });
 }
 
+/** Whether the board holds a source for the repo's forge: GitHub's installation, or GitLab's grants and connections. */
+const answersFor = (run: Run, repo: RepoRef): boolean =>
+    isGitlabRepo(repo)
+        ? run.reads.gitlab !== undefined
+        : resolveForgeClient(run.reads.forge, repo, INSTALLATION_CREDENTIAL).ok;
+
 /**
  * Resolves the starter's token before an intent exists (once per batch per pass): a starter whose grant is not
  * live, a deleted starter or an unreadable token claims nothing, so no attempt is spent and nothing parks the task.
  */
 async function admitMerge(run: Run, deps: BatchMergerDeps, candidate: MergeCandidate): Promise<boolean> {
-    if (run.tokens.has(candidate.batchId)) return true;
-    // A forge no client answers for reads no credential: the dispatch records it as unbound, with no request made.
-    if (!resolveForgeClient(run.forge, candidate.repo, INSTALLATION_CREDENTIAL).ok) return true;
+    // A forge no source answers for reads no credential: the dispatch records it as unbound, with no request made.
+    if (!answersFor(run, candidate.repo)) return true;
+    const waiting = await tokenOf(run, deps, candidate);
+    // Why a ready PR is not merging is the task's note: set when the token is refused, cleared once one is admitted.
+    if (await setMergeWait(run.store, candidate, waiting)) await run.reconcile(candidate.batchId);
+    return waiting === null;
+}
+
+/** The starter's token for the candidate's batch, once per pass: null when held, else the refusal's detail. */
+async function tokenOf(run: Run, deps: BatchMergerDeps, candidate: MergeCandidate): Promise<string | null> {
+    const key = credentialKey(candidate.batchId, candidate.repo);
+    if (run.tokens.has(key)) return null;
+    const refused = run.refused.get(key);
+    if (refused !== undefined) return refused;
     const token = await deps.mergeToken(
         { orgId: deps.orgId, repo: candidate.repo, startedBy: candidate.startedBy },
         AbortSignal.timeout(MERGE_TOKEN_DEADLINE_MS)
     );
     if (!token.ok) {
         logger('batches').info({ batchId: candidate.batchId, detail: token.detail }, 'a merge waits for its token');
-        return false;
+        run.refused.set(key, token.detail);
+        return token.detail;
     }
-    run.tokens.set(candidate.batchId, token.token);
-    return true;
+    run.tokens.set(key, token.token);
+    return null;
 }
 
 /** A request whose answer is unknown is read back from the PR, never sent again. */
 async function reconcileOne(run: Run, intent: MergeIntent): Promise<void> {
     let facts: PrFacts;
     try {
-        facts = await readBound(run, intent.repo, intent.prNumber);
+        facts = await readBound(intent, run, readSignal());
     } catch (e) {
-        // An answer for another identity says nothing about this request: it stays unresolved, recorded as nothing.
-        if (e instanceof UnboundRead)
+        // An answer for another identity, or none for want of a grant, says nothing about this request: it stays unresolved.
+        if (e instanceof UnboundRead || e instanceof UnconfirmedRead)
             return void logger('batches').warn(
                 { intentId: intent.id, detail: e.message },
                 'a merge request cannot be reconciled'
@@ -250,8 +290,13 @@ async function reconcileOne(run: Run, intent: MergeIntent): Promise<void> {
     });
 }
 
-async function mergeCommitOf(run: Run, repo: RepoRef, prNumber: number): Promise<string | null> {
-    const facts = await readBound(run, repo, prNumber);
+async function mergeCommitOf(
+    run: Run,
+    job: VerificationJob,
+    merge: VerificationJob['merges'][number],
+    signal: AbortSignal
+): Promise<string | null> {
+    const facts = await readBound({ ...merge, startedBy: job.startedBy }, run, signal);
     return facts.merged ? facts.mergeCommitSha : null;
 }
 
@@ -259,12 +304,13 @@ async function mergeCommitOf(run: Run, repo: RepoRef, prNumber: number): Promise
 async function judgeStage(run: Run, job: VerificationJob): Promise<StageVerification> {
     try {
         // Stored merge commits are judged against the target's branch, so every identity must be one the reader answers for.
-        const target = clientFor(run, job.repo, INSTALLATION_CREDENTIAL);
-        for (const merge of job.merges) clientFor(run, merge.repo, INSTALLATION_CREDENTIAL);
+        const signal = readSignal();
+        const target = await clientFor(run, job.repo, job.startedBy, signal);
+        for (const merge of job.merges) await clientFor(run, merge.repo, job.startedBy, signal);
         const merges = await Promise.all(
             job.merges.map(async (merge) => ({
                 task: merge.task,
-                sha: merge.mergeCommitSha ?? (await mergeCommitOf(run, merge.repo, merge.prNumber)),
+                sha: merge.mergeCommitSha ?? (await mergeCommitOf(run, job, merge, signal)),
             }))
         );
         const shas = merges.flatMap((merge) => (merge.sha === null ? [] : [merge.sha]));
@@ -289,21 +335,22 @@ const guarded = (what: string, fields: Record<string, unknown>, work: () => Prom
     });
 
 export function createBatchMerger(deps: BatchMergerDeps): BatchMerger {
-    const { sql, orgId, ready, forge, now } = deps;
+    const { sql, orgId, ready, forge, gitlab, now } = deps;
     const concurrency = deps.concurrency ?? MERGE_CONCURRENCY;
     const store: MergeDeps = { sql, orgId, now };
 
     return {
         async mergeDue() {
             if (ready) await ready;
-            if (!forge) return 0;
+            if (!forge && !gitlab) return 0;
             const run: Run = {
                 store,
-                forge,
+                reads: { forge, gitlab, orgId },
                 recordMerge: deps.recordMerge,
                 reconcile: deps.reconcile,
                 clock: () => (now ? now() : new Date()),
                 tokens: new Map(),
+                refused: new Map(),
             };
             const unresolved = await unresolvedMerges(store, concurrency);
             await Promise.all(

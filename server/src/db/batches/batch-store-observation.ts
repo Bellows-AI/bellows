@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+    OUTCOME_READY,
     assessPullRequest,
     errorFingerprint,
     GATE_OPEN,
@@ -299,6 +300,7 @@ async function writeFacts(
             evidence = ${tx.json(assessment.evidence as never)}, stale = ${stale}, error_code = null,
             error_detail = null, failures = 0, observed_at = ${now},
             next_refresh_at = ${new Date(now.getTime() + delay)}, claim_token = null, claimed_until = null,
+            merge_wait = case when ${assessment.outcome === OUTCOME_READY}::boolean then merge_wait end,
             updated_at = ${now}
         where org_id = ${at.orgId} and batch_id = ${at.batchId} and task_key = ${at.taskKey}
     `;

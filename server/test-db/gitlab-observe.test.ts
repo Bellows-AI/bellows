@@ -555,10 +555,9 @@ describe.skipIf(!enabled)('a GitLab batch launches', () => {
         expect(await jobCount()).toBe(0);
     });
 
-    it('refuses an automerge plan with a GitLab target until the board merges on GitLab', async () => {
+    it('launches an automerge plan on a board with GitLab access and member grants', async () => {
         const batch = await launch('automerge');
         const res = await batch.validate();
-        expect(res.statusCode, res.body).toBe(CONFLICT);
-        expect(res.json()).toMatchObject({ code: 'BATCH_UNSUPPORTED', reason: 'automerge' });
+        expect(res.statusCode, res.body).toBe(OK);
     });
 });

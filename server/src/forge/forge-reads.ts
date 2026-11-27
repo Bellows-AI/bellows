@@ -1,6 +1,12 @@
 import { formatRepoRef, type RepoRef } from '@factory-ai/core';
 import type { MemberForgeGrants } from '../integrations/member-forge-grant.js';
-import { INSTALLATION_CREDENTIAL, resolveForgeClient, type ForgeClient, type ForgeSource } from './forge-client.js';
+import {
+    INSTALLATION_CREDENTIAL,
+    resolveForgeClient,
+    type ActingCredential,
+    type ForgeClient,
+    type ForgeSource,
+} from './forge-client.js';
 import type { GitlabAccess } from './forge-gate.js';
 import { forgeOfRepo, isGitlabRepo } from './forges.js';
 import { gitlabRequest } from './gitlab-call.js';
@@ -96,6 +102,24 @@ async function gitlabActing(
     }
 }
 
+const githubClient = (deps: ReadDeps, repo: RepoRef, credential: ActingCredential): ReadClient => {
+    const resolution = resolveForgeClient(deps.forge, repo, credential);
+    return resolution.ok
+        ? { ok: true, client: resolution.client }
+        : {
+              ok: false,
+              kind: 'binding',
+              detail: `${formatRepoRef(repo)} is not a repository the GitHub reader answers for`,
+          };
+};
+
+const gitlabClient = (source: ForgeSource, repo: RepoRef, token: string): ReadClient => {
+    const resolution = resolveForgeClient(source, repo, { kind: 'token', token });
+    return resolution.ok
+        ? { ok: true, client: resolution.client }
+        : { ok: false, kind: 'binding', detail: `no client answers for ${resolution.forge} repositories` };
+};
+
 /**
  * The client a change request of `repo` is read through. GitHub: the installation's. GitLab: the acting member's own
  * token (`actor`, the task's starter), refused as `unconfirmed` with no request when there is no starter, no active
@@ -107,23 +131,30 @@ export async function readClient(
     actor: string | null,
     signal: AbortSignal
 ): Promise<ReadClient> {
-    if (!isGitlabRepo(repo)) {
-        const resolution = resolveForgeClient(deps.forge, repo, INSTALLATION_CREDENTIAL);
-        return resolution.ok
-            ? { ok: true, client: resolution.client }
-            : {
-                  ok: false,
-                  kind: 'binding',
-                  detail: `${formatRepoRef(repo)} is not a repository the GitHub reader answers for`,
-              };
-    }
+    if (!isGitlabRepo(repo)) return githubClient(deps, repo, INSTALLATION_CREDENTIAL);
     if (deps.gitlab === undefined) return notGitlabReader(repo);
     const acting = await gitlabActing({ ...deps, gitlab: deps.gitlab }, repo, actor, signal);
-    if (!acting.ok) return acting;
-    const resolution = resolveForgeClient(acting.source, repo, { kind: 'token', token: acting.token });
-    return resolution.ok
-        ? { ok: true, client: resolution.client }
-        : { ok: false, kind: 'binding', detail: `no client answers for ${resolution.forge} repositories` };
+    return acting.ok ? gitlabClient(acting.source, repo, acting.token) : acting;
+}
+
+/**
+ * The client a merge is sent through, acting with a `token` the caller already read (the batch starter's). The same
+ * boundary as `readClient`: `signal` is the one deadline of the merge, and a connection that cannot be read is `unconfirmed`.
+ */
+export async function tokenClient(
+    deps: ReadDeps,
+    repo: RepoRef,
+    token: string,
+    signal: AbortSignal
+): Promise<ReadClient> {
+    if (!isGitlabRepo(repo)) return githubClient(deps, repo, { kind: 'token', token });
+    if (deps.gitlab === undefined) return notGitlabReader(repo);
+    try {
+        const source = await sourceOf({ forge: {}, gitlab: deps.gitlab.gitlab }, deps.orgId, repo, signal);
+        return gitlabClient(source, repo, token);
+    } catch (e) {
+        return unconfirmed(`${formatRepoRef(repo)} cannot be merged: ${(e as Error).message}`);
+    }
 }
 
 /** The default branch answered for, or null for a confirmed empty project. */

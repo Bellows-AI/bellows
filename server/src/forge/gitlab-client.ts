@@ -1,5 +1,4 @@
 import { READ_TRANSPORT, type RepoRef } from '@factory-ai/core';
-import { GitHubMergeError } from '../github/pr-merge.js';
 import { GitHubReadError } from '../github/pr-read.js';
 import {
     GitHubWriteError,
@@ -12,6 +11,7 @@ import type { GitlabApi } from '../gitlab/gitlab-api.js';
 import type { ActingCredential, ForgeClient } from './forge-client.js';
 import { gitlabRequest, isSuccess, NO_TOKEN as NO_TOKEN_REASON } from './gitlab-call.js';
 import { asRead, readMergeRequestPart } from './gitlab-change-request-read.js';
+import { createGitLabMerge } from './gitlab-merge.js';
 import { createGitLabReads } from './gitlab-reads.js';
 
 /**
@@ -217,7 +217,7 @@ export function createGitLabForgeClient(
         readChangeRequest: reads.readChangeRequest,
         readChangeRequestPart: (number, part, signal) =>
             readMergeRequestPart(asRead(call), { project, number }, part, signal),
-        mergeChangeRequest: () => Promise.reject(new GitHubMergeError(unconfirmed('a merge'), 'uncertain')),
+        mergeChangeRequest: createGitLabMerge(send, ref, () => deps.signal),
         async findChangeRequest(branch, signal) {
             const found = await find(branch, signal);
             return found && publicFacts(found);
