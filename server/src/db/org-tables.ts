@@ -27,6 +27,7 @@ export const ORG_TABLES = [
     'connector_connection',
     'driver_credential_org',
     'env_var',
+    'executor_default_selection',
     'executor_profile',
     'input_attachment',
     'integration_authorization',
