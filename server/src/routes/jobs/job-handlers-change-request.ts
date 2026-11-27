@@ -1,4 +1,4 @@
-import { ERROR_CODES, formatRepoRef } from '@factory-ai/core';
+import { ERROR_CODES, formatRepoRef, type RepoRef } from '@factory-ai/core';
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import type { LiveAttempt } from '../../db/attempt-of-lease.js';
 import type { ChangeRequestContext } from '../../db/jobs/job-store-change-request.js';
@@ -80,13 +80,19 @@ function partOf(request: FastifyRequest, reply: FastifyReply): ChangeRequestPart
     return null;
 }
 
-/** The read itself: the recorded request's part under the starter's token. A throw confirmed nothing (a 503). */
-async function readRecorded(
-    deps: ChangeRequestReadDeps,
+/** The starter's token for the recorded request, or why there is none (a refusal the route answers). */
+export type StarterToken =
+    | { kind: 'token'; token: string; ref: RepoRef; number: number }
+    | { kind: 'unsupported' }
+    | { kind: 'none' }
+    | { kind: 'grant'; forge: string; reason: 'missing' | 'reconnect' };
+
+/** The thread starter's own GitLab token for the thread's recorded request. A throw confirmed nothing (a 503). */
+export async function starterToken(
+    deps: { memberGrants: MemberForgeGrants | undefined },
     who: ChangeRequestContext,
-    part: ChangeRequestPart,
     signal: AbortSignal
-): Promise<Read> {
+): Promise<StarterToken> {
     const { ref, publication, executionUserId, orgId } = who;
     if (!ref || !isGitlabRepo(ref) || !deps.memberGrants) return { kind: 'unsupported' };
     if (!publication) return { kind: 'none' };
@@ -97,17 +103,30 @@ async function readRecorded(
         if (token.answer === 'waiting') return { kind: 'grant', forge: token.forge, reason: token.reason };
         throw new Error('the starter token is not confirmed');
     }
-    const source = await sourceOf({ forge: {}, gitlab: deps.gitlab }, orgId, ref, signal);
+    return { kind: 'token', token: token.token, ref, number: publication.number };
+}
+
+/** The read itself: the recorded request's part under the starter's token. A throw confirmed nothing (a 503). */
+async function readRecorded(
+    deps: ChangeRequestReadDeps,
+    who: ChangeRequestContext,
+    part: ChangeRequestPart,
+    signal: AbortSignal
+): Promise<Read> {
+    const starter = await starterToken(deps, who, signal);
+    if (starter.kind !== 'token') return starter;
+    const { ref, token, number } = starter;
+    const source = await sourceOf({ forge: {}, gitlab: deps.gitlab }, who.orgId, ref, signal);
     try {
-        const read = await writerFor(source, ref, token.token).readChangeRequestPart(publication.number, part, signal);
-        return { kind: 'ok', body: { ...read, number: publication.number, url: publication.url } };
+        const read = await writerFor(source, ref, token).readChangeRequestPart(number, part, signal);
+        return { kind: 'ok', body: { ...read, number, url: who.publication?.url } };
     } catch (e) {
         if (e instanceof ChangeRequestReadUnsupportedError) return { kind: 'unsupported' };
         throw e;
     }
 }
 
-const unconfirmed = (request: FastifyRequest, reply: FastifyReply, id: string, e: unknown) => {
+export const unconfirmed = (request: FastifyRequest, reply: FastifyReply, id: string, e: unknown) => {
     // Logged without the error text: it may quote a remote body.
     request.log.warn({ jobId: id, kind: (e as { name?: string }).name }, 'change request read: no answer to trust');
     return bad(reply, ERROR_CODES.UNAVAILABLE, NOT_CONFIRMED, HTTP_SERVICE_UNAVAILABLE);
@@ -168,7 +187,7 @@ export interface AgentChangeRequestDeps extends ForgeCredentialDeps {
 }
 
 /** The live attempt on its own repository and the thread's recorded request, or the refusal already sent. */
-async function attemptContext(
+export async function attemptContext(
     deps: AgentChangeRequestDeps,
     reply: FastifyReply,
     pair: { jobId: string; leaseToken: string }

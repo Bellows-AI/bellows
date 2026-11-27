@@ -99,6 +99,8 @@ const CONNECTOR_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/[^/]+\/credentials\/gitlab$/,
     // The thread's recorded GitLab merge request, read as its starter by the attempt (docs/gitlab.md).
     /^\/api\/jobs\/[^/]+\/agent-change-request$/,
+    // The thread's recorded merge request's discussions, read and answered as its starter by the attempt (docs/workflows.md).
+    /^\/api\/jobs\/[^/]+\/agent-review(\/replies)?$/,
     /^\/api\/jobs\/[^/]+\/credentials\/connections\/[^/]+$/,
     // The runner seam: the helper's connection list and its operation receipts.
     /^\/api\/jobs\/[^/]+\/credentials\/connections$/,

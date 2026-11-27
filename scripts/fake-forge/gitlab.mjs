@@ -721,7 +721,8 @@ export const registerGitlab = (forge) => {
         author: userJson(note.author),
         created_at: note.createdAt,
         updated_at: note.updatedAt,
-        system: false,
+        system: note.system === true,
+        ...(note.position ? { position: note.position } : {}),
         noteable_id: mr.id,
         noteable_type: 'MergeRequest',
         noteable_iid: mr.iid,
@@ -736,19 +737,29 @@ export const registerGitlab = (forge) => {
         individual_note: thread.individual,
         notes: thread.notes.map((note) => noteJson(mr, note)),
     });
-    const newNote = (login, body, resolvable) => ({
+    const newNote = (login, body, resolvable, extra = {}) => ({
         id: forge.nextId(),
         body,
         author: login,
         resolvable,
+        ...extra,
         resolved: false,
         resolvedBy: null,
         createdAt: now(),
         updatedAt: now(),
     });
-    const openThread = (mr, login, body, individual) => {
-        const thread = { id: sha1(`discussion:${forge.nextId()}`), individual, notes: [newNote(login, body, !individual)] };
+    // GitLab's note touches its noteable: a note added or a discussion resolved moves the MR's `updated_at`.
+    const touch = (mr) => {
+        mr.updatedAt = now();
+    };
+    const openThread = (mr, login, body, individual, extra = {}) => {
+        const thread = {
+            id: sha1(`discussion:${forge.nextId()}`),
+            individual,
+            notes: [newNote(login, body, !individual, extra)],
+        };
         mr.discussions.push(thread);
+        touch(mr);
         return thread;
     };
     const mutable = (ctx) => {
@@ -771,7 +782,7 @@ export const registerGitlab = (forge) => {
     route('GET', discussions, (ctx) => {
         const project = guard(ctx, GUEST);
         const mr = project && findMr(ctx, project);
-        if (mr) forge.json(ctx.response, 200, mr.discussions.map((thread) => discussionJson(mr, thread)));
+        if (mr) page(ctx, mr.discussions.map((thread) => discussionJson(mr, thread)));
     });
     route('GET', `${discussions}/:discussion`, (ctx) => {
         const project = guard(ctx, GUEST);
@@ -790,8 +801,9 @@ export const registerGitlab = (forge) => {
         const body = thread && bodyOf(ctx);
         if (!body) return;
         if (thread.individual) return badRequest(ctx.response, '400 Bad request - Note cannot be added to an individual discussion');
-        const note = newNote(ctx.token.login, body, true);
+        const note = newNote(ctx.token.login, body, true, { position: thread.notes[0].position });
         thread.notes.push(note);
+        touch(mr);
         forge.json(ctx.response, 201, noteJson(mr, note));
     });
     route('PUT', `${discussions}/:discussion`, (ctx) => {
@@ -803,6 +815,7 @@ export const registerGitlab = (forge) => {
             note.resolved = resolved;
             note.resolvedBy = resolved ? ctx.token.login : null;
         }
+        touch(mr);
         forge.json(ctx.response, 200, discussionJson(mr, thread));
     });
 
@@ -816,6 +829,11 @@ export const registerGitlab = (forge) => {
         const mr = mutable(ctx);
         const body = mr && bodyOf(ctx);
         if (body) forge.json(ctx.response, 201, noteJson(mr, openThread(mr, ctx.token.login, body, true).notes[0]));
+    });
+    route('GET', `${mrs}/:iid/reviewers`, (ctx) => {
+        const project = guard(ctx, GUEST);
+        const mr = project && findMr(ctx, project);
+        if (mr) forge.json(ctx.response, 200, (mr.reviewers ?? []).map((entry) => ({ user: userJson(entry.login), state: entry.state })));
     });
     route('PUT', `${notes}/:note`, (ctx) => {
         const mr = mutable(ctx);
@@ -1332,6 +1350,27 @@ export const registerGitlab = (forge) => {
         if (!mr) return;
         mr.approvals = { required: Number(ctx.body.required ?? 0), by: ctx.body.approvedBy ?? [] };
         forge.json(ctx.response, 200, mr.approvals);
+    });
+    // A discussion opened by `login` (`body`; `position` makes it a diff discussion, `individual` a plain note, `system`
+    // a system note): what a reviewer's comment looks like to the board. Answers its id.
+    control('discussion', (ctx) => {
+        const project = controlProject(ctx);
+        const mr = project && project.mrs.find((entry) => entry.iid === Number(ctx.body.iid));
+        if (project && !mr) return notFound(ctx.response, 'Merge Request Not Found');
+        if (!mr) return;
+        const { login, body, position, system, individual } = ctx.body;
+        const plain = flag(individual) || flag(system);
+        const thread = openThread(mr, login, body, plain, { position, system: flag(system) });
+        forge.json(ctx.response, 200, { id: thread.id, noteId: thread.notes[0].id });
+    });
+    // The MR's reviewers: `reviewers: [{ login, state }]` with GitLab's review states.
+    control('reviewers', (ctx) => {
+        const project = controlProject(ctx);
+        const mr = project && project.mrs.find((entry) => entry.iid === Number(ctx.body.iid));
+        if (project && !mr) return notFound(ctx.response, 'Merge Request Not Found');
+        if (!mr) return;
+        mr.reviewers = ctx.body.reviewers ?? [];
+        forge.json(ctx.response, 200, { reviewers: mr.reviewers.length });
     });
     control('merge_status', (ctx) => {
         const project = controlProject(ctx);

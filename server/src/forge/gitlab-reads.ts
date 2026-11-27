@@ -40,14 +40,14 @@ const MERGED = 'merged';
 const PIPELINE_CHECK = 'pipeline';
 const STALE_PIPELINE = 'the head pipeline ran on an older commit';
 
-type Json = Record<string, unknown>;
-const isObject = (value: unknown): value is Json =>
+export type Json = Record<string, unknown>;
+export const isObject = (value: unknown): value is Json =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
-const text = (value: unknown): value is string => typeof value === 'string';
+export const text = (value: unknown): value is string => typeof value === 'string';
 const textOrNull = (value: unknown): string | null => (text(value) && value !== '' ? value : null);
 
-const fail = (what: string, kind: ReadErrorKind = READ_TRANSPORT) => new GitHubReadError(what, kind);
-const unclean = (what: string) => fail(`${what}: not a clean answer`);
+export const fail = (what: string, kind: ReadErrorKind = READ_TRANSPORT) => new GitHubReadError(what, kind);
+export const unclean = (what: string) => fail(`${what}: not a clean answer`);
 
 /** One request of a read. `found` and `denied` are the two answers a caller may treat as absence. */
 type Sent =
@@ -60,7 +60,7 @@ type Sent =
     | { kind: 'refused'; status: number };
 
 /** What every read of one project needs: the request, and the project's path under the API. */
-interface Ctx {
+export interface Ctx {
     call: GitlabCall;
     project: string;
 }
@@ -68,7 +68,7 @@ const branchPath = (ctx: Ctx, branch: string) => `${ctx.project}/repository/bran
 const failed = (path: string, status: number) => fail(`GET ${path.split('?')[0]} failed with ${status}`);
 
 /** What GitLab says when the object itself is missing; a 404 saying anything else is inconclusive. */
-const MR_NOT_FOUND = /^404 Merge Request Not Found$/;
+export const MR_NOT_FOUND = /^404 Merge Request Not Found$/;
 const BRANCH_NOT_FOUND = /^404 Branch Not Found$/;
 const COMMIT_NOT_FOUND = /^404 Commit Not Found$/;
 const namesObject = (json: unknown, object: RegExp): boolean =>
@@ -89,7 +89,7 @@ async function send(ctx: Ctx, path: string, signal: AbortSignal, object?: RegExp
 }
 
 /** The body of a 2xx. A 404 is `not_found` only when it names `object` (the one asked for), else the read is unconfirmed. */
-async function get(ctx: Ctx, path: string, signal: AbortSignal, object?: RegExp): Promise<unknown> {
+export async function get(ctx: Ctx, path: string, signal: AbortSignal, object?: RegExp): Promise<unknown> {
     const sent = await send(ctx, path, signal, object);
     if (sent.kind === 'ok') return sent.json;
     if (sent.kind === 'absent') throw fail(failed(path, HTTP_NOT_FOUND).message, READ_NOT_FOUND);
@@ -106,7 +106,7 @@ async function optional(ctx: Ctx, path: string, signal: AbortSignal): Promise<un
 }
 
 /** Every entry of a listing, page by page: a page that is not a clean list, an entry that does not parse or a listing past the cap rejects. */
-async function listed<T>(
+export async function listed<T>(
     ctx: Ctx,
     path: string,
     parse: (entry: unknown) => T | null,
@@ -262,7 +262,7 @@ function settledFacts(ref: RepoRef, mr: Json, iid: number): PrFacts {
     };
 }
 
-async function readChangeRequest(ctx: Ctx, ref: RepoRef, iid: number, signal: AbortSignal): Promise<PrFacts> {
+export async function readChangeRequest(ctx: Ctx, ref: RepoRef, iid: number, signal: AbortSignal): Promise<PrFacts> {
     const base = `${ctx.project}/merge_requests/${iid}`;
     const mr = mergeRequestOf(await get(ctx, base, signal, MR_NOT_FOUND), iid, base);
     const facts = settledFacts(ref, mr, iid);
