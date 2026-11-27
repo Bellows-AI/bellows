@@ -7,8 +7,9 @@
 //   <stateDir>/hold          while it exists, a holdable call touches hold.ready and waits for hold.go
 // The `/_control/*` routes (clock, calls, installation tokens) are the lane's own door; no forge uses them.
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createServer as createTlsServer } from 'node:https';
 import { join } from 'node:path';
 import { registerGithub, USER_TOKEN_TTL_S } from './github.mjs';
 import { GITLAB_CODE_TTL_S, GITLAB_TOKEN_TTL_S, registerGitlab } from './gitlab.mjs';
@@ -36,10 +37,11 @@ const credentialOf = (request) => {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * @param {{ stateDir: string, now?: () => number, routes?: Array<(forge: object) => void> }} options
+ * @param {{ stateDir: string, now?: () => number, routes?: Array<(forge: object) => void>, tls?: { cert: string, key: string } }} options
+ * `tls` serves https with that certificate (a GitLab's git and OAuth are https-only for the runner and the board).
  * `now` is the clock; `advance(ms)` moves it forward so a lane can expire a token without waiting.
  */
-export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGithub, registerGitlab] }) => {
+export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGithub, registerGitlab], tls = null }) => {
     mkdirSync(stateDir, { recursive: true });
     let offsetMs = 0;
     const clock = () => now() + offsetMs;
@@ -132,13 +134,14 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
             });
         });
 
-    const server = createServer((request, response) => {
+    const onRequest = (request, response) => {
         // A handler that rejects answers 500 (when nothing was sent yet) and never takes the process down.
         dispatch(request, response).catch(() => {
             if (!response.headersSent) forge.json(response, 500, { message: '500 Internal Server Error' });
             else response.destroy();
         });
-    });
+    };
+    const server = tls ? createTlsServer(tls, onRequest) : createServer(onRequest);
     async function dispatch(request, response) {
         const url = new URL(request.url, 'http://fake-forge');
         const credential = credentialOf(request);
@@ -198,9 +201,14 @@ export const createFakeForge = ({ stateDir, now = Date.now, routes = [registerGi
     };
 };
 
-// `node server.mjs <state dir> [port]` serves the lane: the port is printed once it listens.
+// `node server.mjs <state dir> [port]` serves the lane: the port is printed once it listens. FAKE_FORGE_TLS_CERT and
+// FAKE_FORGE_TLS_KEY (PEM files) make it https.
 if (import.meta.url === `file://${process.argv[1]}`) {
     const [stateDir, port = '0'] = process.argv.slice(2);
-    const forge = createFakeForge({ stateDir });
+    const { FAKE_FORGE_TLS_CERT: cert, FAKE_FORGE_TLS_KEY: key } = process.env;
+    const forge = createFakeForge({
+        stateDir,
+        ...(cert && key ? { tls: { cert: readFileSync(cert), key: readFileSync(key) } } : {}),
+    });
     console.log(await forge.listen(Number(port), process.env.FAKE_FORGE_HOST ?? '127.0.0.1'));
 }

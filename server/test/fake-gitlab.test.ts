@@ -70,6 +70,30 @@ describe('fake GitLab: OAuth', () => {
         expect((await gl.refresh(unbound.refresh_token)).status).toBe(400);
     });
 
+    it('shortens the lifetime of the pairs minted after the lane asks, and restores it', async () => {
+        await gl.control('gitlab/token-ttl', { seconds: 75 });
+        const short = (await gl.control('gitlab/sign-in', { login: 'ttl-dev' })).body;
+        expect(short.expires_in).toBe(75);
+        await gl.control('gitlab/token-ttl', {});
+        expect((await gl.control('gitlab/sign-in', { login: 'ttl-dev' })).body.expires_in).toBe(GITLAB_TOKEN_TTL_S);
+    });
+
+    it('serves the profile fields a lane sets on /user', async () => {
+        const pair = (await gl.control('gitlab/sign-in', { login: 'profile-dev' })).body;
+        const before = (await gl.send('GET', '/api/v4/user', { token: pair.access_token })).body;
+        expect(before).toMatchObject({ name: 'profile-dev', public_email: '' });
+        expect(before.commit_email).toBeTruthy();
+        await gl.control('gitlab/user-profile', {
+            login: 'profile-dev',
+            fields: { name: 'Profile Dev', commit_email: 'pd@example.test', public_email: 'pub@example.test' },
+        });
+        expect((await gl.send('GET', '/api/v4/user', { token: pair.access_token })).body).toMatchObject({
+            name: 'Profile Dev',
+            commit_email: 'pd@example.test',
+            public_email: 'pub@example.test',
+        });
+    });
+
     it('answers as the login the authorize call names', async () => {
         const pair = await gl.signIn('reviewer');
         expect((await gl.send('GET', '/api/v4/user', { token: pair.access_token })).body.username).toBe('reviewer');
