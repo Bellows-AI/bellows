@@ -1222,7 +1222,8 @@ export const registerGitlab = (forge) => {
             id,
             path: body.path,
             name: body.path.split('/').pop(),
-            defaultBranch: body.defaultBranch ?? 'main',
+            // `defaultBranch: null` is an empty project: the API reports no default branch (its git repository still has one).
+            defaultBranch: body.defaultBranch === null ? null : (body.defaultBranch ?? 'main'),
             squashOption: body.squashOption ?? 'default_off',
             onlyPipeline: flag(body.onlyAllowMergeIfPipelineSucceeds),
             onlyDiscussions: flag(body.onlyAllowMergeIfAllDiscussionsAreResolved),
@@ -1233,7 +1234,7 @@ export const registerGitlab = (forge) => {
         };
         projects.set(id, project);
         ensureGroups(project.path);
-        await repos.create(id, { defaultBranch: project.defaultBranch, files: body.files ?? {}, seedDir: body.seedDir, author: SEED_AUTHOR, date: now() });
+        await repos.create(id, { defaultBranch: project.defaultBranch ?? 'main', files: body.files ?? {}, seedDir: body.seedDir, author: SEED_AUTHOR, date: now() });
         forge.json(response, 200, { id, path_with_namespace: project.path, http_url_to_repo: `${origin(request)}/${project.path}.git` });
     });
     control('version', ({ response, body }) => {

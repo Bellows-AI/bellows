@@ -10,8 +10,8 @@ import type { GitlabAccess } from '../../forge/forge-gate.js';
 import { isGitlabRepo } from '../../forge/forges.js';
 
 /**
- * The forge half of the publish route (docs/connections.md): whether the board can write on a repo's forge at all, the
- * source a write is made through, and the client over the confirmed token.
+ * The forge half of the publish route (docs/connections.md): whether the board can write on a repo's forge at all, and the
+ * client over the confirmed token (the source is `forge-reads.ts`'s).
  */
 
 export interface ForgeWriteDeps {
@@ -19,16 +19,6 @@ export interface ForgeWriteDeps {
     forge: ForgeSource;
     /** The org's GitLab connection and the board's client; absent, the board writes no GitLab merge request. */
     gitlab?: GitlabAccess | undefined;
-}
-
-/** Rejects when `signal` aborts, so a read that takes no signal still ends with the call's one deadline. */
-function within<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-        const aborted = () => reject(new Error('no answer before the deadline'));
-        if (signal.aborted) return aborted();
-        signal.addEventListener('abort', aborted, { once: true });
-        work.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
-    });
 }
 
 /**
@@ -42,25 +32,6 @@ export function canWrite(deps: ForgeWriteDeps, repo: RepoRef): boolean {
     if (gap === null) return true;
     if (gap.reason === FORGE_UNCONFIGURED) return false;
     throw new Error(`no client answers for ${gap.forge} repositories`);
-}
-
-/**
- * The source the write is made through. For GitLab it is built per call with the CA bundle of the org's connection on
- * the repo's host; a connection that cannot be read, or is not active just after the grant read said live, is a race,
- * never a verdict (a throw: 503).
- */
-export async function sourceOf(
-    deps: ForgeWriteDeps,
-    orgId: string,
-    repo: RepoRef,
-    signal: AbortSignal
-): Promise<ForgeSource> {
-    if (!isGitlabRepo(repo) || deps.gitlab === undefined) return deps.forge;
-    const connections = await within(deps.gitlab.connectionsOf(orgId), signal);
-    if (!connections) throw new Error('the GitLab connection store is not available');
-    const application = await within(connections.application(repo.host), signal);
-    if (!application?.active) throw new Error('the GitLab connection is not active');
-    return { ...deps.forge, gitlab: { api: deps.gitlab.api, caBundle: application.caBundle } };
 }
 
 /** The client the change request is written through under the confirmed `token`; the forge was checked by `canWrite`. */

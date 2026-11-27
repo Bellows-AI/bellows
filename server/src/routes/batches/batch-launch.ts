@@ -1,4 +1,5 @@
 import {
+    AUTOMERGE,
     batchExecutionCapability,
     ERROR_CODES,
     formatRepoRef,
@@ -14,7 +15,9 @@ import type { BatchRecord } from '../../db/batches/batch-store-types.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from '../helpers.js';
 import { HTTP_CONFLICT, HTTP_UNAVAILABLE } from '../jobs/job-limits.js';
-import { forgeOfRepo, isGithubRepo, refOfListed } from '../../forge/forges.js';
+import { readGitlabDefaultBranch } from '../../forge/forge-reads.js';
+import { FORGE_READ_DEADLINE_MS } from '../../forge/gitlab-reads.js';
+import { forgeOfRepo, isGithubRepo, isGitlabRepo, refOfListed } from '../../forge/forges.js';
 import { refusedAsNoForgeGrant } from '../jobs/forge-usable.js';
 import { readBranchHead } from '../../forge/forge-client.js';
 import { defaultExecutorOf, executorTypeOf, refusedAsNoModel, refusedAsUnusable } from '../jobs/executor-usable.js';
@@ -61,26 +64,70 @@ async function defaultBranchesOf(
     for (const repo of detail.value.repos) {
         if (repo.defaultBranch !== null) defaults[formatRepoRef(refOfListed(repo))] = repo.defaultBranch;
     }
-    const missing = plan.targets.find((target) => defaults[formatRepoRef(target.repo)] === undefined);
-    if (!missing) return defaults;
-    // A listing holds no default branch for another forge's repository because none was read, not because it has none:
-    // the board cannot say yet, which is no verdict about the repository.
-    if (!isGithubRepo(missing.repo)) {
+    for (const target of plan.targets) {
+        if (defaults[formatRepoRef(target.repo)] !== undefined) continue;
+        const read = await missingDefaultBranch(ctx, request, reply, target);
+        if (!read.ok) return null;
+        if (read.branch === null) {
+            bad(
+                reply,
+                ERROR_CODES.BATCH_NO_DEFAULT_BRANCH,
+                `"${formatRepoRef(target.repo)}" reports no default branch, so a branch cannot be resolved for "${target.key}"`,
+                HTTP_CONFLICT
+            );
+            return null;
+        }
+        defaults[formatRepoRef(target.repo)] = read.branch;
+    }
+    return defaults;
+}
+
+type DefaultRead = { ok: true; branch: string | null } | { ok: false };
+
+/**
+ * The default branch of a target the installation listing holds none for: GitHub's has none (null); a GitLab project's is
+ * read as the launcher; another forge's is not read at all, which is no verdict about the repository (503). `ok: false`
+ * once a refusal is sent.
+ */
+async function missingDefaultBranch(
+    ctx: Context,
+    request: FastifyRequest,
+    reply: FastifyReply,
+    target: BatchPlan['targets'][number]
+): Promise<DefaultRead> {
+    if (isGithubRepo(target.repo)) return { ok: true, branch: null };
+    if (!isGitlabRepo(target.repo)) {
         bad(
             reply,
             ERROR_CODES.UNAVAILABLE,
-            `The default branch of ${missing.repo.forge} repositories cannot be read yet, so a branch cannot be resolved for "${missing.key}"`,
+            `The default branch of ${target.repo.forge} repositories cannot be read yet, so a branch cannot be resolved for "${target.key}"`,
             HTTP_UNAVAILABLE
         );
-        return null;
+        return { ok: false };
     }
-    bad(
-        reply,
-        ERROR_CODES.BATCH_NO_DEFAULT_BRANCH,
-        `"${formatRepoRef(missing.repo)}" reports no default branch, so a branch cannot be resolved for "${missing.key}"`,
-        HTTP_CONFLICT
-    );
-    return null;
+    // Any read the board could not confirm (no launcher grant or connection, an error, a timeout, a board with no GitLab
+    // access) is a 503, never "no default branch".
+    const unavailable = (why: string): DefaultRead => {
+        bad(
+            reply,
+            ERROR_CODES.UNAVAILABLE,
+            `The default branch of "${formatRepoRef(target.repo)}" could not be read for "${target.key}": ${why}`,
+            HTTP_UNAVAILABLE
+        );
+        return { ok: false };
+    };
+    try {
+        const read = await readGitlabDefaultBranch(
+            { forge: ctx.runtime.forge, gitlab: ctx.gitlab, orgId: ctx.runtime.orgId },
+            target.repo,
+            ctx.createdBy,
+            AbortSignal.timeout(FORGE_READ_DEADLINE_MS)
+        );
+        return read.ok ? read : unavailable(read.detail);
+    } catch (e) {
+        request.log.error({ err: e }, 'batch default branch read failed');
+        return unavailable((e as Error).message);
+    }
 }
 
 /** The used targets off their repository's default branch: the ones whose branch must be read. */
@@ -167,11 +214,15 @@ export async function launchChecks(
     const plan = planOf(reply, record.plan);
     if (!plan) return null;
     if (!(await targetsVisible(ctx, request, reply, plan))) return null;
+    // A GitLab default branch is read as the launcher, so their grant is checked first (409, not a 503 from the read).
+    const returnTo = `/batches/${record.id}`;
+    if (!(await forgeGrantsLive(ctx, request, reply, { plan, returnTo, includes: isGitlabRepo }))) return null;
     const defaults = await defaultBranchesOf(ctx, request, reply, plan);
     if (!defaults) return null;
 
     const resolved = resolveBatchPlan(plan, defaults);
     if (!(await targetBranchesExist(ctx, request, reply, offDefaultTargets(resolved, defaults)))) return null;
+    if (!automergeUnsupported(reply, resolved)) return null;
     const capability = batchExecutionCapability(resolved, {
         canMerge: ctx.runtime.batchMerger !== undefined,
     });
@@ -187,9 +238,22 @@ export async function launchChecks(
     if (!stamped) return null;
     if (!(await executorsUsable(ctx, request, reply, stamped))) return null;
     if (!(await modelKeysPresent(ctx, request, reply, stamped))) return null;
-    return (await forgeGrantsLive(ctx, request, reply, { plan: stamped, returnTo: `/batches/${record.id}` }))
+    const isOtherForge = (repo: RepoRef) => !isGitlabRepo(repo);
+    return (await forgeGrantsLive(ctx, request, reply, { plan: stamped, returnTo, includes: isOtherForge }))
         ? stamped
         : null;
+}
+
+/** The board does not merge on GitLab yet: an automerge stage on a GitLab target is refused, whatever else the org holds. False once refused. */
+function automergeUnsupported(reply: FastifyReply, plan: ResolvedBatchPlan): boolean {
+    const gitlab = plan.targets.some((target) => isGitlabRepo(target.repo));
+    if (!gitlab || !plan.stages.some((stage) => stage.policy === AUTOMERGE)) return true;
+    reply.code(HTTP_CONFLICT).send({
+        error: 'The board does not merge GitLab merge requests yet; every stage must use the "human" policy',
+        code: ERROR_CODES.BATCH_UNSUPPORTED,
+        reason: AUTOMERGE,
+    });
+    return false;
 }
 
 /**
@@ -202,11 +266,11 @@ async function forgeGrantsLive(
     ctx: Context,
     request: FastifyRequest,
     reply: FastifyReply,
-    launch: { plan: ResolvedBatchPlan; returnTo: string }
+    launch: { plan: { targets: BatchPlan['targets'] }; returnTo: string; includes: (repo: RepoRef) => boolean }
 ) {
     const repoOfForge = new Map<string, RepoRef>();
     for (const { repo } of launch.plan.targets) {
-        const forge = forgeOfRepo(repo);
+        const forge = launch.includes(repo) ? forgeOfRepo(repo) : null;
         if (forge !== null && !repoOfForge.has(forge)) repoOfForge.set(forge, repo);
     }
     for (const repo of repoOfForge.values()) {

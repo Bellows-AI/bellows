@@ -9,7 +9,8 @@ import type { JobStore } from '../../db/jobs/job-store-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad } from '../helpers.js';
 import { resolveLeasedRoute } from '../route-guards.js';
-import { canWrite, type ForgeWriteDeps, sourceOf, writerFor } from './pull-request-forge.js';
+import { sourceOf } from '../../forge/forge-reads.js';
+import { canWrite, type ForgeWriteDeps, writerFor } from './pull-request-forge.js';
 import { isBranchField } from './job-field-validation.js';
 import { BODY_LIMIT, HTTP_OK, leaseLost, notFoundJob } from './job-limits.js';
 

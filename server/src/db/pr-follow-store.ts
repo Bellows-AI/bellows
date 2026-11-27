@@ -30,6 +30,11 @@ export interface PrFollowDeps {
 export interface PrFollowClaim {
     repo: RepoRef;
     prNumber: number;
+    /**
+     * Whose grant reads the PR on GitLab: the execution user of the newest live thread bound to it, read in the claim's own
+     * select so claim and actor are one snapshot. Null when none is left.
+     */
+    actor: string | null;
     token: string;
 }
 
@@ -60,6 +65,7 @@ const candidates = (tx: TransactionSql, orgId: string) => tx`
 
 interface DueRow extends RepoRow {
     pr_number: number;
+    actor: string | null;
 }
 
 /**
@@ -83,7 +89,21 @@ export async function claimDue(deps: PrFollowDeps, limit: number, spreadMs: numb
             on conflict do nothing
         `;
         const due = await tx<DueRow[]>`
-            select f.forge, f.host, f.repo, f.pr_number from pr_follow f
+            select f.forge, f.host, f.repo, f.pr_number,
+                   (select r.execution_user_id from (
+                        select w.root_job_id from workflow_wait w
+                        where w.org_id = f.org_id and ${refsMatch(tx, 'w', 'f')} and w.pr_number = f.pr_number
+                          and w.completed_at is null and w.cancelled_at is null
+                        union
+                        select p.root_job_id from job_pr p
+                        where p.org_id = f.org_id and ${refsMatch(tx, 'p', 'f')} and p.pr_number = f.pr_number
+                    ) bound
+                    join job r on r.org_id = f.org_id and r.id = bound.root_job_id
+                    where not exists (select 1 from job d
+                                      where d.org_id = r.org_id and d.root_job_id = r.id and d.done_at is not null)
+                    order by r.created_at desc, r.id desc
+                    limit 1) as actor
+            from pr_follow f
             where f.org_id = ${orgId}
               and f.next_poll_at <= ${now}
               and (f.claimed_until is null or f.claimed_until <= ${now})
@@ -99,7 +119,7 @@ export async function claimDue(deps: PrFollowDeps, limit: number, spreadMs: numb
                 update pr_follow set claim_token = ${token}::uuid, claimed_until = ${claimedUntil}
                 where org_id = ${orgId} and ${repoIs(tx, 'pr_follow', refOfRow(row))} and pr_number = ${row.pr_number}
             `;
-            claims.push({ repo: refOfRow(row), prNumber: row.pr_number, token });
+            claims.push({ repo: refOfRow(row), prNumber: row.pr_number, actor: row.actor, token });
         }
         return claims;
     });

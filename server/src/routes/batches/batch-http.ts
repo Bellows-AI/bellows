@@ -1,4 +1,6 @@
 import type { ForgeGate } from '../../forge/forge-gate.js';
+import type { GitlabReads } from '../../forge/forge-reads.js';
+import type { ForgeGatedDeps } from '../jobs/forge-usable.js';
 import { batchStanding, ERROR_CODES, validateBatchPlan, type BatchPlan, type BatchStanding } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
@@ -30,6 +32,13 @@ export interface Context {
     createdBy: string | null;
     /** The forge start gate; absent when no member holds a grant (AUTH_MODE=none). */
     forgeGate?: ForgeGate | undefined;
+    /** What a GitLab target's default branch is read through, as the launcher; absent on a board with no member grants. */
+    gitlab?: GitlabReads | undefined;
+}
+
+/** What a handler that may launch a batch is built from. */
+export interface LaunchDeps extends ForgeGatedDeps {
+    gitlab?: GitlabReads | undefined;
 }
 
 export const notFoundBatch = (reply: FastifyReply) =>
@@ -43,7 +52,7 @@ export async function contextOf(
     orgs: OrgRegistry,
     request: FastifyRequest,
     reply: FastifyReply,
-    forgeGate?: ForgeGate
+    launch: { forgeGate?: ForgeGate | undefined; gitlab?: GitlabReads | undefined } = {}
 ): Promise<Context | null> {
     // The hook already walls these paths; this is the route's own statement that no batch write
     // has a non-person behind it, for the day a path joins an allowlist by mistake.
@@ -58,7 +67,13 @@ export async function contextOf(
         await bad(reply, ERROR_CODES.BATCHES_UNAVAILABLE, 'Batches need the board database', HTTP_UNAVAILABLE);
         return null;
     }
-    return { runtime, store: runtime.batches, createdBy: callerOf(request)?.user.id ?? null, forgeGate };
+    return {
+        runtime,
+        store: runtime.batches,
+        createdBy: callerOf(request)?.user.id ?? null,
+        forgeGate: launch.forgeGate,
+        gitlab: launch.gitlab,
+    };
 }
 
 /** The body, with only `allowed` keys: the rest are refused 400, the board-decided ones by name. */

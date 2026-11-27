@@ -1,4 +1,4 @@
-import { githubRepo, READ_BINDING, sameRepo } from '@factory-ai/core';
+import { changeRequestIs, READ_BINDING } from '@factory-ai/core';
 import type { PrFacts, RepoRef } from '@factory-ai/core';
 import { createHash } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
@@ -19,6 +19,8 @@ import {
     type PrFollowResult,
 } from './db/pr-follow-store.js';
 import type { ForgeSource } from './forge/forge-client.js';
+import type { GitlabReads } from './forge/forge-reads.js';
+import { isGithubRepo } from './forge/forges.js';
 import { logger } from './log.js';
 
 /**
@@ -35,6 +37,10 @@ export interface PrFollowerDeps {
     ready?: Promise<unknown> | undefined;
     /** Absent offline: nothing is followed. */
     forge?: ForgeSource | undefined;
+    /** What a GitLab MR is read through, as the publishing thread's starter; absent on a board with no member grants. */
+    gitlab?: GitlabReads | undefined;
+    /** Bounds one claim's whole read; `FORGE_READ_DEADLINE_MS` when absent. */
+    readDeadlineMs?: number | undefined;
     prs: Pick<PrLifecycleStore, 'cancelForRepoPr' | 'foldObservedActivity'>;
     /** Records a merge GitHub reports: the job store's `closeMergedPr`, the batch observer's own hand-off. */
     recordMerge: (repo: RepoRef, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
@@ -77,7 +83,7 @@ const validDate = (value: string | null): Date | undefined => {
 };
 
 export function createPrFollower(deps: PrFollowerDeps): PrFollower {
-    const { sql, orgId, ready, forge, prs, recordMerge, now } = deps;
+    const { sql, orgId, ready, forge, gitlab, prs, recordMerge, now } = deps;
     const concurrency = deps.concurrency ?? OBSERVER_CONCURRENCY;
     const spreadMs = deps.spreadMs ?? PR_FOLLOW_INTERVAL_MS;
     const store = { sql, orgId, now };
@@ -114,12 +120,18 @@ export function createPrFollower(deps: PrFollowerDeps): PrFollower {
     };
 
     const followOne = async (claim: PrFollowClaim): Promise<boolean> => {
-        const read = await readFacts(forge, claim.repo, claim.prNumber);
-        pause.note(read);
+        const read = await readFacts(
+            { forge, gitlab, orgId, readDeadlineMs: deps.readDeadlineMs },
+            claim.repo,
+            claim.prNumber,
+            claim.actor
+        );
+        // The pause is the installation's: a GitLab member's rate limit backs off its own row, nobody else's reads.
+        if (isGithubRepo(claim.repo)) pause.note(read);
         return withFollowClaim(store, claim, async (tx): Promise<PrFollowResult> => {
             if (read.kind === 'error') return { kind: 'failed', error: read.error, retryAfterMs: read.retryAfterMs };
             // Facts about another PR are never applied to this one.
-            if (!sameRepo(githubRepo(read.facts.repo), claim.repo) || read.facts.number !== claim.prNumber) {
+            if (!changeRequestIs(read.facts, claim.repo, claim.prNumber)) {
                 return { kind: 'failed', error: READ_BINDING, retryAfterMs: null };
             }
             return apply(claim.repo, read.facts, tx);
@@ -129,7 +141,7 @@ export function createPrFollower(deps: PrFollowerDeps): PrFollower {
     return {
         async observeDue() {
             if (ready) await ready;
-            if (!forge) return 0;
+            if (!forge && !gitlab) return 0;
             let committed = 0;
             for (let round = 0; round < MAX_ROUNDS_PER_TICK && pause.open(); round += 1) {
                 const claims = await claimDue(store, concurrency, spreadMs);

@@ -647,7 +647,7 @@ describe.skipIf(!enabled).each(VARIANT_CASES)(
 
             const applied = await withFollowClaim(
                 { sql, orgId: ORG },
-                { repo: githubRepo(REPO), prNumber: nextPr, token },
+                { repo: githubRepo(REPO), prNumber: nextPr, actor: null, token },
                 async () => ({ kind: 'seen', closed: false })
             );
 
@@ -699,7 +699,7 @@ describe.skipIf(!enabled).each(VARIANT_CASES)(
 
             const applied = await withFollowClaim(
                 { sql, orgId: ORG },
-                { repo: refOf(variant, REPO), prNumber: nextPr, token },
+                { repo: refOf(variant, REPO), prNumber: nextPr, actor: null, token },
                 async () => ({ kind: 'seen', closed: false })
             );
 

@@ -25,7 +25,8 @@ import { bad } from '../helpers.js';
 import { resolveJobRoute } from '../route-guards.js';
 import { closedBy } from './job-handlers-pull-request.js';
 import { notFoundJob } from './job-limits.js';
-import { sourceOf, writerFor } from './pull-request-forge.js';
+import { sourceOf } from '../../forge/forge-reads.js';
+import { writerFor } from './pull-request-forge.js';
 
 /**
  * `GET /api/jobs/:id/change-request?part=diff|notes|pipeline` (a person, MCP) and

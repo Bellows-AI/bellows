@@ -1,6 +1,6 @@
 import {
+    changeRequestIs,
     formatRepoRef,
-    githubRepo,
     nextObservationDelayMs,
     READ_BINDING,
     READ_RATE_LIMITED,
@@ -19,7 +19,10 @@ import {
     type ObservationResult,
     type RefreshHint,
 } from './db/batches/batch-store-observation.js';
-import { INSTALLATION_CREDENTIAL, resolveForgeClient, type ForgeSource } from './forge/forge-client.js';
+import type { ForgeSource } from './forge/forge-client.js';
+import { readClient, type GitlabReads } from './forge/forge-reads.js';
+import { isGithubRepo } from './forge/forges.js';
+import { FORGE_READ_DEADLINE_MS } from './forge/gitlab-reads.js';
 import { startIntervalLoop } from './interval-loop.js';
 import { GitHubReadError } from './github/pr-read.js';
 import { logger } from './log.js';
@@ -44,6 +47,10 @@ export interface BatchPrObserverDeps {
     ready?: Promise<unknown> | undefined;
     /** What the org's PRs are read through; absent offline: nothing is observed. */
     forge?: ForgeSource | undefined;
+    /** What a GitLab change request is read through, as the batch's starter; absent on a board with no member grants. */
+    gitlab?: GitlabReads | undefined;
+    /** Bounds one claim's whole read (token, connection and every request); `FORGE_READ_DEADLINE_MS` when absent. */
+    readDeadlineMs?: number | undefined;
     /** Records a merge GitHub reports as done: the job store's `closeMergedPr`, with the merge's own time. */
     recordMerge: (repo: RepoRef, prNumber: number, deliveryId: string, mergedAt: Date | undefined) => Promise<unknown>;
     /** Lets the human gate judge a merge just recorded. */
@@ -78,26 +85,35 @@ const failure = (error: GitHubReadError): ObservationResult => ({
 });
 
 /**
- * One provider read as a result: the facts, or the kind of failure. A non-provider error is a
- * transport failure, so no read ever escapes as an answer; the PR follower reads through this too.
+ * One provider read as a result: the facts, or the kind of failure. A non-provider error is a transport failure, so no
+ * read ever escapes as an answer; the PR follower reads through this too. A GitLab read acts as `actor`: a grant the board
+ * cannot confirm is a transport failure with no request made, never a verdict about the change request.
  */
 export async function readFacts(
-    forge: ForgeSource | undefined,
+    deps: {
+        forge?: ForgeSource | undefined;
+        gitlab?: GitlabReads | undefined;
+        orgId: string;
+        readDeadlineMs?: number | undefined;
+    },
     repo: RepoRef,
-    number: number
+    number: number,
+    actor: string | null
 ): Promise<ObservationResult> {
-    // A forge no client answers for is a binding error with no request made, never an answer about the PR.
-    const resolution = resolveForgeClient(forge, repo, INSTALLATION_CREDENTIAL);
-    if (!resolution.ok) {
-        return {
-            kind: 'error',
-            error: READ_BINDING,
-            detail: `${formatRepoRef(repo)} is not a repository the GitHub reader answers for`,
-            retryAfterMs: null,
-        };
-    }
+    // One deadline per claim: it covers the token read, the connection read and every request of the read.
+    const signal = AbortSignal.timeout(deps.readDeadlineMs ?? FORGE_READ_DEADLINE_MS);
     try {
-        return { kind: 'facts', facts: await resolution.client.readChangeRequest(number) };
+        const resolved = await readClient(deps, repo, actor, signal);
+        if (!resolved.ok) {
+            // No client answers for the repository: a binding error with no request made, never an answer about the PR.
+            return {
+                kind: 'error',
+                error: resolved.kind === 'binding' ? READ_BINDING : READ_TRANSPORT,
+                detail: resolved.detail,
+                retryAfterMs: null,
+            };
+        }
+        return { kind: 'facts', facts: await resolved.client.readChangeRequest(number) };
     } catch (e) {
         if (e instanceof GitHubReadError) return failure(e);
         return failure(new GitHubReadError((e as Error).message, READ_TRANSPORT));
@@ -129,7 +145,7 @@ export function createReadPause(now?: (() => Date) | undefined): ReadPause {
 }
 
 export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserver {
-    const { sql, orgId, ready, forge, recordMerge, reconcile } = deps;
+    const { sql, orgId, ready, forge, gitlab, recordMerge, reconcile } = deps;
     const now = deps.now;
     const concurrency = deps.concurrency ?? OBSERVER_CONCURRENCY;
     const store = { sql, orgId, now };
@@ -148,20 +164,25 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
                 retryAfterMs: null,
             };
         }
-        return readFacts(forge, claim.repo, claim.prNumber);
+        return readFacts(
+            { forge, gitlab, orgId, readDeadlineMs: deps.readDeadlineMs },
+            claim.repo,
+            claim.prNumber,
+            claim.startedBy
+        );
     };
 
     const observeOne = async (claim: ObservationClaim): Promise<boolean> => {
         const result = await read(claim);
-        pause.note(result);
+        // The pause is the installation's: a GitLab member's rate limit backs off its own row, nobody else's reads.
+        if (isGithubRepo(claim.repo)) pause.note(result);
         const committed = await commitObservation(store, claim, result);
         if (committed.status === 'superseded') return false;
         // Facts about another PR were downgraded to a binding error at commit; never record their merge.
         if (
             result.kind === 'facts' &&
             result.facts.merged &&
-            sameRepo(githubRepo(result.facts.repo), claim.repo) &&
-            result.facts.number === claim.prNumber
+            changeRequestIs(result.facts, claim.repo, claim.prNumber)
         ) {
             await recordMergeOf(claim, result.facts);
         }
@@ -179,7 +200,7 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
     return {
         async observeDue() {
             await gate();
-            if (!forge) return 0;
+            if (!forge && !gitlab) return 0;
             let committed = 0;
             for (let round = 0; round < MAX_ROUNDS_PER_TICK && pause.open(); round += 1) {
                 const claims = await claimDue(store, concurrency);

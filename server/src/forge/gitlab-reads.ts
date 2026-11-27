@@ -298,6 +298,17 @@ async function readBranchHead(ctx: Ctx, branch: string, signal: AbortSignal): Pr
     return tipOf(ctx, sent.json, branch);
 }
 
+/** The project's default branch, or null when the instance confirms it has none (an empty project); anything else throws. */
+export async function readDefaultBranch(call: GitlabCall, ref: RepoRef, signal: AbortSignal): Promise<string | null> {
+    const project = `/api/v4/projects/${encodeURIComponent(ref.path)}`;
+    const body = await get({ call, project }, project, signal);
+    if (!isObject(body) || !('default_branch' in body)) throw unclean(project);
+    const branch = body.default_branch;
+    if (branch === null) return null;
+    if (!text(branch) || branch === '') throw unclean(project);
+    return branch;
+}
+
 /** Whether `tip` holds `sha`: the merge base of the two is `sha`. A commit GitLab does not know is not held. */
 async function holds(ctx: Ctx, sha: string, tip: string, signal: AbortSignal): Promise<boolean> {
     if (sha === tip) return true;

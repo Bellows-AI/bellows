@@ -412,6 +412,24 @@ describe('launch checks: validate and start', () => {
         expect(batches.writes).toEqual(['create']);
     });
 
+    it('answers 503, not a verdict, for a GitLab target on a board with no member grants (AUTH_MODE=none)', async () => {
+        const gitlab = parseRepoRef('gitlab:gitlab.example.test/Bellows-AI/bellows.ai')!;
+        const { call, create, batches } = await setup({
+            repos: [{ owner: 'Bellows-AI', name: 'bellows.ai', defaultBranch: null, ref: gitlab }],
+        });
+        const { id } = await create(plan({ targets: [{ key: 'web', repo: gitlab }] }));
+        for (const [path, payload] of [
+            ['validate', {}],
+            ['start', { version: 1 }],
+        ] as const) {
+            const response = await call('POST', `/api/batches/${id}/${path}`, payload);
+            expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+            expect(response.json()).toMatchObject({ code: 'UNAVAILABLE' });
+            expect(response.json().code).not.toBe('BATCH_NO_DEFAULT_BRANCH');
+        }
+        expect(batches.writes).toEqual(['create']);
+    });
+
     it('refuses a repository that reports no default branch', async () => {
         const { call, create } = await setup({ repos: [{ ...WEB, defaultBranch: null }] });
         const { id } = await create();
