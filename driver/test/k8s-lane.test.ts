@@ -1074,7 +1074,7 @@ describe('kind lane members hold a GitHub grant (BEL-617)', () => {
     it('the smoke create loop reports the refusal body', () => {
         expect(script).toContain('b.slice(0, 600)');
         expect(script).toContain('refusal="${id#*|}"');
-        expect(script).toContain("'a job was queued' \"no id came back (last status: ${status:-none}): ${refusal:-}\"");
+        expect(script).toContain('\'a job was queued\' "no id came back (last status: ${status:-none}): ${refusal:-}"');
     });
 
     it('the workspace PVC label quotes the org id', () => {
