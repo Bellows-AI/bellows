@@ -566,6 +566,15 @@ describe.skipIf(!enabled)('the model setup command', () => {
         expect(unchanged!.model).toBe('claude-sonnet-4-5');
     });
 
+    it('the setup view carries the executor revision an edit must send back', async () => {
+        const { setup, executors } = stores();
+        await setup.apply(command());
+        const [row] = await executors.listOrg();
+        const selected = await setup.selectedFor(ALICE);
+        expect(selected?.updatedAt).toBeDefined();
+        expect(Date.parse(selected!.updatedAt)).toBe(Date.parse(row!.updatedAt));
+    });
+
     it('default replacement and protected deletion cannot leave dangling references', async () => {
         const { setup, executors, connections } = stores();
         const first = await setup.apply(command());

@@ -121,6 +121,7 @@ const selectedView = (selected: SelectedSetup) => ({
     agentType: selected.agentType,
     model: selected.model,
     suspended: selected.suspended,
+    updatedAt: selected.updatedAt,
     connection: selected.connection,
 });
 

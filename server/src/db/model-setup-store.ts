@@ -116,6 +116,8 @@ export interface SelectedSetup {
     readonly agentType: string;
     readonly model: string | null;
     readonly suspended: boolean;
+    /** The executor's revision (ISO): an edit or a rotation sends it back as `expectedUpdatedAt`, so an older read cannot overwrite a newer save. */
+    readonly updatedAt: string;
     /** The connection the executor selects, when the member may see it; null for none. */
     readonly connection: {
         readonly id: string;
@@ -382,6 +384,7 @@ interface SelectedRow {
     type: string;
     model: string | null;
     suspended: boolean;
+    updated_at: Date;
     connection_id: string | null;
     connection_name: string | null;
     connection_provider: ModelProvider | null;
@@ -396,6 +399,7 @@ const toSelected = (row: SelectedRow): SelectedSetup => ({
     agentType: row.type,
     model: row.model,
     suspended: row.suspended,
+    updatedAt: row.updated_at.toISOString(),
     connection:
         row.connection_id === null
             ? null
@@ -433,7 +437,7 @@ export function createModelSetupStore({
         async selectedFor(userId) {
             if (ready) await ready;
             const [row] = await sql<SelectedRow[]>`
-                select s.owner_id, p.id, p.name, p.type, p.config->>'model' as model, p.suspended,
+                select s.owner_id, p.id, p.name, p.type, p.config->>'model' as model, p.suspended, p.updated_at,
                     c.id as connection_id, c.name as connection_name, c.provider as connection_provider,
                     c.user_id as connection_user_id, c.base_url as connection_base_url
                 from executor_default_selection s

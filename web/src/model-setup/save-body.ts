@@ -57,8 +57,8 @@ export function adoptBody(input: {
 }
 
 /**
- * The selected executor's agent and model changed: the same executor by id on the same connection. The key is never
- * sent, so a model-only edit cannot rotate it.
+ * The selected executor's agent and model changed: the same executor by id on the same connection, at the revision the
+ * member read. The key is never sent, so a model-only edit cannot rotate it.
  */
 export function editBody(input: {
     selected: SelectedExecutorView;
@@ -71,11 +71,11 @@ export function editBody(input: {
         agentType,
         model,
         connection: selected.connection ? { intent: 'reuse', id: selected.connection.id } : { intent: 'none' },
-        executor: { id: selected.executorId },
+        executor: { id: selected.executorId, expectedUpdatedAt: selected.updatedAt },
     };
 }
 
-/** Explicit rotation: a fresh key for the selected executor's own connection, under its id; the endpoint stays. */
+/** Explicit rotation: a fresh key for the selected executor's own connection, under its id, at the revision the member read; the endpoint stays. */
 export function rotateBody(input: {
     selected: SelectedExecutorView;
     connectionId: string;
@@ -89,6 +89,6 @@ export function rotateBody(input: {
         agentType,
         model,
         connection: { intent: 'rotate', id: input.connectionId, key: input.key.trim() },
-        executor: { id: selected.executorId },
+        executor: { id: selected.executorId, expectedUpdatedAt: selected.updatedAt },
     };
 }

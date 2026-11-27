@@ -26,6 +26,8 @@ export interface SelectedExecutorView {
     agentType: ExecutorType;
     model: string | null;
     suspended: boolean;
+    /** The executor's revision: a save of this executor sends it back, so an older read cannot overwrite a newer save. */
+    updatedAt: string;
     /** The connection the executor runs on, when the member may see it; null for the platform model or the environment's keys. */
     connection: { id: string; name: string; provider: ModelProvider; scope: SetupScope; baseUrl: string | null } | null;
 }
@@ -54,7 +56,7 @@ export interface ModelSetupSave {
     model: string;
     connection: ConnectionBody;
     /** An edit names the executor by its stable id; a new one needs a name. */
-    executor: { id?: string; name?: string };
+    executor: { id?: string; name?: string; expectedUpdatedAt?: string };
 }
 
 /** What a save answers: the stable identities the next save carries. */

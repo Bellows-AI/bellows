@@ -367,6 +367,8 @@ describe('the configured banners', () => {
     });
 });
 
+const REVISION = '2026-01-02T03:04:05.678Z';
+
 describe('a default executor', () => {
     const selected = (over: Record<string, unknown> = {}) => ({
         scope: 'personal',
@@ -375,6 +377,7 @@ describe('a default executor', () => {
         agentType: 'claude-code',
         model: 'claude-sonnet-5-5',
         suspended: false,
+        updatedAt: REVISION,
         connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'personal', baseUrl: null },
         ...over,
     });
@@ -410,7 +413,7 @@ describe('a default executor', () => {
             agentType: 'claude-code',
             model: 'claude-opus-5-5',
             connection: { intent: 'reuse', id: 'connection-1' },
-            executor: { id: 'executor-1' },
+            executor: { id: 'executor-1', expectedUpdatedAt: REVISION },
         });
         expect(JSON.stringify(puts(calls)[0]?.body)).not.toContain('"key"');
     });
@@ -441,7 +444,7 @@ describe('a default executor', () => {
             agentType: 'claude-code',
             model: 'claude-sonnet-5-5',
             connection: { intent: 'rotate', id: 'connection-1', key: 'sk-ant-api03-new' },
-            executor: { id: 'executor-1' },
+            executor: { id: 'executor-1', expectedUpdatedAt: REVISION },
         });
     });
 

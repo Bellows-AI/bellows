@@ -191,6 +191,38 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         expect((await call(member, 'GET', '/api/workspace')).json.executors).toEqual([]);
     });
 
+    it('an older tab cannot overwrite a newer save: the read carries the revision and an edit or a rotation sends it', async () => {
+        const first = await save(admin, orgBody());
+        const stale = (await call(admin, 'GET', '/api/model-setup')).json.selected.updatedAt;
+        expect(typeof stale).toBe('string');
+        const edit = (model: string, expectedUpdatedAt: string) =>
+            save(
+                admin,
+                orgBody({
+                    model,
+                    connection: { intent: 'reuse', id: first.json.connectionId },
+                    executor: { id: first.json.executorId, expectedUpdatedAt },
+                })
+            );
+        // Another tab saves a new model; the older tab's edit and rotation both read `stale` and are refused.
+        expect((await edit('claude-opus-4-5', stale)).status).toBe(OK);
+        const lateEdit = await edit('claude-sonnet-4-5', stale);
+        expect(lateEdit.status).toBe(CONFLICT);
+        expect(lateEdit.json.code).toBe('MODEL_SETUP_CONFLICT');
+        const lateRotation = await save(
+            admin,
+            orgBody({
+                connection: { intent: 'rotate', id: first.json.connectionId, key: KEY_B },
+                executor: { id: first.json.executorId, expectedUpdatedAt: stale },
+            })
+        );
+        expect(lateRotation.status).toBe(CONFLICT);
+        const view = (await call(admin, 'GET', '/api/model-setup')).json;
+        expect(view.selected.model).toBe('claude-opus-4-5');
+        // The fresh revision the read now carries is accepted.
+        expect((await edit('claude-sonnet-4-5', view.selected.updatedAt)).status).toBe(OK);
+    });
+
     it('personal onboarding yields a personal connection executor and default', async () => {
         const saved = await save(
             member,
