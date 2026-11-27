@@ -168,7 +168,7 @@ describe.skipIf(!enabled)('configured default selection', () => {
         await store.selectDefault(null, org.id);
         await store.selectDefault(BOB, org.id);
         const refused = await refusal(() => store.deleteOrg(org.id));
-        expect(refused).toMatchObject({ organization: true, members: 1 });
+        expect(refused).toMatchObject({ selections: { organization: true, members: 1 } });
         expect(refused.message).not.toContain(BOB);
         expect(await store.orgCount()).toBe(1);
         expect(await store.selectedDefault(null)).toMatchObject({ executorId: org.id });
@@ -176,7 +176,9 @@ describe.skipIf(!enabled)('configured default selection', () => {
 
         // A member's selection alone refuses too: it is never released silently.
         await store.clearDefault(null);
-        expect(await refusal(() => store.deleteOrg(org.id))).toMatchObject({ organization: false, members: 1 });
+        expect(await refusal(() => store.deleteOrg(org.id))).toMatchObject({
+            selections: { organization: false, members: 1 },
+        });
         expect(await store.selectedDefault(BOB)).toMatchObject({ executorId: org.id });
     });
 
