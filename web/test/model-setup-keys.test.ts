@@ -8,7 +8,6 @@ import {
     providerChoices,
     providerAgents,
     saveReason,
-    secretNames,
 } from '../src/model-setup/providers.js';
 
 /**
@@ -73,13 +72,6 @@ describe('agents and models per provider', () => {
             'anthropic/claude-z',
         ]);
         expect(modelOptions('platform', 'claude-code', undefined)[0]).toBe('claude-sonnet-5-5');
-    });
-
-    it('names the env a save writes: the key, and the base URL beside it where one is saved', () => {
-        expect(secretNames('anthropic', false)).toEqual(['ANTHROPIC_API_KEY']);
-        expect(secretNames('anthropic', true)).toEqual(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL']);
-        expect(secretNames('litellm', false)).toEqual(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL']);
-        expect(secretNames('subscription', false)).toEqual(['CLAUDE_CODE_OAUTH_TOKEN']);
     });
 });
 

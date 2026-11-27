@@ -23,6 +23,7 @@ import { createJobStore } from './db/jobs/job-store.js';
 import type { ClaimObserver } from './db/jobs/job-store-admission.js';
 import type { JobStore } from './db/jobs/job-store-types.js';
 import { storedRepoNames } from './db/stored-repos.js';
+import { createModelSetupStore, type ModelSetupStore } from './db/model-setup-store.js';
 import { createUserExecutorStore, type UserExecutorStore } from './db/user-executor-store.js';
 import {
     createNotificationSubscriptionStore,
@@ -105,6 +106,8 @@ export interface OrgRuntime {
     /** The org's installation mint, behind the runner GitHub credential route; absent offline or uninstalled. */
     githubToken?: InstallationTokenProvider | undefined;
     userExecutors?: UserExecutorStore | undefined;
+    /** The model setup command (170): a connection, its executor and the default in one transaction; present with the other stores. */
+    modelSetup?: ModelSetupStore | undefined;
     /** The org's notification subscriptions (103); present with the other stores. */
     notificationSubscriptions?: NotificationSubscriptionStore | undefined;
     /** The org's notification outbox (104); present with the other stores. */
@@ -198,6 +201,7 @@ function buildOrgStores({
     connectionGrants: ConnectionGrants;
     providerConnections: ProviderConnectionStore;
     userExecutors: UserExecutorStore;
+    modelSetup: ModelSetupStore;
     notificationSubscriptions: NotificationSubscriptionStore;
     notificationOutbox: NotificationOutboxStore;
     prs: PrLifecycleStore;
@@ -211,6 +215,7 @@ function buildOrgStores({
     const connectionGrants = createConnectionGrants({ sql, orgId, ready });
     const providerConnections = createProviderConnectionStore({ sql, orgId, ready, secrets, secretLog });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready, secrets, secretLog });
+    const modelSetup = createModelSetupStore({ sql, orgId, ready, secrets, secretLog });
     const notificationSubscriptions = createNotificationSubscriptionStore({ sql, orgId, ready, secrets, secretLog });
     const notificationOutbox = createNotificationOutboxStore({ sql, orgId, ready, secrets });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
@@ -306,6 +311,7 @@ function buildOrgStores({
         connectionGrants,
         providerConnections,
         userExecutors,
+        modelSetup,
         notificationSubscriptions,
         notificationOutbox,
         prs,
@@ -327,6 +333,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.connectionGrants = stores.connectionGrants;
     runtime.providerConnections = stores.providerConnections;
     runtime.userExecutors = stores.userExecutors;
+    runtime.modelSetup = stores.modelSetup;
     runtime.notificationSubscriptions = stores.notificationSubscriptions;
     runtime.notificationOutbox = stores.notificationOutbox;
     runtime.jobs = stores.jobs;

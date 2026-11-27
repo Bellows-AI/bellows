@@ -7,6 +7,20 @@ import { showNoModel } from '../src/onboarding/no-model.js';
 
 const NONE: ModelSetupView = { platform: false, org: null, personal: null, effective: null };
 const KEYED: ModelSetupView = { ...NONE, effective: 'org' };
+/** A default executor on a connection: effective with no environment key and no agent default anywhere. */
+const EXECUTOR: ModelSetupView = {
+    ...NONE,
+    effective: 'executor',
+    selected: {
+        scope: 'org',
+        executorId: 'executor-1',
+        name: 'Claude',
+        agentType: 'claude-code',
+        model: 'claude-sonnet-4-5',
+        suspended: false,
+        connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'org', baseUrl: null },
+    },
+};
 const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null, agentDefault: null };
 const PROFILE: WorkspacePayload = { ...BARE, defaultExecutor: { scope: 'user', name: 'mine' } };
 const AGENT: WorkspacePayload = { ...BARE, agentDefault: { agentType: 'claude-code', model: 'm', from: 'org' } };
@@ -25,6 +39,17 @@ describe('showNoModel', () => {
     it('never when a key or the platform resolves', () => {
         expect(showNoModel({ mode: 'cloud', modelSetup: ok(KEYED), workspace: ok(BARE) })).toBe(false);
         expect(showNoModel({ mode: 'self-hosted', modelSetup: ok(KEYED), workspace: ok(BARE) })).toBe(false);
+    });
+
+    it('never when a default executor resolves, with no env copy of its key, in cloud or self-hosted', () => {
+        for (const mode of ['cloud', 'self-hosted'] as const) {
+            expect(showNoModel({ mode, modelSetup: ok(EXECUTOR), workspace: ok(BARE) })).toBe(false);
+        }
+    });
+
+    it('a suspended default executor is not effective: the read says null and cloud shows the warning', () => {
+        const suspended: ModelSetupView = { ...EXECUTOR, effective: null };
+        expect(showNoModel({ mode: 'cloud', modelSetup: ok(suspended), workspace: ok(BARE) })).toBe(true);
     });
 
     it('cloud: on a confirmed effective null, whatever the workspace holds', () => {

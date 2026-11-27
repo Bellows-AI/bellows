@@ -58,6 +58,8 @@ export function staticRegistry(
         /** The org's installation mint, behind the runner GitHub credential route. */
         githubToken?: OrgRuntime['githubToken'];
         userExecutors?: OrgRuntime['userExecutors'];
+        /** Present when the org's board applies the model setup command. */
+        modelSetup?: OrgRuntime['modelSetup'];
         skills?: OrgRuntime['skills'];
         /** When set, `for()` answers null for every id not in it. */
         orgsFor?: readonly string[];
@@ -87,6 +89,7 @@ export function staticRegistry(
         providerConnections: parts.providerConnections,
         githubToken: parts.githubToken,
         userExecutors: parts.userExecutors,
+        modelSetup: parts.modelSetup,
         skills: parts.skills,
     };
     return {

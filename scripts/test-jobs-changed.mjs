@@ -91,7 +91,7 @@ export const RULES = [
     [/^server\/src\/secrets\/rotate-(cli|args)\.ts$/, NONE, 'the rotation command line, not called by any jobs phase'],
     [/^server\/src\/secrets\//, FULL, 'the secret store every board opens'],
     [/^server\/src\/(pr-follower|batch-loops|batch-pr-observer|stats-service|skills|skill-catalog)\.ts$/, FULL, 'the PR follower and stats warm-up every board runs, and the skill catalog every create reads'],
-    [/^server\/src\/db\/(pool|migrate|org-sql|org-tables|org-status|audit-log|lease-types|attempt-of-lease|restore-types|object-write-fence|operation-receipts|env-var-store|env-secrets|user-executor-store|executor-default-store|executor-personal-replace|executor-connection-selection|executor-credentials|stored-repos|tracked-repos|master-prompt|review-prompt|evidence-policy|follow-up-recap|gate-report|task-summary|plan-limits|plan-allowances|outbox-backoff|pr-follow-store|pr-lifecycle-store|org-retention|org-purge|skill-store|connection-bindings|agent-default-sql|env-var-write)\.ts$/, FULL, 'stores the job path, the claim or a boot loop uses'],
+    [/^server\/src\/db\/(pool|migrate|org-sql|org-tables|org-status|audit-log|lease-types|attempt-of-lease|restore-types|object-write-fence|operation-receipts|env-var-store|env-secrets|user-executor-store|executor-default-store|executor-personal-replace|executor-connection-selection|executor-setup-rows|model-setup-store|executor-credentials|stored-repos|tracked-repos|master-prompt|review-prompt|evidence-policy|follow-up-recap|gate-report|task-summary|plan-limits|plan-allowances|outbox-backoff|pr-follow-store|pr-lifecycle-store|org-retention|org-purge|skill-store|connection-bindings|agent-default-sql|env-var-write)\.ts$/, FULL, 'stores the job path, the claim or a boot loop uses'],
     // The claim reads a profile's selected connection through this store (job-store-claim-executor.ts), so every phase's claim runs it.
     [/^server\/src\/db\/provider-connection(-(secrets|store))?\.ts$/, FULL, 'the provider connection store the claim reads for a profile that selects one'],
     [/^server\/src\/db\/batches\/batch-store-(observation|types)\.ts$/, FULL, 'the PR follower every board runs reads its lease'],
@@ -102,7 +102,7 @@ export const RULES = [
     [/^server\/src\/(provider-keys\/|net\/pinned-request\.ts$)/, FULL, 'the provider key check server/src/main.ts builds on every board'],
     [/^server\/src\/oauth\/(rate-limit|special-use-address)\.ts$/, FULL, 'the rate limiter every request passes'],
     [/^server\/src\/attachments\/(attachment-collector|attachment-store|attachment-rows)\.ts$/, FULL, 'the attachment sweep every board runs over the shared object store'],
-    [/^server\/src\/routes\/(auth|auth-onboarding|auth-shared|health|error-handler|executor-fields|helpers|route-guards|plan-limit|env|workspace|org-executors|github-credential|operation-receipts|ingest|stats|connections|agent-default|onboarding-setup)\.ts$/, FULL, 'routes the lane fixture, the driver or a runner calls in every phase'],
+    [/^server\/src\/routes\/(auth|auth-onboarding|auth-shared|health|error-handler|executor-fields|helpers|route-guards|plan-limit|env|workspace|org-executors|github-credential|operation-receipts|ingest|stats|connections|agent-default|onboarding-setup|model-setup|model-setup-save)\.ts$/, FULL, 'routes the lane fixture, the driver or a runner calls in every phase; the model setup writes the default executor every launch resolves'],
     // Registration runs at boot: a route file whose plugin body calls something besides declaring routes (pinned by the test).
     [/^server\/src\/routes\/(skills|skills-store|version|webhook|attachments|notification-subscriptions|operator|org-export|repos|connection-credential|batches\/batches|model-setup-verify|provider-connections)\.ts$/, FULL, 'registration does work at every boot'],
     // Called by named phases only.
@@ -115,7 +115,7 @@ export const RULES = [
     // Not called by any jobs phase.
     [/^server\/src\/(commerce\/|db\/commerce-|routes\/commerce\.ts$)/, NONE, 'commerce, off unless COMMERCE_ENABLED, which no lane sets; not called by any jobs phase'],
     [/^server\/src\/(db\/batches\/|routes\/batches\/|batch-merger\.ts$|batch-reconciler\.ts$)/, NONE, 'batches: their loops need BATCHES_ENABLED, which no lane sets, and no phase makes one; not called by any jobs phase'],
-    [/^server\/src\/(routes\/(org-members|org-retention|audit|tokens|tasks|operator-driver-credentials|integrations|integration-catalog|attachment-uploads|attachment-ingest|model-setup|model-setup-save)\.ts|db\/org-export\.ts|attachments\/(name|sniff)\.ts)$/, NONE, 'settings, admin and dashboard routes; not called by any jobs phase'],
+    [/^server\/src\/(routes\/(org-members|org-retention|audit|tokens|tasks|operator-driver-credentials|integrations|integration-catalog|attachment-uploads|attachment-ingest)\.ts|db\/org-export\.ts|attachments\/(name|sniff)\.ts)$/, NONE, 'settings, admin and dashboard routes; not called by any jobs phase'],
     [/^server\/src\/seed\//, NONE, 'synthetic data command line, not called by any jobs phase'],
 
     // --- docker executor, specific concerns ------------------------------------------------------

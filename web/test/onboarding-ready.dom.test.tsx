@@ -197,6 +197,65 @@ describe('the Ready step', () => {
         expect(calls.slice(completeAt).some((c) => c.url === '/api/auth/me')).toBe(true);
     });
 
+    it('recovers the persisted default executor on a reload: the summary names it and Start launches on it', async () => {
+        const user = userEvent.setup();
+        const orgExecutor = {
+            id: 'executor-1',
+            name: 'Claude',
+            type: 'claude-code',
+            createdAt: CREATED,
+            suspended: false,
+            runnerClass: null,
+            orgDefault: true,
+            providerConnectionId: 'connection-1',
+            providerConnectionName: 'Anthropic',
+            providerConnectionProvider: 'anthropic' as const,
+            providerConnectionScope: 'org' as const,
+        };
+        const calls = board({
+            model: {
+                platform: false,
+                org: null,
+                personal: null,
+                effective: 'executor',
+                selected: {
+                    scope: 'org',
+                    executorId: 'executor-1',
+                    name: 'Claude',
+                    agentType: 'claude-code',
+                    model: 'claude-sonnet-4-5',
+                    suspended: false,
+                    connection: {
+                        id: 'connection-1',
+                        name: 'Anthropic',
+                        provider: 'anthropic',
+                        scope: 'org',
+                        baseUrl: null,
+                    },
+                },
+            },
+            space: {
+                executors: [],
+                orgExecutors: [orgExecutor],
+                defaultExecutor: { scope: 'org', name: 'Claude' },
+                agentDefault: null,
+            },
+        });
+        const { router } = renderApp('/onboarding/ready');
+
+        const model = await row('Model');
+        expect(
+            await model.findByText('Claude · Claude Code · Anthropic · claude-sonnet-4-5 · everyone in Bellows AI')
+        ).toBeTruthy();
+        expect(screen.queryByText(/No model yet/)).toBeNull();
+        await user.type(await prompt(), 'fix the login crash');
+        await waitFor(() => expect((startButton() as HTMLButtonElement).disabled).toBe(false));
+        await user.click(startButton());
+        await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${TASK_ID}`));
+        const launch = calls.find((c) => c.method === 'POST' && c.url === '/api/jobs')!;
+        expect(launch.body).toMatchObject({ command: 'fix the login crash', executor: 'Claude', executorScope: 'org' });
+    });
+
     it('a refused start keeps the draft, leaves setup open, and the retry carries the same key', async () => {
         const user = userEvent.setup();
         let refusals = 1;

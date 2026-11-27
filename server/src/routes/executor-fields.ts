@@ -33,7 +33,8 @@ export const MAX_EXECUTORS_PER_USER = 10;
 
 export const MAX_EXECUTORS_PER_ORG = 10;
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** The shape of a row id the routes accept before it reaches a `uuid` column. */
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * The one validated executor entry both the personal whole-list PUT and the organization CRUD
