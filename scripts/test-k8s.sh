@@ -37,10 +37,10 @@ while [ "$#" -gt 0 ]; do
         phase_requested=1
         shift
         PHASE="${1:-}"
-        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|observability|drain|replicas|bench) ;; *) echo 'invalid --phase'; exit 2 ;; esac
+        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|gitlab|capacity|mcp|observability|drain|replicas|bench) ;; *) echo 'invalid --phase'; exit 2 ;; esac
         ;;
     --help)
-        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|capacity|mcp|observability|drain|replicas|bench] | --netpol]'
+        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|acceptance|gitlab|capacity|mcp|observability|drain|replicas|bench] | --netpol]'
         echo 'All cluster phases run smoke prerequisites. The default cluster phase is all, which leaves out drain and replicas (both need a LAYOUT=drain cluster) and bench (an hour or more on an idle host; writes <timings>.bench.tsv).'
         echo 'TIMINGS_FILE overrides artifacts/k8s/<release>.tsv (includes cleanup).'
         exit 0
@@ -206,6 +206,10 @@ cleanup() {
     # The lane's own object store (the replicas phase); gated on its own flag, so a run that stopped before the install still removes it.
     if [ "${fake_forge_created:-}" = '1' ]; then
         kubectl delete pod,service,configmap "$RELEASE-fake-forge" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
+    fi
+    # The gitlab phase's TLS fake GitLab: its pod, Service, files and certificate.
+    if [ "${fake_gitlab_created:-}" = '1' ]; then
+        kubectl delete pod,service,configmap,secret "$RELEASE-fake-gitlab" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
     fi
     if [ "${s3_created:-}" = '1' ]; then
         kubectl delete pod,service,secret "$RELEASE-s3" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
@@ -3405,6 +3409,8 @@ driver_logs() { kubectl logs -l "$DRIVER_SEL" -n "$NAMESPACE" --tail=-1 --reques
 . "$REPO/scripts/lanes/k8s/control.sh"
 
 . "$REPO/scripts/lanes/k8s/acceptance.sh"
+
+. "$REPO/scripts/lanes/k8s/gitlab.sh"
 
 . "$REPO/scripts/lanes/k8s/capacity.sh"
 

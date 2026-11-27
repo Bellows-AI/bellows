@@ -69,24 +69,12 @@ gl_control() { # gl_control <path> [json] -> the fake GitLab's answer body (its 
     [ -n "$json" ] || json='{}'
     NODE_EXTRA_CA_CERTS="$GL_TLS/cert.pem" node scripts/gitlab-member-client.mjs control "$GL_URL" "$1" "$json"
 }
-gl_pushes() { # gl_pushes -> a JSON array: the pushes the fake saw, in order
-    node -e '
-const fs = require("fs");
-const lines = fs.existsSync(process.argv[1]) ? fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean) : [];
-process.stdout.write(JSON.stringify(lines.map((line) => JSON.parse(line)).filter((call) => call.event === "push")));' "$GL_STATE/calls.jsonl"
+gl_summary() { # gl_summary [skip calls] -> the fake's view of the project's git traffic since then (scripts/gitlab-member-client.mjs summary)
+    node scripts/gitlab-member-client.mjs summary "$GL_STATE/calls.jsonl" "$GL_PROJECT" "${1:-0}"
 }
-gl_push_count() { node -e 'process.stdout.write(String(JSON.parse(process.argv[1]).length))' "$(gl_pushes)"; }
-gl_git_tokens() { # gl_git_tokens <since> -> "<tokenId:status>" of each git call on the project after the first <since> calls, one per line
-    node -e '
-const fs = require("fs");
-const calls = fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-const [since, project] = [Number(process.argv[2]), process.argv[3]];
-for (const call of calls.slice(since)) {
-    if (call.event === "push" || !call.path.startsWith(`/${project}.git/`)) continue;
-    console.log(`${call.tokenId}:${call.status}:${call.holder}`);
-}' "$GL_STATE/calls.jsonl" "$1" "$GL_PROJECT"
+gl_line() { # gl_line <key> <summary> -> the value of the first "<key> <value>" line
+    printf '%s\n' "$2" | sed -n "s/^$1 //p" | sed -n 1p
 }
-gl_call_count() { wc -l <"$GL_STATE/calls.jsonl" 2>/dev/null | tr -d ' '; }
 gl_job() { # gl_job <command> -> the member's new GitLab task id
     local payload
     payload="$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1], executor: "claude", repo: { forge: "gitlab", host: process.argv[2], path: process.argv[3] } }))' "$1" "$GL_HOST" "$GL_PROJECT")"
@@ -188,8 +176,7 @@ if [ -n "$GL_CONNECTION" ]; then
     GL_COMMIT='cd "$WORKDIR" && echo x >lane-change'
 
     # M1 + M2 + M4: the task clones, waits past a token's refresh window, then publishes. The agent probes its own env.
-    gl_calls0="$(gl_call_count)"
-    gl_pushes0="$(gl_push_count)"
+    gl_calls0="$(gl_line calls "$(gl_summary)")"
     m1="$(gl_job "mkdir -p $GL_D; $GL_COMMIT; $(gl_probe); : >$GL_D/$RUN_ID-m1.ready; $(lane_wait "$GL_D/$RUN_ID-m1.go"); echo \"m1 ran in \$HOSTNAME\"")"
     lane_use "$m1"
     acc_until 180 gl_running "$m1" && lane_await_file 120 "$GL_D/$RUN_ID-m1.ready" && ok 'm1: the agent is running on the checkout cloned from the TLS GitLab' ||
@@ -201,16 +188,17 @@ if [ -n "$GL_CONNECTION" ]; then
     m1_out="$(field "$(gl_read "$m1")" output)"
     expect_contains 'm1: the task opened its merge request' "$m1_out" '/-/merge_requests/'
 
-    gl_tokens="$(gl_git_tokens "$gl_calls0")"
+    gl_sum="$(gl_summary "$gl_calls0")"
+    gl_tokens="$(printf '%s\n' "$gl_sum" | sed -n 's/^git //p')"
     gl_authed="$(printf '%s\n' "$gl_tokens" | grep ':200:' || true)"
     [ -n "$gl_authed" ] && ok 'm1: the git calls the GitLab answered carried a token' || bad 'm1: the git calls the GitLab answered carried a token' "git calls: $gl_tokens"
     case "$(printf '%s\n' "$gl_authed" | grep -v ":$GL_LOGIN\$" || true)" in
     '') ok "m1: every authenticated git call was the member's token" ;;
     *) bad "m1: every authenticated git call was the member's token" "$gl_authed" ;;
     esac
-    gl_new="$(( $(gl_push_count) - gl_pushes0 ))"
+    gl_new="$(gl_line pushes "$gl_sum")"
     [ "$gl_new" = 1 ] && ok 'm1: the branch was pushed once' || bad 'm1: the branch was pushed once' "pushes: $gl_new"
-    gl_push="$(node -e 'const p = JSON.parse(process.argv[1]); const e = p[p.length - 1] ?? {}; const c = e.refs?.[0]?.commits?.[0] ?? {}; process.stdout.write([e.holder, e.tokenKind, c.author?.name, c.author?.email, c.committer?.name].join("|"))' "$(gl_pushes)")"
+    gl_push="$(gl_line push "$gl_sum")"
     case "$gl_push" in
     "$GL_LOGIN|user|Lane Member|lane.member@example.test|factory-ai") ok "m1: the commit is authored by the member's GitLab identity and committed by the bot, pushed with the member's token" ;;
     *) bad "m1: the commit is authored by the member's GitLab identity and committed by the bot, pushed with the member's token" "holder|kind|author|email|committer = $gl_push" ;;
@@ -236,8 +224,7 @@ if [ -n "$GL_CONNECTION" ]; then
         bad 'm4: no token is in the job output, the driver log or the board log' "found in:$gl_leaks"
 
     # M3: the driver dies while the agent runs; the next driver takes the runner over, which asks for the token again.
-    gl_pushes3="$(gl_push_count)"
-    gl_calls3="$(gl_call_count)"
+    gl_calls3="$(gl_line calls "$(gl_summary)")"
     m3="$(gl_job "mkdir -p $GL_D; $GL_COMMIT; : >$GL_D/$RUN_ID-m3.ready; $(lane_wait "$GL_D/$RUN_ID-m3.go"); echo \"m3 ran in \$HOSTNAME\"")"
     lane_use "$m3"
     acc_until 180 gl_running "$m3" && lane_await_file 120 "$GL_D/$RUN_ID-m3.ready" && ok 'm3: the agent is running' ||
@@ -249,9 +236,10 @@ if [ -n "$GL_CONNECTION" ]; then
         bad 'm3: the next driver takes the running agent over' "$(grep -F "job $m3:" "$work/driver.log" | tail -5)"
     lane_touch "$GL_D/$RUN_ID-m3.go" || bad 'm3: the agent is released' 'the touch failed'
     expect_contains 'm3: the task finishes under the adopting driver' "$(gl_settled "$m3" "$ADOPT_S")" succeeded
-    gl_new3="$(( $(gl_push_count) - gl_pushes3 ))"
+    gl_sum3="$(gl_summary "$gl_calls3")"
+    gl_new3="$(gl_line pushes "$gl_sum3")"
     [ "$gl_new3" = 1 ] && ok 'm3: the branch was pushed once, not again after the takeover' || bad 'm3: the branch was pushed once, not again after the takeover' "pushes: $gl_new3"
-    gl_tokens3="$(gl_git_tokens "$gl_calls3" | grep ':200:' || true)"
+    gl_tokens3="$(printf '%s\n' "$gl_sum3" | sed -n 's/^git //p' | grep ':200:' || true)"
     case "$(printf '%s\n' "$gl_tokens3" | grep -v ":$GL_LOGIN\$" || true)" in
     '') ok "m3: the adopting runner's git calls were the member's too" ;;
     *) bad "m3: the adopting runner's git calls were the member's too" "$gl_tokens3" ;;
