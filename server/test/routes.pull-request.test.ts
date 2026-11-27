@@ -114,7 +114,8 @@ describe('POST /api/jobs/:id/pull-request', () => {
     describe('a task on a forge no client answers for (GitLab)', () => {
         const GITLAB = parseRepoRef('gitlab:gl.example/acme/widgets')!;
 
-        it('is unconfirmed (503): no mint, no grant read, no wait opened, no GitHub request', async () => {
+        // Until the GitLab MR writer lands, the board answers as an App-less one: the push landed, no PR is opened.
+        it('answers 409 GITHUB_UNAVAILABLE: no mint, no grant read, no wait opened, no GitHub request', async () => {
             const reads: string[] = [];
             const waits: unknown[] = [];
             const requests: string[] = [];
@@ -149,8 +150,8 @@ describe('POST /api/jobs/:id/pull-request', () => {
                     }),
                     ASK
                 );
-                expect(res.statusCode).toBe(503);
-                expect(res.json()).toMatchObject({ code: 'UNAVAILABLE' });
+                expect(res.statusCode).toBe(409);
+                expect(res.json()).toMatchObject({ code: 'GITHUB_UNAVAILABLE' });
             }
             expect({ reads, waits, requests }).toEqual({ reads: [], waits: [], requests: [] });
         });

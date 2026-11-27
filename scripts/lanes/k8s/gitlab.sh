@@ -68,8 +68,14 @@ glk_leaks() { # glk_leaks <job id> -> where a token was found outside the task v
 glk_volume_leak() { # glk_volume_leak <runner pod> -> files on the task volume that hold a token, read from the supervisor container
     bounded 30 kubectl exec "$1" -c supervisor -n "$NAMESPACE" --request-timeout=20s -- sh -c 'grep -rIl -e "$1" /task 2>/dev/null' sh "$GLK_PAT"
 }
+glk_clone_base_was=''
 glk_cleanup() {
     [ -z "$glk_pf_pid" ] || { kill "$glk_pf_pid" 2>/dev/null; wait "$glk_pf_pid" 2>/dev/null; glk_pf_pid=''; }
+    if [ -n "$glk_clone_base_was" ]; then
+        kubectl set env "$DRIVER_DEPLOY" -n "$NAMESPACE" "REPO_CLONE_BASE=$glk_clone_base_was" >/dev/null 2>&1
+        kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
+        glk_clone_base_was=''
+    fi
     FACTORY_TOKEN="$glk_saved_token"
     export FACTORY_TOKEN
 }
@@ -147,6 +153,30 @@ if [ -n "$glk_ready" ]; then
         glk_control gitlab/user-profile "{\"login\":\"$GLK_LOGIN\",\"fields\":{\"name\":\"Lane Member\",\"commit_email\":\"lane.member@example.test\",\"public_email\":\"\"}}" >/dev/null &&
         ok 'the fake GitLab holds a project and the member profile' ||
         { bad 'the fake GitLab holds a project and the member profile' 'a control call failed'; glk_ready=''; }
+fi
+if [ -n "$glk_ready" ]; then
+    # The offline board reads every claim's plan from REPO_CLONE_BASE, and an absent origin is an outage it retries
+    # forever: the origin holds the project with no .bellows.yaml, so the claim reads "no plan".
+    glk_origin_repo="/origins/$GLK_HOST/$GLK_PROJECT.git"
+    glk_seeded="$(bounded 40 kubectl exec "pod/$RELEASE-origin" -n "$NAMESPACE" --request-timeout=30s -- sh -c \
+        "set -e; rm -rf /tmp/glk-seed; git init -q --bare -b main '$glk_origin_repo'; git init -q -b main /tmp/glk-seed;
+        git -C /tmp/glk-seed -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m init;
+        git -C /tmp/glk-seed push -q '$glk_origin_repo' main" 2>&1)" &&
+        ok 'the plan origin holds the GitLab project with no plan' ||
+        { bad 'the plan origin holds the GitLab project with no plan' "$glk_seeded"; glk_ready=''; }
+fi
+if [ -n "$glk_ready" ]; then
+    # The driver clones every repo from REPO_CLONE_BASE when set, and the credentialed clone refuses that git origin
+    # for a GitLab repo: the phase's driver clones from the GitLab host; glk_cleanup puts the origin back.
+    glk_clone_base_was="$(kubectl get "$DRIVER_DEPLOY" -n "$NAMESPACE" --request-timeout=10s \
+        -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="REPO_CLONE_BASE")].value}')"
+    if kubectl set env "$DRIVER_DEPLOY" -n "$NAMESPACE" REPO_CLONE_BASE- >/dev/null 2>&1 &&
+        kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1; then
+        ok 'the driver clones GitLab repos from their host'
+    else
+        bad 'the driver clones GitLab repos from their host' 'the driver did not roll out without REPO_CLONE_BASE'
+        glk_ready=''
+    fi
 fi
 
 glk_connected=''
