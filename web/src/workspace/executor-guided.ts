@@ -174,7 +174,7 @@ export const GUIDED_COPY = {
     /** The collapsed entry a guided pick starts from. */
     PROVIDER_STEP_LABEL: 'Connect a provider',
     PROVIDER_STEP_HELP:
-        'Pick a provider to give this executor its own key, endpoint and model — the same guided setup Connect a provider runs. The configuration below is replaced by what you pick; without a provider the key connected in Settings → Model runs the task.',
+        'Pick a provider to give this executor its own key, endpoint and model — the same guided setup onboarding runs. The configuration below is replaced by what you pick; without a provider the key connected in Settings → Model runs the task.',
     REMOVE_PROVIDER_LABEL: 'Remove provider settings',
     KEY_SOURCE_LABEL: 'Key',
     KEY_PASTE_LABEL: 'Paste a key',

@@ -339,8 +339,8 @@ function DialogFields(props: {
                     />
                     <p className="picker-help">
                         Pick a provider to give this executor its own key, endpoint and model — the same guided setup
-                        Connect a provider runs. The configuration below is replaced by what you pick; without a
-                        provider the key connected in Settings → Model runs the task.
+                        onboarding runs. The configuration below is replaced by what you pick; without a provider the
+                        key connected in Settings → Model runs the task.
                     </p>
                 </details>
             ) : (

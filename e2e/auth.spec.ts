@@ -181,7 +181,7 @@ test('signing out returns to the gate, and the next sign-in reuses the stored ch
     await expect(screen(page)).toHaveCount(0);
 });
 
-test('first sign-in walks Repositories → Model → Tools → Ready → app; reload resumes', async ({ page }) => {
+test('first sign-in walks Repositories → Provider → Tools → Ready → app; reload resumes', async ({ page }) => {
     // A fresh account, so its memberships carry no setup answer whatever other tests recorded.
     const newcomer = { login: `newcomer-${randomInt(1e6)}`, id: 600_000_000 + randomInt(1e6) };
     await page.request.post(`${IDP}/_control/identity`, { data: newcomer });
@@ -200,7 +200,7 @@ test('first sign-in walks Repositories → Model → Tools → Ready → app; re
 
     await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2Ftasks$/);
     await expect(title(page, 'Connect your issue tracker')).toBeVisible();
-    await expect(progress(page).getByRole('listitem').filter({ hasText: 'Model' })).toContainText('–');
+    await expect(progress(page).getByRole('listitem').filter({ hasText: 'Provider' })).toContainText('–');
 
     // Reload resumes at the step: the answers are the server's, and an app route leads back to it.
     await page.reload();
