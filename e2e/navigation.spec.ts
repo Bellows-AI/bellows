@@ -40,8 +40,7 @@ const MATRIX_ROUTES: ReadonlyArray<string> = PAGES.map(([path]) => path);
 
 /** Waits for the route's data anchor, so a measurement reads the settled layout and not the
     shell the SPA paints first. Each mapped route waits for content that only exists once its
-    data (or its terminal error/empty state) has landed — never the loading skeleton — and for the
-    shell's "No model yet" decision, which can land above any of them. */
+    data (or its terminal error/empty state) has landed — never the loading skeleton. */
 async function settle(page: Page, path: string): Promise<void> {
     await routeAnchor(page, path);
 }

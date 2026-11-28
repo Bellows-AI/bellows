@@ -115,5 +115,11 @@ export function useDefaultExecutor(workspace: UseWorkspace, connections: UseProv
         return { state: 'error', error: workspace.error ?? connections.error ?? '', retry };
     }
     if (workspace.data === null || connections.connections === null) return { state: 'loading' };
+    // A default that names a row the list does not hold, without the server saying it is missing, is two reads that
+    // disagree: inconclusive, never "nothing is set up".
+    const named = workspace.data.defaultExecutor;
+    if (!executor && named && named.unusable !== 'missing') {
+        return { state: 'error', error: 'The default executor could not be matched to its row.', retry };
+    }
     return executor ? { state: 'set', executor, detail } : { state: 'none' };
 }

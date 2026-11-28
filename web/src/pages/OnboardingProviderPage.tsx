@@ -115,14 +115,17 @@ interface Context {
 }
 
 /** The reads have not answered, or one failed: a message with Retry, never the banner and never the empty form. */
-function pendingView(read: DefaultExecutorRead): View {
-    const failed = read.state === 'error';
+function pendingView(read: DefaultExecutorRead, sessionError: string | null): View {
+    // One error state: the session's (nothing can be shown without it; Retry reloads the page) or the setup reads'.
+    const message = sessionError ?? (read.state === 'error' ? read.error : null);
+    const failed = message !== null;
+    const retry = sessionError !== null || read.state !== 'error' ? () => window.location.reload() : read.retry;
     return {
         purpose: FORM_PURPOSE,
         body: failed ? (
             <>
-                <StateNote state="error">{read.error}</StateNote>
-                <button type="button" className="tertiary" onClick={read.retry}>
+                <StateNote state="error">{message}</StateNote>
+                <button type="button" className="tertiary" onClick={retry}>
                     Retry
                 </button>
             </>
@@ -257,13 +260,13 @@ export function OnboardingProviderPage() {
     const ctx: Context = { ids, session, walk, setup, connection, executor, replace, setMode };
 
     let view: View;
-    if (read.state === 'loading' || read.state === 'error' || !session) view = pendingView(read);
+    if (read.state === 'loading' || read.state === 'error' || !session)
+        view = pendingView(read, session ? null : sessionError);
     else if (read.state === 'none' || picked === 'form') view = formView(ctx);
     else view = setUpView(ctx, picked, read);
 
     return (
         <SetupFrame place="provider" title={TITLE} purpose={view.purpose}>
-            {sessionError && !session ? <StateNote state="error">{sessionError}</StateNote> : null}
             {view.body}
             <SetupActions
                 back={

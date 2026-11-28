@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
-import { renderApp } from './dom.js';
+import { renderApp, stubFetch } from './dom.js';
 import { board, orgDefault, setupCalls, verifyCalls } from './provider-fixtures.js';
 
 /**
@@ -16,6 +16,9 @@ afterEach(() => {
 
 const PATH = '/onboarding/provider?returnTo=%2F';
 const WAITING = 'Check the key first — the models come from the provider.';
+
+/** A board whose `/api/auth/me` answers 500. */
+const stubFetchSessionDown = () => stubFetch((call) => (call.url === '/api/auth/me' ? { status: 500 } : undefined));
 
 const mount = () => renderApp(PATH);
 const keyInput = () => screen.findByLabelText('API key');
@@ -257,5 +260,25 @@ describe('an org that is already set up', () => {
         expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
         expect(screen.queryByRole('radiogroup', { name: 'Provider' })).toBeNull();
         expect(screen.queryByText(/runs tasks on/)).toBeNull();
+    });
+
+    it('a default that names no row in the list is two reads that disagree: an error with Retry, never the empty form', async () => {
+        board({
+            workspace: { executors: [], orgExecutors: [], defaultExecutor: { scope: 'org', name: 'Ghost' } },
+            connections: { connections: [] },
+        });
+        mount();
+        expect(await screen.findByRole('alert')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+        expect(screen.queryByRole('radiogroup', { name: 'Provider' })).toBeNull();
+    });
+
+    it('a failed session read is one error with Retry, not a loading line', async () => {
+        const calls = stubFetchSessionDown();
+        mount();
+        expect(await screen.findByRole('alert')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+        expect(screen.queryByText('Loading the provider setup…')).toBeNull();
+        expect(calls.length).toBeGreaterThan(0);
     });
 });
