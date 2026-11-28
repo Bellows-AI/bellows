@@ -20,16 +20,15 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
-const NONE: ModelSetupView = { platform: false, org: null, personal: null, effective: null };
+const NONE: ModelSetupView = { org: null, personal: null, effective: null };
 const SAVED: ModelSetupView = {
-    platform: false,
     org: null,
-    personal: { provider: 'anthropic', agentType: 'claude-code', model: 'claude-test-model', keyNames: ['K'] },
+    personal: { provider: 'anthropic', keyNames: ['K'] },
     effective: 'personal',
 };
 const TEXT = 'No model yet — tasks will wait until one is connected';
 
-const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null, agentDefault: null };
+const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null };
 const PROFILE: WorkspacePayload = { ...BARE, defaultExecutor: { scope: 'user', name: 'mine' } };
 
 /** The banner's board: self-hosted with nothing to run on, unless told otherwise. */

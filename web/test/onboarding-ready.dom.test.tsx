@@ -25,17 +25,30 @@ afterEach(() => {
 const repo = (name: string) => ({ owner: 'acme', name, private: true, defaultBranch: 'main', pushedAt: null });
 
 const personalModel: ModelSetupView = {
-    platform: false,
     org: null,
-    personal: { provider: 'anthropic', agentType: 'claude-code', model: 'claude-test-model', keyNames: ['K'] },
+    personal: { provider: 'anthropic', keyNames: ['K'] },
     effective: 'personal',
+};
+
+/** The organization's default executor, on a connection. */
+const orgExecutor = {
+    id: 'executor-1',
+    name: 'Claude',
+    type: 'claude-code',
+    createdAt: CREATED,
+    suspended: false,
+    runnerClass: null,
+    orgDefault: true,
+    providerConnectionId: 'connection-1',
+    providerConnectionName: 'Anthropic',
+    providerConnectionProvider: 'anthropic' as const,
+    providerConnectionScope: 'org' as const,
 };
 
 const workspace: WorkspacePayload = {
     executors: [],
-    orgExecutors: [],
-    defaultExecutor: null,
-    agentDefault: { agentType: 'claude-code', model: 'claude-test-model', from: 'personal' },
+    orgExecutors: [orgExecutor],
+    defaultExecutor: { scope: 'org', name: 'Claude' },
 };
 
 const jiraConnection: ConnectionView = {
@@ -117,27 +130,13 @@ describe('the Ready step', () => {
         );
 
         const model = await row('Model');
-        expect(await model.findByText('Claude Code · Anthropic · claude-test-model · only you')).toBeTruthy();
+        expect(await model.findByText('Anthropic · only you')).toBeTruthy();
         expect(model.getByRole('link', { name: /Change/ }).getAttribute('href')).toMatch(/^\/onboarding\/model\b/);
 
         const tracker = await row('Issue tracker');
         expect(await tracker.findByText('Jira · acme-example.atlassian.net')).toBeTruthy();
         expect(tracker.getByRole('link', { name: /Change/ }).getAttribute('href')).toMatch(/^\/onboarding\/tools\b/);
         expect(document.querySelectorAll('.ready-lamp[data-state="ok"]').length).toBe(4);
-    });
-
-    it('says the model is provided by this deployment, with the chosen agent and model', async () => {
-        board({
-            model: {
-                platform: true,
-                org: null,
-                personal: { provider: 'platform', agentType: 'opencode', model: 'platform-model', keyNames: [] },
-                effective: 'platform',
-            },
-        });
-        renderApp('/onboarding/ready');
-        const model = await row('Model');
-        expect(await model.findByText('OpenCode · platform-model · provided by this deployment')).toBeTruthy();
     });
 
     it('a tracker never connected is optional, and a failed model read never says Not connected', async () => {
@@ -179,7 +178,7 @@ describe('the Ready step', () => {
         expect(container.querySelector('main.onboarding')?.classList.contains('onboarding-wide')).toBe(true);
     });
 
-    it('Start creates the task on the agent default, completes setup, re-reads the session, then opens the task', async () => {
+    it('Start creates the task on the default executor, completes setup, re-reads the session, then opens the task', async () => {
         const user = userEvent.setup();
         const calls = board();
         const { router } = renderApp('/onboarding/ready?returnTo=%2Fsettings');
@@ -189,8 +188,7 @@ describe('the Ready step', () => {
 
         await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${TASK_ID}`));
         const launch = calls.find((c) => c.method === 'POST' && c.url === '/api/jobs')!;
-        expect(launch.body).toMatchObject({ command: 'fix the login crash', repo: 'acme/web' });
-        expect(launch.body).not.toHaveProperty('executor');
+        expect(launch.body).toMatchObject({ command: 'fix the login crash', repo: 'acme/web', executor: 'Claude' });
         expect(launch.headers['idempotency-key']).toMatch(/^[\w.:-]{8,128}$/);
         const completeAt = calls.findIndex((c) => c.method === 'POST' && c.url === '/api/onboarding/setup/complete');
         expect(completeAt).toBeGreaterThan(calls.indexOf(launch));
@@ -199,22 +197,8 @@ describe('the Ready step', () => {
 
     it('recovers the persisted default executor on a reload: the summary names it and Start launches on it', async () => {
         const user = userEvent.setup();
-        const orgExecutor = {
-            id: 'executor-1',
-            name: 'Claude',
-            type: 'claude-code',
-            createdAt: CREATED,
-            suspended: false,
-            runnerClass: null,
-            orgDefault: true,
-            providerConnectionId: 'connection-1',
-            providerConnectionName: 'Anthropic',
-            providerConnectionProvider: 'anthropic' as const,
-            providerConnectionScope: 'org' as const,
-        };
         const calls = board({
             model: {
-                platform: false,
                 org: null,
                 personal: null,
                 effective: 'executor',
@@ -239,7 +223,6 @@ describe('the Ready step', () => {
                 executors: [],
                 orgExecutors: [orgExecutor],
                 defaultExecutor: { scope: 'org', name: 'Claude' },
-                agentDefault: null,
             },
         });
         const { router } = renderApp('/onboarding/ready');
@@ -318,20 +301,20 @@ describe('the Ready step', () => {
         expect(calls.some((c) => c.method === 'POST' && c.url === '/api/jobs')).toBe(false);
     });
 
-    const NO_KEY: ModelSetupView = { platform: false, org: null, personal: null, effective: null };
-    const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null, agentDefault: null };
+    const NO_KEY: ModelSetupView = { org: null, personal: null, effective: null };
+    const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null };
 
-    it("self-hosted with no key but an agent default: You're set, the default in the Model row, Start live", async () => {
+    it("self-hosted with no key but a default executor: You're set, the default in the Model row, Start live", async () => {
         board({ model: NO_KEY });
         renderApp('/onboarding/ready');
         expect(await screen.findByRole('heading', { level: 1, name: "You're set" })).toBeTruthy();
-        expect(await (await row('Model')).findByText('Claude Code · claude-test-model')).toBeTruthy();
+        expect(await (await row('Model')).findByText('Executor profile · Claude')).toBeTruthy();
         expect(await prompt()).toBeTruthy();
         expect(document.querySelector('.ready-no-model')).toBeNull();
     });
 
     for (const [where, mode, space] of [
-        ['cloud, even with an agent default', 'cloud', workspace],
+        ['cloud, even with a default executor', 'cloud', workspace],
         ['self-hosted with nothing to run on', 'self-hosted', BARE],
     ] as const) {
         it(`with no model (${where}), says Almost set, and Start is aria-disabled behind a warning that links to the model step`, async () => {

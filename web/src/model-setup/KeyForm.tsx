@@ -73,11 +73,7 @@ export function useKeyForm(session: Session | null, setup: UseModelSetup, onSave
     const { proxy, base, hiddenProxy } = urlsOf(scopeView, provider, proxyEdit, baseEdit);
     const baseUrl = baseFor(provider, proxy, base).trim();
     const check = useKeyCheck({ provider, key, baseUrl, subscriptionAllowed });
-    const saved =
-        scopeView && scopeView.provider === provider
-            ? { agent: scopeView.agentType, model: scopeView.model }
-            : undefined;
-    const choice = useAgentModel(provider, providerAgents(provider), check.models, saved);
+    const choice = useAgentModel(provider, providerAgents(provider), check.models);
     // A saved connection is not a draft any more: the next form starts clean, so a second save cannot re-create it.
     const save = useSaveRun(setup, async () => {
         setKey('');

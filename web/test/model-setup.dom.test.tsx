@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '../src/api/useSession.js';
@@ -16,7 +16,7 @@ afterEach(() => {
     window.history.replaceState(null, '', '/');
 });
 
-const NOTHING = { platform: false, org: null, personal: null, effective: null };
+const NOTHING = { org: null, personal: null, effective: null };
 const SAVED = {
     saved: true,
     scope: 'personal',
@@ -327,60 +327,16 @@ describe('Save', () => {
     });
 });
 
-describe('the configured banners', () => {
-    it('the platform banner saves the chosen agent and model on the platform', async () => {
-        const calls = board({ platform: true, org: null, personal: null, effective: 'platform' });
-        const { onSaved } = mount({ platformModel: true });
-        expect(await screen.findByText('This deployment provides a model.')).toBeTruthy();
-        expect((screen.getByLabelText('Agent') as HTMLSelectElement).value).toBe('claude-code');
-        expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe('claude-sonnet-5-5');
-        fireEvent.click(saveButton());
-        await waitFor(() => expect(onSaved).toHaveBeenCalled());
-        expect(puts(calls)[0]?.body).toEqual({
-            scope: 'personal',
-            requestId: expect.any(String),
-            agentType: 'claude-code',
-            model: 'claude-sonnet-5-5',
-            connection: { intent: 'none' },
-            executor: { name: 'Platform model' },
+describe('a key in the environment with no default executor', () => {
+    it('shows the key form, not a banner: nothing is adopted without a connection', async () => {
+        board({
+            org: { provider: 'anthropic', keyNames: ['ANTHROPIC_API_KEY'] },
+            personal: null,
+            effective: 'org',
         });
-    });
-
-    it('"Use a personal key" opens the form at Only me', async () => {
-        board({ platform: true, org: null, personal: null, effective: 'platform' });
-        mount({ platformModel: true, role: 'admin' });
-        fireEvent.click(await screen.findByRole('button', { name: 'Use a personal key' }));
-        expect(screen.getByRole('radiogroup', { name: 'Provider' })).toBeTruthy();
-        expect((screen.getByRole('radio', { name: 'Only me' }) as HTMLInputElement).checked).toBe(true);
-    });
-
-    const orgKey = { provider: 'anthropic', agentType: null, model: null, keyNames: ['ANTHROPIC_API_KEY'] };
-
-    it("the org banner adopts a real executor on the org's environment key when no default exists", async () => {
-        const calls = board({ platform: false, org: orgKey, personal: null, effective: 'org' });
-        const { onSaved } = mount();
-        expect(await screen.findByText('Bellows AI already has a model.')).toBeTruthy();
-        fireEvent.click(saveButton());
-        await waitFor(() => expect(onSaved).toHaveBeenCalled());
-        expect(puts(calls)[0]?.body).toEqual({
-            scope: 'personal',
-            requestId: expect.any(String),
-            agentType: 'claude-code',
-            model: 'claude-sonnet-5-5',
-            connection: { intent: 'none' },
-            executor: { name: 'Anthropic (organization key)' },
-        });
-    });
-
-    it('with a default already set, Continue only records the step', async () => {
-        const org = { ...orgKey, agentType: 'claude-code', model: 'claude-opus-5-5' };
-        const calls = board({ platform: false, org, personal: null, effective: 'org' });
-        const { onSaved } = mount();
-        const banner = await screen.findByText('Bellows AI already has a model.');
-        expect(within(banner.closest('div') as HTMLElement).getByText(/Anthropic/)).toBeTruthy();
-        fireEvent.click(saveButton());
-        await waitFor(() => expect(onSaved).toHaveBeenCalled());
-        expect(puts(calls)).toHaveLength(0);
+        mount();
+        expect(await screen.findByRole('radiogroup', { name: 'Provider' })).toBeTruthy();
+        expect(screen.queryByText('Bellows AI already has a model.')).toBeNull();
     });
 });
 
@@ -399,7 +355,6 @@ describe('a default executor', () => {
         ...over,
     });
     const view = (over: Record<string, unknown> = {}) => ({
-        platform: false,
         org: null,
         personal: null,
         selected: selected(over),
@@ -565,7 +520,6 @@ describe('after a save in Settings', () => {
         },
     };
     const viewOf = (selected: object) => ({
-        platform: false,
         org: null,
         personal: null,
         selected,

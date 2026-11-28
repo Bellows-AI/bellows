@@ -29,9 +29,7 @@ import {
     touchAll,
 } from '../task-composer.js';
 import { type ComposerDraft, type ComposerWorkflowOption, useComposerDraft } from '../use-composer-draft.js';
-import type { AgentDefaultChoice } from '../api/useWorkspace.js';
 import {
-    EXECUTOR_TYPE_META,
     executorChoiceId,
     executorChoiceOf,
     type ComposerExecutorOption,
@@ -59,41 +57,31 @@ const shortRepo = (repo: string): string => repo.slice(repo.lastIndexOf('/') + 1
 /** The empty workflow option: objective mode, the prompt runs as written. */
 const NO_WORKFLOW_LABEL = 'No workflow';
 
-/** The executor chip's value: the chosen profile, else the agent default a task naming none runs, else the blocker. */
-function executorLabelOf(executor: string, agentDefault: AgentDefaultChoice | null): string {
-    if (executor !== '') return executor;
-    if (agentDefault === null) return 'No executor configured';
-    return `Default — ${EXECUTOR_TYPE_META[agentDefault.agentType].label} · ${agentDefault.model}`;
-}
+/** The executor chip's value: the chosen profile, else the blocker. */
+const executorLabelOf = (executor: string): string => (executor === '' ? 'No executor configured' : executor);
 
 /**
- * The Model chip beside the executor: Default is the executor's own model — the agent default's, named, when that
- * runs — and sends nothing. The agent never changes here; the offered models are its provider's.
+ * The Model chip beside the executor: Default is the executor's own model and sends nothing. The agent never
+ * changes here; the offered models are its provider's.
  */
 function ComposerModelChip({
     executors,
-    agentDefault,
     state,
     update,
 }: {
     executors: readonly ComposerExecutorOption[];
-    agentDefault: AgentDefaultChoice | null;
     state: ComposerDraftInput;
     update: Update;
 }) {
     const { executor, executorScope } = state;
     const profile = executors.find((option) => option.name === executor && option.scope === executorScope);
-    const runsDefault = executor === '' && agentDefault !== null;
-    // A profile that selects a connection offers that connection's models; the agent default and the rest read the member's setup.
-    const { models, note, pick } = useModelChoices(
-        runsDefault ? agentDefault.agentType : (profile?.type ?? null),
-        runsDefault ? null : (profile?.connection ?? null)
-    );
+    // A profile that selects a connection offers that connection's models; the rest read the member's setup.
+    const { models, note, pick } = useModelChoices(profile?.type ?? null, profile?.connection ?? null);
     return (
         <div className="composer-context-item">
             <ModelCombobox
                 value={state.model}
-                defaultLabel={runsDefault ? `Default (${agentDefault.model})` : 'Default'}
+                defaultLabel="Default"
                 models={models}
                 note={note}
                 onChange={(model) => update({ model: pick(model) })}
@@ -106,28 +94,25 @@ function ComposerModelChip({
  * The context chips (issue 571): Repository, Executor and Workflow as compact borderless triggers
  * in the surface's toolbar, each showing its glyph and selected value. The accessible name
  * is the field and that value (label in name), the full value also its title and its menu. A missing executor is a
- * blocker, said by the readiness banner; its trigger only wears the stop lamp's edge. No executor chosen beside an
- * agent default is not missing: the task runs that default.
+ * blocker, said by the readiness banner; its trigger only wears the stop lamp's edge.
  */
 function ComposerContextRow({
     repos,
     executors,
-    agentDefault,
     workflows,
     state,
     update,
 }: {
     repos: readonly RepoOption[];
     executors: readonly ComposerExecutorOption[];
-    agentDefault: AgentDefaultChoice | null;
     workflows: readonly ComposerWorkflowOption[] | null;
     state: ComposerDraftInput;
     update: Update;
 }) {
     const { repo, executor } = state;
     const repoLabel = repo === '' ? REPO_PLACEHOLDER : repo;
-    const executorLabel = executorLabelOf(executor, agentDefault);
-    const executorMissing = executor === '' && agentDefault === null;
+    const executorLabel = executorLabelOf(executor);
+    const executorMissing = executor === '';
     return (
         <div className="composer-context">
             <div className="composer-context-item">
@@ -173,7 +158,7 @@ function ComposerContextRow({
                     }}
                 />
             </div>
-            <ComposerModelChip executors={executors} agentDefault={agentDefault} state={state} update={update} />
+            <ComposerModelChip executors={executors} state={state} update={update} />
             <ComposerWorkflowTrigger workflows={workflows} workflow={state.workflow} update={update} />
         </div>
     );
@@ -414,7 +399,6 @@ export function TaskComposer({
     onRetryWorkspace,
     executors,
     defaultExecutor,
-    agentDefault = null,
     workflows,
     actionError,
     sending,
@@ -441,8 +425,6 @@ export function TaskComposer({
     executors: readonly ComposerExecutorOption[];
     /** The poll's resolved default executor (issue 391), or null when nothing is selectable. */
     defaultExecutor: ExecutorChoice | null;
-    /** The agent default a task naming no executor runs, from the same poll; null or absent when none wins. */
-    agentDefault?: AgentDefaultChoice | null;
     /**
      * The workflow choices for the selected repository's context, or null when the list has not
      * answered (or this board serves no workflows at all). Null HIDES the selector: a board
@@ -480,7 +462,6 @@ export function TaskComposer({
         executors,
         executorsLoaded: workspaceLoaded,
         defaultExecutor,
-        agentDefault: agentDefault !== null,
         workflows,
         onRepoChange,
         sending,
@@ -503,7 +484,7 @@ export function TaskComposer({
     const nearLimit = commandNearLimit(state.draft);
     const blocker = startBlocker({
         sending: frozen,
-        executorMissing: state.executor === '' && agentDefault === null,
+        executorMissing: state.executor === '',
         promptEmpty: state.draft.trim() === '',
         promptTooLong,
         ...(readiness !== undefined ? { repoReadiness: readiness } : {}),
@@ -578,7 +559,6 @@ export function TaskComposer({
                         <ComposerContextRow
                             repos={repos}
                             executors={executors}
-                            agentDefault={agentDefault}
                             workflows={workflows}
                             state={state}
                             update={update}

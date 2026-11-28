@@ -1,4 +1,4 @@
-import { EXECUTOR_TYPES, type ExecutorType, isModelProvider } from '@factory-ai/core';
+import { EXECUTOR_TYPES, type ExecutorType, isModelProvider, type ModelProvider } from '@factory-ai/core';
 import type { AnchorSide } from '../anchor.js';
 import { type ModelSetupView, useModelSetup } from '../api/useModelSetup.js';
 import { useConnectionModels } from '../api/useProviderConnections.js';
@@ -9,19 +9,17 @@ import {
     modelCatalogOf,
     normalizedChoices,
 } from '../workspace/model-catalog.js';
-import { type ModelSource, modelOptions } from '../model-setup/providers.js';
+import { modelOptions } from '../model-setup/providers.js';
 import { type SearchRow, SearchSelect } from './SearchSelect.js';
 
 const MODEL_HELP = 'The model the agent runs. Pick one the provider offers, or type any model name it serves.';
 
-/** The source the effective model setup names: a key provider, the platform, or none known. */
-function sourceOf(setup: ModelSetupView | null): ModelSource | null {
+/** The source the effective model setup names: a key provider, or none known. */
+function sourceOf(setup: ModelSetupView | null): ModelProvider | null {
     if (setup === null || setup.effective === null) return null;
-    if (setup.effective === 'platform') return 'platform';
     if (setup.effective === 'executor') {
-        // A default executor on a connection names its provider; on none, the platform model or what the env holds.
+        // A default executor on a connection names its provider; on none, what the env holds.
         const provider = setup.selected?.connection?.provider ?? (setup.personal ?? setup.org)?.provider;
-        if (setup.selected?.connection == null && setup.platform) return 'platform';
         return isModelProvider(provider) ? provider : null;
     }
     const provider = setup[setup.effective]?.provider;

@@ -7,8 +7,6 @@ import { useResource } from './useResource.js';
 /** One scope's setup in `GET /api/model-setup` (server/src/routes/model-setup.ts), names only; null when it has none. */
 export interface ModelScopeView {
     provider: string | null;
-    agentType: ExecutorType | null;
-    model: string | null;
     keyNames: string[];
     /** The provider's base URL when the scope holds it as a plain variable. */
     baseUrl?: string;
@@ -28,26 +26,23 @@ export interface SelectedExecutorView {
     suspended: boolean;
     /** The executor's revision: a save of this executor sends it back, so an older read cannot overwrite a newer save. */
     updatedAt: string;
-    /** The connection the executor runs on, when the member may see it; null for the platform model or the environment's keys. */
+    /** The connection the executor runs on, when the member may see it; null for the environment's keys. */
     connection: { id: string; name: string; provider: ModelProvider; scope: SetupScope; baseUrl: string | null } | null;
 }
 
 export interface ModelSetupView {
-    /** The deployment supplies a model (`PLATFORM_MODEL_PROVIDED`). */
-    platform: boolean;
     org: ModelScopeView | null;
     personal: ModelScopeView | null;
     /** The configured default executor (the member's, else the organization's); absent when none is configured. */
     selected?: SelectedExecutorView;
-    effective: 'executor' | 'personal' | 'org' | 'platform' | null;
+    effective: 'executor' | 'personal' | 'org' | null;
 }
 
-/** What a setup does about the connection: seal a new one, select one, replace one's key, or use none (platform or the environment's). */
+/** What a setup does about the connection: seal a new one, select one, or replace one's key. */
 export type ConnectionBody =
     | { intent: 'create'; provider: ModelProvider; key: string; baseUrl?: string; name: string }
     | { intent: 'reuse'; id: string }
-    | { intent: 'rotate'; id: string; key: string; baseUrl?: string }
-    | { intent: 'none' };
+    | { intent: 'rotate'; id: string; key: string; baseUrl?: string };
 
 /** `PUT /api/model-setup` (the request id is the hook's): the connection intent and the executor it runs, made the default. */
 export interface ModelSetupSave {

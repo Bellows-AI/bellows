@@ -2,13 +2,13 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Session } from '../src/api/useSession.js';
 import { ModelSetup } from '../src/model-setup/ModelSetupForm.js';
-import { renderApp, renderAt, stubFetch, type FetchCall } from './dom.js';
+import { renderAt, stubFetch, type FetchCall } from './dom.js';
 import { memberSession } from './fixtures.js';
 
 /**
- * What is saved survives a save the member did not change: a saved model the list does not name stays as "Other…"
- * text and goes back in the PUT as it was; a legacy setup adopts a real executor with the `none` intent, the route
- * deciding the platform model or the key in view; a saved base or proxy URL pre-fills a new connection.
+ * What is saved survives a save the member did not change: a default executor's model the list does not name stays as
+ * "Other…" text and goes back in the PUT as it was, on its own connection; a saved base or proxy URL pre-fills a new
+ * connection.
  */
 
 afterEach(() => {
@@ -25,19 +25,19 @@ const SAVED = {
     connectionName: null,
     replayed: false,
 };
-/** The adoption body: no connection, a real executor named for what it adopts, a request id the hook minted. */
-const adopted = (name: string, agentType: string, model: string, scope = 'personal') => ({
-    scope,
+/** The edit body: the selected executor by id on its own connection, a request id the hook minted. */
+const edited = (agentType: string, model: string) => ({
+    scope: 'personal',
     requestId: expect.any(String),
     agentType,
     model,
-    connection: { intent: 'none' },
-    executor: { name },
+    connection: { intent: 'reuse', id: 'connection-1' },
+    executor: { id: 'executor-1', expectedUpdatedAt: UPDATED_AT },
 });
 
 function board(setup: Setup) {
     return stubFetch((call) => {
-        if (call.url === '/api/auth/me') return memberSession({ platformModel: setup.platform === true });
+        if (call.url === '/api/auth/me') return memberSession();
         if (call.url === '/api/model-setup' && call.method === 'GET') return setup;
         if (call.url === '/api/model-setup' && call.method === 'PUT') return SAVED;
         if (call.url === '/api/onboarding/setup') return { status: 204 };
@@ -60,11 +60,23 @@ function mount(session: Partial<Session> = {}) {
     return onSaved;
 }
 
-const scopeView = (provider: string, agentType: string, model: string, keyNames: string[]) => ({
-    provider,
-    agentType,
-    model,
-    keyNames,
+const UPDATED_AT = '2026-01-02T03:04:05.678Z';
+const scopeView = (provider: string, keyNames: string[]) => ({ provider, keyNames });
+/** A personal default executor on a connection of `provider`, running `agentType` and `model`. */
+const executorOn = (provider: string, agentType: string, model: string) => ({
+    org: null,
+    personal: null,
+    effective: 'executor',
+    selected: {
+        scope: 'personal',
+        executorId: 'executor-1',
+        name: 'Mine',
+        agentType,
+        model,
+        suspended: false,
+        updatedAt: UPDATED_AT,
+        connection: { id: 'connection-1', name: 'Mine', provider, scope: 'personal', baseUrl: null },
+    },
 });
 const putBody = (calls: FetchCall[]) => calls.find((c) => c.method === 'PUT')?.body;
 const modelSelect = () => screen.getByLabelText('Model') as HTMLSelectElement;
@@ -76,23 +88,19 @@ async function saveUnchanged(calls: FetchCall[], onSaved: ReturnType<typeof vi.f
 }
 
 describe('a saved model the list does not name', () => {
-    it("survives a no-op Save on the org's key: Other… with the saved id, sent back as it was", async () => {
-        const org = scopeView('openrouter', 'opencode', 'openrouter/mistralai/devstral', ['OPENROUTER_API_KEY']);
-        const calls = board({ platform: false, org, personal: null, effective: 'org' });
+    it('survives a no-op Save on the default executor: Other… with the saved id, sent back as it was', async () => {
+        const calls = board(executorOn('openrouter', 'opencode', 'openrouter/mistralai/devstral'));
         const onSaved = mount();
-        await screen.findByText('Bellows AI already has a model.');
+        await screen.findByText('Your tasks run on Mine.');
         expect(modelSelect().value).toBe('');
         expect((screen.getByLabelText('Model id') as HTMLInputElement).value).toBe('openrouter/mistralai/devstral');
-        expect(await saveUnchanged(calls, onSaved)).toEqual(
-            adopted('OpenRouter (organization key)', 'opencode', 'openrouter/mistralai/devstral')
-        );
+        expect(await saveUnchanged(calls, onSaved)).toEqual(edited('opencode', 'openrouter/mistralai/devstral'));
     });
 
     it('matches a listed model after normalization instead of replacing it', async () => {
-        const org = scopeView('openrouter', 'opencode', 'openrouter/openai/gpt-5.1', ['OPENROUTER_API_KEY']);
-        const calls = board({ platform: false, org, personal: null, effective: 'org' });
+        const calls = board(executorOn('openrouter', 'opencode', 'openrouter/openai/gpt-5.1'));
         const onSaved = mount();
-        await screen.findByText('Bellows AI already has a model.');
+        await screen.findByText('Your tasks run on Mine.');
         expect(modelSelect().value).toBe('openai/gpt-5.1');
         expect((await saveUnchanged(calls, onSaved)) as { model: string }).toMatchObject({
             model: 'openrouter/openai/gpt-5.1',
@@ -100,10 +108,9 @@ describe('a saved model the list does not name', () => {
     });
 
     it("keeps a LiteLLM default's model, which no list names", async () => {
-        const org = scopeView('litellm', 'claude-code', 'gpt-5.1-on-proxy', ['ANTHROPIC_API_KEY']);
-        const calls = board({ platform: false, org, personal: null, effective: 'org' });
+        const calls = board(executorOn('litellm', 'claude-code', 'gpt-5.1-on-proxy'));
         const onSaved = mount();
-        await screen.findByText('Bellows AI already has a model.');
+        await screen.findByText('Your tasks run on Mine.');
         expect((screen.getByLabelText('Model') as HTMLInputElement).value).toBe('gpt-5.1-on-proxy');
         expect(await saveUnchanged(calls, onSaved)).toMatchObject({
             agentType: 'claude-code',
@@ -111,49 +118,12 @@ describe('a saved model the list does not name', () => {
         });
     });
 
-    it('keeps a custom platform model and the scope it was saved in', async () => {
-        const personal = scopeView('platform', 'claude-code', 'house-model-v2', []);
-        const calls = board({ platform: true, org: null, personal, effective: 'platform' });
-        const onSaved = mount({ platformModel: true, role: 'admin' });
-        await screen.findByText('This deployment provides a model.');
-        expect((screen.getByRole('radio', { name: 'Only me' }) as HTMLInputElement).checked).toBe(true);
-        expect(await saveUnchanged(calls, onSaved)).toEqual(adopted('Platform model', 'claude-code', 'house-model-v2'));
-    });
-
-    it("prefills the key form from the member's own key: its provider, agent and unlisted model", async () => {
-        const personal = scopeView('openrouter', 'claude-code', 'anthropic/claude-next', ['OPENROUTER_API_KEY']);
-        board({ platform: false, org: null, personal, effective: 'personal' });
+    it("prefills the key form with the provider of the member's own key", async () => {
+        const personal = scopeView('openrouter', ['OPENROUTER_API_KEY']);
+        board({ org: null, personal, effective: 'personal' });
         mount();
         await screen.findByRole('radiogroup', { name: 'Provider' });
         expect((screen.getByRole('radio', { name: /^OpenRouter/ }) as HTMLInputElement).checked).toBe(true);
-        expect((screen.getByLabelText('Agent') as HTMLSelectElement).value).toBe('claude-code');
-        expect((screen.getByLabelText('Model id') as HTMLInputElement).value).toBe('anthropic/claude-next');
-    });
-});
-
-describe('the adoption with the platform model on and an org key', () => {
-    const setup = {
-        platform: true,
-        org: scopeView('anthropic', '', '', ['ANTHROPIC_API_KEY']),
-        personal: null,
-        effective: 'org',
-    };
-    const expected = adopted('Anthropic (organization key)', 'claude-code', 'claude-sonnet-5-5');
-
-    it('onboarding Continue sends the none intent: the route picks the platform model', async () => {
-        const calls = board({ ...setup, org: { ...setup.org, agentType: null, model: null } });
-        renderApp('/onboarding/model?returnTo=%2Ftasks');
-        await screen.findByText('Bellows AI already has a model.');
-        fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
-        await waitFor(() => expect(putBody(calls)).toEqual(expected));
-    });
-
-    it('Settings → Model Save sends the same none intent', async () => {
-        const calls = board({ ...setup, org: { ...setup.org, agentType: null, model: null } });
-        renderApp('/settings/model');
-        await screen.findByText('Bellows AI already has a model.');
-        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-        await waitFor(() => expect(putBody(calls)).toEqual(expected));
     });
 });
 
@@ -169,9 +139,8 @@ describe('a saved base or proxy URL', () => {
     }
 
     it('prefills the Advanced base URL and sends it back on a Save that leaves it', async () => {
-        const personal = { ...scopeView('anthropic', 'claude-code', 'claude-opus-5-5', ['ANTHROPIC_API_KEY']) };
+        const personal = scopeView('anthropic', ['ANTHROPIC_API_KEY']);
         const calls = board({
-            platform: false,
             org: null,
             personal: { ...personal, baseUrl: 'https://gw.example.test' },
         });
@@ -183,7 +152,7 @@ describe('a saved base or proxy URL', () => {
             scope: 'personal',
             requestId: expect.any(String),
             agentType: 'claude-code',
-            model: 'claude-opus-5-5',
+            model: 'claude-sonnet-5-5',
             connection: {
                 intent: 'create',
                 provider: 'anthropic',
@@ -195,10 +164,9 @@ describe('a saved base or proxy URL', () => {
         });
     });
 
-    it("prefills LiteLLM's proxy URL and sends it back with the saved model", async () => {
-        const personal = scopeView('litellm', 'claude-code', 'proxy-model', ['ANTHROPIC_API_KEY']);
+    it("prefills LiteLLM's proxy URL and sends it back with the typed model", async () => {
+        const personal = scopeView('litellm', ['ANTHROPIC_API_KEY']);
         const calls = board({
-            platform: false,
             org: null,
             personal: { ...personal, baseUrl: 'https://llm.example.test' },
         });
@@ -206,6 +174,7 @@ describe('a saved base or proxy URL', () => {
         expect(((await screen.findByLabelText('Proxy URL')) as HTMLInputElement).value).toBe(
             'https://llm.example.test'
         );
+        fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'proxy-model' } });
         const sent = await pasteAndSave(calls, onSaved, 'Virtual key', 'sk-virtual');
         expect(sent.put).toMatchObject({
             model: 'proxy-model',
@@ -214,8 +183,8 @@ describe('a saved base or proxy URL', () => {
     });
 
     it('does not carry a base URL saved as a secret into a new connection: no value, no keep flag', async () => {
-        const personal = scopeView('openai', 'opencode', 'openai/gpt-5.1', ['OPENAI_API_KEY']);
-        const calls = board({ platform: false, org: null, personal: { ...personal, baseUrlSet: true } });
+        const personal = scopeView('openai', ['OPENAI_API_KEY']);
+        const calls = board({ org: null, personal: { ...personal, baseUrlSet: true } });
         const onSaved = mount();
         const sent = await pasteAndSave(calls, onSaved, 'API key', 'sk-proj-new');
         const connection = (sent.put as { connection: Record<string, unknown> }).connection;

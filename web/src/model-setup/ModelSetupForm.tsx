@@ -3,7 +3,7 @@ import { useModelSetup } from '../api/useModelSetup.js';
 import type { Session } from '../api/useSession.js';
 import { StateNote } from '../components/StateNote.js';
 import { ADMIN_ROLE } from '@factory-ai/core';
-import { bannerOf, canRotate, ConfiguredView, useConfigured } from './ConfiguredBanner.js';
+import { canRotate, ConfiguredView, useConfigured } from './ConfiguredBanner.js';
 import { KeyFormView, useKeyForm } from './KeyForm.js';
 import { RotateView, useRotate } from './RotateKey.js';
 import { SavePrimary } from './SavePrimary.js';
@@ -53,7 +53,7 @@ export function ModelSetup({
     const configured = useConfigured({ session, view: setup.data, setup, onSaved, saveExisting });
     const view = setup.data;
     const rotate = useRotate(session, setup, savedToBanner, view?.selected);
-    const banner = mode !== 'banner' || !view ? null : bannerOf(view);
+    const banner = mode === 'banner' && view?.selected ? view.selected : null;
 
     let body: ReactNode;
     let primary: { label: string; reason: string | null; busy: boolean; press: () => void } = {
@@ -91,8 +91,7 @@ export function ModelSetup({
         body = (
             <ConfiguredView
                 ids={ids}
-                kind={banner}
-                view={view}
+                selected={banner}
                 state={configured}
                 orgName={session.organization.name}
                 onOwnKey={openForm}

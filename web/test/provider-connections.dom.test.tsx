@@ -10,7 +10,7 @@ import { boardHandler, listedModels, personalExecutor, providerConnection, setti
  * routes receive: who may change which row, rename versus rotation, the removal refusal, and the four discovery states.
  */
 
-const NO_SETUP = { platform: false, org: null, personal: null, effective: null };
+const NO_SETUP = { org: null, personal: null, effective: null };
 const SECRET = 'sk-ant-api03-brand-new-secret';
 
 const withSetup = (

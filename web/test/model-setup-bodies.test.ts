@@ -4,7 +4,7 @@ import { EXECUTOR_TYPES, isModelProvider, MODEL_PROVIDERS, PROVIDER_AGENTS, prov
 import { describe, expect, it } from 'vitest';
 import type { ModelSetupSave, SelectedExecutorView } from '../src/api/useModelSetup.js';
 import { savedModelChoice } from '../src/model-setup/AgentModelFields.js';
-import { adoptBody, createBody, editBody, rotateBody } from '../src/model-setup/save-body.js';
+import { createBody, editBody, rotateBody } from '../src/model-setup/save-body.js';
 
 /**
  * Every `PUT /api/model-setup` body the model setup can build is one the route accepts. Web imports no server code, so
@@ -42,7 +42,6 @@ function connectionAccepted(
     subscriptionAllowed: boolean
 ): boolean {
     const { intent } = connection;
-    if (intent === 'none') return known(connection, ['intent']);
     if (intent === 'reuse') return known(connection, ['intent', 'id']) && isId(connection.id);
     if (intent === 'rotate') {
         return (
@@ -81,7 +80,7 @@ describe('the route rule this file mirrors', () => {
     it('still reads the same fields and the same four connection intents', () => {
         const source = readFileSync(ROUTE, 'utf8');
         expect(source).toContain(`const FIELDS = new Set([${FIELDS.map((f) => `'${f}'`).join(', ')}]);`);
-        for (const intent of ['none', 'reuse', 'rotate']) expect(source).toContain(`intent === '${intent}'`);
+        for (const intent of ['reuse', 'rotate']) expect(source).toContain(`intent === '${intent}'`);
         expect(source).toContain(`intent !== 'create'`);
     });
 });
@@ -134,28 +133,12 @@ describe('the bodies the model setup sends', () => {
         });
     });
 
-    it('every adoption body is accepted, whatever it adopts', () => {
-        for (const source of ['platform', ...MODEL_PROVIDERS] as const) {
-            const agents = source === 'platform' ? EXECUTOR_TYPES : PROVIDER_AGENTS[source];
-            for (const agentType of agents) {
-                for (const scope of ['org', 'personal'] as const) {
-                    const body = adoptBody({ scope, name: 'Adopted', source, agentType, model: 'some-model' });
-                    expect(routeAccepts(body, true), JSON.stringify(body)).toBe(true);
-                    expect(body.connection).toEqual({ intent: 'none' });
-                }
-            }
-        }
-    });
-
     it('an edit names the executor by id and its connection by id, and carries no key', () => {
-        const body = editBody({ selected: selected(), agentType: 'opencode', model: 'm' });
+        const body = editBody({ selected: selected(), connectionId: CONNECTION_ID, agentType: 'opencode', model: 'm' });
         expect(routeAccepts(body, true)).toBe(true);
         expect(body.connection).toEqual({ intent: 'reuse', id: CONNECTION_ID });
         expect(body.executor).toEqual({ id: EXECUTOR_ID, expectedUpdatedAt: REVISION });
         expect(JSON.stringify(body)).not.toContain('key');
-        const none = editBody({ selected: selected({ connection: null }), agentType: 'claude-code', model: 'm' });
-        expect(routeAccepts(none, true)).toBe(true);
-        expect(none.connection).toEqual({ intent: 'none' });
     });
 
     it('a rotation names the connection and the executor by id, and sends the key alone', () => {
@@ -169,17 +152,6 @@ describe('the bodies the model setup sends', () => {
         expect(routeAccepts(body, true)).toBe(true);
         expect(body.connection).toEqual({ intent: 'rotate', id: CONNECTION_ID, key: 'sk-new' });
         expect(body.executor).toEqual({ id: EXECUTOR_ID, expectedUpdatedAt: REVISION });
-    });
-
-    it('stores an OpenCode id the way core does, even on the platform model that keeps ids as given', () => {
-        const body = adoptBody({
-            scope: 'personal',
-            name: 'n',
-            source: 'openrouter',
-            agentType: 'opencode',
-            model: 'openai/gpt-5.1',
-        });
-        expect(body.model).toBe('openrouter/openai/gpt-5.1');
     });
 });
 

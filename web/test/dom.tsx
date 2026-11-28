@@ -120,7 +120,6 @@ export const OPEN_BOARD_SESSION: Session = {
     batches: false,
     deploymentMode: 'self-hosted',
     subscriptionToken: true,
-    platformModel: false,
 };
 
 /**

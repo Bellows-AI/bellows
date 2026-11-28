@@ -758,34 +758,12 @@ describe('the composer base branch and skill menu', () => {
 });
 
 describe('the composer with no executor profile', () => {
-    const profileless = (agentDefault: WorkspacePayload['agentDefault']) => (call: FetchCall) =>
-        call.url === '/api/workspace'
-            ? { executors: [], orgExecutors: [], defaultExecutor: null, agentDefault }
-            : undefined;
+    const profileless = (call: FetchCall) =>
+        call.url === '/api/workspace' ? { executors: [], orgExecutors: [], defaultExecutor: null } : undefined;
 
-    it('starts on the agent default: Start is enabled and the request names no executor', async () => {
+    it('Start stays dark behind the missing-executor banner', async () => {
         const user = userEvent.setup();
-        const agentDefault = { agentType: 'claude-code', model: 'sonnet-test', from: 'personal' } as const;
-        const { launches, router } = openComposer(reposReply(['web']), undefined, profileless(agentDefault));
-        const prompt = await screen.findByLabelText('What should the agent do?');
-        expect(
-            await screen.findByRole('button', { name: 'Executor: Default — Claude Code · sonnet-test' })
-        ).toBeTruthy();
-        await user.type(prompt, 'fix the login crash');
-        await startEnabled();
-        expect(document.querySelector('.composer .banner-bad')).toBeNull();
-
-        await user.click(startButton());
-
-        await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${LAUNCHED_ID}`));
-        const body = launches()[0]!.body as Record<string, unknown>;
-        expect(body).not.toHaveProperty('executor');
-        expect(body).not.toHaveProperty('executorScope');
-    });
-
-    it('with no agent default either, Start stays dark behind the missing-executor banner', async () => {
-        const user = userEvent.setup();
-        const { launches } = openComposer(reposReply(['web']), undefined, profileless(null));
+        const { launches } = openComposer(reposReply(['web']), undefined, profileless);
         const prompt = await screen.findByLabelText('What should the agent do?');
         await user.type(prompt, 'fix the login crash');
         await waitFor(() =>

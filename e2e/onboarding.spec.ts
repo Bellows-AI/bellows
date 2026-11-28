@@ -115,7 +115,7 @@ test('a first sign-in connects a model, starts its first task from Ready and lan
     await expect(page).toHaveURL(/\/onboarding\/ready/, { timeout: 60_000 });
     await expect(title(page, "You're set")).toBeVisible();
 
-    // Start: the starter fills the request, the task is created on the agent default and opened.
+    // Start: the starter fills the request, the task is created on the default executor and opened.
     await page.getByRole('button', { name: 'Write CONTRIBUTING.md' }).click();
     await expect(page.getByLabel('What should the agent do?')).toHaveValue(/CONTRIBUTING\.md/);
     // The arrow shows at every width; Enter sends too.
@@ -126,12 +126,8 @@ test('a first sign-in connects a model, starts its first task from Ready and lan
     // The first task runs on the executor the model step created and selected, by name and scope.
     expect(launches.bodies[0]).toMatchObject({ executor: 'Anthropic' });
     const id = new URL(page.url()).pathname.split('/').pop();
-    const job = (await (await page.request.get(`/api/jobs/${id}`)).json()) as {
-        executor: string | null;
-        agentType: string | null;
-    };
+    const job = (await (await page.request.get(`/api/jobs/${id}`)).json()) as { executor: string | null };
     expect(job.executor).toBe('Anthropic');
-    expect(job.agentType).toBeNull();
     const view = (await (await page.request.get('/api/model-setup')).json()) as {
         effective: string;
         selected: { name: string; connection: { provider: string } };

@@ -45,17 +45,9 @@ const profileWorkspace: WorkspacePayload = {
     defaultExecutor: { scope: 'user', name: 'e2e-executor' },
 };
 
-const agentDefaultWorkspace: WorkspacePayload = {
-    executors: [],
-    orgExecutors: [],
-    defaultExecutor: null,
-    agentDefault: { agentType: 'claude-code', model: 'claude-sonnet-5-5', from: 'personal' },
-};
-
 const setup: ModelSetupView = {
-    platform: false,
     org: null,
-    personal: { provider: 'anthropic', agentType: 'claude-code', model: 'claude-sonnet-5-5', keyNames: [] },
+    personal: { provider: 'anthropic', keyNames: [] },
     effective: 'personal',
 };
 
@@ -100,22 +92,6 @@ describe('the new-task Model control', () => {
         await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${LAUNCHED_ID}`));
         expect(launched()).toHaveLength(1);
         expect(launched()[0]).not.toHaveProperty('model');
-    });
-
-    it("is prefilled from the agent default's model and offers the provider's models", async () => {
-        const user = userEvent.setup();
-        const { launched } = openComposer(agentDefaultWorkspace);
-        await screen.findByLabelText('What should the agent do?');
-        await waitFor(() =>
-            expect(modelPicker().getAttribute('aria-label')).toBe('Model: Default (claude-sonnet-5-5)')
-        );
-        await user.click(modelPicker());
-        const list = await screen.findByRole('listbox');
-        await user.click(await within(list).findByRole('option', { name: 'claude-opus-5-5' }));
-        expect(modelPicker().getAttribute('aria-label')).toBe('Model: claude-opus-5-5');
-        await launch(user, 'fix the login crash');
-        await waitFor(() => expect(launched()).toHaveLength(1));
-        expect((launched()[0] as { model?: string }).model).toBe('claude-opus-5-5');
     });
 
     it('takes a typed model name the list does not offer', async () => {
@@ -205,35 +181,13 @@ describe('the follow-up Model control', () => {
     /** An OpenRouter key: Claude Code runs its Anthropic models only, OpenCode any. */
     const openRouter: ModelSetupView = {
         ...setup,
-        personal: {
-            provider: 'openrouter',
-            agentType: 'claude-code',
-            model: 'anthropic/claude-sonnet-5.5',
-            keyNames: [],
-        },
+        personal: { provider: 'openrouter', keyNames: [] },
     };
-    const offered = async (user: ReturnType<typeof userEvent.setup>) => {
-        await screen.findByLabelText('Ask for a follow-up');
-        await user.click(modelPicker());
-        const options = within(await screen.findByRole('listbox')).getAllByRole('option');
-        return options.map((option) => option.textContent);
-    };
-
-    it("offers only the thread's agent's models: a Claude Code agent default on OpenRouter", async () => {
-        const user = userEvent.setup();
-        thread(
-            { executor: null, agentType: 'claude-code', agentModel: 'anthropic/claude-sonnet-5.5' },
-            { setup: openRouter }
-        );
-        const models = await offered(user);
-        expect(models).toContain('anthropic/claude-opus-5.5');
-        expect(models).not.toContain('openai/gpt-5.1');
-    });
 
     it("offers only the profile's agent's models on a profile thread", async () => {
         const user = userEvent.setup();
         thread(
-            { executor: 'e2e-executor', executorScope: 'user', agentType: null, agentModel: null },
+            { executor: 'e2e-executor', executorScope: 'user', agentModel: null },
             { setup: openRouter, workspace: profileWorkspace }
         );
         await screen.findByLabelText('Ask for a follow-up');
@@ -363,7 +317,6 @@ describe('the Model chip follows the selected executor connection', () => {
             ...j,
             executor: 'routed',
             executorScope: 'user' as const,
-            agentType: null,
             agentModel: null,
         }));
         stubFetch((call: FetchCall) => {

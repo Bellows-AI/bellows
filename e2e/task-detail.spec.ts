@@ -556,9 +556,8 @@ test.describe('the task detail page', () => {
         await page.route('**/api/model-setup', (route) =>
             route.fulfill({
                 json: {
-                    platform: false,
                     org: null,
-                    personal: { provider: 'anthropic', agentType: 'claude-code', model: 'm', keyNames: ['K'] },
+                    personal: { provider: 'anthropic', keyNames: ['K'] },
                     effective: 'personal',
                 },
             })

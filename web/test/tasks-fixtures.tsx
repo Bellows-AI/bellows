@@ -66,7 +66,6 @@ export function job(overrides: Partial<Job> = {}): Job {
         repo: null,
         executor: null,
         executorScope: 'user',
-        agentType: null,
         agentModel: null,
         resolvedModel: null,
         workflowName: null,
