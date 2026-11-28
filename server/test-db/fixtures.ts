@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { expect } from 'vitest';
+import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
+import { testSecretStore } from './env-secrets-harness.js';
 import { createConnectionGrants } from '../src/db/connection-grants.js';
 import { INTERRUPTION_BUDGET } from '../src/db/jobs/job-store.js';
 import type { TestUser } from './harness.js';
@@ -293,3 +295,34 @@ export const legacyConnection = async (
     `;
     return row!.id;
 };
+
+/** The key `testConnection` seals unless a test names its own. */
+export const TEST_CONNECTION_KEY = 'sk-ant-test-fixture';
+
+/**
+ * A provider connection for an executor to select — every executor has one (docs/workspace.md) — its key sealed in the
+ * real test secret store. `owner` null is the organization's connection, a member id that member's own; the name is
+ * unique so a suite may make several. Answers the connection id.
+ */
+export async function testConnection(
+    sql: Sql,
+    orgId: string,
+    over: { owner?: string | null; provider?: 'anthropic' | 'openrouter' | 'openai'; key?: string } = {}
+): Promise<string> {
+    const store = createProviderConnectionStore({
+        sql,
+        orgId,
+        secrets: testSecretStore(sql),
+        secretLog: () => {},
+    });
+    const owner = over.owner ?? null;
+    const made = await store.create({
+        scope: owner === null ? 'org' : 'personal',
+        userId: owner,
+        provider: over.provider ?? 'anthropic',
+        name: `Test ${randomUUID().slice(0, 8)}`,
+        baseUrl: null,
+        key: over.key ?? TEST_CONNECTION_KEY,
+    });
+    return made.id;
+}

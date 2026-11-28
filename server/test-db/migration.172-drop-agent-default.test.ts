@@ -213,6 +213,8 @@ beforeAll(async () => {
                values (${org}, ${profileJob}, 'work', ${profileJob}, ${ids.bob}, 'other', 'user', 'm-5')`;
 
     await pool.unsafe(readFileSync(new URL(VERSION, DIR), 'utf8'));
+    // The claim tests below run today's stores, which read the columns later migrations added.
+    for (const name of versioned((n) => n > VERSION)) await pool.unsafe(readFileSync(new URL(name, DIR), 'utf8'));
 });
 
 afterAll(async () => {

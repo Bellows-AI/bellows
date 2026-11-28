@@ -23,7 +23,7 @@ import { ORG_OWNER } from '../src/notifications/subscription-store.js';
 import { createOrgRegistry, type OrgRuntime } from '../src/orgs.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { testSecretStore } from './env-secrets-harness.js';
-import { craftJob, randomGithubId, testOrg } from './fixtures.js';
+import { craftJob, randomGithubId, testConnection, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -270,6 +270,7 @@ describe.skipIf(!enabled)('GET /api/org/export', () => {
             type: 'claude-code',
             config: { env: { ANTHROPIC_API_KEY: providerKey } },
             createdBy: admin.userId,
+            providerConnectionId: await testConnection(sql, org, { key: providerKey }),
         });
         await rt.notificationSubscriptions!.create(
             ORG_OWNER,
@@ -323,8 +324,8 @@ describe.skipIf(!enabled)('GET /api/org/export', () => {
             mcp: [{ headers: { auth_token: nested } }],
         };
         await sql`
-            insert into executor_profile (org_id, user_id, name, type, config, position)
-            values (${org}, ${admin.userId}, 'legacy', 'claude-code', ${sql.json(config)}, 0)
+            insert into executor_profile (org_id, user_id, name, type, config, position, provider_connection_id)
+            values (${org}, ${admin.userId}, 'legacy', 'claude-code', ${sql.json(config)}, 0, ${await testConnection(sql, org)})
         `;
 
         const archive = (await exportAs(admin)).rawPayload;

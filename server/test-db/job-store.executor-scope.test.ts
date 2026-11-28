@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { noExecutorMessage } from '@factory-ai/core';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
+import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { expireLease, mustCreate, testOrg, testUser } from './fixtures.js';
+import { expireLease, mustCreate, testConnection, testOrg, testUser } from './fixtures.js';
 import { testSecretDeps } from './env-secrets-harness.js';
 
 /**
@@ -44,15 +45,26 @@ beforeAll(async () => {
         sql,
         orgId: ORG,
         executorConfig: createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) }),
+        providerConnections: createProviderConnectionStore({ sql, orgId: ORG, ...testSecretDeps(sql) }),
     });
+});
+
+/** The organization's provider connection every executor in a test selects; the reset empties the table. */
+let conn: string;
+
+beforeEach(async () => {
+    if (process.env.DATABASE_URL) conn = await testConnection(db.sql, ORG);
 });
 
 describe.skipIf(!enabled)('claim resolution across executor scopes (issue 391)', () => {
     /** Alice's personal "main" and the organization's own "main": same name, two rows. */
     const seedSameName = async () => {
         const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: { model: 'personal-model' } }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'opencode', config: { model: 'personal-model' } },
+        ]);
         await executors.createOrg({
+            providerConnectionId: conn,
             name: 'main',
             type: 'claude-code',
             config: { model: 'shared-model' },
@@ -104,7 +116,13 @@ describe.skipIf(!enabled)('claim resolution across executor scopes (issue 391)',
 
     it('a row removed after queueing resolves null, and the task fails clearly rather than guessing', async () => {
         const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
-        await executors.createOrg({ name: 'gone', type: 'claude-code', config: {}, createdBy: ALICE });
+        await executors.createOrg({
+            providerConnectionId: conn,
+            name: 'gone',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
         const { id } = await mustCreate(
             store.create('echo hi', ALICE, { repo: null, executor: 'gone', executorScope: 'org' })
         );
@@ -120,13 +138,20 @@ describe.skipIf(!enabled)('claim resolution across executor scopes (issue 391)',
     it("the claim carries the profile's runnerClass; null when unset", async () => {
         const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         await executors.createOrg({
+            providerConnectionId: conn,
             name: 'sandboxed',
             type: 'claude-code',
             config: {},
             runnerClass: 'kata',
             createdBy: ALICE,
         });
-        await executors.createOrg({ name: 'plain', type: 'claude-code', config: {}, createdBy: ALICE });
+        await executors.createOrg({
+            providerConnectionId: conn,
+            name: 'plain',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
         const classed = await mustCreate(
             store.create('echo hi', BOB, { repo: null, executor: 'sandboxed', executorScope: 'org' })
         );
@@ -158,7 +183,9 @@ describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 4
 
     it('hands out no runner and no config for a suspended profile, and says why', async () => {
         const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: { model: 'secret' } }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'claude-code', config: { model: 'secret' } },
+        ]);
         const { id } = await mustCreate(
             store.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' })
         );
@@ -175,8 +202,14 @@ describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 4
 
     it('is scoped: a suspended personal profile does not refuse the same-named org selection', async () => {
         const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: {} }]);
-        await executors.createOrg({ name: 'main', type: 'claude-code', config: {}, createdBy: ALICE });
+        await executors.replace(ALICE, [{ providerConnectionId: conn, name: 'main', type: 'opencode', config: {} }]);
+        await executors.createOrg({
+            providerConnectionId: conn,
+            name: 'main',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
         await suspend('user', 'main', true);
         await mustCreate(store.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'org' }));
 
@@ -188,7 +221,13 @@ describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 4
 
     it('applies to a follow-up and a retry the same way, and launches again once resumed', async () => {
         const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
-        await executors.createOrg({ name: 'team', type: 'claude-code', config: {}, createdBy: ALICE });
+        await executors.createOrg({
+            providerConnectionId: conn,
+            name: 'team',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
         const parent = await mustCreate(
             store.create('drive me', ALICE, { repo: null, executor: 'team', executorScope: 'org' })
         );
@@ -274,7 +313,7 @@ describe.skipIf(!enabled)('a thread with no executor, after its member configure
     };
     const configureDefault = async (name: string) => {
         const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
-        await executors.replace(BOB, [{ name, type: 'opencode', config: { model: 'm' } }]);
+        await executors.replace(BOB, [{ providerConnectionId: conn, name, type: 'opencode', config: { model: 'm' } }]);
         const [row] = await sql<{ id: string }[]>`
             select id from executor_profile where org_id = ${ORG} and user_id = ${BOB} and name = ${name}
         `;
@@ -344,7 +383,7 @@ describe.skipIf(!enabled)('a model chosen for the task', () => {
     const CONFIG_ENV = { 'claude-code': 'CLAUDE_CODE_CONFIG_CONTENT', opencode: 'OPENCODE_CONFIG_CONTENT' } as const;
     const executors = () => createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
     const saveProfile = (type: 'claude-code' | 'opencode', config: Record<string, unknown>) =>
-        executors().replace(ALICE, [{ name: 'main', type, config }]);
+        executors().replace(ALICE, [{ providerConnectionId: conn, name: 'main', type, config }]);
     const profileTask = (agentModel?: string) =>
         mustCreate(
             store.create('echo hi', ALICE, {
@@ -454,8 +493,9 @@ describe.skipIf(!enabled)('a model chosen for the task', () => {
     });
 });
 
-describe.skipIf(!enabled)('Claude Code on an OpenRouter key alone', () => {
-    const OPENROUTER_KEY = 'sk-or-v1-member-owned';
+describe.skipIf(!enabled)('Claude Code on an OpenRouter connection alone', () => {
+    const OPENROUTER_KEY = 'sk-or-v1-connection-owned';
+    const openRouter = () => testConnection(sql, ORG, { provider: 'openrouter', key: OPENROUTER_KEY });
     const WIRED = {
         ANTHROPIC_BASE_URL: 'https://openrouter.ai/api',
         ANTHROPIC_AUTH_TOKEN: OPENROUTER_KEY,
@@ -464,18 +504,18 @@ describe.skipIf(!enabled)('Claude Code on an OpenRouter key alone', () => {
     const withEnv = () => {
         const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         const env = createEnvVarStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
-        return { executors, env, jobs: createJobStore({ sql, orgId: ORG, env, executorConfig: executors }) };
+        const providerConnections = createProviderConnectionStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
+        return {
+            executors,
+            env,
+            jobs: createJobStore({ sql, orgId: ORG, env, executorConfig: executors, providerConnections }),
+        };
     };
-    const saveEnv = (env: ReturnType<typeof withEnv>['env'], vars: Record<string, string>) =>
-        env.replaceWorkspace(
-            ALICE,
-            Object.entries(vars).map(([name, value]) => ({ name, value, isSecret: true }))
-        );
-
     it('a Claude Code task with a chosen model claims the key wired as an Anthropic bearer to OpenRouter', async () => {
-        const { executors, env, jobs } = withEnv();
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
-        await saveEnv(env, { OPENROUTER_API_KEY: OPENROUTER_KEY });
+        const { executors, jobs } = withEnv();
+        await executors.replace(ALICE, [
+            { providerConnectionId: await openRouter(), name: 'main', type: 'claude-code', config: {} },
+        ]);
         await mustCreate(
             jobs.create('echo hi', ALICE, {
                 repo: null,
@@ -492,18 +532,20 @@ describe.skipIf(!enabled)('Claude Code on an OpenRouter key alone', () => {
     });
 
     it('a Claude Code profile task is wired the same way', async () => {
-        const { executors, env, jobs } = withEnv();
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
-        await saveEnv(env, { OPENROUTER_API_KEY: OPENROUTER_KEY });
+        const { executors, jobs } = withEnv();
+        await executors.replace(ALICE, [
+            { providerConnectionId: await openRouter(), name: 'main', type: 'claude-code', config: {} },
+        ]);
         await mustCreate(jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' }));
 
         expect((await jobs.claim('w1', LEASE_SECONDS))?.env).toMatchObject(WIRED);
     });
 
-    it('an opencode task, or a member Anthropic key beside it, claims the env unchanged', async () => {
-        const { executors, env, jobs } = withEnv();
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: {} }]);
-        await saveEnv(env, { OPENROUTER_API_KEY: OPENROUTER_KEY });
+    it('an opencode task, or an Anthropic connection beside it, claims the key unwired', async () => {
+        const { executors, jobs } = withEnv();
+        await executors.replace(ALICE, [
+            { providerConnectionId: await openRouter(), name: 'main', type: 'opencode', config: {} },
+        ]);
         await mustCreate(
             jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user', agentModel: 'm' })
         );
@@ -511,15 +553,17 @@ describe.skipIf(!enabled)('Claude Code on an OpenRouter key alone', () => {
         expect(opencode?.env?.OPENROUTER_API_KEY).toBe(OPENROUTER_KEY);
         for (const name of Object.keys(WIRED)) expect(opencode?.env).not.toHaveProperty(name);
 
-        await saveEnv(env, { OPENROUTER_API_KEY: OPENROUTER_KEY, ANTHROPIC_API_KEY: 'sk-ant-member' });
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        const anthropic = await testConnection(sql, ORG, { key: 'sk-ant-connection' });
+        await executors.replace(ALICE, [
+            { providerConnectionId: anthropic, name: 'main', type: 'claude-code', config: {} },
+        ]);
         await mustCreate(
             jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user', agentModel: 'm' })
         );
         const keyed = await jobs.claim('w2', LEASE_SECONDS);
-        expect(keyed?.env?.ANTHROPIC_API_KEY).toBe('sk-ant-member');
-        expect(keyed?.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
-        expect(keyed?.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+        expect(keyed?.env?.ANTHROPIC_API_KEY).toBe('sk-ant-connection');
+        expect(keyed?.env?.ANTHROPIC_AUTH_TOKEN).toBe('');
+        expect(keyed?.env?.ANTHROPIC_BASE_URL).toBe('');
     });
 });
 
@@ -533,11 +577,16 @@ describe.skipIf(!enabled)('the recorded model is the one the runner uses', () =>
     const withEnv = () => {
         const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         const env = createEnvVarStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
-        return { executors, env, jobs: createJobStore({ sql, orgId: ORG, env, executorConfig: executors }) };
+        const providerConnections = createProviderConnectionStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
+        return {
+            executors,
+            env,
+            jobs: createJobStore({ sql, orgId: ORG, env, executorConfig: executors, providerConnections }),
+        };
     };
     const setUp = async (type: 'claude-code' | 'opencode', config: Record<string, unknown>, model?: string) => {
         const { executors, env, jobs } = withEnv();
-        await executors.replace(ALICE, [{ name: 'main', type, config }]);
+        await executors.replace(ALICE, [{ providerConnectionId: conn, name: 'main', type, config }]);
         await env.replaceWorkspace(ALICE, [{ name: 'ANTHROPIC_MODEL', value: 'A', isSecret: false }]);
         const { id } = await mustCreate(
             jobs.create('echo hi', ALICE, {
@@ -571,7 +620,9 @@ describe.skipIf(!enabled)('the recorded model is the one the runner uses', () =>
 
     it('a Claude Code task with neither pins the config model, so a driver-forwarded ANTHROPIC_MODEL cannot win', async () => {
         const { executors, jobs } = withEnv();
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: { model: 'P' } }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'claude-code', config: { model: 'P' } },
+        ]);
         const { id } = await mustCreate(
             jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' })
         );
@@ -582,7 +633,7 @@ describe.skipIf(!enabled)('the recorded model is the one the runner uses', () =>
 
     it('a Claude Code task where nothing names a model sends none and records none', async () => {
         const { executors, jobs } = withEnv();
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await executors.replace(ALICE, [{ providerConnectionId: conn, name: 'main', type: 'claude-code', config: {} }]);
         const { id } = await mustCreate(
             jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' })
         );

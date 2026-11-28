@@ -5,8 +5,11 @@ import { createSecretRef } from '../src/secrets/secret-input.js';
 import type { SecretDiagnostic, SecretStore } from '../src/secrets/secret-store.js';
 import { MutableKeys } from './secrets-postgres-harness.js';
 
+/** The keys every default test store shares: a secret sealed through one store (a fixture's) opens through another (a claim's). */
+const sharedKeys = new MutableKeys();
+
 /** The real PostgreSQL secret store over the test database, with a short deadline so a hang fails fast. */
-export function testSecretStore(sql: Sql, keys: MutableKeys = new MutableKeys()) {
+export function testSecretStore(sql: Sql, keys: MutableKeys = sharedKeys) {
     return createPostgresSecretStore({ sql, keys, deadlineMs: 3000 });
 }
 

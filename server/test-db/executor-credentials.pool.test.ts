@@ -1,11 +1,13 @@
+import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, ReviewerSpec } from '../src/db/jobs/job-store-types.js';
 import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
+import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { testSecretStore } from './env-secrets-harness.js';
-import { mustCreate, testOrg, testUser } from './fixtures.js';
+import { mustCreate, testConnection, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -17,6 +19,7 @@ import { useTestDb } from './harness.js';
 const enabled = Boolean(process.env.DATABASE_URL);
 const LEASE_SECONDS = 300;
 const KEY = 'sk-ant-api03-saved-before-the-store';
+const CONNECTION_KEY = `sk-ant-api03-${randomUUID()}`;
 const PLAINTEXT = { env: { ANTHROPIC_API_KEY: KEY } };
 const REVIEWER: ReviewerSpec = { name: 'sec', instructions: 'Look.', timeoutMinutes: 7, connections: [] };
 const DEADLINE_MS = 5000;
@@ -37,16 +40,13 @@ afterAll(async () => {
 
 /** A fresh process's stores over the one-connection pool; the secret store keeps its own pool, as in main.ts. */
 function boot() {
-    const executors = createUserExecutorStore({
-        sql: one,
-        orgId: ORG,
-        secrets: testSecretStore(db.sql),
-        secretLog: () => {},
-    });
+    const deps = { sql: one, orgId: ORG, secrets: testSecretStore(db.sql), secretLog: () => {} };
+    const executors = createUserExecutorStore(deps);
     const jobs = createJobStore({
         sql: one,
         orgId: ORG,
         executorConfig: executors,
+        providerConnections: createProviderConnectionStore(deps),
         githubApp: true,
         plan: {
             readFor: async () => ({ config: null, error: null, services: [], revision: null, reviewers: [REVIEWER] }),
@@ -58,9 +58,19 @@ function boot() {
 async function seedPlaintext() {
     await db.sql`delete from executor_profile where org_id = ${ORG} and user_id = ${ALICE}`;
     await db.sql`
-        insert into executor_profile (org_id, user_id, name, type, config, position)
-        values (${ORG}, ${ALICE}, 'main', 'claude-code', ${db.sql.json(PLAINTEXT)}, 0)
+        insert into executor_profile (org_id, user_id, name, type, config, position, provider_connection_id)
+        values (${ORG}, ${ALICE}, 'main', 'claude-code', ${db.sql.json(PLAINTEXT)}, 0, ${await testConnection(db.sql, ORG, { key: CONNECTION_KEY })})
     `;
+}
+
+/** The pasted key is resolved from the secret store into the claim's config; the connection's key rides as the env key. */
+async function expectConvertedAndKeyed(env: Record<string, string> | undefined): Promise<void> {
+    expect(env?.ANTHROPIC_API_KEY).toBe(CONNECTION_KEY);
+    expect(JSON.parse(env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual(PLAINTEXT);
+    const [row] = await db.sql<{ config: string }[]>`
+        select config::text as config from executor_profile where org_id = ${ORG} and user_id = ${ALICE}
+    `;
+    expect(row?.config).not.toContain(KEY);
 }
 
 function withinDeadline<T>(work: Promise<T>): Promise<T> {
@@ -79,7 +89,7 @@ describe.skipIf(!enabled)('an unconverted profile on a one-connection pool', () 
         await mustCreate(jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user' }));
 
         const claim = await withinDeadline(jobs.claim('w1', LEASE_SECONDS));
-        expect(JSON.parse(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual(PLAINTEXT);
+        await expectConvertedAndKeyed(claim?.env);
     });
 
     it('a review claim converts it first and carries the key', async () => {
@@ -103,6 +113,6 @@ describe.skipIf(!enabled)('an unconverted profile on a one-connection pool', () 
         );
         expect(review.result).toBe('created');
         const claim = 'claim' in review ? review.claim : undefined;
-        expect(JSON.parse(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual(PLAINTEXT);
+        await expectConvertedAndKeyed(claim?.env);
     });
 });

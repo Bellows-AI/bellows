@@ -1,13 +1,23 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { CreateJobStoreDeps, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { EnvSecretError } from '../src/db/env-secrets.js';
+import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
 import { seedEncryptedRow, testSecretDeps, testSecretStore } from './env-secrets-harness.js';
-import { account, lapseDeferral, mustCreate, randomGithubId, startRow, testOrg } from './fixtures.js';
+import {
+    TEST_CONNECTION_KEY,
+    account,
+    lapseDeferral,
+    mustCreate,
+    randomGithubId,
+    startRow,
+    testConnection,
+    testOrg,
+} from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -29,6 +39,13 @@ beforeAll(async () => {
     if (!enabled) return;
     sql = db.sql;
     store = createJobStore({ sql, orgId: ORG });
+});
+
+/** The organization's provider connection every executor in a test selects; the reset empties the table. */
+let conn: string;
+
+beforeEach(async () => {
+    if (process.env.DATABASE_URL) conn = await testConnection(db.sql, ORG);
 });
 
 /**
@@ -247,7 +264,19 @@ describe.runIf(enabled)('attribution', () => {
         })();
         // Built in beforeAll, not at collection: `sql` does not exist until the outer hook ran.
         let executors: ReturnType<typeof createUserExecutorStore>;
-        const configured = () => createJobStore({ sql, orgId: ORG, executorConfig: executors });
+        /**
+         * The claim env without the executor connection's layer: its key (asserted) and the names it carries empty,
+         * so what remains is the executor config's own contribution.
+         */
+        const withoutConnectionLayer = (env: Record<string, string> | undefined) => {
+            expect(env?.ANTHROPIC_API_KEY).toBe(TEST_CONNECTION_KEY);
+            return Object.fromEntries(
+                Object.entries(env ?? {}).filter(([name, value]) => value !== '' && name !== 'ANTHROPIC_API_KEY')
+            );
+        };
+        const connections = () => createProviderConnectionStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
+        const configured = () =>
+            createJobStore({ sql, orgId: ORG, executorConfig: executors, providerConnections: connections() });
         beforeAll(() => {
             if (enabled) executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
         });
@@ -256,6 +285,7 @@ describe.runIf(enabled)('attribution', () => {
             const userId = await account(sql, executorAccountId(), 'executor-cat');
             await executors.replace(userId, [
                 {
+                    providerConnectionId: conn,
                     name: 'main',
                     type: 'opencode',
                     config: {
@@ -284,8 +314,8 @@ describe.runIf(enabled)('attribution', () => {
         it('routes by the selected executor type and leaves unresolved selections explicit', async () => {
             const userId = await account(sql, executorAccountId(), 'executor-dog');
             await executors.replace(userId, [
-                { name: 'claude', type: 'claude-code', config: { model: 'x' } },
-                { name: 'main', type: 'opencode', config: { model: 'y' } },
+                { providerConnectionId: conn, name: 'claude', type: 'claude-code', config: { model: 'x' } },
+                { providerConnectionId: conn, name: 'main', type: 'opencode', config: { model: 'y' } },
             ]);
             const store = configured();
 
@@ -298,7 +328,7 @@ describe.runIf(enabled)('attribution', () => {
             const claude = await store.claim('driver-1', LEASE_SECONDS);
             expect(claude?.executorType).toBe('claude-code');
             // The profile's model is pinned as ANTHROPIC_MODEL too, so a driver-forwarded one cannot outrank it.
-            expect(claude?.env).toEqual({
+            expect(withoutConnectionLayer(claude?.env)).toEqual({
                 CLAUDE_CODE_CONFIG_CONTENT: '{"model":"x"}',
                 ANTHROPIC_MODEL: 'x',
             });
@@ -314,6 +344,7 @@ describe.runIf(enabled)('attribution', () => {
             const userId = await account(sql, executorAccountId(), 'executor-cat');
             await executors.replace(userId, [
                 {
+                    providerConnectionId: conn,
                     name: 'claude',
                     type: 'claude-code',
                     config: {
@@ -328,7 +359,7 @@ describe.runIf(enabled)('attribution', () => {
 
             await mustCreate(store.create('claude task', userId, { repo: null, executor: 'claude' }));
 
-            expect((await store.claim('driver-1', LEASE_SECONDS))?.env).toEqual({
+            expect(withoutConnectionLayer((await store.claim('driver-1', LEASE_SECONDS))?.env)).toEqual({
                 CLAUDE_CODE_CONFIG_CONTENT: '{"model":"x"}',
                 ANTHROPIC_MODEL: 'x',
             });
@@ -343,13 +374,21 @@ describe.runIf(enabled)('attribution', () => {
             await envStore.replaceWorkspace(userId, [
                 { name: 'OPENCODE_CONFIG_CONTENT', value: '{"model":"stale"}', isSecret: false },
             ]);
-            await executors.replace(userId, [{ name: 'main', type: 'opencode', config: { model: 'fresh' } }]);
-            const store = createJobStore({ sql, orgId: ORG, env: envStore, executorConfig: executors });
+            await executors.replace(userId, [
+                { providerConnectionId: conn, name: 'main', type: 'opencode', config: { model: 'fresh' } },
+            ]);
+            const store = createJobStore({
+                sql,
+                orgId: ORG,
+                env: envStore,
+                executorConfig: executors,
+                providerConnections: connections(),
+            });
 
             await mustCreate(store.create('echo hi', userId, { repo: null, executor: 'main' }));
             const claim = await store.claim('driver-1', LEASE_SECONDS);
 
-            expect(claim?.env).toEqual({ OPENCODE_CONFIG_CONTENT: '{"model":"fresh"}' });
+            expect(withoutConnectionLayer(claim?.env)).toEqual({ OPENCODE_CONFIG_CONTENT: '{"model":"fresh"}' });
         });
     });
 

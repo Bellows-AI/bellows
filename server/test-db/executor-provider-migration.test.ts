@@ -260,11 +260,11 @@ describe.skipIf(!enabled)('the executor provider migration step', () => {
         const first = await run();
         expect(first).toMatchObject({ converted: 6, suspended: 2, inconclusive: 0 });
         expect(await validated()).toBe(true);
-        const [{ n }] = await sql<{ n: number }[]>`
+        const [counted] = await sql<{ n: number }[]>`
             select count(*)::int as n from executor_profile
             where provider_connection_id is null and provider_migration_reason is null
         `;
-        expect(n).toBe(0);
+        expect(counted?.n).toBe(0);
 
         const snapshot = {
             rows: await rows(),

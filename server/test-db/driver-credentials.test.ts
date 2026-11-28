@@ -16,7 +16,7 @@ import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
-import { expireLease, randomGithubId, testOrg } from './fixtures.js';
+import { expireLease, randomGithubId, testConnection, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -91,6 +91,7 @@ async function boardFor(orgId: string): Promise<Person> {
         type: 'claude-code',
         config: {},
         createdBy: member.userId,
+        providerConnectionId: await testConnection(sql, orgId),
     });
     await executors.selectDefault(null, main.id);
     await sql`insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)

@@ -4,16 +4,17 @@ import {
     missingProviderSecretMessage,
     STORED_CREDENTIAL_PREFIX,
 } from '@factory-ai/core';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, ReviewerSpec } from '../src/db/jobs/job-store-types.js';
 import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
+import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
 import { faultySecrets, testSecretStore } from './env-secrets-harness.js';
-import { lapseDeferral, mustCreate, testOrg, testUser } from './fixtures.js';
+import { TEST_CONNECTION_KEY, lapseDeferral, mustCreate, testConnection, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -42,6 +43,7 @@ function stores(orgId: string, deploymentMode: DeploymentMode, secrets: SecretSt
         deploymentMode,
         env,
         executorConfig: executors,
+        providerConnections: createProviderConnectionStore({ sql, orgId, secrets, secretLog: () => {} }),
         githubApp: true,
         plan: {
             readFor: async () => ({ config: null, error: null, services: [], revision: null, reviewers: [REVIEWER] }),
@@ -65,19 +67,44 @@ beforeAll(() => {
     if (enabled) sql = db.sql;
 });
 
+/** The organization's provider connection every executor in a test selects; the reset empties the table. */
+let conn: string;
+
+beforeEach(async () => {
+    if (process.env.DATABASE_URL) conn = await testConnection(db.sql, ORG);
+});
+
 const task = (jobs: ReturnType<typeof stores>['jobs'], repo: string | null = null) =>
     mustCreate(jobs.create('echo hi', ALICE, { repo, executor: 'main', executorScope: 'user' }));
 
+/**
+ * An OpenCode executor on an OpenAI connection. A connection replaces every credential name of a Claude Code run and
+ * only its own provider's names of an OpenCode run, so the Anthropic names a member scope sets reach this claim's
+ * judgement untouched.
+ */
+const openCodeExecutor = async (config: Record<string, unknown> = {}) => ({
+    providerConnectionId: await testConnection(sql, ORG, { provider: 'openai' }),
+    name: 'main',
+    type: 'opencode',
+    config,
+});
+
 describe.skipIf(!enabled)('cloud mode: a redirect with no member key never reaches a claim', () => {
-    it('(a) in the profile, for both executor types: refused, the profile kept', async () => {
+    it('(a) in the profile: a Claude Code redirect rides on the connection key, an OpenCode provider one is refused, the profile kept', async () => {
         const { executors, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: { env: { [BASE_URL]: URL } } }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'claude-code', config: { env: { [BASE_URL]: URL } } },
+        ]);
         await task(jobs);
-        expectRefused(await jobs.claim('w1', LEASE_SECONDS), BASE_URL);
-        expect(await jobs.claim('w2', LEASE_SECONDS)).toBeNull();
+        // The connection's key is the member key the redirect needs beside it: Claude Code always has one.
+        const answered = await jobs.claim('w1', LEASE_SECONDS);
+        expect(answered?.executorRefusal).toBeNull();
+        expect(answered?.env?.ANTHROPIC_API_KEY).toBe(TEST_CONNECTION_KEY);
 
         const provider = { provider: { anthropic: { options: { baseURL: URL } } } };
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: provider }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'opencode', config: provider },
+        ]);
         await task(jobs);
         expectRefused(await jobs.claim('w3', LEASE_SECONDS), 'baseURL');
         expect((await executors.configFor(ALICE, 'main', 'user', sql))?.config).toEqual(provider);
@@ -85,7 +112,7 @@ describe.skipIf(!enabled)('cloud mode: a redirect with no member key never reach
 
     it('(b) in a repo-scope env row: refused, the row kept', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await executors.replace(ALICE, [await openCodeExecutor()]);
         await env.replaceRepo('env-admin', 'acme', 'web', [{ name: BASE_URL, value: URL, isSecret: false }]);
         await task(jobs, 'acme/web');
         expectRefused(await jobs.claim('w1', LEASE_SECONDS), BASE_URL);
@@ -94,7 +121,7 @@ describe.skipIf(!enabled)('cloud mode: a redirect with no member key never reach
 
     it('(c) in a user env row: refused', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: {} }]);
+        await executors.replace(ALICE, [await openCodeExecutor()]);
         await env.replaceWorkspace(ALICE, [{ name: BASE_URL, value: URL, isSecret: true }]);
         await task(jobs);
         expectRefused(await jobs.claim('w1', LEASE_SECONDS), BASE_URL);
@@ -102,7 +129,7 @@ describe.skipIf(!enabled)('cloud mode: a redirect with no member key never reach
 
     it('(d) granted to a reviewer: the review claim is refused', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await executors.replace(ALICE, [await openCodeExecutor()]);
         // The author claims on a model key; the org scope is then rewritten to the bare redirect, key gone.
         await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: 'sk-ant-author', isSecret: true }]);
         await task(jobs, 'acme/api');
@@ -122,24 +149,22 @@ describe.skipIf(!enabled)('cloud mode: a redirect with no member key never reach
 });
 
 describe.skipIf(!enabled)('cloud mode: a member key anywhere in the merged env lets the redirect travel', () => {
-    it('claude-code: the key stored in the profile, the base URL in a repo row', async () => {
+    it('opencode: a key in the org env lets a base URL in a repo row travel', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [
-            { name: 'main', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: KEY } } },
-        ]);
+        await executors.replace(ALICE, [await openCodeExecutor()]);
+        await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: KEY, isSecret: true }]);
         await env.replaceRepo('env-admin', 'acme', 'web', [{ name: BASE_URL, value: URL, isSecret: false }]);
         await task(jobs, 'acme/web');
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);
         expect(claim?.executorRefusal).toBeNull();
-        expect(claim?.env?.[BASE_URL]).toBe(URL);
-        expect(JSON.parse(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual({ env: { ANTHROPIC_API_KEY: KEY } });
+        expect(claim?.env).toMatchObject({ [BASE_URL]: URL, ANTHROPIC_API_KEY: KEY });
     });
 
     it('opencode: a provider baseURL beside its own apiKey travels with the key resolved', async () => {
         const { executors, jobs } = stores(ORG, 'cloud');
         const config = { provider: { anthropic: { options: { baseURL: URL, apiKey: KEY } } } };
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config }]);
+        await executors.replace(ALICE, [{ providerConnectionId: conn, name: 'main', type: 'opencode', config }]);
         await task(jobs);
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);
@@ -152,10 +177,13 @@ describe.skipIf(!enabled)('cloud mode: a member key anywhere in the merged env l
 describe.skipIf(!enabled)('cloud mode: an OpenRouter key wired for Claude Code', () => {
     const OPENROUTER_KEY = 'sk-or-v1-member-owned';
 
-    it('travels: the wiring carries the member key, so the redirect check accepts it', async () => {
-        const { executors, env, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
-        await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true }]);
+    const openRouter = () => testConnection(sql, ORG, { provider: 'openrouter', key: OPENROUTER_KEY });
+
+    it('travels: the wiring carries the connection key, so the redirect check accepts it', async () => {
+        const { executors, jobs } = stores(ORG, 'cloud');
+        await executors.replace(ALICE, [
+            { providerConnectionId: await openRouter(), name: 'main', type: 'claude-code', config: {} },
+        ]);
         await task(jobs);
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);
@@ -167,22 +195,27 @@ describe.skipIf(!enabled)('cloud mode: an OpenRouter key wired for Claude Code',
         });
     });
 
-    it('a member ANTHROPIC_AUTH_TOKEN answers a member base URL; a base URL with neither key is still refused', async () => {
+    it('a Claude Code connection replaces a member base URL and bearer; an OpenCode base URL with neither key is still refused', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await executors.replace(ALICE, [{ providerConnectionId: conn, name: 'main', type: 'claude-code', config: {} }]);
         await env.replaceWorkspace(ALICE, [
             { name: BASE_URL, value: URL, isSecret: false },
             { name: 'ANTHROPIC_AUTH_TOKEN', value: KEY, isSecret: true },
         ]);
         await task(jobs);
-        const bearer = await jobs.claim('w1', LEASE_SECONDS);
-        expect(bearer?.executorRefusal).toBeNull();
-        expect(bearer?.env).toMatchObject({ [BASE_URL]: URL, ANTHROPIC_AUTH_TOKEN: KEY });
+        const replaced = await jobs.claim('w1', LEASE_SECONDS);
+        expect(replaced?.executorRefusal).toBeNull();
+        expect(replaced?.env).toMatchObject({
+            [BASE_URL]: '',
+            ANTHROPIC_AUTH_TOKEN: '',
+            ANTHROPIC_API_KEY: TEST_CONNECTION_KEY,
+        });
+        expect(JSON.stringify(replaced)).not.toContain(URL);
 
-        await env.replaceWorkspace(ALICE, [
-            { name: BASE_URL, value: URL, isSecret: false },
-            { name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true },
+        await executors.replace(ALICE, [
+            { providerConnectionId: await openRouter(), name: 'main', type: 'opencode', config: {} },
         ]);
+        await env.replaceWorkspace(ALICE, [{ name: BASE_URL, value: URL, isSecret: false }]);
         await task(jobs);
         expectRefused(await jobs.claim('w2', LEASE_SECONDS), BASE_URL);
     });
@@ -197,7 +230,7 @@ describe.skipIf(!enabled)('cloud mode: an OpenRouter key wired for Claude Code',
 describe.skipIf(!enabled)('a member redirect never carries the platform Anthropic key in cloud mode', () => {
     it('cloud: a bearer redirect in member env claims ANTHROPIC_API_KEY blank', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await executors.replace(ALICE, [await openCodeExecutor()]);
         await env.replaceWorkspace(ALICE, [
             { name: BASE_URL, value: URL, isSecret: false },
             { name: 'ANTHROPIC_AUTH_TOKEN', value: KEY, isSecret: true },
@@ -209,22 +242,21 @@ describe.skipIf(!enabled)('a member redirect never carries the platform Anthropi
         expect(claim?.env).toMatchObject({ [BASE_URL]: URL, ANTHROPIC_AUTH_TOKEN: KEY, ANTHROPIC_API_KEY: '' });
     });
 
-    it("cloud: a bearer redirect in a claude-code profile's env claims ANTHROPIC_API_KEY blank", async () => {
+    it("cloud: a bearer redirect in a claude-code profile's env claims the connection key, never the platform's", async () => {
         const { executors, jobs } = stores(ORG, 'cloud');
         const config = { env: { [BASE_URL]: URL, ANTHROPIC_AUTH_TOKEN: KEY } };
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config }]);
+        await executors.replace(ALICE, [{ providerConnectionId: conn, name: 'main', type: 'claude-code', config }]);
         await task(jobs);
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);
         expect(claim?.executorRefusal).toBeNull();
-        expect(claim?.env?.ANTHROPIC_API_KEY).toBe('');
+        expect(claim?.env?.ANTHROPIC_API_KEY).toBe(TEST_CONNECTION_KEY);
         expect(JSON.parse(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual(config);
     });
 
     it('self-hosted: a member redirect, in env or a profile, leaves the platform key alone', async () => {
         const { executors, env, jobs } = stores(ORG, 'self-hosted');
-        const config = { env: { ANTHROPIC_AUTH_TOKEN: KEY } };
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config }]);
+        await executors.replace(ALICE, [await openCodeExecutor()]);
         await env.replaceOrg('env-admin', [{ name: BASE_URL, value: URL, isSecret: false }]);
         await task(jobs);
 
@@ -236,7 +268,7 @@ describe.skipIf(!enabled)('a member redirect never carries the platform Anthropi
 
     it('a member ANTHROPIC_API_KEY beside the redirect travels as is', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await executors.replace(ALICE, [await openCodeExecutor()]);
         await env.replaceWorkspace(ALICE, [
             { name: BASE_URL, value: URL, isSecret: false },
             { name: 'ANTHROPIC_API_KEY', value: KEY, isSecret: true },
@@ -252,7 +284,12 @@ describe.skipIf(!enabled)('a stored credential the claim cannot confirm', () => 
         const store = testSecretStore(sql);
         const { executors } = stores(ORG, 'self-hosted', store);
         await executors.replace(ALICE, [
-            { name: 'main', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: KEY } } },
+            {
+                providerConnectionId: conn,
+                name: 'main',
+                type: 'claude-code',
+                config: { env: { ANTHROPIC_API_KEY: KEY } },
+            },
         ]);
         const down = faultySecrets(store, {
             readActive: async () => {
@@ -273,7 +310,9 @@ describe.skipIf(!enabled)('a stored credential the claim cannot confirm', () => 
 describe.skipIf(!enabled)('self-hosted mode: a redirect still travels', () => {
     it('reaches the claim through the profile', async () => {
         const { executors, jobs } = stores(ORG, 'self-hosted');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: { env: { [BASE_URL]: URL } } }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'claude-code', config: { env: { [BASE_URL]: URL } } },
+        ]);
         await task(jobs);
 
         const claim = await jobs.claim('w1', LEASE_SECONDS);
@@ -285,50 +324,41 @@ describe.skipIf(!enabled)('self-hosted mode: a redirect still travels', () => {
 describe.skipIf(!enabled)('Claude Code takes its model credentials from one scope', () => {
     const TEAM_KEY = 'sk-ant-org-owned';
     const OPENROUTER_KEY = 'sk-or-v1-member-owned';
+    /** The env the claim starts from, before the executor's connection is layered over it. */
+    const stacked = (env: ReturnType<typeof stores>['env'], repo: string | null = null) =>
+        env.resolveFor({ userId: ALICE, repo }, sql, { agentType: 'claude-code' });
 
-    it('a personal OpenRouter key over an org Anthropic key: the wiring runs, the org key stays behind', async () => {
-        const { executors, env, jobs } = stores(ORG, 'self-hosted');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+    it('a personal OpenRouter key over an org Anthropic key: the org key stays behind', async () => {
+        const { env } = stores(ORG, 'self-hosted');
         await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: TEAM_KEY, isSecret: true }]);
         await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true }]);
-        await task(jobs);
 
-        const claim = await jobs.claim('w1', LEASE_SECONDS);
-        expect(claim?.executorRefusal).toBeNull();
-        expect(claim?.env).toMatchObject({
-            [BASE_URL]: 'https://openrouter.ai/api',
-            ANTHROPIC_AUTH_TOKEN: OPENROUTER_KEY,
-            ANTHROPIC_API_KEY: '',
-        });
-        expect(JSON.stringify(claim)).not.toContain(TEAM_KEY);
+        const resolved = await stacked(env);
+        expect(resolved).toMatchObject({ OPENROUTER_API_KEY: OPENROUTER_KEY });
+        expect(JSON.stringify(resolved)).not.toContain(TEAM_KEY);
     });
 
     it('an org Anthropic key with nothing personal travels unchanged', async () => {
-        const { executors, env, jobs } = stores(ORG, 'self-hosted');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        const { env } = stores(ORG, 'self-hosted');
         await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: TEAM_KEY, isSecret: true }]);
         await env.replaceWorkspace(ALICE, [{ name: 'OTHER', value: 'x', isSecret: false }]);
-        await task(jobs);
 
-        const claim = await jobs.claim('w1', LEASE_SECONDS);
-        expect(claim?.env).toMatchObject({ ANTHROPIC_API_KEY: TEAM_KEY, OTHER: 'x' });
-        expect(claim?.env).not.toHaveProperty(BASE_URL);
+        const resolved = await stacked(env);
+        expect(resolved).toMatchObject({ ANTHROPIC_API_KEY: TEAM_KEY, OTHER: 'x' });
+        expect(resolved).not.toHaveProperty(BASE_URL);
     });
 
     it('another provider’s key in a repo neither owns nor drops the org Anthropic key', async () => {
-        const { executors, env, jobs } = stores(ORG, 'self-hosted');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        const { env } = stores(ORG, 'self-hosted');
         await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: TEAM_KEY, isSecret: true }]);
         await env.replaceRepo('env-admin', 'acme', 'web', [{ name: 'OPENAI_API_KEY', value: 'repo', isSecret: true }]);
-        await task(jobs, 'acme/web');
 
-        const claim = await jobs.claim('w1', LEASE_SECONDS);
-        expect(claim?.env).toMatchObject({ ANTHROPIC_API_KEY: TEAM_KEY, OPENAI_API_KEY: 'repo' });
+        expect(await stacked(env, 'acme/web')).toMatchObject({ ANTHROPIC_API_KEY: TEAM_KEY, OPENAI_API_KEY: 'repo' });
     });
 
     it('an OpenCode run stacks plainly: the org and the personal keys both travel', async () => {
         const { executors, env, jobs } = stores(ORG, 'self-hosted');
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: {} }]);
+        await executors.replace(ALICE, [await openCodeExecutor()]);
         await env.replaceOrg('env-admin', [{ name: 'ANTHROPIC_API_KEY', value: TEAM_KEY, isSecret: true }]);
         await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true }]);
         await task(jobs);
@@ -338,18 +368,16 @@ describe.skipIf(!enabled)('Claude Code takes its model credentials from one scop
     });
 
     it('a repo-scope key overrides the workspace provider', async () => {
-        const { executors, env, jobs } = stores(ORG, 'self-hosted');
-        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        const { env } = stores(ORG, 'self-hosted');
         await env.replaceWorkspace(ALICE, [{ name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true }]);
         await env.replaceRepo('env-admin', 'acme', 'web', [
             { name: 'ANTHROPIC_API_KEY', value: 'repo', isSecret: true },
         ]);
-        await task(jobs, 'acme/web');
 
-        const claim = await jobs.claim('w1', LEASE_SECONDS);
-        expect(claim?.env).toMatchObject({ ANTHROPIC_API_KEY: 'repo' });
-        expect(claim?.env).not.toHaveProperty('OPENROUTER_API_KEY');
-        expect(claim?.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+        const resolved = await stacked(env, 'acme/web');
+        expect(resolved).toMatchObject({ ANTHROPIC_API_KEY: 'repo' });
+        expect(resolved).not.toHaveProperty('OPENROUTER_API_KEY');
+        expect(resolved).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
     });
 });
 
@@ -385,7 +413,9 @@ describe.skipIf(!enabled)('a custom provider key that names a secret resolves at
 
     it('an org secret value is written into the rendered provider config, never the raw reference', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) },
+        ]);
         await env.replaceOrg('env-admin', [{ name: GATEWAY_KEY, value: 'sk-org-gateway', isSecret: true }]);
         await task(jobs);
 
@@ -398,7 +428,9 @@ describe.skipIf(!enabled)('a custom provider key that names a secret resolves at
 
     it('the higher scope wins the name: workspace over organization, repository over workspace', async () => {
         const { executors, env, jobs } = stores(ORG, 'self-hosted');
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) },
+        ]);
         await env.replaceOrg('env-admin', [{ name: GATEWAY_KEY, value: 'org-value', isSecret: false }]);
         await task(jobs);
         gatewayKey(await jobs.claim('w1', LEASE_SECONDS), 'org-value');
@@ -416,7 +448,9 @@ describe.skipIf(!enabled)('a custom provider key that names a secret resolves at
 
     it('rotating the org secret applies to the next claim with no profile edit', async () => {
         const { executors, env, jobs } = stores(ORG, 'self-hosted');
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) },
+        ]);
         await env.replaceOrg('env-admin', [{ name: GATEWAY_KEY, value: 'first-value', isSecret: true }]);
         await task(jobs);
         gatewayKey(await jobs.claim('w1', LEASE_SECONDS), 'first-value');
@@ -430,9 +464,8 @@ describe.skipIf(!enabled)('a custom provider key that names a secret resolves at
         const { executors, jobs } = stores(ORG, 'cloud');
         // ANTHROPIC_API_KEY is the deployment's own key name: it resolves only from a member scope,
         // and none is set, so the runner env must never answer for it.
-        await executors.replace(ALICE, [
-            { name: 'main', type: 'opencode', config: gateway('{env:ANTHROPIC_API_KEY}') },
-        ]);
+        // On an OpenAI connection: an Anthropic connection would itself supply that name.
+        await executors.replace(ALICE, [await openCodeExecutor(gateway('{env:ANTHROPIC_API_KEY}'))]);
         await task(jobs);
         const claim = await jobs.claim('w1', LEASE_SECONDS);
         expect(claim?.executorRefusal).toBe(missingProviderSecretMessage(['ANTHROPIC_API_KEY']));
@@ -441,7 +474,9 @@ describe.skipIf(!enabled)('a custom provider key that names a secret resolves at
 
         // An empty value is just as unresolved.
         const { executors: executors2, env, jobs: jobs2 } = stores(ORG, 'self-hosted');
-        await executors2.replace(ALICE, [{ name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) }]);
+        await executors2.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) },
+        ]);
         await env.replaceWorkspace(ALICE, [{ name: GATEWAY_KEY, value: '', isSecret: false }]);
         await task(jobs2);
         const refused = await jobs2.claim('w1', LEASE_SECONDS);
@@ -450,7 +485,9 @@ describe.skipIf(!enabled)('a custom provider key that names a secret resolves at
 
     it('a reviewer claim resolves only past its grant: an ungranted name is refused, a granted one travels', async () => {
         const { executors, env, jobs } = stores(ORG, 'cloud');
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'opencode', config: gateway(`{env:${GATEWAY_KEY}}`) },
+        ]);
         await env.replaceOrg('env-admin', [{ name: GATEWAY_KEY, value: 'sk-org-gateway', isSecret: true }]);
         await env.replaceWorkspace(ALICE, [{ name: 'ANTHROPIC_API_KEY', value: KEY, isSecret: true }]);
         await task(jobs, 'acme/api');
@@ -474,7 +511,9 @@ describe.skipIf(!enabled)('a custom provider key that names a secret resolves at
     it("a reference on a provider without a baseURL is opencode's own substitution and travels untouched", async () => {
         const { executors, env, jobs } = stores(ORG, 'self-hosted');
         const builtin = { provider: { anthropic: { options: { apiKey: '{env:MY_KEY}' } } }, model: 'anthropic/sonnet' };
-        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: builtin }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'opencode', config: builtin },
+        ]);
         await env.replaceWorkspace(ALICE, [{ name: 'MY_KEY', value: 'sk-member', isSecret: false }]);
         await task(jobs);
 

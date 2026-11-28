@@ -1,11 +1,11 @@
 import { STORED_CREDENTIAL_PREFIX } from '@factory-ai/core';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { executorCredentialIdentity, type StoredCredential } from '../src/db/executor-credentials.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import type { SecretRef, SecretStore } from '../src/secrets/secret-store.js';
 import { faultySecrets, testSecretStore } from './env-secrets-harness.js';
-import { testOrg, testUser } from './fixtures.js';
+import { testConnection, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -35,6 +35,13 @@ beforeAll(() => {
     secrets = testSecretStore(sql);
 });
 
+/** The organization's provider connection every executor in a test selects; the reset empties the table. */
+let conn: string;
+
+beforeEach(async () => {
+    if (process.env.DATABASE_URL) conn = await testConnection(db.sql, ORG);
+});
+
 const store = (with_: SecretStore = secrets) =>
     createUserExecutorStore({ sql, orgId: ORG, secrets: with_, secretLog: () => {} });
 
@@ -58,10 +65,16 @@ describe.skipIf(!enabled)('executor settings never read back a provider key', ()
         const executors = store();
         const opencode = { provider: { anthropic: { options: { apiKey: KEY, baseURL: 'https://a.example.test' } } } };
         await executors.replace(ALICE, [
-            { name: 'claude', type: 'claude-code', config: { model: 'sonnet', env: { ANTHROPIC_API_KEY: KEY } } },
-            { name: 'open', type: 'opencode', config: opencode },
+            {
+                providerConnectionId: conn,
+                name: 'claude',
+                type: 'claude-code',
+                config: { model: 'sonnet', env: { ANTHROPIC_API_KEY: KEY } },
+            },
+            { providerConnectionId: conn, name: 'open', type: 'opencode', config: opencode },
         ]);
         await executors.createOrg({
+            providerConnectionId: conn,
             name: 'team',
             type: 'claude-code',
             config: { env: { ANTHROPIC_API_KEY: KEY } },
@@ -99,6 +112,7 @@ describe.skipIf(!enabled)('a provider key that names a secret is a reference, no
         const executors = store();
         await executors.replace(ALICE, [
             {
+                providerConnectionId: conn,
                 name: 'gateway',
                 type: 'opencode',
                 config: {
@@ -136,10 +150,17 @@ describe.skipIf(!enabled)('a save keeps, replaces or drops a stored key', () => 
     it('the marker sent back keeps the value through a rename and a scope change', async () => {
         const executors = store();
         await executors.replace(ALICE, [
-            { name: 'main', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: KEY } } },
+            {
+                providerConnectionId: conn,
+                name: 'main',
+                type: 'claude-code',
+                config: { env: { ANTHROPIC_API_KEY: KEY } },
+            },
         ]);
         const [row] = await executors.listWithConfigs(ALICE);
-        await executors.replace(ALICE, [{ name: 'renamed', type: 'claude-code', config: row!.config }]);
+        await executors.replace(ALICE, [
+            { providerConnectionId: conn, name: 'renamed', type: 'claude-code', config: row!.config },
+        ]);
         expect((await executors.claimConfigFor(ALICE, 'renamed', 'user', sql))?.config).toEqual({
             env: { ANTHROPIC_API_KEY: KEY },
         });
@@ -154,11 +175,21 @@ describe.skipIf(!enabled)('a save keeps, replaces or drops a stored key', () => 
     it('a new value replaces the reference and deletes the old record after the commit', async () => {
         const executors = store();
         await executors.replace(ALICE, [
-            { name: 'main', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: KEY } } },
+            {
+                providerConnectionId: conn,
+                name: 'main',
+                type: 'claude-code',
+                config: { env: { ANTHROPIC_API_KEY: KEY } },
+            },
         ]);
         const [before] = (await rawRows())[0]!.secret_refs;
         await executors.replace(ALICE, [
-            { name: 'main', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: OTHER } } },
+            {
+                providerConnectionId: conn,
+                name: 'main',
+                type: 'claude-code',
+                config: { env: { ANTHROPIC_API_KEY: OTHER } },
+            },
         ]);
 
         expect(await recordExists(before!)).toBe(false);
@@ -170,18 +201,33 @@ describe.skipIf(!enabled)('a save keeps, replaces or drops a stored key', () => 
     it("a marker naming another member's or another path's reference is dropped, never resolved", async () => {
         const executors = store();
         await executors.replace(BOB, [
-            { name: 'bob', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: KEY } } },
+            {
+                providerConnectionId: conn,
+                name: 'bob',
+                type: 'claude-code',
+                config: { env: { ANTHROPIC_API_KEY: KEY } },
+            },
         ]);
         const [bob] = await executors.listWithConfigs(BOB);
         const stolen = markerAt(bob!.config, 'env', 'ANTHROPIC_API_KEY');
         expect(stolen.startsWith(STORED_CREDENTIAL_PREFIX)).toBe(true);
 
         await executors.replace(ALICE, [
-            { name: 'mine', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: stolen } } },
+            {
+                providerConnectionId: conn,
+                name: 'mine',
+                type: 'claude-code',
+                config: { env: { ANTHROPIC_API_KEY: stolen } },
+            },
         ]);
         expect((await executors.claimConfigFor(ALICE, 'mine', 'user', sql))?.config).toEqual({ env: {} });
         await executors.replace(BOB, [
-            { name: 'bob', type: 'claude-code', config: { env: { OPENAI_API_KEY: stolen } } },
+            {
+                providerConnectionId: conn,
+                name: 'bob',
+                type: 'claude-code',
+                config: { env: { OPENAI_API_KEY: stolen } },
+            },
         ]);
         expect((await executors.claimConfigFor(BOB, 'bob', 'user', sql))?.config).toEqual({ env: {} });
     });
@@ -189,6 +235,7 @@ describe.skipIf(!enabled)('a save keeps, replaces or drops a stored key', () => 
     it('removing a profile deletes its stored keys', async () => {
         const executors = store();
         const team = await executors.createOrg({
+            providerConnectionId: conn,
             name: 'team',
             type: 'claude-code',
             config: { env: { ANTHROPIC_API_KEY: KEY } },
@@ -207,7 +254,12 @@ describe.skipIf(!enabled)('a save keeps, replaces or drops a stored key', () => 
         });
         await expect(
             store(down).replace(ALICE, [
-                { name: 'main', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: KEY } } },
+                {
+                    providerConnectionId: conn,
+                    name: 'main',
+                    type: 'claude-code',
+                    config: { env: { ANTHROPIC_API_KEY: KEY } },
+                },
             ])
         ).rejects.toThrow();
         expect(await rawRows()).toEqual([]);
@@ -218,8 +270,8 @@ describe.skipIf(!enabled)('migration 136: a key saved before the store held them
     it('moves to the secret store before the first read; the row keeps only the reference', async () => {
         const config = { model: 'sonnet', env: { ANTHROPIC_API_KEY: KEY } };
         await sql`
-            insert into executor_profile (org_id, user_id, name, type, config, position)
-            values (${ORG}, ${ALICE}, 'legacy', 'claude-code', ${sql.json(config)}, 0)
+            insert into executor_profile (org_id, user_id, name, type, config, position, provider_connection_id)
+            values (${ORG}, ${ALICE}, 'legacy', 'claude-code', ${sql.json(config)}, 0, ${conn})
         `;
         const executors = store();
 
@@ -238,8 +290,8 @@ describe.skipIf(!enabled)('migration 136: a key saved before the store held them
 
     it('a failed conversion fails the read and is retried by the next', async () => {
         await sql`
-            insert into executor_profile (org_id, user_id, name, type, config, position)
-            values (${ORG}, ${ALICE}, 'legacy', 'claude-code', ${sql.json({ env: { ANTHROPIC_API_KEY: KEY } })}, 0)
+            insert into executor_profile (org_id, user_id, name, type, config, position, provider_connection_id)
+            values (${ORG}, ${ALICE}, 'legacy', 'claude-code', ${sql.json({ env: { ANTHROPIC_API_KEY: KEY } })}, 0, ${conn})
         `;
         let fail = true;
         const flaky = faultySecrets(secrets, {

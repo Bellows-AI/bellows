@@ -206,7 +206,7 @@ export function memoryUserExecutorStore(
                 matched[index] = row;
             }
             const connectionOf = (executor: (typeof executors)[number]) => executor.providerConnectionId;
-            for (const [index, executor] of executors.entries()) {
+            for (const executor of executors) {
                 judge(userId, connectionOf(executor), executor.type, executor.config);
             }
             const omitted = own.filter((r) => !claimed.has(r.id));
