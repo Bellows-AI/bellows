@@ -18,6 +18,7 @@ import { listingClient } from './helpers-app-client.js';
 import { HTTP_BAD_REQUEST, HTTP_OK, trackApps } from './helpers-http.js';
 
 const track = trackApps();
+const CONNECTION_ID = '77777777-7777-4777-8777-777777777777';
 type Reader = NonNullable<NonNullable<Parameters<typeof staticRegistry>[0]>['repoSkills']>;
 
 async function boot(repoSkills?: Reader) {
@@ -161,8 +162,8 @@ describe('GET /api/repos/:owner/:name/skills follows the executor', () => {
         const member = auth.seedMember('test-org', 'octocat');
         const executors = memoryUserExecutorStore();
         await executors.replace(member.user.id, [
-            { name: 'main', type: 'claude-code', config: {} },
-            { name: 'oc', type: 'opencode', config: {} },
+            { name: 'main', type: 'claude-code', config: {}, providerConnectionId: CONNECTION_ID },
+            { name: 'oc', type: 'opencode', config: {}, providerConnectionId: CONNECTION_ID },
         ]);
         const config = testConfig({ auth: githubAuth() });
         const client = listingClient(async () => ({

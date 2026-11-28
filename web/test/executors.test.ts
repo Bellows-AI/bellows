@@ -243,13 +243,21 @@ describe('validateExecutorDraft', () => {
     const draft = (patch: Partial<ExecutorDraft> = {}): ExecutorDraft => ({
         ...initialExecutorDraft(undefined),
         name: 'Code review',
+        providerConnectionId: 'conn-1',
         ...patch,
     });
 
     it('saves a name and an agent alone as the inherited configuration', () => {
         expect(validateExecutorDraft(draft(), [], null)).toEqual({
             ok: true,
-            value: { name: 'Code review', type: CLAUDE_CODE, config: {}, gateFixRounds: 3, runnerClass: null },
+            value: {
+                name: 'Code review',
+                type: CLAUDE_CODE,
+                config: {},
+                gateFixRounds: 3,
+                runnerClass: null,
+                providerConnectionId: 'conn-1',
+            },
         });
     });
 
@@ -271,6 +279,7 @@ describe('validateExecutorDraft', () => {
             [draft({ configs: { [CLAUDE_CODE]: '{"model":5}', [OPENCODE]: '{}' } }), 'model'],
             [draft({ customModel: { [CLAUDE_CODE]: true, [OPENCODE]: false } }), 'model'],
             [draft({ gateFixRounds: '11' }), 'rounds'],
+            [draft({ providerConnectionId: '' }), 'connection'],
         ];
         for (const [input, field] of cases) {
             const result = validateExecutorDraft(input, [validRow()], null);
@@ -361,6 +370,7 @@ describe('executorEditorView', () => {
         const draft = {
             ...initialExecutorDraft(undefined),
             name: 'x',
+            providerConnectionId: 'conn-1',
             configs: { [CLAUDE_CODE]: '{"model":5,"hooks":{}}', [OPENCODE]: '{}' },
         };
         const result = view(draft);
@@ -374,7 +384,14 @@ describe('executorEditorView', () => {
 describe('saveUnavailableReason', () => {
     const ok = {
         ok: true as const,
-        value: { name: 'x', type: CLAUDE_CODE, config: {}, gateFixRounds: 3, runnerClass: null },
+        value: {
+            name: 'x',
+            type: CLAUDE_CODE,
+            config: {},
+            gateFixRounds: 3,
+            runnerClass: null,
+            providerConnectionId: 'conn-1',
+        },
     };
 
     it('points an invalid draft at its field, without repeating the error shown beside it', () => {
@@ -517,6 +534,7 @@ describe('mergeExecutors', () => {
         config: { model: 'sonnet' },
         gateFixRounds: 3,
         runnerClass: null,
+        providerConnectionId: 'conn-1',
     };
     const second: ValidExecutor = {
         name: 'oc',
@@ -524,6 +542,7 @@ describe('mergeExecutors', () => {
         config: { model: 'x' },
         gateFixRounds: 1,
         runnerClass: null,
+        providerConnectionId: 'conn-1',
     };
     const firstRow: ExecutorRow = { ...first };
     const secondRow: ExecutorRow = { ...second };
@@ -531,6 +550,17 @@ describe('mergeExecutors', () => {
     it('appends a new executor and preserves order', () => {
         const result = mergeExecutors([firstRow], null, second);
         expect(result).toEqual({ ok: true, value: [firstRow, secondRow] });
+    });
+
+    it('carries a migration-suspended row back untouched while another row is added', () => {
+        const stuck: ExecutorRow = {
+            ...firstRow,
+            id: 'id-stuck',
+            suspended: true,
+            providerConnectionId: null,
+        };
+        const result = mergeExecutors([stuck], null, second);
+        expect(result).toEqual({ ok: true, value: [stuck, secondRow] });
     });
 
     it('replaces the edited row, matched by its original name, keeping its position', () => {
@@ -542,6 +572,7 @@ describe('mergeExecutors', () => {
             config: {},
             gateFixRounds: 3,
             runnerClass: null,
+            providerConnectionId: 'conn-1',
         };
         const result = mergeExecutors([firstRow, secondRow], 'main', renamed);
         expect(result).toEqual({ ok: true, value: [{ ...renamed }, secondRow] });
@@ -564,6 +595,7 @@ describe('mergeExecutors', () => {
             config: { model: 'opus' },
             gateFixRounds: 5,
             runnerClass: null,
+            providerConnectionId: 'conn-1',
         };
         const result = mergeExecutors([firstRow, secondRow], 'main', changed);
         expect(result.ok && result.value[0]?.gateFixRounds).toBe(5);
@@ -576,6 +608,7 @@ describe('mergeExecutors', () => {
             config: { model: 'opus' },
             gateFixRounds: 3,
             runnerClass: null,
+            providerConnectionId: 'conn-1',
         };
         const result = mergeExecutors([firstRow, secondRow], 'main', changed);
         expect(result).toEqual({ ok: true, value: [{ ...changed }, secondRow] });
@@ -677,6 +710,7 @@ describe('mergeExecutors — suspension (issue 440)', () => {
         config: { model: 'x' },
         gateFixRounds: 3,
         runnerClass: null,
+        providerConnectionId: 'conn-1',
     };
 
     it('keeps a suspended row suspended through an edit and a rename', () => {
@@ -816,6 +850,7 @@ describe('the guided provider step', () => {
         const draft: ExecutorDraft = {
             ...initialExecutorDraft(undefined),
             name: 'main',
+            providerConnectionId: 'conn-1',
             guided: {
                 'claude-code': null,
                 opencode: { provider: 'openai-compatible', key: { kind: 'none' }, baseUrl: '', model: '' },

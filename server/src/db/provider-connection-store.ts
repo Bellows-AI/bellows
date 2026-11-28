@@ -33,7 +33,8 @@ import {
 /** A connection create: the scope decides the owner, `userId` the caller (and a personal row's owner). */
 export interface ProviderConnectionInput {
     readonly scope: ProviderConnectionScope;
-    readonly userId: string;
+    /** The creating member; null for a row made by a data step. */
+    readonly userId: string | null;
     readonly provider: ModelProvider;
     readonly name: string;
     readonly baseUrl: string | null;
@@ -188,7 +189,7 @@ async function referencedError(
 }
 
 /** The lock one scope's create holds for its count-then-insert, so concurrent creates cannot race past the cap. */
-const scopeLockKey = (orgId: string, owner: string | null) => `provider-connection:${orgId}:${owner ?? 'org'}`;
+export const scopeLockKey = (orgId: string, owner: string | null) => `provider-connection:${orgId}:${owner ?? 'org'}`;
 
 /**
  * The edit's one transaction: lock the row `owner` owns, publish the name, endpoint and — on a

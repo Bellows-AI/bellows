@@ -5,7 +5,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, GateReport, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { expireLease, testOrg } from './fixtures.js';
+import { expireLease, testConnection, testOrg } from './fixtures.js';
 
 /**
  * Issue 543: a task created without a workflow is OBJECTIVE mode — an ordinary claimable job with
@@ -229,8 +229,8 @@ describe.skipIf(!enabled)('objective mode — database', () => {
 
         it('freezes the cap from the executor at launch: a later edit changes nothing', async () => {
             await sql`
-                insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds, position)
-                values (${ORG}, null, 'strict', 'claude-code', '{}'::jsonb, 0, 0)`;
+                insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds, position, provider_connection_id)
+                values (${ORG}, null, 'strict', 'claude-code', '{}'::jsonb, 0, 0, ${await testConnection(sql, ORG)})`;
             const created = await store.create('scaffold', null, {
                 repo: null,
                 executor: 'strict',

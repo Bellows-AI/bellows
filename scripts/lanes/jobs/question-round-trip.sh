@@ -42,6 +42,8 @@ start_ask_endpoint() { # start_ask_endpoint <name> -> sets ask_pid and ask_port
 
 point_runners_at() { # point_runners_at <port>: the org env a member would set, aimed at the scripted model
     api PUT /api/env/org "{\"vars\":[{\"name\":\"ANTHROPIC_API_KEY\",\"value\":\"fake-key\",\"isSecret\":true},{\"name\":\"ANTHROPIC_BASE_URL\",\"value\":\"http://host.docker.internal:$1\",\"isSecret\":false}]}" >/dev/null
+    # The claim replaces that env with the selected connection's endpoint, so the executors select one aimed here too.
+    lane_store_executors org "http://host.docker.internal:$1" opencode >/dev/null
 }
 
 ask_roundtrip_lane() {
@@ -216,8 +218,7 @@ task_title_lane() { # task_title_lane <claude|opencode>
         # OPENCODE_CONFIG_CONTENT is reserved at /api/env; the claim synthesizes it from the executor row's
         # config (job-store-claim-executor.ts), so the scripted endpoint rides the row. The key is a plain env name.
         api PUT /api/env/org '{"vars":[{"name":"ANTHROPIC_API_KEY","value":"fake-key","isSecret":true}]}' >/dev/null
-        api PUT /api/workspace/executors "$(node -e 'const config = JSON.parse(process.argv[1]);
-            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$(lane_opencode_config "http://host.docker.internal:$fake_port/v1")")" >/dev/null
+        lane_store_executors org "http://host.docker.internal:$fake_port/v1" opencode "$(lane_opencode_config "http://host.docker.internal:$fake_port/v1")" >/dev/null
     else
         point_runners_at "$fake_port"
     fi
@@ -228,7 +229,7 @@ task_title_lane() { # task_title_lane <claude|opencode>
     expect_field "$cli: the title is marked as set by the agent" "$body_json" titleOrigin agent
     lane_endpoint_stop "$fake_pid"
     if [ "$cli" = opencode ]; then
-        api PUT /api/workspace/executors '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}' >/dev/null
+        lane_store_executors org "$LANE_IDLE_MODEL_URL" opencode >/dev/null
     fi
     stop_driver
 }

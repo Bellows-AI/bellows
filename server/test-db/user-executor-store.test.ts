@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-selection.js';
 import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
@@ -12,7 +12,7 @@ import {
     type UserExecutorStore,
 } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { testOrg, testUser } from './fixtures.js';
+import { testConnection, testOrg, testUser } from './fixtures.js';
 import { testSecretDeps } from './env-secrets-harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -38,11 +38,20 @@ beforeAll(async () => {
     store = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
 });
 
+/** The organization's provider connection every executor in a test selects; the reset empties the table. */
+let conn: string;
+
+beforeEach(async () => {
+    if (process.env.DATABASE_URL) conn = await testConnection(db.sql, ORG);
+});
+
 describe.skipIf(!enabled)('the user executor store', () => {
     it('accepts an opencode executor at the row', async () => {
         // 013 rewrote user_executor_type_ck to add opencode; this is the check at the row, the
         // same way user-repo-store.test.ts asserts its name rules.
-        await store.replace(ALICE, [{ name: 'main', type: 'opencode', config: { model: 'x' } }]);
+        await store.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'opencode', config: { model: 'x' } },
+        ]);
 
         expect(await store.list(ALICE)).toEqual([expect.objectContaining({ name: 'main', type: 'opencode' })]);
     });
@@ -51,16 +60,16 @@ describe.skipIf(!enabled)('the user executor store', () => {
         {
             name: 'still refuses a type outside the list',
             insert: () => sql`
-                insert into executor_profile (org_id, user_id, name, type, config)
-                values (${ORG}, ${ALICE}, 'x', 'codex', '{}'::jsonb)
+                insert into executor_profile (org_id, user_id, name, type, config, provider_connection_id)
+                values (${ORG}, ${ALICE}, 'x', 'codex', '{}'::jsonb, ${conn})
             `,
             check: /user_executor_type_ck/,
         },
         ...[-1, 11].map((rounds) => ({
             name: `refuses a gate_fix_rounds outside 0..10 at the row (${rounds})`,
             insert: () => sql`
-                insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds)
-                values (${ORG}, ${ALICE}, 'main', 'claude-code', '{}'::jsonb, ${rounds})
+                insert into executor_profile (org_id, user_id, name, type, config, provider_connection_id, gate_fix_rounds)
+                values (${ORG}, ${ALICE}, 'main', 'claude-code', '{}'::jsonb, ${conn}, ${rounds})
             `,
             check: /user_executor_gate_fix_rounds_ck/,
         })),
@@ -70,7 +79,7 @@ describe.skipIf(!enabled)('the user executor store', () => {
 
     it('answers the pasted config for a named row, and null when no row matches', async () => {
         const config = { model: 'zai-coding-plan/glm-5.3-flash', provider: { 'zai-coding-plan': {} } };
-        await store.replace(ALICE, [{ name: 'main', type: 'opencode', config }]);
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'main', type: 'opencode', config }]);
 
         expect(await store.configFor(ALICE, 'main')).toEqual({
             type: 'opencode',
@@ -78,6 +87,7 @@ describe.skipIf(!enabled)('the user executor store', () => {
             gateFixRounds: 3,
             suspended: false,
             runnerClass: null,
+            providerConnectionId: conn,
         });
         expect(await store.configFor(ALICE, 'deleted')).toBeNull();
         // Another member's row is not this member's answer.
@@ -86,8 +96,8 @@ describe.skipIf(!enabled)('the user executor store', () => {
 
     it('stores and lists gateFixRounds, the column default filling an omitted value', async () => {
         await store.replace(ALICE, [
-            { name: 'main', type: 'claude-code', config: {} },
-            { name: 'heavy', type: 'claude-code', config: {}, gateFixRounds: 7 },
+            { providerConnectionId: conn, name: 'main', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'heavy', type: 'claude-code', config: {}, gateFixRounds: 7 },
         ]);
 
         expect(await store.list(ALICE)).toEqual([
@@ -106,15 +116,32 @@ describe.skipIf(!enabled)('the user executor store', () => {
             gateFixRounds: 7,
             suspended: false,
             runnerClass: null,
+            providerConnectionId: conn,
         });
     });
 
     it('reads whether a pasted config overrides a connection from the stored markers, on every list read', async () => {
         await store.replace(ALICE, [
-            { name: 'plain', type: 'opencode', config: { model: 'anthropic/claude-sonnet-4-5' } },
-            { name: 'keyed', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: 'sk-test-override' } } },
-            { name: 'ref', type: 'opencode', config: { provider: { p: { options: { apiKey: '{env:MY_KEY}' } } } } },
             {
+                providerConnectionId: conn,
+                name: 'plain',
+                type: 'opencode',
+                config: { model: 'anthropic/claude-sonnet-4-5' },
+            },
+            {
+                providerConnectionId: conn,
+                name: 'keyed',
+                type: 'claude-code',
+                config: { env: { ANTHROPIC_API_KEY: 'sk-test-override' } },
+            },
+            {
+                providerConnectionId: conn,
+                name: 'ref',
+                type: 'opencode',
+                config: { provider: { p: { options: { apiKey: '{env:MY_KEY}' } } } },
+            },
+            {
+                providerConnectionId: conn,
                 name: 'endpoint',
                 type: 'opencode',
                 config: { provider: { p: { options: { baseURL: 'https://x.test' } } } },
@@ -126,6 +153,7 @@ describe.skipIf(!enabled)('the user executor store', () => {
         expect(flags(await store.list(ALICE))).toEqual(expected);
         expect(flags(await store.listWithConfigs(ALICE))).toEqual(expected);
         await store.createOrg({
+            providerConnectionId: conn,
             name: 'org-keyed',
             type: 'claude-code',
             config: { env: { ANTHROPIC_API_KEY: 'sk-test-org' } },
@@ -149,9 +177,9 @@ describe.skipIf(!enabled)('the user executor store', () => {
      */
     it('lists in the order the member saved, not alphabetically', async () => {
         await store.replace(ALICE, [
-            { name: 'zulu', type: 'claude-code', config: {} },
-            { name: 'mike', type: 'claude-code', config: {} },
-            { name: 'alpha', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'zulu', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'mike', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'alpha', type: 'claude-code', config: {} },
         ]);
 
         expect((await store.list(ALICE)).map((executor) => executor.name)).toEqual(['zulu', 'mike', 'alpha']);
@@ -165,7 +193,7 @@ describe.skipIf(!enabled)('the user executor store', () => {
     });
 
     it('keys every personal row with a surrogate id that survives until the next replace', async () => {
-        await store.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'main', type: 'claude-code', config: {} }]);
 
         const rows = await store.list(ALICE);
         expect(rows[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
@@ -175,6 +203,7 @@ describe.skipIf(!enabled)('the user executor store', () => {
 describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', () => {
     it('stores an org-scope row and lists it apart from any member’s personal rows', async () => {
         const created = await store.createOrg({
+            providerConnectionId: conn,
             name: 'team-runner',
             type: 'claude-code',
             config: { model: 'claude-sonnet-4-5' },
@@ -198,27 +227,49 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
     });
 
     it('allows the same name in both scopes and refuses a duplicate within one scope', async () => {
-        await store.createOrg({ name: 'main', type: 'claude-code', config: {}, createdBy: ALICE });
+        await store.createOrg({
+            providerConnectionId: conn,
+            name: 'main',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
         // The personal scope is a different ownership: the same name coexists.
-        await store.replace(ALICE, [{ name: 'main', type: 'opencode', config: { model: 'personal' } }]);
+        await store.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'opencode', config: { model: 'personal' } },
+        ]);
 
         await expect(
-            store.createOrg({ name: 'main', type: 'claude-code', config: {}, createdBy: ALICE })
+            store.createOrg({
+                providerConnectionId: conn,
+                name: 'main',
+                type: 'claude-code',
+                config: {},
+                createdBy: ALICE,
+            })
         ).rejects.toThrow(/executor_profile_name_uk/);
         // Within the personal scope the owner is the uniqueness: ALICE cannot hold 'main' twice,
         // while BOB's own 'main' is a different ownership and stays legal.
         await expect(
             sql`
-                insert into executor_profile (org_id, user_id, name, type, config)
-                values (${ORG}, ${ALICE}, 'main', 'claude-code', '{}'::jsonb)
+                insert into executor_profile (org_id, user_id, name, type, config, provider_connection_id)
+                values (${ORG}, ${ALICE}, 'main', 'claude-code', '{}'::jsonb, ${conn})
             `
         ).rejects.toThrow(/executor_profile_name_uk/);
-        await store.replace(BOB, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await store.replace(BOB, [{ providerConnectionId: conn, name: 'main', type: 'claude-code', config: {} }]);
     });
 
     it('resolves configFor in the stamped scope only — same name, two rows, no silent switch', async () => {
-        await store.replace(ALICE, [{ name: 'main', type: 'opencode', config: { model: 'personal' } }]);
-        await store.createOrg({ name: 'main', type: 'claude-code', config: { model: 'shared' }, createdBy: ALICE });
+        await store.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'opencode', config: { model: 'personal' } },
+        ]);
+        await store.createOrg({
+            providerConnectionId: conn,
+            name: 'main',
+            type: 'claude-code',
+            config: { model: 'shared' },
+            createdBy: ALICE,
+        });
 
         expect((await store.configFor(ALICE, 'main', 'user'))?.config).toEqual({ model: 'personal' });
         expect((await store.configFor(ALICE, 'main', 'org'))?.config).toEqual({ model: 'shared' });
@@ -229,10 +280,16 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
     });
 
     it('replaces only the caller’s personal rows; org rows survive a personal PUT', async () => {
-        await store.createOrg({ name: 'shared', type: 'claude-code', config: { model: 'shared' }, createdBy: ALICE });
-        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
+        await store.createOrg({
+            providerConnectionId: conn,
+            name: 'shared',
+            type: 'claude-code',
+            config: { model: 'shared' },
+            createdBy: ALICE,
+        });
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'mine', type: 'claude-code', config: {} }]);
 
-        await store.replace(ALICE, [{ name: 'other', type: 'claude-code', config: {} }]);
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'other', type: 'claude-code', config: {} }]);
 
         expect((await store.list(ALICE)).map((row) => row.name)).toEqual(['other']);
         expect((await store.listOrg()).map((row) => row.name)).toEqual(['shared']);
@@ -240,6 +297,7 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
 
     it('edits, renames and deletes an org row by id, and counts them for the cap', async () => {
         const created = await store.createOrg({
+            providerConnectionId: conn,
             name: 'team',
             type: 'claude-code',
             config: {},
@@ -259,7 +317,7 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
     });
 
     it('updateOrg answers null for an id that is not an org row of this organization', async () => {
-        await store.replace(ALICE, [{ name: 'personal', type: 'claude-code', config: {} }]);
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'personal', type: 'claude-code', config: {} }]);
         const personal = (await store.listWithConfigs(ALICE))[0]!;
         // A personal row is not addressable through the org CRUD surface — the scopes are
         // different ownerships, and the route layer only ever sends org ids here.
@@ -269,7 +327,9 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
     });
 
     it('promotes the caller’s own personal row to org scope and demotes back', async () => {
-        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: { model: 'm' } }]);
+        await store.replace(ALICE, [
+            { providerConnectionId: conn, name: 'mine', type: 'claude-code', config: { model: 'm' } },
+        ]);
         const personal = (await store.list(ALICE))[0]!;
 
         const promoted = await store.changeScope(personal.id, 'org', ALICE);
@@ -285,8 +345,8 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
     });
 
     it('changeScope only moves the caller’s own personal row up', async () => {
-        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
-        await store.replace(BOB, [{ name: 'theirs', type: 'claude-code', config: {} }]);
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'mine', type: 'claude-code', config: {} }]);
+        await store.replace(BOB, [{ providerConnectionId: conn, name: 'theirs', type: 'claude-code', config: {} }]);
         const aliceRow = (await store.list(ALICE))[0]!;
         const bobRow = (await store.list(BOB))[0]!;
 
@@ -297,8 +357,14 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
     });
 
     it('refuses a scope change whose target name is taken in that scope', async () => {
-        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
-        await store.createOrg({ name: 'mine', type: 'claude-code', config: {}, createdBy: ALICE });
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'mine', type: 'claude-code', config: {} }]);
+        await store.createOrg({
+            providerConnectionId: conn,
+            name: 'mine',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
         const personal = (await store.list(ALICE))[0]!;
 
         // The org scope already holds "mine" — promoting would collide with the name index.
@@ -309,6 +375,7 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
 
     it("stores and returns an org profile's runnerClass", async () => {
         const created = await store.createOrg({
+            providerConnectionId: conn,
             name: 'sandboxed',
             type: 'claude-code',
             config: {},
@@ -327,12 +394,19 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
         expect((await store.configFor(BOB, 'sandboxed', 'org'))?.runnerClass).toBeNull();
 
         // A profile created without one names no class: the driver's default.
-        const plain = await store.createOrg({ name: 'plain', type: 'claude-code', config: {}, createdBy: ALICE });
+        const plain = await store.createOrg({
+            providerConnectionId: conn,
+            name: 'plain',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
         expect(plain.runnerClass).toBeNull();
     });
 
     it('never stores a runnerClass on a personal row: a demotion clears it and the row check refuses one', async () => {
         const created = await store.createOrg({
+            providerConnectionId: conn,
             name: 'sandboxed',
             type: 'claude-code',
             config: {},
@@ -346,8 +420,8 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
 
         await expect(
             sql`
-                insert into executor_profile (org_id, user_id, name, type, config, runner_class)
-                values (${ORG}, ${BOB}, 'personal', 'claude-code', '{}'::jsonb, 'kata')
+                insert into executor_profile (org_id, user_id, name, type, config, provider_connection_id, runner_class)
+                values (${ORG}, ${BOB}, 'personal', 'claude-code', '{}'::jsonb, ${conn}, 'kata')
             `
         ).rejects.toThrow(/executor_profile_runner_class_ck/);
     });
@@ -355,9 +429,15 @@ describe.skipIf(!enabled)('organization-scoped executor profiles (issue 391)', (
 
 describe.skipIf(!enabled)('removing and suspending profiles by id (issue 440)', () => {
     it('removes only the caller’s own personal row; another member’s, an org row and an unknown id match nothing', async () => {
-        await store.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
-        await store.replace(BOB, [{ name: 'main', type: 'claude-code', config: {} }]);
-        const org = await store.createOrg({ name: 'main', type: 'claude-code', config: {}, createdBy: ALICE });
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'main', type: 'claude-code', config: {} }]);
+        await store.replace(BOB, [{ providerConnectionId: conn, name: 'main', type: 'claude-code', config: {} }]);
+        const org = await store.createOrg({
+            providerConnectionId: conn,
+            name: 'main',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
         const alice = (await store.list(ALICE))[0]!;
         const bob = (await store.list(BOB))[0]!;
 
@@ -372,8 +452,16 @@ describe.skipIf(!enabled)('removing and suspending profiles by id (issue 440)', 
     });
 
     it('suspends and resumes by id with the same ownership boundary, keeping config and ownership', async () => {
-        await store.replace(ALICE, [{ name: 'main', type: 'claude-code', config: { model: 'x' } }]);
-        const org = await store.createOrg({ name: 'main', type: 'claude-code', config: {}, createdBy: ALICE });
+        await store.replace(ALICE, [
+            { providerConnectionId: conn, name: 'main', type: 'claude-code', config: { model: 'x' } },
+        ]);
+        const org = await store.createOrg({
+            providerConnectionId: conn,
+            name: 'main',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
         const mine = (await store.list(ALICE))[0]!;
 
         expect(await store.setPersonalSuspended(BOB, mine.id, true)).toBeNull();
@@ -393,14 +481,14 @@ describe.skipIf(!enabled)('removing and suspending profiles by id (issue 440)', 
 
     it('keeps a row suspended through a whole-list replace, and lets an entry say otherwise', async () => {
         await store.replace(ALICE, [
-            { name: 'a', type: 'claude-code', config: {} },
-            { name: 'b', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'a', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'b', type: 'claude-code', config: {} },
         ]);
         await store.setPersonalSuspended(ALICE, (await store.list(ALICE))[0]!.id, true);
 
         await store.replace(ALICE, [
-            { name: 'a', type: 'claude-code', config: {}, gateFixRounds: 2 },
-            { name: 'b', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'a', type: 'claude-code', config: {}, gateFixRounds: 2 },
+            { providerConnectionId: conn, name: 'b', type: 'claude-code', config: {} },
         ]);
         expect((await store.list(ALICE)).map((row) => [row.name, row.suspended])).toEqual([
             ['a', true],
@@ -408,8 +496,8 @@ describe.skipIf(!enabled)('removing and suspending profiles by id (issue 440)', 
         ]);
 
         await store.replace(ALICE, [
-            { name: 'a2', type: 'claude-code', config: {}, suspended: true },
-            { name: 'b', type: 'claude-code', config: {}, suspended: false },
+            { providerConnectionId: conn, name: 'a2', type: 'claude-code', config: {}, suspended: true },
+            { providerConnectionId: conn, name: 'b', type: 'claude-code', config: {}, suspended: false },
         ]);
         expect((await store.list(ALICE)).map((row) => [row.name, row.suspended])).toEqual([
             ['a2', true],
@@ -423,16 +511,28 @@ describe.skipIf(!enabled)('resolvedDefault: only a configured default resolves',
     const byName = async (name: string) => (await store.list(ALICE)).find((row) => row.name === name)!;
 
     it('no configured default is null even with an active personal and org profile', async () => {
-        await store.createOrg({ name: 'org-a', type: 'claude-code', config: {}, createdBy: ALICE });
-        await store.replace(ALICE, [{ name: 'zulu', type: 'claude-code', config: {} }]);
+        await store.createOrg({
+            providerConnectionId: conn,
+            name: 'org-a',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'zulu', type: 'claude-code', config: {} }]);
 
         expect(await store.resolvedDefault(ALICE)).toBeNull();
         expect(await store.resolvedDefault(BOB)).toBeNull();
     });
 
     it('answers the personal configured default over the organization one, and the org one otherwise', async () => {
-        const orgA = await store.createOrg({ name: 'org-a', type: 'claude-code', config: {}, createdBy: ALICE });
-        await store.replace(ALICE, [{ name: 'zulu', type: 'claude-code', config: {} }]);
+        const orgA = await store.createOrg({
+            providerConnectionId: conn,
+            name: 'org-a',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'zulu', type: 'claude-code', config: {} }]);
         await store.selectDefault(null, orgA.id);
         expect(await store.resolvedDefault(ALICE)).toEqual(profile('org', 'org-a'));
         expect(await store.resolvedDefault(BOB)).toEqual(profile('org', 'org-a'));
@@ -446,10 +546,16 @@ describe.skipIf(!enabled)('resolvedDefault: only a configured default resolves',
     });
 
     it('refuses a suspended configured default instead of falling through to another profile', async () => {
-        const orgA = await store.createOrg({ name: 'org-a', type: 'claude-code', config: {}, createdBy: ALICE });
+        const orgA = await store.createOrg({
+            providerConnectionId: conn,
+            name: 'org-a',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
         await store.replace(ALICE, [
-            { name: 'first', type: 'claude-code', config: {} },
-            { name: 'second', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'first', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'second', type: 'claude-code', config: {} },
         ]);
         await store.selectDefault(null, orgA.id);
         await store.selectDefault(ALICE, (await byName('first')).id);
@@ -626,11 +732,42 @@ describe.skipIf(!enabled)('executor writes and the provider connection they sele
         ]);
     });
 
-    it('a row with no connection is unchanged', async () => {
-        await store.replace(ALICE, [{ name: 'plain', type: 'claude-code', config: { model: 'm' } }]);
-        expect((await store.list(ALICE))[0]?.providerConnectionId).toBeNull();
-        // The claim-time read omits the key entirely, so a profile without a connection reads exactly as it always did.
-        expect(await store.configFor(ALICE, 'plain')).not.toHaveProperty('providerConnectionId');
+    it('every write names a connection: a personal save and an org create without one are refused', async () => {
+        const entry = { name: 'plain', type: 'claude-code', config: { model: 'm' } };
+        expect(await refusal(() => store.replace(ALICE, [{ ...entry, providerConnectionId: null as never }]))).toBe(
+            'missing'
+        );
+        expect(
+            await refusal(() => store.createOrg({ ...entry, createdBy: ALICE, providerConnectionId: null as never }))
+        ).toBe('missing');
+        expect(await store.list(ALICE)).toEqual([]);
+        expect(await store.listOrg()).toEqual([]);
+    });
+
+    it("an org edit that omits the connection keeps the row's; a suspended row cannot resume without one", async () => {
+        const org = await store.createOrg({
+            name: 'kept',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+            providerConnectionId: conn,
+        });
+        expect((await store.updateOrg(org.id, { gateFixRounds: 4 }))?.providerConnectionId).toBe(conn);
+
+        // Only the provider migration leaves a row with no connection: it carries the reason a person reads.
+        const reason = `no key found ${randomUUID()}`;
+        const [inserted] = await sql<{ id: string }[]>`
+            insert into executor_profile (org_id, user_id, name, type, config, suspended, provider_migration_reason)
+            values (${ORG}, ${ALICE}, 'stranded', 'claude-code', '{}'::jsonb, true, ${reason})
+            returning id
+        `;
+        const id = inserted!.id;
+        expect((await store.list(ALICE)).find((row) => row.id === id)).toMatchObject({
+            providerConnectionId: null,
+            suspendedReason: reason,
+        });
+        expect(await refusal(() => store.setPersonalSuspended(ALICE, id, false))).toBe('missing');
+        expect((await store.list(ALICE)).find((row) => row.id === id)?.suspended).toBe(true);
     });
 });
 
@@ -649,16 +786,16 @@ describe.skipIf(!enabled)('stable personal executor identities', () => {
 
     it('whole-list saves preserve surviving executor IDs', async () => {
         await store.replace(ALICE, [
-            { name: 'a', type: 'claude-code', config: {} },
-            { name: 'b', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'a', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'b', type: 'claude-code', config: {} },
         ]);
         const before = await idsByName(ALICE);
         const created = (await store.list(ALICE)).map((row) => row.createdAt);
 
         // Reordered, one omitted, one new: the survivors keep their identity, by name when no id is sent.
         await store.replace(ALICE, [
-            { name: 'b', type: 'claude-code', config: {} },
-            { name: 'c', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'b', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'c', type: 'claude-code', config: {} },
         ]);
         const after = await idsByName(ALICE);
         expect(after.get('b')).toBe(before.get('b'));
@@ -668,7 +805,9 @@ describe.skipIf(!enabled)('stable personal executor identities', () => {
         expect((await store.list(ALICE))[0]!.createdAt).toBe(created[1]);
 
         // And by explicit id, whatever the name says.
-        await store.replace(ALICE, [{ id: after.get('b')!, name: 'b', type: 'claude-code', config: {} }]);
+        await store.replace(ALICE, [
+            { providerConnectionId: conn, id: after.get('b')!, name: 'b', type: 'claude-code', config: {} },
+        ]);
         expect((await idsByName(ALICE)).get('b')).toBe(before.get('b'));
     });
 
@@ -680,7 +819,9 @@ describe.skipIf(!enabled)('stable personal executor identities', () => {
         const [row] = await store.list(ALICE);
         await store.selectDefault(ALICE, row!.id);
 
-        await store.replace(ALICE, [{ id: row!.id, name: 'renamed', type: 'claude-code', config: {} }]);
+        await store.replace(ALICE, [
+            { providerConnectionId: connection.id, id: row!.id, name: 'renamed', type: 'claude-code', config: {} },
+        ]);
 
         const [renamed] = await store.list(ALICE);
         expect(renamed).toMatchObject({ id: row!.id, name: 'renamed', providerConnectionId: connection.id });
@@ -690,13 +831,13 @@ describe.skipIf(!enabled)('stable personal executor identities', () => {
 
     it('swaps two names by ID in one save', async () => {
         await store.replace(ALICE, [
-            { name: 'a', type: 'claude-code', config: {} },
-            { name: 'b', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'a', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'b', type: 'claude-code', config: {} },
         ]);
         const ids = await idsByName(ALICE);
         await store.replace(ALICE, [
-            { id: ids.get('a')!, name: 'b', type: 'claude-code', config: {} },
-            { id: ids.get('b')!, name: 'a', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, id: ids.get('a')!, name: 'b', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, id: ids.get('b')!, name: 'a', type: 'claude-code', config: {} },
         ]);
         const swapped = await idsByName(ALICE);
         expect(swapped.get('b')).toBe(ids.get('a'));
@@ -704,22 +845,30 @@ describe.skipIf(!enabled)('stable personal executor identities', () => {
     });
 
     it('rejects another owners executor ID', async () => {
-        await store.replace(ALICE, [{ name: 'mine', type: 'claude-code', config: {} }]);
-        await store.replace(BOB, [{ name: 'his', type: 'claude-code', config: {} }]);
-        const org = await store.createOrg({ name: 'shared', type: 'claude-code', config: {}, createdBy: ALICE });
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'mine', type: 'claude-code', config: {} }]);
+        await store.replace(BOB, [{ providerConnectionId: conn, name: 'his', type: 'claude-code', config: {} }]);
+        const org = await store.createOrg({
+            providerConnectionId: conn,
+            name: 'shared',
+            type: 'claude-code',
+            config: {},
+            createdBy: ALICE,
+        });
         const [mine] = await store.list(ALICE);
         const [his] = await store.list(BOB);
 
         for (const foreign of [mine!.id, org.id, randomUUID()]) {
             await expect(
-                store.replace(BOB, [{ id: foreign, name: 'his', type: 'claude-code', config: {} }])
+                store.replace(BOB, [
+                    { providerConnectionId: conn, id: foreign, name: 'his', type: 'claude-code', config: {} },
+                ])
             ).rejects.toBeInstanceOf(ExecutorIdentityError);
         }
         // The same id twice in one body is a duplicate identity.
         await expect(
             store.replace(BOB, [
-                { id: his!.id, name: 'his', type: 'claude-code', config: {} },
-                { id: his!.id, name: 'other', type: 'claude-code', config: {} },
+                { providerConnectionId: conn, id: his!.id, name: 'his', type: 'claude-code', config: {} },
+                { providerConnectionId: conn, id: his!.id, name: 'other', type: 'claude-code', config: {} },
             ])
         ).rejects.toBeInstanceOf(ExecutorIdentityError);
         // Nothing moved.
@@ -729,15 +878,15 @@ describe.skipIf(!enabled)('stable personal executor identities', () => {
 
     it('omitting a configured default refuses until explicitly replaced or cleared', async () => {
         await store.replace(ALICE, [
-            { name: 'a', type: 'claude-code', config: {} },
-            { name: 'b', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'a', type: 'claude-code', config: {} },
+            { providerConnectionId: conn, name: 'b', type: 'claude-code', config: {} },
         ]);
         const ids = await idsByName(ALICE);
         await store.selectDefault(ALICE, ids.get('a')!);
 
-        await expect(store.replace(ALICE, [{ name: 'b', type: 'claude-code', config: {} }])).rejects.toBeInstanceOf(
-            ExecutorDefaultProtectedError
-        );
+        await expect(
+            store.replace(ALICE, [{ providerConnectionId: conn, name: 'b', type: 'claude-code', config: {} }])
+        ).rejects.toBeInstanceOf(ExecutorDefaultProtectedError);
         await expect(store.removePersonal(ALICE, ids.get('a')!)).rejects.toBeInstanceOf(ExecutorDefaultProtectedError);
         // The refused saves left both rows and the selection.
         expect([...(await idsByName(ALICE)).keys()]).toEqual(['a', 'b']);
@@ -745,7 +894,7 @@ describe.skipIf(!enabled)('stable personal executor identities', () => {
 
         // Replaced explicitly, the old row may go.
         await store.selectDefault(ALICE, ids.get('b')!);
-        await store.replace(ALICE, [{ name: 'b', type: 'claude-code', config: {} }]);
+        await store.replace(ALICE, [{ providerConnectionId: conn, name: 'b', type: 'claude-code', config: {} }]);
         expect([...(await idsByName(ALICE)).keys()]).toEqual(['b']);
 
         // Or cleared.

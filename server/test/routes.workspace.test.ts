@@ -37,6 +37,8 @@ async function boot(runnerClasses: { name: string; docker: boolean }[] = []) {
     return { app: h.app, caller, cookie: await signedIn(auth, caller), executors };
 }
 
+const ORG_CONNECTION = '66666666-6666-4666-8666-666666666666';
+
 describe('GET /api/workspace', () => {
     it('keys are exactly executors, orgExecutors, defaultExecutor, executorsAvailable', async () => {
         const { app, cookie } = await boot();
@@ -53,7 +55,9 @@ describe('GET /api/workspace', () => {
 
     it('answers no default executor until one is configured, never the first profile', async () => {
         const { app, cookie, caller, executors } = await boot();
-        await executors.replace(caller.user.id, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await executors.replace(caller.user.id, [
+            { name: 'main', type: 'claude-code', config: {}, providerConnectionId: ORG_CONNECTION },
+        ]);
         const poll = async () =>
             (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json() as {
                 defaultExecutor: unknown;
@@ -90,7 +94,12 @@ const putExecutors = (app: FastifyInstance, cookie: string, executors: unknown) 
         payload: { executors },
     });
 
-const CLAUDE_CODE = { name: 'main', type: 'claude-code', config: { model: 'sonnet' } };
+const CLAUDE_CODE = {
+    name: 'main',
+    type: 'claude-code',
+    config: { model: 'sonnet' },
+    providerConnectionId: ORG_CONNECTION,
+};
 
 describe('executors: listing and replacing', () => {
     it('lists executors in the GET payload, without their config', async () => {
@@ -108,7 +117,9 @@ describe('executors: listing and replacing', () => {
     it('replaces the whole list, so replaying the same body changes nothing', async () => {
         const { app, cookie, executors } = await boot();
         await putExecutors(app, cookie, [CLAUDE_CODE]);
-        await putExecutors(app, cookie, [{ name: 'second', type: 'claude-code', config: {} }]);
+        await putExecutors(app, cookie, [
+            { name: 'second', type: 'claude-code', config: {}, providerConnectionId: ORG_CONNECTION },
+        ]);
 
         expect(executors.rows().map((row) => row.name)).toEqual(['second']);
     });
@@ -145,7 +156,10 @@ describe('executors: listing and replacing', () => {
 
     it('persists the default by id and echoes it on the poll; rows carry no default flag', async () => {
         const { app, cookie } = await boot();
-        await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
+        await putExecutors(app, cookie, [
+            CLAUDE_CODE,
+            { name: 'oc', type: 'opencode', config: {}, providerConnectionId: ORG_CONNECTION },
+        ]);
         const put = await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'oc') });
         expect(put.statusCode).toBe(HTTP_OK);
         expect(put.json().defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
@@ -178,7 +192,10 @@ describe('executors: listing and replacing', () => {
 
     it('a later selection re-points the default', async () => {
         const { app, cookie } = await boot();
-        await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
+        await putExecutors(app, cookie, [
+            CLAUDE_CODE,
+            { name: 'oc', type: 'opencode', config: {}, providerConnectionId: ORG_CONNECTION },
+        ]);
         await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'main') });
         const second = await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'oc') });
         expect(second.json().defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
@@ -186,7 +203,10 @@ describe('executors: listing and replacing', () => {
 
     it('refuses a name-only body with 400 and leaves the resolved default alone', async () => {
         const { app, cookie } = await boot();
-        await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
+        await putExecutors(app, cookie, [
+            CLAUDE_CODE,
+            { name: 'oc', type: 'opencode', config: {}, providerConnectionId: ORG_CONNECTION },
+        ]);
         await putDefault(app, cookie, { executorId: await idOf(app, cookie, 'main') });
 
         const refused = await putDefault(app, cookie, { executor: 'oc', executorScope: 'user' });
@@ -203,7 +223,10 @@ describe('executors: listing and replacing', () => {
 
     it('refuses to drop the configured default row and keeps it as the default', async () => {
         const { app, cookie, caller, executors } = await boot();
-        await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
+        await putExecutors(app, cookie, [
+            CLAUDE_CODE,
+            { name: 'oc', type: 'opencode', config: {}, providerConnectionId: ORG_CONNECTION },
+        ]);
         const oc = (await executors.list(caller.user.id)).find((p) => p.name === 'oc')!;
         await executors.selectDefault(caller.user.id, oc.id);
         const poll = async () =>
@@ -245,7 +268,9 @@ describe('executors: listing and replacing', () => {
 describe('executors: validation', () => {
     it('refuses an unknown type', async () => {
         const { app, cookie } = await boot();
-        const response = await putExecutors(app, cookie, [{ name: 'x', type: 'codex', config: {} }]);
+        const response = await putExecutors(app, cookie, [
+            { name: 'x', type: 'codex', config: {}, providerConnectionId: ORG_CONNECTION },
+        ]);
 
         expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(response.json().code).toBe('BAD_EXECUTOR_TYPE');
@@ -253,7 +278,9 @@ describe('executors: validation', () => {
 
     it('accepts an opencode executor', async () => {
         const { app, cookie, executors } = await boot();
-        const response = await putExecutors(app, cookie, [{ name: 'oc', type: 'opencode', config: {} }]);
+        const response = await putExecutors(app, cookie, [
+            { name: 'oc', type: 'opencode', config: {}, providerConnectionId: ORG_CONNECTION },
+        ]);
 
         expect(response.statusCode).toBe(HTTP_OK);
         expect(executors.rows()).toEqual([expect.objectContaining({ name: 'oc', type: 'opencode' })]);
@@ -263,7 +290,9 @@ describe('executors: validation', () => {
         const { app, cookie } = await boot();
         const NON_OBJECT_NUMBER = 7;
         for (const config of [[], 'text', NON_OBJECT_NUMBER, null]) {
-            const response = await putExecutors(app, cookie, [{ name: 'x', type: 'claude-code', config }]);
+            const response = await putExecutors(app, cookie, [
+                { name: 'x', type: 'claude-code', config, providerConnectionId: ORG_CONNECTION },
+            ]);
             expect(response.statusCode, String(config)).toBe(HTTP_BAD_REQUEST);
         }
     });
@@ -272,7 +301,7 @@ describe('executors: validation', () => {
         const { app, cookie } = await boot();
         const response = await putExecutors(app, cookie, [
             CLAUDE_CODE,
-            { name: 'main', type: 'claude-code', config: {} },
+            { name: 'main', type: 'claude-code', config: {}, providerConnectionId: ORG_CONNECTION },
         ]);
 
         expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
@@ -282,7 +311,9 @@ describe('executors: validation', () => {
     it('refuses a name that cannot become a directory, by name', async () => {
         const { app, cookie } = await boot();
         for (const name of ['-x', '.', '..', 'a/b', '']) {
-            const response = await putExecutors(app, cookie, [{ name, type: 'claude-code', config: {} }]);
+            const response = await putExecutors(app, cookie, [
+                { name, type: 'claude-code', config: {}, providerConnectionId: ORG_CONNECTION },
+            ]);
             expect(response.statusCode, name).toBe(HTTP_BAD_REQUEST);
             expect(response.json().code, name).toBe('BAD_EXECUTOR_NAME');
         }
@@ -294,6 +325,7 @@ describe('executors: validation', () => {
             name: `e${i}`,
             type: 'claude-code',
             config: {},
+            providerConnectionId: ORG_CONNECTION,
         }));
         const response = await putExecutors(app, cookie, many);
 
@@ -309,11 +341,22 @@ describe('executors: validation', () => {
         );
     });
 
+    it('refuses an entry without a provider connection id, or with a null one, as BAD_BODY', async () => {
+        const { app, cookie, executors } = await boot();
+        const { providerConnectionId: _omitted, ...bare } = CLAUDE_CODE;
+        for (const entry of [bare, { ...CLAUDE_CODE, providerConnectionId: null }]) {
+            const response = await putExecutors(app, cookie, [entry]);
+            expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+            expect(response.json().code).toBe('BAD_BODY');
+        }
+        expect(executors.rows()).toEqual([]);
+    });
+
     it('refuses two defaults as BAD_BODY, not TOO_MANY_EXECUTORS', async () => {
         const { app, cookie, executors } = await boot();
         const response = await putExecutors(app, cookie, [
             { ...CLAUDE_CODE, isDefault: true },
-            { name: 'oc', type: 'opencode', config: {}, isDefault: true },
+            { name: 'oc', type: 'opencode', config: {}, providerConnectionId: ORG_CONNECTION, isDefault: true },
         ]);
 
         expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
@@ -458,7 +501,6 @@ describe('executors: GET /api/workspace/executors', () => {
 });
 
 describe('executor rows: safe provider connection metadata', () => {
-    const ORG_CONNECTION = '66666666-6666-4666-8666-666666666666';
     const OWN_CONNECTION = '77777777-7777-4777-8777-777777777777';
     const SECRET = 'sk-never-in-a-payload';
     const visible = [
@@ -479,7 +521,6 @@ describe('executor rows: safe provider connection metadata', () => {
         });
         track(h.app);
         await executors.replace(caller.user.id, [
-            { name: 'plain', type: 'claude-code', config: {} },
             { name: 'shared', type: 'claude-code', config: {}, providerConnectionId: ORG_CONNECTION },
             {
                 name: 'pasted',
@@ -490,6 +531,12 @@ describe('executor rows: safe provider connection metadata', () => {
                 providerConnectionId: OWN_CONNECTION,
             },
         ]);
+        executors.seedMigrationSuspended({
+            userId: caller.user.id,
+            name: 'plain',
+            type: 'claude-code',
+            reason: 'no connection',
+        });
         await executors.createOrg({
             name: 'team',
             type: 'claude-code',

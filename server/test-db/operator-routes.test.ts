@@ -9,7 +9,7 @@ import { createOrgRegistry } from '../src/orgs.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
-import { randomGithubId, testOrg } from './fixtures.js';
+import { randomGithubId, testConnection, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -102,6 +102,7 @@ beforeEach(async () => {
         // Cloud: the profile carries its own model key, so a task needs no member key.
         config: { env: { ANTHROPIC_API_KEY: 'sk-ant-test' } },
         createdBy: admin.userId,
+        providerConnectionId: await testConnection(sql, org),
     });
     await executors.selectDefault(null, main.id);
     // The board refuses a create whose repo it does not track; offline the tracked list is the stored sessions' repos.

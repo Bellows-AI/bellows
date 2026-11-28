@@ -320,7 +320,7 @@ function connectionCell(row: ExecutorRow): string[] {
     return [`connection ${label}`, ...(row.configOverridesConnection ? ['config overrides connection'] : [])];
 }
 
-/** Executor discovery: scope, name, type, runner class and provider connection when set, and the flags a selection cares about. */
+/** Executor discovery: scope, name, type, runner class and provider connection, and the flags a selection cares about. */
 export function renderExecutors(executors: readonly ExecutorRow[]): string {
     if (executors.length === 0) return 'no executors';
     return executors
@@ -332,6 +332,7 @@ export function renderExecutors(executors: readonly ExecutorRow[]): string {
                 ...(row.runnerClass === null ? [] : [`class ${row.runnerClass}`]),
                 ...connectionCell(row),
                 row.suspended ? 'suspended' : 'active',
+                ...(row.suspendedReason ? [`reason: ${row.suspendedReason}`] : []),
                 ...(row.default ? ['default'] : []),
             ].join('  ')
         )

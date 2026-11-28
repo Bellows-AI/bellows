@@ -81,6 +81,8 @@ interface Scenario {
     /** The org's provider connections; `main` is rewritten to select `connection` when one is given. */
     providerConnections?: OrgRuntime['providerConnections'];
     connection?: { id: string };
+    /** The `main` profile's config; absent is empty. */
+    config?: Record<string, unknown>;
 }
 
 async function boot(scenario: Scenario = {}) {
@@ -92,8 +94,8 @@ async function boot(scenario: Scenario = {}) {
         {
             name: 'main',
             type: 'claude-code',
-            config: {},
-            ...(scenario.connection ? { providerConnectionId: scenario.connection.id } : {}),
+            config: scenario.config ?? {},
+            providerConnectionId: scenario.connection?.id ?? CONNECTION_ID,
         },
     ]);
     // A task naming no executor needs a configured default: the member's `main` is theirs.
@@ -178,18 +180,18 @@ const verdict = async (booted: Booted, payload: unknown, subject: string, name?:
     return { body, check: body.checks.find((c) => c.subject === subject && (name === undefined || c.name === name)) };
 };
 
+const CONNECTION_ID = '44444444-4444-4444-8444-444444444444';
+
 describe('POST /api/jobs/preflight model', () => {
-    it('is blocked with the fix in cloud when the agent has no model key, ok once one is set', async () => {
-        const env = memoryEnvVarStore();
-        const booted = await boot({ cloudEnv: env });
+    it('is blocked with the fix in cloud when the profile clears the key its connection would give', async () => {
+        const booted = await boot({
+            cloudEnv: memoryEnvVarStore(),
+            providerConnections: connectionsAnswering(async () => metaOf('anthropic')),
+            config: { env: { ANTHROPIC_API_KEY: '' } },
+        });
         const { check, body } = await verdict(booted, { repo: 'acme/web', executor: 'main' }, 'model');
         expect(check).toMatchObject({ status: 'blocked', code: 'NO_MODEL', detail: NO_MODEL_MESSAGE });
         expect(body.ready).toBe(false);
-
-        await env.replaceWorkspace(booted.member.user.id, [{ name: 'ANTHROPIC_API_KEY', value: 'k', isSecret: true }]);
-        expect((await verdict(booted, { repo: 'acme/web', executor: 'main' }, 'model')).check).toMatchObject({
-            status: 'ok',
-        });
     });
 
     it('is unverified, never blocked, when the env cannot be read', async () => {
@@ -200,9 +202,9 @@ describe('POST /api/jobs/preflight model', () => {
         expect(body.ready).toBe(true);
     });
 
-    it('is not checked on a self-hosted board', async () => {
+    it('judges only the selected connection on a self-hosted board, never an env key', async () => {
         const { check } = await verdict(await boot(), { repo: 'acme/web', executor: 'main' }, 'model');
-        expect(check).toBeUndefined();
+        expect(check).toMatchObject({ status: 'ok', detail: 'the selected provider connection can run this executor' });
     });
 });
 
@@ -210,7 +212,6 @@ describe('POST /api/jobs/preflight model', () => {
 const connectionsAnswering = (
     answer: (userId: string, id: string) => Promise<ProviderConnectionMeta | null>
 ): OrgRuntime['providerConnections'] => ({ forUser: answer }) as unknown as OrgRuntime['providerConnections'];
-const CONNECTION_ID = '44444444-4444-4444-8444-444444444444';
 const metaOf = (provider: ProviderConnectionMeta['provider'], scope: 'org' | 'personal' = 'personal') =>
     ({ id: CONNECTION_ID, name: 'main', provider, scope, baseUrl: null, hasKey: true }) as ProviderConnectionMeta;
 
@@ -341,6 +342,7 @@ describe('POST /api/jobs/preflight executor', () => {
             name: 'shared',
             type: 'claude-code',
             config: {},
+            providerConnectionId: CONNECTION_ID,
             createdBy: booted.member.user.id,
         });
         await booted.executors.clearDefault(booted.member.user.id);
@@ -387,6 +389,7 @@ describe('POST /api/jobs/preflight executor', () => {
             name: 'shared',
             type: 'claude-code',
             config: {},
+            providerConnectionId: CONNECTION_ID,
             createdBy: booted.member.user.id,
         });
         const { check } = await verdict(
@@ -809,8 +812,8 @@ describe('POST /api/jobs/preflight repo skills follow the executor', () => {
     const bootWithOpencode = async (scenario: Scenario) => {
         const booted = await boot(scenario);
         await booted.executors.replace(booted.member.user.id, [
-            { name: 'main', type: 'claude-code', config: {} },
-            { name: 'oc', type: 'opencode', config: {} },
+            { name: 'main', type: 'claude-code', config: {}, providerConnectionId: CONNECTION_ID },
+            { name: 'oc', type: 'opencode', config: {}, providerConnectionId: CONNECTION_ID },
         ]);
         return booted;
     };

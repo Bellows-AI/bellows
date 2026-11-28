@@ -2600,6 +2600,17 @@ fetch(process.argv[2], { method: process.argv[1], headers, body: process.argv[3]
     .catch(() => process.stdout.write("000"));
 ' "$@"
 }
+# Every executor selects a provider connection (scripts/lane-lib.sh). The k8s runners are stubs, so the
+# connection's endpoint is never called; the token is the FACTORY_TOKEN in scope.
+K8S_IDLE_MODEL_URL='http://127.0.0.1:9'
+put_member_executors() { # put_member_executors -> the status of the member storing its claude executor under the reused connection, 000 when none
+    local conn
+    conn="$(lane_connection_id "$K8S_IDLE_MODEL_URL" personal 2>/dev/null)" || {
+        printf 000
+        return 0
+    }
+    http_status PUT "$BASE/api/workspace/executors" "$(lane_executors_json "$conn")"
+}
 give_up() {
     kill "$pf_pid" 2>/dev/null
     # What the lane was standing on when it stopped: the port-forward and this release's pods.
@@ -2820,8 +2831,7 @@ esac
 # retries through the same grace the queue loop below allows.
 configured=""
 for _ in $(seq 1 60); do
-    [ "$(http_status PUT "$BASE/api/workspace/executors" \
-        '{"executors":[{"name":"claude","type":"claude-code","config":{}}]}')" = '200' ] && {
+    [ "$(put_member_executors)" = '200' ] && {
         configured=1
         break
     }
@@ -2834,11 +2844,43 @@ done
 # admin-created shape, with this lane's member only ever a selector — and a task stamped
 # `executorScope: 'org'`. The stub prints the claude config content, so the org model marker in
 # the output is the proof the claim resolved the ORG row: the member's personal list is empty.
-org_seeded="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-    psql -q -v ON_ERROR_STOP=1 -v "member=$member" \
+# An org executor selects an org connection, and a member cannot write one: a short-lived admin of this
+# org creates it (the same mint scripts/lanes/k8s/recovery.sh uses for its skills admin).
+org_admin_token="fat_$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+org_admin_hash="$(printf '%s' "$org_admin_token" | openssl dgst -sha256 -hex | sed 's/^.* //')"
+org_admin="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+    psql -qtA -v ON_ERROR_STOP=1 -v "org=$member" -v "login=$member-org-admin" -v "hash=$org_admin_hash" \
     postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
-insert into executor_profile (org_id, user_id, name, type, config)
-select id, null, 'team', 'claude-code', '{"model":"org-team-model"}'::jsonb from organization where id = :'member';
+with u as (
+    insert into app_user (github_user_id, github_login)
+    values ((1000000000 + floor(random() * 1000000000000))::bigint, :'login') returning id
+), m as (
+    insert into org_membership (org_id, github_login, user_id, role, claimed_at)
+    select :'org', :'login', u.id, 'admin', now() from u
+), t as (
+    insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
+    select :'org', 'personal', u.id, u.id, 'test-k8s', decode(:'hash', 'hex') from u
+)
+select count(*) from u;
+SQL
+)"
+[ "$org_admin" = 1 ] && ok 'an org admin is minted for the org connection' || {
+    bad 'an org admin is minted for the org connection' "$org_admin"
+    give_up
+}
+org_connection_id="$(FACTORY_TOKEN="$org_admin_token" lane_connection_id "$K8S_IDLE_MODEL_URL" org 2>&1)"
+case "$org_connection_id" in
+*-*) ok 'an org provider connection is created' ;;
+*)
+    bad 'an org provider connection is created' "$org_connection_id"
+    give_up
+    ;;
+esac
+org_seeded="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+    psql -q -v ON_ERROR_STOP=1 -v "member=$member" -v "connection=$org_connection_id" \
+    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+insert into executor_profile (org_id, user_id, name, type, config, provider_connection_id)
+select id, null, 'team', 'claude-code', '{"model":"org-team-model"}'::jsonb, :'connection'::uuid from organization where id = :'member';
 SQL
 )" && ok 'an org executor profile is seeded' || {
     bad 'an org executor profile is seeded' "$org_seeded"
@@ -3015,8 +3057,9 @@ case "$connection_id" in
 *-*) ok 'a provider connection was created' ;;
 *) bad 'a provider connection was created' 'POST /api/provider-connections did not answer 201 with an id' ;;
 esac
+claude_connection_id="$(lane_connection_id "$K8S_IDLE_MODEL_URL" personal 2>&1)"
 connection_put="$(http_status PUT "$BASE/api/workspace/executors" \
-    "{\"executors\":[{\"name\":\"claude\",\"type\":\"claude-code\",\"config\":{}},{\"name\":\"connected\",\"type\":\"claude-code\",\"config\":{},\"providerConnectionId\":\"$connection_id\"}]}")"
+    "{\"executors\":[{\"name\":\"claude\",\"type\":\"claude-code\",\"config\":{},\"providerConnectionId\":\"$claude_connection_id\"},{\"name\":\"connected\",\"type\":\"claude-code\",\"config\":{},\"providerConnectionId\":\"$connection_id\"}]}")"
 [ "$connection_put" = '200' ] && ok 'an executor selecting the connection is stored' ||
     bad 'an executor selecting the connection is stored' "PUT /api/workspace/executors answered $connection_put"
 connection_task="$(node -e "$JS_HEADERS"'
@@ -3284,8 +3327,7 @@ SQL
 store_executor() { # store_executor -> the current FACTORY_TOKEN's member stores the executor its tasks run under
     local until=$(($(date +%s) + 60))
     while [ "$(date +%s)" -lt "$until" ]; do
-        [ "$(http_status PUT "$BASE/api/workspace/executors" \
-            '{"executors":[{"name":"claude","type":"claude-code","config":{}}]}')" = '200' ] && return 0
+        [ "$(put_member_executors)" = '200' ] && return 0
         sleep 1
     done
     return 1

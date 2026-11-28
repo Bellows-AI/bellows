@@ -1,4 +1,9 @@
-import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-selection.js';
+import { isDeepStrictEqual } from 'node:util';
+import {
+    ExecutorConnectionRefusedError,
+    MIGRATION_PENDING_MESSAGE,
+    MISSING_CONNECTION_MESSAGE,
+} from '../src/db/executor-connection-selection.js';
 import { type DefaultResolution, selectedMessage } from '../src/db/executor-default-store.js';
 import {
     ConfiguredDefaultUnusableError,
@@ -28,6 +33,16 @@ export interface MemoryUserExecutorStore extends UserExecutorStore {
         suspended: boolean;
         runnerClass: string | null;
     }[];
+    /** A row the provider migration suspended (docs/persistence.md): no connection, the reason recorded. */
+    seedMigrationSuspended(input: {
+        userId: string | null;
+        name: string;
+        type: string;
+        reason: string;
+        config?: Record<string, unknown>;
+    }): string;
+    /** A row the provider migration has not reached yet: no connection, pending. */
+    seedMigrationPending(input: { userId: string | null; name: string; type: string }): string;
 }
 
 /**
@@ -46,7 +61,7 @@ export function memoryUserExecutorStore(
     }) => ConnectionSelectionRefusal | null = () => null
 ): MemoryUserExecutorStore {
     const judge = (owner: string | null, connectionId: string | null, type: string, config: unknown) => {
-        if (connectionId === null) return;
+        if (connectionId === null) throw new ExecutorConnectionRefusedError('missing', MISSING_CONNECTION_MESSAGE);
         const model = typeof config === 'object' && config !== null ? (config as { model?: unknown }).model : undefined;
         const refusal = refuseSelection({ owner, connectionId, type, model });
         if (refusal) throw new ExecutorConnectionRefusedError(refusal.reason, refusal.message);
@@ -62,6 +77,8 @@ export function memoryUserExecutorStore(
         suspended: boolean;
         runnerClass: string | null;
         providerConnectionId: string | null;
+        suspendedReason?: string;
+        pending?: boolean;
         position: number;
         createdAt: string;
         updatedAt: string;
@@ -145,6 +162,7 @@ export function memoryUserExecutorStore(
         suspended: r.suspended,
         runnerClass: r.runnerClass,
         providerConnectionId: r.providerConnectionId,
+        suspendedReason: r.suspendedReason ?? null,
         configOverridesConnection: overridesConnection(r.config),
     });
 
@@ -161,6 +179,48 @@ export function memoryUserExecutorStore(
                 suspended: r.suspended,
                 runnerClass: r.runnerClass,
             })),
+
+        seedMigrationPending({ userId, name, type }) {
+            const id = uuid();
+            rows.push({
+                id,
+                userId,
+                name,
+                type,
+                config: {},
+                gateFixRounds: DEFAULT_GATE_FIX_ROUNDS,
+                createdBy: null,
+                suspended: false,
+                runnerClass: null,
+                providerConnectionId: null,
+                pending: true,
+                position: byScope(userId).length,
+                createdAt: at(),
+                updatedAt: at(),
+            });
+            return id;
+        },
+
+        seedMigrationSuspended({ userId, name, type, reason, config = {} }) {
+            const id = uuid();
+            rows.push({
+                id,
+                userId,
+                name,
+                type,
+                config,
+                gateFixRounds: DEFAULT_GATE_FIX_ROUNDS,
+                createdBy: null,
+                suspended: true,
+                runnerClass: null,
+                providerConnectionId: null,
+                suspendedReason: reason,
+                position: byScope(userId).length,
+                createdAt: at(),
+                updatedAt: at(),
+            });
+            return id;
+        },
 
         async replace(userId, executors) {
             const own = rows.filter((r) => r.userId === userId);
@@ -180,12 +240,25 @@ export function memoryUserExecutorStore(
                 claimed.add(row.id);
                 matched[index] = row;
             }
-            const connectionOf = (executor: (typeof executors)[number], index: number) =>
-                executor.providerConnectionId === undefined
-                    ? (matched[index]?.providerConnectionId ?? null)
-                    : executor.providerConnectionId;
             for (const [index, executor] of executors.entries()) {
-                judge(userId, connectionOf(executor, index), executor.type, executor.config);
+                if (executor.providerConnectionId !== null) {
+                    judge(userId, executor.providerConnectionId, executor.type, executor.config);
+                    continue;
+                }
+                // Only the carried-back migration-suspended row, by id, unchanged, keeps no connection.
+                const row = matched[index];
+                const carried =
+                    row !== undefined &&
+                    executor.id === row.id &&
+                    executor.type === row.type &&
+                    row.providerConnectionId === null &&
+                    (row.pending === true || (row.suspendedReason !== undefined && row.suspended)) &&
+                    (executor.suspended ?? row.suspended) === row.suspended &&
+                    isDeepStrictEqual(row.config, executor.config);
+                if (!carried) {
+                    const message = row?.pending ? MIGRATION_PENDING_MESSAGE : MISSING_CONNECTION_MESSAGE;
+                    throw new ExecutorConnectionRefusedError('missing', message);
+                }
             }
             const omitted = own.filter((r) => !claimed.has(r.id));
             assertUnselected(omitted, userId);
@@ -199,11 +272,17 @@ export function memoryUserExecutorStore(
                     config: structuredClone(executor.config),
                     gateFixRounds: executor.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS,
                     suspended: executor.suspended ?? row?.suspended ?? false,
-                    providerConnectionId: connectionOf(executor, index),
+                    providerConnectionId: executor.providerConnectionId,
                     position: index,
                     updatedAt: at(),
                 };
-                if (row) Object.assign(row, fields);
+                if (row) {
+                    Object.assign(row, fields);
+                    if (fields.providerConnectionId !== null) {
+                        delete row.suspendedReason;
+                        delete row.pending;
+                    }
+                }
                 kept.push(
                     row ?? { id: uuid(), userId, createdBy: null, runnerClass: null, createdAt: at(), ...fields }
                 );
@@ -224,6 +303,10 @@ export function memoryUserExecutorStore(
         async setPersonalSuspended(userId, id, suspended) {
             const row = rows.find((r) => r.id === id && r.userId === userId);
             if (!row) return null;
+            if (row.pending) throw new ExecutorConnectionRefusedError('missing', MIGRATION_PENDING_MESSAGE);
+            if (!suspended && row.providerConnectionId === null) {
+                throw new ExecutorConnectionRefusedError('missing', MISSING_CONNECTION_MESSAGE);
+            }
             row.suspended = suspended;
             row.updatedAt = at();
             return toProfile(row);
@@ -232,6 +315,10 @@ export function memoryUserExecutorStore(
         async setOrgSuspended(id, suspended) {
             const row = rows.find((r) => r.id === id && r.userId === null);
             if (!row) return null;
+            if (row.pending) throw new ExecutorConnectionRefusedError('missing', MIGRATION_PENDING_MESSAGE);
+            if (!suspended && row.providerConnectionId === null) {
+                throw new ExecutorConnectionRefusedError('missing', MISSING_CONNECTION_MESSAGE);
+            }
             row.suspended = suspended;
             row.updatedAt = at();
             return toProfile(row);
@@ -276,7 +363,7 @@ export function memoryUserExecutorStore(
 
         async createOrg(input) {
             assertFree(null, input.name);
-            judge(null, input.providerConnectionId ?? null, input.type, input.config);
+            judge(null, input.providerConnectionId, input.type, input.config);
             const row: Row = {
                 id: uuid(),
                 userId: null,
@@ -287,7 +374,7 @@ export function memoryUserExecutorStore(
                 createdBy: input.createdBy,
                 suspended: false,
                 runnerClass: input.runnerClass ?? null,
-                providerConnectionId: input.providerConnectionId ?? null,
+                providerConnectionId: input.providerConnectionId,
                 position: byScope(null).length,
                 createdAt: at(),
                 updatedAt: at(),
@@ -299,9 +386,12 @@ export function memoryUserExecutorStore(
         async updateOrg(id, patch) {
             const row = rows.find((r) => r.id === id && r.userId === null);
             if (!row) return null;
+            if (row.pending && patch.providerConnectionId === undefined) {
+                throw new ExecutorConnectionRefusedError('missing', MIGRATION_PENDING_MESSAGE);
+            }
             judge(
                 null,
-                patch.providerConnectionId === undefined ? row.providerConnectionId : patch.providerConnectionId,
+                patch.providerConnectionId ?? row.providerConnectionId,
                 patch.type ?? row.type,
                 patch.config ?? row.config
             );
@@ -314,6 +404,8 @@ export function memoryUserExecutorStore(
             if (patch.gateFixRounds !== undefined) row.gateFixRounds = patch.gateFixRounds;
             if (patch.runnerClass !== undefined) row.runnerClass = patch.runnerClass;
             if (patch.providerConnectionId !== undefined) row.providerConnectionId = patch.providerConnectionId;
+            delete row.suspendedReason;
+            if (patch.providerConnectionId !== undefined) delete row.pending;
             row.updatedAt = at();
             return { ...toProfile(row), config: structuredClone(row.config) };
         },
