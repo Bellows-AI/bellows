@@ -178,6 +178,13 @@ describe('TrackedOrgsPanel', () => {
         expect(html).toContain('Change what you track');
     });
 
+    it('offers installing the App on another organization, and says why a new one is missing (BEL-629)', () => {
+        const html = renderToStaticMarkup(<TrackedOrgsPanel session={session} />);
+        expect(html).toContain('Install the App on another organization');
+        expect(html).toContain('href="/api/auth/github/install?returnTo=%2Faccount"');
+        expect(html).toContain('Only organizations with the App installed are listed.');
+    });
+
     it('renders the empty roster without a placeholder', () => {
         const html = renderToStaticMarkup(<TrackedOrgsPanel session={{ ...session, organizations: [] }} />);
         expect(html).toContain('No organizations are tracked yet.');

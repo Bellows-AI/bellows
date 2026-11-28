@@ -83,6 +83,15 @@ describe('OnboardingPage', () => {
         expect(html).toContain('Continue');
     });
 
+    it('offers installing the App on another organization, on first run and on a reselect (BEL-629)', () => {
+        for (const payload of [pending, { ...pending, reselect: true }]) {
+            const html = renderPage({ payload: { ...payload, returnTo: '/account' } });
+            expect(html).toContain('Install the App on another organization');
+            expect(html).toContain('href="/api/auth/github/install?returnTo=%2Faccount"');
+            expect(html).toContain('Only organizations with the App installed are listed.');
+        }
+    });
+
     it('marks the requested organization and renders the reselect context line', () => {
         const html = renderPage({ payload: { ...pending, selected: ['999999'], reselect: true, org: '999999' } });
         expect(html).toContain('Requested for this sign-in');
