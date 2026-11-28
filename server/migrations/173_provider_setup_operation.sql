@@ -21,6 +21,9 @@ alter table provider_setup_operation
     rename constraint model_setup_operation_connection_fk to provider_setup_operation_connection_fk;
 alter table provider_setup_operation
     rename constraint model_setup_operation_request_ck to provider_setup_operation_request_ck;
+-- The creator's reference was never named in 170: postgres chose `<table>_created_by_fkey`.
+alter table provider_setup_operation
+    rename constraint model_setup_operation_created_by_fkey to provider_setup_operation_created_by_fkey;
 
 alter index if exists model_setup_operation_request_uk rename to provider_setup_operation_request_uk;
 

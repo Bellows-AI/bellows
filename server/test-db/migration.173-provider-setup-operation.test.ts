@@ -94,6 +94,7 @@ describe.runIf(enabled)('173: the provider setup operation', () => {
                 'provider_setup_operation_executor_fk',
                 'provider_setup_operation_connection_fk',
                 'provider_setup_operation_request_ck',
+                'provider_setup_operation_created_by_fkey',
             ].sort()
         );
         expect(

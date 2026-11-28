@@ -388,18 +388,49 @@ describe.skipIf(!enabled)('the provider setup routes', () => {
         });
     });
 
-    it('legacy setup without a configured executor keeps its behavior', async () => {
-        const runtime = (await orgs.for(org))!;
-        await runtime.envVars!.writeScoped(
-            { kind: 'org' },
-            { upsert: [{ name: 'ANTHROPIC_API_KEY', value: KEY_A, isSecret: true }], remove: [] },
-            admin.userId
-        );
+    it('a cloud board refuses a subscription token unless the org is listed, and writes nothing', async () => {
+        const subscription = orgBody({
+            connection: {
+                intent: 'create',
+                provider: 'subscription',
+                key: 'sk-ant-oat-routes-0123456789',
+                name: 'Sub',
+            },
+        });
+        const serve = async (cloudSubscriptionOrgIds: Set<string>) => {
+            const config = testConfig({ auth: githubAuth(), deploymentMode: 'cloud', cloudSubscriptionOrgIds });
+            const cloudOrgs = createOrgRegistry({
+                sql,
+                ready: Promise.resolve(),
+                config,
+                withStores: true,
+                secrets: testSecretStore(sql),
+                secretLog: () => {},
+            });
+            return buildApp({ config, orgs: cloudOrgs, auth, ready: Promise.resolve(), version: '0.0.0' });
+        };
+        const refusing = await serve(new Set());
+        const refused = await refusing.inject({
+            method: 'POST',
+            url: '/api/provider-connections/setup',
+            headers: { authorization: `Bearer ${admin.token}` },
+            payload: subscription,
+        });
+        await refusing.close();
+        expect(refused.statusCode).toBe(400);
+        expect(refused.json().code).toBe('CLOUD_CREDENTIAL_REFUSED');
+        expect((await sql`select 1 from provider_connection where org_id = ${org}`).length).toBe(0);
+        expect((await sql`select 1 from executor_profile where org_id = ${org}`).length).toBe(0);
 
-        await launch(member);
-        const claimed = await claim('w1');
-        expect(claimed?.env?.ANTHROPIC_API_KEY).toBe(KEY_A);
-        expect((await sql`select 1 from executor_default_selection where org_id = ${org}`).length).toBe(0);
+        const allowing = await serve(new Set([org]));
+        const saved = await allowing.inject({
+            method: 'POST',
+            url: '/api/provider-connections/setup',
+            headers: { authorization: `Bearer ${admin.token}` },
+            payload: subscription,
+        });
+        await allowing.close();
+        expect(saved.statusCode).toBe(OK);
     });
 
     it('an invalid provider and runtime combination is refused and leaves the prior setup', async () => {

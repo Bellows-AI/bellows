@@ -36,7 +36,7 @@ export function knownModels(setup: ModelSetupView | null, agent: ExecutorType | 
     return [...new Set(agents.flatMap((type) => modelOptions(source, type, undefined)))];
 }
 
-/** `knownModels` over the member's `GET /api/model-setup`; an agent name it does not know counts as unknown. */
+/** `knownModels` over the member's derived model setup; an agent name it does not know counts as unknown. */
 export function useKnownModels(agent: string | null): string[] {
     return knownModels(useModelSetup().data, EXECUTOR_TYPES.find((type) => type === agent) ?? null);
 }

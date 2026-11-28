@@ -23,7 +23,7 @@ const TEAM_OPTION = `${TEAM} — Anthropic · Organization`;
 const OPENAI_OPTION = `${OPENAI} — OpenAI · Personal`;
 
 async function stubProvider(page: Page): Promise<void> {
-    await page.route('**/api/model-setup/verify', (route) =>
+    await page.route('**/api/provider-connections/verify', (route) =>
         route.fulfill({ json: { ok: true, models: ['model-e2e-a', 'model-e2e-b'] } })
     );
     await page.route('**/api/provider-connections/*/models', (route) =>

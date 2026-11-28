@@ -3,8 +3,8 @@ import type { ModelSetupSave, SelectedExecutorView, SetupScope } from '../api/us
 import type { ModelSource } from './providers.js';
 
 /**
- * The `PUT /api/model-setup` bodies the model setup sends, built in one place so each is one the route accepts
- * (`parseSetup` in server/src/routes/model-setup-save.ts; mirrored in web/test/model-setup-bodies.test.ts). Four intents
+ * The `POST /api/provider-connections/setup` bodies the model setup sends, built in one place so each is one the route accepts
+ * (`parseSetup` in server/src/routes/provider-setup.ts; mirrored in web/test/model-setup-bodies.test.ts). Four intents
  * about the connection — create, reuse, rotate, none — never inferred from a provider's name or label.
  */
 

@@ -24,7 +24,7 @@ const title = (page: Page, name: string) => page.getByRole('heading', { level: 1
 
 /** The key check's answer for any key: valid, with one model, so Save is offered. */
 async function stubKeyCheck(page: Page): Promise<void> {
-    await page.route('**/api/model-setup/verify', (route) =>
+    await page.route('**/api/provider-connections/verify', (route) =>
         route.fulfill({ json: { ok: true, models: ['claude-sonnet-e2e'] } })
     );
 }
@@ -132,17 +132,15 @@ test('a first sign-in connects a model, starts its first task from Ready and lan
     };
     expect(job.executor).toBe('Anthropic');
     expect(job.agentType).toBeNull();
-    const view = (await (await page.request.get('/api/model-setup')).json()) as {
-        effective: string;
-        selected: { name: string; connection: { provider: string } };
-        personal: { keyNames: string[] } | null;
-        org: { keyNames: string[] } | null;
+    const workspace = (await (await page.request.get('/api/workspace')).json()) as {
+        defaultExecutor: { scope: string; name: string } | null;
+        executors: { name: string; providerConnectionProvider: string | null }[];
     };
-    expect(view.effective).toBe('executor');
-    expect(view.selected).toMatchObject({ name: 'Anthropic', connection: { provider: 'anthropic' } });
-    // The key lives only on the connection: no environment copy in either scope.
-    expect(view.personal?.keyNames ?? []).toEqual([]);
-    expect(view.org?.keyNames ?? []).toEqual([]);
+    expect(workspace.defaultExecutor).toEqual({ scope: 'user', name: 'Anthropic' });
+    // The key lives only on the connection the executor runs on.
+    expect(workspace.executors.find((e) => e.name === 'Anthropic')).toMatchObject({
+        providerConnectionProvider: 'anthropic',
+    });
 
     // The executor is in Settings → Executors after a reload.
     await page.goto('/settings/executors');
@@ -181,10 +179,12 @@ test("an admin's setup creates an organization executor and default that every r
     await expect(region.getByRole('row').filter({ hasText: 'e2e-org-setup' })).toBeVisible({ timeout: 30_000 });
     await page.screenshot({ path: 'artifacts/ui/onboarding-org-executor-settings-executors.png', fullPage: true });
 
-    const view = (await (await page.request.get('/api/model-setup')).json()) as {
-        effective: string;
-        selected: { scope: string; name: string; connection: { scope: string } };
+    const workspace = (await (await page.request.get('/api/workspace')).json()) as {
+        defaultExecutor: { scope: string; name: string } | null;
+        orgExecutors: { name: string; providerConnectionScope: string | null }[];
     };
-    expect(view.effective).toBe('executor');
-    expect(view.selected).toMatchObject({ scope: 'org', name: 'e2e-org-setup', connection: { scope: 'org' } });
+    expect(workspace.defaultExecutor).toEqual({ scope: 'org', name: 'e2e-org-setup' });
+    expect(workspace.orgExecutors.find((e) => e.name === 'e2e-org-setup')).toMatchObject({
+        providerConnectionScope: 'org',
+    });
 });

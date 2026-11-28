@@ -10,7 +10,7 @@ import {
 } from '@factory-ai/core';
 
 /**
- * The model step's rules (docs/api.md, `GET`/`PUT /api/model-setup`, `POST /api/model-setup/verify`): what each
+ * The model step's rules (docs/api.md, `POST /api/provider-connections/setup`, `POST /api/provider-connections/verify`): what each
  * provider card says, which provider a pasted key names, the agents and models each offers, how the key check's answer
  * reads, and why Save waits. The agents and env names are core's (`model-providers.ts`); the copy is the UI's.
  */
@@ -150,7 +150,7 @@ export function modelOptions(source: ModelSource, agent: ExecutorType, checked: 
     return fromCheck.length > 0 ? fromCheck : [...CURATED[source][agent]];
 }
 
-/** What `POST /api/model-setup/verify` answers (server/src/provider-keys/verify.ts), copied: web imports no server. */
+/** What `POST /api/provider-connections/verify` answers (server/src/provider-keys/verify.ts), copied: web imports no server. */
 export type VerifyAnswer =
     | { ok: true; models?: string[]; creditUsd?: number; budget?: { limitUsd: number; usedUsd: number } }
     | { ok: false; code: string; message: string };

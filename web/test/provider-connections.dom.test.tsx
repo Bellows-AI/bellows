@@ -3,6 +3,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { renderApp, stubFetch } from './dom.js';
+import { VERIFY_URL } from './model-setup-reads.js';
 import { boardHandler, listedModels, personalExecutor, providerConnection, settingsBoard } from './settings-board.js';
 
 /**
@@ -10,7 +11,6 @@ import { boardHandler, listedModels, personalExecutor, providerConnection, setti
  * routes receive: who may change which row, rename versus rotation, the removal refusal, and the four discovery states.
  */
 
-const NO_SETUP = { platform: false, org: null, personal: null, effective: null };
 const SECRET = 'sk-ant-api03-brand-new-secret';
 
 const withSetup = (
@@ -18,8 +18,7 @@ const withSetup = (
     extra: Parameters<typeof boardHandler>[1] = () => undefined
 ) =>
     boardHandler(board, (call) => {
-        if (call.url === '/api/model-setup') return NO_SETUP;
-        if (call.method === 'POST' && call.url === '/api/model-setup/verify') {
+        if (call.method === 'POST' && call.url === VERIFY_URL) {
             return { ok: true, models: ['claude-a', 'claude-b', 'claude-c'] };
         }
         return extra(call);
@@ -31,7 +30,9 @@ const row = async (name: string) => within(await panel()).findByRole('row', { na
 const openMenu = async (user: ReturnType<typeof userEvent.setup>, name: string) =>
     user.click(await screen.findByRole('button', { name: `Actions for ${name}` }));
 const connectionCalls = (calls: { method: string; url: string; body: unknown }[]) =>
-    calls.filter((call) => call.method !== 'GET' && call.url.startsWith('/api/provider-connections'));
+    calls.filter(
+        (call) => call.method !== 'GET' && call.url.startsWith('/api/provider-connections') && call.url !== VERIFY_URL
+    );
 
 describe('Settings → Model: provider connections', () => {
     const org = providerConnection('Team key', { scope: 'org' });
@@ -156,7 +157,7 @@ describe('Settings → Model: provider connections', () => {
         });
         expect(connectionCalls(calls).at(-1)?.body).not.toHaveProperty('key');
         expect(board.connectionKeys[mine.id]).toBe('sk-ant-old-key');
-        expect(calls.filter((call) => call.url === '/api/model-setup/verify')).toHaveLength(0);
+        expect(calls.filter((call) => call.url === VERIFY_URL)).toHaveLength(0);
 
         // Rotation: its own action, the new key verified first, then replaced — and nothing else sent.
         await openMenu(user, 'Renamed key');
@@ -166,7 +167,7 @@ describe('Settings → Model: provider connections', () => {
         expect((save as HTMLButtonElement).disabled).toBe(true);
         fireEvent.change(within(rotate).getByLabelText('API key'), { target: { value: SECRET } });
         await within(rotate).findByText(/Key works · 3 models available/);
-        expect(calls.find((call) => call.url === '/api/model-setup/verify')?.body).toMatchObject({
+        expect(calls.find((call) => call.url === VERIFY_URL)?.body).toMatchObject({
             provider: 'anthropic',
             key: SECRET,
         });
