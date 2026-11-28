@@ -41,18 +41,18 @@ In the task picker, personal profiles come first. Organization profiles are labe
   <Step title="Fill in the form">
     Give it a **Name**, such as `Code review`. The name appears in the task picker. Choose the **Agent**.
   </Step>
-  <Step title="Connect a provider — optional">
-    Open **Connect a provider** to give the profile its own key, endpoint and model: pick a provider
-    (Anthropic, OpenRouter, OpenAI, LiteLLM — or, for OpenCode, **OpenAI-compatible (custom endpoint)** for your own
-    endpoint such as vLLM, LiteLLM or a gateway), paste a key, set the base URL where the provider
-    takes one, and name the model. The key is stored in the secret store — the configuration keeps
-    only a reference to it. Bellows builds the agent configuration from what you pick; it stays
+  <Step title="Choose a provider connection">
+    Pick one in the **Provider connection** field beside **Agent**; **Save** stays disabled until you do.
+    Create connections under **Settings → Model**, or use **Connect a provider** to give the profile its own
+    key, endpoint and model: pick a provider (Anthropic, OpenRouter, OpenAI, LiteLLM — or, for OpenCode,
+    **OpenAI-compatible (custom endpoint)** for your own endpoint such as vLLM, LiteLLM or a gateway), paste a key,
+    set the base URL where the provider takes one, and name the model. The key is stored in the secret store — the
+    configuration keeps only a reference to it. Bellows builds the agent configuration from what you pick; it stays
     visible and editable under **Advanced configuration**.
   </Step>
-  <Step title="Or leave the provider out">
-    Without a provider, keep **Use runner default** or choose **Custom model identifier** under
-    **Model**. The task then runs on the key connected in [Settings → Model](/guides/env-and-secrets#saving-a-model-key-when-you-connect-a-provider), in
-    your own or the organization's environment.
+  <Step title="Choose a model">
+    Keep **Use runner default** or choose **Custom model identifier** under **Model**. The task runs on the
+    connection you chose, never on keys left in the environment.
   </Step>
   <Step title="Save">
     Save the profile. It now shows in the task picker.

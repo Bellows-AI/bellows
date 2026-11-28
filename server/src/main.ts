@@ -104,6 +104,7 @@ const mcpStores = (db: { sql: Sql; ready: Promise<unknown> }) => ({
 function startCollectors({
     crossOrg,
     secrets,
+    secretLog,
     artifacts,
     config,
     metrics,
@@ -113,6 +114,7 @@ function startCollectors({
 }: {
     crossOrg: { sql: Sql; ready: Promise<unknown> };
     secrets: CoordinatedSecretStore;
+    secretLog: (diagnostic: SecretDiagnostic) => void;
     artifacts: ArtifactBackend;
     config: AppConfig;
     metrics: ServerMetrics;
@@ -164,6 +166,12 @@ function startCollectors({
                 prefix: artifacts.prefix,
                 planDefaults: config.planDefaults,
             })
+        )
+    );
+    // Executors saved before every one needed a provider connection get one holding their key, or a suspension.
+    void ready.then(() =>
+        track(() =>
+            startExecutorProviderMigration({ sql: crossOrg.sql, secrets, secretLog, subscriptionPolicy: config })
         )
     );
     // Expired codes, consent transactions and grant families; only a board that serves MCP ever writes them.
@@ -463,16 +471,13 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     // not awaited: a cold database must not hold `listen()`.
     void ready.then(() => orgs.warmAll()).catch((e: Error) => logger('orgs').error({ err: e }, 'warm failed'));
 
-    startCollectors({ crossOrg, secrets, artifacts, config, metrics, ...mcp, track: stops.add });
+    startCollectors({ crossOrg, secrets, secretLog, artifacts, config, metrics, ...mcp, track: stops.add });
     startRecovery({ config, orgs, metrics, ready, integrations, registry, track: stops.add });
 
     startDeliveries({ config, orgs, metrics, ready, track: stops.add });
     void ready.then(() => stops.add(() => membership.start(metrics.timedPass)));
     // Points stored before they carried an org get the one their session evidence names, a batch at a time.
     void ready.then(() => stops.add(() => startMetricPointOrgBackfill({ sql: crossOrg.sql })));
-    // Executors saved before every one needed a provider connection get one holding their key, or a suspension with the reason.
-    void ready.then(() => stops.add(() => startExecutorProviderMigration({ sql: crossOrg.sql, secrets, secretLog })));
-
     await app.listen({ port: config.port, host: config.host });
 
     return { close: createClose({ app, stops, pools: [sql, secretSql, crossOrgSql, ownerSql] }) };

@@ -552,6 +552,17 @@ describe('mergeExecutors', () => {
         expect(result).toEqual({ ok: true, value: [firstRow, secondRow] });
     });
 
+    it('carries a migration-suspended row back untouched while another row is added', () => {
+        const stuck: ExecutorRow = {
+            ...firstRow,
+            id: 'id-stuck',
+            suspended: true,
+            providerConnectionId: null,
+        };
+        const result = mergeExecutors([stuck], null, second);
+        expect(result).toEqual({ ok: true, value: [stuck, secondRow] });
+    });
+
     it('replaces the edited row, matched by its original name, keeping its position', () => {
         // A rename changes the name the row is saved under; the match is still against the name
         // the row had when the dialog opened.

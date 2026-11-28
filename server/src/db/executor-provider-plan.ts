@@ -168,10 +168,9 @@ function openCodeWirings(providers: Record<string, unknown>): Wirings {
     return { wirings };
 }
 
-/** `config` without the values at `paths`, and without the objects that leave empty; a custom endpoint block goes whole. */
-function without(config: Record<string, unknown>, paths: readonly string[][], blockIds: readonly string[]) {
+/** `config` without the values at `paths`, and without the objects that leave empty. */
+function without(config: Record<string, unknown>, paths: readonly string[][]) {
     const out = structuredClone(config);
-    for (const id of blockIds) delete (out.provider as Record<string, unknown>)[id];
     for (const path of paths) {
         const trail: Record<string, unknown>[] = [out];
         for (const key of path.slice(0, -1)) {
@@ -249,13 +248,16 @@ function configWirings(row: LegacyRow, config: Record<string, unknown>): { wirin
     return found.wirings[0] ? { wiring: found.wirings[0] } : {};
 }
 
-/** The conversion a config's own wiring decides: its key and endpoint leave the config, a custom endpoint block goes whole. */
+/**
+ * The conversion a config's own wiring decides: only its key and endpoint leave the config. A custom endpoint's
+ * model id moves to the `custom` prefix the connection's generated block declares; the rest of the block stays.
+ */
 function convertWiring(row: LegacyRow, config: Record<string, unknown>, wiring: Wiring): Converted {
     const { provider, baseUrl, source } = wiring;
-    const blockId = provider === 'openai-compatible' ? wiring.paths[0]![1]! : undefined;
-    const kept = without(config, wiring.paths, blockId === undefined ? [] : [blockId]);
+    const kept = without(config, wiring.paths);
     const model = config.model;
-    if (blockId !== undefined && nonEmpty(model)) {
+    if (provider === 'openai-compatible' && nonEmpty(model)) {
+        const blockId = wiring.paths[0]![1]!;
         kept.model = normalizeModelId(
             provider,
             row.type,
@@ -288,9 +290,9 @@ function convertFromScope(row: LegacyRow, config: Record<string, unknown>, vars:
     }
     const only = candidates[0]!;
     const hostName = PROVIDER_BASE_URL_ENV[only];
-    const host = hostName === null ? undefined : findVar(vars, hostName)?.row.value;
-    const baseUrl = nonEmpty(host) ? host : null;
-    const provider = only === 'anthropic' && baseUrl !== null ? 'litellm' : only;
+    const hostVar = hostName === null ? undefined : findVar(vars, hostName);
+    const baseUrl = hostVar ? (hostVar.row.is_secret ? `{env:${hostName}}` : hostVar.row.value) : null;
+    const provider = only === 'anthropic' && nonEmpty(baseUrl) ? 'litellm' : only;
     return {
         kind: 'convert',
         provider,
@@ -307,7 +309,7 @@ function convertFromScope(row: LegacyRow, config: Record<string, unknown>, vars:
  * candidates or none is a confirmed ambiguity, suspended with its reason, never `inferProvider`'s fixed priority.
  */
 export function planExecutor(row: LegacyRow, all: readonly EnvRow[]): Plan {
-    if (!isRecord(row.config)) throw new InconclusiveRead('config is not an object');
+    if (!isRecord(row.config)) return suspend('the executor config is not a JSON object');
     const found = configWirings(row, row.config);
     if ('refusal' in found) return suspend(found.refusal);
     const plan = found.wiring

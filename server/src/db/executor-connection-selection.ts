@@ -26,6 +26,10 @@ export class ExecutorConnectionRefusedError extends Error {
 /** What a write or a resume without a connection is refused with: every executor selects one. */
 export const MISSING_CONNECTION_MESSAGE = 'An executor needs a provider connection: select one first.';
 
+/** What a suspend, resume or edit of a row the provider migration has not reached yet is refused with. */
+export const MIGRATION_PENDING_MESSAGE =
+    'This executor is still being migrated to a provider connection; try again shortly, or select a connection.';
+
 export const selectedOf = (id: string | null): { providerConnectionId?: string } =>
     id === null ? {} : { providerConnectionId: id };
 

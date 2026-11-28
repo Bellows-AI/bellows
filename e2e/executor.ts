@@ -21,31 +21,42 @@ const E2E_CONNECTION_ID = '22222222-2222-4222-8222-222222222222';
 /** The connection's line in the executor dialog's select (`connectionLabel`). */
 export const E2E_CONNECTION_OPTION = `${E2E_CONNECTION.name} — Anthropic · Organization`;
 
-/** Makes sure the real board holds `E2E_CONNECTION` (an org admin writes it) and returns its id. */
-export async function ensureConnection(page: Page): Promise<string> {
-    const created = await page.request.post(PROVIDER_CONNECTIONS, { data: { scope: 'org', ...E2E_CONNECTION } });
+/** The org `openai-compatible` connection the guided OpenAI-compatible executor spec selects (a placeholder endpoint, never called). */
+export const E2E_OPENAI_CONNECTION = {
+    name: 'e2e-openai-compatible',
+    provider: 'openai-compatible',
+    key: 'fake-key',
+    baseUrl: 'https://models.example.test/v1',
+};
+export const E2E_OPENAI_CONNECTION_OPTION = `${E2E_OPENAI_CONNECTION.name} — OpenAI-compatible (custom endpoint) · Organization`;
+
+type E2eConnection = { name: string; provider: string; key: string; baseUrl?: string };
+
+/** Makes sure the real board holds `connection` (default `E2E_CONNECTION`; an org admin writes it) and returns its id. */
+export async function ensureConnection(page: Page, connection: E2eConnection = E2E_CONNECTION): Promise<string> {
+    const created = await page.request.post(PROVIDER_CONNECTIONS, { data: { scope: 'org', ...connection } });
     if (created.status() === 201 || created.status() === 200) return ((await created.json()) as { id: string }).id;
     const listed = (await (await page.request.get(PROVIDER_CONNECTIONS)).json()) as {
         connections: { id: string; name: string }[];
     };
-    const found = listed.connections.find((row) => row.name === E2E_CONNECTION.name);
-    expect(found, `the board holds ${E2E_CONNECTION.name} (create answered ${created.status()})`).toBeDefined();
+    const found = listed.connections.find((row) => row.name === connection.name);
+    expect(found, `the board holds ${connection.name} (create answered ${created.status()})`).toBeDefined();
     return found!.id;
 }
 
-/** Removes `E2E_CONNECTION` once no executor uses it. */
-export async function removeConnection(page: Page): Promise<void> {
+/** Removes `connection` (default `E2E_CONNECTION`) once no executor uses it. */
+export async function removeConnection(page: Page, connection: E2eConnection = E2E_CONNECTION): Promise<void> {
     const listed = (await (await page.request.get(PROVIDER_CONNECTIONS)).json()) as {
         connections: { id: string; name: string }[];
     };
-    for (const row of listed.connections.filter((c) => c.name === E2E_CONNECTION.name)) {
+    for (const row of listed.connections.filter((c) => c.name === connection.name)) {
         await page.request.delete(`${PROVIDER_CONNECTIONS}/${row.id}`);
     }
 }
 
-/** Picks `E2E_CONNECTION` in an executor dialog, once the connection list has loaded. */
-export async function chooseConnection(dialog: Locator): Promise<void> {
-    await dialog.getByLabel('Provider connection', { exact: true }).selectOption({ label: E2E_CONNECTION_OPTION });
+/** Picks a connection (default `E2E_CONNECTION`) in an executor dialog, once the connection list has loaded. */
+export async function chooseConnection(dialog: Locator, option: string = E2E_CONNECTION_OPTION): Promise<void> {
+    await dialog.getByLabel('Provider connection', { exact: true }).selectOption({ label: option });
 }
 
 /** The executor as `mockExecutors` holds it: the list row with its (empty) configuration. */

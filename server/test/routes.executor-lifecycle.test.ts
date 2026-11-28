@@ -804,6 +804,36 @@ describe('every executor needs a provider connection', () => {
         expect(b.executors.rows().every((row) => row.suspended)).toBe(true);
     });
 
+    it('lets a personal list save carry a migration-suspended row back while other executors are added, edited and removed', async () => {
+        const b = await boot();
+        const id = b.executors.seedMigrationSuspended({
+            userId: b.memberId,
+            name: 'legacy',
+            type: 'claude-code',
+            reason: MIGRATION_REASON,
+        });
+        const carried = {
+            id,
+            name: 'legacy',
+            type: 'claude-code',
+            config: {},
+            suspended: true,
+            providerConnectionId: null,
+        };
+        const added = await putPersonal(b, b.memberCookie, [carried, entry('fresh')]);
+        expect(added.statusCode).toBe(HTTP_OK);
+        const edited = await putPersonal(b, b.memberCookie, [carried, entry('fresh', { gateFixRounds: 1 })]);
+        expect(edited.statusCode).toBe(HTTP_OK);
+        const removed = await putPersonal(b, b.memberCookie, [carried]);
+        expect(removed.statusCode).toBe(HTTP_OK);
+        expect(b.executors.rows().map((row) => row.name)).toEqual(['legacy']);
+        // Without its id, or edited, it is not the carried-back row.
+        const nameless = await putPersonal(b, b.memberCookie, [{ ...carried, id: undefined }]);
+        expect(nameless.statusCode).toBe(HTTP_BAD_REQUEST);
+        const changed = await putPersonal(b, b.memberCookie, [{ ...carried, config: { model: 'opus' } }]);
+        expect(changed.statusCode).toBe(HTTP_CONFLICT);
+    });
+
     it('answers the reason a migration suspended the executor on the workspace poll', async () => {
         const b = await boot();
         b.executors.seedMigrationSuspended({

@@ -1,28 +1,21 @@
 import { randomUUID } from 'node:crypto';
+import type { SubscriptionTokenPolicy } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
+import { startIntervalLoop } from '../interval-loop.js';
+import { logger } from '../log.js';
+import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
+import { EnvSecretError } from './env-secrets.js';
+import { retireCredentials, type StoredCredential } from './executor-credentials.js';
 import {
     type EnvRow,
-    findVar,
     InconclusiveRead,
-    type KeySource,
     type LegacyRow,
     PROVIDER_NAME,
     planExecutor,
     samePath,
-    type ScopeVars,
     varsFor,
 } from './executor-provider-plan.js';
-import { startIntervalLoop } from '../interval-loop.js';
-import { logger } from '../log.js';
-import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
-import { envSecretIdentity, EnvSecretError, readSecretValues } from './env-secrets.js';
-import { executorCredentialIdentity, retireCredentials, type StoredCredential } from './executor-credentials.js';
-import {
-    connectionSecretDeps,
-    insertConnectionRow,
-    ProviderConnectionCapError,
-    scopeLockKey,
-} from './provider-connection-store.js';
+import { resolveConnectionInput } from './executor-provider-resolve.js';
 import { waitAdvisoryXactLock } from './pool.js';
 import {
     mintConnectionSecret,
@@ -30,88 +23,56 @@ import {
     readConnectionCredential,
     releaseConnectionSecrets,
 } from './provider-connection-secrets.js';
+import {
+    connectionSecretDeps,
+    insertConnectionRow,
+    ProviderConnectionCapError,
+    scopeLockKey,
+} from './provider-connection-store.js';
 
 /**
- * Migration 175's data step (docs/persistence.md, docs/workspace.md): an executor with no provider connection gets one
- * of its provider in its scope, holding the key its config or its scope's variables carry, named after the provider;
- * the key leaves the config. An executor whose key or provider cannot be CONFIRMED is suspended with the reason and
- * never guessed or deleted. A failed, timed-out or malformed read is inconclusive: the row stays as it was and the next
- * pass retries it. One transaction per executor, a lock serializing replicas, and a rerun finds nothing legacy.
+ * Migration 175's data step (docs/persistence.md, docs/workspace.md): an executor the migration marked pending gets a
+ * provider connection of its provider in its scope, holding the key its config or its scope's variables carry, named
+ * after the provider; the key leaves the config. An executor whose key or provider cannot be CONFIRMED — a bad config,
+ * a missing variable, a key or endpoint the routes would refuse — is suspended with the reason and never guessed or
+ * deleted. Only a failed or timed-out secret store read is inconclusive: the row stays pending and the next pass
+ * retries it. One transaction per executor, a lock serializing replicas, and a rerun finds nothing pending.
  */
 
 const LOCK_KEY = 'executor-provider-migration';
-const CONSTRAINT = 'executor_profile_provider_required_ck';
 export const EXECUTOR_PROVIDER_MIGRATION_INTERVAL_MS = 600_000;
+/** The class of every integrity violation (a check, a unique or a foreign key): confirmed, never transient. */
+const INTEGRITY_VIOLATION_CLASS = '23';
 
 export interface ExecutorProviderMigrationDeps {
-    /** The cross-org pool: the step reads every organization's legacy rows. */
+    /** The cross-org pool: the step reads every organization's pending rows. */
     sql: Sql;
     secrets: SecretStore;
     secretLog: (diagnostic: SecretDiagnostic) => void;
+    /** Whether an org may hold a subscription connection (`AppConfig` satisfies it). */
+    subscriptionPolicy: SubscriptionTokenPolicy;
     signal?: AbortSignal;
 }
 
 export interface ExecutorProviderMigrationResult {
     converted: number;
     suspended: number;
-    /** Rows left as they were because a read was not confirmed: the next pass retries them. */
+    /** Rows left pending because a secret store read was not confirmed: the next pass retries them. */
     inconclusive: number;
-    /** Whether the constraint is validated (no legacy row remains anywhere). */
-    validated: boolean;
+    /** Rows still pending after the pass; zero ends the loop. */
+    remaining: number;
     /** Another replica held the lock. */
     busy: boolean;
-}
-
-/** The key's value, fail-closed: a stored credential, a variable of the scope or a literal. Throws when not confirmed. */
-async function readKey(
-    { deps, orgId, row, vars }: { deps: ExecutorProviderMigrationDeps; orgId: string; row: LegacyRow; vars: ScopeVars },
-    source: KeySource
-): Promise<{ value: string } | { absent: string }> {
-    if (source.kind === 'literal') return { value: source.value };
-    try {
-        if (source.kind === 'stored') {
-            const stored = row.secret_refs.find((s) => samePath(s.path, source.path));
-            if (!stored) throw new InconclusiveRead(`no stored credential at ${source.path.join('.')}`);
-            const [value] = await readSecretValues(deps.secrets, [
-                {
-                    name: source.path.join('.'),
-                    ref: stored.ref,
-                    version: stored.version,
-                    identity: executorCredentialIdentity(orgId, stored.path),
-                },
-            ]);
-            return { value: value! };
-        }
-        const hit = findVar(vars, source.name);
-        if (!hit) return { absent: source.name };
-        if (!hit.row.is_secret) return { value: hit.row.value! };
-        if (!hit.row.secret_ref || !hit.row.secret_version) throw new InconclusiveRead('malformed variable row');
-        const [value] = await readSecretValues(deps.secrets, [
-            {
-                name: source.name,
-                ref: hit.row.secret_ref,
-                version: hit.row.secret_version,
-                identity: envSecretIdentity(
-                    orgId,
-                    hit.layer.kind === 'org' ? { kind: 'org' } : { kind: 'workspace', userId: hit.layer.userId! },
-                    source.name
-                ),
-            },
-        ]);
-        return { value: value! };
-    } catch (error) {
-        if (error instanceof EnvSecretError) throw new InconclusiveRead(error.message);
-        throw error;
-    }
 }
 
 type Outcome = 'converted' | 'suspended' | 'stale';
 
 async function suspendRow(sql: Sql | TransactionSql, orgId: string, row: LegacyRow, reason: string): Promise<Outcome> {
     const updated = await sql`
-        update executor_profile set suspended = true, provider_migration_reason = ${reason}, updated_at = now()
+        update executor_profile set
+            suspended = true, provider_migration_reason = ${reason}, provider_migration_pending = false, updated_at = now()
         where org_id = ${orgId} and id = ${row.id} and user_id is not distinct from ${row.user_id}
-            and provider_connection_id is null and provider_migration_reason is null
+            and provider_migration_pending and provider_connection_id is null
         returning id
     `;
     return updated.length === 0 ? 'stale' : 'suspended';
@@ -132,40 +93,25 @@ async function freeName(tx: TransactionSql, orgId: string, owner: string | null,
     }
 }
 
-async function convertRow(
+/** The scope's own connection already holding this key at this endpoint: the one a shared key resolves to. */
+async function findSharedConnection(
     deps: ExecutorProviderMigrationDeps,
-    orgId: string,
-    row: LegacyRow,
-    all: readonly EnvRow[]
-): Promise<Outcome> {
-    const plan = planExecutor(row, all);
-    if (plan.kind === 'suspend') return suspendRow(deps.sql, orgId, row, plan.reason);
-    const key = await readKey({ deps, orgId, row, vars: varsFor(all, row.user_id) }, plan.source);
-    if ('absent' in key) {
-        return suspendRow(
-            deps.sql,
-            orgId,
-            row,
-            `the variable ${key.absent} the executor names is not set in its scope`
-        );
-    }
-
-    const secretDeps = connectionSecretDeps({
-        sql: deps.sql,
+    {
         orgId,
-        secrets: deps.secrets,
-        secretLog: deps.secretLog,
-    });
-    // The scope's own connection already holding this key at this endpoint is the one a shared key resolves to.
+        row,
+        provider,
+        baseUrl,
+        key,
+    }: { orgId: string; row: LegacyRow; provider: string; baseUrl: string | null; key: string }
+): Promise<string | undefined> {
     const existing = await deps.sql<
         { id: string; user_id: string | null; name: string; secret_ref: string; secret_version: string }[]
     >`
         select id, user_id, name, secret_ref, secret_version from provider_connection
         where org_id = ${orgId} and user_id is not distinct from ${row.user_id}
-            and provider = ${plan.provider} and base_url is not distinct from ${plan.baseUrl}
+            and provider = ${provider} and base_url is not distinct from ${baseUrl}
         order by created_at, id
     `;
-    let reuse: string | undefined;
     for (const candidate of existing) {
         const held = await readConnectionCredential(deps.secrets, {
             orgId,
@@ -177,12 +123,40 @@ async function convertRow(
         }).catch((error: unknown) => {
             throw error instanceof EnvSecretError ? new InconclusiveRead(error.message) : error;
         });
-        if (held === key.value) {
-            reuse = candidate.id;
-            break;
-        }
+        if (held === key) return candidate.id;
     }
+    return undefined;
+}
 
+async function convertRow(
+    deps: ExecutorProviderMigrationDeps,
+    orgId: string,
+    row: LegacyRow,
+    all: readonly EnvRow[]
+): Promise<Outcome> {
+    const plan = planExecutor(row, all);
+    if (plan.kind === 'suspend') return suspendRow(deps.sql, orgId, row, plan.reason);
+    const resolved = await resolveConnectionInput(
+        {
+            secrets: deps.secrets,
+            subscriptionPolicy: deps.subscriptionPolicy,
+            orgId,
+            row,
+            vars: varsFor(all, row.user_id),
+        },
+        plan
+    );
+    if ('suspend' in resolved) return suspendRow(deps.sql, orgId, row, resolved.suspend);
+    const key = { value: resolved.key };
+    const baseUrl = resolved.baseUrl;
+
+    const secretDeps = connectionSecretDeps({
+        sql: deps.sql,
+        orgId,
+        secrets: deps.secrets,
+        secretLog: deps.secretLog,
+    });
+    const reuse = await findSharedConnection(deps, { orgId, row, provider: plan.provider, baseUrl, key: key.value });
     const newId = randomUUID();
     const made =
         reuse === undefined
@@ -198,7 +172,7 @@ async function convertRow(
             const [current] = await tx<{ config: unknown; secret_refs: StoredCredential[] }[]>`
                 select config, secret_refs from executor_profile
                 where org_id = ${orgId} and id = ${row.id} and user_id is not distinct from ${row.user_id}
-                    and provider_connection_id is null and provider_migration_reason is null
+                    and provider_migration_pending and provider_connection_id is null
                 for update
             `;
             if (!current || JSON.stringify(current.config) !== JSON.stringify(row.config)) return 'stale';
@@ -216,7 +190,7 @@ async function convertRow(
                         userId: row.created_by,
                         provider: plan.provider,
                         name: await freeName(tx, orgId, row.user_id, PROVIDER_NAME[plan.provider]),
-                        baseUrl: plan.baseUrl,
+                        baseUrl,
                         key: key.value,
                     },
                 });
@@ -225,7 +199,7 @@ async function convertRow(
             await tx`
                 update executor_profile set
                     provider_connection_id = ${connectionId}, config = ${tx.json(plan.config as never)},
-                    secret_refs = ${tx.json(secretRefs as never)}, updated_at = now()
+                    secret_refs = ${tx.json(secretRefs as never)}, provider_migration_pending = false, updated_at = now()
                 where org_id = ${orgId} and id = ${row.id}
             `;
             return 'converted';
@@ -239,6 +213,10 @@ async function convertRow(
                 row,
                 'the scope holds the most provider connections allowed; remove one and choose a connection'
             );
+        }
+        if ((error as { code?: string }).code?.startsWith(INTEGRITY_VIOLATION_CLASS)) {
+            const constraint = (error as { constraint_name?: string }).constraint_name ?? 'a constraint';
+            return suspendRow(deps.sql, orgId, row, `the connection could not be stored (${constraint})`);
         }
         throw error;
     }
@@ -275,21 +253,6 @@ async function retireUnreferenced(deps: ExecutorProviderMigrationDeps, orgId: st
     );
 }
 
-/** Validates the constraint once nothing legacy remains; true when it is validated. */
-async function validateWhenDone(sql: Sql): Promise<boolean> {
-    const [counted] = await sql<{ legacy: number }[]>`
-        select count(*)::int as legacy from executor_profile where provider_connection_id is null and provider_migration_reason is null
-    `;
-    const status = () =>
-        sql<{ convalidated: boolean }[]>`
-            select convalidated from pg_constraint where conname = ${CONSTRAINT} and conrelid = 'executor_profile'::regclass
-        `;
-    if ((await status())[0]?.convalidated !== false) return true;
-    if ((counted?.legacy ?? 1) > 0) return false;
-    await sql`select bellows_validate_executor_provider_required()`;
-    return (await status())[0]?.convalidated === true;
-}
-
 /** One organization's legacy executors, one at a time: a row that fails is counted and left as it was. */
 async function migrateOrg(
     deps: ExecutorProviderMigrationDeps,
@@ -302,7 +265,7 @@ async function migrateOrg(
     `;
     const rows = await deps.sql<LegacyRow[]>`
         select id, user_id, name, type, config, secret_refs, created_by from executor_profile
-        where org_id = ${orgId} and provider_connection_id is null and provider_migration_reason is null
+        where org_id = ${orgId} and provider_migration_pending
         order by (user_id is not null), position, name, id
     `;
     for (const row of rows) {
@@ -322,17 +285,19 @@ async function migrateOrg(
     }
 }
 
-/** Every organization with a legacy executor, then the constraint's validation once none is left. */
+/** Every organization with a pending executor, then how many remain pending anywhere. */
 async function migrateAll(deps: ExecutorProviderMigrationDeps, result: ExecutorProviderMigrationResult) {
     const orgs = await deps.sql<{ org_id: string }[]>`
-        select distinct org_id from executor_profile
-        where provider_connection_id is null and provider_migration_reason is null
+        select distinct org_id from executor_profile where provider_migration_pending
     `;
     for (const { org_id: orgId } of orgs) {
         if (deps.signal?.aborted) break;
         await migrateOrg(deps, orgId, result);
     }
-    result.validated = await validateWhenDone(deps.sql);
+    const [left] = await deps.sql<{ n: number }[]>`
+        select count(*)::int as n from executor_profile where provider_migration_pending
+    `;
+    result.remaining = left?.n ?? 1;
 }
 
 /**
@@ -346,7 +311,7 @@ export async function migrateExecutorProviders(
         converted: 0,
         suspended: 0,
         inconclusive: 0,
-        validated: false,
+        remaining: 0,
         busy: false,
     };
     const lock = await deps.sql.reserve();
@@ -366,11 +331,16 @@ export async function migrateExecutorProviders(
     return result;
 }
 
-/** The boot step: a pass now and on an interval, until nothing legacy remains (a pass with none is two cheap reads). */
+/** The boot step: a pass now and on an interval, until none is pending (an unconfirmed read is retried). */
 export function startExecutorProviderMigration(deps: Omit<ExecutorProviderMigrationDeps, 'signal'>) {
-    return startIntervalLoop(
+    let stop: (() => Promise<void>) | undefined;
+    stop = startIntervalLoop(
         'executor-provider-migration',
-        (signal) => migrateExecutorProviders({ ...deps, signal }),
+        async (signal) => {
+            const result = await migrateExecutorProviders({ ...deps, signal });
+            if (!result.busy && result.remaining === 0) void stop?.();
+        },
         EXECUTOR_PROVIDER_MIGRATION_INTERVAL_MS
     );
+    return () => stop!();
 }

@@ -103,7 +103,7 @@ export interface UseWorkspace {
             config: object;
             gateFixRounds: number;
             suspended?: boolean;
-            /** The edited row names one; a carried-back row the provider migration suspended still has none, and the board says so. */
+            /** Every entry names one; null only carries back a migration-suspended row by id, unchanged, which the board accepts. */
             providerConnectionId?: string | null;
         }[]
     ) => Promise<string | null>;

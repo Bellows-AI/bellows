@@ -29,7 +29,8 @@ import type { OrgRegistry } from '../orgs.js';
 import { MAX_AGENT_MODEL_LENGTH } from './jobs/job-limits.js';
 import { HTTP_CONNECTION_REFUSED, isConnectionRefusal, lifecycleRefusal, UUID } from './executor-fields.js';
 import { bad, body as jsonBody, guard } from './helpers.js';
-import { refuseUnparsedBody, validBase, validKey } from './provider-connections-verify.js';
+import { validBase, validKey } from '../provider-keys/input-rules.js';
+import { refuseUnparsedBody } from './provider-connections-verify.js';
 import { badConnectionName } from './provider-connections.js';
 
 /**

@@ -24,7 +24,14 @@ import {
     SUSPENDED_LABEL,
 } from '../web/src/panels/WorkspaceExecutorsPanel.js';
 import { confirmLabel, confirmTitle } from '../web/src/panels/org-executor-confirm.js';
-import { chooseConnection, contextChip, ensureConnection } from './executor.js';
+import {
+    chooseConnection,
+    contextChip,
+    E2E_OPENAI_CONNECTION,
+    E2E_OPENAI_CONNECTION_OPTION,
+    ensureConnection,
+    removeConnection,
+} from './executor.js';
 
 /**
  * The organization executor row's actions (issue 411): the overflow menu, and the confirmation that
@@ -309,13 +316,15 @@ test('Suspend keeps a personal profile but withholds Make default and the compos
 
 test('an OpenAI-compatible executor is created through the guided provider, with no JSON typed', async ({ page }) => {
     await asAdmin(page);
+    await ensureConnection(page, E2E_OPENAI_CONNECTION);
     const name = PROFILES[0]!;
 
     await page.getByRole('button', { name: 'Add organization executor' }).click();
     const dialog = page.getByRole('dialog', { name: ADD_LABEL });
     await dialog.getByLabel('Name', { exact: true }).fill(name);
-    await chooseConnection(dialog);
+    // A custom endpoint runs on OpenCode only, so the select offers it once the agent is chosen.
     await dialog.getByLabel('Agent').selectOption('OpenCode');
+    await chooseConnection(dialog, E2E_OPENAI_CONNECTION_OPTION);
 
     // The guided provider step, collapsed until the member opens it.
     await dialog.getByText('Connect a provider').click();
@@ -350,12 +359,12 @@ test('an OpenAI-compatible executor is created through the guided provider, with
     await row(page, name).getByRole('button', { name: 'Edit' }).click();
     const edit = page.getByRole('dialog', { name: 'Edit executor' });
     await edit.getByText('Advanced configuration').click();
-    // The selected connection's provider prefixes the model the way the board accepts it; the rest is as generated.
+    // The selected openai-compatible connection prefixes the model with `custom/` (normalizeModelId); the rest is as generated.
     const shown = JSON.parse(await edit.getByLabel('Configuration JSON').inputValue());
-    const expected = JSON.parse(generated);
-    expect(shown).toEqual({ ...expected, model: expect.stringContaining(expected.model) });
+    expect(shown).toEqual({ ...JSON.parse(generated), model: 'custom/vllm-internal/llama-3' });
     await page.keyboard.press('Escape');
     await deleteProfile(page, name);
+    await removeConnection(page, E2E_OPENAI_CONNECTION);
 });
 
 /** A refused removal reads from the page's one error line: the default names the executor until it is replaced or cleared. */

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { ExecutorConnectionRefusedError, MISSING_CONNECTION_MESSAGE } from '../src/db/executor-connection-selection.js';
 import { type DefaultResolution, selectedMessage } from '../src/db/executor-default-store.js';
 import {
@@ -205,9 +206,22 @@ export function memoryUserExecutorStore(
                 claimed.add(row.id);
                 matched[index] = row;
             }
-            const connectionOf = (executor: (typeof executors)[number]) => executor.providerConnectionId;
-            for (const executor of executors) {
-                judge(userId, connectionOf(executor), executor.type, executor.config);
+            for (const [index, executor] of executors.entries()) {
+                if (executor.providerConnectionId !== null) {
+                    judge(userId, executor.providerConnectionId, executor.type, executor.config);
+                    continue;
+                }
+                // Only the carried-back migration-suspended row, by id, unchanged, keeps no connection.
+                const row = matched[index];
+                const carried =
+                    row !== undefined &&
+                    executor.id === row.id &&
+                    row.providerConnectionId === null &&
+                    row.suspendedReason !== undefined &&
+                    row.suspended &&
+                    executor.suspended !== false &&
+                    isDeepStrictEqual(row.config, executor.config);
+                if (!carried) throw new ExecutorConnectionRefusedError('missing', MISSING_CONNECTION_MESSAGE);
             }
             const omitted = own.filter((r) => !claimed.has(r.id));
             assertUnselected(omitted, userId);
@@ -221,13 +235,13 @@ export function memoryUserExecutorStore(
                     config: structuredClone(executor.config),
                     gateFixRounds: executor.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS,
                     suspended: executor.suspended ?? row?.suspended ?? false,
-                    providerConnectionId: connectionOf(executor),
+                    providerConnectionId: executor.providerConnectionId,
                     position: index,
                     updatedAt: at(),
                 };
                 if (row) {
                     Object.assign(row, fields);
-                    delete row.suspendedReason;
+                    if (fields.providerConnectionId !== null) delete row.suspendedReason;
                 }
                 kept.push(
                     row ?? { id: uuid(), userId, createdBy: null, runnerClass: null, createdAt: at(), ...fields }

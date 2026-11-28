@@ -68,7 +68,7 @@ function parseExecutorEntry(
     if (item?.isDefault !== undefined) {
         return 'isDefault is set through PUT /api/workspace/executors/default, not on the row';
     }
-    const fields = parseExecutorFields(entry, deploymentMode, subscriptionAllowed);
+    const fields = parseExecutorFields(entry, deploymentMode, subscriptionAllowed, true);
     if (typeof fields === 'string') return fields;
     const id = parseExecutorId(entry);
     if (typeof id === 'object') return id.refusal;
@@ -114,7 +114,7 @@ type ExecutorEntry = {
     config: Record<string, unknown>;
     gateFixRounds: number;
     suspended?: boolean;
-    providerConnectionId: string;
+    providerConnectionId: string | null;
 };
 
 /**

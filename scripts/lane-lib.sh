@@ -181,8 +181,8 @@ field() { # field <json> <key>
 
 # Every executor selects a provider connection, and the claim replaces the runner's model env with the
 # connection's key and endpoint (applyConnectionLayer), so the connection carries the scripted model's
-# address. scripts/lane-connection.mjs is the one implementation; the token is AUTH_HEADER or FACTORY_TOKEN.
-lane_connection_id() { # lane_connection_id <baseUrl> [org|personal] -> the id of a new anthropic connection at <baseUrl>, key fake-key
+# address. scripts/lane-connection.mjs is the one implementation (one connection per endpoint and scope, reused by retries); the token is AUTH_HEADER or FACTORY_TOKEN.
+lane_connection_id() { # lane_connection_id <baseUrl> [org|personal] -> the id of the anthropic connection at <baseUrl>, created once, key fake-key
     node "$REPO/scripts/lane-connection.mjs" connection "$BASE" "$1" "${2:-org}"
 }
 

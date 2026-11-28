@@ -10,7 +10,7 @@
 // stdout: one `ok\t<check>` or `bad\t<check>\t<detail>` line per check, which test-jobs.sh turns into its own.
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { connectionBody, executorsBody } from './lane-connection.mjs';
+import { ensureConnectionId, executorsBody } from './lane-connection.mjs';
 
 // The SDK is a dependency of the server workspace (server/package.json), not of the repository root: resolve it from there.
 const fromServer = createRequire(new URL('../server/package.json', import.meta.url));
@@ -131,17 +131,19 @@ async function signIn() {
     check('mcp: the member signs in through the identity provider', Boolean(who?.user?.id), `landed ${landed.status}, me ${me.status}`);
     // The task executors a claim resolves, stored by the member as the board fixture stores the stand-in member's.
     // Every executor selects a provider connection; this phase's runner is the stub, so the endpoint is never called.
-    const created = await hop(`${BOARD}/api/provider-connections`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', origin: BOARD },
-        body: JSON.stringify(connectionBody('http://host.docker.internal:9', 'personal')),
+    let failure = '';
+    const connectionId = await ensureConnectionId(
+        (path, init = {}) => hop(`${BOARD}${path}`, { ...init, headers: { ...init.headers, origin: BOARD } }),
+        'http://host.docker.internal:9',
+        'personal'
+    ).catch((e) => {
+        failure = e.message;
     });
-    const connection = created.status === 201 ? await created.json() : null;
-    check('mcp: the member creates a provider connection', typeof connection?.id === 'string', `${created.status}`);
+    check('mcp: the member creates a provider connection', typeof connectionId === 'string', failure);
     const stored = await hop(`${BOARD}/api/workspace/executors`, {
         method: 'PUT',
         headers: { 'content-type': 'application/json', origin: BOARD },
-        body: JSON.stringify(executorsBody(connection?.id, true)),
+        body: JSON.stringify(executorsBody(connectionId, true)),
     });
     check('mcp: the member stores the task executors', stored.status === 200, `${stored.status}`);
     return who;

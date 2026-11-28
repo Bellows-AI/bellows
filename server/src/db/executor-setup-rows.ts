@@ -72,7 +72,7 @@ export async function writeSetupExecutor(
         update executor_profile set
             name = coalesce(${input.name ?? null}, name), type = ${input.agentType},
             config = ${tx.json(configWithModel(previous.config, input.agentType, input.model))},
-            provider_connection_id = ${input.connectionId}, provider_migration_reason = null, updated_at = now()
+            provider_connection_id = ${input.connectionId}, provider_migration_reason = null, provider_migration_pending = false, updated_at = now()
         where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
         returning id, name
     `;

@@ -6,6 +6,7 @@ import {
     assertMovedSelection,
     ExecutorConnectionRefusedError,
     lockOrgRowForUpdate,
+    MIGRATION_PENDING_MESSAGE,
     MISSING_CONNECTION_MESSAGE,
     modelOf,
     selectedOf,
@@ -316,19 +317,24 @@ async function setSuspendedRow(
     sql: Sql,
     { orgId, id, owner, suspended }: { orgId: string; id: string; owner: string | null; suspended: boolean }
 ): Promise<ExecutorProfile | null> {
-    // A row with no connection (the provider migration suspended it) cannot be resumed until it selects one.
+    // A row the provider migration has not reached (pending) is left to it, and a row with no connection (the migration
+    // suspended it) cannot be resumed until it selects one.
     const rows = await sql<Row[]>`
         update executor_profile set suspended = ${suspended}, updated_at = now()
         where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
-            and (${suspended} or provider_connection_id is not null)
+            and not provider_migration_pending and (${suspended} or provider_connection_id is not null)
         returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, provider_migration_reason
     `;
     if (rows[0]) return toExecutorProfile(rows[0]);
-    const [held] = await sql`
-        select 1 from executor_profile where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
+    const [held] = await sql<{ pending: boolean }[]>`
+        select provider_migration_pending as pending from executor_profile
+        where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
     `;
-    if (held) throw new ExecutorConnectionRefusedError('missing', MISSING_CONNECTION_MESSAGE);
-    return null;
+    if (!held) return null;
+    throw new ExecutorConnectionRefusedError(
+        'missing',
+        held.pending ? MIGRATION_PENDING_MESSAGE : MISSING_CONNECTION_MESSAGE
+    );
 }
 
 /**
@@ -467,6 +473,7 @@ async function updateOrgRow(
                 runner_class = case when ${patch.runnerClass !== undefined} then ${patch.runnerClass ?? null}
                                     else runner_class end,
                 provider_connection_id = ${previous.connectionId}, provider_migration_reason = null,
+                provider_migration_pending = false,
                 updated_at = now()
             where org_id = ${orgId} and id = ${id} and user_id is null
             returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, provider_migration_reason, config

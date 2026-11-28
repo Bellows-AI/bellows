@@ -2603,7 +2603,7 @@ fetch(process.argv[2], { method: process.argv[1], headers, body: process.argv[3]
 # Every executor selects a provider connection (scripts/lane-lib.sh). The k8s runners are stubs, so the
 # connection's endpoint is never called; the token is the FACTORY_TOKEN in scope.
 K8S_IDLE_MODEL_URL='http://127.0.0.1:9'
-put_member_executors() { # put_member_executors -> the status of the member storing its claude executor under a new connection, 000 when none
+put_member_executors() { # put_member_executors -> the status of the member storing its claude executor under the reused connection, 000 when none
     local conn
     conn="$(lane_connection_id "$K8S_IDLE_MODEL_URL" personal 2>/dev/null)" || {
         printf 000
