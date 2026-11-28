@@ -1,4 +1,5 @@
 import { EXECUTOR_TYPES } from '@factory-ai/core';
+import { useEffect, useRef } from 'react';
 import type { AnchorSide } from '../anchor.js';
 import { useConnectionModels } from '../api/useProviderConnections.js';
 import {
@@ -20,9 +21,18 @@ const MODEL_HELP = 'The model the agent runs. Pick one the provider offers, or t
 export function useModelChoices(
     agent: string | null,
     connection: ChipConnection | null
-): { models: string[]; note: string | null; pick: (model: string) => string } {
+): {
+    models: string[];
+    note: string | null;
+    pick: (model: string) => string;
+    /** The selected connection; null without one. */
+    connectionId: string | null;
+    /** The connection's confirmed, non-empty list; null while loading, failed, unsupported, empty or without a connection. */
+    listed: readonly string[] | null;
+} {
     const read = useConnectionModels(connection?.id ?? null);
-    if (connection === null) return { models: [], note: null, pick: (model) => model };
+    if (connection === null)
+        return { models: [], note: null, pick: (model) => model, connectionId: null, listed: null };
     const type = EXECUTOR_TYPES.find((candidate) => candidate === agent) ?? null;
     const catalog = modelCatalogOf(connection, type, read.models);
     // A typed or picked name goes through the same rule as the offered list, so a bare id is saved as the server accepts it.
@@ -30,7 +40,40 @@ export function useModelChoices(
         models: [...catalogModels(catalog)],
         note: catalogNote(catalog),
         pick: (model) => normalizedChoices(connection.provider, type, model),
+        connectionId: connection.id,
+        listed: catalog.kind === 'listed' ? catalog.models : null,
     };
+}
+
+/**
+ * What a picked model becomes once a new connection's list is confirmed: kept when listed, else Default (''). Only a
+ * confirmed non-empty list judges it — a read that is loading, failed, unsupported or empty never drops a model.
+ */
+export function modelAfterExecutorSwitch(picked: string, listed: readonly string[] | null): string {
+    return listed === null || listed.includes(picked) ? picked : '';
+}
+
+/**
+ * Resets a model picked under the previous executor's connection to Default when the executor moves to another
+ * connection whose confirmed list lacks it. `choices` is the chip's `useModelChoices`; `reset` clears the pick.
+ */
+export function useStaleModelReset(
+    choices: { connectionId: string | null; listed: readonly string[] | null },
+    picked: string,
+    reset: () => void
+) {
+    const { connectionId, listed } = choices;
+    const previous = useRef(connectionId);
+    const awaiting = useRef(false);
+    useEffect(() => {
+        if (previous.current !== connectionId) {
+            previous.current = connectionId;
+            awaiting.current = connectionId !== null;
+        }
+        if (!awaiting.current || listed === null) return;
+        awaiting.current = false;
+        if (picked !== '' && modelAfterExecutorSwitch(picked, listed) === '') reset();
+    });
 }
 
 /**
