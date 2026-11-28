@@ -49,15 +49,13 @@ function reposRow(read: UseRepos): RowState {
     return { detail: joined([installation?.account, scope]), lamp: repos.length > 0 ? 'ok' : 'wait' };
 }
 
-/** With no key the board can see, what a task would run on instead: the agent default, else the default profile. */
+/** With no key the board can see, what a task would run on instead: the default profile. */
 function withoutKeyRow(workspace: UseWorkspace): RowState {
     if (workspace.data === null) {
         if (workspace.error === null) return CHECKING;
         return { detail: 'Could not check the model.', lamp: 'idle', retry: workspace.refresh };
     }
-    const { agentDefault, defaultExecutor } = workspace.data;
-    if (agentDefault) return { detail: joined([agentLabel(agentDefault.agentType), agentDefault.model]), lamp: 'ok' };
-    return { detail: joined(['Executor profile', defaultExecutor?.name]), lamp: 'ok' };
+    return { detail: joined(['Executor profile', workspace.data.defaultExecutor?.name]), lamp: 'ok' };
 }
 
 /** "Not connected" only when `showNoModel` says a task could not run; a failed read says so instead. */
@@ -71,13 +69,6 @@ function modelRow(
     const view = setup.data;
     if (view === null) return CHECKING;
     if (view.effective === null) return noModel ? { detail: 'Not connected', lamp: 'wait' } : withoutKeyRow(workspace);
-    if (view.effective === 'platform') {
-        const choice = view.personal ?? view.org;
-        return {
-            detail: joined([agentLabel(choice?.agentType), choice?.model, 'provided by this deployment']),
-            lamp: 'ok',
-        };
-    }
     if (view.effective === 'executor' && view.selected) {
         const { selected } = view;
         const who = selected.scope === 'org' ? `everyone in ${organization ?? 'the organization'}` : 'only you';
@@ -95,7 +86,7 @@ function modelRow(
     const scope = view.effective === 'executor' ? null : view[view.effective];
     const who = view.effective === 'org' ? `everyone in ${organization ?? 'the organization'}` : 'only you';
     return {
-        detail: joined([agentLabel(scope?.agentType), providerLabel(scope?.provider), scope?.model, who]),
+        detail: joined([providerLabel(scope?.provider), who]),
         lamp: 'ok',
     };
 }

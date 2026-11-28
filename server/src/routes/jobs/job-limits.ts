@@ -14,6 +14,9 @@ export const BYTES_PER_KIB = 1024;
 const BODY_LIMIT_KIB = 128;
 export const BODY_LIMIT = BODY_LIMIT_KIB * BYTES_PER_KIB;
 
+/** The longest model name a task, a follow-up or a model setup may choose. */
+export const MAX_AGENT_MODEL_LENGTH = 200;
+
 /**
  * The repo and executor labels a task may carry. The repo label is display metadata for the tasks
  * chat — the chat groups by repository. The executor label is consumed at claim time: the claim

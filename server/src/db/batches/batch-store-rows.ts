@@ -4,7 +4,6 @@ import {
     BATCH_COMPLETION_ACCEPTED,
     BATCH_COMPLETION_PR,
     type ExecutorScope,
-    type ExecutorType,
     TASK_NO_PR,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
@@ -27,18 +26,13 @@ export interface RootTask {
     executor: string | null;
     /** Null beside a null executor, which only a board with no executor store or no caller launches. */
     executor_scope: ExecutorScope | null;
-    /** The starter's agent default frozen at start beside a null executor; null otherwise. */
-    agent_type: ExecutorType | null;
-    agent_model: string | null;
 }
 
-/** Where a task's root launches: its target's repo, and its frozen executor in that executor's scope, or its frozen agent. */
+/** Where a task's root launches: its target's repo, and its frozen executor in that executor's scope, */
 export const rootTargetOf = (task: RootTask, repo: string) => ({
     repo,
     executor: task.executor,
     ...(task.executor_scope === null ? {} : { executorScope: task.executor_scope }),
-    agentType: task.agent_type,
-    agentModel: task.agent_model,
 });
 
 /** The `batch_task` columns, its stage's policy and its PR's observed outcome that say whether the board is still merging it. */
@@ -396,8 +390,7 @@ export async function writeResolved(
             await tx`
                 update batch_task
                 set target_key = ${task.target}, executor = ${task.executor},
-                    executor_scope = ${task.executor === null ? null : task.executorScope},
-                    agent_type = ${task.agentType ?? null}, agent_model = ${task.agentModel ?? null}
+                    executor_scope = ${task.executor === null ? null : task.executorScope}
                 where org_id = ${orgId} and batch_id = ${id} and key = ${task.key}
             `;
         }

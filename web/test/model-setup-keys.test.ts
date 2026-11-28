@@ -75,7 +75,6 @@ describe('agents and models per provider', () => {
         expect(modelOptions('openrouter', 'claude-code', ['openai/gpt-5.1', 'anthropic/claude-z'])).toEqual([
             'anthropic/claude-z',
         ]);
-        expect(modelOptions('platform', 'claude-code', undefined)[0]).toBe('claude-sonnet-5-5');
     });
 });
 

@@ -352,7 +352,6 @@ describe('a default executor', () => {
         ...over,
     });
     const view = (over: Partial<SelectedExecutorView> = {}): ModelSetupView => ({
-        platform: false,
         org: null,
         personal: null,
         selected: selected(over),
@@ -526,7 +525,6 @@ describe('after a save in Settings', () => {
         },
     };
     const viewOf = (selected: SelectedExecutorView): ModelSetupView => ({
-        platform: false,
         org: null,
         personal: null,
         selected,

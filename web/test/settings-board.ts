@@ -157,7 +157,6 @@ function session(board: SettingsBoard): Session {
         batches: false,
         deploymentMode: board.deploymentMode,
         subscriptionToken: board.subscriptionToken,
-        platformModel: false,
     };
 }
 

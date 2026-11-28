@@ -26,14 +26,12 @@ export function noModelState({ mode, modelSetup, workspace }: NoModelInput): NoM
     if (mode === null) return 'pending';
     if (workspace.error !== null) return 'hidden';
     if (workspace.data === null) return 'pending';
-    return workspace.data.defaultExecutor === null && (workspace.data.agentDefault ?? null) === null
-        ? 'shown'
-        : 'hidden';
+    return workspace.data.defaultExecutor === null ? 'shown' : 'hidden';
 }
 
 /**
  * Whether to say "No model yet": only where a task could not run. Cloud: a confirmed `effective: null`.
- * Self-hosted: that, and no executor profile or agent default the member could run on either — the
+ * Self-hosted: that, and no default executor the member could run on either — the
  * runners' own environment may supply a key the board cannot see. Any unconfirmed read says nothing.
  */
 export function showNoModel(input: NoModelInput): boolean {

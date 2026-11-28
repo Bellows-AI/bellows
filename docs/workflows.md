@@ -47,7 +47,7 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
   `server/test-db/pr-follow.test.ts`.
 - **A parked wait holds no `job` row and no lease**; the per-root advisory lock and the claim-time
   cancellation fence prevent a double wake — `server/test-db/job-store.block-wait.test.ts`.
-- **A successor carries the thread's frozen executor and `agent_type`/`agent_model`**; a parked `workflow_round` stores them for the woken job — `server/src/db/workflows/workflow-blocks/runtime.ts`, `server/test-db/job-store.block-wait.test.ts`.
+- **A successor carries the thread's frozen executor and `agent_model`**; a parked `workflow_round` stores them for the woken job — `server/src/db/workflows/workflow-blocks/runtime.ts`, `server/test-db/job-store.block-wait.test.ts`.
 
 ## Stated limits
 

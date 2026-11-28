@@ -35,8 +35,6 @@ export interface Session {
      * the operator listed (`CLOUD_SUBSCRIPTION_ORG_IDS`). Read as `=== true`: an absent flag never allows one.
      */
     subscriptionToken: boolean;
-    /** Whether the operator supplies the model (`PLATFORM_MODEL_PROVIDED`): a member may run on it without a key. */
-    platformModel: boolean;
 }
 
 /** The role as the settings pages print it. */

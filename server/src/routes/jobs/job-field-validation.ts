@@ -30,6 +30,7 @@ import {
     INT4_MIN,
     LEASE_SECONDS_MAX,
     LIST_LIMIT_DEFAULT,
+    MAX_AGENT_MODEL_LENGTH,
     LIST_LIMIT_MAX,
     OUTPUT_LIMIT,
     PR_URL,
@@ -44,7 +45,6 @@ import {
 } from './job-limits.js';
 import { repoReason } from '../helpers.js';
 import { MS_PER_SECOND } from '../auth-shared.js';
-import { MAX_AGENT_MODEL_LENGTH } from '../agent-default.js';
 
 /**
  * Field-by-field body/query validation for the job routes — everything that turns an untrusted
@@ -113,8 +113,8 @@ export function validateExecutorField(
 }
 
 /**
- * The model a create or a follow-up chooses: absent or null means none (the profile's or the agent default's model
- * runs), otherwise a name of 1 to `MAX_AGENT_MODEL_LENGTH` characters after trimming — the agent default's own bound.
+ * The model a create or a follow-up chooses: absent or null means none (the profile's model
+ * runs), otherwise a name of 1 to `MAX_AGENT_MODEL_LENGTH` characters after trimming.
  */
 export function validateModelField(raw: unknown): { ok: true; value: string | null } | { ok: false; message: string } {
     if (raw === undefined || raw === null) return { ok: true, value: null };

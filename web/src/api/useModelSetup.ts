@@ -19,8 +19,6 @@ import {
 /** One scope's setup, names only; null when it has none. */
 export interface ModelScopeView {
     provider: string | null;
-    agentType: ExecutorType | null;
-    model: string | null;
     keyNames: string[];
     /** The provider's base URL when the scope holds it as a plain variable. */
     baseUrl?: string;
@@ -45,21 +43,18 @@ export interface SelectedExecutorView {
 }
 
 export interface ModelSetupView {
-    /** The deployment supplies a model; the provider setup knows no such model, so it is never true. */
-    platform: boolean;
     org: ModelScopeView | null;
     personal: ModelScopeView | null;
     /** The configured default executor (the member's, else the organization's); absent when none is configured. */
     selected?: SelectedExecutorView;
-    effective: 'executor' | 'personal' | 'org' | 'platform' | null;
+    effective: 'executor' | 'personal' | 'org' | null;
 }
 
-/** What a setup does about the connection: seal a new one, select one, replace one's key, or use none (refused: every executor runs on a connection). */
+/** What a setup does about the connection: seal a new one, select one, or replace one's key. */
 export type ConnectionBody =
     | { intent: 'create'; provider: ModelProvider; key: string; baseUrl?: string; name: string }
     | { intent: 'reuse'; id: string }
-    | { intent: 'rotate'; id: string; key: string; baseUrl?: string }
-    | { intent: 'none' };
+    | { intent: 'rotate'; id: string; key: string; baseUrl?: string };
 
 /** The provider setup the hook sends (the request id is the hook's): the connection intent and the executor it runs, made the default. */
 export interface ModelSetupSave {
@@ -80,8 +75,6 @@ export interface SavedSetup {
     connectionName: string | null;
     replayed: boolean;
 }
-
-const NO_CONNECTION_REFUSAL = 'Choose a provider connection first: every executor runs on one.';
 
 /** The default executor's connection, from the executor row's own safe fields and the list's endpoint. */
 function connectionOf(
@@ -109,7 +102,7 @@ export function viewOf(
     const def = workspace.defaultExecutor;
     const org = def?.scope === ORG_SCOPE;
     const row = def ? (org ? workspace.orgExecutors : workspace.executors).find((e) => e.name === def.name) : undefined;
-    if (!def || !row) return { platform: false, org: null, personal: null, effective: null };
+    if (!def || !row) return { org: null, personal: null, effective: null };
     const selected: SelectedExecutorView = {
         scope: org ? 'org' : 'personal',
         executorId: row.id,
@@ -121,7 +114,6 @@ export function viewOf(
         connection: connectionOf(row, connections),
     };
     return {
-        platform: false,
         org: null,
         personal: null,
         selected,
@@ -217,7 +209,6 @@ export function useModelSetup(): UseModelSetup {
     const attempt = useRef<{ body: string; requestId: string } | null>(null);
     const save = useCallback(
         async (body: ModelSetupSave) => {
-            if (body.connection.intent === 'none') return { ok: false, error: NO_CONNECTION_REFUSAL } as const;
             const text = JSON.stringify(body);
             if (attempt.current?.body !== text) attempt.current = { body: text, requestId: crypto.randomUUID() };
             const { expectedUpdatedAt, ...executor } = body.executor;

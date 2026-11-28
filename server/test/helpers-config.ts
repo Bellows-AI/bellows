@@ -67,7 +67,6 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         batches: { enabled: false },
         deploymentMode: 'self-hosted',
         cloudSubscriptionOrgIds: new Set(),
-        platformModelProvided: false,
         operatorGithubIds: [],
         driverCredentialBootstrap: null,
         ...overrides,

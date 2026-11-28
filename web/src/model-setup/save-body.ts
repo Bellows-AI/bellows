@@ -1,11 +1,10 @@
-import { type ExecutorType, type ModelProvider, normalizeModelId } from '@factory-ai/core';
+import type { ExecutorType, ModelProvider } from '@factory-ai/core';
 import type { ModelSetupSave, SelectedExecutorView, SetupScope } from '../api/useModelSetup.js';
-import type { ModelSource } from './providers.js';
 
 /**
  * The `POST /api/provider-connections/setup` bodies the model setup sends, built in one place so each is one the route accepts
- * (`parseSetup` in server/src/routes/provider-setup.ts; mirrored in web/test/model-setup-bodies.test.ts). Four intents
- * about the connection — create, reuse, rotate, none — never inferred from a provider's name or label.
+ * (`parseSetup` in server/src/routes/provider-setup.ts; mirrored in web/test/model-setup-bodies.test.ts). Three intents
+ * about the connection — create, reuse, rotate — never inferred from a provider's name or label.
  */
 
 /**
@@ -34,34 +33,12 @@ export function createBody(input: {
 }
 
 /**
- * A new executor on no connection of its own: the deployment's platform model, or the key the scope's environment
- * already holds (an existing setup adopting a real executor without moving its credential). The id is stored the way
- * core stores it for the key it runs on (`normalizeModelId`): the route keeps an id as given on the platform model, so
- * the client normalizes first.
- */
-export function adoptBody(input: {
-    scope: SetupScope;
-    name: string;
-    source: ModelSource;
-    agentType: ExecutorType;
-    model: string;
-}): ModelSetupSave {
-    const { scope, source, agentType } = input;
-    return {
-        scope,
-        agentType,
-        model: normalizeModelId(source, agentType, input.model),
-        connection: { intent: 'none' },
-        executor: { name: input.name.trim() },
-    };
-}
-
-/**
  * The selected executor's agent and model changed: the same executor by id on the same connection, at the revision the
  * member read. The key is never sent, so a model-only edit cannot rotate it.
  */
 export function editBody(input: {
     selected: SelectedExecutorView;
+    connectionId: string;
     agentType: ExecutorType;
     model: string;
 }): ModelSetupSave {
@@ -70,7 +47,7 @@ export function editBody(input: {
         scope: selected.scope,
         agentType,
         model,
-        connection: selected.connection ? { intent: 'reuse', id: selected.connection.id } : { intent: 'none' },
+        connection: { intent: 'reuse', id: input.connectionId },
         executor: { id: selected.executorId, expectedUpdatedAt: selected.updatedAt },
     };
 }

@@ -56,12 +56,14 @@ beforeEach(async () => {
         tokenHash: hashToken(token),
     });
     // A task naming no executor runs on the caller's default; the org's one profile is it.
-    await createUserExecutorStore({ sql, orgId, ...testSecretDeps(sql) }).createOrg({
+    const executors = createUserExecutorStore({ sql, orgId, ...testSecretDeps(sql) });
+    const main = await executors.createOrg({
         name: 'main',
         type: 'claude-code',
         config: {},
         createdBy: caller.user.id,
     });
+    await executors.selectDefault(null, main.id);
     // The board refuses a create whose repo it does not track; offline the tracked list is the stored sessions' repos.
     const name = `repo-${randomUUID().slice(0, 8)}`;
     repo = `cli-owner/${name}`;

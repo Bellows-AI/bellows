@@ -244,7 +244,6 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         batches = true,
         deploymentMode = SELF_HOSTED,
         cloudSubscriptionOrgIds = new Set<string>(),
-        platformModelProvided = false,
         metrics,
         orgKey,
     } = deps;
@@ -275,7 +274,6 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         batches,
         deploymentMode,
         cloudSubscriptionOrgIds,
-        platformModelProvided,
     };
 
     return gated(gate, jobStoreMethods(ctx));

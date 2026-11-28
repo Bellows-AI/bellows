@@ -67,8 +67,6 @@ async function boot(operatorGithubIds: readonly number[]): Promise<void> {
     const config = testConfig({
         auth: githubAuth(),
         deploymentMode: 'cloud',
-        // The operator supplies the model, so a task needs no member key here (that check: job-store.cloud-credentials).
-        platformModelProvided: true,
         planDefaults: { running: 1, queued: 5, wallSeconds: 3600 },
         operatorGithubIds,
     });
@@ -97,12 +95,15 @@ beforeEach(async () => {
     admin = await personIn(org);
     operator = await personIn(operatorOrg);
     // A task naming no executor runs on the org's one profile.
-    await createUserExecutorStore({ sql, orgId: org, ...testSecretDeps(sql) }).createOrg({
+    const executors = createUserExecutorStore({ sql, orgId: org, ...testSecretDeps(sql) });
+    const main = await executors.createOrg({
         name: 'main',
         type: 'claude-code',
-        config: {},
+        // Cloud: the profile carries its own model key, so a task needs no member key.
+        config: { env: { ANTHROPIC_API_KEY: 'sk-ant-test' } },
         createdBy: admin.userId,
     });
+    await executors.selectDefault(null, main.id);
     // The board refuses a create whose repo it does not track; offline the tracked list is the stored sessions' repos.
     await sql`insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
               values (${org}, 'claude-code', ${`op-${randomUUID()}`}, ${REPO}, 'main', now(), now())`;

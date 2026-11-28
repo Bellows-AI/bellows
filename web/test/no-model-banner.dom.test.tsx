@@ -23,7 +23,6 @@ afterEach(() => {
 
 const NONE = NO_SETUP;
 const SAVED: ModelSetupView = {
-    platform: false,
     org: null,
     personal: null,
     effective: 'executor',
@@ -40,7 +39,7 @@ const SAVED: ModelSetupView = {
 };
 const TEXT = 'No model yet — tasks will wait until one is connected';
 
-const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null, agentDefault: null };
+const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null };
 const PROFILE: WorkspacePayload = { ...BARE, defaultExecutor: { scope: 'user', name: 'mine' } };
 
 /** The banner's board: self-hosted with nothing to run on, unless told otherwise. */

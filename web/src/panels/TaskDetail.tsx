@@ -376,7 +376,7 @@ export function TaskDetail({
      * what it is handed, and a run with no answer yet is "loading", never a zero.
      */
     activity?: ThreadActivity;
-    /** The thread's agent (its frozen agent default, else its profile's type); null when unknown. */
+    /** The thread's agent (its executor's type); null when unknown. */
     agent?: string | null;
     /** The connection the thread's executor selects, when the caller may see it; its live models are what a follow-up offers. */
     connection?: ChipConnection | null;

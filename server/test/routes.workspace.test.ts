@@ -2,7 +2,14 @@ import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { githubAuth, harness, memoryAuthStore, memoryUserExecutorStore, signedIn } from './helpers.js';
 import { MAX_EXECUTORS_PER_USER } from '../src/routes/executor-fields.js';
-import { HTTP_BAD_REQUEST, HTTP_NOT_FOUND, HTTP_OK, HTTP_UNPROCESSABLE, trackApps } from './helpers-http.js';
+import {
+    HTTP_BAD_REQUEST,
+    HTTP_CONFLICT,
+    HTTP_NOT_FOUND,
+    HTTP_OK,
+    HTTP_UNPROCESSABLE,
+    trackApps,
+} from './helpers-http.js';
 
 /** Offline: the member's executor profiles over the in-memory store; the board has no workspace configuration. */
 
@@ -31,13 +38,12 @@ async function boot(runnerClasses: { name: string; docker: boolean }[] = []) {
 }
 
 describe('GET /api/workspace', () => {
-    it('keys are exactly executors, orgExecutors, defaultExecutor, agentDefault, executorsAvailable', async () => {
+    it('keys are exactly executors, orgExecutors, defaultExecutor, executorsAvailable', async () => {
         const { app, cookie } = await boot();
         const response = await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
 
         expect(response.statusCode).toBe(HTTP_OK);
         expect(Object.keys(response.json()).sort()).toEqual([
-            'agentDefault',
             'defaultExecutor',
             'executors',
             'executorsAvailable',
@@ -45,21 +51,17 @@ describe('GET /api/workspace', () => {
         ]);
     });
 
-    it('answers the agent default with no default executor when it wins over a profile the member never chose', async () => {
+    it('answers no default executor until one is configured, never the first profile', async () => {
         const { app, cookie, caller, executors } = await boot();
         await executors.replace(caller.user.id, [{ name: 'main', type: 'claude-code', config: {} }]);
         const poll = async () =>
             (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json() as {
                 defaultExecutor: unknown;
-                agentDefault: unknown;
             };
-        expect(await poll()).toMatchObject({ defaultExecutor: { scope: 'user', name: 'main' }, agentDefault: null });
+        expect(await poll()).toMatchObject({ defaultExecutor: null });
 
-        await executors.setAgentDefault(null, { agentType: 'opencode', model: 'anthropic/claude-sonnet-4-5' });
-        expect(await poll()).toMatchObject({
-            defaultExecutor: null,
-            agentDefault: { agentType: 'opencode', model: 'anthropic/claude-sonnet-4-5', from: 'org' },
-        });
+        await executors.selectDefault(caller.user.id, (await executors.list(caller.user.id))[0]!.id);
+        expect(await poll()).toMatchObject({ defaultExecutor: { scope: 'user', name: 'main' } });
     });
 });
 
@@ -165,13 +167,13 @@ describe('executors: listing and replacing', () => {
         ]);
     });
 
-    it('a row sent without a default resolves the first row on the poll', async () => {
+    it('a row sent without a default leaves the poll with no default executor', async () => {
         const { app, cookie } = await boot();
         const put = await putExecutors(app, cookie, [CLAUDE_CODE]);
         expect(put.json().executors).toEqual([expect.objectContaining({ name: 'main' })]);
 
         const poll = (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
-        expect(poll.defaultExecutor).toEqual({ scope: 'user', name: 'main' });
+        expect(poll.defaultExecutor).toBeNull();
     });
 
     it('a later selection re-points the default', async () => {
@@ -199,16 +201,18 @@ describe('executors: listing and replacing', () => {
         expect(missing.statusCode).toBe(HTTP_NOT_FOUND);
     });
 
-    it('reads a legacy name-keyed preference, and dropping its row falls back to the first remaining row', async () => {
+    it('refuses to drop the configured default row and keeps it as the default', async () => {
         const { app, cookie, caller, executors } = await boot();
         await putExecutors(app, cookie, [CLAUDE_CODE, { name: 'oc', type: 'opencode', config: {} }]);
-        executors.seedLegacyDefault(caller.user.id, { scope: 'user', name: 'oc' });
+        const oc = (await executors.list(caller.user.id)).find((p) => p.name === 'oc')!;
+        await executors.selectDefault(caller.user.id, oc.id);
         const poll = async () =>
             (await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } })).json();
         expect((await poll()).defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
 
-        await putExecutors(app, cookie, [CLAUDE_CODE]);
-        expect((await poll()).defaultExecutor).toEqual({ scope: 'user', name: 'main' });
+        const dropped = await putExecutors(app, cookie, [CLAUDE_CODE]);
+        expect(dropped.statusCode).toBe(HTTP_CONFLICT);
+        expect((await poll()).defaultExecutor).toEqual({ scope: 'user', name: 'oc' });
     });
 
     it('persists gateFixRounds and echoes it on the PUT response, the poll and the config read', async () => {

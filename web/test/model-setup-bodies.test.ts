@@ -12,7 +12,7 @@ import {
     useModelSetup,
 } from '../src/api/useModelSetup.js';
 import { savedModelChoice } from '../src/model-setup/AgentModelFields.js';
-import { adoptBody, createBody, editBody, rotateBody } from '../src/model-setup/save-body.js';
+import { createBody, editBody, rotateBody } from '../src/model-setup/save-body.js';
 import { SETUP_URL } from './model-setup-reads.js';
 
 /**
@@ -189,24 +189,10 @@ describe('the bodies the model setup sends', () => {
         });
     });
 
-    it('refuses the none intent before any request: every executor runs on a connection', async () => {
-        for (const source of ['platform', ...MODEL_PROVIDERS] as const) {
-            const body = adoptBody({
-                scope: 'personal',
-                name: 'Adopted',
-                source,
-                agentType: 'claude-code',
-                model: 'm',
-            });
-            expect(body.connection).toEqual({ intent: 'none' });
-            const { sent, result } = await wire(body);
-            expect(sent).toBeNull();
-            expect(result).toMatchObject({ ok: false });
-        }
-    });
-
     it('an edit names the executor by id and its connection by id, and carries no key', async () => {
-        const sent = await sentBody(editBody({ selected: selected(), agentType: 'opencode', model: 'm' }));
+        const sent = await sentBody(
+            editBody({ selected: selected(), connectionId: CONNECTION_ID, agentType: 'opencode', model: 'm' })
+        );
         expect(routeAccepts(sent, true)).toBe(true);
         expect(sent.connection).toEqual({ intent: 'reuse', id: CONNECTION_ID });
         expect(sent.executor).toEqual({
@@ -216,14 +202,16 @@ describe('the bodies the model setup sends', () => {
             expectedUpdatedAt: REVISION,
         });
         expect(JSON.stringify(sent)).not.toContain('key');
-        const none = editBody({ selected: selected({ connection: null }), agentType: 'claude-code', model: 'm' });
-        expect(none.connection).toEqual({ intent: 'none' });
-        expect((await wire(none)).sent).toBeNull();
     });
 
     it('an edit read without a revision sends none, which the route tolerates', async () => {
         const sent = await sentBody(
-            editBody({ selected: selected({ updatedAt: '' }), agentType: 'claude-code', model: 'm' })
+            editBody({
+                selected: selected({ updatedAt: '' }),
+                connectionId: CONNECTION_ID,
+                agentType: 'claude-code',
+                model: 'm',
+            })
         );
         expect(routeAccepts(sent, true)).toBe(true);
         expect(sent.executor).not.toHaveProperty('expectedUpdatedAt');
@@ -247,17 +235,6 @@ describe('the bodies the model setup sends', () => {
             model: 'claude-sonnet-5-5',
             expectedUpdatedAt: REVISION,
         });
-    });
-
-    it('stores an OpenCode id the way core does, even on the platform model that keeps ids as given', () => {
-        const body = adoptBody({
-            scope: 'personal',
-            name: 'n',
-            source: 'openrouter',
-            agentType: 'opencode',
-            model: 'openai/gpt-5.1',
-        });
-        expect(body.model).toBe('openrouter/openai/gpt-5.1');
     });
 });
 

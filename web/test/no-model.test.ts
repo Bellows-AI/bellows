@@ -5,9 +5,9 @@ import { showNoModel } from '../src/onboarding/no-model.js';
 
 /** "No model yet" only where a task could not run: cloud on no key, self-hosted on no key and no default at all. */
 
-const NONE: ModelSetupView = { platform: false, org: null, personal: null, effective: null };
+const NONE: ModelSetupView = { org: null, personal: null, effective: null };
 const KEYED: ModelSetupView = { ...NONE, effective: 'org' };
-/** A default executor on a connection: effective with no environment key and no agent default anywhere. */
+/** A default executor on a connection: effective with no environment key and no default profile. */
 const EXECUTOR: ModelSetupView = {
     ...NONE,
     effective: 'executor',
@@ -22,9 +22,8 @@ const EXECUTOR: ModelSetupView = {
         connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'org', baseUrl: null },
     },
 };
-const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null, agentDefault: null };
+const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null };
 const PROFILE: WorkspacePayload = { ...BARE, defaultExecutor: { scope: 'user', name: 'mine' } };
-const AGENT: WorkspacePayload = { ...BARE, agentDefault: { agentType: 'claude-code', model: 'm', from: 'org' } };
 
 const ok = <T>(data: T) => ({ data, error: null });
 const loading = { data: null, error: null };
@@ -58,10 +57,9 @@ describe('showNoModel', () => {
         expect(showNoModel({ mode: 'cloud', modelSetup: ok(NONE), workspace: loading })).toBe(true);
     });
 
-    it('self-hosted: only when no profile and no agent default either', () => {
+    it('self-hosted: only when no profile either', () => {
         expect(showNoModel({ mode: 'self-hosted', modelSetup: ok(NONE), workspace: ok(BARE) })).toBe(true);
         expect(showNoModel({ mode: 'self-hosted', modelSetup: ok(NONE), workspace: ok(PROFILE) })).toBe(false);
-        expect(showNoModel({ mode: 'self-hosted', modelSetup: ok(NONE), workspace: ok(AGENT) })).toBe(false);
     });
 
     it('self-hosted: never on an unconfirmed workspace read', () => {

@@ -108,8 +108,7 @@ export interface ThreadJob {
     executor: string | null;
     /** Which list the executor label was chosen from (issue 391); `user` on every fixture here. */
     executorScope: 'user' | 'org';
-    /** The agent default frozen on a task naming no profile, and the requested model; null on every fixture here. */
-    agentType: 'claude-code' | 'opencode' | null;
+    /** The requested model; null on every fixture here. */
     agentModel: string | null;
     /** The model the latest claim handed the runner; null on every fixture here. */
     resolvedModel: string | null;
@@ -257,7 +256,6 @@ function run(fields: RunFields): ThreadJob {
         repo: null,
         executor: 'main',
         executorScope: 'user',
-        agentType: null,
         agentModel: null,
         resolvedModel: null,
         followUpTo: null,

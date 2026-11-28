@@ -1,7 +1,6 @@
 import type { Sql, TransactionSql } from 'postgres';
-import { DEFAULT_GATE_FIX_ROUNDS, ORG_SCOPE, USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
+import { DEFAULT_GATE_FIX_ROUNDS, USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
 import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
-import { type AgentDefault, type AgentDefaults, agentDefaultMethods } from './agent-default-sql.js';
 import {
     assertConnectionSelection,
     assertMovedSelection,
@@ -31,7 +30,6 @@ import {
     writeSealed,
 } from './executor-credentials.js';
 
-export type { AgentDefault, AgentDefaults } from './agent-default-sql.js';
 export {
     ConfiguredDefaultUnusableError,
     ExecutorDefaultNotFoundError,
@@ -101,23 +99,11 @@ export interface UserExecutorConfig {
     readonly providerConnectionId?: string;
 }
 
-/**
- * A member's legacy default-executor preference (issue 391): names a profile by scope and name. It applies only while no
- * configured default does (`selectDefault`, which names the profile by stable id), and `resolvedDefault`'s chain covers
- * a preference whose profile was removed.
- */
-export interface ExecutorDefault {
+/** What a task naming no executor runs on (`resolvedDefault`): a profile by scope and name. */
+export interface ResolvedDefault {
     readonly scope: ExecutorScope;
     readonly name: string;
 }
-
-/**
- * What a task naming no executor runs on (`resolvedDefault`): a profile by scope and name, or an agent default the task
- * is frozen with — its agent type and model, and whether the member's own row or the organization's won.
- */
-export type ResolvedDefault =
-    | ({ readonly kind: 'profile' } & ExecutorDefault)
-    | ({ readonly kind: 'agent'; readonly from: 'personal' | 'org' } & AgentDefault);
 
 export interface UserExecutorStore {
     /**
@@ -229,8 +215,6 @@ export interface UserExecutorStore {
     /** How many org-scope rows the organization holds — the cap check's read. */
     orgCount(): Promise<number>;
 
-    /** The member's legacy name-keyed preference, verbatim — a read only; nothing writes it any more. Null when unset. */
-    defaultOf(userId: string): Promise<ExecutorDefault | null>;
     /** The configured default `owner` holds (a member's id; null: the organization's), by stable id. Null when none. */
     selectedDefault(owner: string | null): Promise<DefaultSelection | null>;
     /**
@@ -244,27 +228,11 @@ export interface UserExecutorStore {
     /** Clears `owner`'s configured default. False when there was none. */
     clearDefault(owner: string | null): Promise<boolean>;
     /**
-     * What a task naming no executor runs on: the member's configured default, then the organization's, each by stable id
-     * — and one that is suspended refuses (`ConfiguredDefaultUnusableError`) instead of falling through. Without a
-     * configured default, the legacy chain: the stored preference
-     * while it still resolves to an ACTIVE row, then the member's agent default, then the
-     * organization's agent default, then the first active personal row by position, then the first
-     * active org row by position, then null. A removed or suspended profile's preference falls
-     * through — it is never silently re-pointed at another row, and a suspended one stays stored so
-     * resuming restores it. A failed read throws; it is never "no default".
+     * What a task naming no executor runs on: the member's configured default, then the organization's, each by stable id,
+     * else null — there is no fallback to a profile nobody chose. A configured default that is suspended refuses
+     * (`ConfiguredDefaultUnusableError`) instead of falling through. A failed read throws; it is never "no default".
      */
     resolvedDefault(userId: string): Promise<ResolvedDefault | null>;
-
-    /** The organization's agent default and the member's own, each null when unset. */
-    agentDefaults(userId: string): Promise<AgentDefaults>;
-    /** Writes the agent default `owner` names — a member's id, or null for the organization's. */
-    setAgentDefault(owner: string | null, value: AgentDefault): Promise<void>;
-    /** `setAgentDefault` inside a transaction the caller holds, so a save can write it beside other rows. */
-    setAgentDefaultInTx(tx: TransactionSql, owner: string | null, value: AgentDefault): Promise<void>;
-    /** The agent default `owner` names, read and locked inside a transaction the caller holds; null when unset. */
-    agentDefaultInTx(tx: TransactionSql, owner: string | null): Promise<AgentDefault | null>;
-    /** Removes the agent default `owner` names (null: the organization's). False when there was none. */
-    deleteAgentDefault(owner: string | null): Promise<boolean>;
 }
 
 interface Row {
@@ -493,32 +461,6 @@ async function updateOrgRow(
     return rows[0] ?? null;
 }
 
-/** `resolvedDefault`'s chain over the store's own reads, in the order the interface documents. */
-async function resolveDefault(
-    store: Pick<UserExecutorStore, 'defaultOf' | 'configFor' | 'agentDefaults' | 'list' | 'listOrg'>,
-    userId: string,
-    configuredOf: () => Promise<DefaultSelection | null>
-): Promise<ResolvedDefault | null> {
-    const selected = await configuredOf();
-    if (selected) return { kind: 'profile', scope: selected.scope, name: selected.name };
-    const stored = await store.defaultOf(userId);
-    const configured = stored ? await store.configFor(userId, stored.name, stored.scope) : null;
-    if (stored && configured && !configured.suspended) {
-        return { kind: 'profile', ...stored };
-    }
-    // An agent default comes before any profile the member never chose: the member's own, then the org's.
-    const agents = await store.agentDefaults(userId);
-    if (agents.personal) return { kind: 'agent', ...agents.personal, from: 'personal' };
-    if (agents.org) return { kind: 'agent', ...agents.org, from: 'org' };
-    // The fallback chain, deterministic: first active personal row by position, then first
-    // active org row. A member who never chose keeps "selected first on new tasks" semantics.
-    const personal = (await store.list(userId)).find((row) => !row.suspended);
-    if (personal) return { kind: 'profile', scope: USER_SCOPE, name: personal.name };
-    const orgRow = (await store.listOrg()).find((row) => !row.suspended);
-    if (orgRow) return { kind: 'profile', scope: ORG_SCOPE, name: orgRow.name };
-    return null;
-}
-
 /** The organization is bound at construction: one store serves one organization. */
 export function createUserExecutorStore({
     sql,
@@ -710,23 +652,12 @@ export function createUserExecutorStore({
             return rows[0]?.count ?? 0;
         },
 
-        async defaultOf(userId) {
-            await gate();
-            const rows = await sql<{ scope: ExecutorScope; name: string }[]>`
-                select scope, name from user_executor_default
-                where org_id = ${orgId} and user_id = ${userId}
-            `;
-            const row = rows[0];
-            return row ? { scope: row.scope, name: row.name } : null;
-        },
-
         ...selectionMethods(sql, orgId, gate),
 
         async resolvedDefault(userId) {
             await gate();
-            return resolveDefault(this, userId, () => resolveConfiguredDefault(sql, orgId, userId));
+            const selected = await resolveConfiguredDefault(sql, orgId, userId);
+            return selected ? { scope: selected.scope, name: selected.name } : null;
         },
-
-        ...agentDefaultMethods(sql, orgId, gate),
     };
 }
