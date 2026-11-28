@@ -69,6 +69,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['claude-turns.cjs', 'node'],
     ['claude-export.cjs', 'node'],
     ['supervisor.cjs', 'node'],
+    ['argv-loader.cjs', 'node'],
     ['git-harden.cjs', 'node'],
     ['checkpoint.cjs', 'node'],
     ['checkpoint-restore.cjs', 'node'],

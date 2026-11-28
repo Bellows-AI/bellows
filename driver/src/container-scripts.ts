@@ -30,6 +30,31 @@ export const claudeExportScript = script('claude-export.cjs');
 /** The task supervisor, the trusted container of a run's pod: see scripts/supervisor.cjs. */
 export const supervisorScript = script('supervisor.cjs');
 
+/** Linux's cap on one argv or env string (MAX_ARG_STRLEN, 32 pages): exec refuses a longer one. */
+export const ARG_STRLEN_MAX = 131_072;
+
+// UTF-16 units per chunk: at most 3 UTF-8 bytes each, so a chunk stays well under the cap.
+const ARGV_CHUNK_UNITS = 32_768;
+const argvLoaderScript = script('argv-loader.cjs');
+const HIGH_SURROGATE_FIRST = 0xd800;
+const HIGH_SURROGATE_LAST = 0xdbff;
+
+/** `script` split at chunk boundaries that never cut a surrogate pair. */
+function argvChunks(text: string): string[] {
+    const chunks: string[] = [];
+    for (let at = 0; at < text.length; ) {
+        let end = Math.min(at + ARGV_CHUNK_UNITS, text.length);
+        const last = text.charCodeAt(end - 1);
+        if (end < text.length && last >= HIGH_SURROGATE_FIRST && last <= HIGH_SURROGATE_LAST) end -= 1;
+        chunks.push(text.slice(at, end));
+        at = end;
+    }
+    return chunks;
+}
+
+/** The arguments after `node` that run `script` as `node -e` would, in argv strings exec accepts (scripts/argv-loader.cjs). */
+export const nodeEvalArgv = (text: string): string[] => ['-e', argvLoaderScript, ...argvChunks(text)];
+
 /** The `git` every supervised step runs, execution-capable checkout config neutralized: see scripts/git-harden.cjs. */
 export const gitHardenScript = script('git-harden.cjs');
 
