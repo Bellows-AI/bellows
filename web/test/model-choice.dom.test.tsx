@@ -1,6 +1,8 @@
+import { renderHook } from '@testing-library/react';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useStaleModelReset } from '../src/components/ModelCombobox.js';
 import type { WorkspacePayload } from '../src/api/useWorkspace.js';
 import type { ModelSetupView } from '../src/api/useModelSetup.js';
 import { readReadyDraft, writeReadyDraft } from '../src/onboarding/ready-draft.js';
@@ -330,6 +332,95 @@ describe('the Model chip follows the selected executor connection', () => {
         await user.keyboard('{Escape}');
     });
 
+    describe('switching to an executor on another connection', () => {
+        const OTHER = '55555555-5555-4555-8555-555555555555';
+        const other = {
+            providerConnectionId: OTHER,
+            providerConnectionName: 'Other key',
+            providerConnectionProvider: 'anthropic' as const,
+            providerConnectionScope: 'org' as const,
+            configOverridesConnection: false,
+        };
+        const twoConnections: WorkspacePayload = {
+            ...routedWorkspace,
+            executors: [
+                ...routedWorkspace.executors,
+                {
+                    ...profileWorkspace.executors[0]!,
+                    id: '66666666-6666-4666-8666-666666666666',
+                    name: 'other',
+                    ...other,
+                },
+            ],
+        };
+        const answers = (lists: Record<string, unknown>) => {
+            const calls = stubFetch((call) => {
+                if (call.url === '/api/workspace') return twoConnections;
+                if (call.url === '/api/repos') return repos;
+                if (call.url === '/api/auth/me') return OPEN_BOARD_SESSION;
+                if (call.url === '/api/model-setup') return setup;
+                for (const [id, body] of Object.entries(lists)) {
+                    if (call.url === `/api/provider-connections/${id}/models`) return body;
+                }
+                if (call.method === 'POST' && call.url === '/api/jobs') {
+                    return { status: 201, body: { id: LAUNCHED_ID, status: 'queued' } };
+                }
+            });
+            return () => calls.filter((c) => c.method === 'POST' && c.url === '/api/jobs').map((c) => c.body);
+        };
+        const pickOn = async (user: ReturnType<typeof userEvent.setup>, executor: string, model: string) => {
+            await pickExecutor(user, executor);
+            await user.click(modelPicker());
+            await user.type(screen.getByRole('combobox', { name: 'Search model' }), `${model}{Enter}`);
+            expect(modelPicker().getAttribute('aria-label')).toBe(`Model: ${model}`);
+        };
+
+        it('resets to Default when the new connection does not list the picked model', async () => {
+            const user = userEvent.setup();
+            const launched = answers({
+                [CONNECTION]: { state: 'listed', models: ['claude-live-1'] },
+                [OTHER]: { state: 'listed', models: ['claude-other-1'] },
+            });
+            renderApp('/tasks/new');
+            await screen.findByLabelText('What should the agent do?');
+            await pickOn(user, 'routed', 'claude-live-1');
+            await pickExecutor(user, 'other');
+            await waitFor(() => expect(modelPicker().getAttribute('aria-label')).toBe('Model: Default'));
+            await launch(user, 'fix the login crash');
+            await waitFor(() => expect(launched()).toHaveLength(1));
+            expect(launched()[0]).not.toHaveProperty('model');
+        });
+
+        it('keeps the model when the new connection lists it too', async () => {
+            const user = userEvent.setup();
+            answers({
+                [CONNECTION]: { state: 'listed', models: ['claude-live-1'] },
+                [OTHER]: { state: 'listed', models: ['claude-live-1', 'claude-other-1'] },
+            });
+            renderApp('/tasks/new');
+            await screen.findByLabelText('What should the agent do?');
+            await pickOn(user, 'routed', 'claude-live-1');
+            await pickExecutor(user, 'other');
+            await screen.findByRole('button', { name: /^Executor.*other/ });
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            expect(modelPicker().getAttribute('aria-label')).toBe('Model: claude-live-1');
+        });
+
+        it('keeps a typed model when the new connection does not list models', async () => {
+            const user = userEvent.setup();
+            answers({
+                [CONNECTION]: { state: 'listed', models: ['claude-live-1'] },
+                [OTHER]: { state: 'unsupported' },
+            });
+            renderApp('/tasks/new');
+            await screen.findByLabelText('What should the agent do?');
+            await pickOn(user, 'routed', 'my-hand-typed-model');
+            await pickExecutor(user, 'other');
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            expect(modelPicker().getAttribute('aria-label')).toBe('Model: my-hand-typed-model');
+        });
+    });
+
     it('offers a follow-up on a connection thread that connection’s models', async () => {
         const user = userEvent.setup();
         board({ state: 'listed', models: ['claude-live-1'] });
@@ -363,5 +454,40 @@ describe('the Model chip follows the selected executor connection', () => {
                     .map((option) => option.textContent)
             ).toContain('claude-live-1')
         );
+    });
+});
+
+describe('the stale-model reset the follow-up shares with the composer', () => {
+    const listed = (...models: string[]) => ({ connectionId: 'b', listed: models });
+    const run = (initial: { connectionId: string | null; listed: readonly string[] | null }, picked: string) => {
+        const reset = vi.fn();
+        const hook = renderHook(({ choices }) => useStaleModelReset(choices, picked, reset), {
+            initialProps: { choices: initial },
+        });
+        return { reset, change: (choices: typeof initial) => hook.rerender({ choices }) };
+    };
+
+    it('resets once the new connection’s confirmed list lacks the pick, not while it loads', () => {
+        const { reset, change } = run({ connectionId: 'a', listed: ['m1'] }, 'm1');
+        change({ connectionId: 'b', listed: null });
+        expect(reset).not.toHaveBeenCalled();
+        change(listed('m2'));
+        expect(reset).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a pick the new list has, and one never judged on the same connection', () => {
+        const kept = run({ connectionId: 'a', listed: ['m1'] }, 'm1');
+        kept.change({ connectionId: 'b', listed: null });
+        kept.change(listed('m1', 'm2'));
+        const same = run({ connectionId: 'a', listed: ['m2'] }, 'm1');
+        same.change({ connectionId: 'a', listed: ['m3'] });
+        expect(kept.reset).not.toHaveBeenCalled();
+        expect(same.reset).not.toHaveBeenCalled();
+    });
+
+    it('treats a read that failed or is unsupported as unconfirmed', () => {
+        const { reset, change } = run({ connectionId: 'a', listed: ['m1'] }, 'typed');
+        change({ connectionId: 'b', listed: null });
+        expect(reset).not.toHaveBeenCalled();
     });
 });

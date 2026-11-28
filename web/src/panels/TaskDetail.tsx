@@ -11,7 +11,7 @@ import { useStickToBottom } from '../use-stick-to-bottom.js';
 import { AttachmentDropZone } from './AttachmentDropZone.js';
 import { attachmentHandlers } from './AttachmentPicker.js';
 import { ChatInput } from './ChatInput.js';
-import { ModelCombobox, useModelChoices } from '../components/ModelCombobox.js';
+import { ModelCombobox, useModelChoices, useStaleModelReset } from '../components/ModelCombobox.js';
 import type { ChipConnection } from '../workspace/model-catalog.js';
 import { FOLLOW_UP_INPUT_ID, notAuthorMessage } from './TaskHeader.js';
 import { TaskActivity } from './TaskActivity.js';
@@ -119,6 +119,9 @@ function FollowUpComposer({
     }, [adder, limits, add]);
     const blocked = !draft.trim() || frozen || files.blocker !== null;
     const choices = useModelChoices(agent, connection);
+    useStaleModelReset(choices, held?.model ?? '', () =>
+        draftStore.updateFollowUp(rootId, (prev) => ({ ...prev, model: undefined, submissionKey: null }))
+    );
     const models = choices.models.filter((model) => model !== current);
     // '' is the thread's own model: sent only when the member picked another.
     const picked = held?.model?.trim() ?? '';
