@@ -185,6 +185,8 @@ const KNOWN_MODEL_PREFIXES: readonly string[] = ['anthropic', 'openrouter', 'ope
  * lists the model can prove more, and a discovery outage proves nothing.
  */
 export function modelFitsProvider(provider: ModelProvider, agentType: ExecutorType, model: string): boolean {
+    // A custom endpoint serves whatever ids it names, a vendor-looking prefix included.
+    if (provider === 'openai-compatible') return true;
     const slash = model.indexOf('/');
     if (slash < 0) return true;
     const prefix = model.slice(0, slash);

@@ -12,6 +12,7 @@ import {
     isAgentProvider,
     isModelProvider,
     MODEL_PROVIDERS,
+    modelFitsProvider,
     modelKeyRequired,
     NO_MODEL_MESSAGE,
     normalizeModelId,
@@ -309,6 +310,10 @@ describe('openai-compatible provider', () => {
     it("counts as the OpenCode run's model key when selected", () => {
         expect(hasModelKey([], {}, OPENCODE, 'openai-compatible')).toBe(true);
         expect(hasModelKey([], {}, OPENCODE)).toBe(false);
+    });
+
+    it('accepts any model id, a known vendor prefix included', () => {
+        expect(modelFitsProvider('openai-compatible', OPENCODE, 'anthropic/claude-x')).toBe(true);
     });
 
     it('renders an OpenCode block under the endpoint host, its key a reference', () => {

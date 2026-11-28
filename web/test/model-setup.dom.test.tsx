@@ -98,7 +98,7 @@ describe('provider cards', () => {
     it('locks OpenAI to OpenCode with the Codex note, and a subscription to Claude Code', async () => {
         board();
         mount();
-        await userEvent.setup().click(await screen.findByRole('radio', { name: /^OpenAI/ }));
+        await userEvent.setup().click(await screen.findByRole('radio', { name: /^OpenAI(?!-compatible)/ }));
         const agent = screen.getByLabelText('Agent') as HTMLSelectElement;
         expect([...agent.options].map((o) => o.value)).toEqual(['opencode']);
         expect(screen.getByText(/OpenAI keys run on OpenCode/).textContent).toContain('Codex');
