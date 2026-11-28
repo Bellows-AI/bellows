@@ -7,7 +7,7 @@ description: "Quick answers to common questions, and a symptom-to-fix guide for 
 
 <AccordionGroup>
   <Accordion title="Which model does the agent use?">
-    The model of the [executor profile](/guides/executors) you pick or, with none picked, your default executor (the one **Connect a model** creates; **Settings → Model** edits it) or an older agent default. You can override it per task with the **Model** chip in the composer (see [Choosing the model for one task](/guides/executors#choosing-the-model-for-one-task)). **Claude Code** takes a Claude model id or alias such as `sonnet`. **OpenCode** takes `provider/model`. If you leave the model on **Use runner default**, the runner's default applies.
+    The model of the [executor profile](/guides/executors) you pick or, with none picked, your default executor (the one **Connect a provider** creates) or an older agent default. You can override it per task with the **Model** chip in the composer (see [Choosing the model for one task](/guides/executors#choosing-the-model-for-one-task)). **Claude Code** takes a Claude model id or alias such as `sonnet`. **OpenCode** takes `provider/model`. If you leave the model on **Use runner default**, the runner's default applies.
   </Accordion>
   <Accordion title="Does the agent push to my main branch?">
     Not by design. The agent works on a task branch and opens or updates a pull request; it is instructed never to push to your default branch, merge or close a pull request. That is an instruction, not a lock: the run's GitHub token is limited to the one repository, not to one branch. For a hard guarantee, turn on branch protection for your default branch in GitHub. See [Task lifecycle](/guides/task-lifecycle).
@@ -19,7 +19,7 @@ description: "Quick answers to common questions, and a symptom-to-fix guide for 
     Yes. Bellows works through its GitHub App, so any repository you gave the App access to can be tracked, public or private. For each run it issues a short-lived token for that one repository. See [Connections](/guides/connections#github).
   </Accordion>
   <Accordion title="Can I use my own API key?">
-    Connect it under **Settings → Model**, which checks the key and saves it as a secret together with your default agent and model. You can also store a key yourself as a [secret](/guides/env-and-secrets) under **Settings → Workspace** (only your runs) or **Settings → Organization** (everyone). It is injected into the runner's environment. Keep keys out of the executor's configuration JSON.
+    Connect it in the **Connect a provider** step during setup, or add a connection under **Settings → Model**; either checks the key and saves it as a secret. You can also store a key yourself as a [secret](/guides/env-and-secrets) under **Settings → Workspace** (only your runs) or **Settings → Organization** (everyone). It is injected into the runner's environment. Keep keys out of the executor's configuration JSON.
   </Accordion>
   <Accordion title="How long can a run take, and what does it cost?">
     Each gate has a `timeout` of 1 to 120 minutes (default 20). The driver also caps a whole run. Its default is 8 hours and a self-hosted admin can change it. A run that hits the cap fails as `timed out`. Bellows records token usage per run: see `bellows job activity <id>`. This page cannot state a price.
@@ -80,7 +80,7 @@ Each entry reads symptom, cause, fix. For every failure badge, see [Task lifecyc
   </Accordion>
   <Accordion title="Bellows Cloud refuses a task with “NO_MODEL”">
     **Cause.** In Bellows Cloud, a task needs a model key its agent can use, and none was found. Claude Code runs on `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `OPENROUTER_API_KEY`. OpenCode runs on `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`. The key can sit in a provider connection the executor selects, in your variables, the organization's or the repository's, or in the executor profile. The task is refused before it starts, and a key removed after you start it fails the task the same way. Preflight shows it as the `model` check. A self-hosted server does not check this.
-    **Fix.** Connect a model in **Settings → Model**, or ask an admin to connect one for the organization. Then start the task again. See [Variables and secrets](/guides/env-and-secrets).
+    **Fix.** Connect a provider in **Settings → Model**, or ask an admin to connect one for the organization. Then start the task again. See [Variables and secrets](/guides/env-and-secrets).
   </Accordion>
   <Accordion title="The task says it needs a Jira or Linear connection">
     **Cause.** The task mentions a ticket, but you have not connected Jira or Linear, or the connection needs reconnecting.

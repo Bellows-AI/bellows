@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { BATCH_DETAIL_STATES, BatchBoard } from './fixtures/batch-board.js';
-import { FORBIDDEN, shellSettled, useTheme, watchConsole } from './page-health.js';
+import { FORBIDDEN, useTheme, watchConsole } from './page-health.js';
 import { COMPOSER_SHOT, DASHBOARD_SHOT, ENTRY_SHOTS, INBOX_SHOT, SETTINGS_SHOTS, SLOW, type Shot } from './routes.js';
 import { THEMES } from './screenshot-matrix.js';
 import { controlsOutsideViewport, noHorizontalOverflow } from './viewport.js';
@@ -32,8 +32,8 @@ const HEIGHT = 900;
 const BATCH_ID_STATE = 'verification-failed';
 
 /** What every settled cell must satisfy, whatever its state. */
-async function assertFits(page: Page, width: number, { settle = true }: { settle?: boolean } = {}): Promise<void> {
-    await noHorizontalOverflow(page, { settle });
+async function assertFits(page: Page, width: number): Promise<void> {
+    await noHorizontalOverflow(page);
     expect(await controlsOutsideViewport(page, width), 'controls past the viewport').toEqual([]);
     const text = await page.locator('main').innerText();
     for (const token of FORBIDDEN) expect(text, `page contains ${token}`).not.toContain(token);
@@ -53,7 +53,6 @@ async function walk(page: Page, cell: Cell, width: number, theme: (typeof THEMES
     const ready = await cell.shot.open(page);
     await expect(ready).toBeVisible({ timeout: SLOW });
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-    await shellSettled(page);
     await page.evaluate(() => document.fonts.ready);
     await assertFits(page, width);
 }
@@ -112,8 +111,6 @@ interface Held {
     route: string;
     path: string;
     read: RegExp;
-    /** The read also decides the shell's "No model yet" banner (self-hosted), so holding it keeps the shell pending by design. */
-    holdsShell?: true;
 }
 
 const HELD: readonly Held[] = [
@@ -122,7 +119,7 @@ const HELD: readonly Held[] = [
     { route: 'batches', path: '/batches', read: /\/api\/batches(\?|$)/ },
     { route: 'settings-repos', path: '/settings/repos', read: /\/api\/repos/ },
     { route: 'settings-workspace', path: '/settings/workspace', read: /\/api\/env/ },
-    { route: 'settings-executors', path: '/settings/executors', read: /\/api\/workspace(\?|$)/, holdsShell: true },
+    { route: 'settings-executors', path: '/settings/executors', read: /\/api\/workspace(\?|$)/ },
     { route: 'settings-integrations', path: '/settings/integrations', read: /\/api\/connections/ },
     { route: 'settings-organization', path: '/settings/organization', read: /\/api\/env/ },
 ];
@@ -162,8 +159,7 @@ for (const theme of THEMES) {
                     await page.goto(held.path);
                     await expect(page.locator('main')).toBeVisible({ timeout: SLOW });
                     await expect(page.getByRole('alert'), 'loading is not an error').toHaveCount(0);
-                    // A held banner read never lands a banner, so there is nothing to wait for.
-                    await assertFits(page, width, { settle: !held.holdsShell });
+                    await assertFits(page, width);
 
                     // Error: the read is refused, so the page must say so — an error never reads as empty.
                     await page.unrouteAll({ behavior: 'ignoreErrors' });

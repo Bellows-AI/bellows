@@ -192,10 +192,10 @@ test('first sign-in walks Repositories → Model → Tools → Ready → app; re
     await page.getByRole('button', { name: 'Continue' }).click();
 
     // The app route the sign-in returned to sends the unfinished member to the first step.
-    await expect(page).toHaveURL(/\/onboarding\/model\?returnTo=%2Ftasks$/, { timeout: 60_000 });
-    await expect(title(page, 'Connect a model')).toBeVisible();
+    await expect(page).toHaveURL(/\/onboarding\/provider\?returnTo=%2Ftasks$/, { timeout: 60_000 });
+    await expect(title(page, 'Connect a provider')).toBeVisible();
     await expect(page.locator('.public-context')).toHaveText('Setup · Step 2 of 3');
-    await expect(progress(page).locator('[aria-current="step"]')).toContainText('Model');
+    await expect(progress(page).locator('[aria-current="step"]')).toContainText('Provider');
     await page.getByRole('button', { name: 'Skip for now' }).click();
 
     await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2Ftasks$/);
@@ -226,15 +226,15 @@ test("Back to Repositories after sign-in lands in the reselect round trip and re
 }) => {
     await throughSignIn(page);
 
-    // Back from Model: the reselect round trip reopens the selection screen with a live pending sign-in.
-    await page.goto('/onboarding/model?returnTo=%2Ftasks');
+    // Back from Provider: the reselect round trip reopens the selection screen with a live pending sign-in.
+    await page.goto('/onboarding/provider?returnTo=%2Ftasks');
     await page.getByRole('link', { name: 'Back' }).click();
     // The expired state keeps the h1 but has no Continue: the button is the live screen's proof.
     await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible({ timeout: 60_000 });
     await expect(page.getByText('That sign-in expired')).toHaveCount(0);
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(page).toHaveURL(/\/onboarding\/model\?returnTo=%2Ftasks$/, { timeout: 60_000 });
-    await expect(title(page, 'Connect a model')).toBeVisible();
+    await expect(page).toHaveURL(/\/onboarding\/provider\?returnTo=%2Ftasks$/, { timeout: 60_000 });
+    await expect(title(page, 'Connect a provider')).toBeVisible();
 
     // The stepper's Repositories step from Tools takes the same round trip back to Tools.
     await page.goto('/onboarding/tools?returnTo=%2Ftasks');

@@ -1,10 +1,10 @@
 import { expect, type Page } from '@playwright/test';
 
 /** What each sign-in page asks before the dashboard: confirm the selection screen's
-    pre-checked default, skip the model and tools steps, and leave Ready for the app. */
+    pre-checked default, skip the provider and tools steps, and leave Ready for the app. */
 const SETUP_ACTIONS: Record<string, string> = {
     '/onboarding': 'Continue',
-    '/onboarding/model': 'Skip for now',
+    '/onboarding/provider': 'Skip for now',
     '/onboarding/tools': 'Skip for now',
     '/onboarding/ready': 'Go to the dashboard',
 };
