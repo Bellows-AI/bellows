@@ -10,7 +10,7 @@ import {
     type UserExecutorStore,
 } from '../src/db/user-executor-store.js';
 import { testSecretDeps } from './env-secrets-harness.js';
-import { testOrg, testUser } from './fixtures.js';
+import { testConnection, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
@@ -38,15 +38,24 @@ beforeAll(() => {
 });
 
 const claude = { type: 'claude-code', config: {} };
+// The organization's connection: visible to a personal and an org executor alike.
+const orgConnection = (): Promise<string> => testConnection(sql, ORG);
 const personal = async (userId: string, name: string) => {
     const existing = await store.list(userId);
     await store.replace(userId, [
-        ...existing.map((row) => ({ id: row.id, name: row.name, type: row.type, config: {} })),
-        { name, ...claude },
+        ...existing.map((row) => ({
+            id: row.id,
+            name: row.name,
+            type: row.type,
+            config: {},
+            providerConnectionId: row.providerConnectionId!,
+        })),
+        { name, ...claude, providerConnectionId: await orgConnection() },
     ]);
     return (await store.list(userId)).find((row) => row.name === name)!;
 };
-const shared = (name: string) => store.createOrg({ name, ...claude, createdBy: ALICE });
+const shared = async (name: string) =>
+    store.createOrg({ name, ...claude, createdBy: ALICE, providerConnectionId: await orgConnection() });
 
 describe.skipIf(!enabled)('configured default selection', () => {
     it('personal configured default precedes organization configured default', async () => {

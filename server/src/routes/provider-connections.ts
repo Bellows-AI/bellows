@@ -23,7 +23,8 @@ import type { OrgRegistry } from '../orgs.js';
 import type { ProviderKeys, VerifyAnswer } from '../provider-keys/verify.js';
 import type { AppConfig } from '../config.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
-import { refuseUnparsedBody, validBase, validKey } from './provider-connections-verify.js';
+import { validBase, validKey } from '../provider-keys/input-rules.js';
+import { refuseUnparsedBody } from './provider-connections-verify.js';
 
 /**
  * Provider connections (docs/api.md): the named model-provider credentials a member brings and an

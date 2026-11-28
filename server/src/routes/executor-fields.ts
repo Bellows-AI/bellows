@@ -50,11 +50,16 @@ export interface ExecutorFields {
     /** The runner class the profile runs in; null is the driver's default. Checked against the board's classes by the route. */
     runnerClass: string | null;
     /**
-     * The provider connection the profile selects: an id, null to clear it, absent to keep what the row has. Whether
-     * the caller may use it and whether its provider runs `type` is the store's, in the write's transaction.
+     * The provider connection the profile selects, required: every executor has one. Whether the caller may use it
+     * and whether its provider runs `type` is the store's, in the write's transaction.
      */
-    providerConnectionId?: string | null;
+    providerConnectionId: string;
 }
+
+/** The personal list's entry: the connection may be null for a carried-back migration-suspended row. */
+export type PersonalExecutorFields = Omit<ExecutorFields, 'providerConnectionId'> & {
+    providerConnectionId: string | null;
+};
 
 /** A refused connection selection answers 409: the body is well formed, the selection conflicts with what exists. */
 export const HTTP_CONNECTION_REFUSED = 409;
@@ -130,33 +135,39 @@ function parseGateFixRounds(item: { name?: unknown; gateFixRounds?: unknown }): 
     return rounds;
 }
 
-/** One entry's connection id: absent keeps the row's, null clears it, else a connection id; or the refusal. */
-function parseConnectionId(item: {
-    name?: unknown;
-    providerConnectionId?: unknown;
-}): string | null | undefined | { refusal: string } {
+/**
+ * One entry's connection id, which every executor needs; or the refusal. `carriedBack` (the personal list's entry
+ * naming a stored row by id) also admits null: the store accepts it only for a migration-suspended row, unchanged.
+ */
+function parseConnectionId(
+    item: { name?: unknown; providerConnectionId?: unknown },
+    carriedBack: boolean
+): string | null | { refusal: string } {
     const id = item.providerConnectionId;
-    if (id === undefined || id === null) return id;
+    if (id === null && carriedBack) return null;
     if (typeof id === 'string' && UUID.test(id)) return id;
-    return { refusal: `providerConnectionId for "${item.name}" must be a connection id or null` };
+    return { refusal: `providerConnectionId for "${item.name}" is required and must be a connection id` };
 }
 
 /**
  * The optional fields: the runner class (absent meaning null, the driver's default class; the route decides which
  * names it takes) and the provider connection id, or the refusal message.
  */
-function parseOptionalFields(item: {
-    name?: unknown;
-    runnerClass?: unknown;
-    providerConnectionId?: unknown;
-}): Pick<ExecutorFields, 'runnerClass' | 'providerConnectionId'> | string {
+function parseOptionalFields(
+    item: {
+        name?: unknown;
+        runnerClass?: unknown;
+        providerConnectionId?: unknown;
+    },
+    carriedBack: boolean
+): Pick<PersonalExecutorFields, 'runnerClass' | 'providerConnectionId'> | string {
     const runnerClass = item.runnerClass ?? null;
     if (runnerClass !== null && typeof runnerClass !== 'string') {
         return `runnerClass for "${item.name}" must be a runner class name or null`;
     }
-    const connection = parseConnectionId(item);
+    const connection = parseConnectionId(item, carriedBack);
     if (typeof connection === 'object' && connection !== null) return connection.refusal;
-    return { runnerClass, ...(connection === undefined ? {} : { providerConnectionId: connection }) };
+    return { runnerClass, providerConnectionId: connection };
 }
 
 /** The status a `parseExecutorFields` refusal answers with: 422 for a runner class, 400 otherwise. */
@@ -194,7 +205,19 @@ export function parseExecutorFields(
     entry: unknown,
     deploymentMode: DeploymentMode,
     subscriptionAllowed: boolean
-): ExecutorFields | string {
+): ExecutorFields | string;
+export function parseExecutorFields(
+    entry: unknown,
+    deploymentMode: DeploymentMode,
+    subscriptionAllowed: boolean,
+    carriedBack: true
+): PersonalExecutorFields | string;
+export function parseExecutorFields(
+    entry: unknown,
+    deploymentMode: DeploymentMode,
+    subscriptionAllowed: boolean,
+    carriedBack = false
+): PersonalExecutorFields | string {
     const item = entry as {
         name?: unknown;
         type?: unknown;
@@ -212,14 +235,22 @@ export function parseExecutorFields(
     if (!(EXECUTOR_TYPES as readonly string[]).includes(item.type)) {
         return `unknown executor type "${item.type}" (known: ${EXECUTOR_TYPES.join(', ')})`;
     }
-    if (!subscriptionAllowed && forbiddenCredentialIn(undefined, item.config) !== null) {
+    // A carried-back migration row is judged by the store against the stored row, which it must equal: the content
+    // rules are for what a member newly writes, and a row the migration suspended may still hold what they refuse.
+    const carried =
+        carriedBack && item.providerConnectionId === null && typeof (entry as { id?: unknown }).id === 'string';
+    if (!carried && !subscriptionAllowed && forbiddenCredentialIn(undefined, item.config) !== null) {
         return CLOUD_CREDENTIAL_MESSAGE;
     }
-    const redirect = deploymentMode === CLOUD ? redirectsPlatformCredential(undefined, item.config, item.type) : null;
+    const redirect =
+        !carried && deploymentMode === CLOUD ? redirectsPlatformCredential(undefined, item.config, item.type) : null;
     if (redirect !== null) return credentialRedirectMessage(redirect);
     const gateFixRounds = parseGateFixRounds(item);
     if (typeof gateFixRounds === 'string') return gateFixRounds;
-    const optional = parseOptionalFields(item);
+    const optional = parseOptionalFields(
+        item,
+        carried || (carriedBack && typeof (entry as { id?: unknown }).id === 'string')
+    );
     if (typeof optional === 'string') return optional;
     return {
         name: item.name,

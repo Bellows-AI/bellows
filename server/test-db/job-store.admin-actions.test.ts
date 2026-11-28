@@ -1,15 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { ConnectionRefusedError } from '../src/db/connection-bindings.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
+import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { mustCreate, oauthConnection, testOrg, testUser } from './fixtures.js';
+import { mustCreate, oauthConnection, testConnection, testOrg, testUser } from './fixtures.js';
 import { testSecretDeps } from './env-secrets-harness.js';
 
 /**
@@ -64,6 +65,7 @@ beforeAll(async () => {
         orgId: ORG,
         prs,
         executorConfig: createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) }),
+        providerConnections: createProviderConnectionStore({ sql, orgId: ORG, ...testSecretDeps(sql) }),
         env: {
             async resolveFor(target) {
                 envTargets.push(target);
@@ -72,6 +74,13 @@ beforeAll(async () => {
         },
     });
     otherOrgStore = createJobStore({ sql, orgId: OTHER_ORG });
+});
+
+/** The organization's provider connection every executor in a test selects; the reset empties the table. */
+let conn: string;
+
+beforeEach(async () => {
+    if (process.env.DATABASE_URL) conn = await testConnection(db.sql, ORG);
 });
 
 /** Claims until the named job comes up; anything else claimed on the way belongs to an earlier case and is failed. */
@@ -197,7 +206,7 @@ describe.skipIf(!enabled)('admin follow-up and retry', () => {
 
     it("an admin's turn resolves the author's user-scoped executor", async () => {
         await createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) }).replace(AUTHOR, [
-            { name: 'mine', type: 'claude-code', config: { model: 'author-model' } },
+            { providerConnectionId: conn, name: 'mine', type: 'claude-code', config: { model: 'author-model' } },
         ]);
         const root = await finishedTask(AUTHOR, 'mine');
         const ref = must(await store.createFollowUp(root, 'admin says', ADMIN, undefined, undefined, true));

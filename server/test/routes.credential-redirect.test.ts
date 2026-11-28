@@ -44,10 +44,16 @@ async function boot(deploymentMode: DeploymentMode) {
 const CLAUDE_REDIRECT = { env: { ANTHROPIC_BASE_URL: URL } };
 const CLAUDE_OWN_KEY = { env: { ANTHROPIC_BASE_URL: URL, ANTHROPIC_API_KEY: KEY } };
 const OPENCODE_REDIRECT = { provider: { anthropic: { options: { baseURL: URL } } } };
+const CONNECTION_ID = '33333333-3333-4333-8333-333333333333';
 const personal = (config: Record<string, unknown>, type = 'claude-code') => ({
-    executors: [{ name: 'mine', type, config }],
+    executors: [{ name: 'mine', type, config, providerConnectionId: CONNECTION_ID }],
 });
-const org = (config: Record<string, unknown>, type = 'claude-code') => ({ name: 'team', type, config });
+const org = (config: Record<string, unknown>, type = 'claude-code') => ({
+    name: 'team',
+    type,
+    config,
+    providerConnectionId: CONNECTION_ID,
+});
 const vars = (...entries: [string, string][]) => ({
     vars: entries.map(([name, value]) => ({ name, value, isSecret: true })),
 });

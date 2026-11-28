@@ -4,7 +4,10 @@ import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
 import {
     assertConnectionSelection,
     assertMovedSelection,
+    ExecutorConnectionRefusedError,
     lockOrgRowForUpdate,
+    MIGRATION_PENDING_MESSAGE,
+    MISSING_CONNECTION_MESSAGE,
     modelOf,
     selectedOf,
 } from './executor-connection-selection.js';
@@ -76,10 +79,13 @@ export interface ExecutorProfile {
      */
     readonly runnerClass: string | null;
     /**
-     * The provider connection the profile runs its model on (docs/workspace.md), or null for the stacked env and
-     * the pasted config alone. An id, never a credential: the claim resolves the key from the secret store.
+     * The provider connection the profile runs its model on (docs/workspace.md): an id, never a credential — the
+     * claim resolves the key from the secret store. Null only on a row the provider migration suspended
+     * (`suspendedReason`), which cannot be resumed or edited until it selects one.
      */
     readonly providerConnectionId: string | null;
+    /** Why the provider migration suspended the row (docs/persistence.md); null on every other row. */
+    readonly suspendedReason: string | null;
     /**
      * Whether the pasted config carries its own credential, endpoint or `{env:NAME}` reference, which the claim
      * keeps above the connection's (docs/workspace.md). Read from the stored markers and the config text, never by
@@ -172,7 +178,7 @@ export interface UserExecutorStore {
         config: Record<string, unknown>;
         gateFixRounds?: number;
         runnerClass?: string | null;
-        providerConnectionId?: string | null;
+        providerConnectionId: string;
         createdBy: string;
     }): Promise<ExecutorProfile & { config: Record<string, unknown> }>;
     /**
@@ -188,8 +194,8 @@ export interface UserExecutorStore {
             config?: Record<string, unknown>;
             gateFixRounds?: number;
             runnerClass?: string | null;
-            /** Omitted keeps the row's connection; null clears it. */
-            providerConnectionId?: string | null;
+            /** Omitted keeps the row's connection; a row with none (migration-suspended) must name one. */
+            providerConnectionId?: string;
         }
     ): Promise<(ExecutorProfile & { config: Record<string, unknown> }) | null>;
     /**
@@ -246,6 +252,7 @@ interface Row {
     suspended: boolean;
     runner_class: string | null;
     provider_connection_id: string | null;
+    provider_migration_reason: string | null;
     overrides_connection?: boolean;
 }
 
@@ -260,6 +267,7 @@ const toExecutorProfile = (row: Row): ExecutorProfile => ({
     suspended: row.suspended,
     runnerClass: row.runner_class,
     providerConnectionId: row.provider_connection_id,
+    suspendedReason: row.provider_migration_reason,
     ...(row.overrides_connection === undefined ? {} : { configOverridesConnection: row.overrides_connection }),
 });
 
@@ -309,12 +317,24 @@ async function setSuspendedRow(
     sql: Sql,
     { orgId, id, owner, suspended }: { orgId: string; id: string; owner: string | null; suspended: boolean }
 ): Promise<ExecutorProfile | null> {
+    // A row the provider migration has not reached (pending) is left to it, and a row with no connection (the migration
+    // suspended it) cannot be resumed until it selects one.
     const rows = await sql<Row[]>`
         update executor_profile set suspended = ${suspended}, updated_at = now()
         where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
-        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
+            and not provider_migration_pending and (${suspended} or provider_connection_id is not null)
+        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, provider_migration_reason
     `;
-    return rows[0] ? toExecutorProfile(rows[0]) : null;
+    if (rows[0]) return toExecutorProfile(rows[0]);
+    const [held] = await sql<{ pending: boolean }[]>`
+        select provider_migration_pending as pending from executor_profile
+        where org_id = ${orgId} and id = ${id} and user_id is not distinct from ${owner}
+    `;
+    if (!held) return null;
+    throw new ExecutorConnectionRefusedError(
+        'missing',
+        held.pending ? MIGRATION_PENDING_MESSAGE : MISSING_CONNECTION_MESSAGE
+    );
 }
 
 /**
@@ -336,7 +356,7 @@ async function readConfig(
             provider_connection_id: string | null;
         }[]
     >`
-        select type, config, gate_fix_rounds, suspended, runner_class, provider_connection_id
+        select type, config, gate_fix_rounds, suspended, runner_class, provider_connection_id, provider_migration_reason
         from executor_profile
         where org_id = ${orgId} and user_id is not distinct from ${owner} and name = ${name}
     `;
@@ -379,7 +399,7 @@ async function claimConfigRow(
             secret_refs: StoredCredential[];
         })[]
     >`
-        select type, config, secret_refs, gate_fix_rounds, suspended, runner_class, provider_connection_id
+        select type, config, secret_refs, gate_fix_rounds, suspended, runner_class, provider_connection_id, provider_migration_reason
         from executor_profile
         where org_id = ${deps.orgId} and user_id is not distinct from ${owner} and name = ${name}
     `;
@@ -408,7 +428,7 @@ async function insertOrgRow(
         const [sealed] = sealedOf([]);
         await assertConnectionSelection(tx, deps.orgId, {
             owner: null,
-            connectionId: input.providerConnectionId ?? null,
+            connectionId: input.providerConnectionId,
             type: input.type,
             model: modelOf(input.config),
             previousConnectionId: null,
@@ -421,9 +441,9 @@ async function insertOrgRow(
             values (
                 ${deps.orgId}, null, ${input.name}, ${input.type}, ${tx.json(sealed!.config as never)},
                 ${tx.json(sealed!.secretRefs as never)}, ${input.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS},
-                ${position}, ${input.createdBy}, ${input.runnerClass ?? null}, ${input.providerConnectionId ?? null}
+                ${position}, ${input.createdBy}, ${input.runnerClass ?? null}, ${input.providerConnectionId}
             )
-            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config
+            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, provider_migration_reason, config
         `;
     });
     const row = rows[0];
@@ -452,10 +472,11 @@ async function updateOrgRow(
                 gate_fix_rounds = coalesce(${patch.gateFixRounds ?? null}, gate_fix_rounds),
                 runner_class = case when ${patch.runnerClass !== undefined} then ${patch.runnerClass ?? null}
                                     else runner_class end,
-                provider_connection_id = ${previous.connectionId},
+                provider_connection_id = ${previous.connectionId}, provider_migration_reason = null,
+                provider_migration_pending = false,
                 updated_at = now()
             where org_id = ${orgId} and id = ${id} and user_id is null
-            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config
+            returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, provider_migration_reason, config
         `;
     });
     return rows[0] ?? null;
@@ -518,7 +539,7 @@ export function createUserExecutorStore({
             // `config` is deliberately not selected: the routes echo these rows on every poll, and
             // pasted config may hold credentials.
             const rows = await sql<Row[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id,
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, provider_migration_reason,
                     (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id = ${userId}
@@ -530,7 +551,7 @@ export function createUserExecutorStore({
         async listWithConfigs(userId) {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config,
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, provider_migration_reason, config,
                     (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id = ${userId}
@@ -556,7 +577,7 @@ export function createUserExecutorStore({
         async listOrg() {
             await gate();
             const rows = await sql<Row[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id,
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, provider_migration_reason,
                     (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id is null
@@ -568,7 +589,7 @@ export function createUserExecutorStore({
         async listOrgWithConfigs() {
             await gate();
             const rows = await sql<(Row & { config: Record<string, unknown> })[]>`
-                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, config,
+                select id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, provider_migration_reason, config,
                     (jsonb_array_length(secret_refs) > 0 or config::text ~* '[{]env:|"[a-z_]*base_?url"') as overrides_connection
                 from executor_profile
                 where org_id = ${orgId} and user_id is null
@@ -619,7 +640,7 @@ export function createUserExecutorStore({
                             user_id = ${userId}, position = ${position}, created_by = null, runner_class = null,
                             updated_at = now()
                         where org_id = ${orgId} and id = ${id} and user_id is null
-                        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
+                        returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, provider_migration_reason
                     `;
                     })
                 );
@@ -636,7 +657,7 @@ export function createUserExecutorStore({
                     update executor_profile set
                         user_id = null, position = ${position}, created_by = ${userId}, updated_at = now()
                     where org_id = ${orgId} and id = ${id} and user_id = ${userId}
-                    returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id
+                    returning id, name, type, created_at, updated_at, gate_fix_rounds, created_by, suspended, runner_class, provider_connection_id, provider_migration_reason
                 `;
             });
             const row = rows[0];

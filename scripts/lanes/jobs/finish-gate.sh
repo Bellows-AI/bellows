@@ -116,12 +116,12 @@ finish_gate_lane() { # finish_gate_lane <claude|opencode>
     if [ "$cli" = opencode ]; then
         # OPENCODE_CONFIG_CONTENT is reserved at /api/env; the claim synthesizes it from the executor row's config.
         api PUT /api/env/org '{"vars":[{"name":"ANTHROPIC_API_KEY","value":"fake-key","isSecret":true}]}' >/dev/null
-        api PUT /api/workspace/executors "$(node -e 'const config = JSON.parse(process.argv[1]);
-            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$(lane_opencode_config "http://host.docker.internal:$fake_port/v1")")" >/dev/null
+        lane_store_executors org "http://host.docker.internal:$fake_port/v1" opencode "$(lane_opencode_config "http://host.docker.internal:$fake_port/v1")" >/dev/null
     else
         # The org env a member would set, aimed at the scripted model (question-round-trip's point_runners_at,
         # which exists only when that phase is selected).
         api PUT /api/env/org "{\"vars\":[{\"name\":\"ANTHROPIC_API_KEY\",\"value\":\"fake-key\",\"isSecret\":true},{\"name\":\"ANTHROPIC_BASE_URL\",\"value\":\"http://host.docker.internal:$fake_port\",\"isSecret\":false}]}" >/dev/null
+        lane_store_executors org "http://host.docker.internal:$fake_port" opencode >/dev/null
     fi
 
     id="$(create_job 'make the change, then finish' "$cli")"
@@ -161,7 +161,7 @@ finish_gate_lane() { # finish_gate_lane <claude|opencode>
         "a.exitCode === 0 && String(a.output).includes('lane-exec-ok') && Array.isArray(a.artifacts) && a.artifacts.length === 0 && !('verdict' in a)"
     lane_endpoint_stop "$fake_pid"
     if [ "$cli" = opencode ]; then
-        api PUT /api/workspace/executors '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}' >/dev/null
+        lane_store_executors org "$LANE_IDLE_MODEL_URL" opencode >/dev/null
     fi
     stop_driver
     docker image rm -f "$image" >/dev/null 2>&1

@@ -160,6 +160,7 @@ function selectionMetadata(
         type: string;
         createdAt: string;
         suspended: boolean;
+        suspendedReason: string | null;
         runnerClass: string | null;
         providerConnectionId: string | null;
         configOverridesConnection?: boolean;
@@ -172,6 +173,7 @@ function selectionMetadata(
         type: row.type,
         createdAt: row.createdAt,
         suspended: row.suspended,
+        suspendedReason: row.suspendedReason,
         runnerClass: row.runnerClass,
         providerConnectionId: row.providerConnectionId,
         ...connectionFields(row, visible),
@@ -221,6 +223,7 @@ function adminRow(
         gateFixRounds: number;
         createdBy: string | null;
         suspended: boolean;
+        suspendedReason: string | null;
         runnerClass: string | null;
         providerConnectionId: string | null;
         configOverridesConnection?: boolean;
@@ -235,6 +238,7 @@ function adminRow(
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         suspended: row.suspended,
+        suspendedReason: row.suspendedReason,
         gateFixRounds: row.gateFixRounds,
         createdBy: row.createdBy,
         runnerClass: row.runnerClass,
@@ -385,9 +389,14 @@ async function handleSuspendOrgExecutor(orgs: OrgRegistry, request: FastifyReque
     const updated = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => store.setOrgSuspended(id, suspended)
+        () =>
+            store.setOrgSuspended(id, suspended).catch((error: unknown) => {
+                if (isConnectionRefusal(error)) return error;
+                throw error;
+            })
     );
     if (!updated.ok) return reply;
+    if (isConnectionRefusal(updated.value)) return connectionRefused(reply, updated.value.message);
     if (!updated.value) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such organization executor' });
     return reply.code(HTTP_OK).send(selectionMetadata(updated.value));
 }

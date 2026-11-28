@@ -35,7 +35,7 @@ export function inUseMessage(connection: string, removal: Extract<ConnectionRemo
     const hidden = removal.otherReferences
         ? ' Executors you cannot see also use it, so ask the owners to switch them first.'
         : '';
-    return `“${connection}” is still used${visible}. Switch those executors to another connection or to None (environment keys), then remove it.${hidden}`;
+    return `“${connection}” is still used${visible}. Switch those executors to another connection, then remove it.${hidden}`;
 }
 
 export function ProviderConnectionsPanel({ session }: { session: Session | null }) {

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { NO_MODEL_MESSAGE, normalizeModelId, OPENROUTER_ANTHROPIC_BASE_URL } from '@factory-ai/core';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
@@ -6,7 +6,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import { createProviderConnectionStore, type ProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
-import { expireLease, lapseDeferral, mustCreate, testOrg, testUser } from './fixtures.js';
+import { expireLease, lapseDeferral, mustCreate, testConnection, testOrg, testUser } from './fixtures.js';
 import { faultySecrets, testSecretStore } from './env-secrets-harness.js';
 import { useTestDb } from './harness.js';
 
@@ -67,6 +67,13 @@ beforeAll(() => {
     if (enabled) sql = db.sql;
 });
 
+/** The organization's provider connection every executor in a test selects; the reset empties the table. */
+let conn: string;
+
+beforeEach(async () => {
+    if (process.env.DATABASE_URL) conn = await testConnection(db.sql, ORG);
+});
+
 describe.skipIf(!enabled)('a profile provider connection at claim', () => {
     it('a connection alone satisfies the model requirement and the claim', async () => {
         const { executors, connections, jobs } = stores({ mode: 'cloud' });
@@ -82,9 +89,10 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
         expect(claim?.env?.ANTHROPIC_API_KEY).toBe('sk-ant-connection-key');
     });
 
-    it('without a connection or a key the same cloud claim is NO_MODEL (the layer is the difference)', async () => {
+    it('a profile clearing the connection key leaves the same cloud claim NO_MODEL (the layer is the difference)', async () => {
         const { executors, jobs } = stores({ mode: 'cloud' });
-        await executors.replace(ALICE, [{ name: 'bare', type: 'claude-code', config: {} }]);
+        const config = { env: { ANTHROPIC_API_KEY: '' } };
+        await executors.replace(ALICE, [{ providerConnectionId: conn, name: 'bare', type: 'claude-code', config }]);
         await queue(jobs, 'bare');
 
         expect((await jobs.claim('w1', LEASE_SECONDS))?.executorRefusal).toBe(NO_MODEL_MESSAGE);

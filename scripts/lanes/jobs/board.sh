@@ -4,7 +4,7 @@ echo
 echo '# board'
 
 expect_status 'refuses a duplicate org name'         409 POST /api/org/executors \
-    "{\"name\":\"$ORG_EXECUTOR\",\"type\":\"claude-code\",\"config\":{}}"
+    "{\"name\":\"$ORG_EXECUTOR\",\"type\":\"claude-code\",\"config\":{},\"providerConnectionId\":\"$lane_idle_connection\"}"
 expect_status 'a scope outside the pair is refused' 400 POST /api/jobs \
     "{\"command\":\"x\",\"executor\":\"$ORG_EXECUTOR\",\"executorScope\":\"repo\",\"repo\":\"$SMOKE_REPO\"}"
 

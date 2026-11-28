@@ -66,6 +66,7 @@ const ExecutorRow = z.object({
     type: z.string(),
     runnerClass: z.string().nullable().optional(),
     suspended: z.boolean().optional(),
+    suspendedReason: z.string().nullable().optional(),
     providerConnectionId: z.string().nullable().optional(),
     providerConnectionName: z.string().nullable().optional(),
     providerConnectionProvider: z.string().nullable().optional(),
@@ -99,11 +100,17 @@ export const listExecutors = defineTool({
                     .nullable()
                     .describe('The runner class its tasks run on; null is the default. Only an org profile names one.'),
                 suspended: z.boolean(),
+                suspendedReason: z
+                    .string()
+                    .nullable()
+                    .describe('Why the provider migration suspended it, until a connection is chosen; null otherwise.'),
                 default: z.boolean(),
                 providerConnectionId: z
                     .string()
                     .nullable()
-                    .describe('The provider connection it runs its model on; null uses the environment keys.'),
+                    .describe(
+                        'The provider connection it runs its model on; null only on an executor the provider migration suspended.'
+                    ),
                 providerConnectionName: z.string().nullable().describe("That connection's name, when you may see it."),
                 providerConnectionProvider: z.string().nullable().describe("That connection's model provider."),
                 providerConnectionScope: z.enum(['org', 'personal']).nullable(),
@@ -128,6 +135,7 @@ export const listExecutors = defineTool({
             type: profile.type,
             runnerClass: profile.runnerClass ?? null,
             suspended: profile.suspended === true,
+            suspendedReason: profile.suspendedReason ?? null,
             providerConnectionId: profile.providerConnectionId ?? null,
             providerConnectionName: profile.providerConnectionName ?? null,
             providerConnectionProvider: profile.providerConnectionProvider ?? null,

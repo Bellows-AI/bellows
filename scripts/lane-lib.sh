@@ -178,3 +178,24 @@ api() { # api METHOD PATH [json] -> "<status>\t<body>"; BASE and AUTH_HEADER com
 field() { # field <json> <key>
     lane_call field "$1" "$2"
 }
+
+# Every executor selects a provider connection, and the claim replaces the runner's model env with the
+# connection's key and endpoint (applyConnectionLayer), so the connection carries the scripted model's
+# address. scripts/lane-connection.mjs is the one implementation (one connection per endpoint and scope, reused by retries); the token is AUTH_HEADER or FACTORY_TOKEN.
+lane_connection_id() { # lane_connection_id <baseUrl> [org|personal] -> the id of the anthropic connection at <baseUrl>, created once, key fake-key
+    node "$REPO/scripts/lane-connection.mjs" connection "$BASE" "$1" "${2:-org}"
+}
+
+lane_executors_json() { # lane_executors_json <connection id> [opencode [config json]] -> the PUT /api/workspace/executors body
+    node "$REPO/scripts/lane-connection.mjs" executors "$@"
+}
+
+lane_store_executors() { # lane_store_executors <org|personal> <baseUrl> [opencode [config json]] -> "<status>\t<body>" of the PUT, after creating the connection
+    local scope="$1" base_url="$2" conn
+    shift 2
+    conn="$(lane_connection_id "$base_url" "$scope" 2>&1)" || {
+        printf '000\t%s' "$conn"
+        return 1
+    }
+    api PUT /api/workspace/executors "$(lane_executors_json "$conn" "$@")"
+}

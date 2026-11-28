@@ -1,8 +1,9 @@
 import { ADMIN_ROLE } from '@factory-ai/core';
-import { cleanup, configure, render } from '@testing-library/react';
+import { cleanup, configure, render, screen, waitFor, within } from '@testing-library/react';
+import type userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
-import { afterEach, vi } from 'vitest';
+import { afterEach, expect, vi } from 'vitest';
 import { LOCAL_AUTHOR } from '../../e2e/fixtures/threads.js';
 import type { Session } from '../src/api/useSession.js';
 import { App, appRoutes } from '../src/App.js';
@@ -14,6 +15,14 @@ import { ThemeProvider } from '../src/theme.js';
  * board is a stubbed `fetch`; the router is a memory data router over the real route table, so a
  * page under test owns the same polls, blockers and links it owns in the browser.
  */
+
+/** Picks `connectionId` in the open executor dialog once its connection list has loaded: every executor runs on one. */
+export async function chooseConnection(user: ReturnType<typeof userEvent.setup>, connectionId: string): Promise<void> {
+    const dialog = screen.getByRole('dialog', { name: /^(Add|Edit) executor$/ });
+    const select = within(dialog).getByLabelText<HTMLSelectElement>('Provider connection', { exact: true });
+    await waitFor(() => expect([...select.options].map((option) => option.value)).toContain(connectionId));
+    await user.selectOptions(select, connectionId);
+}
 
 // `find*`/`waitFor` give up after 1s by default, which a full run on a loaded machine outlasts —
 // the same contention the 30s testTimeout in vitest.config.ts absorbs.
