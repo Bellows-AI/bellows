@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeState } from '../src/auth/session.js';
 import { TEST_SESSION_SECRET } from './helpers-config.js';
 import { HTTP_FOUND } from './helpers-http.js';
+import { githubAuth, harness, memoryAuthStore, stubIdentityClient } from './helpers.js';
 import { errorOf, setup } from './auth.oauth-fixtures.js';
 
 const installRoute = (app: Awaited<ReturnType<typeof setup>>['app'], query: string) =>
@@ -29,7 +30,12 @@ describe('GET /api/auth/github/install (BEL-629)', () => {
     });
 
     it('reports install as its own failure when the slug cannot be resolved', async () => {
-        const { app } = await setup({ appSlug: undefined });
+        // No appSlug at all — the offline shape.
+        const { app } = await harness({
+            config: { auth: githubAuth() },
+            auth: memoryAuthStore(),
+            identity: stubIdentityClient(),
+        });
         const response = await installRoute(app, '?returnTo=%2Faccount');
 
         expect(response.statusCode).toBe(HTTP_FOUND);

@@ -96,8 +96,9 @@ async function redirectToInstallPage(
     ctx: Pick<CallbackCtx, 'appSlug' | 'secret'>,
     request: FastifyRequest,
     reply: FastifyReply,
-    returnTo: string
+    dest: { returnTo: string; reselect?: boolean }
 ): Promise<void> {
+    const { returnTo, reselect = false } = dest;
     // The ordinary first-run state, not a fault: the App exists but is installed nowhere this
     // account can see. GitHub's own install page is where that is fixed — and its setup URL
     // sends the browser back here once it is done.
@@ -106,7 +107,7 @@ async function redirectToInstallPage(
         if (!slug) throw new Error('no slug provider');
         // GitHub hands `state` back to the setup URL, which is how the destination survives the
         // round trip through the install page.
-        const state = encodeURIComponent(encodeState(returnTo, ctx.secret));
+        const state = encodeURIComponent(encodeState(returnTo, ctx.secret, undefined, reselect));
         reply.redirect(`https://github.com/apps/${slug}/installations/new?state=${state}`, HTTP_FOUND);
     } catch (e) {
         request.log.error({ err: e }, 'could not resolve the App slug for the install redirect');
@@ -170,7 +171,7 @@ async function resolveCallbackCaller(
     // truncated one is as corrosive as ever (see github.ts's page cap).
     const installations = await ctx.identity.installations(accessToken);
     if (installations.length === 0) {
-        await redirectToInstallPage(ctx, request, reply, returnTo);
+        await redirectToInstallPage(ctx, request, reply, { returnTo });
         return { kind: 'handled' };
     }
     const reported = installations.map(({ id, account, ...kind }) => ({ id, name: account ?? id, ...kind }));
@@ -458,6 +459,16 @@ export const authRoutes =
             // cookie holds a different nonce.
             reply.setCookie(OAUTH_COOKIE, state, oauthCookieOptions(auth.cookieSecure));
             return reply.redirect(identity.authorizeUrl(state), HTTP_FOUND);
+        });
+
+        // The way to the App install page for an account that already has installations — the
+        // callback only sends the zero-installation case there. The setup URL's return restarts the
+        // sign-in with `reselect=1` and the new installation as the preference, so the selection
+        // screen reopens listing the organization that was just added.
+        app.get('/api/auth/github/install', (request, reply) => {
+            const query = request.query as { returnTo?: string };
+            const returnTo = safeReturnPath(query.returnTo, auth.publicUrl);
+            return redirectToInstallPage(callbackCtx, request, reply, { returnTo, reselect: true });
         });
 
         app.get('/api/auth/github/callback', (request, reply) =>

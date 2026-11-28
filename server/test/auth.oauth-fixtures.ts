@@ -19,8 +19,6 @@ export interface SetupOptions {
     installations?: { id: string; account: string | null }[];
     installationListing?: (installationId: string) => Promise<InstallationRepo[] | null>;
     config?: Partial<AppConfig>;
-    /** Overrides the App slug provider; `undefined` (the key present) is the offline shape. */
-    appSlug?: (() => Promise<string>) | undefined;
 }
 
 export async function setup({
@@ -28,7 +26,6 @@ export async function setup({
     installations = oneInstallation(ORG),
     installationListing,
     config = {},
-    ...rest
 }: SetupOptions = {}) {
     const auth = memoryAuthStore();
     seed(auth);
@@ -38,7 +35,7 @@ export async function setup({
         config: { auth: githubAuth(), ...config },
         auth,
         identity,
-        appSlug: 'appSlug' in rest ? rest.appSlug : async () => 'stub-app',
+        appSlug: async () => 'stub-app',
         ...(installationListing ? { installationListing } : {}),
     });
     return { app, auth, identity, orgs, repos };
