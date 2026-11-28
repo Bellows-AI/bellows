@@ -28,11 +28,11 @@ const item = (html: string, label: string): string => {
 };
 
 describe('nextSetupStep', () => {
-    it('walks model, then tools, then ready, and nothing once completed', () => {
-        expect(nextSetupStep(setup())).toBe('model');
-        expect(nextSetupStep(setup({ skipped: ['model'] }))).toBe('tools');
-        expect(nextSetupStep(setup({ done: ['model'] }))).toBe('tools');
-        expect(nextSetupStep(setup({ done: ['model'], skipped: ['tools'] }))).toBe('ready');
+    it('walks provider, then tools, then ready, and nothing once completed', () => {
+        expect(nextSetupStep(setup())).toBe('provider');
+        expect(nextSetupStep(setup({ skipped: ['provider'] }))).toBe('tools');
+        expect(nextSetupStep(setup({ done: ['provider'] }))).toBe('tools');
+        expect(nextSetupStep(setup({ done: ['provider'], skipped: ['tools'] }))).toBe('ready');
         expect(nextSetupStep(setup({ completed: true }))).toBeNull();
     });
 });
@@ -48,9 +48,9 @@ describe('the return path', () => {
     });
 
     it('builds the step path and the reselect round trip with the return path encoded', () => {
-        expect(setupPath('model', '/tasks')).toBe('/onboarding/model?returnTo=%2Ftasks');
-        expect(reselectHref('/onboarding/model?returnTo=%2Ftasks')).toBe(
-            '/api/auth/github?reselect=1&returnTo=%2Fonboarding%2Fmodel%3FreturnTo%3D%252Ftasks'
+        expect(setupPath('provider', '/tasks')).toBe('/onboarding/provider?returnTo=%2Ftasks');
+        expect(reselectHref('/onboarding/provider?returnTo=%2Ftasks')).toBe(
+            '/api/auth/github?reselect=1&returnTo=%2Fonboarding%2Fprovider%3FreturnTo%3D%252Ftasks'
         );
     });
 });
@@ -58,7 +58,7 @@ describe('the return path', () => {
 describe('setupContext', () => {
     it('numbers the three steps and names the closing page', () => {
         expect(setupContext('repositories')).toBe('Setup · Step 1 of 3');
-        expect(setupContext('model')).toBe('Setup · Step 2 of 3');
+        expect(setupContext('provider')).toBe('Setup · Step 2 of 3');
         expect(setupContext('tools')).toBe('Setup · Step 3 of 3');
         expect(setupContext('ready')).toBe('Ready');
     });
@@ -66,34 +66,36 @@ describe('setupContext', () => {
 
 describe('SetupStepper', () => {
     it('is an ordered list with the current step marked and the steps in order', () => {
-        const html = renderToStaticMarkup(<SetupStepper current="model" setup={setup()} here="/onboarding/model" />);
+        const html = renderToStaticMarkup(
+            <SetupStepper current="provider" setup={setup()} here="/onboarding/provider" />
+        );
         expect(html).toMatch(/^<ol class="setup-steps" aria-label="Setup progress">/);
         expect(html.match(/<li/g)?.length).toBe(3);
-        expect(html.indexOf('Repositories')).toBeLessThan(html.indexOf('Model'));
-        expect(html.indexOf('Model')).toBeLessThan(html.indexOf('Tools'));
+        expect(html.indexOf('Repositories')).toBeLessThan(html.indexOf('Provider'));
+        expect(html.indexOf('Provider')).toBeLessThan(html.indexOf('Tools'));
         expect(html.match(/aria-current="step"/g)?.length).toBe(1);
-        expect(item(html, 'Model')).toContain('aria-current="step"');
+        expect(item(html, 'Provider')).toContain('aria-current="step"');
         expect(item(html, 'Tools')).toContain('>3<');
     });
 
     it('marks a finished step ✓ and a skipped one –', () => {
         const done = renderToStaticMarkup(
-            <SetupStepper current="tools" setup={setup({ done: ['model'] })} here="/onboarding/tools" />
+            <SetupStepper current="tools" setup={setup({ done: ['provider'] })} here="/onboarding/tools" />
         );
-        expect(item(done, 'Model')).toContain('✓');
-        expect(item(done, 'Model')).toContain('setup-step-done');
+        expect(item(done, 'Provider')).toContain('✓');
+        expect(item(done, 'Provider')).toContain('setup-step-done');
         const skipped = renderToStaticMarkup(
-            <SetupStepper current="tools" setup={setup({ skipped: ['model'] })} here="/onboarding/tools" />
+            <SetupStepper current="tools" setup={setup({ skipped: ['provider'] })} here="/onboarding/tools" />
         );
-        expect(item(skipped, 'Model')).toContain('–');
-        expect(item(skipped, 'Model')).toContain('setup-step-skipped');
+        expect(item(skipped, 'Provider')).toContain('–');
+        expect(item(skipped, 'Provider')).toContain('setup-step-skipped');
         expect(item(skipped, 'Tools')).toContain('aria-current="step"');
     });
 
     it('links Repositories to the reselect round trip back to this step, never to bare /onboarding', () => {
-        for (const here of ['/onboarding/model?returnTo=%2Ftasks', '/onboarding/tools?returnTo=%2F']) {
+        for (const here of ['/onboarding/provider?returnTo=%2Ftasks', '/onboarding/tools?returnTo=%2F']) {
             const html = renderToStaticMarkup(
-                <SetupStepper current={here.includes('model') ? 'model' : 'tools'} setup={setup()} here={here} />
+                <SetupStepper current={here.includes('provider') ? 'provider' : 'tools'} setup={setup()} here={here} />
             );
             const href = /<a [^>]*href="([^"]*)"[^>]*>Repositories<\/a>/.exec(html)?.[1]?.replaceAll('&amp;', '&');
             expect(href).toBe(reselectHref(here));
@@ -110,7 +112,7 @@ describe('SetupStepper', () => {
 });
 
 describe('SetupFrame', () => {
-    const frame = (place: 'model' | 'ready') =>
+    const frame = (place: 'provider' | 'ready') =>
         renderToStaticMarkup(
             <ThemeProvider>
                 <MemoryRouter initialEntries={[`/onboarding/${place}`]}>
@@ -122,7 +124,7 @@ describe('SetupFrame', () => {
         );
 
     it('carries the public header, the step context, the stepper and one h1', () => {
-        const html = frame('model');
+        const html = frame('provider');
         expect(html).toContain('public-header');
         expect(html).toContain('Setup · Step 2 of 3');
         expect(html).toContain('theme-select');

@@ -1,6 +1,6 @@
 import { type ExecutorType, type ModelProvider, normalizeModelId, type ProviderConnectionMeta } from '@factory-ai/core';
 import type { ConnectionModels } from '../api/providerConnections.js';
-import { modelOptions } from '../model-setup/providers.js';
+import { modelOptions } from '../providers/providers.js';
 
 /**
  * What a selected connection's model read means for the Model control and the model chips (docs/workspace.md): the five

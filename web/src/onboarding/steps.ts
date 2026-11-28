@@ -1,5 +1,5 @@
 /** A setup step the member records (`POST /api/onboarding/setup`); Repositories is the sign-in's own. */
-export type RecordedStep = 'model' | 'tools';
+export type RecordedStep = 'provider' | 'tools';
 
 /** Where the setup walk can stand: the three numbered steps, then the closing page. */
 export type SetupPlace = 'repositories' | RecordedStep | 'ready';
@@ -11,12 +11,12 @@ export interface SetupState {
     skipped: readonly RecordedStep[];
 }
 
-const RECORDED: readonly RecordedStep[] = ['model', 'tools'];
+const RECORDED: readonly RecordedStep[] = ['provider', 'tools'];
 
 /** The stepper's steps, in order. Ready closes the walk and is not numbered. */
 export const NUMBERED_STEPS: readonly { place: Exclude<SetupPlace, 'ready'>; label: string }[] = [
     { place: 'repositories', label: 'Repositories' },
-    { place: 'model', label: 'Model' },
+    { place: 'provider', label: 'Provider' },
     { place: 'tools', label: 'Tools' },
 ];
 

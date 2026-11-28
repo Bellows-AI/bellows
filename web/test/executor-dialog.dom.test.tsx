@@ -30,7 +30,7 @@ import {
 } from '../src/workspace/executors.js';
 import { GUIDED_COPY } from '../src/workspace/executor-guided.js';
 import { renderApp, stubFetch } from './dom.js';
-import { VERIFY_URL } from './model-setup-reads.js';
+import { VERIFY_URL } from './provider-fixtures.js';
 import { boardHandler, listedModels, personalExecutor, providerConnection, settingsBoard } from './settings-board.js';
 
 /**

@@ -28,7 +28,7 @@ import {
     SAVE_LABEL,
 } from '../workspace/executors.js';
 import { JsonEditor } from './JsonEditor.js';
-import { PROVIDER_META } from '../model-setup/providers.js';
+import { PROVIDER_META } from '../providers/providers.js';
 import { catalogModels, catalogNote, type ModelCatalog } from '../workspace/model-catalog.js';
 
 /**

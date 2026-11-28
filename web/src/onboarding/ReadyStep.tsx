@@ -1,21 +1,19 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { request } from '../api/request.js';
 import { queueTask, type QueueTaskInput } from '../api/taskWrites.js';
 import { useConnections } from '../api/useConnections.js';
-import type { UseModelSetup } from '../api/useModelSetup.js';
 import { trackedRepos, type UseRepos, useRepos } from '../api/useRepos.js';
 import { useSession } from '../api/useSession.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
 import { ComposerDraftProvider, draftOwner, useComposerDraftStore } from '../composer-draft.js';
-import { Icon } from '../components/Icon.js';
 import { StateNote } from '../components/StateNote.js';
 import { TaskComposer, TaskComposerSkeleton } from '../panels/TaskComposer.js';
 import { initialComposerState } from '../task-composer.js';
+import type { DefaultExecutorRead } from '../providers/default-executor.js';
 import { composerExecutorOptions } from '../workspace/executors.js';
 import { readReadyDraft, writeReadyDraft } from './ready-draft.js';
 import { ReadySummary } from './ReadySummary.js';
-import { setupPath } from './steps.js';
 import { useSetupWalk } from './useSetupWalk.js';
 
 /** The starter prompts under the composer: a chip fills the request, the member still presses Start. */
@@ -30,7 +28,6 @@ const taskPlaceholder = (repo: string): string => (repo === '' ? 'Describe a tas
 
 /** A task created whose setup `complete` has not landed yet: the next Ready load finishes it, never creating again. */
 const STARTED_KEY = 'setup-first-task';
-const NO_MODEL_ID = 'ready-no-model';
 const RESUME_FAILED = 'Your first task started, but setup could not be finished. Try again.';
 
 /** Marks setup complete, then re-reads `/api/auth/me` so no stale `completed: false` sends the member back. */
@@ -182,20 +179,10 @@ function FirstTaskComposer({
 }
 
 /**
- * Ready's body: the summary, then the first task — the inline composer, or, with no model confirmed,
- * the warning back to the model step and an `aria-disabled` Start — and "Go to the dashboard instead",
- * which completes setup and returns to `returnTo`.
+ * Ready's body: the summary, then the first task — the inline composer, which says so itself when there is no executor
+ * to run it — and "Go to the dashboard instead", which completes setup and returns to `returnTo`.
  */
-export function ReadyStep({
-    setup,
-    workspace,
-    noModel,
-}: {
-    setup: UseModelSetup;
-    workspace: UseWorkspace;
-    /** `showNoModel`'s answer: a task could not run, so Start stays dark. */
-    noModel: boolean;
-}) {
+export function ReadyStep({ provider, workspace }: { provider: DefaultExecutorRead; workspace: UseWorkspace }) {
     const walk = useSetupWalk();
     const { session, loading: sessionLoading } = useSession();
     const repos = useRepos(true);
@@ -209,16 +196,6 @@ export function ReadyStep({
             <StateNote state="error">{RESUME_FAILED}</StateNote>
         ) : (
             <StateNote state="loading">Finishing setup…</StateNote>
-        );
-    } else if (noModel) {
-        task = (
-            <div className="banner-warn ready-no-model" id={NO_MODEL_ID}>
-                <Icon name="alert-triangle" size={24} />
-                <p>
-                    No model yet — tasks will wait until one is connected.{' '}
-                    <Link to={setupPath('model', walk.returnTo)}>Connect a model</Link>
-                </p>
-            </div>
         );
     } else {
         task = (
@@ -237,9 +214,7 @@ export function ReadyStep({
             <ReadySummary
                 session={session}
                 repos={repos}
-                setup={setup}
-                noModel={noModel}
-                workspace={workspace}
+                provider={provider}
                 connections={connections}
                 returnTo={walk.returnTo}
                 here={`${pathname}${search}`}
@@ -258,11 +233,6 @@ export function ReadyStep({
                 {started.failed ? (
                     <button type="button" className="primary" onClick={started.retry}>
                         Try again
-                    </button>
-                ) : null}
-                {noModel && started.started === null ? (
-                    <button type="button" className="primary" aria-disabled="true" aria-describedby={NO_MODEL_ID}>
-                        Start task
                     </button>
                 ) : null}
             </div>

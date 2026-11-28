@@ -11,7 +11,7 @@ import {
 } from '@factory-ai/core';
 
 /**
- * The model step's rules (docs/api.md, `POST /api/provider-connections/setup`, `POST /api/provider-connections/verify`): what each
+ * The provider step's rules (docs/api.md, `POST /api/provider-connections/setup`, `POST /api/provider-connections/verify`): what each
  * provider card says, which provider a pasted key names, the agents and models each offers, how the key check's answer
  * reads, and why Save waits. The agents and env names are core's (`model-providers.ts`); the copy is the UI's.
  */
@@ -130,14 +130,11 @@ export function agentLock(provider: ModelProvider): string | null {
     return null;
 }
 
-/** The source a model is chosen for: a key provider, or the deployment's own model. */
-export type ModelSource = ModelProvider | 'platform';
-
 const ANTHROPIC_CLAUDE = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'];
 const OPENROUTER_CLAUDE = ['anthropic/claude-sonnet-5.5', 'anthropic/claude-opus-5.5'];
 
 /** The suggestions offered before a check lists the key's own models; the first is preselected. */
-const CURATED: Readonly<Record<ModelSource, Readonly<Record<ExecutorType, readonly string[]>>>> = {
+const CURATED: Readonly<Record<ModelProvider, Readonly<Record<ExecutorType, readonly string[]>>>> = {
     anthropic: {
         [CLAUDE_CODE]: ANTHROPIC_CLAUDE,
         [OPENCODE]: ['anthropic/claude-sonnet-5-5', 'anthropic/claude-opus-5-5'],
@@ -150,14 +147,13 @@ const CURATED: Readonly<Record<ModelSource, Readonly<Record<ExecutorType, readon
     litellm: { [CLAUDE_CODE]: [], [OPENCODE]: [] },
     'openai-compatible': { [CLAUDE_CODE]: [], [OPENCODE]: [] },
     subscription: { [CLAUDE_CODE]: ['claude-sonnet-5-5', 'claude-opus-5-5'], [OPENCODE]: [] },
-    platform: { [CLAUDE_CODE]: ANTHROPIC_CLAUDE, [OPENCODE]: ['anthropic/claude-sonnet-5-5'] },
 };
 
 /**
  * The models offered for a source and agent: the ones the key check returned, else the curated list. Claude Code on
  * OpenRouter runs Anthropic models only, so the check's list is cut to those.
  */
-export function modelOptions(source: ModelSource, agent: ExecutorType, checked: readonly string[] | undefined) {
+export function modelOptions(source: ModelProvider, agent: ExecutorType, checked: readonly string[] | undefined) {
     const fromCheck = (checked ?? []).filter(
         (id) => source !== 'openrouter' || agent !== CLAUDE_CODE || id.startsWith('anthropic/')
     );
@@ -208,12 +204,24 @@ export function checkLine(provider: ModelProvider, answer: VerifyAnswer): { kind
     return { kind: 'ok', text: [lead, ...okFacts(provider, answer)].join(' · ') };
 }
 
-/** Why Save waits, or null when it may run: a checked key (✓ or ▲) and a model. */
-export function saveReason(input: {
+/** Why a key cannot be used yet, or null once it has passed its check (✓ or ▲). */
+export function keyReason(key: string, check: CheckKind): string | null {
+    if (!key.trim()) return 'Paste a key to continue.';
+    const waiting: Partial<Record<CheckKind, string>> = {
+        idle: 'Paste a key to continue.',
+        wait: 'Checking the key…',
+        bad: 'Fix the key to continue.',
+        error: 'The key could not be checked. Try again.',
+    };
+    return waiting[check] ?? null;
+}
+
+/** Why the connection cannot be created yet, or null when it may: a base URL where one is required, a checked key, a name. */
+export function connectionReason(input: {
     provider: ModelProvider;
     key: string;
     baseUrl: string;
-    model: string;
+    name: string;
     check: CheckKind;
 }): string | null {
     if (providerRequiresBaseUrl(input.provider) && !input.baseUrl.trim()) {
@@ -221,14 +229,5 @@ export function saveReason(input: {
             ? 'Enter the proxy URL to continue.'
             : 'Enter the endpoint URL to continue.';
     }
-    if (!input.key.trim()) return 'Paste a key to continue.';
-    const waiting: Partial<Record<CheckKind, string>> = {
-        idle: 'Paste a key to continue.',
-        wait: 'Checking the key…',
-        bad: 'Fix the key to continue.',
-        error: 'The key could not be checked. Try again.',
-    };
-    const reason = waiting[input.check];
-    if (reason) return reason;
-    return input.model.trim() ? null : 'Choose a model to continue.';
+    return keyReason(input.key, input.check) ?? (input.name.trim() ? null : 'Give the connection a name.');
 }

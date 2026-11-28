@@ -103,7 +103,7 @@ export function ToolsStep({ catalog = INTEGRATION_CATALOG }: { catalog?: readonl
             ) : null}
             <SetupActions
                 back={
-                    <Link className="setup-back" to={setupPath('model', walk.returnTo)}>
+                    <Link className="setup-back" to={setupPath('provider', walk.returnTo)}>
                         Back
                     </Link>
                 }

@@ -11,8 +11,6 @@ import type { RangeSelection, ScopeSelection } from './RangeSelector.js';
 import { SideNav } from './SideNav.js';
 import { AppBar } from './AppBar.js';
 import { MobileNavDialog } from './MobileNavDialog.js';
-import { NoModelBanner } from './NoModelBanner.js';
-import type { NoModelState } from '../onboarding/no-model.js';
 import { ComposerDraftProvider } from '../composer-draft.js';
 import { useFileDropGuard } from '../panels/AttachmentDropZone.js';
 
@@ -95,10 +93,6 @@ export function AppShell() {
     // piece owns state the other renders.
     const [navOpen, setNavOpen] = useState(false);
 
-    // The banner's decision, mirrored on the root as `data-no-model`: `pending` until it is
-    // made, so a whole-page e2e check waits for it instead of walking a page that is about to grow.
-    const [noModel, setNoModel] = useState<NoModelState>('pending');
-
     const context: ShellContext = {
         data,
         range,
@@ -113,7 +107,7 @@ export function AppShell() {
     };
 
     return (
-        <div className="shell" data-no-model={noModel}>
+        <div className="shell">
             {/* The first focusable element on every page (issue 160): a keyboard user's first Tab
                 makes it visible, activating it moves focus to the main region below — and nothing
                 else ever moves focus there, so ordinary client-side navigation never steals it.
@@ -138,8 +132,6 @@ export function AppShell() {
                     selector — carries the padding and width cap, so a dialog or a nested main can
                     never inherit page chrome by accident. Pages render fragments into it. */}
                 <main id="main-content" className="page" tabIndex={-1}>
-                    {/* Above every page while no model is connected; it reads its own setup. */}
-                    <NoModelBanner onState={setNoModel} />
                     {/* The composer's draft outlives a trip to Settings and back; the composer reads
                         it once issue 280 wires it in. */}
                     <ComposerDraftProvider session={session}>

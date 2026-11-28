@@ -3,7 +3,7 @@ import { PROVIDER_AGENTS } from './model-providers.js';
 import { customModelEntry, customProviderId, OPENAI_COMPATIBLE_NPM } from './openai-compatible.js';
 
 /**
- * The providers an executor profile's guided setup offers : the model-setup's key providers
+ * The providers an executor profile's guided setup offers : the provider step's key providers
  * a profile can carry its own credential for, plus the OpenAI-compatible custom endpoint, which is
  * an OpenCode provider block (`npm: @ai-sdk/openai-compatible`) rather than a stored env name. The
  * guided setup renders this list and `guidedExecutorConfig` generates the config from a pick, so a
@@ -16,7 +16,7 @@ export type ExecutorProvider = (typeof EXECUTOR_PROVIDERS)[number];
 export const isExecutorProvider = (value: unknown): value is ExecutorProvider =>
     typeof value === 'string' && (EXECUTOR_PROVIDERS as readonly string[]).includes(value);
 
-/** The agents each provider's credential runs, the first preselected — the model-setup's own answers, plus the custom endpoint. */
+/** The agents each provider's credential runs, the first preselected — the provider step's own answers, plus the custom endpoint. */
 export const EXECUTOR_PROVIDER_AGENTS: Readonly<Record<ExecutorProvider, readonly ExecutorType[]>> = {
     anthropic: PROVIDER_AGENTS.anthropic,
     openrouter: PROVIDER_AGENTS.openrouter,

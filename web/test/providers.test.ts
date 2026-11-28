@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { generatedExecutorName, modelFamily } from '../src/providers/executor-name.js';
 import {
     agentLock,
     checkLine,
@@ -7,12 +8,12 @@ import {
     modelOptions,
     providerChoices,
     providerAgents,
-    saveReason,
-} from '../src/model-setup/providers.js';
+    connectionReason,
+} from '../src/providers/providers.js';
 
 /**
- * The model step's pure rules: which provider a pasted key names, which agents and models each provider offers, what
- * the key check's answer reads as, and why Save waits.
+ * The provider step's pure rules: which provider a pasted key names, which agents and models each provider offers, what
+ * the key check's answer reads as, why the connection waits, and the generated executor name.
  */
 
 describe('provider detection from the key prefix', () => {
@@ -75,7 +76,6 @@ describe('agents and models per provider', () => {
         expect(modelOptions('openrouter', 'claude-code', ['openai/gpt-5.1', 'anthropic/claude-z'])).toEqual([
             'anthropic/claude-z',
         ]);
-        expect(modelOptions('platform', 'claude-code', undefined)[0]).toBe('claude-sonnet-5-5');
     });
 });
 
@@ -98,20 +98,41 @@ describe("the key check's answer", () => {
     });
 });
 
-describe('why Save waits', () => {
-    const base = { provider: 'anthropic' as const, key: 'sk-ant-x', baseUrl: '', model: 'm' };
+describe('why the connection waits', () => {
+    const base = { provider: 'anthropic' as const, key: 'sk-ant-x', baseUrl: '', name: 'Anthropic' };
 
     it('names the missing step, and nothing once the key checked out', () => {
-        expect(saveReason({ ...base, key: '', check: 'idle' })).toBe('Paste a key to continue.');
-        expect(saveReason({ ...base, check: 'wait' })).toBe('Checking the key…');
-        expect(saveReason({ ...base, check: 'bad' })).toBe('Fix the key to continue.');
-        expect(saveReason({ ...base, check: 'error' })).toBe('The key could not be checked. Try again.');
-        expect(saveReason({ ...base, provider: 'litellm', check: 'idle' })).toBe('Enter the proxy URL to continue.');
-        expect(saveReason({ ...base, provider: 'openai-compatible', check: 'idle' })).toBe(
+        expect(connectionReason({ ...base, key: '', check: 'idle' })).toBe('Paste a key to continue.');
+        expect(connectionReason({ ...base, check: 'wait' })).toBe('Checking the key…');
+        expect(connectionReason({ ...base, check: 'bad' })).toBe('Fix the key to continue.');
+        expect(connectionReason({ ...base, check: 'error' })).toBe('The key could not be checked. Try again.');
+        expect(connectionReason({ ...base, provider: 'litellm', check: 'idle' })).toBe(
+            'Enter the proxy URL to continue.'
+        );
+        expect(connectionReason({ ...base, provider: 'openai-compatible', check: 'idle' })).toBe(
             'Enter the endpoint URL to continue.'
         );
-        expect(saveReason({ ...base, model: ' ', check: 'ok' })).toBe('Choose a model to continue.');
-        expect(saveReason({ ...base, check: 'ok' })).toBeNull();
-        expect(saveReason({ ...base, check: 'warn' })).toBeNull();
+        expect(connectionReason({ ...base, name: ' ', check: 'ok' })).toBe('Give the connection a name.');
+        expect(connectionReason({ ...base, check: 'ok' })).toBeNull();
+        expect(connectionReason({ ...base, check: 'warn' })).toBeNull();
+    });
+});
+
+describe('the generated executor name', () => {
+    it('reads the model family out of a model id, with or without a provider prefix', () => {
+        expect(modelFamily('claude-sonnet-5-5')).toBe('Sonnet');
+        expect(modelFamily('anthropic/claude-opus-5.5')).toBe('Opus');
+        expect(modelFamily('claude-haiku-5-5')).toBe('Haiku');
+        expect(modelFamily('openai/gpt-5.1')).toBe('GPT-5.1');
+        expect(modelFamily('openai/gpt-5.1-codex')).toBe('GPT-5.1 Codex');
+        expect(modelFamily('moonshotai/kimi-k2')).toBe('Kimi');
+        expect(modelFamily('acme/house-model-7')).toBe('house-model-7');
+        expect(modelFamily('')).toBe('');
+    });
+
+    it('is "<Agent> · <Model family>", the agent alone without a model', () => {
+        expect(generatedExecutorName('claude-code', 'claude-sonnet-5-5')).toBe('Claude Code · Sonnet');
+        expect(generatedExecutorName('opencode', 'openai/gpt-5.1')).toBe('OpenCode · GPT-5.1');
+        expect(generatedExecutorName('opencode', '')).toBe('OpenCode');
     });
 });

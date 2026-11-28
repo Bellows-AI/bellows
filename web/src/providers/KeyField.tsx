@@ -1,6 +1,5 @@
 import type { ModelProvider } from '@factory-ai/core';
 import { useState } from 'react';
-import type { SetupScope } from '../api/useModelSetup.js';
 import type { ProviderMeta } from './providers.js';
 import type { KeyCheck } from './useKeyCheck.js';
 
@@ -158,18 +157,5 @@ export function AdvancedBase({
                 </p>
             </div>
         </details>
-    );
-}
-
-/** Where the key goes: a sealed provider connection in which scope, and that nobody reads it back. */
-export function SecretNote({ scope }: { scope: SetupScope }) {
-    return (
-        <p className="model-secret-note">
-            {scope === 'org'
-                ? 'Saved as an organization provider connection. '
-                : 'Saved as your personal provider connection. '}
-            Nobody — admins included — can read the key back; you can only replace it (Settings → Model).
-            {scope === 'personal' ? ' A personal executor wins over the organization’s default.' : null}
-        </p>
     );
 }

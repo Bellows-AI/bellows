@@ -7,7 +7,7 @@ import { integrationProvider } from '@factory-ai/core';
  *
  * Sources: Simple Icons 16.36.0 (the path data is CC0; each mark stays its owner's trademark, used here only to name
  * the integration, per the owner's brand guidelines), except Slack, which Simple Icons no longer carries. Each path
- * keeps its published grid and the default nonzero fill rule it was drawn for. The model providers (the model step's
+ * keeps its published grid and the default nonzero fill rule it was drawn for. The model providers (the provider step's
  * cards) use Simple Icons `anthropic`, `openrouter` and `claude` (the subscription); OpenAI and LiteLLM, which Simple
  * Icons does not carry, are neutral line glyphs drawn here — a line glyph (`stroke`) is stroked in the brand token
  * instead of filled.
