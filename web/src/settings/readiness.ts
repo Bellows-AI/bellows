@@ -209,7 +209,7 @@ function executorsItem(workspace: ReadinessInput['workspace']): ReadinessItem {
             status: 'No executor profile',
             facts: [
                 {
-                    text: "No personal executor rows are required: new tasks run on your agent default or the organization's. With neither set, a task needs an executor profile.",
+                    text: "No personal executor rows are required: a task runs on your default executor or the organization's. With neither set, a task needs an executor profile.",
                 },
             ],
             tone: 'info',

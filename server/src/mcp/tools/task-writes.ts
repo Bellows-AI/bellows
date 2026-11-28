@@ -32,7 +32,7 @@ const attachmentIds = z
         'Ids of completed, already-uploaded files you own to bind to the task. A client-local path is not readable by the board. Every id must be valid or the whole request is refused.'
     );
 
-/** 157_agent_default.sql's model bound; the board trims and refuses an empty or over-long name. */
+/** The per-task model bound; the board trims and refuses an empty or over-long name. */
 const MAX_MODEL_CHARS = 200;
 
 const model = (what: string) => z.string().min(1).max(MAX_MODEL_CHARS).optional().describe(what);
