@@ -297,6 +297,9 @@ test('Suspend keeps a personal profile but withholds Make default and the compos
     await expect(personalRow(page, 'Alpha').getByText(SUSPENDED_LABEL)).toHaveCount(0);
     await expect(personalRow(page, 'Alpha').getByText(/Default/)).toBeVisible();
 
+    // The default cannot be removed: clear it through the API, then both go.
+    expect((await page.request.delete('/api/workspace/executors/default')).ok()).toBe(true);
+    await page.reload();
     for (const name of ['Alpha', 'Beta']) await removePersonal(page, name);
 });
 
