@@ -40,6 +40,13 @@ interface Seeded {
 const seeded: Record<'alice' | 'bob' | 'carol', Seeded> = {} as never;
 let runningJob = '';
 let profileJob = '';
+let finishedJob = '';
+let stoppedJob = '';
+let carolFinishedJob = '';
+let carolRunningJob = '';
+let launchedBatch = '';
+let draftBatch = '';
+let wokenRound = '';
 
 const newUser = async (): Promise<string> => {
     const [row] = await pool<{ id: string }[]>`
@@ -131,6 +138,56 @@ beforeAll(async () => {
     runningJob = randomUUID();
     await pool`insert into job (org_id, id, command, root_job_id, created_by, status, agent_type, agent_model)
                values (${org}, ${runningJob}, 'work', ${runningJob}, ${ids.alice}, 'running', 'claude-code', 'm-4')`;
+    finishedJob = randomUUID();
+    await pool`insert into job (org_id, id, command, root_job_id, created_by, status, agent_type, agent_model)
+               values (${org}, ${finishedJob}, 'work', ${finishedJob}, ${ids.alice}, 'succeeded', 'claude-code', 'm-6')`;
+    stoppedJob = randomUUID();
+    await pool`insert into job (org_id, id, command, root_job_id, created_by, status, agent_type, agent_model)
+               values (${org}, ${stoppedJob}, 'work', ${stoppedJob}, ${ids.alice}, 'stopped', 'claude-code', 'm-7')`;
+    carolFinishedJob = randomUUID();
+    await pool`insert into job (org_id, id, command, root_job_id, created_by, status, agent_type, agent_model)
+               values (${bareOrg}, ${carolFinishedJob}, 'work', ${carolFinishedJob}, ${ids.carol}, 'succeeded', 'claude-code', 'm-8')`;
+
+    carolRunningJob = randomUUID();
+    await pool`insert into job (org_id, id, command, root_job_id, created_by, status, agent_type, agent_model)
+               values (${bareOrg}, ${carolRunningJob}, 'work', ${carolRunningJob}, ${ids.carol}, 'running', 'claude-code', 'm-8')`;
+
+    // A launched task of a started batch, and a pending task of a batch that has not started.
+    const taskBatch = async (started: boolean, execution: string): Promise<string> => {
+        const [batch] = await pool<{ id: string }[]>`
+            insert into batch (org_id, plan_version, title, policy, concurrency, created_by, started_by)
+            values (${org}, 1, 'b', 'human', 1, ${ids.alice}, ${started ? ids.alice : null}) returning id
+        `;
+        await pool`insert into batch_target (org_id, batch_id, key, position, repo, branch)
+                   values (${org}, ${batch!.id}, 't', 0, 'acme/app', 'main')`;
+        await pool`insert into batch_stage (org_id, batch_id, key, position, policy)
+                   values (${org}, ${batch!.id}, 's', 0, 'human')`;
+        await pool`
+            insert into batch_task (org_id, batch_id, key, stage_key, position, target_key, objective, acceptance,
+                                    verification, agent_type, agent_model)
+            values (${org}, ${batch!.id}, 'k', 's', 0, 't', 'o', 'a', 'v', 'claude-code', 'm-9')
+        `;
+        if (started) {
+            await pool`update batch set status = 'started', started_at = now(), deadline_at = now() + interval '1 day' where org_id = ${org} and id = ${batch!.id}`;
+            await pool`alter table batch_task disable trigger batch_task_immutable`;
+            await pool`update batch_task set execution = ${execution} where org_id = ${org} and batch_id = ${batch!.id}`;
+            await pool`alter table batch_task enable trigger batch_task_immutable`;
+        }
+        return batch!.id;
+    };
+    launchedBatch = await taskBatch(true, 'running');
+    draftBatch = await taskBatch(false, 'pending');
+
+    // A workflow round that was already woken.
+    wokenRound = randomUUID();
+    await pool`insert into job (org_id, id, command, root_job_id, created_by, execution_user_id, status)
+               values (${org}, ${wokenRound}, 'work', ${wokenRound}, ${ids.alice}, ${ids.alice}, 'succeeded')`;
+    await pool`insert into workflow_wait (org_id, root_job_id, reason, repo, pr_number)
+               values (${org}, ${wokenRound}, 'review', 'acme/app', 1)`;
+    await pool`insert into workflow_round (org_id, root_job_id, workflow_node, round, repo, pr_number, command,
+                                           parent_job_id, agent_type, agent_model, woken_at, job_id, delivery_count)
+               values (${org}, ${wokenRound}, 'review', 1, 'acme/app', 1, 'continue', ${wokenRound}, 'opencode', 'm-10', now(), ${wokenRound}, 1)`;
+
     profileJob = randomUUID();
     await pool`insert into job (org_id, id, command, root_job_id, created_by, executor, executor_scope, agent_model)
                values (${org}, ${profileJob}, 'work', ${profileJob}, ${ids.bob}, 'other', 'user', 'm-5')`;
@@ -272,8 +329,23 @@ describe.runIf(enabled)('172: the agent default is dropped', () => {
         expect(wait.terminal_reason).toBe(REASON);
     });
 
-    it('leaves started work and work that names a profile alone', async () => {
-        expect(await jobOf(runningJob)).toMatchObject({ status: 'running', executor: null });
+    it('stamps started, finished and parked agent-default jobs too: a follow-up or takeover copies the executor', async () => {
+        for (const id of [runningJob, finishedJob, stoppedJob]) {
+            expect(await jobOf(id)).toMatchObject({ executor: 'mine', executor_scope: 'user' });
+        }
+        expect((await jobOf(runningJob)).status).toBe('running');
+        expect((await jobOf(finishedJob)).status).toBe('succeeded');
+        expect(await jobOf(carolFinishedJob, bareOrg)).toMatchObject({ status: 'succeeded', executor: null });
+        expect(await jobOf(carolRunningJob, bareOrg)).toMatchObject({ status: 'running', executor: null });
+    });
+
+    it('stamps a launched batch task and a woken workflow round, and leaves a draft batch alone', async () => {
+        expect(await taskOf(launchedBatch)).toMatchObject({ execution: 'running', executor: 'mine' });
+        expect(await taskOf(draftBatch)).toMatchObject({ execution: 'pending', attention: null, executor: null });
+        expect(await roundOf(wokenRound)).toEqual({ executor: 'mine', executor_scope: 'user' });
+    });
+
+    it('leaves work that names a profile alone', async () => {
         expect(await jobOf(profileJob)).toMatchObject({ status: 'queued', executor: 'other', executor_scope: 'user' });
     });
 });
