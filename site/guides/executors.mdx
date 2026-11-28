@@ -94,10 +94,12 @@ resolves only from your own scopes.
 
 ### Run an executor on a provider connection
 
-A profile can select one **provider connection** — a named model key with its endpoint, set up under
-**Settings → Model** — instead of relying on keys set in the environment. In the executor dialog, choose
-it in the **Provider connection** field beside **Agent**; **None (environment keys)** is the default
-and keeps a profile exactly as it was. This is separate from **Connect a provider** under it, which
+Every profile runs on one **provider connection** — a named model key with its endpoint, set up under
+**Settings → Model**. In the executor dialog, choose it in the **Provider connection** field beside
+**Agent**; **Save** stays disabled until one is chosen, and there is no option to run on keys set in
+the environment. An executor that could not be matched to a key or provider when Bellows moved to
+provider connections is suspended: its **Suspended** badge shows the reason on hover, and it stays
+suspended until you choose a connection for it and resume it. This is separate from **Connect a provider** under it, which
 writes a key and endpoint into this one profile's own configuration. Several profiles can share
 one connection, and each profile picks its own connection and model, so one connection's key
 rotation reaches every profile that selects it on its next task, while a task already running keeps

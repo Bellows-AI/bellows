@@ -92,6 +92,19 @@ describe('bellows executor list', () => {
         );
     });
 
+    it('shows why the provider migration suspended a row', async () => {
+        const reason = 'No provider could be determined for this executor.';
+        const fixture = workspace({
+            orgExecutors: [{ name: 'team', type: 'claude', suspended: true, suspendedReason: reason }],
+        });
+        const human = harness({ '/api/workspace': () => json(fixture) });
+        expect(await run(['executor', 'list'], human.io)).toBe(0);
+        expect(human.out.join('')).toContain(`org  team  claude  suspended  reason: ${reason}`);
+        const machine = harness({ '/api/workspace': () => json(fixture) });
+        expect(await run(['executor', 'list', '--json'], machine.io)).toBe(0);
+        expect(JSON.parse(machine.out.join('')).data.executors[1]).toMatchObject({ suspendedReason: reason });
+    });
+
     it('renders the human form and an empty state', async () => {
         const some = harness({ '/api/workspace': () => json(workspace()) });
         expect(await run(['executor', 'list'], some.io)).toBe(0);

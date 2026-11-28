@@ -120,8 +120,7 @@ export async function lockOrgRowForUpdate(
         for update
     `;
     if (!previous) return null;
-    const connectionId =
-        patch.providerConnectionId ?? previous.provider_connection_id;
+    const connectionId = patch.providerConnectionId ?? previous.provider_connection_id;
     await assertConnectionSelection(tx, orgId, {
         owner: null,
         connectionId,

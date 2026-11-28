@@ -52,7 +52,7 @@ const RECOVERY = ['node-disruption', 'driver-kill'];
 // [pattern, phases | FULL | NONE, reason]. First match wins, so a specific file precedes its directory.
 export const RULES = [
     // --- the shared fixture: every board phase builds on it -------------------------------------
-    [/^scripts\/(test-jobs\.sh|test-jobs-changed\.mjs|stub-agent\.sh|stub-runner\.Dockerfile|lane-gh\.sh|lane-lib\.sh|lane-api\.mjs|lane-slow-jobs\.mjs)$/, FULL, 'lane harness and stub image'],
+    [/^scripts\/(test-jobs\.sh|test-jobs-changed\.mjs|stub-agent\.sh|stub-runner\.Dockerfile|lane-gh\.sh|lane-lib\.sh|lane-api\.mjs|lane-connection\.mjs|lane-slow-jobs\.mjs)$/, FULL, 'lane harness and stub image'],
     // One file per phase (scripts/lanes/jobs): a phase file runs that phase; the fixture the services phases share runs them all.
     [/^scripts\/lanes\/jobs\/service-fixture\.sh$/, ['services', 'orphan-reaper', 'node-disruption'], 'the service fixture three phases build on'],
     ...PHASES.map((phase) => [new RegExp(`^scripts/lanes/jobs/${phase}\\.sh$`), [phase], 'its own phase file']),
@@ -92,7 +92,7 @@ export const RULES = [
     [/^server\/src\/secrets\/rotate-(cli|args)\.ts$/, NONE, 'the rotation command line, not called by any jobs phase'],
     [/^server\/src\/secrets\//, FULL, 'the secret store every board opens'],
     [/^server\/src\/(pr-follower|batch-loops|batch-pr-observer|stats-service|skills|skill-catalog)\.ts$/, FULL, 'the PR follower and stats warm-up every board runs, and the skill catalog every create reads'],
-    [/^server\/src\/db\/(pool|migrate|org-sql|org-tables|org-status|audit-log|lease-types|attempt-of-lease|restore-types|object-write-fence|operation-receipts|env-var-store|env-secrets|user-executor-store|executor-default-store|executor-personal-replace|executor-connection-selection|executor-setup-rows|provider-setup-store|executor-credentials|stored-repos|tracked-repos|master-prompt|review-prompt|evidence-policy|follow-up-recap|gate-report|task-summary|plan-limits|plan-allowances|outbox-backoff|pr-follow-store|pr-lifecycle-store|org-retention|org-purge|skill-store|connection-bindings|env-var-write)\.ts$/, FULL, 'stores the job path, the claim or a boot loop uses'],
+    [/^server\/src\/db\/(pool|migrate|org-sql|org-tables|org-status|audit-log|lease-types|attempt-of-lease|restore-types|object-write-fence|operation-receipts|env-var-store|env-secrets|user-executor-store|executor-default-store|executor-provider-migration|executor-provider-plan|executor-personal-replace|executor-connection-selection|executor-setup-rows|provider-setup-store|executor-credentials|stored-repos|tracked-repos|master-prompt|review-prompt|evidence-policy|follow-up-recap|gate-report|task-summary|plan-limits|plan-allowances|outbox-backoff|pr-follow-store|pr-lifecycle-store|org-retention|org-purge|skill-store|connection-bindings|env-var-write)\.ts$/, FULL, 'stores the job path, the claim or a boot loop uses'],
     // The claim reads a profile's selected connection through this store (job-store-claim-executor.ts), so every phase's claim runs it.
     [/^server\/src\/db\/provider-connection(-(secrets|store))?\.ts$/, FULL, 'the provider connection store the claim reads for a profile that selects one'],
     [/^server\/src\/db\/batches\/batch-store-(observation|types)\.ts$/, FULL, 'the PR follower every board runs reads its lease'],

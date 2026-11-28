@@ -519,6 +519,13 @@ expect_status() { # expect_status <name> <want> <method> <path> [json]
     if [ "$got" = "$want" ]; then ok "$name"; else bad "$name" "wanted $want, got $got: $(body "$out")"; fi
 }
 
+expect_store_executors() { # expect_store_executors <name> <org|personal> <baseUrl> [opencode [config]] -> the PUT answers 200 (lane_store_executors, scripts/lane-lib.sh)
+    local name="$1" out
+    shift
+    out="$(lane_store_executors "$@")"
+    if [ "$(status "$out")" = 200 ]; then ok "$name"; else bad "$name" "wanted 200, got $(status "$out"): $(body "$out")"; fi
+}
+
 expect_status_at() { # expect_status_at <base> <name> <want> <method> <path> [json]
     local base="$1"
     shift
@@ -1155,8 +1162,15 @@ member_seeded="$(compose exec -T postgres psql -U factory -d "$DB" -q -v ON_ERRO
     echo "test-jobs: could not select $SMOKE_REPO for the stand-in member: $member_seeded"
     exit 1
 }
+# Every executor selects a provider connection (scripts/lane-lib.sh). This one points at no listening
+# endpoint: the phases that make a model call store their own executors aimed at their scripted endpoint.
+LANE_IDLE_MODEL_URL='http://host.docker.internal:9'
+lane_idle_connection="$(lane_connection_id "$LANE_IDLE_MODEL_URL" 2>&1)" || {
+    echo "test-jobs: could not create the lane's provider connection: $lane_idle_connection"
+    exit 1
+}
 expect_status 'stores the task-selectable executors' 200 PUT /api/workspace/executors \
-    '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
+    "$(lane_executors_json "$lane_idle_connection" opencode)"
 
 # Organization-scoped executor profiles (issue 391). AUTH_MODE=none's stand-in account is the
 # seeded admin, so the create is allowed; the org config marker is what tells the run's output
@@ -1164,7 +1178,7 @@ expect_status 'stores the task-selectable executors' 200 PUT /api/workspace/exec
 # a per-run suffix: the lane may run against a reused database, and a name is unique per scope.
 ORG_EXECUTOR="team-$(openssl rand -hex 3)"
 expect_status 'stores an org executor as the admin' 201 POST /api/org/executors \
-    "{\"name\":\"$ORG_EXECUTOR\",\"type\":\"claude-code\",\"config\":{\"model\":\"org-team-model\"}}"
+    "{\"name\":\"$ORG_EXECUTOR\",\"type\":\"claude-code\",\"config\":{\"model\":\"org-team-model\"},\"providerConnectionId\":\"$lane_idle_connection\"}"
 expect_status 'puts the core env' 200 PUT /api/env/org \
     '{"vars":[{"name":"FACTORY_ENV_PROBE","value":"org-marker","isSecret":false},{"name":"SECRET_PROBE","value":"secret-marker","isSecret":true}]}'
 fi

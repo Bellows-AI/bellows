@@ -8,8 +8,10 @@ import { request } from './request.js';
  * caller may see the connection. Never a key or a secret reference.
  */
 export interface ExecutorConnectionFields {
-    /** The provider connection the profile runs its model on; null or absent is the environment keys. */
+    /** The provider connection the profile runs its model on; null only on a row the provider migration suspended. */
     providerConnectionId?: string | null;
+    /** Why the provider migration suspended the row (no connection could be chosen for it); null otherwise. */
+    suspendedReason?: string | null;
     providerConnectionName?: string | null;
     providerConnectionProvider?: ModelProvider | null;
     providerConnectionScope?: ProviderConnectionScope | null;
@@ -101,6 +103,7 @@ export interface UseWorkspace {
             config: object;
             gateFixRounds: number;
             suspended?: boolean;
+            /** The edited row names one; a carried-back row the provider migration suspended still has none, and the board says so. */
             providerConnectionId?: string | null;
         }[]
     ) => Promise<string | null>;

@@ -150,7 +150,11 @@ function OrgExecutorRow({
                         <span className="pill-list">
                             {defaultName === executor.name ? <span className="pill">{DEFAULT_LABEL}</span> : null}
                             {executor.orgDefault ? <span className="pill">{ORG_DEFAULT_LABEL}</span> : null}
-                            {executor.suspended ? <span className="pill">{SUSPENDED_LABEL}</span> : null}
+                            {executor.suspended ? (
+                                <span className="pill" title={executor.suspendedReason ?? undefined}>
+                                    {SUSPENDED_LABEL}
+                                </span>
+                            ) : null}
                         </span>
                     ) : null}
                 </span>

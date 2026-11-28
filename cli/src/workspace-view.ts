@@ -1,6 +1,8 @@
 /** The safe provider connection fields an executor row carries (copied from core, never imported): no key, no secret reference. */
 export interface ExecutorConnectionView {
     providerConnectionId?: string | null;
+    /** Why the provider migration suspended the row; null otherwise. */
+    suspendedReason?: string | null;
     providerConnectionName?: string | null;
     providerConnectionProvider?: string | null;
     providerConnectionScope?: 'org' | 'personal' | null;

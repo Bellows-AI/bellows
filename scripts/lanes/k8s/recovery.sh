@@ -430,8 +430,7 @@ fi
 # a task whose owner holds no Jira connection (the org admin minted above has none, so nothing binds by
 # default) is made with factory-jira hidden: the row's skill_hidden is the stored decision the claim carries. The
 # switched-off built-in is the control that the column was read at all.
-skills_admin_exec="$(FACTORY_TOKEN="$skills_admin_token" http_status PUT "$BASE/api/workspace/executors" \
-    '{"executors":[{"name":"claude","type":"claude-code","config":{}}]}')"
+skills_admin_exec="$(FACTORY_TOKEN="$skills_admin_token" put_member_executors)"
 [ "$skills_admin_exec" = 200 ] && ok 'the connection-less admin stores the task executor' || bad 'the connection-less admin stores the task executor' "status $skills_admin_exec"
 skills_nojira_job="$(FACTORY_TOKEN="$skills_admin_token" queue_job "factory-stub-skills factory-stub-wait-$skills_release pinned skills")"
 skills_nojira_hidden="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \

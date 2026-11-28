@@ -111,7 +111,12 @@ export function WorkspaceExecutorsPanel({
                                                         <span className="pill">{DEFAULT_LABEL}</span>
                                                     ) : null}
                                                     {executor.suspended ? (
-                                                        <span className="pill">{SUSPENDED_LABEL}</span>
+                                                        <span
+                                                            className="pill"
+                                                            title={executor.suspendedReason ?? undefined}
+                                                        >
+                                                            {SUSPENDED_LABEL}
+                                                        </span>
                                                     ) : null}
                                                 </span>
                                             ) : null}

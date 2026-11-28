@@ -13,6 +13,41 @@ export const E2E_EXECUTOR = {
 /** The member's resolved default the poll carries (issue 391): the one executor, by scope. */
 export const E2E_DEFAULT_EXECUTOR = { scope: 'user' as const, name: E2E_EXECUTOR.name };
 
+/** The org `anthropic` connection every executor the specs create runs on (the key is never checked). */
+export const E2E_CONNECTION = { name: 'e2e-anthropic', provider: 'anthropic', key: 'fake-key' };
+const PROVIDER_CONNECTIONS = '/api/provider-connections';
+const E2E_CONNECTION_ID = '22222222-2222-4222-8222-222222222222';
+
+/** The connection's line in the executor dialog's select (`connectionLabel`). */
+export const E2E_CONNECTION_OPTION = `${E2E_CONNECTION.name} — Anthropic · Organization`;
+
+/** Makes sure the real board holds `E2E_CONNECTION` (an org admin writes it) and returns its id. */
+export async function ensureConnection(page: Page): Promise<string> {
+    const created = await page.request.post(PROVIDER_CONNECTIONS, { data: { scope: 'org', ...E2E_CONNECTION } });
+    if (created.status() === 201 || created.status() === 200) return ((await created.json()) as { id: string }).id;
+    const listed = (await (await page.request.get(PROVIDER_CONNECTIONS)).json()) as {
+        connections: { id: string; name: string }[];
+    };
+    const found = listed.connections.find((row) => row.name === E2E_CONNECTION.name);
+    expect(found, `the board holds ${E2E_CONNECTION.name} (create answered ${created.status()})`).toBeDefined();
+    return found!.id;
+}
+
+/** Removes `E2E_CONNECTION` once no executor uses it. */
+export async function removeConnection(page: Page): Promise<void> {
+    const listed = (await (await page.request.get(PROVIDER_CONNECTIONS)).json()) as {
+        connections: { id: string; name: string }[];
+    };
+    for (const row of listed.connections.filter((c) => c.name === E2E_CONNECTION.name)) {
+        await page.request.delete(`${PROVIDER_CONNECTIONS}/${row.id}`);
+    }
+}
+
+/** Picks `E2E_CONNECTION` in an executor dialog, once the connection list has loaded. */
+export async function chooseConnection(dialog: Locator): Promise<void> {
+    await dialog.getByLabel('Provider connection', { exact: true }).selectOption({ label: E2E_CONNECTION_OPTION });
+}
+
 /** The executor as `mockExecutors` holds it: the list row with its (empty) configuration. */
 export const E2E_EXECUTOR_ROW = { ...E2E_EXECUTOR, config: {} };
 
@@ -100,16 +135,27 @@ export async function withExecutor(page: Page): Promise<void> {
  * `clearExecutors` once the spec is done.
  */
 export async function saveExecutor(page: Page): Promise<void> {
+    const providerConnectionId = await ensureConnection(page);
     const response = await page.request.put('/api/workspace/executors', {
-        data: { executors: [{ name: E2E_EXECUTOR.name, type: E2E_EXECUTOR.type, config: {} }] },
+        data: { executors: [{ name: E2E_EXECUTOR.name, type: E2E_EXECUTOR.type, config: {}, providerConnectionId }] },
     });
     expect(response.status(), 'the open board saves the member’s executor').toBe(200);
+    // A task naming no executor runs on the member's configured default; nothing picks one on its own.
+    const workspace = (await (await page.request.get('/api/workspace')).json()) as {
+        executors: { id: string; name: string }[];
+    };
+    const saved = workspace.executors.find((row) => row.name === E2E_EXECUTOR.name);
+    expect(saved, 'the saved executor is listed').toBeDefined();
+    const selected = await page.request.put('/api/workspace/executors/default', { data: { executorId: saved!.id } });
+    expect(selected.status(), 'the open board selects it as the default').toBe(200);
 }
 
 /** Put the open board back to no executor profile, the state every other spec starts from. */
 export async function clearExecutors(page: Page): Promise<void> {
+    await page.request.delete('/api/workspace/executors/default');
     const response = await page.request.put('/api/workspace/executors', { data: { executors: [] } });
     expect(response.status(), 'the open board clears the member’s executors').toBe(200);
+    await removeConnection(page);
 }
 
 /** One executor profile as the mocked workspace holds it — the config-bearing list row. */
@@ -134,6 +180,28 @@ export async function mockExecutors(
 ): Promise<{ executors: MockExecutor[] }> {
     const held = { executors: initial };
     if (repos.length > 0) await trackRepos(page, repos);
+    // The dialog needs a connection to choose, and the mocked board saves nothing: the list is served here too.
+    await page.route(`**${PROVIDER_CONNECTIONS}`, (route) =>
+        route.request().method() === 'GET'
+            ? route.fulfill({
+                  json: {
+                      connections: [
+                          {
+                              id: E2E_CONNECTION_ID,
+                              name: E2E_CONNECTION.name,
+                              provider: E2E_CONNECTION.provider,
+                              scope: 'org',
+                              baseUrl: null,
+                              hasKey: true,
+                          },
+                      ],
+                  },
+              })
+            : route.fallback()
+    );
+    await page.route(`**${PROVIDER_CONNECTIONS}/*/models`, (route) =>
+        route.fulfill({ json: { state: 'listed', models: ['claude-sonnet-e2e'] } })
+    );
     await page.route('**/api/workspace', async (route) => {
         let response: APIResponse;
         try {
@@ -190,6 +258,7 @@ export async function addExecutorViaDialog(page: Page, name: string): Promise<vo
     await page.getByRole('button', { name: ADD_LABEL }).click();
     const dialog = page.getByRole('dialog', { name: ADD_LABEL });
     await dialog.getByLabel('Name', { exact: true }).fill(name);
+    await chooseConnection(dialog);
     await dialog.getByRole('button', { name: ADD_LABEL }).click();
     await expect(dialog).toHaveCount(0);
 }
