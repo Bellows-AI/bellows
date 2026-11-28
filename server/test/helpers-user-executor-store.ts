@@ -1,14 +1,12 @@
 import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-selection.js';
 import { type DefaultResolution, selectedMessage } from '../src/db/executor-default-store.js';
 import {
-    type AgentDefault,
     ConfiguredDefaultUnusableError,
     type DefaultSelection,
     ExecutorDefaultNotFoundError,
     ExecutorDefaultProtectedError,
     ExecutorIdentityError,
     ExecutorSuspendedError,
-    type ExecutorDefault,
     type ExecutorProfile,
     type UserExecutorStore,
 } from '../src/db/user-executor-store.js';
@@ -30,8 +28,6 @@ export interface MemoryUserExecutorStore extends UserExecutorStore {
         suspended: boolean;
         runnerClass: string | null;
     }[];
-    /** Plants a legacy name-keyed preference, which the store only reads: the old row a deployment may still hold. */
-    seedLegacyDefault(userId: string, def: ExecutorDefault): void;
 }
 
 /**
@@ -71,9 +67,6 @@ export function memoryUserExecutorStore(
         updatedAt: string;
     }
     const rows: Row[] = [];
-    const preferences = new Map<string, ExecutorDefault>();
-    /** Agent defaults keyed by owner: a member's id, or `''` for the organization's row. */
-    const agentDefaults = new Map<string, AgentDefault>();
     const ownerKey = (owner: string | null) => owner ?? '';
     /** The configured defaults (migration 169) by owner: the executor id each names. */
     const selections = new Map<string, string>();
@@ -113,12 +106,6 @@ export function memoryUserExecutorStore(
         if (!next) throw new ExecutorDefaultNotFoundError('No other organization executor to replace the default with');
         if (next.suspended) throw new ExecutorSuspendedError(`The organization executor "${next.name}" is suspended`);
         for (const [owner] of held) selections.set(owner, next.id);
-    };
-    /** The SQL's upsert: a write without a provider keeps the one the row recorded. */
-    const writeAgentDefault = (owner: string | null, value: AgentDefault) => {
-        const provider = value.provider ?? agentDefaults.get(ownerKey(owner))?.provider;
-        const row = { agentType: value.agentType, model: value.model };
-        agentDefaults.set(ownerKey(owner), provider === undefined ? row : { ...row, provider });
     };
     let nextId = 1;
     const at = () => new Date().toISOString();
@@ -174,10 +161,6 @@ export function memoryUserExecutorStore(
                 suspended: r.suspended,
                 runnerClass: r.runnerClass,
             })),
-
-        seedLegacyDefault: (userId, def) => {
-            preferences.set(userId, { ...def });
-        },
 
         async replace(userId, executors) {
             const own = rows.filter((r) => r.userId === userId);
@@ -373,10 +356,6 @@ export function memoryUserExecutorStore(
             return rows.filter((r) => r.userId === null).length;
         },
 
-        async defaultOf(userId) {
-            return preferences.get(userId) ?? null;
-        },
-
         async selectedDefault(owner) {
             return selectionOf(owner);
         },
@@ -414,42 +393,9 @@ export function memoryUserExecutorStore(
                         `The default ${configured.scope} executor "${configured.name}" is suspended`
                     );
                 }
-                return { kind: 'profile', scope: configured.scope, name: configured.name };
+                return { scope: configured.scope, name: configured.name };
             }
-            const stored = preferences.get(userId);
-            if (stored) {
-                const owner = stored.scope === USER_SCOPE ? userId : null;
-                if (rows.some((r) => r.userId === owner && r.name === stored.name && !r.suspended))
-                    return { kind: 'profile', ...stored };
-            }
-            const { personal: personalAgent, org: orgAgent } = await this.agentDefaults(userId);
-            if (personalAgent) return { kind: 'agent', ...personalAgent, from: 'personal' };
-            if (orgAgent) return { kind: 'agent', ...orgAgent, from: 'org' };
-            const personal = byScope(userId).find((r) => !r.suspended);
-            if (personal) return { kind: 'profile', scope: USER_SCOPE, name: personal.name };
-            const orgRow = byScope(null).find((r) => !r.suspended);
-            if (orgRow) return { kind: 'profile', scope: 'org', name: orgRow.name };
             return null;
-        },
-
-        async agentDefaults(userId) {
-            return { org: agentDefaults.get(ownerKey(null)) ?? null, personal: agentDefaults.get(userId) ?? null };
-        },
-
-        async setAgentDefault(owner, value) {
-            writeAgentDefault(owner, value);
-        },
-
-        async setAgentDefaultInTx(_tx, owner, value) {
-            writeAgentDefault(owner, value);
-        },
-
-        async agentDefaultInTx(_tx, owner) {
-            return agentDefaults.get(ownerKey(owner)) ?? null;
-        },
-
-        async deleteAgentDefault(owner) {
-            return agentDefaults.delete(ownerKey(owner));
         },
     };
 }

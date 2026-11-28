@@ -6,7 +6,6 @@
  */
 export const ORG_TABLES = [
     'access_token',
-    'agent_default',
     'artifact_chunk',
     'artifact_manifest',
     'attachment_upload',
@@ -73,7 +72,6 @@ export const ORG_TABLES = [
     'thread_expiry',
     'tracked_repo',
     'transcript_tool_event',
-    'user_executor_default',
     'workflow',
     'workflow_round',
     'workflow_wait',

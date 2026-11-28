@@ -206,19 +206,30 @@ describe.runIf(enabled)('172: the agent default is dropped', () => {
         expect(await tableExists('executor_default_selection')).toBe(true);
     });
 
-    it.each(['job', 'batch_task', 'workflow_round'])('drops agent_type from %s and keeps agent_model', async (table) => {
-        expect(await columns(table)).toEqual(['agent_model']);
-        const checks = await pool<{ name: string }[]>`
+    it.each(['job', 'batch_task', 'workflow_round'])(
+        'drops agent_type from %s and keeps agent_model',
+        async (table) => {
+            expect(await columns(table)).toEqual(['agent_model']);
+            const checks = await pool<{ name: string }[]>`
             select c.conname as name from pg_constraint c
             join pg_class t on t.oid = c.conrelid join pg_namespace n on n.oid = t.relnamespace
             where n.nspname = ${schema} and t.relname = ${table} and c.conname like '%agent_type%'
         `;
-        expect(checks).toEqual([]);
-    });
+            expect(checks).toEqual([]);
+        }
+    );
 
     it('moves a queued agent-default job onto the member configured default, personal before org', async () => {
-        expect(await jobOf(seeded.alice.job)).toMatchObject({ status: 'queued', executor: 'mine', executor_scope: 'user' });
-        expect(await jobOf(seeded.bob.job)).toMatchObject({ status: 'queued', executor: 'shared', executor_scope: 'org' });
+        expect(await jobOf(seeded.alice.job)).toMatchObject({
+            status: 'queued',
+            executor: 'mine',
+            executor_scope: 'user',
+        });
+        expect(await jobOf(seeded.bob.job)).toMatchObject({
+            status: 'queued',
+            executor: 'shared',
+            executor_scope: 'org',
+        });
     });
 
     it('moves a pending agent-default batch task onto the member configured default', async () => {

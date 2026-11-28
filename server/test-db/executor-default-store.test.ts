@@ -15,7 +15,7 @@ import { useTestDb } from './harness.js';
 
 /**
  * The scoped, stable default-executor selection (migration 169) against Postgres: a selection names an
- * executor by its id, personal beats organization beats the legacy chain, and the executor lifecycle
+ * executor by its id, personal beats organization, no configured default resolves to nothing, and the executor lifecycle
  * cannot leave a selection dangling.
  */
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -46,12 +46,6 @@ const personal = async (userId: string, name: string) => {
     ]);
     return (await store.list(userId)).find((row) => row.name === name)!;
 };
-const legacyDefault = (userId: string, def: { scope: string; name: string }) =>
-    sql`
-        insert into user_executor_default (org_id, user_id, scope, name)
-        values (${ORG}, ${userId}, ${def.scope}, ${def.name})
-        on conflict (org_id, user_id) do update set scope = excluded.scope, name = excluded.name
-    `;
 const shared = (name: string) => store.createOrg({ name, ...claude, createdBy: ALICE });
 
 describe.skipIf(!enabled)('configured default selection', () => {
@@ -59,42 +53,18 @@ describe.skipIf(!enabled)('configured default selection', () => {
         const org = await shared('org-default');
         const mine = await personal(ALICE, 'mine');
         await store.selectDefault(null, org.id);
-        expect(await store.resolvedDefault(ALICE)).toEqual({ kind: 'profile', scope: 'org', name: 'org-default' });
+        expect(await store.resolvedDefault(ALICE)).toEqual({ scope: 'org', name: 'org-default' });
 
         await store.selectDefault(ALICE, mine.id);
-        expect(await store.resolvedDefault(ALICE)).toEqual({ kind: 'profile', scope: 'user', name: 'mine' });
+        expect(await store.resolvedDefault(ALICE)).toEqual({ scope: 'user', name: 'mine' });
         // Bob has no personal selection: the organization's applies to him.
         expect(await store.resolvedDefault(BOB)).toMatchObject({ scope: 'org', name: 'org-default' });
     });
 
-    it('configured defaults precede legacy fallback', async () => {
-        const first = await personal(ALICE, 'first');
-        const chosen = await shared('chosen');
-        await legacyDefault(ALICE, { scope: 'user', name: 'first' });
-        await store.setAgentDefault(null, { agentType: 'opencode', model: 'x/y' });
-        expect(first.id).toBeDefined();
-
-        await store.selectDefault(null, chosen.id);
-        expect(await store.resolvedDefault(ALICE)).toMatchObject({ kind: 'profile', scope: 'org', name: 'chosen' });
-    });
-
-    it('legacy resolution is unchanged without configured defaults', async () => {
-        await personal(ALICE, 'first');
-        const org = await shared('org-row');
-        expect(await store.resolvedDefault(ALICE)).toEqual({ kind: 'profile', scope: 'user', name: 'first' });
-        await legacyDefault(ALICE, { scope: 'org', name: 'org-row' });
-        expect(await store.resolvedDefault(ALICE)).toEqual({ kind: 'profile', scope: 'org', name: 'org-row' });
-        await store.setAgentDefault(null, { agentType: 'opencode', model: 'x/y' });
-        await legacyDefault(ALICE, { scope: 'user', name: 'first' });
-        expect(await store.resolvedDefault(BOB)).toMatchObject({ kind: 'agent', from: 'org' });
-        expect(org.id).toBeDefined();
-    });
-
-    it('stale configured default refuses without fallback', async () => {
+    it('suspended configured default refuses without fallback', async () => {
         const mine = await personal(ALICE, 'mine');
         await personal(ALICE, 'other');
         await store.selectDefault(ALICE, mine.id);
-        await store.setAgentDefault(null, { agentType: 'opencode', model: 'x/y' });
 
         await store.setPersonalSuspended(ALICE, mine.id, true);
         const refused = await store.resolvedDefault(ALICE).then(
