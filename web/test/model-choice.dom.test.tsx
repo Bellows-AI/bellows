@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useStaleModelReset } from '../src/components/ModelCombobox.js';
 import type { WorkspacePayload } from '../src/api/useWorkspace.js';
-import type { ModelSetupView } from '../src/api/useModelSetup.js';
+import type { ModelSetupView, SelectedExecutorView } from '../src/api/useModelSetup.js';
 import { readReadyDraft, writeReadyDraft } from '../src/onboarding/ready-draft.js';
 import { initialComposerState } from '../src/task-composer.js';
 import { queuedTask } from '../src/use-composer-draft.js';
@@ -15,6 +15,7 @@ import {
     mockedActivityOf,
     type ThreadJob,
 } from '../../e2e/fixtures/threads.js';
+import { modelSetupReads, NO_SETUP } from './model-setup-reads.js';
 import { type FetchCall, OPEN_BOARD_SESSION, renderApp, stubFetch, stubObjectUrls } from './dom.js';
 
 /**
@@ -54,19 +55,32 @@ const agentDefaultWorkspace: WorkspacePayload = {
     agentDefault: { agentType: 'claude-code', model: 'claude-sonnet-5-5', from: 'personal' },
 };
 
-const setup: ModelSetupView = {
-    platform: false,
-    org: null,
-    personal: { provider: 'anthropic', agentType: 'claude-code', model: 'claude-sonnet-5-5', keyNames: [] },
-    effective: 'personal',
+/** A default executor of the member's on a connection of `provider`: what the model setup read derives the curated models from. */
+const executorOn = (
+    provider: 'anthropic' | 'openrouter',
+    agentType: 'claude-code' | 'opencode',
+    model: string
+): ModelSetupView => {
+    const selected: SelectedExecutorView = {
+        scope: 'personal',
+        executorId: '55555555-5555-4555-8555-555555555555',
+        name: `${provider}-default`,
+        agentType,
+        model,
+        suspended: false,
+        updatedAt: CREATED,
+        connection: { id: `${provider}-connection`, name: provider, provider, scope: 'personal', baseUrl: null },
+    };
+    return { platform: false, org: null, personal: null, selected, effective: 'executor' };
 };
+const setup = executorOn('anthropic', 'claude-code', 'claude-sonnet-5-5');
 
 function openComposer(workspace: WorkspacePayload) {
     const calls = stubFetch((call) => {
-        if (call.url === '/api/workspace') return workspace;
+        const read = modelSetupReads(NO_SETUP, call, workspace);
+        if (read !== undefined) return read;
         if (call.url === '/api/repos') return repos;
         if (call.url === '/api/auth/me') return OPEN_BOARD_SESSION;
-        if (call.url === '/api/model-setup') return setup;
         if (call.method === 'POST' && call.url === '/api/jobs') {
             return { status: 201, body: { id: LAUNCHED_ID, status: 'queued' } };
         }
@@ -160,11 +174,12 @@ describe('the follow-up Model control', () => {
     });
 
     function thread(over: Partial<ThreadJob>, answers: { setup?: ModelSetupView; workspace?: WorkspacePayload } = {}) {
+        const view = answers.setup ?? setup;
         const jobs = authoredBy(missingSummaryThread, LOCAL_AUTHOR).map((j) => ({ ...j, ...over }));
         const calls = stubFetch((call: FetchCall) => {
             if (call.url === '/api/auth/me') return OPEN_BOARD_SESSION;
-            if (call.url === '/api/model-setup') return answers.setup ?? setup;
-            if (call.url === '/api/workspace' && answers.workspace) return answers.workspace;
+            const read = modelSetupReads(view, call, answers.workspace);
+            if (read !== undefined) return read;
             if (call.method === 'POST' && /\/follow-up$/.test(call.url)) return { status: 201, body: { id: SENT_ID } };
             const match = /\/api\/jobs\/([^/]+)\/(thread|activity)/.exec(call.url);
             if (match && jobs.some((j) => j.id === match[1]))
@@ -231,10 +246,10 @@ describe('the Model chip follows the selected executor connection', () => {
 
     function board(models: unknown, workspace: WorkspacePayload = routedWorkspace) {
         const calls = stubFetch((call) => {
-            if (call.url === '/api/workspace') return workspace;
+            const read = modelSetupReads(NO_SETUP, call, workspace);
+            if (read !== undefined) return read;
             if (call.url === '/api/repos') return repos;
             if (call.url === '/api/auth/me') return OPEN_BOARD_SESSION;
-            if (call.url === '/api/model-setup') return setup;
             if (call.url === `/api/provider-connections/${CONNECTION}/models`) return models;
             if (call.method === 'POST' && call.url === '/api/jobs') {
                 return { status: 201, body: { id: LAUNCHED_ID, status: 'queued' } };
@@ -358,7 +373,6 @@ describe('the Model chip follows the selected executor connection', () => {
                 if (call.url === '/api/workspace') return twoConnections;
                 if (call.url === '/api/repos') return repos;
                 if (call.url === '/api/auth/me') return OPEN_BOARD_SESSION;
-                if (call.url === '/api/model-setup') return setup;
                 for (const [id, body] of Object.entries(lists)) {
                     if (call.url === `/api/provider-connections/${id}/models`) return body;
                 }
@@ -433,8 +447,8 @@ describe('the Model chip follows the selected executor connection', () => {
         }));
         stubFetch((call: FetchCall) => {
             if (call.url === '/api/auth/me') return OPEN_BOARD_SESSION;
-            if (call.url === '/api/model-setup') return setup;
-            if (call.url === '/api/workspace') return routedWorkspace;
+            const read = modelSetupReads(NO_SETUP, call, routedWorkspace);
+            if (read !== undefined) return read;
             if (call.url === `/api/provider-connections/${CONNECTION}/models`) {
                 return { state: 'listed', models: ['claude-live-1'] };
             }

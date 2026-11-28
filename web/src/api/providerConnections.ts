@@ -5,6 +5,8 @@ import {
     type ProviderConnectionModels,
     type ProviderConnectionScope,
 } from '@factory-ai/core';
+import type { ExecutorType } from '@factory-ai/core';
+import type { VerifyAnswer } from '../model-setup/providers.js';
 import { request } from './request.js';
 
 /**
@@ -154,3 +156,47 @@ export async function fetchConnectionModels(id: string, signal: AbortSignal): Pr
     if (answer.state === 'unsupported') return { state: 'unsupported' };
     return { state: 'failed', message: answer.message };
 }
+
+/** `POST /api/provider-connections/verify` (10 checks per member a minute): the check's answer with the provider's models, 200 either way. */
+export const verifyKey = (body: { provider: ModelProvider; key: string; baseUrl?: string }, signal: AbortSignal) =>
+    request<VerifyAnswer>(`${PROVIDER_CONNECTIONS_URL}/verify`, {
+        method: 'POST',
+        body,
+        signal,
+        verb: 'Could not check the key',
+    });
+
+/** What a setup does about the connection: seal a new one, select one, or replace one's key. */
+export type SetupConnection =
+    | { intent: 'create'; provider: ModelProvider; key: string; baseUrl?: string; name: string }
+    | { intent: 'reuse'; id: string }
+    | { intent: 'rotate'; id: string; key: string; baseUrl?: string };
+
+/** `POST /api/provider-connections/setup`: the connection, the executor on it (its own name) and the default, atomically. */
+export interface ProviderSetupBody {
+    scope: ProviderConnectionScope;
+    /** The client's durable identity for this attempt: a retry of the same body repeats it and replays. */
+    requestId: string;
+    connection: SetupConnection;
+    /** An edit names the executor by its stable id; a new one needs a name. */
+    executor: { id?: string; name?: string; agentType: ExecutorType; model: string; expectedUpdatedAt?: string };
+    /** Absent: the server makes it the default only while the member has none. */
+    makeDefault?: boolean;
+}
+
+/** What a setup answers: the stable identities the next save carries. No key, no secret reference. */
+export interface ProviderSetupResult {
+    scope: ProviderConnectionScope;
+    executorId: string;
+    executorName: string;
+    connectionId: string | null;
+    connectionName: string | null;
+    replayed: boolean;
+}
+
+export const setupProvider = (body: ProviderSetupBody) =>
+    request<ProviderSetupResult>(`${PROVIDER_CONNECTIONS_URL}/setup`, {
+        method: 'POST',
+        body,
+        verb: 'Could not save the provider',
+    });

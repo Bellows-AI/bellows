@@ -78,12 +78,12 @@ describe('the route classes (what a scoped caller may do)', () => {
         );
     });
 
-    // The model setup names its scope in the body: the class admits a member, the handler refuses a member's org save.
-    it('the model setup reads as a member and saves as a browser act', () => {
-        expect(classOf('GET', '/api/model-setup')).toBe('read');
-        expect(roleOf('GET', '/api/model-setup')).toBe('member');
-        expect(classOf('PUT', '/api/model-setup')).toBe('none');
-        expect(roleOf('PUT', '/api/model-setup')).toBe('member');
+    // The provider setup names its scope in the body: the class admits a member, the handler refuses a member's org save.
+    it('the provider setup and the key check are browser acts a member may make', () => {
+        for (const path of ['/api/provider-connections/setup', '/api/provider-connections/verify']) {
+            expect(classOf('POST', path)).toBe('none');
+            expect(roleOf('POST', path)).toBe('member');
+        }
     });
 
     // Provider connections hold a stored provider key: the list is metadata (a read), every write

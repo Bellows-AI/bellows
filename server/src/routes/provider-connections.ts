@@ -22,13 +22,13 @@ import type { OrgRegistry } from '../orgs.js';
 import type { ProviderKeys, VerifyAnswer } from '../provider-keys/verify.js';
 import type { AppConfig } from '../config.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
-import { refuseUnparsedBody, validBase, validKey } from './model-setup-verify.js';
+import { refuseUnparsedBody, validBase, validKey } from './provider-connections-verify.js';
 
 /**
  * Provider connections (docs/api.md): the named model-provider credentials a member brings and an
  * executor profile references. The list answers metadata alone — no answer carries a key or a
  * secret reference; a create or edit validates a key's shape but never contacts the provider
- * (verification is the member's explicit `POST /api/model-setup/verify` step), and discovery reads
+ * (verification is the member's explicit `POST /api/provider-connections/verify` step), and discovery reads
  * the SEALED stored key through the real checker, rate-limited.
  */
 

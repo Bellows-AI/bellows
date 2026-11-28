@@ -551,18 +551,31 @@ test.describe('the task detail page', () => {
     test('the detail renders at every target width without overflow', async ({ page }) => {
         test.setTimeout(60_000);
         await routeThread(page, authoredBy(publishedThread, await sessionAuthor(page)));
-        // The layout under test is the connected one: a confirmed key keeps the "No model yet"
+        // The layout under test is the connected one: a default executor keeps the "No model yet"
         // banner out, so the rail starts at the app bar rather than below the banner.
-        await page.route('**/api/model-setup', (route) =>
-            route.fulfill({
+        await page.route('**/api/workspace', async (route) => {
+            const board = (await (await route.fetch()).json()) as Record<string, unknown>;
+            await route.fulfill({
                 json: {
-                    platform: false,
-                    org: null,
-                    personal: { provider: 'anthropic', agentType: 'claude-code', model: 'm', keyNames: ['K'] },
-                    effective: 'personal',
+                    ...board,
+                    executors: [
+                        {
+                            id: '33333333-3333-4333-8333-333333333333',
+                            name: 'e2e-layout',
+                            suspended: false,
+                            type: 'claude-code',
+                            createdAt: '2026-01-01T00:00:00.000Z',
+                            gateFixRounds: 3,
+                            providerConnectionId: '44444444-4444-4444-8444-444444444444',
+                            providerConnectionName: 'e2e-layout',
+                            providerConnectionProvider: 'anthropic',
+                            providerConnectionScope: 'personal',
+                        },
+                    ],
+                    defaultExecutor: { scope: 'user', name: 'e2e-layout' },
                 },
-            })
-        );
+            });
+        });
 
         for (const width of [360, 768, 1024, 1440]) {
             await page.setViewportSize({ width, height: 1000 });
