@@ -1,6 +1,5 @@
-import { EXECUTOR_TYPES, type ExecutorType, isModelProvider } from '@factory-ai/core';
+import { EXECUTOR_TYPES } from '@factory-ai/core';
 import type { AnchorSide } from '../anchor.js';
-import { type ModelSetupView, useModelSetup } from '../api/useModelSetup.js';
 import { useConnectionModels } from '../api/useProviderConnections.js';
 import {
     catalogModels,
@@ -9,50 +8,21 @@ import {
     modelCatalogOf,
     normalizedChoices,
 } from '../workspace/model-catalog.js';
-import { type ModelSource, modelOptions } from '../model-setup/providers.js';
 import { type SearchRow, SearchSelect } from './SearchSelect.js';
 
 const MODEL_HELP = 'The model the agent runs. Pick one the provider offers, or type any model name it serves.';
 
-/** The source the effective model setup names: a key provider, the platform, or none known. */
-function sourceOf(setup: ModelSetupView | null): ModelSource | null {
-    if (setup === null || setup.effective === null) return null;
-    if (setup.effective === 'platform') return 'platform';
-    if (setup.effective === 'executor') {
-        // A default executor on a connection names its provider; on none, the platform model or what the env holds.
-        const provider = setup.selected?.connection?.provider ?? (setup.personal ?? setup.org)?.provider;
-        if (setup.selected?.connection == null && setup.platform) return 'platform';
-        return isModelProvider(provider) ? provider : null;
-    }
-    const provider = setup[setup.effective]?.provider;
-    return isModelProvider(provider) ? provider : null;
-}
-
-/** The provider's curated models for one agent, or for either when the agent is not known; none without a provider. */
-export function knownModels(setup: ModelSetupView | null, agent: ExecutorType | null): string[] {
-    const source = sourceOf(setup);
-    if (source === null) return [];
-    const agents = agent === null ? EXECUTOR_TYPES : [agent];
-    return [...new Set(agents.flatMap((type) => modelOptions(source, type, undefined)))];
-}
-
-/** `knownModels` over the member's `GET /api/model-setup`; an agent name it does not know counts as unknown. */
-export function useKnownModels(agent: string | null): string[] {
-    return knownModels(useModelSetup().data, EXECUTOR_TYPES.find((type) => type === agent) ?? null);
-}
-
 /**
- * The models a chip offers and the sentence that says where they came from. With a selected connection that is its live
- * catalog — the curated suggestions only while the read cannot answer, and nothing for a successful empty list — and
- * without one, `useKnownModels`'s answer as it always was. Typing a model name is open in every state.
+ * The models a chip offers and the sentence that says where they came from: the selected executor's connection catalog,
+ * with the curated suggestions only while the read cannot answer and nothing for a successful empty list. Without a
+ * connection there is nothing to list, so only typing a model name is offered. Typing is open in every state.
  */
 export function useModelChoices(
     agent: string | null,
     connection: ChipConnection | null
 ): { models: string[]; note: string | null; pick: (model: string) => string } {
-    const known = useKnownModels(agent);
     const read = useConnectionModels(connection?.id ?? null);
-    if (connection === null) return { models: known, note: null, pick: (model) => model };
+    if (connection === null) return { models: [], note: null, pick: (model) => model };
     const type = EXECUTOR_TYPES.find((candidate) => candidate === agent) ?? null;
     const catalog = modelCatalogOf(connection, type, read.models);
     // A typed or picked name goes through the same rule as the offered list, so a bare id is saved as the server accepts it.

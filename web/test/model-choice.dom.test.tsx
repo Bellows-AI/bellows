@@ -102,7 +102,7 @@ describe('the new-task Model control', () => {
         expect(launched()[0]).not.toHaveProperty('model');
     });
 
-    it("is prefilled from the agent default's model and offers the provider's models", async () => {
+    it("is prefilled from the agent default's model and takes a typed name", async () => {
         const user = userEvent.setup();
         const { launched } = openComposer(agentDefaultWorkspace);
         await screen.findByLabelText('What should the agent do?');
@@ -110,8 +110,7 @@ describe('the new-task Model control', () => {
             expect(modelPicker().getAttribute('aria-label')).toBe('Model: Default (claude-sonnet-5-5)')
         );
         await user.click(modelPicker());
-        const list = await screen.findByRole('listbox');
-        await user.click(await within(list).findByRole('option', { name: 'claude-opus-5-5' }));
+        await user.type(await screen.findByRole('combobox', { name: 'Search model' }), 'claude-opus-5-5{Enter}');
         expect(modelPicker().getAttribute('aria-label')).toBe('Model: claude-opus-5-5');
         await launch(user, 'fix the login crash');
         await waitFor(() => expect(launched()).toHaveLength(1));
@@ -194,54 +193,19 @@ describe('the follow-up Model control', () => {
         await screen.findByLabelText('Ask for a follow-up');
         expect(modelPicker().getAttribute('aria-label')).toBe('Model: claude-haiku-5-5');
         await user.click(modelPicker());
-        await user.click(
-            await within(await screen.findByRole('listbox')).findByRole('option', { name: 'claude-opus-5-5' })
-        );
+        await user.type(await screen.findByRole('combobox', { name: 'Search model' }), 'claude-opus-5-5{Enter}');
         await send(user);
         await waitFor(() => expect(sent()).toHaveLength(1));
         expect((sent()[0] as { model?: string }).model).toBe('claude-opus-5-5');
     });
 
-    /** An OpenRouter key: Claude Code runs its Anthropic models only, OpenCode any. */
-    const openRouter: ModelSetupView = {
-        ...setup,
-        personal: {
-            provider: 'openrouter',
-            agentType: 'claude-code',
-            model: 'anthropic/claude-sonnet-5.5',
-            keyNames: [],
-        },
-    };
-    const offered = async (user: ReturnType<typeof userEvent.setup>) => {
+    it('offers no curated models on a thread without a connection', async () => {
+        const user = userEvent.setup();
+        thread({ executor: null, agentType: 'claude-code', agentModel: 'claude-sonnet-5-5' });
         await screen.findByLabelText('Ask for a follow-up');
         await user.click(modelPicker());
-        const options = within(await screen.findByRole('listbox')).getAllByRole('option');
-        return options.map((option) => option.textContent);
-    };
-
-    it("offers only the thread's agent's models: a Claude Code agent default on OpenRouter", async () => {
-        const user = userEvent.setup();
-        thread(
-            { executor: null, agentType: 'claude-code', agentModel: 'anthropic/claude-sonnet-5.5' },
-            { setup: openRouter }
-        );
-        const models = await offered(user);
-        expect(models).toContain('anthropic/claude-opus-5.5');
-        expect(models).not.toContain('openai/gpt-5.1');
-    });
-
-    it("offers only the profile's agent's models on a profile thread", async () => {
-        const user = userEvent.setup();
-        thread(
-            { executor: 'e2e-executor', executorScope: 'user', agentType: null, agentModel: null },
-            { setup: openRouter, workspace: profileWorkspace }
-        );
-        await screen.findByLabelText('Ask for a follow-up');
-        await user.click(modelPicker());
-        const list = await screen.findByRole('listbox');
-        await within(list).findByRole('option', { name: 'anthropic/claude-opus-5.5' });
-        // The profile's type lands with the workspace poll; the open list follows it.
-        await waitFor(() => expect(within(list).queryByRole('option', { name: 'openai/gpt-5.1' })).toBeNull());
+        const options = within(await screen.findByRole('listbox')).queryAllByRole('option');
+        expect(options.map((option) => option.textContent)).not.toContain('claude-opus-5-5');
     });
 });
 
@@ -303,8 +267,8 @@ describe('the Model chip follows the selected executor connection', () => {
         renderApp('/tasks/new');
         await screen.findByLabelText('What should the agent do?');
 
-        // The default executor has no connection: today's curated list, and no connection read at all.
-        expect(await offeredModels(user)).toContain('claude-opus-5-5');
+        // The default executor has no connection: typing only, no curated list, and no connection read at all.
+        expect(await offeredModels(user)).toEqual(['Default']);
         expect(modelReads()).toHaveLength(0);
         await user.keyboard('{Escape}');
 
@@ -320,6 +284,16 @@ describe('the Model chip follows the selected executor connection', () => {
             expect(models).not.toContain('claude-opus-5-5');
         });
         expect(modelReads()).toHaveLength(1);
+    });
+
+    it('offers no curated models without a connection, only typing', async () => {
+        const user = userEvent.setup();
+        board({ state: 'listed', models: [] });
+        renderApp('/tasks/new');
+        await screen.findByLabelText('What should the agent do?');
+        expect(await offeredModels(user)).toEqual(['Default']);
+        await user.type(screen.getByRole('combobox', { name: 'Search model' }), 'typed-model');
+        expect(await screen.findByRole('option', { name: 'Use “typed-model”' })).toBeTruthy();
     });
 
     it('manual model entry survives unsupported or failed discovery', async () => {
