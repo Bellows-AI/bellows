@@ -23,6 +23,8 @@ Executor profiles, `.bellows.yaml` plans and per-thread task volumes. The board 
 | The executor dialog's client-side validation | `web/src/workspace/executors.ts`, `web/src/panels/WorkspaceExecutorsPanel.tsx` | `web/test/executors.test.ts`, `web/test/executor-dialog.dom.test.tsx`, `e2e/org-executors.spec.ts` |
 | The Workspace and Repositories pages in a browser | `e2e/workspace.spec.ts` | the `chromium` Playwright project |
 
+| The `openai-compatible` connection provider (a custom OpenAI-wire endpoint, OpenCode only): `base_url` required, models read at `<base>/v1/models` (cloud refuses special-use hosts), rendered at claim as an `@ai-sdk/openai-compatible` block with the key resolved | `core/src/model-providers.ts`, `core/src/openai-compatible.ts`, `server/src/provider-keys/checks.ts`, `server/migrations/174_provider_connection_openai_compatible.sql` | `core/test/model-providers.test.ts`, `server/test/provider-keys.test.ts`, `server/test-db/provider-connection-store.test.ts` |
+
 ## Invariants
 
 - **A runner never mounts the member subtree.** Each root thread has its own task volume (`factory-task-<root uuid>-<generation>`) at `/task`, so tasks of different threads share nothing and a thread's follow-ups share the one checkout. `driver/src/task-volume.ts`, `driver/test/k8s/`, `driver/test/docker-task-volume.test.ts`.
