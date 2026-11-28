@@ -88,7 +88,7 @@ test('the selection screen tracks only the chosen organizations (issue 125)', as
     const orgs = screen(page).locator('.onboarding-org');
     await expect(orgs).toHaveCount(2);
     // An organization the App is not installed on is never listed, so the screen says so and links
-    // the install page (BEL-629); the server route signs the state that brings the browser back here.
+    // the install page; the server route signs the state that brings the browser back here.
     await expect(screen(page).getByRole('link', { name: 'Install the App on another organization' })).toHaveAttribute(
         'href',
         '/api/auth/github/install?returnTo=%2F'

@@ -83,7 +83,7 @@ describe('OnboardingPage', () => {
         expect(html).toContain('Continue');
     });
 
-    it('offers installing the App on another organization, on first run and on a reselect (BEL-629)', () => {
+    it('offers installing the App on another organization, on first run and on a reselect', () => {
         for (const payload of [pending, { ...pending, reselect: true }]) {
             const html = renderPage({ payload: { ...payload, returnTo: '/account' } });
             expect(html).toContain('Install the App on another organization');

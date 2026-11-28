@@ -178,7 +178,7 @@ describe('TrackedOrgsPanel', () => {
         expect(html).toContain('Change what you track');
     });
 
-    it('offers installing the App on another organization, and says why a new one is missing (BEL-629)', () => {
+    it('offers installing the App on another organization, and says why a new one is missing', () => {
         const html = renderToStaticMarkup(<TrackedOrgsPanel session={session} />);
         expect(html).toContain('Install the App on another organization');
         expect(html).toContain('href="/api/auth/github/install?returnTo=%2Faccount"');
