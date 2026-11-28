@@ -18,6 +18,7 @@ import {
     type RepoMode,
     type SummaryRow,
 } from '../onboarding.js';
+import { InstallAppLink } from '../components/InstallAppLink.js';
 import { Icon } from '../components/Icon.js';
 import { OnboardingOrganization } from '../components/OnboardingOrganization.js';
 import { PublicPageHeader } from '../components/PublicPageHeader.js';
@@ -247,6 +248,7 @@ function OnboardingMainContent({
                     />
                 ))}
             </ul>
+            <InstallAppLink returnTo={payload.returnTo} />
             <p className="onboarding-note">
                 GitHub sign-in provides your identity and organization membership. Repository names come from the
                 installed GitHub App. This choice changes what {PRODUCT_NAME} tracks, not your GitHub permissions.

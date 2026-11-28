@@ -10,7 +10,7 @@ import { withDraftReturn } from '../components/DraftReturnBanner.js';
 import { BranchCombobox } from '../components/BranchCombobox.js';
 import { Icon } from '../components/Icon.js';
 import { SearchSelect } from '../components/SearchSelect.js';
-import { ModelCombobox, useModelChoices } from '../components/ModelCombobox.js';
+import { ModelCombobox, useModelChoices, useStaleModelReset } from '../components/ModelCombobox.js';
 import { SlashSkillMenu, useSlashMenu } from '../components/SlashSkillMenu.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
 import {
@@ -75,8 +75,11 @@ function ComposerModelChip({
 }) {
     const { executor, executorScope } = state;
     const profile = executors.find((option) => option.name === executor && option.scope === executorScope);
-    // A profile that selects a connection offers that connection's models; the rest read the member's setup.
-    const { models, note, pick } = useModelChoices(profile?.type ?? null, profile?.connection ?? null);
+    // A profile that selects a connection offers that connection's models; the rest offer typing only.
+    const choices = useModelChoices(profile?.type ?? null, profile?.connection ?? null);
+    const { models, note, pick } = choices;
+    // A model picked under the previous executor's connection does not follow a switch to one that does not list it.
+    useStaleModelReset(choices, state.model, () => update({ model: '' }));
     return (
         <div className="composer-context-item">
             <ModelCombobox
