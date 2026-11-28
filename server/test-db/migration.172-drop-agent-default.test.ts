@@ -4,6 +4,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { assertTestDatabase } from './harness.js';
 import { randomGithubId } from './fixtures.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import type { Claim } from '../src/db/jobs/job-store-types.js';
+import { createUserExecutorStore } from '../src/db/user-executor-store.js';
+import { testSecretDeps } from './env-secrets-harness.js';
 
 /**
  * 172 removes the agent default. Work that never started and was frozen with one (a queued job, a pending batch task,
@@ -136,11 +140,16 @@ beforeAll(async () => {
 
     // Started work is left alone: a running agent-default job, and a queued job that already names a profile.
     runningJob = randomUUID();
-    await pool`insert into job (org_id, id, command, root_job_id, created_by, status, agent_type, agent_model)
-               values (${org}, ${runningJob}, 'work', ${runningJob}, ${ids.alice}, 'running', 'claude-code', 'm-4')`;
+    await pool`insert into job (org_id, id, command, root_job_id, created_by, execution_user_id, status, agent_type,
+                                agent_model)
+               values (${org}, ${runningJob}, 'work', ${runningJob}, ${ids.alice}, ${ids.alice}, 'running',
+                       'claude-code', 'm-4')`;
     finishedJob = randomUUID();
-    await pool`insert into job (org_id, id, command, root_job_id, created_by, status, agent_type, agent_model)
-               values (${org}, ${finishedJob}, 'work', ${finishedJob}, ${ids.alice}, 'succeeded', 'claude-code', 'm-6')`;
+    await pool`insert into job (org_id, id, command, root_job_id, created_by, execution_user_id, status, finished_at,
+                                session_id, agent_type, agent_model)
+               values (${org}, ${finishedJob}, 'work', ${finishedJob}, ${ids.alice}, ${ids.alice}, 'succeeded', now(),
+                       ${randomUUID()},
+                       'claude-code', 'm-6')`;
     stoppedJob = randomUUID();
     await pool`insert into job (org_id, id, command, root_job_id, created_by, status, agent_type, agent_model)
                values (${org}, ${stoppedJob}, 'work', ${stoppedJob}, ${ids.alice}, 'stopped', 'claude-code', 'm-7')`;
@@ -347,5 +356,46 @@ describe.runIf(enabled)('172: the agent default is dropped', () => {
 
     it('leaves work that names a profile alone', async () => {
         expect(await jobOf(profileJob)).toMatchObject({ status: 'queued', executor: 'other', executor_scope: 'user' });
+    });
+
+    // The claim is the consumer of the stamp: a row left without an executor is refused (noExecutorMessage). These pin
+    // that the work minted from a pre-172 agent-default row claims on the stamped executor.
+    const claimOf = async (id: string): Promise<Claim> => {
+        const store = createJobStore({
+            sql: pool,
+            orgId: org,
+            executorConfig: createUserExecutorStore({ sql: pool, orgId: org, ...testSecretDeps(pool) }),
+        });
+        for (let i = 0; i < 20; i++) {
+            const claim = await store.claim('w-172', 300);
+            if (claim === null) break;
+            if (claim.id === id) return claim;
+        }
+        throw new Error(`job ${id} was never claimed`);
+    };
+
+    it('a follow-up on a finished pre-172 agent-default thread claims with the stamped executor', async () => {
+        const store = createJobStore({
+            sql: pool,
+            orgId: org,
+            executorConfig: createUserExecutorStore({ sql: pool, orgId: org, ...testSecretDeps(pool) }),
+        });
+        const followUp = await store.createFollowUp(finishedJob, 'adjust', ids.alice);
+        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
+        expect(await jobOf(followUp.id)).toMatchObject({ executor: 'mine', executor_scope: 'user' });
+        const claim = await claimOf(followUp.id);
+        expect(claim.executorType).toBe('claude-code');
+        expect(claim.noExecutor).toBeUndefined();
+    });
+
+    it('a takeover of a running pre-172 agent-default job claims with the stamped executor', async () => {
+        // The runner is lost: the running row's lease has expired, so the claim is a takeover.
+        await pool`update job set lease_expires_at = now() - interval '1 minute' where org_id = ${org} and id = ${runningJob}`;
+        const first = await claimOf(runningJob);
+        expect(first.executorType).toBe('claude-code');
+        await pool`update job set lease_expires_at = now() - interval '1 minute' where org_id = ${org} and id = ${runningJob}`;
+        const takeover = await claimOf(runningJob);
+        expect(takeover.executorType).toBe('claude-code');
+        expect(takeover.leaseToken).not.toBe(first.leaseToken);
     });
 });
