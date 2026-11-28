@@ -649,8 +649,18 @@ describe('the workspace poll and the personal routes after 391', () => {
         expect(body.executors[0].config).toBeUndefined();
         expect(body.orgExecutors).toEqual([expect.objectContaining({ name: 'team-runner', type: 'claude-code' })]);
         expect(JSON.stringify(body)).not.toContain('sonnet');
-        // No preference stored: the resolved default is the first personal row.
-        expect(body.defaultExecutor).toEqual({ scope: 'user', name: 'mine' });
+        // No configured default: nothing resolves, however many profiles exist.
+        expect(body.defaultExecutor).toBeNull();
+        await instance.inject({
+            method: 'PUT',
+            url: '/api/workspace/executors/default',
+            headers: { cookie: adminCookie },
+            payload: { executorId: body.executors[0].id },
+        });
+        const after = (
+            await instance.inject({ method: 'GET', url: '/api/workspace', headers: { cookie: adminCookie } })
+        ).json();
+        expect(after.defaultExecutor).toEqual({ scope: 'user', name: 'mine' });
     });
 
     it('PUT /api/workspace/executors/default selects an org executor by id for the member', async () => {

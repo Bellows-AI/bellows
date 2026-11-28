@@ -51,6 +51,7 @@ import type { WorkflowRecord, WorkflowStore } from '../src/db/workflows/workflow
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import { memoryBatchStore } from './helpers-batch-store.js';
+import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import {
     githubAuth,
     jobStoreSlice,
@@ -3510,7 +3511,6 @@ describe('GET /api/jobs', () => {
         gates: null,
         runtime: null,
         executorScope: USER_SCOPE,
-        agentType: null,
         agentModel: null,
         resolvedModel: null,
         workflowNode: null,
@@ -3702,7 +3702,6 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         taskWallClockMs: null,
         failureCause: null,
         executorScope: USER_SCOPE,
-        agentType: null,
         agentModel: null,
         resolvedModel: null,
         setupMs: null,
@@ -3933,7 +3932,6 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         taskWallClockMs: null,
         failureCause: null,
         executorScope: USER_SCOPE,
-        agentType: null,
         agentModel: null,
         resolvedModel: null,
         setupMs: null,
@@ -4802,8 +4800,76 @@ describe('error-path mapping', () => {
     });
 });
 
+describe('POST /api/jobs naming no executor', () => {
+    async function boot(executors: UserExecutorStore) {
+        const auth = memoryAuthStore();
+        const member = auth.seedMember('test-org', 'octocat');
+        const created: string[] = [];
+        const jobs = jobStoreSlice<JobStore>({
+            async create(command: string) {
+                created.push(command);
+                return { id: '11111111-1111-4111-8111-111111111111' };
+            },
+        });
+        const config = testConfig({ auth: githubAuth() });
+        const instance = await buildApp({
+            config,
+            orgs: staticRegistry({
+                config,
+                jobs,
+                userExecutors: executors,
+                repos: staticRepoSource([TRACKED]),
+                telemetry: stubTelemetryClient(),
+            }),
+            auth,
+        });
+        track(instance);
+        const cookie = await signedIn(auth, member);
+        const create = () =>
+            instance.inject({
+                method: 'POST',
+                url: '/api/jobs',
+                headers: { cookie },
+                payload: { command: 'echo hi', repo: `${TRACKED.owner}/${TRACKED.name}` },
+            });
+        return { member, created, create };
+    }
+
+    it('no configured default, one active personal profile -> 409 NO_EXECUTOR, nothing queued', async () => {
+        const executors = memoryUserExecutorStore();
+        const b = await boot(executors);
+        await executors.replace(b.member.user.id, [{ name: 'mine', type: 'claude-code', config: { model: 'm' } }]);
+
+        const response = await b.create();
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json().code).toBe('NO_EXECUTOR');
+        expect(b.created).toEqual([]);
+    });
+
+    it('the default read throws -> 503, never NO_EXECUTOR', async () => {
+        const executors = memoryUserExecutorStore();
+        const b = await boot({
+            ...executors,
+            resolvedDefault: async () => {
+                throw storeOutage();
+            },
+        });
+
+        const response = await b.create();
+
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).not.toBe('NO_EXECUTOR');
+        expect(b.created).toEqual([]);
+    });
+});
+
 describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', () => {
-    async function bootCloud(overrides: Parameters<typeof testConfig>[0] = {}) {
+    type Profile = { type: string; config: Record<string, unknown> };
+    async function bootCloud(
+        overrides: Parameters<typeof testConfig>[0] = {},
+        profile: Profile = { type: 'claude-code', config: {} }
+    ) {
         const auth = memoryAuthStore();
         const member = auth.seedMember('test-org', 'octocat');
         const executors = memoryUserExecutorStore();
@@ -4830,7 +4896,9 @@ describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', 
         });
         track(instance);
         const userId = member.user.id;
-        await executors.setAgentDefault(userId, { agentType: 'claude-code', model: 'sonnet' });
+        // A task naming no executor runs on the configured default: the member's one profile.
+        await executors.replace(userId, [{ name: 'mine', ...profile }]);
+        await executors.selectDefault(userId, (await executors.list(userId))[0]!.id);
         const cookie = await signedIn(auth, member);
         const create = () =>
             instance.inject({
@@ -4875,18 +4943,13 @@ describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', 
     });
 
     it('creates when the executor profile itself holds the key', async () => {
-        const claude = await bootCloud();
-        await claude.executors.replace(claude.userId, [
-            { name: 'mine', type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: 'k' } } },
-        ]);
-        await claude.executors.deleteAgentDefault(claude.userId);
+        const claude = await bootCloud({}, { type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: 'k' } } });
         expect((await claude.create()).statusCode).toBe(201);
 
-        const opencode = await bootCloud();
-        await opencode.executors.replace(opencode.userId, [
-            { name: 'mine', type: 'opencode', config: { provider: { openai: { options: { apiKey: 'k' } } } } },
-        ]);
-        await opencode.executors.deleteAgentDefault(opencode.userId);
+        const opencode = await bootCloud(
+            {},
+            { type: 'opencode', config: { provider: { openai: { options: { apiKey: 'k' } } } } }
+        );
         expect((await opencode.create()).statusCode).toBe(201);
     });
 
@@ -4900,19 +4963,16 @@ describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', 
             ['opencode', opencode({ apiKey: 'sk-literal' }), 201],
         ];
         for (const [type, config, status] of cases) {
-            const b = await bootCloud();
+            const b = await bootCloud({}, { type, config });
             // Claude Code's profile clears the org key; OpenCode gets only a name its substitution can read.
             const name = type === 'opencode' ? 'GATEWAY_KEY' : 'ANTHROPIC_API_KEY';
             await b.envVars.replaceOrg('admin', [{ name, value: 'k', isSecret: true }]);
-            await b.executors.replace(b.userId, [{ name: 'mine', type, config }]);
-            await b.executors.deleteAgentDefault(b.userId);
             expect((await b.create()).statusCode, JSON.stringify(config)).toBe(status);
         }
     });
 
-    it('a self-hosted board, or a cloud board whose operator supplies the model, creates with no key', async () => {
+    it('a self-hosted board creates with no key', async () => {
         expect((await (await bootCloud({ deploymentMode: 'self-hosted' })).create()).statusCode).toBe(201);
-        expect((await (await bootCloud({ platformModelProvided: true })).create()).statusCode).toBe(201);
     });
 
     it('answers 503, never NO_MODEL, when the env cannot be read', async () => {

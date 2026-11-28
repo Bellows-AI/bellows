@@ -1,11 +1,9 @@
 import {
     ADMIN_ROLE,
-    type AgentProvider,
     currentProvider,
     ERROR_CODES,
-    type ExecutorType,
     isModelProvider,
-    PLATFORM_PROVIDER,
+    type ModelProvider,
     PROVIDER_BASE_URL_ENV,
     subscriptionTokenAllowed,
 } from '@factory-ai/core';
@@ -24,12 +22,12 @@ import {
     type SetupResult,
 } from '../db/model-setup-store.js';
 import { ProviderConnectionCapError } from '../db/provider-connection-store.js';
-import type { AgentDefault, UserExecutorStore } from '../db/user-executor-store.js';
+import type { UserExecutorStore } from '../db/user-executor-store.js';
 import type { OrgRegistry } from '../orgs.js';
 import { errorHandler } from './error-handler.js';
 import { HTTP_CONNECTION_REFUSED, isConnectionRefusal, lifecycleRefusal } from './executor-fields.js';
 import { bad, guard } from './helpers.js';
-import { commandOf, keyNamesOf, parseSetup } from './model-setup-save.js';
+import { keyNamesOf, parseSetup } from './model-setup-save.js';
 
 /**
  * `GET` / `PUT /api/model-setup` (docs/api.md): what model a member's tasks run on, and the setup command that creates or
@@ -53,9 +51,7 @@ const refuseUnparsed = (error: FastifyError, request: FastifyRequest, reply: Fas
         : errorHandler(error, request, reply);
 
 interface ScopeView {
-    provider: AgentProvider | null;
-    agentType: ExecutorType | null;
-    model: string | null;
+    provider: ModelProvider | null;
     keyNames: string[];
     /** The provider's base URL when the scope holds it as a plain variable; never a secret's value. */
     baseUrl?: string;
@@ -66,7 +62,7 @@ interface ScopeView {
 /** The scope's base URL for its provider: the plain value, or only that a secret one is set. */
 function baseOf(
     rows: readonly EnvVarEntry[],
-    provider: AgentProvider | null
+    provider: ModelProvider | null
 ): Pick<ScopeView, 'baseUrl' | 'baseUrlSet'> {
     const name = isModelProvider(provider) ? PROVIDER_BASE_URL_ENV[provider] : null;
     const row = name === null ? undefined : rows.find((entry) => entry.name === name);
@@ -74,20 +70,14 @@ function baseOf(
     return !row.isSecret && row.value !== null ? { baseUrl: row.value } : { baseUrlSet: true };
 }
 
-/**
- * One scope's setup: the provider its names hold now (`currentProvider`; the platform when it holds none and its
- * agent default runs on it), its agent default, its key names; null when it has none.
- */
-function viewOf(rows: readonly EnvVarEntry[], agent: AgentDefault | null): ScopeView | null {
+/** One scope's setup: the provider its names hold now (`currentProvider`) and its key names; null when it has none. */
+function viewOf(rows: readonly EnvVarEntry[]): ScopeView | null {
     const names = rows.map((row) => row.name);
     const keyNames = keyNamesOf(names);
-    if (agent === null && keyNames.length === 0) return null;
-    const platform = agent?.provider === PLATFORM_PROVIDER ? PLATFORM_PROVIDER : null;
-    const provider = currentProvider(names, agent?.provider) ?? platform;
+    if (keyNames.length === 0) return null;
+    const provider = currentProvider(names);
     return {
         provider,
-        agentType: agent?.agentType ?? null,
-        model: agent?.model ?? null,
         keyNames,
         ...baseOf(rows, provider),
     };
@@ -95,18 +85,12 @@ function viewOf(rows: readonly EnvVarEntry[], agent: AgentDefault | null): Scope
 
 /**
  * Which source a task naming no executor runs on: the configured default executor, then a key in the member's scope, then
- * the org's, then the platform. A suspended default refuses launches, so it is not effective: the legacy source shows.
+ * the org's. A suspended default refuses launches, so it is not effective: the legacy source shows.
  */
-function effectiveOf(
-    selected: SelectedSetup | null,
-    org: ScopeView | null,
-    personal: ScopeView | null,
-    platform: boolean
-) {
+function effectiveOf(selected: SelectedSetup | null, org: ScopeView | null, personal: ScopeView | null) {
     if (selected !== null && !selected.suspended) return 'executor';
     if (personal?.keyNames.length) return 'personal';
-    if (org?.keyNames.length) return 'org';
-    return platform ? 'platform' : null;
+    return org?.keyNames.length ? 'org' : null;
 }
 
 /** The default executor as the view shows it: ids and names, the connection's safe metadata, never a credential. */
@@ -152,7 +136,7 @@ async function contextOf(orgs: OrgRegistry, request: FastifyRequest, reply: Fast
 const noEnvStore = (reply: FastifyReply) =>
     bad(reply, ERROR_CODES.ENV_UNAVAILABLE, 'No environment store for this organization', HTTP_UNAVAILABLE);
 
-async function handleGet(config: AppConfig, orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+async function handleGet(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const ctx = await contextOf(orgs, request, reply);
     if (!ctx) return reply;
     const { envVars } = ctx;
@@ -165,21 +149,18 @@ async function handleGet(config: AppConfig, orgs: OrgRegistry, request: FastifyR
             Promise.all([
                 envVars.listOrg(),
                 envVars.listWorkspace(ctx.userId),
-                ctx.executors.agentDefaults(ctx.userId),
                 ctx.modelSetup?.selectedFor(ctx.userId) ?? null,
             ])
     );
     if (!read.ok) return reply;
-    const [orgRows, personalRows, defaults, selected] = read.value;
-    const platform = config.platformModelProvided;
-    const org = viewOf(orgRows, defaults.org);
-    const personal = viewOf(personalRows, defaults.personal);
+    const [orgRows, personalRows, selected] = read.value;
+    const org = viewOf(orgRows);
+    const personal = viewOf(personalRows);
     return reply.code(HTTP_OK).send({
-        platform,
         org,
         personal,
         ...(selected === null ? {} : { selected: selectedView(selected) }),
-        effective: effectiveOf(selected, org, personal, platform),
+        effective: effectiveOf(selected, org, personal),
     });
 }
 
@@ -236,13 +217,11 @@ async function handlePut(config: AppConfig, orgs: OrgRegistry, request: FastifyR
             HTTP_UNAVAILABLE
         );
     }
-    if (parsed.connection.intent === 'none' && !config.platformModelProvided && !ctx.envVars) return noEnvStore(reply);
     const saved = await guard(
         reply,
         (e) => (refusedSetup(e) ? undefined : request.log.error({ err: e }, 'model setup save failed')),
         async (): Promise<{ result: SetupResult } | { refused: { status: number; error: string; code: string } }> => {
-            const command = await commandOf(parsed, { ...ctx, userId: ctx.userId, config });
-            if ('error' in command) return { refused: { status: 400, ...command } };
+            const command = { ...parsed, userId: ctx.userId };
             try {
                 return { result: await modelSetup.apply(command) };
             } catch (error) {
@@ -263,7 +242,7 @@ async function handlePut(config: AppConfig, orgs: OrgRegistry, request: FastifyR
 export const modelSetupRoutes =
     ({ config, orgs }: { config: AppConfig; orgs: OrgRegistry }): FastifyPluginAsync =>
     async (app) => {
-        app.get(PATH, (request, reply) => handleGet(config, orgs, request, reply));
+        app.get(PATH, (request, reply) => handleGet(orgs, request, reply));
         app.put(PATH, { bodyLimit: BODY_LIMIT, errorHandler: refuseUnparsed }, (request, reply) =>
             handlePut(config, orgs, request, reply)
         );

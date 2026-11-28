@@ -13,7 +13,7 @@ import type { BatchRecord } from '../../db/batches/batch-store-types.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from '../helpers.js';
 import { HTTP_CONFLICT } from '../jobs/job-limits.js';
-import { defaultExecutorOf, executorTypeOf, refusedAsNoModel, refusedAsUnusable } from '../jobs/executor-usable.js';
+import { defaultExecutorOf, refusedAsMissingModelKey, refusedAsUnusable } from '../jobs/executor-usable.js';
 import { validateExecutorField } from '../jobs/job-field-validation.js';
 
 /**
@@ -177,7 +177,7 @@ export async function launchChecks(
 
 /**
  * Each task's agent must have a model credential for its repository where the board requires one, and the connection
- * its profile selects must be usable anywhere (`refusedAsNoModel`), judged once per repository × executor or agent:
+ * its profile selects must be usable anywhere (`refusedAsMissingModelKey`), judged once per repository × executor:
  * 409 `NO_MODEL` or `PROVIDER_CONNECTION_REFUSED`, or 503 when the env cannot be read. False once a refusal is sent.
  */
 async function modelKeysPresent(ctx: Context, request: FastifyRequest, reply: FastifyReply, plan: ResolvedBatchPlan) {
@@ -185,20 +185,17 @@ async function modelKeysPresent(ctx: Context, request: FastifyRequest, reply: Fa
     const seen = new Set<string>();
     for (const task of plan.stages.flatMap((stage) => stage.tasks)) {
         const repo = repoOf.get(task.target) ?? null;
-        const key = JSON.stringify([repo, task.executor, task.executorScope, task.agentType ?? null]);
+        const key = JSON.stringify([repo, task.executor, task.executorScope]);
         if (seen.has(key)) continue;
         seen.add(key);
-        const profile =
-            task.agentType !== undefined
-                ? { type: executorTypeOf(task.agentType), config: null, connection: null }
-                : await refusedAsUnusable(request, reply, {
-                      executors: ctx.runtime.userExecutors,
-                      createdBy: ctx.createdBy,
-                      executor: task.executor,
-                      scope: task.executorScope,
-                  });
+        const profile = await refusedAsUnusable(request, reply, {
+            executors: ctx.runtime.userExecutors,
+            createdBy: ctx.createdBy,
+            executor: task.executor,
+            scope: task.executorScope,
+        });
         if (profile === 'refused') return false;
-        if (await refusedAsNoModel(request, reply, ctx.runtime, { userId: ctx.createdBy, repo, ...profile })) {
+        if (await refusedAsMissingModelKey(request, reply, ctx.runtime, { userId: ctx.createdBy, repo, ...profile })) {
             return false;
         }
     }
@@ -206,8 +203,8 @@ async function modelKeysPresent(ctx: Context, request: FastifyRequest, reply: Fa
 }
 
 /**
- * A task naming no executor runs on the starter's default, stamped into the plan the start freezes: a profile as the
- * label, an agent default as the task's agent and model. The claim reads only what was stamped. Null once a
+ * A task naming no executor runs on the starter's default executor, stamped into the plan the start freezes as the
+ * label. The claim reads only what was stamped. Null once a
  * refusal is on `reply` (409 `NO_EXECUTOR` when nothing resolves for the starter).
  */
 async function withDefaultExecutor(
@@ -224,10 +221,7 @@ async function withDefaultExecutor(
     });
     if (fallback === 'refused') return null;
     if (fallback === null) return plan;
-    const stamp =
-        fallback.kind === 'agent'
-            ? { agentType: fallback.agentType, agentModel: fallback.model }
-            : { executor: fallback.name, executorScope: fallback.scope };
+    const stamp = { executor: fallback.name, executorScope: fallback.scope };
     return {
         ...plan,
         stages: plan.stages.map((stage) => ({

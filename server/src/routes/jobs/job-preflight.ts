@@ -160,8 +160,8 @@ async function defaultOrRefusal(store: Pick<UserExecutorStore, 'resolvedDefault'
 }
 
 /**
- * What a task naming no executor resolves to: the profile create will stamp, or the standing that already answers (an
- * agent default, no default, a configured default that cannot run, an unreadable default). Create stamps the caller's
+ * What a task naming no executor resolves to: the profile create will stamp, or the standing that already answers (no
+ * default, a configured default that cannot run, an unreadable default). Create stamps the caller's
  * resolved default (executor-usable.ts), so that is the verdict.
  */
 async function defaultStanding(
@@ -192,19 +192,6 @@ async function defaultStanding(
         return {
             check: { subject: 'executor', name: null, status: 'blocked', detail: noExecutorMessage },
             type: { state: 'unconfirmed', error: noExecutorMessage },
-        };
-    }
-    if (fallback.value.kind === 'agent') {
-        const { agentType, model, from } = fallback.value;
-        const whose = from === 'personal' ? 'your agent default' : "the organization's agent default";
-        return {
-            check: {
-                subject: 'executor',
-                name: null,
-                status: 'ok',
-                detail: `none selected: the task runs on ${whose}, ${agentType} with model ${model}`,
-            },
-            type: executorTypeOf(agentType),
         };
     }
     return { name: fallback.value.name, scope: fallback.value.scope };
@@ -270,7 +257,7 @@ async function executorCheck(
 }
 
 /**
- * Where the board requires one (cloud, no platform model), whether the task's agent has a model credential, by create's
+ * Where the board requires one (cloud), whether the task's agent has a model credential, by create's
  * predicate (`modelStanding`): blocked with the fix when it has none; unverified when the agent is not resolved or the
  * env cannot be read. Null where no credential is required.
  */

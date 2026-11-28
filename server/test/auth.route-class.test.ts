@@ -34,14 +34,12 @@ describe('the route classes (what a scoped caller may do)', () => {
 
     // The whole admin surface, pinned: a state-changing org route reachable by a plain member is the class this
     // guards against, so a new org-wide write must be added here on purpose, never by default.
-    it('admin is exactly the org-wide administration: tokens, org env, members, executors, agent default, skills, subscriptions', () => {
+    it('admin is exactly the org-wide administration: tokens, org env, members, executors, skills, subscriptions', () => {
         const admin = ROUTE_CLASSES.filter((row) => row[3] === 'admin').map(
             ([method, pattern]) => `${method} ${pattern}`
         );
         expect(admin.sort()).toEqual(
             [
-                'DELETE /api/agent-default/org',
-                'PUT /api/agent-default/org',
                 'DELETE /api/org/executors/:id',
                 'DELETE /api/org/executors/default',
                 'DELETE /api/org/notification-subscriptions/:id',

@@ -3,7 +3,7 @@ import { interruptionOf } from './job-interruption-body.js';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { refusedAsNoModel, usableSelection } from './executor-usable.js';
+import { refusedAsMissingModelKey, usableSelection } from './executor-usable.js';
 import {
     type FairBoardScanner,
     boardsFor,
@@ -273,7 +273,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
         scope: simple.executorScope,
     });
     if (!selection) return reply;
-    const { executor, scope: executorScope, type: executorType, agent } = selection;
+    const { executor, scope: executorScope, type: executorType } = selection;
     const subject = {
         userId: createdBy,
         repo,
@@ -281,7 +281,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
         config: selection.config,
         connection: selection.connection,
     };
-    if (await refusedAsNoModel(request, reply, await orgs.for(orgOf(request)), subject)) return reply;
+    if (await refusedAsMissingModelKey(request, reply, await orgs.for(orgOf(request)), subject)) return reply;
     const baseBranch = await checkedTarget(orgs, request, reply, { repo, rawBaseBranch: fields.baseBranch });
     if (baseBranch === undefined) return reply;
     if (await refusedAsUnknownSkill(orgs, request, reply, { names: skills, repo, baseBranch, executorType }))
@@ -314,10 +314,8 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 repo,
                 executor,
                 executorScope,
-                // The agent default that won, frozen on the task: the claim runs it, never a later default. A chosen
-                // model wins over the default's, and rides a profile task alone (it overrides the profile's model).
-                ...(agent ? { agentType: agent.agentType, agentModel: simple.model ?? agent.model } : {}),
-                ...(!agent && simple.model !== null ? { agentModel: simple.model } : {}),
+                // A chosen model overrides the profile's `config.model`.
+                ...(simple.model !== null ? { agentModel: simple.model } : {}),
                 skills,
                 baseBranch,
                 title,

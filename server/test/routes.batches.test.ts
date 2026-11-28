@@ -562,34 +562,35 @@ describe('launch checks: validate and start', () => {
         expect(tasksOf((await call('GET', `/api/batches/${id}`)).json())).toEqual(['org:Main', 'org:Main', 'org:Main']);
     });
 
-    it("freezes the starter's agent default on every task that names no executor, on validate and on start", async () => {
+    it("stamps the starter's configured default as the executor of every task that names none, on validate and on start", async () => {
         const userExecutors = {
             async configFor() {
-                return null;
+                return { type: 'opencode', config: {}, suspended: false };
             },
             async resolvedDefault() {
-                return { kind: 'agent', agentType: 'opencode', model: 'team-model', from: 'org' };
+                return { scope: 'org', name: 'team-runner' };
             },
         } as unknown as UserExecutorStore;
         const { call, create } = await setup({ userExecutors });
         const { id } = await create(plan());
-        type Tasks = {
-            plan: { stages: { tasks: { executor: string | null; agentType?: string; agentModel?: string }[] }[] };
-        };
+        type Tasks = { plan: { stages: { tasks: { executor: string | null; executorScope: string }[] }[] } };
         const tasksOf = (body: Tasks) =>
-            body.plan.stages.flatMap((stage) => stage.tasks).map((t) => `${t.executor}:${t.agentType}:${t.agentModel}`);
+            body.plan.stages.flatMap((stage) => stage.tasks).map((t) => `${t.executorScope}:${t.executor}`);
         const validated = await call('POST', `/api/batches/${id}/validate`, {});
         expect(validated.statusCode).toBe(HTTP_OK);
-        const frozen = ['null:opencode:team-model', 'null:opencode:team-model', 'null:opencode:team-model'];
-        expect(tasksOf(validated.json())).toEqual(frozen);
+        const stamped = ['org:team-runner', 'org:team-runner', 'org:team-runner'];
+        expect(tasksOf(validated.json())).toEqual(stamped);
         expect((await call('POST', `/api/batches/${id}/start`, { version: 1 })).statusCode).toBe(HTTP_OK);
-        expect(tasksOf((await call('GET', `/api/batches/${id}`)).json())).toEqual(frozen);
+        expect(tasksOf((await call('GET', `/api/batches/${id}`)).json())).toEqual(stamped);
     });
 
     it('in cloud, refuses NO_MODEL when a task’s repository and agent have no model key, and starts nothing', async () => {
         const userExecutors = {
+            async configFor() {
+                return { type: 'claude-code', config: {}, suspended: false };
+            },
             async resolvedDefault() {
-                return { kind: 'agent', agentType: 'claude-code', model: 'sonnet', from: 'personal' };
+                return { scope: 'user', name: 'Main' };
             },
         } as unknown as UserExecutorStore;
         const env = memoryEnvVarStore();
@@ -619,7 +620,7 @@ describe('launch checks: validate and start', () => {
                 return { type: 'claude-code', config: {}, suspended: false, providerConnectionId: CONNECTION };
             },
             async resolvedDefault() {
-                return { kind: 'profile', scope: 'user', name: 'Main' };
+                return { scope: 'user', name: 'Main' };
             },
         } as unknown as UserExecutorStore;
         const connectionOf = (provider: string, read: () => unknown = () => null) =>
@@ -675,8 +676,11 @@ describe('launch checks: validate and start', () => {
 
     it('in cloud, answers 503 and never NO_MODEL when the env cannot be read', async () => {
         const userExecutors = {
+            async configFor() {
+                return { type: 'opencode', config: {}, suspended: false };
+            },
             async resolvedDefault() {
-                return { kind: 'agent', agentType: 'opencode', model: 'm', from: 'personal' };
+                return { scope: 'user', name: 'Main' };
             },
         } as unknown as UserExecutorStore;
         const env = memoryEnvVarStore();

@@ -57,7 +57,7 @@ function recordingSetup() {
                     scope: command.scope,
                     executorId: command.executor.id ?? 'executor-1',
                     executorName: command.executor.name ?? 'kept',
-                    connectionId: command.connection.intent === 'none' ? null : 'connection-1',
+                    connectionId: 'connection-1',
                     connectionName: command.connection.intent === 'create' ? command.connection.name : null,
                     replayed: false,
                 };
@@ -119,7 +119,7 @@ describe('GET /api/model-setup', () => {
         const b = await boot();
         const response = await get(b, b.memberCookie);
         expect(response.statusCode).toBe(HTTP_OK);
-        expect(response.json()).toEqual({ platform: false, org: null, personal: null, effective: null });
+        expect(response.json()).toEqual({ org: null, personal: null, effective: null });
     });
 
     it('shows a saved personal setup by names only, the personal scope effective', async () => {
@@ -127,20 +127,12 @@ describe('GET /api/model-setup', () => {
         await b.envVars.replaceWorkspace(b.member.user.id, [
             { name: 'ANTHROPIC_API_KEY', value: ANTHROPIC_KEY, isSecret: true },
         ]);
-        await b.executors.setAgentDefault(b.member.user.id, {
-            agentType: 'claude-code',
-            model: 'claude-sonnet-4-5',
-            provider: 'anthropic',
-        });
 
         const response = await get(b, b.memberCookie);
         expect(response.json()).toEqual({
-            platform: false,
             org: null,
             personal: {
                 provider: 'anthropic',
-                agentType: 'claude-code',
-                model: 'claude-sonnet-4-5',
                 keyNames: ['ANTHROPIC_API_KEY'],
             },
             effective: 'personal',
@@ -154,40 +146,15 @@ describe('GET /api/model-setup', () => {
             { name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true },
         ]);
         expect((await get(b, b.memberCookie)).json()).toEqual({
-            platform: false,
-            org: { provider: 'openrouter', agentType: null, model: null, keyNames: ['OPENROUTER_API_KEY'] },
+            org: { provider: 'openrouter', keyNames: ['OPENROUTER_API_KEY'] },
             personal: null,
             effective: 'org',
         });
     });
 
-    it('reports the platform model, effective while no scope holds a key', async () => {
-        const b = await boot({ platformModelProvided: true });
-        expect((await get(b, b.memberCookie)).json()).toEqual({
-            platform: true,
-            org: null,
-            personal: null,
-            effective: 'platform',
-        });
-        await b.envVars.replaceWorkspace(b.member.user.id, [
-            { name: 'ANTHROPIC_API_KEY', value: ANTHROPIC_KEY, isSecret: true },
-        ]);
-        expect((await get(b, b.memberCookie)).json()).toMatchObject({ platform: true, effective: 'personal' });
-    });
-
     it('is a 503, never "nothing configured", when the env read fails', async () => {
-        const b = await boot({ platformModelProvided: true });
-        b.envVars.listWorkspace = async () => {
-            throw storeOutage();
-        };
-        const response = await get(b, b.memberCookie);
-        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
-        expect(response.json()).not.toHaveProperty('effective');
-    });
-
-    it('is a 503 when the agent default read fails', async () => {
         const b = await boot();
-        b.executors.agentDefaults = async () => {
+        b.envVars.listWorkspace = async () => {
             throw storeOutage();
         };
         const response = await get(b, b.memberCookie);
@@ -262,7 +229,7 @@ describe('PUT /api/model-setup', () => {
         expect(b.setup.commands[0]).toMatchObject({ scope: 'org', userId: b.admin.user.id });
     });
 
-    it('answers the stable identities and never the key, and writes no env row or agent default', async () => {
+    it('answers the stable identities and never the key, and writes no env row', async () => {
         const b = await boot();
         const response = await put(b, b.memberCookie, anthropicPersonal);
         expect(response.statusCode).toBe(HTTP_OK);
@@ -277,7 +244,6 @@ describe('PUT /api/model-setup', () => {
         });
         expect(response.body).not.toContain(ANTHROPIC_KEY);
         expect(b.envVars.rows()).toEqual([]);
-        expect(await b.executors.agentDefaults(b.member.user.id)).toEqual({ org: null, personal: null });
         expect(b.setup.commands[0]).toMatchObject({
             requestId: 'request-1',
             connection: {
@@ -355,6 +321,7 @@ describe('PUT /api/model-setup', () => {
             // An id that is not a row id never reaches a uuid column.
             withConnection({ intent: 'reuse', id: 'not-a-uuid' }),
             withConnection({ intent: 'rotate', id: 'not-a-uuid', key: 'sk-x' }),
+            withConnection({ intent: 'none' }),
             withConnection({ intent: 'none', key: 'sk-x' }),
             withConnection({ intent: 'rotate', id: CONNECTION_ID, key: 'has space' }),
             withConnection({ intent: 'create', provider: 'anthropic', key: 'sk-x' }),
@@ -415,64 +382,6 @@ describe('PUT /api/model-setup', () => {
         const response = await put(b, b.memberCookie, anthropicPersonal);
         expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
         expect(response.body).not.toContain(ANTHROPIC_KEY);
-    });
-});
-
-describe('PUT /api/model-setup with no connection', () => {
-    const none = withConnection({ intent: 'none' }, { executor: { name: 'Platform' } });
-
-    it('with the platform model on, applies an executor on the platform model', async () => {
-        const b = await boot({ platformModelProvided: true });
-        const response = await put(b, b.memberCookie, none);
-        expect(response.statusCode).toBe(HTTP_OK);
-        expect(response.json().connectionId).toBeNull();
-        expect(b.setup.commands[0]?.connection).toEqual({ intent: 'none', source: 'platform' });
-        expect(b.envVars.rows()).toEqual([]);
-    });
-
-    it('adopts the org’s existing key with the platform model off, leaving the env as it was', async () => {
-        const b = await boot();
-        await b.envVars.replaceOrg('env-admin', [
-            { name: 'OPENROUTER_API_KEY', value: OPENROUTER_KEY, isSecret: true },
-        ]);
-        const before = b.envVars.rows();
-        const response = await put(
-            b,
-            b.memberCookie,
-            withConnection({ intent: 'none' }, { agentType: 'opencode', model: 'anthropic/claude-sonnet-4.5' })
-        );
-        expect(response.statusCode).toBe(HTTP_OK);
-        expect(b.envVars.rows()).toEqual(before);
-        expect(b.setup.commands[0]?.connection).toEqual({ intent: 'none', source: 'openrouter' });
-    });
-
-    it('refuses it with no key in view or an agent the key cannot run', async () => {
-        const none_ = await boot();
-        expect((await put(none_, none_.memberCookie, none)).statusCode).toBe(HTTP_BAD_REQUEST);
-        expect(none_.setup.commands).toEqual([]);
-
-        const b = await boot();
-        await b.envVars.replaceOrg('env-admin', [{ name: 'OPENAI_API_KEY', value: 'sk-openai', isSecret: true }]);
-        expect((await put(b, b.memberCookie, none)).statusCode).toBe(HTTP_BAD_REQUEST);
-        // The org's key is not in the org scope's view of a personal key; only the member's own is.
-        await b.envVars.replaceOrg('env-admin', []);
-        await b.envVars.replaceWorkspace(b.member.user.id, [{ name: 'OPENAI_API_KEY', value: 'mine', isSecret: true }]);
-        expect((await put(b, b.adminCookie, { ...none, scope: 'org' })).statusCode).toBe(HTTP_BAD_REQUEST);
-        expect(b.setup.commands).toEqual([]);
-    });
-
-    it('refuses it with 503 when the names cannot be read', async () => {
-        const b = await boot();
-        b.envVars.listOrg = async () => {
-            throw storeOutage();
-        };
-        const response = await put(
-            b,
-            b.memberCookie,
-            withConnection({ intent: 'none' }, { agentType: 'opencode', model: 'gpt-5' })
-        );
-        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
-        expect(b.setup.commands).toEqual([]);
     });
 });
 

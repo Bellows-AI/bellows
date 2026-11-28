@@ -1,22 +1,16 @@
 import {
-    type AgentProvider,
     CLOUD_CREDENTIAL_MESSAGE,
-    currentProvider,
     ERROR_CODES,
     EXECUTOR_TYPES,
     type ExecutorType,
     isModelProvider,
     type ModelProvider,
-    PLATFORM_PROVIDER,
     PROVIDER_AGENTS,
     PROVIDER_ENV,
     providerAvailable,
 } from '@factory-ai/core';
 import type { ConnectionIntent, SetupCommand } from '../db/model-setup-store.js';
-import type { EnvVarStore } from '../db/env-var-store.js';
-import type { UserExecutorStore } from '../db/user-executor-store.js';
-import type { AppConfig } from '../config.js';
-import { MAX_AGENT_MODEL_LENGTH } from './agent-default.js';
+import { MAX_AGENT_MODEL_LENGTH } from './jobs/job-limits.js';
 import { body as jsonBody } from './helpers.js';
 import { validBase, validKey } from './model-setup-verify.js';
 import { UUID } from './executor-fields.js';
@@ -24,7 +18,7 @@ import { badConnectionName } from './provider-connections.js';
 
 /**
  * The model setup's command body (`PUT /api/model-setup`, docs/api.md): the intent about the connection — create, reuse,
- * rotate or none — and the executor it runs, parsed into the store's `SetupCommand` (db/model-setup-store.ts). The HTTP
+ * or rotate — and the executor it runs, parsed into the store's `SetupCommand` (db/model-setup-store.ts). The HTTP
  * shape and the refusals are routes/model-setup.ts'.
  */
 
@@ -38,7 +32,7 @@ const REQUEST_ID_MAX = 128;
 const FIELDS = new Set(['scope', 'requestId', 'agentType', 'model', 'connection', 'executor']);
 const EXECUTOR_FIELDS = new Set(['id', 'name', 'expectedUpdatedAt']);
 
-/** A parsed body: the command as the route can state it, before the `none` intent's provider is looked up. */
+/** A parsed body: the command as the route states it, before the caller's id is added. */
 export interface ParsedSetup {
     readonly scope: SetupScope;
     readonly requestId: string;
@@ -119,15 +113,12 @@ function parseConnection(
 ): ConnectionIntent | Refusal {
     const fields = jsonBody(raw);
     const { intent } = fields;
-    if (intent === 'none') {
-        return Object.keys(fields).length > 1 ? refusal('intent none takes no other connection field') : { intent };
-    }
     if (intent === 'reuse') {
         if (!isId(fields.id) || Object.keys(fields).length > 2) return refusal('intent reuse takes an id alone');
         return { intent, id: fields.id };
     }
     if (intent === 'rotate') return parseRotate(fields);
-    if (intent !== 'create') return refusal('connection.intent must be create, reuse, rotate or none');
+    if (intent !== 'create') return refusal('connection.intent must be create, reuse or rotate');
     return parseCreate(fields, agentType, subscriptionAllowed);
 }
 
@@ -190,62 +181,3 @@ const KEY_NAMES = new Set(Object.values(PROVIDER_ENV));
 
 /** The provider key names among a scope's names, sorted: names only, never a value. */
 export const keyNamesOf = (names: readonly string[]): string[] => names.filter((name) => KEY_NAMES.has(name)).sort();
-
-/** The names one scope holds; a failed read throws. */
-async function scopeNames(envVars: EnvVarStore, scope: SetupScope, userId: string): Promise<string[]> {
-    const rows = scope === 'org' ? await envVars.listOrg() : await envVars.listWorkspace(userId);
-    return rows.map((row) => row.name);
-}
-
-/**
- * The key provider the member's view of `scope` runs on, for an executor that adopts the credentials already in the
- * environment (intent `none`): the personal scope sees its own key first, then the organization's; the org scope only its
- * own. Null when no key is in view. A failed read throws: it never reads as "no key".
- */
-async function providerInView(
-    stores: { envVars: EnvVarStore; executors: Pick<UserExecutorStore, 'agentDefaults'> },
-    scope: SetupScope,
-    userId: string
-): Promise<ModelProvider | null> {
-    const defaults = await stores.executors.agentDefaults(userId);
-    if (scope === 'personal') {
-        const own = currentProvider(await scopeNames(stores.envVars, 'personal', userId), defaults.personal?.provider);
-        if (own !== null) return own;
-    }
-    return currentProvider(await scopeNames(stores.envVars, 'org', userId), defaults.org?.provider);
-}
-
-/**
- * The command the store runs. The `none` intent decides its provider here: the deployment's platform model when it
- * supplies one, else the key already in the scope's view — which must run the agent. Anything else is a refusal.
- */
-export async function commandOf(
-    parsed: ParsedSetup,
-    ctx: {
-        userId: string;
-        config: AppConfig;
-        envVars: EnvVarStore | undefined;
-        executors: Pick<UserExecutorStore, 'agentDefaults'>;
-    }
-): Promise<SetupCommand | Refusal> {
-    const base = { scope: parsed.scope, userId: ctx.userId, requestId: parsed.requestId, executor: parsed.executor };
-    if (parsed.connection.intent !== 'none') return { ...base, connection: parsed.connection };
-    let source: AgentProvider = PLATFORM_PROVIDER;
-    if (!ctx.config.platformModelProvided) {
-        if (!ctx.envVars) throw new Error('no env store');
-        const provider = await providerInView(
-            { envVars: ctx.envVars, executors: ctx.executors },
-            parsed.scope,
-            ctx.userId
-        );
-        if (provider === null) return refusal('no provider key is configured in this scope yet');
-        if (!PROVIDER_AGENTS[provider].includes(parsed.executor.agentType)) {
-            return refusal(
-                `the configured ${provider} key does not run ${parsed.executor.agentType}`,
-                ERROR_CODES.BAD_EXECUTOR_TYPE
-            );
-        }
-        source = provider;
-    }
-    return { ...base, connection: { intent: 'none', source } };
-}
