@@ -30,8 +30,7 @@ export interface PendingSuccessor {
     repo: string | null;
     executor: string | null;
     executorScope: ExecutorScope;
-    /** The agent default frozen on the thread: parked with the round, restored on the woken job. Absent is none. */
-    agentType?: string | null;
+    /** The model chosen for the thread: parked with the round, restored on the woken job. Absent is none. */
     agentModel?: string | null;
     sessionId: string | null;
     workflowNode: string;
@@ -87,7 +86,7 @@ export async function enterRuntimeBoundary(
                 command = ${successor.command}, session_id = ${successor.sessionId},
                 job_repo = ${successor.repo}, executor = ${successor.executor},
                 executor_scope = ${successor.executorScope},
-                agent_type = ${successor.agentType ?? null}, agent_model = ${successor.agentModel ?? null},
+                agent_model = ${successor.agentModel ?? null},
                 parent_job_id = ${successor.parentJobId}, parked_at = now()
             where org_id = ${successor.orgId} and root_job_id = ${successor.rootJobId}
               and workflow_node = ${successor.workflowNode} and round = ${parked.round}
@@ -103,12 +102,12 @@ export async function enterRuntimeBoundary(
     await tx`
         insert into workflow_round (
             org_id, root_job_id, workflow_node, round, repo, pr_number,
-            command, session_id, job_repo, executor, executor_scope, agent_type, agent_model, parent_job_id
+            command, session_id, job_repo, executor, executor_scope, agent_model, parent_job_id
         ) values (
             ${successor.orgId}, ${successor.rootJobId}, ${successor.workflowNode}, ${round},
             ${publication.repo}, ${publication.prNumber},
             ${successor.command}, ${successor.sessionId}, ${successor.repo}, ${successor.executor},
-            ${successor.executorScope}, ${successor.agentType ?? null}, ${successor.agentModel ?? null},
+            ${successor.executorScope}, ${successor.agentModel ?? null},
             ${successor.parentJobId}
         )
     `;
@@ -124,7 +123,6 @@ interface RoundRow {
     job_repo: string | null;
     executor: string | null;
     executor_scope: string | null;
-    agent_type: string | null;
     agent_model: string | null;
     parent_job_id: string;
 }
@@ -179,7 +177,7 @@ export async function wakeOneRound(
         if (active?.any) return null;
 
         const [round] = await tx<RoundRow[]>`
-            select workflow_node, command, session_id, job_repo, executor, executor_scope, agent_type, agent_model,
+            select workflow_node, command, session_id, job_repo, executor, executor_scope, agent_model,
                    parent_job_id
             from workflow_round
             where org_id = ${orgId} and root_job_id = ${rootJobId}
@@ -231,8 +229,7 @@ async function insertWakeContinuation(
         repo: round.job_repo,
         executor: round.executor,
         executorScope: (round.executor_scope ?? USER_SCOPE) as ExecutorScope,
-        // The round's frozen copy, never the agent default as it reads at wake.
-        agentType: round.agent_type,
+        // The round's frozen copy.
         agentModel: round.agent_model,
         parentJobId: round.parent_job_id,
         sessionId: round.session_id,

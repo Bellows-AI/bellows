@@ -142,7 +142,6 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         expect(claimed?.executorType).toBe('claude-code');
         expect(claimed?.env?.ANTHROPIC_API_KEY).toBe(KEY_A);
         expect((await sql`select 1 from env_var where org_id = ${org}`).length).toBe(0);
-        expect((await sql`select 1 from agent_default where org_id = ${org}`).length).toBe(0);
     });
 
     it('another member discovers and runs organization setup without receiving its key', async () => {
@@ -393,47 +392,22 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         });
     });
 
-    it('legacy setup without a configured executor keeps its behavior', async () => {
+    it('a key in the org env without a configured executor shows as the org setup', async () => {
         const runtime = (await orgs.for(org))!;
         await runtime.envVars!.writeScoped(
             { kind: 'org' },
             { upsert: [{ name: 'ANTHROPIC_API_KEY', value: KEY_A, isSecret: true }], remove: [] },
             admin.userId
         );
-        await runtime.userExecutors!.setAgentDefault(null, {
-            agentType: 'claude-code',
-            model: 'claude-sonnet-4-5',
-            provider: 'anthropic',
-        });
 
         const view = await call(member, 'GET', '/api/model-setup');
         expect(view.json.effective).toBe('org');
         expect(view.json.selected ?? null).toBeNull();
         expect(view.json.org).toMatchObject({ provider: 'anthropic', keyNames: ['ANTHROPIC_API_KEY'] });
-
-        await launch(member);
-        const claimed = await claim('w1');
-        expect(claimed?.env?.ANTHROPIC_API_KEY).toBe(KEY_A);
         expect((await sql`select 1 from executor_default_selection where org_id = ${org}`).length).toBe(0);
     });
 
-    it('an existing env-backed setup adopts a real executor on request, keeping its credentials', async () => {
-        const runtime = (await orgs.for(org))!;
-        await runtime.envVars!.writeScoped(
-            { kind: 'org' },
-            { upsert: [{ name: 'ANTHROPIC_API_KEY', value: KEY_A, isSecret: true }], remove: [] },
-            admin.userId
-        );
-        const adopted = await save(admin, orgBody({ connection: { intent: 'none' } }));
-        expect(adopted.status).toBe(OK);
-        expect(adopted.json.connectionId).toBeNull();
-        // The old credential is untouched and still what the executor runs on.
-        expect((await sql`select 1 from env_var where org_id = ${org}`).length).toBe(1);
-        await launch(member);
-        expect((await claim('w1'))?.env?.ANTHROPIC_API_KEY).toBe(KEY_A);
-    });
-
-    it('a none intent without any key in view is refused', async () => {
+    it('a none intent is refused and writes nothing', async () => {
         const refused = await save(admin, orgBody({ connection: { intent: 'none' } }));
         expect(refused.status).toBe(400);
         expect((await sql`select 1 from executor_profile where org_id = ${org}`).length).toBe(0);

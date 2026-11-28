@@ -277,10 +277,9 @@ describe('hasModelKey', () => {
         expect(hasModelKey([], withKey({ accessToken: 't' }), OPENCODE)).toBe(false);
     });
 
-    it('is required in cloud only, and not when the platform supplies the model', () => {
-        expect(modelKeyRequired(CLOUD, false)).toBe(true);
-        expect(modelKeyRequired(CLOUD, true)).toBe(false);
-        expect(modelKeyRequired(SELF_HOSTED, false)).toBe(false);
+    it('is required in cloud only', () => {
+        expect(modelKeyRequired(CLOUD)).toBe(true);
+        expect(modelKeyRequired(SELF_HOSTED)).toBe(false);
         expect(NO_MODEL_MESSAGE).toBe(
             'Connect a model in Settings → Model, or ask an admin to connect one for the organization.'
         );

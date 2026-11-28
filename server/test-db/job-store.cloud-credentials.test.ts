@@ -36,10 +36,7 @@ function stores(
     orgId: string,
     deploymentMode: DeploymentMode,
     reviewer: ReviewerSpec = REVIEWER,
-    {
-        platformModelProvided = false,
-        cloudSubscriptionOrgIds = new Set<string>(),
-    }: { platformModelProvided?: boolean; cloudSubscriptionOrgIds?: ReadonlySet<string> } = {}
+    { cloudSubscriptionOrgIds = new Set<string>() }: { cloudSubscriptionOrgIds?: ReadonlySet<string> } = {}
 ) {
     const executors = createUserExecutorStore({ sql, orgId, ...testSecretDeps(sql) });
     const env = createEnvVarStore({ sql, orgId, secrets: testSecretStore(sql), secretLog: () => {} });
@@ -48,7 +45,6 @@ function stores(
         orgId,
         deploymentMode,
         cloudSubscriptionOrgIds,
-        platformModelProvided,
         env,
         executorConfig: executors,
         githubApp: true,
@@ -341,15 +337,10 @@ describe.skipIf(!enabled)('cloud mode: a claim with no model credential is refus
         expect(claim?.env).toBeUndefined();
     });
 
-    it('a self-hosted board, or a cloud board whose operator supplies the model, claims with no key', async () => {
-        for (const jobs of [
-            stores(ORG, 'self-hosted').jobs,
-            stores(ORG, 'cloud', REVIEWER, { platformModelProvided: true }).jobs,
-        ]) {
-            const { executors } = stores(ORG, 'self-hosted');
-            await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
-            await mustCreate(jobs.create('echo', ALICE, { repo: 'acme/web', executor: 'main', executorScope: 'user' }));
-            expect((await jobs.claim('w1', LEASE_SECONDS))?.executorRefusal).toBeNull();
-        }
+    it('a self-hosted board claims with no key', async () => {
+        const { executors, jobs } = stores(ORG, 'self-hosted');
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
+        await mustCreate(jobs.create('echo', ALICE, { repo: 'acme/web', executor: 'main', executorScope: 'user' }));
+        expect((await jobs.claim('w1', LEASE_SECONDS))?.executorRefusal).toBeNull();
     });
 });

@@ -1,12 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
-import {
-    type AgentProvider,
-    type ExecutorType,
-    type ModelProvider,
-    normalizeModelId,
-    PLATFORM_PROVIDER,
-} from '@factory-ai/core';
+import { type ExecutorType, type ModelProvider, normalizeModelId } from '@factory-ai/core';
 import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
 import { ExecutorConnectionRefusedError } from './executor-connection-selection.js';
 import { selectDefaultInTx } from './executor-default-store.js';
@@ -43,9 +37,7 @@ export type ConnectionIntent =
     /** Selects an existing connection the scope may use; its key and endpoint are untouched. */
     | { readonly intent: 'reuse'; readonly id: string }
     /** Replaces the key (and, when given, the endpoint) of a connection the scope owns, in place under its id. */
-    | { readonly intent: 'rotate'; readonly id: string; readonly key: string; readonly baseUrl?: string | null }
-    /** No connection: the deployment's platform model, or the scope's existing environment credentials, left as they are. */
-    | { readonly intent: 'none'; readonly source?: AgentProvider };
+    | { readonly intent: 'rotate'; readonly id: string; readonly key: string; readonly baseUrl?: string | null };
 
 export interface SetupCommand {
     readonly scope: 'org' | 'personal';
@@ -170,9 +162,7 @@ function fingerprintOf(command: SetupCommand): string {
               }
             : connection.intent === 'rotate'
               ? { intent: connection.intent, id: connection.id, baseUrl: connection.baseUrl ?? null }
-              : connection.intent === 'reuse'
-                ? { intent: connection.intent, id: connection.id }
-                : { intent: connection.intent, source: connection.source ?? PLATFORM_PROVIDER };
+              : { intent: connection.intent, id: connection.id };
     return createHash('sha256')
         .update(
             JSON.stringify({
@@ -238,11 +228,11 @@ interface Run {
     readonly limit: number | undefined;
 }
 
-/** What the connection step decided: the connection the executor runs on (none), the provider that names its model, the key it superseded. */
+/** What the connection step decided: the connection the executor runs on, the provider that names its model, the key it superseded. */
 interface ConnectionOutcome {
-    readonly id: string | null;
-    readonly name: string | null;
-    readonly source: AgentProvider;
+    readonly id: string;
+    readonly name: string;
+    readonly source: ModelProvider;
     readonly superseded?: Superseded | undefined;
 }
 
@@ -261,7 +251,7 @@ async function connectionRowOf(
     return row;
 }
 
-/** The connection step inside the transaction: insert the sealed row, replace its key, select one, or select none. */
+/** The connection step inside the transaction: insert the sealed row, replace its key, or select one. */
 async function connectionStep(tx: TransactionSql, run: Run, sealed: Sealed): Promise<ConnectionOutcome> {
     const { orgId, command, owner } = run;
     const { connection } = command;
@@ -302,11 +292,8 @@ async function connectionStep(tx: TransactionSql, run: Run, sealed: Sealed): Pro
             superseded: replaced.superseded,
         };
     }
-    if (connection.intent === 'reuse') {
-        const row = await connectionRowOf(tx, orgId, connection.id);
-        return { id: connection.id, name: row.name, source: row.provider };
-    }
-    return { id: null, name: null, source: connection.source ?? PLATFORM_PROVIDER };
+    const row = await connectionRowOf(tx, orgId, connection.id);
+    return { id: connection.id, name: row.name, source: row.provider };
 }
 
 /** Publishes the command inside the transaction: the connection step, the executor, the default and the receipt. */

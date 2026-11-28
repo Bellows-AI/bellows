@@ -85,12 +85,14 @@ async function personIn(orgId: string): Promise<Person> {
 /** An org whose member can queue a task: its one executor profile and a tracked repo. */
 async function boardFor(orgId: string): Promise<Person> {
     const member = await personIn(orgId);
-    await createUserExecutorStore({ sql, orgId, ...testSecretDeps(sql) }).createOrg({
+    const executors = createUserExecutorStore({ sql, orgId, ...testSecretDeps(sql) });
+    const main = await executors.createOrg({
         name: 'main',
         type: 'claude-code',
         config: {},
         createdBy: member.userId,
     });
+    await executors.selectDefault(null, main.id);
     await sql`insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
               values (${orgId}, 'claude-code', ${`dc-${randomUUID()}`}, ${repoOf(orgId)}, 'main', now(), now())`;
     return member;
@@ -100,9 +102,8 @@ async function boot(store: DriverCredentialStore): Promise<void> {
     const ready = Promise.resolve();
     const config = testConfig({
         auth: githubAuth(),
-        deploymentMode: 'cloud',
-        // The operator supplies the model, so a task needs no member key here (that check: job-store.cloud-credentials).
-        platformModelProvided: true,
+        // Self-hosted: a task needs no member model key here (that check: job-store.cloud-credentials).
+        deploymentMode: 'self-hosted',
         planDefaults: { running: 5, queued: 20, wallSeconds: 3600 },
         operatorGithubIds: [operator.githubUserId],
     });

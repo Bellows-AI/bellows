@@ -526,22 +526,6 @@ describe.skipIf(!enabled)('the model setup command', () => {
             })
         );
         expect(await count('env_var')).toBe(0);
-        expect(await count('agent_default')).toBe(0);
-    });
-
-    it('a none intent creates an executor on no connection and leaves ambient credentials alone', async () => {
-        const { setup, executors } = stores();
-        const result = await setup.apply(
-            command({
-                scope: 'personal',
-                connection: { intent: 'none' },
-                executor: { name: 'Platform', agentType: 'claude-code', model: 'claude-sonnet-4-5' },
-            })
-        );
-        expect(result.connectionId).toBeNull();
-        expect((await executors.list(ALICE))[0]).toMatchObject({ id: result.executorId, providerConnectionId: null });
-        expect(await selection(ALICE)).toBe(result.executorId);
-        expect(await count('provider_connection')).toBe(0);
     });
 
     it('a stale expected revision is refused and writes nothing', async () => {

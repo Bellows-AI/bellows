@@ -92,10 +92,7 @@ const requiredNames = (provider: ModelProvider): string[] =>
  * Anthropic behind a base URL from LiteLLM), else the one the names point to. A key replaced by hand outranks the
  * record.
  */
-export function currentProvider(
-    names: readonly string[],
-    recorded: AgentProvider | null | undefined
-): ModelProvider | null {
+export function currentProvider(names: readonly string[], recorded?: AgentProvider | null): ModelProvider | null {
     const has = new Set(names);
     if (isModelProvider(recorded) && requiredNames(recorded).every((name) => has.has(name))) return recorded;
     return inferProvider(names);
@@ -308,9 +305,8 @@ export function connectionOpenCodeProvider(
 export const NO_MODEL_MESSAGE =
     'Connect a model in Settings → Model, or ask an admin to connect one for the organization.';
 
-/** A task must bring its own model credential in cloud mode, unless the operator supplies the model. */
-export const modelKeyRequired = (mode: DeploymentMode, platformModelProvided: boolean): boolean =>
-    mode === CLOUD && !platformModelProvided;
+/** A task must bring its own model credential in cloud mode. */
+export const modelKeyRequired = (mode: DeploymentMode): boolean => mode === CLOUD;
 
 /** The env names each agent can run its model on. Claude Code's OpenRouter key works through its claim wiring. */
 const MODEL_KEYS: Readonly<Record<ExecutorType, readonly string[]>> = {
