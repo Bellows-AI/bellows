@@ -185,4 +185,14 @@ describe('the searchable select', () => {
         expect(up.lastElementChild?.className).toBe('popover-head');
         expect(up.firstElementChild?.className).toBe('popover-list');
     });
+
+    it('wears the form skin only when asked: the chip stays frameless in the composer', async () => {
+        mount();
+        expect(screen.getByRole('button', { name: 'Repository: acme/web' }).classList.contains('in-form')).toBe(false);
+        cleanup();
+        mount({ variant: 'form' });
+        const chip = screen.getByRole('button', { name: 'Repository: acme/web' });
+        expect(chip.classList.contains('select-trigger')).toBe(true);
+        expect(chip.classList.contains('in-form')).toBe(true);
+    });
 });

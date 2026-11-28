@@ -17,7 +17,7 @@ import { missingProviderSecretMessage, resolveProviderReferences } from '../src/
  */
 
 describe('the executor provider catalog', () => {
-    it('offers the model-setup providers a profile can carry, plus the OpenAI-compatible endpoint', () => {
+    it('offers the provider-step providers a profile can carry, plus the OpenAI-compatible endpoint', () => {
         expect(EXECUTOR_PROVIDERS).toEqual(['anthropic', 'openrouter', 'openai', 'litellm', 'openai-compatible']);
     });
 

@@ -1,11 +1,10 @@
-import { INTEGRATION_CATALOG, MODEL_PROVIDERS, type ExecutorType } from '@factory-ai/core';
+import { INTEGRATION_CATALOG, type ExecutorType } from '@factory-ai/core';
 import { Link } from 'react-router-dom';
 import type { ConnectionsRead } from '../api/useConnections.js';
-import type { UseModelSetup } from '../api/useModelSetup.js';
 import { trackedRepos, type UseRepos } from '../api/useRepos.js';
 import type { Session } from '../api/useSession.js';
-import type { UseWorkspace } from '../api/useWorkspace.js';
-import { PROVIDER_META } from '../model-setup/providers.js';
+import type { DefaultExecutorRead } from '../providers/default-executor.js';
+import { PROVIDER_META } from '../providers/providers.js';
 import { connectionState } from '../settings/integration-providers.js';
 import { EXECUTOR_TYPE_META } from '../workspace/executors.js';
 import { reselectHref, setupPath } from './steps.js';
@@ -27,12 +26,7 @@ type RowState = Pick<Row, 'detail' | 'lamp' | 'retry'>;
 
 const CHECKING = { detail: 'Checking…', lamp: 'idle' } as const;
 const joined = (parts: readonly (string | null | undefined)[]) => parts.filter(Boolean).join(' · ');
-const agentLabel = (type: ExecutorType | null | undefined) => (type ? EXECUTOR_TYPE_META[type].label : null);
-/** A scope's provider is a model provider, or `platform`/`existing`, which name no provider. */
-function providerLabel(provider: string | null | undefined): string | null {
-    const known = MODEL_PROVIDERS.find((entry) => entry === provider);
-    return known ? PROVIDER_META[known].label : null;
-}
+const agentLabel = (type: ExecutorType) => EXECUTOR_TYPE_META[type].label;
 
 /** An empty listing that came with GitHub's error is unknown, never "0 selected" (the composer's own reading). */
 function reposRow(read: UseRepos): RowState {
@@ -49,45 +43,36 @@ function reposRow(read: UseRepos): RowState {
     return { detail: joined([installation?.account, scope]), lamp: repos.length > 0 ? 'ok' : 'wait' };
 }
 
-/** With no key the board can see, what a task would run on instead: the default profile. */
-function withoutKeyRow(workspace: UseWorkspace): RowState {
-    if (workspace.data === null) {
-        if (workspace.error === null) return CHECKING;
-        return { detail: 'Could not check the model.', lamp: 'idle', retry: workspace.refresh };
-    }
-    return { detail: joined(['Executor profile', workspace.data.defaultExecutor?.name]), lamp: 'ok' };
+const UNREAD = { detail: 'Could not check the provider.', lamp: 'idle' } as const;
+
+/** "Not connected" only on a confirmed read that found no default executor; a failed read says so instead. */
+function providerRow(read: DefaultExecutorRead, organization: string | null): RowState {
+    if (read.state === 'loading') return CHECKING;
+    if (read.state === 'error') return { ...UNREAD, retry: read.retry };
+    if (read.state === 'none') return { detail: 'Not connected', lamp: 'wait' };
+    const { connection, scope } = read.executor;
+    if (!connection) return { detail: 'Its connection is not visible to you', lamp: 'ok' };
+    const who = scope === 'org' ? `everyone in ${organization ?? 'the organization'}` : 'only you';
+    return {
+        detail: joined([PROVIDER_META[connection.provider].label, `connection ${connection.name}`, who]),
+        lamp: 'ok',
+    };
 }
 
-/** "Not connected" only when `showNoModel` says a task could not run; a failed read says so instead. */
-function modelRow(
-    setup: UseModelSetup,
-    noModel: boolean,
-    workspace: UseWorkspace,
-    organization: string | null
-): RowState {
-    if (setup.error !== null) return { detail: 'Could not check the model.', lamp: 'idle', retry: setup.refresh };
-    const view = setup.data;
-    if (view === null) return CHECKING;
-    if (view.effective === null) return noModel ? { detail: 'Not connected', lamp: 'wait' } : withoutKeyRow(workspace);
-    if (view.effective === 'executor' && view.selected) {
-        const { selected } = view;
-        const who = selected.scope === 'org' ? `everyone in ${organization ?? 'the organization'}` : 'only you';
-        return {
-            detail: joined([
-                selected.name,
-                agentLabel(selected.agentType),
-                providerLabel(selected.connection?.provider),
-                selected.model,
-                who,
-            ]),
-            lamp: 'ok',
-        };
-    }
-    const scope = view.effective === 'executor' ? null : view[view.effective];
-    const who = view.effective === 'org' ? `everyone in ${organization ?? 'the organization'}` : 'only you';
+/** The default executor by name and model; its model is unknown to a member who cannot read an organization's configuration. */
+function executorRow(read: DefaultExecutorRead): RowState {
+    if (read.state === 'loading') return CHECKING;
+    if (read.state === 'error')
+        return { ...UNREAD, detail: 'Could not check the default executor.', retry: read.retry };
+    if (read.state === 'none') return { detail: 'None yet — tasks need a default executor', lamp: 'wait' };
+    const { executor, detail } = read;
+    const model = detail?.model;
     return {
-        detail: joined([providerLabel(scope?.provider), who]),
-        lamp: 'ok',
+        detail: joined([
+            model ? `${executor.name} — ${model}` : `${executor.name} (${agentLabel(executor.agentType)})`,
+            executor.suspended ? 'suspended' : null,
+        ]),
+        lamp: executor.suspended ? 'wait' : 'ok',
     };
 }
 
@@ -110,18 +95,14 @@ function trackerRow(read: ConnectionsRead): RowState {
 export function ReadySummary({
     session,
     repos,
-    setup,
-    noModel,
-    workspace,
+    provider,
     connections,
     returnTo,
     here,
 }: {
     session: Session | null;
     repos: UseRepos;
-    setup: UseModelSetup;
-    noModel: boolean;
-    workspace: UseWorkspace;
+    provider: DefaultExecutorRead;
     connections: ConnectionsRead;
     returnTo: string;
     here: string;
@@ -130,9 +111,14 @@ export function ReadySummary({
         { name: 'GitHub', detail: session ? `Signed in as ${session.user.login}` : 'Signed in', lamp: 'ok' },
         { name: 'Repositories', ...reposRow(repos), change: { href: reselectHref(here) } },
         {
-            name: 'Model',
-            ...modelRow(setup, noModel, workspace, session?.organization.name ?? null),
-            change: { to: setupPath('model', returnTo) },
+            name: 'Provider',
+            ...providerRow(provider, session?.organization.name ?? null),
+            change: { to: setupPath('provider', returnTo) },
+        },
+        {
+            name: 'Default executor',
+            ...executorRow(provider),
+            change: { to: setupPath('provider', returnTo) },
         },
         { name: 'Issue tracker', ...trackerRow(connections), change: { to: setupPath('tools', returnTo) } },
     ];

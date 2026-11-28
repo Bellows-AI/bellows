@@ -27,7 +27,7 @@ Manage them under **Settings → Model → Provider connections**:
 - **Show models.** Reads the connection's live models. An empty list, a provider that does not list models, and a failed read are shown differently.
 - **Remove.** Refused while an executor still selects it; the message names the executors you can see.
 
-**Connect a model** (setup, or **Settings → Model**) creates a connection and the executor that runs on it together. Creating a connection, choosing an existing one and replacing a key are different actions: choosing one or changing only the model leaves its key as it is, and **Replace the key** changes that connection in place. A name already used by another connection in the same scope is refused instead of overwriting it, so two connections for one provider never replace each other by accident.
+**Connect a provider** (setup) creates a connection and the executor that runs on it together. Creating a connection, choosing an existing one and replacing a key are different actions: choosing one or changing only the model leaves its key as it is, and **Replace the key** changes that connection in place. A name already used by another connection in the same scope is refused instead of overwriting it, so two connections for one provider never replace each other by accident.
 
 Organization connections are managed by admins and usable by every member's executors; personal connections are yours alone. A key is never shown again after it is saved. See [Executors](/guides/executors) for choosing a connection.
 

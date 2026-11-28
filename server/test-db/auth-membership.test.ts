@@ -447,21 +447,21 @@ describe.runIf(enabled)('setup state per membership (onboarding)', () => {
         // Sign-in reads the membership the same way every credential does: a new member has done nothing yet.
         expect(caller.membership.setup).toEqual(fresh);
 
-        await board.base.recordSetupStep(board.install.id, caller.user.id, 'model', 'skip');
+        await board.base.recordSetupStep(board.install.id, caller.user.id, 'provider', 'skip');
         // A second skip from another tab never duplicates the step.
-        await board.base.recordSetupStep(board.install.id, caller.user.id, 'model', 'skip');
+        await board.base.recordSetupStep(board.install.id, caller.user.id, 'provider', 'skip');
         expect((await board.base.findSession(creds.session))?.membership.setup).toEqual({
             completedAt: null,
             done: [],
-            skipped: ['model'],
+            skipped: ['provider'],
         });
 
-        await board.base.recordSetupStep(board.install.id, caller.user.id, 'model', 'done');
-        await board.base.recordSetupStep(board.install.id, caller.user.id, 'model', 'done');
+        await board.base.recordSetupStep(board.install.id, caller.user.id, 'provider', 'done');
+        await board.base.recordSetupStep(board.install.id, caller.user.id, 'provider', 'done');
         // The fat_ path reads the same columns.
         expect((await board.base.findPersonalToken(creds.token))?.membership.setup).toEqual({
             completedAt: null,
-            done: ['model'],
+            done: ['provider'],
             skipped: [],
         });
 

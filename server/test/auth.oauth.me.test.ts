@@ -166,10 +166,10 @@ describe('/api/auth/me', () => {
         // The setup rides the top level; the membership keeps its two timestamps.
         expect(Object.keys(fresh.membership).sort()).toEqual(['claimedAt', 'invitedAt']);
 
-        await auth.recordSetupStep(ORG, fresh.user.id, 'model', 'done');
+        await auth.recordSetupStep(ORG, fresh.user.id, 'provider', 'done');
         await auth.recordSetupStep(ORG, fresh.user.id, 'tools', 'skip');
         await auth.completeSetup(ORG, fresh.user.id);
-        expect((await me()).json().setup).toEqual({ completed: true, done: ['model'], skipped: ['tools'] });
+        expect((await me()).json().setup).toEqual({ completed: true, done: ['provider'], skipped: ['tools'] });
 
         const minted = await app.inject({
             method: 'POST',
@@ -182,7 +182,7 @@ describe('/api/auth/me', () => {
             url: '/api/auth/me',
             headers: { authorization: `Bearer ${minted.json().token}` },
         });
-        expect(viaToken.json().setup).toEqual({ completed: true, done: ['model'], skipped: ['tools'] });
+        expect(viaToken.json().setup).toEqual({ completed: true, done: ['provider'], skipped: ['tools'] });
     });
 
     it('reports setup completed under AUTH_MODE=none, whatever the stand-in membership holds', async () => {

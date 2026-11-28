@@ -485,6 +485,16 @@
         margin-right: auto;
     }
 
+    /* Skip for now keeps its one line beside a primary whose reason line is long; the reason wraps instead. */
+    .setup-actions .tertiary {
+        flex: none;
+        white-space: nowrap;
+    }
+
+    .setup-actions .model-primary {
+        min-width: 0;
+    }
+
     /* The issue-tracker step: one soft card per tracker (mark, name, purpose, its state and
        choice), Connect at the end; a connected card takes the ok border. */
     .setup-tools {
@@ -617,9 +627,11 @@
         margin-top: var(--space-2);
     }
 
-    /* The model step and Settings → Model (`web/src/model-setup/`): soft provider cards in a radiogroup (the
+    /* The provider step (`web/src/providers/`): soft provider cards in a radiogroup (the
        checked one takes the accent edge), the key with its Show toggle, the live check line in its lamp color, the
-       agent and model side by side, and the primary with its reason under it. */
+       agent and model side by side, and the primary with its reason under it. The step is two numbered parts
+       (`.setup-part`): the connection, then the default executor's card (`.executor-card`, dimmed and inert while
+       its `aria-disabled` waits for the key check) with its Default and scope chips. */
     .model-label {
         font-size: var(--text-sm);
         font-weight: 600;
@@ -660,7 +672,6 @@
     }
 
     .model-provider-sub,
-    .model-secret-note,
     .model-save-why {
         color: var(--ink-muted);
         font-size: var(--text-sm);
@@ -721,6 +732,75 @@
     }
 
     .model-banner-body p {
+        margin: 0;
+    }
+
+    .setup-part {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-4);
+    }
+
+    .setup-part + .setup-part {
+        border-top: 1px solid var(--line);
+        padding-top: var(--space-4);
+    }
+
+    .setup-part-head {
+        align-items: baseline;
+        display: flex;
+        gap: var(--space-2);
+    }
+
+    .setup-part-head .num {
+        color: var(--ink-muted);
+        font-size: var(--text-xs);
+        font-weight: 600;
+    }
+
+    .executor-card {
+        background: var(--surface-soft);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-xl);
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-4);
+        margin: 0;
+        min-width: 0;
+        padding: var(--space-4);
+    }
+
+    .executor-card[aria-disabled='true'] {
+        opacity: 0.55;
+    }
+
+    .executor-card-head {
+        align-items: center;
+        display: flex;
+        gap: var(--space-2);
+    }
+
+    .executor-card-head .name {
+        font-weight: 600;
+    }
+
+    .chip {
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        color: var(--ink-muted);
+        font-size: var(--text-xs);
+        padding: 0 var(--space-2);
+    }
+
+    .chip.default {
+        background: var(--accent-wash);
+        border-color: var(--accent-border);
+        color: var(--accent);
+    }
+
+    .wait-note {
+        color: var(--ink-muted);
+        font-size: var(--text-sm);
         margin: 0;
     }
 

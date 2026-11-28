@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { renderApp, stubFetch } from './dom.js';
-import { VERIFY_URL } from './model-setup-reads.js';
+import { VERIFY_URL } from './provider-fixtures.js';
 import { boardHandler, listedModels, personalExecutor, providerConnection, settingsBoard } from './settings-board.js';
 
 /**

@@ -14,7 +14,7 @@ import { type ConnectionDialogMode, ProviderConnectionDialog } from '../componen
 import { type RowAction, RowActions } from '../components/RowActions.js';
 import { ScrollRegion } from '../components/ScrollRegion.js';
 import { StateNote } from '../components/StateNote.js';
-import { PROVIDER_META } from '../model-setup/providers.js';
+import { PROVIDER_META } from '../providers/providers.js';
 
 /**
  * Settings → Model → Provider connections: the named provider keys executors can share. An organization connection is

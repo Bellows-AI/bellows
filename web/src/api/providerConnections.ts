@@ -6,7 +6,7 @@ import {
     type ProviderConnectionScope,
 } from '@factory-ai/core';
 import type { ExecutorType } from '@factory-ai/core';
-import type { VerifyAnswer } from '../model-setup/providers.js';
+import type { VerifyAnswer } from '../providers/providers.js';
 import { request } from './request.js';
 
 /**

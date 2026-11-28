@@ -1,23 +1,16 @@
-import { useModelSetup } from '../api/useModelSetup.js';
-import { useSession } from '../api/useSession.js';
+import { useProviderConnections } from '../api/useProviderConnections.js';
 import { useWorkspace } from '../api/useWorkspace.js';
-import { showNoModel } from '../onboarding/no-model.js';
 import { ReadyStep } from '../onboarding/ReadyStep.js';
 import { SetupFrame } from '../onboarding/SetupFrame.js';
+import { useDefaultExecutor } from '../providers/default-executor.js';
 
-/** The walk's closing page: "Almost set" only when `showNoModel` confirms a task could not run. */
+/** The walk's closing page. A skipped provider step is no warning here: the composer refuses a task with no executor. */
 export function OnboardingReadyPage() {
-    const setup = useModelSetup();
     const workspace = useWorkspace();
-    const { session } = useSession();
-    const noModel = showNoModel({ mode: session?.deploymentMode ?? null, modelSetup: setup, workspace });
+    const provider = useDefaultExecutor(workspace, useProviderConnections());
     return (
-        <SetupFrame
-            place="ready"
-            title={noModel ? 'Almost set' : "You're set"}
-            purpose="Describe a change and an agent opens a pull request."
-        >
-            <ReadyStep setup={setup} workspace={workspace} noModel={noModel} />
+        <SetupFrame place="ready" title="You're set" purpose="Describe a change and an agent opens a pull request.">
+            <ReadyStep provider={provider} workspace={workspace} />
         </SetupFrame>
     );
 }

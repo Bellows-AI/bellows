@@ -181,7 +181,7 @@ test('signing out returns to the gate, and the next sign-in reuses the stored ch
     await expect(screen(page)).toHaveCount(0);
 });
 
-test('first sign-in walks Repositories → Model → Tools → Ready → app; reload resumes', async ({ page }) => {
+test('first sign-in walks Repositories → Provider → Tools → Ready → app; reload resumes', async ({ page }) => {
     // A fresh account, so its memberships carry no setup answer whatever other tests recorded.
     const newcomer = { login: `newcomer-${randomInt(1e6)}`, id: 600_000_000 + randomInt(1e6) };
     await page.request.post(`${IDP}/_control/identity`, { data: newcomer });
@@ -192,15 +192,15 @@ test('first sign-in walks Repositories → Model → Tools → Ready → app; re
     await page.getByRole('button', { name: 'Continue' }).click();
 
     // The app route the sign-in returned to sends the unfinished member to the first step.
-    await expect(page).toHaveURL(/\/onboarding\/model\?returnTo=%2Ftasks$/, { timeout: 60_000 });
-    await expect(title(page, 'Connect a model')).toBeVisible();
+    await expect(page).toHaveURL(/\/onboarding\/provider\?returnTo=%2Ftasks$/, { timeout: 60_000 });
+    await expect(title(page, 'Connect a provider')).toBeVisible();
     await expect(page.locator('.public-context')).toHaveText('Setup · Step 2 of 3');
-    await expect(progress(page).locator('[aria-current="step"]')).toContainText('Model');
+    await expect(progress(page).locator('[aria-current="step"]')).toContainText('Provider');
     await page.getByRole('button', { name: 'Skip for now' }).click();
 
     await expect(page).toHaveURL(/\/onboarding\/tools\?returnTo=%2Ftasks$/);
     await expect(title(page, 'Connect your issue tracker')).toBeVisible();
-    await expect(progress(page).getByRole('listitem').filter({ hasText: 'Model' })).toContainText('–');
+    await expect(progress(page).getByRole('listitem').filter({ hasText: 'Provider' })).toContainText('–');
 
     // Reload resumes at the step: the answers are the server's, and an app route leads back to it.
     await page.reload();
@@ -226,15 +226,15 @@ test("Back to Repositories after sign-in lands in the reselect round trip and re
 }) => {
     await throughSignIn(page);
 
-    // Back from Model: the reselect round trip reopens the selection screen with a live pending sign-in.
-    await page.goto('/onboarding/model?returnTo=%2Ftasks');
+    // Back from Provider: the reselect round trip reopens the selection screen with a live pending sign-in.
+    await page.goto('/onboarding/provider?returnTo=%2Ftasks');
     await page.getByRole('link', { name: 'Back' }).click();
     // The expired state keeps the h1 but has no Continue: the button is the live screen's proof.
     await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible({ timeout: 60_000 });
     await expect(page.getByText('That sign-in expired')).toHaveCount(0);
     await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(page).toHaveURL(/\/onboarding\/model\?returnTo=%2Ftasks$/, { timeout: 60_000 });
-    await expect(title(page, 'Connect a model')).toBeVisible();
+    await expect(page).toHaveURL(/\/onboarding\/provider\?returnTo=%2Ftasks$/, { timeout: 60_000 });
+    await expect(title(page, 'Connect a provider')).toBeVisible();
 
     // The stepper's Repositories step from Tools takes the same round trip back to Tools.
     await page.goto('/onboarding/tools?returnTo=%2Ftasks');

@@ -266,6 +266,9 @@ test('Suspend keeps a personal profile but withholds Make default and the compos
 }) => {
     await asAdmin(page);
     for (const name of ['Alpha', 'Beta']) await addPersonal(page, name);
+    // No profile is the default until one is chosen: nothing falls back to the first row.
+    await expect(personalRow(page, 'Alpha').getByText('Default', { exact: true })).toHaveCount(0);
+    await personalAction(page, 'Alpha', MAKE_DEFAULT_LABEL);
     await expect(personalRow(page, 'Alpha').getByText(/Default/)).toBeVisible();
 
     await personalAction(page, 'Alpha', SUSPEND_LABEL);
@@ -275,21 +278,28 @@ test('Suspend keeps a personal profile but withholds Make default and the compos
     await expect(menu.getByRole('menuitem', { name: MAKE_DEFAULT_LABEL })).toHaveCount(0);
     await expect(menu.getByRole('menuitem', { name: RESUME_LABEL })).toBeVisible();
     await page.keyboard.press('Escape');
-    // The default falls to the first ACTIVE profile; the composer selects it and never offers Alpha.
-    await expect(personalRow(page, 'Beta').getByText(/Default/)).toBeVisible();
+    // The default never falls to another profile. The composer keeps showing the configured default, which a
+    // task is refused on until it is resumed, and never offers the suspended Alpha as a choice.
+    await expect(personalRow(page, 'Beta').getByText('Default', { exact: true })).toHaveCount(0);
     await page.goto('/tasks/new');
-    await expect(contextChip(page, 'Executor')).toHaveText('Beta');
+    await contextChip(page, 'Executor').click();
+    await expect(page.getByRole('option', { name: 'Beta' })).toBeVisible();
+    await expect(page.getByRole('option', { name: 'Alpha' })).toHaveCount(0);
+    await page.keyboard.press('Escape');
 
     // Persists across a reload, configuration and row intact.
     await page.goto('/settings/executors');
     await expect(personalRow(page, 'Alpha').getByText(SUSPENDED_LABEL)).toBeVisible();
     await expect(personalRow(page, 'Alpha').getByRole('button', { name: 'Edit' })).toBeVisible();
 
-    // Resumed, the stored preference (Alpha, by position) is restored.
+    // Resumed, the stored preference (Alpha) is restored.
     await personalAction(page, 'Alpha', RESUME_LABEL);
     await expect(personalRow(page, 'Alpha').getByText(SUSPENDED_LABEL)).toHaveCount(0);
     await expect(personalRow(page, 'Alpha').getByText(/Default/)).toBeVisible();
 
+    // The default cannot be removed: clear it through the API, then both go.
+    expect((await page.request.delete('/api/workspace/executors/default')).ok()).toBe(true);
+    await page.reload();
     for (const name of ['Alpha', 'Beta']) await removePersonal(page, name);
 });
 

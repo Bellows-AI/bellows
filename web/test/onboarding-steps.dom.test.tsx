@@ -33,25 +33,25 @@ const at = (router: ReturnType<typeof renderApp>['router']) =>
 const settle = () => act(() => new Promise((resolve) => setTimeout(resolve, 30)));
 
 describe('the first-sign-in redirect', () => {
-    it('sends an unfinished member from an app route to the model step, carrying the path', async () => {
+    it('sends an unfinished member from an app route to the provider step, carrying the path', async () => {
         board(() => open());
         const { router } = renderApp('/tasks');
-        await waitFor(() => expect(at(router)).toBe('/onboarding/model?returnTo=%2Ftasks'));
+        await waitFor(() => expect(at(router)).toBe('/onboarding/provider?returnTo=%2Ftasks'));
     });
 
-    it('sends the single-installation callback landing on / to the model step too', async () => {
+    it('sends the single-installation callback landing on / to the provider step too', async () => {
         board(() => open());
         const { router } = renderApp('/');
-        await waitFor(() => expect(at(router)).toBe('/onboarding/model?returnTo=%2F'));
+        await waitFor(() => expect(at(router)).toBe('/onboarding/provider?returnTo=%2F'));
     });
 
     it('resumes at the first open step', async () => {
-        board(() => open({ skipped: ['model'] }));
+        board(() => open({ skipped: ['provider'] }));
         const tools = renderApp('/tasks');
         await waitFor(() => expect(at(tools.router)).toBe('/onboarding/tools?returnTo=%2Ftasks'));
         tools.unmount();
 
-        board(() => open({ done: ['model'], skipped: ['tools'] }));
+        board(() => open({ done: ['provider'], skipped: ['tools'] }));
         const ready = renderApp('/settings');
         await waitFor(() => expect(at(ready.router)).toBe('/onboarding/ready?returnTo=%2Fsettings'));
     });
@@ -115,7 +115,7 @@ describe('the placeholder steps', () => {
         const calls = stubFetch((call) => {
             if (call.url === '/api/onboarding/setup' && call.method === 'POST') {
                 posted = true;
-                setup = open({ skipped: ['model'] });
+                setup = open({ skipped: ['provider'] });
                 return { status: 204 };
             }
             if (call.url === '/api/auth/me') {
@@ -124,15 +124,15 @@ describe('the placeholder steps', () => {
             }
         });
         const user = userEvent.setup();
-        const { router } = renderApp('/onboarding/model?returnTo=%2Ftasks');
+        const { router } = renderApp('/onboarding/provider?returnTo=%2Ftasks');
 
-        expect(screen.getByRole('heading', { level: 1, name: 'Connect a model' })).toBeTruthy();
+        expect(screen.getByRole('heading', { level: 1, name: 'Connect a provider' })).toBeTruthy();
         await user.click(await screen.findByRole('button', { name: 'Skip for now' }));
         await waitFor(() => expect(calls.filter((c) => c.url === '/api/auth/me').length).toBeGreaterThan(1));
-        expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ step: 'model', action: 'skip' });
+        expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ step: 'provider', action: 'skip' });
         // The re-read is still in flight: the stale `completed: false` must not move the page yet.
         await settle();
-        expect(at(router)).toBe('/onboarding/model?returnTo=%2Ftasks');
+        expect(at(router)).toBe('/onboarding/provider?returnTo=%2Ftasks');
 
         reread.release();
         await waitFor(() => expect(at(router)).toBe('/onboarding/tools?returnTo=%2Ftasks'));
@@ -158,25 +158,25 @@ describe('the placeholder steps', () => {
         expect(at(router)).toBe('/onboarding/tools?returnTo=%2F');
     });
 
-    it('Back from Model is the reselect round trip back to this step', async () => {
+    it('Back from Provider is the reselect round trip back to this step', async () => {
         board(() => open());
-        renderApp('/onboarding/model?returnTo=%2Ftasks');
+        renderApp('/onboarding/provider?returnTo=%2Ftasks');
         const back = await screen.findByRole('link', { name: 'Back' });
         expect(back.getAttribute('href')).toBe(
-            '/api/auth/github?reselect=1&returnTo=%2Fonboarding%2Fmodel%3FreturnTo%3D%252Ftasks'
+            '/api/auth/github?reselect=1&returnTo=%2Fonboarding%2Fprovider%3FreturnTo%3D%252Ftasks'
         );
     });
 
-    it('Back from Tools goes to Model, keeping the return path', async () => {
-        board(() => open({ skipped: ['model'] }));
+    it('Back from Tools goes to Provider, keeping the return path', async () => {
+        board(() => open({ skipped: ['provider'] }));
         const user = userEvent.setup();
         const { router } = renderApp('/onboarding/tools?returnTo=%2Ftasks');
         await user.click(await screen.findByRole('link', { name: 'Back' }));
-        await waitFor(() => expect(at(router)).toBe('/onboarding/model?returnTo=%2Ftasks'));
+        await waitFor(() => expect(at(router)).toBe('/onboarding/provider?returnTo=%2Ftasks'));
     });
 
     it('Ready completes setup, re-reads /me, then returns to the carried path', async () => {
-        let setup = open({ skipped: ['model', 'tools'] });
+        let setup = open({ skipped: ['provider', 'tools'] });
         const reread = held();
         let completed = false;
         const calls = stubFetch((call) => {

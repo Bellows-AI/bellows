@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { ConsoleMessage, Page } from '@playwright/test';
 import { ADD_LABEL } from '../web/src/workspace/executors.js';
-import { shellSettled } from './page-health.js';
 import {
     addExecutorViaDialog,
     contextChip,
@@ -117,7 +116,6 @@ test.describe('the guided task composer', () => {
         await expect(prompt(page)).toHaveValue('one\n');
         await expect(page).toHaveURL(/\/tasks\/new/);
         await expect(page.locator('.chat-input')).toBeVisible();
-        await shellSettled(page);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         await page.screenshot({ path: `${SHOTS}/composer-390.png`, fullPage: true });
     });

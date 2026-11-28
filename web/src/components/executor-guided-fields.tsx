@@ -1,8 +1,8 @@
 import type { ExecutorProvider, ExecutorType } from '@factory-ai/core';
-import { KeyField } from '../model-setup/KeyField.js';
-import { ProviderCards, type ProviderCard } from '../model-setup/ProviderCards.js';
-import type { ProviderMeta } from '../model-setup/providers.js';
-import type { KeyCheck } from '../model-setup/useKeyCheck.js';
+import { KeyField } from '../providers/KeyField.js';
+import { ProviderCards, type ProviderCard } from '../providers/ProviderCards.js';
+import type { ProviderMeta } from '../providers/providers.js';
+import type { KeyCheck } from '../providers/useKeyCheck.js';
 import { FieldError } from './executor-dialog-parts.js';
 import { EXECUTOR_TYPE_META } from '../workspace/executors.js';
 import {
@@ -13,7 +13,7 @@ import {
 } from '../workspace/executor-guided.js';
 
 /** The key step: on the member's own endpoint, paste-or-name-a-secret; on a catalog provider, the
- * model step's key field with the live check, and the note that says what an empty field means. */
+ * provider step's key field with the live check, and the note that says what an empty field means. */
 function GuidedKeySource({
     ids,
     provider,
@@ -96,8 +96,8 @@ function GuidedKeySource({
 }
 
 /**
- * The guided provider step, the fields of onboarding's Connect a model over an executor
- * profile: the provider cards the model step renders, its key field with the live check, the base
+ * The guided provider step, the fields of onboarding's Connect a provider over an executor
+ * profile: the provider cards the provider step renders, its key field with the live check, the base
  * URL, and the model. Picking a provider writes the generated configuration the Advanced editor
  * shows; removing the provider settings puts back what a pick started from. Presentational only —
  * ExecutorDialog owns the choice, the check and the configuration text.

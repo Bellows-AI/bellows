@@ -21,7 +21,7 @@ import {
 } from './routes.js';
 import { MATRIX_VIEWPORTS, THEMES, type Theme } from './screenshot-matrix.js';
 import { controlsOutsideViewport, NAMED_SCROLL_REGIONS, pageOverflow } from './viewport.js';
-import { shellSettled, useTheme } from './page-health.js';
+import { useTheme } from './page-health.js';
 
 /**
  * The responsive and accessibility matrix (issue 287, plan §8): every route family × the
@@ -114,7 +114,6 @@ async function openSettled(page: Page, shot: Shot, theme: Theme): Promise<void> 
     const ready = await shot.open(page);
     await expect(ready).toBeVisible(SETTLED);
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-    await shellSettled(page);
     await page.evaluate(() => document.fonts.ready);
 }
 

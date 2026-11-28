@@ -1,7 +1,7 @@
 import type { Sql } from 'postgres';
 
-/** The optional onboarding steps a member completes or skips (156_membership_setup.sql checks the same set). */
-export const SETUP_STEPS = ['model', 'tools'] as const;
+/** The optional onboarding steps a member completes or skips (177_onboarding_provider_step.sql checks the same set). */
+export const SETUP_STEPS = ['provider', 'tools'] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
 export const SETUP_ACTIONS = ['done', 'skip'] as const;
 export type SetupAction = (typeof SETUP_ACTIONS)[number];

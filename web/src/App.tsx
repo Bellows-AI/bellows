@@ -10,7 +10,7 @@ import { DashboardPage } from './pages/DashboardPage.js';
 import { UPLOAD_PAGE_ROUTE } from './upload-route.js';
 import { AttachmentUploadPage } from './pages/AttachmentUploadPage.js';
 import { OAuthConsentPage } from './pages/OAuthConsentPage.js';
-import { OnboardingModelPage } from './pages/OnboardingModelPage.js';
+import { OnboardingProviderPage } from './pages/OnboardingProviderPage.js';
 import { OnboardingPage } from './pages/OnboardingPage.js';
 import { OnboardingReadyPage } from './pages/OnboardingReadyPage.js';
 import { OnboardingToolsPage } from './pages/OnboardingToolsPage.js';
@@ -60,7 +60,7 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
         <Route path="onboarding" element={<OnboardingPage />} />
         {/* The setup steps after sign-in: signed in (the gate holds them), outside the
             shell like the selection screen they continue. */}
-        <Route path="onboarding/model" element={<OnboardingModelPage />} />
+        <Route path="onboarding/provider" element={<OnboardingProviderPage />} />
         <Route path="onboarding/tools" element={<OnboardingToolsPage />} />
         <Route path="onboarding/ready" element={<OnboardingReadyPage />} />
         {/* The MCP consent screen: signed-in only (the gate holds it), and outside the shell,

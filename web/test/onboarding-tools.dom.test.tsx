@@ -40,7 +40,7 @@ interface Replies {
 /** The step's board: an unfinished member, the two reads, the authorization start and the setup writes. */
 function board({ configured = { jira: true }, connections = [] }: Replies = {}) {
     const state = { configured, connections };
-    const setup: Session['setup'] = { completed: false, done: ['model'], skipped: [] };
+    const setup: Session['setup'] = { completed: false, done: ['provider'], skipped: [] };
     const calls = stubFetch((call: FetchCall) => {
         const { method, url } = call;
         if (url === '/api/auth/me') return memberSession({ setup });
