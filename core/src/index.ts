@@ -241,9 +241,8 @@ export {
 } from './deployment-mode.js';
 export type { ErrorCode } from './error-codes.js';
 export { ERROR_CODES } from './error-codes.js';
-export type { AgentProvider, ConnectionCredential, ModelProvider } from './model-providers.js';
+export type { ConnectionCredential, ModelProvider } from './model-providers.js';
 export {
-    AGENT_PROVIDERS,
     applyConnectionLayer,
     CLAUDE_CODE_CREDENTIAL_NAMES,
     claimCredentialEnv,
@@ -252,7 +251,6 @@ export {
     currentProvider,
     hasModelKey,
     inferProvider,
-    isAgentProvider,
     isModelProvider,
     missingProviderSecretMessage,
     MODEL_PROVIDERS,
@@ -262,7 +260,6 @@ export {
     normalizeModelId,
     OPENROUTER_ANTHROPIC_BASE_URL,
     openRouterClaudeWiring,
-    PLATFORM_PROVIDER,
     PROVIDER_AGENTS,
     PROVIDER_BASE_URL_ENV,
     PROVIDER_ENV,

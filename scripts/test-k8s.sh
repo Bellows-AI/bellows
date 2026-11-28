@@ -920,12 +920,6 @@ expect_contains 'the deployment mode defaults to self-hosted' "$(grep -A1 'name:
     'value: "self-hosted"'
 refuses 'an unknown deployment mode is refused' 'deploymentMode must be self-hosted or cloud' \
     "${GH_SETS[@]}" --set deploymentMode=saas
-# The operator-supplied model: off by default, rendered as the board's PLATFORM_MODEL_PROVIDED.
-expect_contains 'the platform model defaults to off' "$(grep -A1 'name: PLATFORM_MODEL_PROVIDED$' <<<"$mcp_off")" \
-    'value: "false"'
-platform_on="$(gh_render --set platformModelProvided=true)"
-expect_contains 'platformModelProvided renders PLATFORM_MODEL_PROVIDED' \
-    "$(grep -A1 'name: PLATFORM_MODEL_PROVIDED$' <<<"$platform_on")" 'value: "true"'
 # Cloud also refuses to render with an empty admission cap or Free plan limit: no cloud org is unlimited.
 CLOUD_SETS=(--set deploymentMode=cloud
     --set-string dashboard.admission.maxRunning=20 --set-string dashboard.admission.maxRunningPerOrg=4

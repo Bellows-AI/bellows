@@ -211,12 +211,6 @@ export interface AppConfig {
      */
     readonly cloudSubscriptionOrgIds: ReadonlySet<string>;
     /**
-     * PLATFORM_MODEL_PROVIDED: the operator supplies the model credential in the runner env, so a member may run on
-     * it without bringing a key (`PUT /api/model-setup` with `provider: 'platform'`). Off by default. It only
-     * describes the runner env; the driver's passthrough does not change.
-     */
-    readonly platformModelProvided: boolean;
-    /**
      * The board operator (OPERATOR_GITHUB_IDS): the GitHub user ids that may list, suspend, refuse and reactivate
      * every organization (`routes/operator.ts`). Empty is nobody; cloud mode only, since only cloud reads a status.
      */
@@ -754,7 +748,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         runnerClasses: loadRunnerClassOptions(env.RUNNER_CLASSES),
         deploymentMode,
         cloudSubscriptionOrgIds: loadCloudSubscriptionOrgIds(env.CLOUD_SUBSCRIPTION_ORG_IDS, deploymentMode),
-        platformModelProvided: bool(env.PLATFORM_MODEL_PROVIDED, false, 'PLATFORM_MODEL_PROVIDED'),
         operatorGithubIds: loadOperatorGithubIds(env.OPERATOR_GITHUB_IDS, deploymentMode),
         driverCredentialBootstrap: loadDriverCredentialBootstrap(env.DRIVER_CREDENTIAL_SHA256),
         mcp: loadMcpConfig(

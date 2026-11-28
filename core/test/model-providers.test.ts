@@ -2,14 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { CLOUD, DEPLOYMENT_MODES, SELF_HOSTED } from '../src/deployment-mode.js';
 import { CLAUDE_CODE, OPENCODE } from '../src/executors.js';
 import {
-    AGENT_PROVIDERS,
     CLAUDE_CODE_CREDENTIAL_NAMES,
     claimCredentialEnv,
     claudeCodeCredentialScope,
     currentProvider,
     hasModelKey,
     inferProvider,
-    isAgentProvider,
     isModelProvider,
     MODEL_PROVIDERS,
     modelKeyRequired,
@@ -17,7 +15,6 @@ import {
     normalizeModelId,
     OPENROUTER_ANTHROPIC_BASE_URL,
     openRouterClaudeWiring,
-    PLATFORM_PROVIDER,
     PROVIDER_AGENTS,
     PROVIDER_BASE_URL_ENV,
     PROVIDER_ENV,
@@ -77,13 +74,6 @@ describe('provider env, agents and availability', () => {
             for (const allowed of [true, false]) expect(providerAvailable(provider, allowed)).toBe(true);
         }
     });
-
-    it('records the key providers plus the platform', () => {
-        expect(AGENT_PROVIDERS).toEqual([...MODEL_PROVIDERS, PLATFORM_PROVIDER]);
-        expect(PLATFORM_PROVIDER).toBe('platform');
-        expect(isAgentProvider('platform')).toBe(true);
-        expect(isAgentProvider('existing')).toBe(false);
-    });
 });
 
 describe('inferProvider', () => {
@@ -99,21 +89,14 @@ describe('inferProvider', () => {
 });
 
 describe('currentProvider', () => {
-    it('trusts the recorded provider only while its credential names are in the scope', () => {
-        expect(currentProvider(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'], 'anthropic')).toBe('anthropic');
-        expect(currentProvider(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'], 'litellm')).toBe('litellm');
-        expect(currentProvider(['ANTHROPIC_API_KEY'], 'litellm')).toBe('anthropic');
-        // The key was replaced by hand: the names win over the record.
-        expect(currentProvider(['OPENAI_API_KEY'], 'anthropic')).toBe('openai');
-        expect(currentProvider([], 'anthropic')).toBeNull();
-        expect(currentProvider(['OPENROUTER_API_KEY'], 'platform')).toBe('openrouter');
-        expect(currentProvider(['OPENROUTER_API_KEY'], undefined)).toBe('openrouter');
-    });
-
-    it('infers in provider order when nothing is recorded', () => {
-        expect(currentProvider(['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'], undefined)).toBe('anthropic');
-        expect(currentProvider(['OPENAI_API_KEY', 'OPENROUTER_API_KEY'], undefined)).toBe('openrouter');
-        expect(currentProvider(['CLAUDE_CODE_OAUTH_TOKEN', 'OPENAI_API_KEY'], undefined)).toBe('openai');
+    it('reads the provider from the names a scope holds, in provider order', () => {
+        expect(currentProvider(['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'])).toBe('litellm');
+        expect(currentProvider(['ANTHROPIC_API_KEY'])).toBe('anthropic');
+        expect(currentProvider(['OPENROUTER_API_KEY'])).toBe('openrouter');
+        expect(currentProvider([])).toBeNull();
+        expect(currentProvider(['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'])).toBe('anthropic');
+        expect(currentProvider(['OPENAI_API_KEY', 'OPENROUTER_API_KEY'])).toBe('openrouter');
+        expect(currentProvider(['CLAUDE_CODE_OAUTH_TOKEN', 'OPENAI_API_KEY'])).toBe('openai');
     });
 });
 
@@ -172,7 +155,6 @@ describe('normalizeModelId', () => {
         expect(normalizeModelId('openrouter', CLAUDE_CODE, 'anthropic/claude-sonnet-4.5')).toBe(
             'anthropic/claude-sonnet-4.5'
         );
-        expect(normalizeModelId('platform', OPENCODE, 'big-pickle')).toBe('big-pickle');
     });
 });
 

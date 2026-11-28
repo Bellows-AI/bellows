@@ -19,16 +19,6 @@ export type ModelProvider = (typeof MODEL_PROVIDERS)[number];
 export const isModelProvider = (value: unknown): value is ModelProvider =>
     typeof value === 'string' && (MODEL_PROVIDERS as readonly string[]).includes(value);
 
-/** The model the deployment's operator supplies (`PLATFORM_MODEL_PROVIDED`): an agent default with no member key. */
-export const PLATFORM_PROVIDER = 'platform';
-
-/** What an agent default records as its source (158_agent_default_provider.sql): a key provider or the platform. */
-export const AGENT_PROVIDERS = [...MODEL_PROVIDERS, PLATFORM_PROVIDER] as const;
-export type AgentProvider = (typeof AGENT_PROVIDERS)[number];
-
-export const isAgentProvider = (value: unknown): value is AgentProvider =>
-    typeof value === 'string' && (AGENT_PROVIDERS as readonly string[]).includes(value);
-
 /** The secret each provider's key is stored under. LiteLLM is a proxy Claude Code reaches as Anthropic. */
 export const PROVIDER_ENV: Readonly<Record<ModelProvider, string>> = {
     anthropic: 'ANTHROPIC_API_KEY',
@@ -83,18 +73,8 @@ export function inferProvider(names: readonly string[]): ModelProvider | null {
     return null;
 }
 
-/** The names a provider's setup cannot run without: its key, and LiteLLM's required base URL. */
-const requiredNames = (provider: ModelProvider): string[] =>
-    provider === 'litellm' ? providerEnvNames(provider) : [PROVIDER_ENV[provider]];
-
-/**
- * The key provider a scope holds now: the recorded one while its credential names are all in the scope (it tells
- * Anthropic behind a base URL from LiteLLM), else the one the names point to. A key replaced by hand outranks the
- * record.
- */
-export function currentProvider(names: readonly string[], recorded?: AgentProvider | null): ModelProvider | null {
-    const has = new Set(names);
-    if (isModelProvider(recorded) && requiredNames(recorded).every((name) => has.has(name))) return recorded;
+/** The key provider a scope holds now: the one its credential names point to. */
+export function currentProvider(names: readonly string[]): ModelProvider | null {
     return inferProvider(names);
 }
 
@@ -147,10 +127,10 @@ const OPENCODE_PREFIX: Readonly<Record<ModelProvider, string | null>> = {
 
 /**
  * The model id an agent default stores: OpenCode names a model `<provider>/<model>`, so a bare or foreign id gains the
- * provider's prefix once. Claude Code's id, and any id on the platform's model, is kept as given.
+ * provider's prefix once. Claude Code's id is kept as given.
  */
-export function normalizeModelId(provider: AgentProvider, agentType: ExecutorType, model: string): string {
-    if (agentType !== OPENCODE || provider === PLATFORM_PROVIDER) return model;
+export function normalizeModelId(provider: ModelProvider, agentType: ExecutorType, model: string): string {
+    if (agentType !== OPENCODE) return model;
     const prefix = OPENCODE_PREFIX[provider];
     if (prefix === null || model.startsWith(`${prefix}/`)) return model;
     return `${prefix}/${model}`;
