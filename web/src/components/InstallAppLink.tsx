@@ -8,7 +8,7 @@
  */
 export function InstallAppLink({ returnTo }: { returnTo: string }) {
     return (
-        <p className="muted install-app">
+        <p className="muted">
             Only organizations with the App installed are listed.{' '}
             <a href={`/api/auth/github/install?returnTo=${encodeURIComponent(returnTo)}`}>
                 Install the App on another organization
