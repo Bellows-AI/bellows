@@ -69,9 +69,14 @@ const editButton = async (name: string) =>
     ).getByRole<HTMLButtonElement>('button', { name: 'Edit' });
 
 const CONN = providerConnection('Team key', { scope: 'org', provider: 'anthropic' });
+const ENDPOINT_CONN = providerConnection('Gateway', {
+    scope: 'org',
+    provider: 'openai-compatible',
+    baseUrl: 'http://127.0.0.1:9/v1',
+});
 /** A board holding the one connection every executor in these flows runs on. */
 const connectedBoard = (overrides: Parameters<typeof settingsBoard>[0] = {}) =>
-    settingsBoard({ providerConnections: [CONN], ...overrides });
+    settingsBoard({ providerConnections: [CONN, ENDPOINT_CONN], ...overrides });
 
 async function openAdd(user: ReturnType<typeof userEvent.setup>) {
     await user.click(await screen.findByRole('button', { name: ADD_LABEL }));
@@ -436,12 +441,12 @@ describe('the executor dialog: the guided provider step', () => {
         });
 
         await user.type(field('Name'), 'gateway');
-        await chooseConnection(user, CONN.id);
+        await chooseConnection(user, ENDPOINT_CONN.id);
         await user.click(button(ADD_LABEL));
         await dialogGone();
         const saved = board.executors.find((executor) => executor.name === 'gateway');
-        // The chosen connection's provider prefixes the model the way the server accepts it; the rest is as generated.
-        expect(saved?.config).toEqual({ ...generated, model: expect.stringContaining(generated.model) });
+        // The custom endpoint connection prefixes the model the way the server accepts it; the rest is as generated.
+        expect(saved?.config).toEqual({ ...generated, model: `custom/${generated.model}` });
         expect(JSON.stringify(saved?.config)).not.toContain('GATEWAY_KEY_VALUE');
     });
 

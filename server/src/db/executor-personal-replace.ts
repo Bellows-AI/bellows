@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
     assertConnectionSelection,
     ExecutorConnectionRefusedError,
+    MIGRATION_PENDING_MESSAGE,
     MISSING_CONNECTION_MESSAGE,
     modelOf,
 } from './executor-connection-selection.js';
@@ -40,6 +41,7 @@ interface PreviousRow {
     secret_refs: StoredCredential[];
     provider_connection_id: string | null;
     provider_migration_reason: string | null;
+    provider_migration_pending: boolean;
     config: unknown;
 }
 
@@ -73,15 +75,17 @@ function matchPersonalRows(
     return matched;
 }
 
-/** Whether an entry with no connection only carries back the migration-suspended row it names: same config, still suspended. */
-function carriesMigrationSuspension(row: PreviousRow | undefined, executor: PersonalExecutorEntry): boolean {
+/**
+ * Whether an entry with no connection only carries back the row it names: a migration-suspended row (a reason, still
+ * suspended) or one the migration has not reached (pending), same config, its suspension untouched.
+ */
+function carriesMigrationRow(row: PreviousRow | undefined, executor: PersonalExecutorEntry): boolean {
     return (
         row !== undefined &&
         executor.id === row.id &&
         row.provider_connection_id === null &&
-        row.provider_migration_reason !== null &&
-        row.suspended &&
-        executor.suspended !== false &&
+        (row.provider_migration_pending || (row.provider_migration_reason !== null && row.suspended)) &&
+        (executor.suspended ?? row.suspended) === row.suspended &&
         isDeepStrictEqual(row.config, executor.config)
     );
 }
@@ -99,8 +103,12 @@ async function assertSelections(
     for (const [index, executor] of executors.entries()) {
         const connectionId = executor.providerConnectionId;
         if (connectionId === null) {
-            if (!carriesMigrationSuspension(matched[index], executor)) {
-                throw new ExecutorConnectionRefusedError('missing', MISSING_CONNECTION_MESSAGE);
+            if (!carriesMigrationRow(matched[index], executor)) {
+                const pending = matched[index]?.provider_migration_pending;
+                throw new ExecutorConnectionRefusedError(
+                    'missing',
+                    pending ? MIGRATION_PENDING_MESSAGE : MISSING_CONNECTION_MESSAGE
+                );
             }
             continue;
         }
@@ -130,7 +138,8 @@ export async function replacePersonalRows(
     // Read before the write: an entry that does not say otherwise keeps the suspension and connection of the row it
     // survives as (issue 440), and a stored credential sent back as its marker stays stored.
     const previous = await tx<PreviousRow[]>`
-        select id, name, suspended, secret_refs, provider_connection_id, provider_migration_reason, config
+        select id, name, suspended, secret_refs, provider_connection_id, provider_migration_reason,
+            provider_migration_pending, config
         from executor_profile
         where org_id = ${orgId} and user_id = ${userId}
         for update
@@ -167,7 +176,7 @@ export async function replacePersonalRows(
             suspended: executor.suspended ?? row?.suspended ?? false,
             provider_connection_id: executor.providerConnectionId,
             provider_migration_reason: executor.providerConnectionId === null ? row!.provider_migration_reason : null,
-            provider_migration_pending: false,
+            provider_migration_pending: executor.providerConnectionId === null && row!.provider_migration_pending,
         };
         if (row) {
             await tx`

@@ -15,7 +15,7 @@ import {
     samePath,
     varsFor,
 } from './executor-provider-plan.js';
-import { resolveConnectionInput } from './executor-provider-resolve.js';
+import { isInconclusiveFault, resolveConnectionInput } from './executor-provider-resolve.js';
 import { waitAdvisoryXactLock } from './pool.js';
 import {
     mintConnectionSecret,
@@ -41,8 +41,8 @@ import {
 
 const LOCK_KEY = 'executor-provider-migration';
 export const EXECUTOR_PROVIDER_MIGRATION_INTERVAL_MS = 600_000;
-/** The class of every integrity violation (a check, a unique or a foreign key): confirmed, never transient. */
-const INTEGRITY_VIOLATION_CLASS = '23';
+/** A check violation is a confirmed answer; a foreign key or unique one is a race (a reused connection deleted, a name taken) a retry clears. */
+const CHECK_VIOLATION = '23514';
 
 export interface ExecutorProviderMigrationDeps {
     /** The cross-org pool: the step reads every organization's pending rows. */
@@ -121,9 +121,11 @@ async function findSharedConnection(
             ref: candidate.secret_ref,
             version: candidate.secret_version,
         }).catch((error: unknown) => {
-            throw error instanceof EnvSecretError ? new InconclusiveRead(error.message) : error;
+            // A confirmed fault on another connection's secret says nothing about this key: skip that candidate.
+            if (!(error instanceof EnvSecretError)) throw error;
+            if (isInconclusiveFault(error)) throw new InconclusiveRead(error.message);
         });
-        if (held === key) return candidate.id;
+        if (held !== undefined && held === key) return candidate.id;
     }
     return undefined;
 }
@@ -214,9 +216,8 @@ async function convertRow(
                 'the scope holds the most provider connections allowed; remove one and choose a connection'
             );
         }
-        if ((error as { code?: string }).code?.startsWith(INTEGRITY_VIOLATION_CLASS)) {
-            const constraint = (error as { constraint_name?: string }).constraint_name ?? 'a constraint';
-            return suspendRow(deps.sql, orgId, row, `the connection could not be stored (${constraint})`);
+        if ((error as { code?: string }).code === CHECK_VIOLATION) {
+            return suspendRow(deps.sql, orgId, row, 'the connection could not be stored: a value failed its checks');
         }
         throw error;
     }
@@ -331,16 +332,22 @@ export async function migrateExecutorProviders(
     return result;
 }
 
-/** The boot step: a pass now and on an interval, until none is pending (an unconfirmed read is retried). */
-export function startExecutorProviderMigration(deps: Omit<ExecutorProviderMigrationDeps, 'signal'>) {
+/**
+ * The boot step: a pass now and on an interval, until none is pending (a busy pass or an unconfirmed read is retried).
+ * `pass` and `intervalMs` are the tests' seams.
+ */
+export function startExecutorProviderMigration(
+    deps: Omit<ExecutorProviderMigrationDeps, 'signal'>,
+    { pass = migrateExecutorProviders, intervalMs = EXECUTOR_PROVIDER_MIGRATION_INTERVAL_MS } = {}
+) {
     let stop: (() => Promise<void>) | undefined;
     stop = startIntervalLoop(
         'executor-provider-migration',
         async (signal) => {
-            const result = await migrateExecutorProviders({ ...deps, signal });
+            const result = await pass({ ...deps, signal });
             if (!result.busy && result.remaining === 0) void stop?.();
         },
-        EXECUTOR_PROVIDER_MIGRATION_INTERVAL_MS
+        intervalMs
     );
     return () => stop!();
 }

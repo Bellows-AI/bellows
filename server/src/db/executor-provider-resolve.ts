@@ -29,8 +29,15 @@ import {
 /** What a row's resolution answers: the connection's inputs, or why the executor is suspended. */
 export type Resolved = { key: string; baseUrl: string | null } | { suspend: string };
 
-/** The row faults of a secret read (`EnvSecretError`) that no retry clears. */
-const CONFIRMED_FAULTS: ReadonlySet<string> = new Set(['malformed-row', 'version-mismatch', 'invalid-encoding']);
+/**
+ * The only secret store answers a retry can clear: the store being unreachable, an outcome it could not confirm, and an
+ * operator's misconfiguration. Every other code (`not-found`, `identity-mismatch`, `integrity-failure`, a row fault) is
+ * a confirmed answer about this secret.
+ */
+const RETRYABLE_CODES: ReadonlySet<string> = new Set(['unavailable', 'outcome-unknown', 'invalid-configuration']);
+
+/** Whether a failed read says nothing about the secret itself: the row stays pending and the next pass retries it. */
+export const isInconclusiveFault = (error: EnvSecretError): boolean => RETRYABLE_CODES.has(error.code);
 
 export interface ResolveContext {
     secrets: SecretStore;
@@ -45,8 +52,8 @@ type Read = { value: string } | { suspend: string };
 /** A confirmed row fault is a suspension; any other failed or timed-out read is inconclusive. */
 function judgeFault(error: unknown): Read {
     if (!(error instanceof EnvSecretError)) throw error;
-    if (CONFIRMED_FAULTS.has(error.code)) return { suspend: `the stored key cannot be read (${error.code})` };
-    throw new InconclusiveRead(error.message);
+    if (isInconclusiveFault(error)) throw new InconclusiveRead(error.message);
+    return { suspend: `the stored key cannot be read (${error.code})` };
 }
 
 /** The executor's own stored credential at `path`. */
@@ -107,6 +114,10 @@ async function readBase(
     if (raw === null) return { value: null };
     const reference = ENV_SUBSTITUTION.exec(raw);
     if (!reference) return { value: raw };
+    // The column members list is never a secret: an endpoint kept as a secret variable is not copied into it.
+    if (findVar(context.vars, reference[1]!)?.row.is_secret) {
+        return { suspend: 'the endpoint is stored as a secret variable; set a plain endpoint' };
+    }
     return readValue(context, { kind: 'variable', name: reference[1]! });
 }
 

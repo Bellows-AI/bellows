@@ -117,14 +117,19 @@ export async function lockOrgRowForUpdate(
             config: Record<string, unknown>;
             secret_refs: StoredCredential[];
             provider_connection_id: string | null;
+            pending: boolean;
         }[]
     >`
-        select type, config, secret_refs, provider_connection_id from executor_profile
+        select type, config, secret_refs, provider_connection_id, provider_migration_pending as pending
+        from executor_profile
         where org_id = ${orgId} and id = ${id} and user_id is null
         for update
     `;
     if (!previous) return null;
     const connectionId = patch.providerConnectionId ?? previous.provider_connection_id;
+    if (connectionId === null && previous.pending) {
+        throw new ExecutorConnectionRefusedError('missing', MIGRATION_PENDING_MESSAGE);
+    }
     await assertConnectionSelection(tx, orgId, {
         owner: null,
         connectionId,

@@ -11,7 +11,8 @@
 alter table executor_profile add column if not exists provider_migration_reason text;
 alter table executor_profile add column if not exists provider_migration_pending boolean not null default false;
 
-update executor_profile set provider_migration_pending = true where provider_connection_id is null;
+update executor_profile set provider_migration_pending = true
+where provider_connection_id is null and provider_migration_reason is null;
 
 alter table executor_profile drop constraint if exists executor_profile_provider_required_ck;
 alter table executor_profile add constraint executor_profile_provider_required_ck

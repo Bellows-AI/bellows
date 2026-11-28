@@ -5,7 +5,7 @@ import { mintCredentials, sealAll } from '../src/db/executor-credentials.js';
 import { migrateExecutorProviders } from '../src/db/executor-provider-migration.js';
 import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
-import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-selection.js';
+import { ExecutorConnectionRefusedError, MIGRATION_PENDING_MESSAGE } from '../src/db/executor-connection-selection.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { faultySecrets, seedEncryptedRow, spySecrets, testSecretStore } from './env-secrets-harness.js';
 import { testConnection, testOrg, testUser } from './fixtures.js';
@@ -487,14 +487,40 @@ describe.skipIf(!enabled)('rows the step has not reached, and rows it suspended,
         expect((await rows()).made).toMatchObject({ provider_migration_pending: true, provider_connection_id: null });
     });
 
-    it('answers a suspend, a resume or an edit without a connection on a pending row with a refusal, not a 500', async () => {
+    it('answers a suspend, a resume or an edit without a connection on a pending row with the pending message', async () => {
         const ids = await seedLegacy([{ name: 'pending', type: 'claude-code', owner: null, config: {} }]);
         const store = stores();
-        await expect(store.setOrgSuspended(ids.pending!, true)).rejects.toBeInstanceOf(ExecutorConnectionRefusedError);
-        await expect(store.setOrgSuspended(ids.pending!, false)).rejects.toBeInstanceOf(ExecutorConnectionRefusedError);
-        await expect(store.updateOrg(ids.pending!, { gateFixRounds: 2 })).rejects.toBeInstanceOf(
-            ExecutorConnectionRefusedError
-        );
+        const refused = { name: 'ExecutorConnectionRefusedError', message: MIGRATION_PENDING_MESSAGE };
+        await expect(store.setOrgSuspended(ids.pending!, true)).rejects.toMatchObject(refused);
+        await expect(store.setOrgSuspended(ids.pending!, false)).rejects.toMatchObject(refused);
+        await expect(store.updateOrg(ids.pending!, { gateFixRounds: 2 })).rejects.toMatchObject(refused);
+    });
+
+    it('carries a pending personal row back unchanged, and names the pending migration when it is changed', async () => {
+        const ids = await seedLegacy([
+            { name: 'waiting', type: 'claude-code', owner: ALICE, config: { model: 'sonnet' } },
+        ]);
+        const connection = await testConnection(sql, ORG);
+        const store = stores();
+        const carried = {
+            id: ids.waiting!,
+            name: 'waiting',
+            type: 'claude-code',
+            config: { model: 'sonnet' },
+            providerConnectionId: null,
+        };
+        await store.replace(ALICE, [
+            carried,
+            { name: 'fresh', type: 'claude-code', config: {}, providerConnectionId: connection },
+        ]);
+        expect((await rows()).waiting).toMatchObject({
+            provider_migration_pending: true,
+            provider_connection_id: null,
+            suspended: false,
+        });
+        await expect(store.replace(ALICE, [{ ...carried, config: { model: 'opus' } }])).rejects.toMatchObject({
+            message: MIGRATION_PENDING_MESSAGE,
+        });
     });
 
     it('clears the reason and the pending flag when an edit selects a connection', async () => {
@@ -542,5 +568,88 @@ describe.skipIf(!enabled)('rows the step has not reached, and rows it suspended,
         ]) {
             await expect(store.replace(ALICE, [refused])).rejects.toBeInstanceOf(ExecutorConnectionRefusedError);
         }
+    });
+});
+
+/** A store whose reads answer `code` for the secrets `match` selects, and the real answer for the rest. */
+const failing = (code: string, reason: string, match: (purpose: string) => boolean = () => true): SecretStore =>
+    faultySecrets(healthy, {
+        readActive: (input) =>
+            match(input.identity.purpose)
+                ? Promise.resolve({ ok: false, error: { code, reason } } as never)
+                : healthy.readActive(input),
+    });
+
+describe.skipIf(!enabled)('the executor provider migration step: secret store answers by class', () => {
+    const emptyOrg = () => seedLegacy([{ name: 'empty-org', type: 'claude-code', owner: null, config: {} }]);
+
+    it.each([
+        ['unavailable', 'provider-unavailable'],
+        ['outcome-unknown', 'provider-timeout'],
+        ['invalid-configuration', 'configuration-invalid'],
+    ])('retries on %s: the row stays pending', async (code, reason) => {
+        await orgVar('OPENROUTER_API_KEY', 'sk-or-from-env');
+        await emptyOrg();
+        expect(await run(failing(code, reason))).toMatchObject({ inconclusive: 1, remaining: 1, suspended: 0 });
+        expect((await rows())['empty-org']).toMatchObject({ provider_migration_pending: true });
+    });
+
+    it.each([
+        ['not-found', 'reference-not-found'],
+        ['identity-mismatch', 'identity-mismatch'],
+        ['integrity-failure', 'integrity-check-failed'],
+    ])('suspends on %s: a confirmed answer about that secret', async (code, reason) => {
+        await orgVar('OPENROUTER_API_KEY', 'sk-or-from-env');
+        await emptyOrg();
+        expect(await run(failing(code, reason))).toMatchObject({ suspended: 1, inconclusive: 0, remaining: 0 });
+        expect(await reasonOf('empty-org')).toContain(code);
+    });
+
+    it('skips a candidate connection whose secret is confirmed bad, and converts with a fresh one', async () => {
+        await orgVar('ANTHROPIC_API_KEY', 'sk-ant-from-env');
+        await testConnection(sql, ORG, { key: 'sk-ant-other' });
+        await emptyOrg();
+        const result = await run(
+            failing('not-found', 'reference-not-found', (purpose) => purpose === 'provider-credential')
+        );
+        expect(result).toMatchObject({ converted: 1, inconclusive: 0 });
+        expect(await sql`select 1 from provider_connection where org_id = ${ORG}`).toHaveLength(2);
+    });
+});
+
+describe.skipIf(!enabled)('the executor provider migration step: the endpoint column is never a secret', () => {
+    it('suspends an endpoint kept as a secret variable, through {env:} or the scope, instead of copying it', async () => {
+        await orgVar('ANTHROPIC_KEY', 'sk-ant-from-env');
+        await orgVar('PROXY_URL', 'https://secret-proxy.example.test/v1');
+        await orgVar('ANTHROPIC_API_KEY', 'sk-ant-scope');
+        await orgVar('ANTHROPIC_BASE_URL', 'https://secret-host.example.test/v1');
+        await seedLegacy([
+            {
+                name: 'through-env',
+                type: 'opencode',
+                owner: null,
+                config: {
+                    model: 'anthropic/claude-sonnet-4-5',
+                    provider: { anthropic: { options: { apiKey: '{env:ANTHROPIC_KEY}', baseURL: '{env:PROXY_URL}' } } },
+                },
+            },
+            { name: 'through-scope', type: 'claude-code', owner: null, config: {} },
+        ]);
+        await run();
+        for (const name of ['through-env', 'through-scope']) {
+            expect(await reasonOf(name), name).toContain('secret variable');
+        }
+        expect(await sql`select 1 from provider_connection where org_id = ${ORG}`).toHaveLength(0);
+    });
+
+    it('reads an empty plain endpoint variable as the provider default', async () => {
+        await orgVar('ANTHROPIC_API_KEY', 'sk-ant-scope');
+        await sql`insert into env_var (org_id, name, value, is_secret) values (${ORG}, 'ANTHROPIC_BASE_URL', '', false)`;
+        await seedLegacy([{ name: 'plain-default', type: 'claude-code', owner: null, config: {} }]);
+        await run();
+        expect(await connectionOf((await rows())['plain-default']!)).toMatchObject({
+            provider: 'anthropic',
+            base_url: null,
+        });
     });
 });

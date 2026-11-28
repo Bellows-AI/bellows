@@ -235,14 +235,22 @@ export function parseExecutorFields(
     if (!(EXECUTOR_TYPES as readonly string[]).includes(item.type)) {
         return `unknown executor type "${item.type}" (known: ${EXECUTOR_TYPES.join(', ')})`;
     }
-    if (!subscriptionAllowed && forbiddenCredentialIn(undefined, item.config) !== null) {
+    // A carried-back migration row is judged by the store against the stored row, which it must equal: the content
+    // rules are for what a member newly writes, and a row the migration suspended may still hold what they refuse.
+    const carried =
+        carriedBack && item.providerConnectionId === null && typeof (entry as { id?: unknown }).id === 'string';
+    if (!carried && !subscriptionAllowed && forbiddenCredentialIn(undefined, item.config) !== null) {
         return CLOUD_CREDENTIAL_MESSAGE;
     }
-    const redirect = deploymentMode === CLOUD ? redirectsPlatformCredential(undefined, item.config, item.type) : null;
+    const redirect =
+        !carried && deploymentMode === CLOUD ? redirectsPlatformCredential(undefined, item.config, item.type) : null;
     if (redirect !== null) return credentialRedirectMessage(redirect);
     const gateFixRounds = parseGateFixRounds(item);
     if (typeof gateFixRounds === 'string') return gateFixRounds;
-    const optional = parseOptionalFields(item, carriedBack && typeof (entry as { id?: unknown }).id === 'string');
+    const optional = parseOptionalFields(
+        item,
+        carried || (carriedBack && typeof (entry as { id?: unknown }).id === 'string')
+    );
     if (typeof optional === 'string') return optional;
     return {
         name: item.name,
