@@ -7,11 +7,13 @@ import {
     subscriptionTokenAllowed,
 } from '@factory-ai/core';
 import { validBase, validKey } from '../provider-keys/input-rules.js';
+import type { Sql } from 'postgres';
 import type { SecretStore } from '../secrets/secret-store.js';
 import { EnvSecretError, envSecretIdentity, readSecretValues } from './env-secrets.js';
 import { executorCredentialIdentity } from './executor-credentials.js';
 import {
     findVar,
+    isBlankVar,
     InconclusiveRead,
     type KeySource,
     type LegacyRow,
@@ -40,6 +42,8 @@ const RETRYABLE_CODES: ReadonlySet<string> = new Set(['unavailable', 'outcome-un
 export const isInconclusiveFault = (error: EnvSecretError): boolean => RETRYABLE_CODES.has(error.code);
 
 export interface ResolveContext {
+    /** Re-reads a variable's row when a secret read answers that its snapshot is stale. */
+    sql: Sql;
     secrets: SecretStore;
     subscriptionPolicy: SubscriptionTokenPolicy;
     orgId: string;
@@ -75,8 +79,23 @@ async function readStored({ secrets, orgId, row }: ResolveContext, path: string[
     }
 }
 
+/** Whether the variable's row is gone or holds another secret record than the snapshot read. */
+async function variableChanged(
+    { sql, orgId }: ResolveContext,
+    userId: string | null,
+    name: string,
+    snapshot: { secret_ref: string | null; secret_version: string | null }
+): Promise<boolean> {
+    const [now] = await sql<{ secret_ref: string | null; secret_version: string | null }[]>`
+        select secret_ref, secret_version from env_var
+        where org_id = ${orgId} and user_id is not distinct from ${userId} and repo_owner is null and name = ${name}
+    `;
+    return !now || now.secret_ref !== snapshot.secret_ref || now.secret_version !== snapshot.secret_version;
+}
+
 /** A variable of the executor's scope, the nearest layer first. */
-async function readVariable({ secrets, orgId, vars }: ResolveContext, name: string): Promise<Read> {
+async function readVariable(context: ResolveContext, name: string): Promise<Read> {
+    const { secrets, orgId, vars } = context;
     const hit = findVar(vars, name);
     if (!hit) return { suspend: `the variable ${name} the executor names is not set in its scope` };
     const { layer, row: variable } = hit;
@@ -97,7 +116,12 @@ async function readVariable({ secrets, orgId, vars }: ResolveContext, name: stri
         ]);
         return { value: value! };
     } catch (error) {
-        return judgeFault(error);
+        const judged = judgeFault(error);
+        // A snapshot read once per org: a variable rotated or deleted since is not a bad secret, only a stale read.
+        if (await variableChanged(context, layer.userId, name, variable)) {
+            throw new InconclusiveRead(`the variable ${name} changed during the pass`);
+        }
+        return judged;
     }
 }
 
@@ -118,6 +142,7 @@ async function readBase(
     if (findVar(context.vars, reference[1]!)?.row.is_secret) {
         return { suspend: 'the endpoint is stored as a secret variable; set a plain endpoint' };
     }
+    if (isBlankVar(context.vars, reference[1]!)) return { value: null };
     return readValue(context, { kind: 'variable', name: reference[1]! });
 }
 

@@ -250,6 +250,7 @@ export function memoryUserExecutorStore(
                 const carried =
                     row !== undefined &&
                     executor.id === row.id &&
+                    executor.type === row.type &&
                     row.providerConnectionId === null &&
                     (row.pending === true || (row.suspendedReason !== undefined && row.suspended)) &&
                     (executor.suspended ?? row.suspended) === row.suspended &&

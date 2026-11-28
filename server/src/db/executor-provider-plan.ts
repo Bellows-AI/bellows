@@ -190,7 +190,13 @@ function without(config: Record<string, unknown>, paths: readonly string[][]) {
 /** The variables of one scope the step reads: the names present, in the order the claim stacks them. */
 export interface ScopeVars {
     /** Stacked scopes, nearest first: a personal executor's own variables, then the organization's. */
-    layers: { kind: 'workspace' | 'org'; userId: string | null; rows: Map<string, EnvRow> }[];
+    layers: {
+        kind: 'workspace' | 'org';
+        userId: string | null;
+        rows: Map<string, EnvRow>;
+        /** Plain variables set to the empty string: absent as a key, an explicit "default endpoint" as an endpoint. */
+        blanks: Set<string>;
+    }[];
 }
 
 export const varsFor = (all: readonly EnvRow[], owner: string | null): ScopeVars => {
@@ -202,9 +208,16 @@ export const varsFor = (all: readonly EnvRow[], owner: string | null): ScopeVars
                 .filter((row) => row.user_id === userId && (row.is_secret || nonEmpty(row.value)))
                 .map((row) => [row.name, row])
         ),
+        blanks: new Set(
+            all.filter((row) => row.user_id === userId && !row.is_secret && row.value === '').map((row) => row.name)
+        ),
     });
     return { layers: owner === null ? [layer('org', null)] : [layer('workspace', owner), layer('org', null)] };
 };
+
+/** Whether the scope sets the plain variable to the empty string, and nothing nearer sets it. */
+export const isBlankVar = (vars: ScopeVars, name: string): boolean =>
+    !findVar(vars, name) && vars.layers.some((layer) => layer.blanks.has(name));
 
 export const findVar = (vars: ScopeVars, name: string) => {
     for (const layer of vars.layers) {

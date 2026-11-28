@@ -37,6 +37,7 @@ export interface PersonalExecutorEntry {
 interface PreviousRow {
     id: string;
     name: string;
+    type: string;
     suspended: boolean;
     secret_refs: StoredCredential[];
     provider_connection_id: string | null;
@@ -77,12 +78,13 @@ function matchPersonalRows(
 
 /**
  * Whether an entry with no connection only carries back the row it names: a migration-suspended row (a reason, still
- * suspended) or one the migration has not reached (pending), same config, its suspension untouched.
+ * suspended) or one the migration has not reached (pending), same type and config, its suspension untouched.
  */
 function carriesMigrationRow(row: PreviousRow | undefined, executor: PersonalExecutorEntry): boolean {
     return (
         row !== undefined &&
         executor.id === row.id &&
+        executor.type === row.type &&
         row.provider_connection_id === null &&
         (row.provider_migration_pending || (row.provider_migration_reason !== null && row.suspended)) &&
         (executor.suspended ?? row.suspended) === row.suspended &&
@@ -138,7 +140,7 @@ export async function replacePersonalRows(
     // Read before the write: an entry that does not say otherwise keeps the suspension and connection of the row it
     // survives as (issue 440), and a stored credential sent back as its marker stays stored.
     const previous = await tx<PreviousRow[]>`
-        select id, name, suspended, secret_refs, provider_connection_id, provider_migration_reason,
+        select id, name, type, suspended, secret_refs, provider_connection_id, provider_migration_reason,
             provider_migration_pending, config
         from executor_profile
         where org_id = ${orgId} and user_id = ${userId}

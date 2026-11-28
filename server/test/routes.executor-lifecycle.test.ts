@@ -863,6 +863,21 @@ describe('every executor needs a provider connection', () => {
         expect(added.json().code).toBe('CLOUD_CREDENTIAL_REFUSED');
     });
 
+    it('refuses a carried-back row that changes its type, which the cloud redirect rule depends on', async () => {
+        const b = await boot(undefined, { deploymentMode: 'cloud' });
+        const id = b.executors.seedMigrationSuspended({
+            userId: b.memberId,
+            name: 'legacy',
+            type: 'opencode',
+            reason: MIGRATION_REASON,
+        });
+        const same = { id, name: 'legacy', type: 'opencode', config: {}, suspended: true, providerConnectionId: null };
+        expect((await putPersonal(b, b.memberCookie, [same])).statusCode).toBe(HTTP_OK);
+        const switched = await putPersonal(b, b.memberCookie, [{ ...same, type: 'claude-code' }]);
+        expect(switched.statusCode).toBe(HTTP_CONFLICT);
+        expect(b.executors.rows()[0]!.type).toBe('opencode');
+    });
+
     it('names the pending migration when a row the migration has not reached is edited, suspended or changed', async () => {
         const b = await boot();
         const personal = b.executors.seedMigrationPending({ userId: b.memberId, name: 'waiting', type: 'claude-code' });

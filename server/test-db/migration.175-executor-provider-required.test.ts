@@ -82,6 +82,8 @@ describe.runIf(enabled)('175: every executor has a provider connection', () => {
     });
 
     it('refuses a new executor with no connection, and a reason without a suspension', async () => {
+        const [applied] = await pool<{ found: string | null }[]>`select to_regclass('executor_profile')::text as found`;
+        if (applied!.found === null) await applyAll(versioned());
         const org = `o${randomUUID().replaceAll('-', '').slice(0, 30)}`;
         await pool`insert into organization (id, name) values (${org}, ${org})`;
         await expect(insertExecutor(org, 'bare', null)).rejects.toThrow(/executor_profile_provider_required_ck/);

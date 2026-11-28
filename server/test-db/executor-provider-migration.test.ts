@@ -653,3 +653,88 @@ describe.skipIf(!enabled)('the executor provider migration step: the endpoint co
         });
     });
 });
+
+describe.skipIf(!enabled)('the executor provider migration step: races and stale snapshots', () => {
+    const emptyOrg = () => seedLegacy([{ name: 'empty-org', type: 'claude-code', owner: null, config: {} }]);
+
+    it('skips a row whose type changed during the pass, and converts it on the next with a plan for the new type', async () => {
+        await orgVar('ANTHROPIC_API_KEY', 'sk-ant-from-env');
+        await emptyOrg();
+        const changing = faultySecrets(healthy, {
+            readActive: async (input) => {
+                await sql`update executor_profile set type = 'opencode' where org_id = ${ORG} and name = 'empty-org'`;
+                return healthy.readActive(input);
+            },
+        });
+        expect(await run(changing)).toMatchObject({ converted: 0, suspended: 0, remaining: 1 });
+        expect((await rows())['empty-org']).toMatchObject({
+            provider_migration_pending: true,
+            provider_connection_id: null,
+        });
+        expect(await run()).toMatchObject({ converted: 1, remaining: 0 });
+    });
+
+    it.each([
+        ['23503', 'pending'],
+        ['23505', 'pending'],
+        ['23514', 'suspended'],
+    ])('on a %s violation storing the connection the row is left %s', async (code, outcome) => {
+        await orgVar('ANTHROPIC_API_KEY', 'sk-ant-from-env');
+        await emptyOrg();
+        await sql.unsafe(`
+            create or replace function test_refuse_connection() returns trigger language plpgsql as $$
+            begin raise exception 'refused' using errcode = '${code}', constraint = 'provider_connection_internal_ck'; end $$;
+            create trigger test_refuse_connection before insert on provider_connection
+                for each row execute function test_refuse_connection();
+        `);
+        try {
+            await run();
+        } finally {
+            await sql.unsafe(
+                'drop trigger test_refuse_connection on provider_connection; drop function test_refuse_connection()'
+            );
+        }
+        const row = (await rows())['empty-org']!;
+        if (outcome === 'pending') {
+            expect(row).toMatchObject({ provider_migration_pending: true, provider_migration_reason: null });
+        } else {
+            expect(row).toMatchObject({ provider_migration_pending: false, suspended: true });
+            expect(row.provider_migration_reason).not.toContain('provider_connection_internal_ck');
+            expect(row.provider_migration_reason).not.toMatch(/_ck|_fk|_uk/);
+        }
+    });
+
+    it('reads {env:NAME} of a plain variable set to the empty string as the default endpoint', async () => {
+        await orgVar('ANTHROPIC_KEY', 'sk-ant-from-env');
+        await sql`insert into env_var (org_id, name, value, is_secret) values (${ORG}, 'PROXY', '', false)`;
+        await seedLegacy([
+            {
+                name: 'blank-proxy',
+                type: 'opencode',
+                owner: null,
+                config: {
+                    model: 'anthropic/claude-sonnet-4-5',
+                    provider: { anthropic: { options: { apiKey: '{env:ANTHROPIC_KEY}', baseURL: '{env:PROXY}' } } },
+                },
+            },
+        ]);
+        await run();
+        expect(await connectionOf((await rows())['blank-proxy']!)).toMatchObject({
+            provider: 'anthropic',
+            base_url: null,
+        });
+    });
+
+    it('treats a secret variable rotated or deleted during the pass as a stale read, not a bad secret', async () => {
+        await orgVar('ANTHROPIC_API_KEY', 'sk-ant-from-env');
+        await emptyOrg();
+        const rotating = faultySecrets(healthy, {
+            readActive: async () => {
+                await sql`delete from env_var where org_id = ${ORG} and name = 'ANTHROPIC_API_KEY'`;
+                return { ok: false, error: { code: 'not-found', reason: 'reference-not-found' } } as never;
+            },
+        });
+        expect(await run(rotating)).toMatchObject({ suspended: 0, inconclusive: 1, remaining: 1 });
+        expect(await reasonOf('empty-org')).toBeNull();
+    });
+});

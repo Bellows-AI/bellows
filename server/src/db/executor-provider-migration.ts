@@ -140,6 +140,7 @@ async function convertRow(
     if (plan.kind === 'suspend') return suspendRow(deps.sql, orgId, row, plan.reason);
     const resolved = await resolveConnectionInput(
         {
+            sql: deps.sql,
             secrets: deps.secrets,
             subscriptionPolicy: deps.subscriptionPolicy,
             orgId,
@@ -171,13 +172,19 @@ async function convertRow(
     let outcome: Outcome = 'stale';
     try {
         outcome = await deps.sql.begin(async (tx) => {
-            const [current] = await tx<{ config: unknown; secret_refs: StoredCredential[] }[]>`
-                select config, secret_refs from executor_profile
+            const [current] = await tx<{ type: string; config: unknown; secret_refs: StoredCredential[] }[]>`
+                select type, config, secret_refs from executor_profile
                 where org_id = ${orgId} and id = ${row.id} and user_id is not distinct from ${row.user_id}
                     and provider_migration_pending and provider_connection_id is null
                 for update
             `;
-            if (!current || JSON.stringify(current.config) !== JSON.stringify(row.config)) return 'stale';
+            if (
+                !current ||
+                current.type !== row.type ||
+                JSON.stringify(current.config) !== JSON.stringify(row.config)
+            ) {
+                return 'stale';
+            }
             let connectionId = reuse;
             if (connectionId === undefined) {
                 connectionId = newId;
