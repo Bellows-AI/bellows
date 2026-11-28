@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -212,5 +212,63 @@ describe('the follow-up composer drafts', () => {
         await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
         await waitFor(() => expect(sent()).toHaveLength(2));
         expect(sent()[1]!.headers['idempotency-key']).toBe(sent()[0]!.headers['idempotency-key']);
+    });
+});
+
+describe('the follow-up model list of a thread whose payload names no agent type', () => {
+    const CONNECTION = '33333333-3333-4333-8333-333333333333';
+
+    it("comes from the executor's connection", async () => {
+        stubObjectUrls();
+        const user = userEvent.setup();
+        const jobs = authoredBy(missingSummaryThread, LOCAL_AUTHOR).map((j) => ({
+            ...j,
+            executor: 'routed',
+            executorScope: 'user' as const,
+            agentModel: null,
+        }));
+        expect(jobs.every((j) => !('agentType' in j))).toBe(true);
+        stubFetch((call: FetchCall) => {
+            if (call.url === '/api/auth/me') return OPEN_BOARD_SESSION;
+            if (call.url === '/api/workspace') {
+                return {
+                    executors: [
+                        {
+                            id: '44444444-4444-4444-8444-444444444444',
+                            name: 'routed',
+                            suspended: false,
+                            type: 'claude-code',
+                            createdAt: '2026-01-01T00:00:00.000Z',
+                            gateFixRounds: 3,
+                            providerConnectionId: CONNECTION,
+                            providerConnectionName: 'Team key',
+                            providerConnectionProvider: 'anthropic',
+                            providerConnectionScope: 'org',
+                            configOverridesConnection: false,
+                        },
+                    ],
+                    orgExecutors: [],
+                    defaultExecutor: { scope: 'user', name: 'routed' },
+                };
+            }
+            if (call.url === `/api/provider-connections/${CONNECTION}/models`) {
+                return { state: 'listed', models: ['claude-live-1'] };
+            }
+            const match = /\/api\/jobs\/([^/]+)\/(thread|activity)/.exec(call.url);
+            if (match && jobs.some((j) => j.id === match[1])) {
+                return match[2] === 'thread' ? { jobs } : mockedActivityOf(jobs);
+            }
+        });
+        renderApp(`/tasks/${jobs[0]!.id}`);
+        await screen.findByLabelText('Ask for a follow-up');
+        await user.click(screen.getByRole('button', { name: /^Model/ }));
+        const list = await screen.findByRole('listbox');
+        await waitFor(() =>
+            expect(
+                within(list)
+                    .getAllByRole('option')
+                    .map((option) => option.textContent)
+            ).toContain('claude-live-1')
+        );
     });
 });
