@@ -1,7 +1,14 @@
 import type { TransactionSql } from 'postgres';
 import { DEFAULT_GATE_FIX_ROUNDS } from '@factory-ai/core';
 import { assertUnselected, ExecutorIdentityError } from './executor-default-store.js';
-import { assertConnectionSelection, modelOf } from './executor-connection-selection.js';
+import { isDeepStrictEqual } from 'node:util';
+import {
+    assertConnectionSelection,
+    ExecutorConnectionRefusedError,
+    MIGRATION_PENDING_MESSAGE,
+    MISSING_CONNECTION_MESSAGE,
+    modelOf,
+} from './executor-connection-selection.js';
 import { type StoredCredential, storedOf } from './executor-credentials.js';
 
 /** One entry of a personal whole-list save (`UserExecutorStore.replace`). */
@@ -19,17 +26,24 @@ export interface PersonalExecutorEntry {
     gateFixRounds?: number;
     /** Omitted: the suspension the row the entry survives as already carried survives the rewrite. */
     suspended?: boolean;
-    /** Omitted keeps the connection of the row the entry survives as; null clears it. A selection is validated (`ExecutorConnectionRefusedError`). */
-    providerConnectionId?: string | null;
+    /**
+     * The connection the entry selects, validated in the transaction (`ExecutorConnectionRefusedError`). Null only
+     * carries back a migration-suspended row, by id, with its config unchanged: it keeps its null connection and reason.
+     */
+    providerConnectionId: string | null;
 }
 
 /** What `replacePersonalRows` carries over from the stored row an entry survives as. */
 interface PreviousRow {
     id: string;
     name: string;
+    type: string;
     suspended: boolean;
     secret_refs: StoredCredential[];
     provider_connection_id: string | null;
+    provider_migration_reason: string | null;
+    provider_migration_pending: boolean;
+    config: unknown;
 }
 
 /**
@@ -63,6 +77,54 @@ function matchPersonalRows(
 }
 
 /**
+ * Whether an entry with no connection only carries back the row it names: a migration-suspended row (a reason, still
+ * suspended) or one the migration has not reached (pending), same type and config, its suspension untouched.
+ */
+function carriesMigrationRow(row: PreviousRow | undefined, executor: PersonalExecutorEntry): boolean {
+    return (
+        row !== undefined &&
+        executor.id === row.id &&
+        executor.type === row.type &&
+        row.provider_connection_id === null &&
+        (row.provider_migration_pending || (row.provider_migration_reason !== null && row.suspended)) &&
+        (executor.suspended ?? row.suspended) === row.suspended &&
+        isDeepStrictEqual(row.config, executor.config)
+    );
+}
+
+/**
+ * Each entry names its connection and each selection is judged in this transaction; a null one is only the
+ * carried-back migration-suspended row.
+ */
+async function assertSelections(
+    tx: TransactionSql,
+    { orgId, userId }: { orgId: string; userId: string },
+    executors: readonly PersonalExecutorEntry[],
+    matched: readonly (PreviousRow | undefined)[]
+): Promise<void> {
+    for (const [index, executor] of executors.entries()) {
+        const connectionId = executor.providerConnectionId;
+        if (connectionId === null) {
+            if (!carriesMigrationRow(matched[index], executor)) {
+                const pending = matched[index]?.provider_migration_pending;
+                throw new ExecutorConnectionRefusedError(
+                    'missing',
+                    pending ? MIGRATION_PENDING_MESSAGE : MISSING_CONNECTION_MESSAGE
+                );
+            }
+            continue;
+        }
+        await assertConnectionSelection(tx, orgId, {
+            owner: userId,
+            connectionId,
+            type: executor.type,
+            model: modelOf(executor.config),
+            previousConnectionId: matched[index]?.provider_connection_id ?? null,
+        });
+    }
+}
+
+/**
  * `replace()`'s transaction body: the member's personal list reconciled by identity. A surviving row is updated in place
  * under its id, a new entry inserted, an omitted row deleted — unless a default still names it. `sealedOf` turns the
  * stored credentials of the rows being rewritten into the sealed configs (executor-credentials.ts).
@@ -78,26 +140,14 @@ export async function replacePersonalRows(
     // Read before the write: an entry that does not say otherwise keeps the suspension and connection of the row it
     // survives as (issue 440), and a stored credential sent back as its marker stays stored.
     const previous = await tx<PreviousRow[]>`
-        select id, name, suspended, secret_refs, provider_connection_id from executor_profile
+        select id, name, type, suspended, secret_refs, provider_connection_id, provider_migration_reason,
+            provider_migration_pending, config
+        from executor_profile
         where org_id = ${orgId} and user_id = ${userId}
         for update
     `;
     const matched = matchPersonalRows(previous, executors);
-    // An entry that omits the connection keeps its predecessor's; each selection is judged in this transaction.
-    const connectionIds = executors.map((executor, index) =>
-        executor.providerConnectionId === undefined
-            ? (matched[index]?.provider_connection_id ?? null)
-            : executor.providerConnectionId
-    );
-    for (const [index, executor] of executors.entries()) {
-        await assertConnectionSelection(tx, orgId, {
-            owner: userId,
-            connectionId: connectionIds[index]!,
-            type: executor.type,
-            model: modelOf(executor.config),
-            previousConnectionId: matched[index]?.provider_connection_id ?? null,
-        });
-    }
+    await assertSelections(tx, { orgId, userId }, executors, matched);
     const survivors = new Set(matched.filter((row) => row !== undefined).map((row) => row.id));
     const omitted = previous.filter((row) => !survivors.has(row.id));
     await assertUnselected(tx, orgId, omitted, userId);
@@ -126,7 +176,9 @@ export async function replacePersonalRows(
             gate_fix_rounds: executor.gateFixRounds ?? DEFAULT_GATE_FIX_ROUNDS,
             position: index,
             suspended: executor.suspended ?? row?.suspended ?? false,
-            provider_connection_id: connectionIds[index]!,
+            provider_connection_id: executor.providerConnectionId,
+            provider_migration_reason: executor.providerConnectionId === null ? row!.provider_migration_reason : null,
+            provider_migration_pending: executor.providerConnectionId === null && row!.provider_migration_pending,
         };
         if (row) {
             await tx`

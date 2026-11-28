@@ -44,10 +44,16 @@ async function boot(deploymentMode: DeploymentMode, subscriptionOrgIds: readonly
     return { send, executors, envVars };
 }
 
+const CONNECTION_ID = '33333333-3333-4333-8333-333333333333';
 const personal = (config: Record<string, unknown>) => ({
-    executors: [{ name: 'mine', type: 'claude-code', config }],
+    executors: [{ name: 'mine', type: 'claude-code', config, providerConnectionId: CONNECTION_ID }],
 });
-const org = (config: Record<string, unknown>) => ({ name: 'team', type: 'claude-code', config });
+const org = (config: Record<string, unknown>) => ({
+    name: 'team',
+    type: 'claude-code',
+    config,
+    providerConnectionId: CONNECTION_ID,
+});
 const vars = (name: string) => ({ vars: [{ name, value: VALUE, isSecret: true }] });
 
 function expectRefused(response: { statusCode: number; body: string; json: () => { code: string } }) {

@@ -40,7 +40,9 @@ export interface ExecutorRow {
     /** The runner class its tasks run on; null means the driver's default. A personal profile never names one. */
     runnerClass: string | null;
     suspended: boolean;
-    /** Present only on a row that selects a provider connection; absent means the environment keys. */
+    /** Why the provider migration suspended the row; present only on such a row. */
+    suspendedReason?: string;
+    /** The provider connection the row runs on; absent only on a row the provider migration suspended. */
     providerConnectionId?: string;
     /** The connection's name, provider and scope — absent when the caller may not see the connection. */
     providerConnectionName?: string;
@@ -60,6 +62,7 @@ export function executorDiscovery(workspace: WorkspaceView): { executors: Execut
         type: profile.type,
         runnerClass: profile.runnerClass ?? null,
         suspended: profile.suspended === true,
+        ...(profile.suspendedReason ? { suspendedReason: profile.suspendedReason } : {}),
         ...(profile.providerConnectionId ? { providerConnectionId: profile.providerConnectionId } : {}),
         ...(profile.providerConnectionName ? { providerConnectionName: profile.providerConnectionName } : {}),
         ...(profile.providerConnectionProvider

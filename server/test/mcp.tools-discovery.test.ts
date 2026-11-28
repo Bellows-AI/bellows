@@ -66,6 +66,14 @@ const view = (id: string, extra: Partial<ConnectionView> = {}): ConnectionView =
 });
 
 const ORG_CONNECTION = '66666666-6666-4666-8666-666666666666';
+const TEAM_KEY = {
+    id: ORG_CONNECTION,
+    name: 'Team key',
+    provider: 'anthropic',
+    scope: 'org',
+    baseUrl: null,
+    hasKey: true,
+};
 
 interface Scenario {
     repos?: { owner: string; name: string }[];
@@ -85,6 +93,8 @@ interface Scenario {
     opencodeExecutor?: boolean;
     /** Alice's `mine` and the org's `shared` run on this org connection, which the registry lists. */
     connected?: boolean;
+    /** Alice's `mine` profile config; absent is a token only. */
+    mineConfig?: Record<string, unknown>;
     /** Bellows Cloud: the task's model credential is judged on this env store. */
     cloudEnv?: EnvVarStore;
 }
@@ -140,13 +150,12 @@ async function boot(scenario: Scenario = {}) {
         },
     } as unknown as ConnectionStore;
     const executors = memoryUserExecutorStore();
-    const connectionId = scenario.connected ? ORG_CONNECTION : undefined;
     await executors.replace(people.alice.user.id, [
         {
             name: 'mine',
             type: 'claude-code',
-            config: { token: 'SECRET' },
-            ...(connectionId ? { providerConnectionId: connectionId } : {}),
+            config: scenario.mineConfig ?? { token: 'SECRET' },
+            providerConnectionId: ORG_CONNECTION,
         },
     ]);
     await executors.selectDefault(people.alice.user.id, (await executors.list(people.alice.user.id))[0]!.id);
@@ -156,13 +165,14 @@ async function boot(scenario: Scenario = {}) {
         config: { token: 'ORG-SECRET' },
         runnerClass: 'builds',
         createdBy: people.alice.user.id,
-        ...(connectionId ? { providerConnectionId: connectionId } : {}),
+        providerConnectionId: ORG_CONNECTION,
     });
     if (scenario.opencodeExecutor) {
         await executors.createOrg({
             name: 'oc',
             type: 'opencode',
             config: {},
+            providerConnectionId: ORG_CONNECTION,
             createdBy: people.alice.user.id,
         });
     }
@@ -177,16 +187,8 @@ async function boot(scenario: Scenario = {}) {
         ...(scenario.connected
             ? {
                   providerConnections: {
-                      listFor: async () => [
-                          {
-                              id: ORG_CONNECTION,
-                              name: 'Team key',
-                              provider: 'anthropic',
-                              scope: 'org',
-                              baseUrl: null,
-                              hasKey: true,
-                          },
-                      ],
+                      listFor: async () => [TEAM_KEY],
+                      forUser: async () => TEAM_KEY,
                   } as never,
               }
             : {}),
@@ -369,7 +371,11 @@ describe('list_executors', () => {
             { scope: 'org', providerConnectionName: 'Team key', providerConnectionScope: 'org' },
         ]);
         const plain = await call(await boot(), 'alice', 'list_executors');
-        expect(plain.data.executors[0]).toMatchObject({ providerConnectionId: null, providerConnectionName: null });
+        expect(plain.data.executors[0]).toMatchObject({
+            providerConnectionId: ORG_CONNECTION,
+            providerConnectionName: null,
+            suspendedReason: null,
+        });
         expect(JSON.stringify({ data, rest })).not.toMatch(/SECRET|hasKey|secretRef/);
     });
 
@@ -582,9 +588,13 @@ describe('preflight_task', () => {
         expect(data).toMatchObject({ verdict: 'ready', ready: true, integrationRequired: [] });
     });
 
-    it('in cloud, blocks on the model check with its fix when the task has no model credential', async () => {
+    it('in cloud, blocks on the model check with its fix when the profile clears its connection key', async () => {
         const { data } = await call(
-            await boot({ cloudEnv: memoryEnvVarStore() }),
+            await boot({
+                cloudEnv: memoryEnvVarStore(),
+                connected: true,
+                mineConfig: { env: { ANTHROPIC_API_KEY: '' } },
+            }),
             'alice',
             'preflight_task',
             selection

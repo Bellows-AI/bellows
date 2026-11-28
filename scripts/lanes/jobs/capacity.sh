@@ -258,8 +258,7 @@ cap_run() {
     cap_light_token="$CAP_MEMBER_TOKEN"
     ok 'capacity: two tenants are minted'
     for tok in "$cap_heavy_token" "$cap_light_token"; do
-        AUTH_HEADER="Bearer $tok" expect_status 'capacity: the member stores the task executor' 200 PUT /api/workspace/executors \
-            '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
+        AUTH_HEADER="Bearer $tok" expect_store_executors 'capacity: the member stores the task executor' personal "$LANE_IDLE_MODEL_URL" opencode
     done
 
     # Queued before any driver exists, so the order the claim picks them in is the claim's own.

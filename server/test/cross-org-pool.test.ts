@@ -32,6 +32,8 @@ const CROSS_ORG_CALLS = {
     startOrgPurge: "deletes a deleted org's rows and objects",
     startOrgRetention: "deletes the threads, objects and telemetry each org's retention window passed",
     startMetricPointOrgBackfill: 'resolves the org of points stored before they carried one',
+    startExecutorProviderMigration:
+        'gives the executors of every org saved before connections were required one, or a suspension',
 } as const;
 
 /** The callee of each call `crossOrg` reaches as an argument, or inside one (spread, property, object). */

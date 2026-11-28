@@ -161,7 +161,8 @@ test('a first sign-in connects a provider, starts its first task from Ready and 
     };
     expect(connections.connections.filter((c) => c.name === 'Anthropic')).toHaveLength(1);
     // The model the run takes is the executor's own default model, the one the card showed.
-    const configs = (await (await page.request.get('/api/workspace/executors')).json()) as {
+    // The newcomer is the organization's first member, so the executor is the organization's.
+    const configs = (await (await page.request.get('/api/org/executors')).json()) as {
         executors: { name: string; config: { model?: string } }[];
     };
     expect(configs.executors.find((e) => e.name === 'Claude Code · Sonnet')?.config.model).toBe(model);

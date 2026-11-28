@@ -12,8 +12,8 @@ import {
     WorkspaceExecutorsPanel,
 } from '../src/panels/WorkspaceExecutorsPanel.js';
 import { ADD_LABEL } from '../src/workspace/executors.js';
-import { renderApp, stubFetch } from './dom.js';
-import { boardHandler, orgExecutor, personalExecutor, settingsBoard } from './settings-board.js';
+import { chooseConnection, renderApp, stubFetch } from './dom.js';
+import { boardHandler, orgExecutor, personalExecutor, providerConnection, settingsBoard } from './settings-board.js';
 
 /**
  * The executor rows' own actions on the real Executors page, over a stubbed board that keeps what
@@ -217,7 +217,8 @@ describe('an organization profile’s writes', () => {
     });
 
     it('a saved add refreshes the table with the new row', async () => {
-        const board = settingsBoard();
+        const connection = providerConnection('Team key', { scope: 'org', provider: 'anthropic' });
+        const board = settingsBoard({ providerConnections: [connection] });
         stubFetch(
             boardHandler(board, ({ method, url, body }) => {
                 if (method !== 'POST' || url !== '/api/org/executors') return;
@@ -231,6 +232,7 @@ describe('an organization profile’s writes', () => {
         await user.click(await screen.findByRole('button', { name: 'Add organization executor' }));
         const dialog = await screen.findByRole('dialog', { name: /^Add executor$/ });
         await user.type(within(dialog).getByLabelText('Name', { exact: true }), 'Fresh');
+        await chooseConnection(user, connection.id);
         await user.click(within(dialog).getByRole('button', { name: ADD_LABEL }));
         await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
         await orgRow('Fresh');

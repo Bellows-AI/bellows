@@ -31,8 +31,8 @@ export interface OrgExecutorInput {
     gateFixRounds: number;
     /** Always sent: the PUT is whole-entry, and an omitted class resets the profile to the default. */
     runnerClass: string | null;
-    /** An id selects a connection, null clears it; absent keeps the row's (a legacy profile's write is unchanged). */
-    providerConnectionId?: string | null;
+    /** The connection the profile runs its model on: every write names one. */
+    providerConnectionId: string;
 }
 
 /**

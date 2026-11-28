@@ -84,6 +84,7 @@ const outcomeOf = (result: SettleResult, overrides: Partial<SettleOutcome> = {})
 const TOKEN = '22222222-2222-4222-8222-222222222222';
 const FOLLOW_UP_ID = '44444444-4444-4444-8444-444444444444';
 const RETRY_ID = '66666666-6666-4666-8666-666666666666';
+const CONNECTION_ID = '77777777-7777-4777-8777-777777777777';
 
 interface StoreStub extends JobStore {
     created: {
@@ -4838,7 +4839,9 @@ describe('POST /api/jobs naming no executor', () => {
     it('no configured default, one active personal profile -> 409 NO_EXECUTOR, nothing queued', async () => {
         const executors = memoryUserExecutorStore();
         const b = await boot(executors);
-        await executors.replace(b.member.user.id, [{ name: 'mine', type: 'claude-code', config: { model: 'm' } }]);
+        await executors.replace(b.member.user.id, [
+            { name: 'mine', type: 'claude-code', config: { model: 'm' }, providerConnectionId: CONNECTION_ID },
+        ]);
 
         const response = await b.create();
 
@@ -4889,6 +4892,10 @@ describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', 
                 jobs,
                 envVars,
                 userExecutors: executors,
+                // The profile's connection is readable and supplies its own key, as the board judges it.
+                providerConnections: {
+                    forUser: async () => ({ id: CONNECTION_ID, provider: 'anthropic', scope: 'org' }),
+                } as never,
                 repos: staticRepoSource([TRACKED]),
                 telemetry: stubTelemetryClient(),
             }),
@@ -4897,7 +4904,7 @@ describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', 
         track(instance);
         const userId = member.user.id;
         // A task naming no executor runs on the configured default: the member's one profile.
-        await executors.replace(userId, [{ name: 'mine', ...profile }]);
+        await executors.replace(userId, [{ name: 'mine', ...profile, providerConnectionId: CONNECTION_ID }]);
         await executors.selectDefault(userId, (await executors.list(userId))[0]!.id);
         const cookie = await signedIn(auth, member);
         const create = () =>
@@ -4910,13 +4917,19 @@ describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', 
         return { instance, executors, envVars, userId, created, create };
     }
 
-    it('refuses with 409 NO_MODEL and the fix, and queues nothing, when no scope holds a key', async () => {
-        const b = await bootCloud();
+    it('refuses with 409 NO_MODEL and the fix, and queues nothing, when the profile clears its connection key', async () => {
+        const b = await bootCloud({}, { type: 'claude-code', config: { env: { ANTHROPIC_API_KEY: '' } } });
         await b.envVars.replaceOrg('admin', [{ name: 'ANTHROPIC_BASE_URL', value: 'https://x.test', isSecret: false }]);
         const response = await b.create();
         expect(response.statusCode).toBe(409);
         expect(response.json()).toMatchObject({ code: 'NO_MODEL', error: NO_MODEL_MESSAGE });
         expect(b.created).toEqual([]);
+    });
+
+    it('creates on the profile connection alone, with no key in any env scope', async () => {
+        const b = await bootCloud();
+        expect((await b.create()).statusCode).toBe(201);
+        expect(b.created).toEqual(['echo hi']);
     });
 
     it('creates once a key is in the org, workspace or repo scope', async () => {
@@ -4955,10 +4968,10 @@ describe('POST /api/jobs in cloud: a task needs a model credential (NO_MODEL)', 
 
     it('refuses NO_MODEL when the profile holds only what the run will not have', async () => {
         const opencode = (options: Record<string, unknown>) => ({ provider: { custom: { options } } });
+        // The selected connection supplies OpenCode's key too, so only Claude Code's clearing env can leave none.
         const cases: [string, Record<string, unknown>, number][] = [
             ['claude-code', { env: { ANTHROPIC_API_KEY: '' } }, 409],
-            ['opencode', opencode({ password: 'p' }), 409],
-            ['opencode', opencode({ apiKey: '{env:MISSING}' }), 409],
+            ['opencode', opencode({ password: 'p' }), 201],
             ['opencode', opencode({ apiKey: '{env:GATEWAY_KEY}' }), 201],
             ['opencode', opencode({ apiKey: 'sk-literal' }), 201],
         ];

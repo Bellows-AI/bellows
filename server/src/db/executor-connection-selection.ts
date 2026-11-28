@@ -23,11 +23,19 @@ export class ExecutorConnectionRefusedError extends Error {
     }
 }
 
+/** What a write or a resume without a connection is refused with: every executor selects one. */
+export const MISSING_CONNECTION_MESSAGE = 'An executor needs a provider connection: select one first.';
+
+/** What a suspend, resume or edit of a row the provider migration has not reached yet is refused with. */
+export const MIGRATION_PENDING_MESSAGE =
+    'This executor is still being migrated to a provider connection; try again shortly, or select a connection.';
+
 export const selectedOf = (id: string | null): { providerConnectionId?: string } =>
     id === null ? {} : { providerConnectionId: id };
 
 /**
- * The shared selection rule, run inside the write's transaction: the connection must be visible to the profile's
+ * The shared selection rule, run inside the write's transaction: an executor selects a connection (a null one is
+ * refused: only a migration-suspended row has none, and it names one before any edit), which must be visible to the profile's
  * owner (`owner` null: the organization), its provider must run the executor type, and a connection that CHANGED
  * must not carry a model known to belong to another provider. The row is read `for share`, so a concurrent deletion
  * waits for this transaction — with the foreign key, no write can leave a reference dangling.
@@ -44,7 +52,7 @@ export async function assertConnectionSelection(
     }
 ): Promise<void> {
     const { owner, connectionId, type, model, previousConnectionId } = selection;
-    if (connectionId === null) return;
+    if (connectionId === null) throw new ExecutorConnectionRefusedError('missing', MISSING_CONNECTION_MESSAGE);
     const [row] = await tx<{ provider: ModelProvider; user_id: string | null }[]>`
         select provider, user_id from provider_connection
         where org_id = ${orgId} and id = ${connectionId}
@@ -101,7 +109,7 @@ export async function lockOrgRowForUpdate(
     {
         id,
         patch,
-    }: { id: string; patch: { type?: string; config?: Record<string, unknown>; providerConnectionId?: string | null } }
+    }: { id: string; patch: { type?: string; config?: Record<string, unknown>; providerConnectionId?: string } }
 ): Promise<{ secret_refs: StoredCredential[]; connectionId: string | null } | null> {
     const [previous] = await tx<
         {
@@ -109,15 +117,19 @@ export async function lockOrgRowForUpdate(
             config: Record<string, unknown>;
             secret_refs: StoredCredential[];
             provider_connection_id: string | null;
+            pending: boolean;
         }[]
     >`
-        select type, config, secret_refs, provider_connection_id from executor_profile
+        select type, config, secret_refs, provider_connection_id, provider_migration_pending as pending
+        from executor_profile
         where org_id = ${orgId} and id = ${id} and user_id is null
         for update
     `;
     if (!previous) return null;
-    const connectionId =
-        patch.providerConnectionId === undefined ? previous.provider_connection_id : patch.providerConnectionId;
+    const connectionId = patch.providerConnectionId ?? previous.provider_connection_id;
+    if (connectionId === null && previous.pending) {
+        throw new ExecutorConnectionRefusedError('missing', MIGRATION_PENDING_MESSAGE);
+    }
     await assertConnectionSelection(tx, orgId, {
         owner: null,
         connectionId,

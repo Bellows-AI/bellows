@@ -29,7 +29,7 @@ import {
     SAVE_LABEL,
 } from '../src/workspace/executors.js';
 import { GUIDED_COPY } from '../src/workspace/executor-guided.js';
-import { renderApp, stubFetch } from './dom.js';
+import { chooseConnection, renderApp, stubFetch } from './dom.js';
 import { VERIFY_URL } from './provider-fixtures.js';
 import { boardHandler, listedModels, personalExecutor, providerConnection, settingsBoard } from './settings-board.js';
 
@@ -68,6 +68,16 @@ const editButton = async (name: string) =>
         })
     ).getByRole<HTMLButtonElement>('button', { name: 'Edit' });
 
+const CONN = providerConnection('Team key', { scope: 'org', provider: 'anthropic' });
+const ENDPOINT_CONN = providerConnection('Gateway', {
+    scope: 'org',
+    provider: 'openai-compatible',
+    baseUrl: 'http://127.0.0.1:9/v1',
+});
+/** A board holding the one connection every executor in these flows runs on. */
+const connectedBoard = (overrides: Parameters<typeof settingsBoard>[0] = {}) =>
+    settingsBoard({ providerConnections: [CONN, ENDPOINT_CONN], ...overrides });
+
 async function openAdd(user: ReturnType<typeof userEvent.setup>) {
     await user.click(await screen.findByRole('button', { name: ADD_LABEL }));
     await screen.findByRole('dialog', { name: /^(Add|Edit) executor$/ });
@@ -75,7 +85,7 @@ async function openAdd(user: ReturnType<typeof userEvent.setup>) {
 
 describe('the executor dialog', () => {
     it('adds an executor through guided setup, with no JSON typed', async () => {
-        const board = settingsBoard();
+        const board = connectedBoard();
         stubFetch(boardHandler(board));
         // No inter-action timer: each step below waits on the element or request it needs, not on wall time.
         // The flow is split across three tests so no one test renders ~60 steps under a loaded runner.
@@ -106,6 +116,10 @@ describe('the executor dialog', () => {
         expect(describedBy(button(ADD_LABEL))).toBe(SAVE_HINTS.name);
 
         await user.type(field('Name'), 'main');
+        // A name alone is not enough: every executor runs on a provider connection.
+        expect(button(ADD_LABEL).disabled).toBe(true);
+        expect(describedBy(button(ADD_LABEL))).toBe(SAVE_HINTS.connection);
+        await chooseConnection(user, CONN.id);
         expect(button(ADD_LABEL).disabled).toBe(false);
         await user.click(button(ADD_LABEL));
         await dialogGone();
@@ -153,7 +167,11 @@ describe('the executor dialog', () => {
     });
 
     it('edits the model through the guided control, and reopens with the same settings', async () => {
-        stubFetch(boardHandler(settingsBoard({ executors: [personalExecutor('main')] })));
+        stubFetch(
+            boardHandler(
+                connectedBoard({ executors: [{ ...personalExecutor('main'), providerConnectionId: CONN.id }] })
+            )
+        );
         const user = userEvent.setup({ delay: null });
         renderApp('/settings/executors');
 
@@ -185,7 +203,7 @@ describe('the executor dialog', () => {
     });
 
     it('keeps advanced editing lossless and per agent, and survives a failed save', async () => {
-        const board = settingsBoard();
+        const board = connectedBoard();
         let failNext = true;
         const calls = stubFetch(
             boardHandler(board, ({ method, url }) => {
@@ -199,6 +217,7 @@ describe('the executor dialog', () => {
 
         await openAdd(user);
         await user.type(field('Name'), 'advanced');
+        await chooseConnection(user, CONN.id);
         await user.click(inDialog().getByText(ADVANCED_LABEL));
         expect(json().value).toBe('{}');
         expect(describedBy(json())).toContain(EXECUTOR_TYPE_META[CLAUDE_CODE].configHelp);
@@ -306,7 +325,7 @@ describe('the runner class (organization profiles only)', () => {
         });
 
     it('the dialog offers the declared classes and submits the chosen one', async () => {
-        const board = settingsBoard({ runnerClasses: classes });
+        const board = connectedBoard({ runnerClasses: classes });
         const calls = stubFetch(boardHandler(board));
         const user = userEvent.setup({ delay: null });
         renderApp('/settings/executors');
@@ -323,6 +342,7 @@ describe('the runner class (organization profiles only)', () => {
         expect(describedBy(classSelect())).toContain(RUNNER_CLASS_HELP);
 
         await user.type(within(orgDialog()).getByLabelText('Name', { exact: true }), 'Builder');
+        await chooseConnection(user, CONN.id);
         await user.selectOptions(classSelect(), 'builds');
         await user.click(within(orgDialog()).getByRole('button', { name: ADD_LABEL }));
         await dialogGone();
@@ -379,7 +399,7 @@ describe('the executor dialog: the guided provider step', () => {
         });
 
     it('adds an OpenAI-compatible executor through the guided step, with no JSON typed', async () => {
-        const board = settingsBoard();
+        const board = connectedBoard();
         stubFetch(boardHandler(board));
         const user = userEvent.setup({ delay: null });
         renderApp('/settings/executors');
@@ -421,10 +441,12 @@ describe('the executor dialog: the guided provider step', () => {
         });
 
         await user.type(field('Name'), 'gateway');
+        await chooseConnection(user, ENDPOINT_CONN.id);
         await user.click(button(ADD_LABEL));
         await dialogGone();
         const saved = board.executors.find((executor) => executor.name === 'gateway');
-        expect(saved?.config).toEqual(generated);
+        // The custom endpoint connection prefixes the model the way the server accepts it; the rest is as generated.
+        expect(saved?.config).toEqual({ ...generated, model: `custom/${generated.model}` });
         expect(JSON.stringify(saved?.config)).not.toContain('GATEWAY_KEY_VALUE');
     });
 
@@ -481,6 +503,7 @@ describe('the executor dialog: provider connections', () => {
     /** With suggestions the input names a datalist, which makes it a combobox. */
     const typedModel = () => within(modelGroup()).getByRole<HTMLInputElement>('combobox', { name: MODEL_CUSTOM_LABEL });
     const connectionSelect = () => inDialog().getByLabelText<HTMLSelectElement>('Provider connection', { exact: true });
+    const CHOOSE = 'Choose a connection';
     const optionNames = () => [...connectionSelect().options].map((option) => option.textContent);
     const putBody = (calls: { method: string; url: string; body: unknown }[]) =>
         calls.filter((call) => call.method === 'PUT' && call.url === '/api/workspace/executors').at(-1)?.body as {
@@ -500,7 +523,7 @@ describe('the executor dialog: provider connections', () => {
         // Claude Code runs Anthropic and a subscription; an OpenAI key is explained, not offered.
         await waitFor(() => expect(optionNames()).toContain('Team key — Anthropic · Organization'));
         expect(optionNames()).toEqual([
-            'None (environment keys)',
+            CHOOSE,
             'Team key — Anthropic · Organization',
             'My key — Anthropic · Personal',
             'Max plan — Claude subscription · Personal',
@@ -514,7 +537,7 @@ describe('the executor dialog: provider connections', () => {
         // OpenCode runs OpenAI, not a subscription.
         await user.selectOptions(field('Agent'), OPENCODE);
         expect(optionNames()).toEqual([
-            'None (environment keys)',
+            CHOOSE,
             'Team key — Anthropic · Organization',
             'My key — Anthropic · Personal',
             'OpenAI key — OpenAI · Organization',
@@ -529,7 +552,7 @@ describe('the executor dialog: provider connections', () => {
         await user.click(await screen.findByRole('button', { name: 'Add organization executor' }));
         await screen.findByRole('dialog', { name: ADD_LABEL });
         await waitFor(() => expect(optionNames()).toContain('Team key — Anthropic · Organization'));
-        expect(optionNames()).toEqual(['None (environment keys)', 'Team key — Anthropic · Organization']);
+        expect(optionNames()).toEqual([CHOOSE, 'Team key — Anthropic · Organization']);
         expect(inDialog().getByRole('list', { name: 'Connections not offered' }).textContent).toContain(
             'An organization executor can only use an organization provider connection.'
         );
@@ -665,12 +688,12 @@ describe('the executor dialog: provider connections', () => {
         // The pasted configuration is never erased on the member's behalf.
         expect(json().value).toContain(SECRET);
 
-        // None means no connection to override, so no notice.
-        await user.selectOptions(connectionSelect(), '');
-        expect(inDialog().queryByRole('note')).toBeNull();
+        // Another connection the configuration would override names that one instead.
+        await user.selectOptions(connectionSelect(), MINE.id);
+        expect(inDialog().getByRole('note').textContent).toContain('My key');
     });
 
-    it('preserves None environment keys for legacy profiles', async () => {
+    it('has no environment-keys choice: a row with no connection must choose one before it can save', async () => {
         const legacy = board({ executors: [personalExecutor('legacy')] });
         const calls = stubFetch(boardHandler(legacy));
         const user = userEvent.setup({ delay: null });
@@ -678,16 +701,19 @@ describe('the executor dialog: provider connections', () => {
         await user.click(await editButton('legacy'));
         await screen.findByRole('dialog', { name: /^Edit executor$/ });
         await waitFor(() => expect(optionNames()).toContain('Team key — Anthropic · Organization'));
+        expect(optionNames().join('|')).not.toMatch(/environment keys/);
         expect(connectionSelect().value).toBe('');
-        expect(connectionSelect().selectedOptions[0]?.textContent).toBe('None (environment keys)');
 
-        // A save that never touched the connection says nothing about it: the write is what it always was.
         await user.click(await inDialog().findByText(ADVANCED_LABEL));
         await user.clear(field('Gate repair rounds'));
         await user.type(field('Gate repair rounds'), '5');
+        expect(button(SAVE_LABEL).disabled).toBe(true);
+        expect(describedBy(button(SAVE_LABEL))).toBe(SAVE_HINTS.connection);
+
+        await user.selectOptions(connectionSelect(), TEAM.id);
         await user.click(button(SAVE_LABEL));
         await dialogGone();
-        expect(putBody(calls).executors[0]).not.toHaveProperty('providerConnectionId');
+        expect(putBody(calls).executors[0]).toMatchObject({ providerConnectionId: TEAM.id });
     });
 
     it('keeps manual model entry when the listing fails, and says so apart from an empty list', async () => {
@@ -767,7 +793,7 @@ describe('the executor dialog: provider connections', () => {
         renderApp('/settings/executors');
         await openAdd(user);
         await inDialog().findByText('No provider connection store for this organization');
-        expect(optionNames()).toEqual(['None (environment keys)']);
+        expect(optionNames()).toEqual([CHOOSE]);
         answer = true;
         await user.click(button('Retry loading connections'));
         await waitFor(() => expect(optionNames()).toContain('Team key — Anthropic · Organization'));

@@ -15,7 +15,7 @@ import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { testSecretDeps, testSecretStore } from './env-secrets-harness.js';
 import { githubAuth, testConfig, TEST_DRIVER_CREDENTIAL, testDriverCredentials } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
-import { randomGithubId, testOrg } from './fixtures.js';
+import { randomGithubId, testConnection, testOrg } from './fixtures.js';
 
 /**
  * The driver's real board client (`driver/src/board/board.ts`) against the real app and store on a
@@ -62,6 +62,7 @@ beforeEach(async () => {
         type: 'claude-code',
         config: {},
         createdBy: caller.user.id,
+        providerConnectionId: await testConnection(sql, orgId),
     });
     await executors.selectDefault(null, main.id);
     // The board refuses a create whose repo it does not track; offline the tracked list is the stored sessions' repos.

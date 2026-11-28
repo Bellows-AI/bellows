@@ -68,7 +68,7 @@ function parseExecutorEntry(
     if (item?.isDefault !== undefined) {
         return 'isDefault is set through PUT /api/workspace/executors/default, not on the row';
     }
-    const fields = parseExecutorFields(entry, deploymentMode, subscriptionAllowed);
+    const fields = parseExecutorFields(entry, deploymentMode, subscriptionAllowed, true);
     if (typeof fields === 'string') return fields;
     const id = parseExecutorId(entry);
     if (typeof id === 'object') return id.refusal;
@@ -114,7 +114,7 @@ type ExecutorEntry = {
     config: Record<string, unknown>;
     gateFixRounds: number;
     suspended?: boolean;
-    providerConnectionId?: string | null;
+    providerConnectionId: string | null;
 };
 
 /**
@@ -138,6 +138,7 @@ function personalRow(row: ExecutorProfile, visible?: ReadonlyMap<string, Provide
         createdAt: row.createdAt,
         gateFixRounds: row.gateFixRounds,
         suspended: row.suspended,
+        suspendedReason: row.suspendedReason,
         providerConnectionId: row.providerConnectionId,
         ...connectionFields(row, visible),
     };
@@ -262,6 +263,7 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
             type: row.type,
             createdAt: row.createdAt,
             suspended: row.suspended,
+            suspendedReason: row.suspendedReason,
             runnerClass: row.runnerClass,
             // Whether the organization's configured default names this row: the admin's Clear action reads it.
             orgDefault: orgDefault?.executorId === row.id,
@@ -416,9 +418,16 @@ async function handleSuspendExecutor(deps: WorkspaceDeps, request: FastifyReques
     const updated = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => ctx.executors.setPersonalSuspended(ctx.userId, id, suspended)
+        () =>
+            ctx.executors.setPersonalSuspended(ctx.userId, id, suspended).catch((error: unknown) => {
+                if (isConnectionRefusal(error)) return error;
+                throw error;
+            })
     );
     if (!updated.ok) return reply;
+    if (isConnectionRefusal(updated.value)) {
+        return bad(reply, ERROR_CODES.PROVIDER_CONNECTION_REFUSED, updated.value.message, HTTP_CONNECTION_REFUSED);
+    }
     if (!updated.value) return reply.code(HTTP_NOT_FOUND).send({ error: 'No such executor' });
     return reply.code(HTTP_OK).send(personalRow(updated.value));
 }

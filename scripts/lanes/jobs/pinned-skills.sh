@@ -92,10 +92,10 @@ ps_endpoint() { # ps_endpoint <name> <org skill, workspace skills, helper probes
 
 ps_point() { # ps_point <claude|opencode> <member token> <port> -> that member's runs reach the scripted model on <port>
     if [ "$1" = opencode ]; then
-        AUTH_HEADER="Bearer $2" api PUT /api/workspace/executors "$(node -e 'const config = JSON.parse(process.argv[1]);
-            process.stdout.write(JSON.stringify({ executors: [{ name: "claude", type: "claude-code", config: {} }, { name: "opencode", type: "opencode", config }] }));' "$(lane_opencode_config "http://host.docker.internal:$3/v1")")" >/dev/null
+        AUTH_HEADER="Bearer $2" lane_store_executors personal "http://host.docker.internal:$3/v1" opencode "$(lane_opencode_config "http://host.docker.internal:$3/v1")" >/dev/null
     else
         AUTH_HEADER="Bearer $ps_admin" api PUT /api/env/org "{\"vars\":[{\"name\":\"ANTHROPIC_API_KEY\",\"value\":\"fake-key\",\"isSecret\":true},{\"name\":\"ANTHROPIC_BASE_URL\",\"value\":\"http://host.docker.internal:$3\",\"isSecret\":false}]}" >/dev/null
+        AUTH_HEADER="Bearer $2" lane_store_executors personal "http://host.docker.internal:$3" opencode >/dev/null
     fi
 }
 
@@ -243,8 +243,7 @@ ps_cli_lane() { # ps_cli_lane <claude|opencode>
     # a member who holds a Jira connection has it bound to the task when it is made, so factory-jira is listed.
     local ps_c
     ps_c="$(ps_jira_member "ps-member-c-$cli")" && ok "$cli: a member holding a Jira connection is minted" || bad "$cli: a member holding a Jira connection is minted" "$ps_c"
-    AUTH_HEADER="Bearer $ps_c" expect_status "$cli: the Jira member stores the task executors" 200 PUT /api/workspace/executors \
-        '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
+    AUTH_HEADER="Bearer $ps_c" expect_store_executors "$cli: the Jira member stores the task executors" personal "$LANE_IDLE_MODEL_URL" opencode
     ps_endpoint "pins-$cli-jira" "$PS_JIRA_DESC,$PS_FIX_DESC" "/etc/shadow"
     ps_point "$cli" "$ps_c" "$ps_port"
     id="$(ps_job "$cli" "$ps_c")"
@@ -344,8 +343,7 @@ pinned_skills_lane() {
     }
     ok 'pinned skills: an admin and two members are minted'
     for tok in "$ps_a" "$ps_b"; do
-        AUTH_HEADER="Bearer $tok" expect_status 'pinned skills: the member stores the task executors' 200 PUT /api/workspace/executors \
-            '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
+        AUTH_HEADER="Bearer $tok" expect_store_executors 'pinned skills: the member stores the task executors' personal "$LANE_IDLE_MODEL_URL" opencode
     done
 
     out="$(ps_publish "$ps_admin" /api/org/skills "$PS_ORG_SKILL" "$PS_ORG_SENTINEL")"

@@ -10,7 +10,7 @@ import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { expireLease, mustCreate, testOrg } from './fixtures.js';
+import { expireLease, mustCreate, testConnection, testOrg } from './fixtures.js';
 
 /**
  * The round cap a run's finish pass is held to: the thread root's `gate_fix_rounds`, frozen at create for every
@@ -73,8 +73,8 @@ const workflowOf = (definition: WorkflowDefinition) => ({
 
 async function profile(name: string, rounds: number): Promise<void> {
     await sql`
-        insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds, position)
-        values (${ORG}, null, ${name}, 'claude-code', '{}'::jsonb, ${rounds}, 0)`;
+        insert into executor_profile (org_id, user_id, name, type, config, gate_fix_rounds, position, provider_connection_id)
+        values (${ORG}, null, ${name}, 'claude-code', '{}'::jsonb, ${rounds}, 0, ${await testConnection(sql, ORG)})`;
 }
 
 async function create(target: Partial<CreateTarget> = {}): Promise<string> {

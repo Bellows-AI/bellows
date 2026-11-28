@@ -474,9 +474,8 @@ export function connectionLabel(connection: ProviderConnectionMeta): string {
 }
 
 export const CONNECTION_FIELD_LABEL = 'Provider connection';
-export const CONNECTION_NONE_LABEL = 'None (environment keys)';
 export const CONNECTION_HELP =
-    'The key and endpoint this executor’s tasks use for their model. Executors can share a connection, and editing one here only changes which connection it uses. None runs on the keys in your environment.';
+    'The key and endpoint this executor’s tasks use for their model. Executors can share a connection, and editing one here only changes which connection it uses.';
 
 /**
  * The Provider connection select. It offers the connections this agent and scope may use (the shared selection rule's
@@ -513,7 +512,9 @@ export function ProviderConnectionField(props: {
                 )}
                 onChange={(event) => props.onChange(event.target.value)}
             >
-                <option value="">{CONNECTION_NONE_LABEL}</option>
+                <option value="" disabled>
+                    Choose a connection
+                </option>
                 {offered.map((connection) => (
                     <option key={connection.id} value={connection.id}>
                         {connectionLabel(connection)}

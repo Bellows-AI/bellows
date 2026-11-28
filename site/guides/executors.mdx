@@ -41,18 +41,18 @@ In the task picker, personal profiles come first. Organization profiles are labe
   <Step title="Fill in the form">
     Give it a **Name**, such as `Code review`. The name appears in the task picker. Choose the **Agent**.
   </Step>
-  <Step title="Connect a provider — optional">
-    Open **Connect a provider** to give the profile its own key, endpoint and model: pick a provider
-    (Anthropic, OpenRouter, OpenAI, LiteLLM — or, for OpenCode, **OpenAI-compatible (custom endpoint)** for your own
-    endpoint such as vLLM, LiteLLM or a gateway), paste a key, set the base URL where the provider
-    takes one, and name the model. The key is stored in the secret store — the configuration keeps
-    only a reference to it. Bellows builds the agent configuration from what you pick; it stays
+  <Step title="Choose a provider connection">
+    Pick one in the **Provider connection** field beside **Agent**; **Save** stays disabled until you do.
+    Create connections under **Settings → Model**, or use **Connect a provider** to give the profile its own
+    key, endpoint and model: pick a provider (Anthropic, OpenRouter, OpenAI, LiteLLM — or, for OpenCode,
+    **OpenAI-compatible (custom endpoint)** for your own endpoint such as vLLM, LiteLLM or a gateway), paste a key,
+    set the base URL where the provider takes one, and name the model. The key is stored in the secret store — the
+    configuration keeps only a reference to it. Bellows builds the agent configuration from what you pick; it stays
     visible and editable under **Advanced configuration**.
   </Step>
-  <Step title="Or leave the provider out">
-    Without a provider, keep **Use runner default** or choose **Custom model identifier** under
-    **Model**. The task then runs on the key connected in [Settings → Model](/guides/env-and-secrets#saving-a-model-key-when-you-connect-a-provider), in
-    your own or the organization's environment.
+  <Step title="Choose a model">
+    Keep **Use runner default** or choose **Custom model identifier** under **Model**. The task runs on the
+    connection you chose, never on keys left in the environment.
   </Step>
   <Step title="Save">
     Save the profile. It now shows in the task picker.
@@ -94,10 +94,12 @@ resolves only from your own scopes.
 
 ### Run an executor on a provider connection
 
-A profile can select one **provider connection** — a named model key with its endpoint, set up under
-**Settings → Model** — instead of relying on keys set in the environment. In the executor dialog, choose
-it in the **Provider connection** field beside **Agent**; **None (environment keys)** is the default
-and keeps a profile exactly as it was. This is separate from **Connect a provider** under it, which
+Every profile runs on one **provider connection** — a named model key with its endpoint, set up under
+**Settings → Model**. In the executor dialog, choose it in the **Provider connection** field beside
+**Agent**; **Save** stays disabled until one is chosen, and there is no option to run on keys set in
+the environment. An executor that could not be matched to a key or provider when Bellows moved to
+provider connections is suspended: its **Suspended** badge shows the reason on hover, and it stays
+suspended until you choose a connection for it and resume it. This is separate from **Connect a provider** under it, which
 writes a key and endpoint into this one profile's own configuration. Several profiles can share
 one connection, and each profile picks its own connection and model, so one connection's key
 rotation reaches every profile that selects it on its next task, while a task already running keeps

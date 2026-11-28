@@ -36,7 +36,13 @@ import {
 
 const track = trackApps();
 
-const CLAUDE_CODE = { name: 'team-runner', type: 'claude-code', config: { model: 'sonnet' } };
+const CONNECTION_ID = '33333333-3333-4333-8333-333333333333';
+const CLAUDE_CODE = {
+    name: 'team-runner',
+    type: 'claude-code',
+    config: { model: 'sonnet' },
+    providerConnectionId: CONNECTION_ID,
+};
 
 async function boot(
     executors: MemoryUserExecutorStore = memoryUserExecutorStore(),
@@ -157,7 +163,9 @@ describe('organization executors: permissions', () => {
             method: 'PUT',
             url: '/api/workspace/executors',
             headers: { cookie: memberCookie },
-            payload: { executors: [{ name: 'mine', type: 'claude-code', config: {} }] },
+            payload: {
+                executors: [{ name: 'mine', type: 'claude-code', config: {}, providerConnectionId: CONNECTION_ID }],
+            },
         });
         const personal = executors.rows().find((row) => row.userId === member.user.id)!;
 
@@ -193,6 +201,7 @@ describe('organization executors: permissions', () => {
                         name: 'x',
                         type: 'claude-code',
                         config: {},
+                        providerConnectionId: CONNECTION_ID,
                         userId: '00000000-0000-4000-8000-000000000000',
                     },
                 ],
@@ -244,7 +253,13 @@ describe('organization executors: admin CRUD', () => {
             method: 'PUT',
             url: `/api/org/executors/${id}`,
             headers: { cookie: adminCookie },
-            payload: { name: 'renamed', type: 'claude-code', config: { model: 'opus' }, gateFixRounds: 1 },
+            payload: {
+                name: 'renamed',
+                type: 'claude-code',
+                config: { model: 'opus' },
+                gateFixRounds: 1,
+                providerConnectionId: CONNECTION_ID,
+            },
         });
         expect(renamed.statusCode).toBe(HTTP_OK);
         expect(renamed.json()).toEqual(expect.objectContaining({ name: 'renamed', config: { model: 'opus' } }));
@@ -306,7 +321,9 @@ describe('organization executors: admin CRUD', () => {
             method: 'PUT',
             url: '/api/workspace/executors',
             headers: { cookie: adminCookie },
-            payload: { executors: [{ name: 'team-runner', type: 'opencode', config: {} }] },
+            payload: {
+                executors: [{ name: 'team-runner', type: 'opencode', config: {}, providerConnectionId: CONNECTION_ID }],
+            },
         });
         const response = await instance.inject({
             method: 'POST',
@@ -324,7 +341,12 @@ describe('organization executors: admin CRUD', () => {
                 method: 'POST',
                 url: '/api/org/executors',
                 headers: { cookie: adminCookie },
-                payload: { name: `executor-${i}`, type: 'claude-code', config: {} },
+                payload: {
+                    name: `executor-${i}`,
+                    type: 'claude-code',
+                    config: {},
+                    providerConnectionId: CONNECTION_ID,
+                },
             });
             expect(response.statusCode).toBe(HTTP_CREATED);
         }
@@ -332,7 +354,7 @@ describe('organization executors: admin CRUD', () => {
             method: 'POST',
             url: '/api/org/executors',
             headers: { cookie: adminCookie },
-            payload: { name: 'one-too-many', type: 'claude-code', config: {} },
+            payload: { name: 'one-too-many', type: 'claude-code', config: {}, providerConnectionId: CONNECTION_ID },
         });
         expect(over.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(over.json().code).toBe('TOO_MANY_EXECUTORS');
@@ -341,8 +363,11 @@ describe('organization executors: admin CRUD', () => {
     it('validates the create body: type, name shape, config object, rounds', async () => {
         const { instance, adminCookie } = await boot();
         const refusals = [
-            [{ name: 'x', type: 'codex', config: {} }, 'BAD_EXECUTOR_TYPE'],
-            [{ name: 'a/b', type: 'claude-code', config: {} }, 'BAD_EXECUTOR_NAME'],
+            [{ name: 'x', type: 'codex', config: {}, providerConnectionId: CONNECTION_ID }, 'BAD_EXECUTOR_TYPE'],
+            [
+                { name: 'a/b', type: 'claude-code', config: {}, providerConnectionId: CONNECTION_ID },
+                'BAD_EXECUTOR_NAME',
+            ],
             [{ name: 'x', type: 'claude-code', config: 'text' }, 'BAD_BODY'],
             [{ name: 'x', type: 'claude-code', config: {}, gateFixRounds: 11 }, 'BAD_EXECUTOR_ROUNDS'],
         ] as const;
@@ -484,7 +509,11 @@ describe('organization executors: scope changes', () => {
             method: 'PUT',
             url: '/api/workspace/executors',
             headers: { cookie: adminCookie },
-            payload: { executors: [{ name: 'mine', type: 'claude-code', config: { model: 'm' } }] },
+            payload: {
+                executors: [
+                    { name: 'mine', type: 'claude-code', config: { model: 'm' }, providerConnectionId: CONNECTION_ID },
+                ],
+            },
         });
         const personal = executors.rows().find((row) => row.userId === admin.user.id)!;
 
@@ -533,7 +562,9 @@ describe('organization executors: scope changes', () => {
             method: 'PUT',
             url: '/api/workspace/executors',
             headers: { cookie: adminCookie },
-            payload: { executors: [{ name: 'team-runner', type: 'opencode', config: {} }] },
+            payload: {
+                executors: [{ name: 'team-runner', type: 'opencode', config: {}, providerConnectionId: CONNECTION_ID }],
+            },
         });
         const orgRow = executors.rows().find((row) => row.userId === null)!;
 
@@ -556,7 +587,9 @@ describe('organization executors: scope changes', () => {
             method: 'PUT',
             url: '/api/workspace/executors',
             headers: { cookie: adminCookie },
-            payload: { executors: [{ name: 'mine', type: 'claude-code', config: {} }] },
+            payload: {
+                executors: [{ name: 'mine', type: 'claude-code', config: {}, providerConnectionId: CONNECTION_ID }],
+            },
         });
         const personal = executors.rows().find((row) => row.userId === admin.user.id)!;
         for (let i = 0; i < MAX_EXECUTORS_PER_ORG; i += 1) {
@@ -564,7 +597,7 @@ describe('organization executors: scope changes', () => {
                 method: 'POST',
                 url: '/api/org/executors',
                 headers: { cookie: adminCookie },
-                payload: { name: `full-${i}`, type: 'claude-code', config: {} },
+                payload: { name: `full-${i}`, type: 'claude-code', config: {}, providerConnectionId: CONNECTION_ID },
             });
         }
 
@@ -593,6 +626,7 @@ describe('organization executors: scope changes', () => {
             name: `p-${i}`,
             type: 'claude-code',
             config: {},
+            providerConnectionId: CONNECTION_ID,
         }));
         await instance.inject({
             method: 'PUT',
@@ -639,7 +673,16 @@ describe('the workspace poll and the personal routes after 391', () => {
             method: 'PUT',
             url: '/api/workspace/executors',
             headers: { cookie: adminCookie },
-            payload: { executors: [{ name: 'mine', type: 'opencode', config: { model: 'secret-model' } }] },
+            payload: {
+                executors: [
+                    {
+                        name: 'mine',
+                        type: 'opencode',
+                        config: { model: 'secret-model' },
+                        providerConnectionId: CONNECTION_ID,
+                    },
+                ],
+            },
         });
 
         const body = (
@@ -825,7 +868,7 @@ describe('organization executors: provider connection selection', () => {
         expect(executors.rows()).toEqual([]);
     });
 
-    it('refuses a malformed connection id as a bad body, and refuses an edit that switches to a refused one', async () => {
+    it('refuses a malformed, missing or null connection id as a bad body, and an edit that switches to a refused one', async () => {
         const { instance, adminCookie } = await boot(freshRules());
         expect((await create(adminCookie, instance, { providerConnectionId: 'not-an-id' })).statusCode).toBe(
             HTTP_BAD_REQUEST
@@ -838,21 +881,27 @@ describe('organization executors: provider connection selection', () => {
             payload: { ...CLAUDE_CODE, providerConnectionId: OPENAI_CONNECTION },
         });
         expect(edit.statusCode).toBe(HTTP_CONFLICT);
-        // Null clears the selection; omitting it keeps it.
+        // A connection is required on every edit: omitting it or sending null is a bad body, and the row keeps its own.
+        for (const [label, payload] of [
+            ['omitted', { name: CLAUDE_CODE.name, type: CLAUDE_CODE.type, config: CLAUDE_CODE.config }],
+            ['null', { ...CLAUDE_CODE, providerConnectionId: null }],
+        ] as const) {
+            const refused = await instance.inject({
+                method: 'PUT',
+                url: `/api/org/executors/${created.id}`,
+                headers: { cookie: adminCookie },
+                payload,
+            });
+            expect(refused.statusCode, label).toBe(HTTP_BAD_REQUEST);
+            expect(refused.json(), label).toMatchObject({ code: 'BAD_BODY' });
+        }
         const kept = await instance.inject({
             method: 'PUT',
             url: `/api/org/executors/${created.id}`,
             headers: { cookie: adminCookie },
-            payload: CLAUDE_CODE,
+            payload: { ...CLAUDE_CODE, providerConnectionId: ORG_CONNECTION },
         });
         expect(kept.json()).toMatchObject({ providerConnectionId: ORG_CONNECTION });
-        const cleared = await instance.inject({
-            method: 'PUT',
-            url: `/api/org/executors/${created.id}`,
-            headers: { cookie: adminCookie },
-            payload: { ...CLAUDE_CODE, providerConnectionId: null },
-        });
-        expect(cleared.json()).toMatchObject({ providerConnectionId: null });
     });
 
     it('refuses a promotion that would carry a personal connection into the organization', async () => {

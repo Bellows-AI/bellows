@@ -2,6 +2,7 @@ import { type DeploymentMode, ERROR_CODES, isModelProvider, subscriptionTokenAll
 import type { FastifyError, FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { createRateLimiter } from '../oauth/rate-limit.js';
+import { validBase, validKey } from '../provider-keys/input-rules.js';
 import type { ProviderKeys, VerifyInput } from '../provider-keys/verify.js';
 import { errorHandler } from './error-handler.js';
 import { bad, body as jsonBody } from './helpers.js';
@@ -16,30 +17,10 @@ const VERIFY_PATH = '/api/provider-connections/verify';
 const PER_MEMBER_PER_WINDOW = 10;
 const WINDOW_MS = 60_000;
 const BODY_LIMIT = 8192;
-const KEY_MAX = 4096;
-const URL_MAX = 2048;
 const HTTP_TOO_MANY = 429;
 const HTTP_FIRST_SERVER_ERROR = 500;
 const FIELDS = new Set(['provider', 'key', 'baseUrl']);
-/** Printable ASCII without spaces: what a provider key is, and all a header may carry. */
-const KEY_SHAPE = /^[\x21-\x7e]+$/;
 const BAD_BODY_MESSAGE = 'The check needs a known provider, a key and, for LiteLLM, an http(s) base URL';
-
-/** An http(s) URL with no credentials in it, within the length a base URL may have. */
-export const validBase = (raw: string): boolean => {
-    if (raw.length > URL_MAX) return false;
-    let url: URL;
-    try {
-        url = new URL(raw);
-    } catch {
-        return false;
-    }
-    return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password;
-};
-
-/** A provider key a header can carry: printable ASCII, no spaces, within the length a key may have. */
-export const validKey = (key: unknown): key is string =>
-    typeof key === 'string' && key.length <= KEY_MAX && KEY_SHAPE.test(key);
 
 /** The check's input, or null: every field known, a listed provider, a header-safe key, a base URL where one fits. */
 function parseVerify(raw: unknown): Omit<VerifyInput, 'subscriptionAllowed'> | null {
