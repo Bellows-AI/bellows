@@ -291,3 +291,13 @@ describe('the model setup routes are gone', () => {
         expect((await removed(b, method, url)).statusCode).toBe(HTTP_NOT_FOUND);
     });
 });
+
+describe('/api/auth/me platformModel', () => {
+    it('reports whether the deployment supplies the model', async () => {
+        for (const platformModelProvided of [false, true]) {
+            const b = await boot({ platformModelProvided });
+            const me = await b.app.inject({ method: 'GET', url: '/api/auth/me', headers: { cookie: b.memberCookie } });
+            expect(me.json()).toMatchObject({ platformModel: platformModelProvided });
+        }
+    });
+});
