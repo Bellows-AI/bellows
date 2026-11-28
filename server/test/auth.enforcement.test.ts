@@ -392,9 +392,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/onboarding/setup', 'user'],
     ['/api/onboarding/setup/complete', 'user'],
     // Checking a provider key the member pasted: a person's act in their own session.
-    ['/api/model-setup/verify', 'user'],
-    // Reading and saving the member's model setup: a person's act, the org scope's admin check in the handler.
-    ['/api/model-setup', 'user'],
+    ['/api/provider-connections/verify', 'user'],
+    // The provider setup command: a person's act, the org scope's admin check in the handler.
+    ['/api/provider-connections/setup', 'user'],
     // Provider connections: the named model-provider credentials, the org writes admin-gated in the handler.
     ['/api/provider-connections', 'user'],
     ['/api/provider-connections/:id', 'user'],

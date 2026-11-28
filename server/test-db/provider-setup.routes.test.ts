@@ -12,7 +12,7 @@ import { randomGithubId, testOrg } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
- * The model setup through the real app, org registry and stores (docs/api.md): saving a setup creates the executor,
+ * The provider setup through the real app, org registry and stores (docs/api.md): saving a setup creates the executor,
  * selects it as the default and answers its identity; the first task, a member's task and every later default launch
  * resolve through that executor, and no answer carries the key.
  */
@@ -54,7 +54,7 @@ async function personIn(orgId: string): Promise<Person> {
         orgId,
         userId: caller.user.id,
         createdBy: caller.user.id,
-        label: 'model setup',
+        label: 'provider setup',
         tokenHash: hashToken(token),
     });
     return { userId: caller.user.id, token };
@@ -96,16 +96,28 @@ const call = async (who: Person, method: 'GET' | 'POST' | 'PUT', url: string, pa
     return { status: response.statusCode, json: response.json(), body: response.body };
 };
 
-const orgBody = (over: Record<string, unknown> = {}) => ({
+/** The command body: `agentType` and `model` override the executor's, whose own fields are merged over its defaults. */
+const orgBody = ({ agentType, model, executor, ...over }: Record<string, unknown> = {}) => ({
     scope: 'org',
     requestId: randomUUID(),
-    agentType: 'claude-code',
-    model: 'claude-sonnet-4-5',
     connection: { intent: 'create', provider: 'anthropic', key: KEY_A, name: 'Anthropic' },
-    executor: { name: 'Claude' },
+    makeDefault: true,
     ...over,
+    executor: {
+        name: 'Claude',
+        agentType: agentType ?? 'claude-code',
+        model: model ?? 'claude-sonnet-4-5',
+        ...(executor as object),
+    },
 });
-const save = (who: Person, body: object) => call(who, 'PUT', '/api/model-setup', body);
+const save = (who: Person, body: object) => call(who, 'POST', '/api/provider-connections/setup', body);
+/** The executor's stored model and revision: what an edit's `expectedUpdatedAt` is read from. */
+const storedExecutor = async (id: string) => {
+    const [row] = await sql<{ model: string; updated_at: Date }[]>`
+        select config->>'model' as model, updated_at from executor_profile where org_id = ${org} and id = ${id}
+    `;
+    return { model: row!.model, updatedAt: row!.updated_at.toISOString() };
+};
 const launch = async (who: Person, extra: object = {}) => {
     const created = await call(who, 'POST', '/api/jobs', { repo: REPO, command: 'work', ...extra });
     expect(created.status).toBe(CREATED);
@@ -113,7 +125,7 @@ const launch = async (who: Person, extra: object = {}) => {
 };
 const claim = async (worker: string) => (await orgs.for(org))!.jobs!.claim(worker, LEASE_SECONDS);
 
-describe.skipIf(!enabled)('the model setup routes', () => {
+describe.skipIf(!enabled)('the provider setup routes', () => {
     it('onboarding save first task and claim use the returned executor', async () => {
         const saved = await save(admin, orgBody());
         expect(saved.status).toBe(OK);
@@ -126,23 +138,13 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         const workspace = await call(admin, 'GET', '/api/workspace');
         expect(workspace.json.orgExecutors.map((e: { id: string }) => e.id)).toEqual([saved.json.executorId]);
         expect(workspace.json.defaultExecutor).toEqual({ scope: 'org', name: 'Claude' });
-        const view = await call(admin, 'GET', '/api/model-setup');
-        expect(view.json.effective).toBe('executor');
-        expect(view.json.selected).toMatchObject({
-            scope: 'org',
-            executorId: saved.json.executorId,
-            agentType: 'claude-code',
-            model: 'claude-sonnet-4-5',
-            connection: { id: saved.json.connectionId, provider: 'anthropic', scope: 'org' },
-        });
-        expect(view.body).not.toContain(KEY_A);
+        expect(await storedExecutor(saved.json.executorId)).toMatchObject({ model: 'claude-sonnet-4-5' });
 
         await launch(admin);
         const claimed = await claim('w1');
         expect(claimed?.executorType).toBe('claude-code');
         expect(claimed?.env?.ANTHROPIC_API_KEY).toBe(KEY_A);
         expect((await sql`select 1 from env_var where org_id = ${org}`).length).toBe(0);
-        expect((await sql`select 1 from agent_default where org_id = ${org}`).length).toBe(0);
     });
 
     it('another member discovers and runs organization setup without receiving its key', async () => {
@@ -150,10 +152,6 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         const workspace = await call(member, 'GET', '/api/workspace');
         expect(workspace.json.orgExecutors.map((e: { id: string }) => e.id)).toEqual([saved.json.executorId]);
         expect(workspace.body).not.toContain(KEY_A);
-        const view = await call(member, 'GET', '/api/model-setup');
-        expect(view.json.effective).toBe('executor');
-        expect(view.body).not.toContain(KEY_A);
-
         await launch(member);
         const claimed = await claim('w1');
         expect(claimed?.env?.ANTHROPIC_API_KEY).toBe(KEY_A);
@@ -191,24 +189,22 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         expect((await call(member, 'GET', '/api/workspace')).json.executors).toEqual([]);
     });
 
-    it('an older tab cannot overwrite a newer save: the read carries the revision and an edit or a rotation sends it', async () => {
+    it('an older tab cannot overwrite a newer save: the revision is read and an edit or a rotation sends it', async () => {
         const first = await save(admin, orgBody());
-        const stale = (await call(admin, 'GET', '/api/model-setup')).json.selected.updatedAt;
-        expect(typeof stale).toBe('string');
+        const stale = (await storedExecutor(first.json.executorId)).updatedAt;
         const edit = (model: string, expectedUpdatedAt: string) =>
             save(
                 admin,
                 orgBody({
-                    model,
                     connection: { intent: 'reuse', id: first.json.connectionId },
-                    executor: { id: first.json.executorId, expectedUpdatedAt },
+                    executor: { id: first.json.executorId, model, expectedUpdatedAt },
                 })
             );
         // Another tab saves a new model; the older tab's edit and rotation both read `stale` and are refused.
         expect((await edit('claude-opus-4-5', stale)).status).toBe(OK);
         const lateEdit = await edit('claude-sonnet-4-5', stale);
         expect(lateEdit.status).toBe(CONFLICT);
-        expect(lateEdit.json.code).toBe('MODEL_SETUP_CONFLICT');
+        expect(lateEdit.json.code).toBe('PROVIDER_SETUP_CONFLICT');
         const lateRotation = await save(
             admin,
             orgBody({
@@ -217,10 +213,10 @@ describe.skipIf(!enabled)('the model setup routes', () => {
             })
         );
         expect(lateRotation.status).toBe(CONFLICT);
-        const view = (await call(admin, 'GET', '/api/model-setup')).json;
-        expect(view.selected.model).toBe('claude-opus-4-5');
+        const current = await storedExecutor(first.json.executorId);
+        expect(current.model).toBe('claude-opus-4-5');
         // The fresh revision the read now carries is accepted.
-        expect((await edit('claude-sonnet-4-5', view.selected.updatedAt)).status).toBe(OK);
+        expect((await edit('claude-sonnet-4-5', current.updatedAt)).status).toBe(OK);
     });
 
     describe('the executor cap', () => {
@@ -279,7 +275,7 @@ describe.skipIf(!enabled)('the model setup routes', () => {
             })
         );
         expect(edited.status).toBe(OK);
-        expect((await call(admin, 'GET', '/api/model-setup')).json.selected.model).toBe('claude-opus-4-5');
+        expect((await storedExecutor(first.json.executorId)).model).toBe('claude-opus-4-5');
 
         await launch(admin);
         const claimed = await claim('w-model');
@@ -305,7 +301,6 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         expect((await claim('w1'))?.env?.ANTHROPIC_API_KEY).toBe(KEY_A);
         // The administrator sees none of it.
         expect((await call(admin, 'GET', '/api/workspace')).json.executors).toEqual([]);
-        expect((await call(admin, 'GET', '/api/model-setup')).json.effective).toBeNull();
     });
 
     it('a retried request replays its receipt', async () => {
@@ -400,16 +395,6 @@ describe.skipIf(!enabled)('the model setup routes', () => {
             { upsert: [{ name: 'ANTHROPIC_API_KEY', value: KEY_A, isSecret: true }], remove: [] },
             admin.userId
         );
-        await runtime.userExecutors!.setAgentDefault(null, {
-            agentType: 'claude-code',
-            model: 'claude-sonnet-4-5',
-            provider: 'anthropic',
-        });
-
-        const view = await call(member, 'GET', '/api/model-setup');
-        expect(view.json.effective).toBe('org');
-        expect(view.json.selected ?? null).toBeNull();
-        expect(view.json.org).toMatchObject({ provider: 'anthropic', keyNames: ['ANTHROPIC_API_KEY'] });
 
         await launch(member);
         const claimed = await claim('w1');
@@ -417,40 +402,18 @@ describe.skipIf(!enabled)('the model setup routes', () => {
         expect((await sql`select 1 from executor_default_selection where org_id = ${org}`).length).toBe(0);
     });
 
-    it('an existing env-backed setup adopts a real executor on request, keeping its credentials', async () => {
-        const runtime = (await orgs.for(org))!;
-        await runtime.envVars!.writeScoped(
-            { kind: 'org' },
-            { upsert: [{ name: 'ANTHROPIC_API_KEY', value: KEY_A, isSecret: true }], remove: [] },
-            admin.userId
-        );
-        const adopted = await save(admin, orgBody({ connection: { intent: 'none' } }));
-        expect(adopted.status).toBe(OK);
-        expect(adopted.json.connectionId).toBeNull();
-        // The old credential is untouched and still what the executor runs on.
-        expect((await sql`select 1 from env_var where org_id = ${org}`).length).toBe(1);
-        await launch(member);
-        expect((await claim('w1'))?.env?.ANTHROPIC_API_KEY).toBe(KEY_A);
-    });
-
-    it('a none intent without any key in view is refused', async () => {
-        const refused = await save(admin, orgBody({ connection: { intent: 'none' } }));
-        expect(refused.status).toBe(400);
-        expect((await sql`select 1 from executor_profile where org_id = ${org}`).length).toBe(0);
-    });
-
     it('an invalid provider and runtime combination is refused and leaves the prior setup', async () => {
         const first = await save(admin, orgBody());
         const bad = await save(
             admin,
             orgBody({
-                agentType: 'claude-code',
                 connection: { intent: 'create', provider: 'openai', key: KEY_B, name: 'OpenAI' },
                 executor: { name: 'Bad' },
             })
         );
         expect(bad.status).toBe(400);
-        expect((await call(admin, 'GET', '/api/model-setup')).json.selected.executorId).toBe(first.json.executorId);
+        expect((await call(admin, 'GET', '/api/workspace')).json.defaultExecutor).toEqual({ scope: 'org', name: 'Claude' });
+        expect(first.json.executorId).toEqual(expect.any(String));
         expect((await sql`select 1 from provider_connection where org_id = ${org}`).length).toBe(1);
     });
 });

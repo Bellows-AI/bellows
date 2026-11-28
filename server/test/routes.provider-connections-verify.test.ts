@@ -13,12 +13,12 @@ import { githubAuth, memoryAuthStore, signedIn, staticRegistry, testConfig } fro
 import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
 
 /**
- * Offline: `POST /api/model-setup/verify`. A member's provider key is checked against the provider and
+ * Offline: `POST /api/provider-connections/verify`. A member's provider key is checked against the provider and
  * stored nowhere; the key never reaches a log line or a response body.
  */
 
 const track = trackApps();
-const URL_PATH = '/api/model-setup/verify';
+const URL_PATH = '/api/provider-connections/verify';
 const KEY = 'sk-ant-api03-route-secret-0123456789';
 const HTTP_TOO_MANY = 429;
 const LIMIT = 10;
@@ -65,7 +65,7 @@ const verify = (app: Booted['app'], cookie: string, payload: unknown) =>
         payload: typeof payload === 'string' ? payload : JSON.stringify(payload),
     });
 
-describe('POST /api/model-setup/verify', () => {
+describe('POST /api/provider-connections/verify', () => {
     it('answers the check, uncached', async () => {
         const { app, alice } = await boot();
         fake.reply('/v1/models', modelList('claude-sonnet-4-5'));

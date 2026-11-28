@@ -115,7 +115,6 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['GET', '/api/jobs/:id/artifacts', 'read', MEMBER_ROLE],
     ['GET', '/api/jobs/:id/artifacts/read', 'read', MEMBER_ROLE],
     ['GET', '/api/jobs/:id/thread', 'read', MEMBER_ROLE],
-    ['GET', '/api/model-setup', 'read', MEMBER_ROLE],
     ['GET', '/api/oauth/consent/:id', 'none', MEMBER_ROLE],
     ['GET', '/api/oauth/grants', 'none', MEMBER_ROLE],
     // The whole organization's data, every member's included: an admin read, never reachable by a scoped grant.
@@ -177,7 +176,8 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['POST', '/api/jobs/:id/wait/poke', 'write', MEMBER_ROLE],
     ['POST', '/api/jobs/preflight', 'read', MEMBER_ROLE],
     // Checking a provider key before it is saved: a browser act, never a scoped grant's.
-    ['POST', '/api/model-setup/verify', 'none', MEMBER_ROLE],
+    ['POST', '/api/provider-connections/verify', 'none', MEMBER_ROLE],
+    ['POST', '/api/provider-connections/setup', 'none', MEMBER_ROLE],
     // The member's own onboarding progress: a browser act, never a scoped grant's.
     ['POST', '/api/onboarding/setup', 'none', MEMBER_ROLE],
     ['POST', '/api/onboarding/setup/complete', 'none', MEMBER_ROLE],
@@ -213,7 +213,6 @@ export const ROUTE_CLASSES: readonly (readonly [
     ['PUT', '/api/jobs/:id/title', 'write', MEMBER_ROLE],
     // Saving a key and the agent default: a browser act. The scope is in the body, so the org scope's admin check is
     // the handler's.
-    ['PUT', '/api/model-setup', 'none', MEMBER_ROLE],
     ['PUT', '/api/org/executors/:id', 'none', ADMIN_ROLE],
     ['PUT', '/api/org/executors/default', 'none', ADMIN_ROLE],
     ['PUT', '/api/org/skills/:id/enabled', 'none', ADMIN_ROLE],

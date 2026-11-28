@@ -5,7 +5,7 @@ import { ExecutorIdentityError } from './executor-default-store.js';
 import { CLAUDE_MODEL_ENV } from './jobs/job-store-claim-executor.js';
 
 /**
- * The model setup's executor write, as a transaction body (model-setup-store.ts): one profile created or edited by its
+ * The provider setup's executor write, as a transaction body (provider-setup-store.ts): one profile created or edited by its
  * stable id, carrying a connection id and a model and no credential of its own, so nothing here seals a secret. It
  * is the same row the executor routes write — `assertConnectionSelection` judges the pair — composed into the setup's
  * transaction instead of opening its own.

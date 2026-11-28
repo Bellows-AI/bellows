@@ -33,8 +33,7 @@ import type { OperationReceipts } from './db/operation-receipts.js';
 import { operationReceiptRoutes } from './routes/operation-receipts.js';
 import { integrationCatalogRoutes } from './routes/integration-catalog.js';
 import { integrationRoutes } from './routes/integrations.js';
-import { modelSetupRoutes } from './routes/model-setup.js';
-import { modelSetupVerifyRoutes } from './routes/model-setup-verify.js';
+import { providerConnectionVerifyRoutes } from './routes/provider-connections-verify.js';
 import type { ProviderKeys } from './provider-keys/verify.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
@@ -201,7 +200,7 @@ export interface AppDeps {
     attachmentMaxInFlight?: number | undefined;
     /** The single-use upload capabilities; with it the upload-request routes and the capability PUT exist. */
     uploadCapabilities?: UploadCapabilityStore | undefined;
-    /** The provider key check; with it `POST /api/model-setup/verify` exists. main.ts builds it for the deployment mode. */
+    /** The provider key check; with it `POST /api/provider-connections/verify` exists. main.ts builds it for the deployment mode. */
     providerKeys?: ProviderKeys | undefined;
 }
 
@@ -341,8 +340,8 @@ async function registerRunnerCredentialRoutes(
 
 /**
  * The routes that exist only with their dependency — commerce (and COMMERCE_ENABLED), the provider
- * key check — the model setup the key check serves, which every board has, and the provider
- * connections whose discovery spends the stored key through it.
+ * key check — and the provider connections, which every board has: their setup command, and the discovery that
+ * spends the stored key through the check.
  */
 async function registerOptionalRoutes(
     app: FastifyInstance,
@@ -353,10 +352,9 @@ async function registerOptionalRoutes(
     if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
     const { deploymentMode, cloudSubscriptionOrgIds } = config;
     if (providerKeys) {
-        await app.register(modelSetupVerifyRoutes({ providerKeys, deploymentMode, cloudSubscriptionOrgIds, now }));
+        await app.register(providerConnectionVerifyRoutes({ providerKeys, deploymentMode, cloudSubscriptionOrgIds, now }));
     }
     await app.register(providerConnectionRoutes({ orgs, deploymentMode, cloudSubscriptionOrgIds, providerKeys, now }));
-    await app.register(modelSetupRoutes({ config, orgs }));
 }
 
 /** What the personal and the organization executor routes share: the deployment mode, its exempt orgs and the runner classes. */

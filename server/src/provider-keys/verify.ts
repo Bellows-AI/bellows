@@ -5,7 +5,7 @@ import { type Check, CHECKS, type CheckResult, type HostedProvider } from './che
 import { CheckFailure, type CheckCode, type Outbound } from './http.js';
 
 /**
- * The board's check of a provider key a member pasted (docs/api.md, `POST /api/model-setup/verify`): one read against
+ * The board's check of a provider key a member pasted (docs/api.md, `POST /api/provider-connections/verify`): one read against
  * the provider, nothing stored. Cloud resolves, pins and refuses special-use addresses for every request; self-hosted
  * allows private ones, since a proxy on the company network is the normal case. The key travels in one header and
  * nowhere else: no answer, message or error carries it.
