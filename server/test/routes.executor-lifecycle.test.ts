@@ -34,10 +34,14 @@ const track = trackApps();
 
 const READY_REPO = { owner: 'acme', name: 'web' };
 
+/** The memory store judges no connection id, so any well-formed one selects. */
+const CONNECTION_ID = '33333333-3333-4333-8333-333333333333';
+
 const entry = (name: string, extra: Record<string, unknown> = {}) => ({
     name,
     type: 'claude-code',
     config: { model: 'sonnet' },
+    providerConnectionId: CONNECTION_ID,
     ...extra,
 });
 
@@ -741,5 +745,74 @@ describe('configured default executors', () => {
             ).statusCode
         ).toBe(HTTP_OK);
         expect(await b.executors.selectedDefault(b.memberId)).toBeNull();
+    });
+});
+
+describe('every executor needs a provider connection', () => {
+    const MIGRATION_REASON = 'the scope holds keys for several providers';
+
+    it('refuses a personal list entry without one, and so an entry with a null one', async () => {
+        const b = await boot();
+        for (const providerConnectionId of [undefined, null]) {
+            const res = await putPersonal(b, b.memberCookie, [entry('mine', { providerConnectionId })]);
+            expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
+            expect(res.json().code).toBe('BAD_BODY');
+        }
+        expect(b.executors.rows()).toEqual([]);
+    });
+
+    it('refuses an org create and an org edit without one', async () => {
+        const b = await boot();
+        const created = await b.instance.inject({
+            method: 'POST',
+            url: '/api/org/executors',
+            headers: { cookie: b.adminCookie },
+            payload: entry('shared', { providerConnectionId: undefined }),
+        });
+        expect(created.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(created.json().code).toBe('BAD_BODY');
+
+        const id = await createOrg(b, 'shared');
+        const edited = await b.instance.inject({
+            method: 'PUT',
+            url: `/api/org/executors/${id}`,
+            headers: { cookie: b.adminCookie },
+            payload: entry('shared', { providerConnectionId: undefined }),
+        });
+        expect(edited.statusCode).toBe(HTTP_BAD_REQUEST);
+    });
+
+    it('refuses to resume a migration-suspended executor until it selects a connection', async () => {
+        const b = await boot();
+        const personal = b.executors.seedMigrationSuspended({
+            userId: b.memberId,
+            name: 'legacy',
+            type: 'claude-code',
+            reason: MIGRATION_REASON,
+        });
+        const org = b.executors.seedMigrationSuspended({
+            userId: null,
+            name: 'legacy-org',
+            type: 'claude-code',
+            reason: MIGRATION_REASON,
+        });
+        const mine = await suspend(b, `/api/workspace/executors/${personal}/suspension`, b.memberCookie, false);
+        expect(mine.statusCode).toBe(HTTP_CONFLICT);
+        expect(mine.json().code).toBe('PROVIDER_CONNECTION_REFUSED');
+        const shared = await suspend(b, `/api/org/executors/${org}/suspension`, b.adminCookie, false);
+        expect(shared.statusCode).toBe(HTTP_CONFLICT);
+        expect(b.executors.rows().every((row) => row.suspended)).toBe(true);
+    });
+
+    it('answers the reason a migration suspended the executor on the workspace poll', async () => {
+        const b = await boot();
+        b.executors.seedMigrationSuspended({
+            userId: b.memberId,
+            name: 'legacy',
+            type: 'claude-code',
+            reason: MIGRATION_REASON,
+        });
+        const row = (await poll(b, b.memberCookie)).executors[0];
+        expect(row).toMatchObject({ name: 'legacy', suspended: true, suspendedReason: MIGRATION_REASON });
     });
 });

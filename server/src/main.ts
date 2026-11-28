@@ -46,6 +46,7 @@ import { startAttachmentSweep } from './attachments/attachment-collector.js';
 import { startSkillSweep } from './skills/skill-collector.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
 import { startMetricPointOrgBackfill } from './telemetry/org-backfill.js';
+import { startExecutorProviderMigration } from './db/executor-provider-migration.js';
 import type { CoordinatedSecretStore } from './secrets/postgres-secret-store.js';
 import { startOrgPurge } from './db/org-purge.js';
 import { startOrgRetention } from './db/org-retention.js';
@@ -469,6 +470,8 @@ export async function start(options: StartOptions = {}): Promise<{ close(): Prom
     void ready.then(() => stops.add(() => membership.start(metrics.timedPass)));
     // Points stored before they carried an org get the one their session evidence names, a batch at a time.
     void ready.then(() => stops.add(() => startMetricPointOrgBackfill({ sql: crossOrg.sql })));
+    // Executors saved before every one needed a provider connection get one holding their key, or a suspension with the reason.
+    void ready.then(() => stops.add(() => startExecutorProviderMigration({ sql: crossOrg.sql, secrets, secretLog })));
 
     await app.listen({ port: config.port, host: config.host });
 

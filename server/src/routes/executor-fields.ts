@@ -50,10 +50,10 @@ export interface ExecutorFields {
     /** The runner class the profile runs in; null is the driver's default. Checked against the board's classes by the route. */
     runnerClass: string | null;
     /**
-     * The provider connection the profile selects: an id, null to clear it, absent to keep what the row has. Whether
-     * the caller may use it and whether its provider runs `type` is the store's, in the write's transaction.
+     * The provider connection the profile selects, required: every executor has one. Whether the caller may use it
+     * and whether its provider runs `type` is the store's, in the write's transaction.
      */
-    providerConnectionId?: string | null;
+    providerConnectionId: string;
 }
 
 /** A refused connection selection answers 409: the body is well formed, the selection conflicts with what exists. */
@@ -130,15 +130,11 @@ function parseGateFixRounds(item: { name?: unknown; gateFixRounds?: unknown }): 
     return rounds;
 }
 
-/** One entry's connection id: absent keeps the row's, null clears it, else a connection id; or the refusal. */
-function parseConnectionId(item: {
-    name?: unknown;
-    providerConnectionId?: unknown;
-}): string | null | undefined | { refusal: string } {
+/** One entry's connection id, which every executor needs; or the refusal. */
+function parseConnectionId(item: { name?: unknown; providerConnectionId?: unknown }): string | { refusal: string } {
     const id = item.providerConnectionId;
-    if (id === undefined || id === null) return id;
     if (typeof id === 'string' && UUID.test(id)) return id;
-    return { refusal: `providerConnectionId for "${item.name}" must be a connection id or null` };
+    return { refusal: `providerConnectionId for "${item.name}" is required and must be a connection id` };
 }
 
 /**
@@ -155,8 +151,8 @@ function parseOptionalFields(item: {
         return `runnerClass for "${item.name}" must be a runner class name or null`;
     }
     const connection = parseConnectionId(item);
-    if (typeof connection === 'object' && connection !== null) return connection.refusal;
-    return { runnerClass, ...(connection === undefined ? {} : { providerConnectionId: connection }) };
+    if (typeof connection === 'object') return connection.refusal;
+    return { runnerClass, providerConnectionId: connection };
 }
 
 /** The status a `parseExecutorFields` refusal answers with: 422 for a runner class, 400 otherwise. */

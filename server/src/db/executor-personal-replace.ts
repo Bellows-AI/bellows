@@ -20,7 +20,7 @@ export interface PersonalExecutorEntry {
     /** Omitted: the suspension the row the entry survives as already carried survives the rewrite. */
     suspended?: boolean;
     /** Omitted keeps the connection of the row the entry survives as; null clears it. A selection is validated (`ExecutorConnectionRefusedError`). */
-    providerConnectionId?: string | null;
+    providerConnectionId: string;
 }
 
 /** What `replacePersonalRows` carries over from the stored row an entry survives as. */
@@ -83,12 +83,8 @@ export async function replacePersonalRows(
         for update
     `;
     const matched = matchPersonalRows(previous, executors);
-    // An entry that omits the connection keeps its predecessor's; each selection is judged in this transaction.
-    const connectionIds = executors.map((executor, index) =>
-        executor.providerConnectionId === undefined
-            ? (matched[index]?.provider_connection_id ?? null)
-            : executor.providerConnectionId
-    );
+    // Each entry names its connection; each selection is judged in this transaction.
+    const connectionIds = executors.map((executor) => executor.providerConnectionId);
     for (const [index, executor] of executors.entries()) {
         await assertConnectionSelection(tx, orgId, {
             owner: userId,
@@ -127,6 +123,7 @@ export async function replacePersonalRows(
             position: index,
             suspended: executor.suspended ?? row?.suspended ?? false,
             provider_connection_id: connectionIds[index]!,
+            provider_migration_reason: null,
         };
         if (row) {
             await tx`
