@@ -458,6 +458,31 @@
         display: none;
     }
 
+    /* The form skin (SearchSelect `variant="form"`): framed like `.field`, full width, the accent edge while its
+       list is open. The composer keeps the frameless chip above. */
+    .select-trigger.in-form {
+        background: var(--surface-sunken);
+        border-color: var(--line-strong);
+        justify-content: flex-start;
+        width: 100%;
+    }
+
+    .select-trigger.in-form:hover {
+        background: var(--surface-sunken);
+        border-color: var(--ink-muted);
+    }
+
+    .select-trigger.in-form:focus-visible,
+    .select-trigger.in-form[data-open] {
+        background: var(--surface-sunken);
+        border-color: var(--accent);
+    }
+
+    .select-trigger.in-form:disabled {
+        background: var(--surface);
+        border-color: var(--line-strong);
+    }
+
     /* Native date inputs read their scheme from the theme blocks' color-scheme, so a popup
        renders in the page's theme without this rule carrying one. */
     .org-selector {

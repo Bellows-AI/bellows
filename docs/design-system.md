@@ -68,7 +68,7 @@ Shell and navigation: `shell-main`, `page-header-eyebrow`, `page-header-leading`
 `sidenav-dot-failed`, `sidenav-dot-done`, `sidenav-dot-review`, `mobile-nav-head`,
 `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `is-active`.
 
-Controls and overlays: `primary`, `tertiary`, `icon-button`, `danger`, `tabs`, `select-trigger`, `popover-option`, `popover-separator`,
+Controls and overlays: `primary`, `tertiary`, `icon-button`, `danger`, `tabs`, `select-trigger`, `in-form`, `popover-option`, `popover-separator`,
 `popover-search-select`, `popover-head`, `popover-search`, `popover-search-input`, `popover-list`, `popover-match`,
 `popover-prefix`, `popover-action`, `popover-error`,
 `theme-field`, `theme-label`, `org-selector`, `org-select-name`, `user-menu-button`, `user-menu-login`,
