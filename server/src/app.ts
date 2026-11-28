@@ -33,6 +33,7 @@ import type { OperationReceipts } from './db/operation-receipts.js';
 import { operationReceiptRoutes } from './routes/operation-receipts.js';
 import { integrationCatalogRoutes } from './routes/integration-catalog.js';
 import { integrationRoutes } from './routes/integrations.js';
+import { providerSetupRoutes } from './routes/provider-setup.js';
 import { providerConnectionVerifyRoutes } from './routes/provider-connections-verify.js';
 import type { ProviderKeys } from './provider-keys/verify.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
@@ -352,9 +353,12 @@ async function registerOptionalRoutes(
     if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
     const { deploymentMode, cloudSubscriptionOrgIds } = config;
     if (providerKeys) {
-        await app.register(providerConnectionVerifyRoutes({ providerKeys, deploymentMode, cloudSubscriptionOrgIds, now }));
+        await app.register(
+            providerConnectionVerifyRoutes({ providerKeys, deploymentMode, cloudSubscriptionOrgIds, now })
+        );
     }
     await app.register(providerConnectionRoutes({ orgs, deploymentMode, cloudSubscriptionOrgIds, providerKeys, now }));
+    await app.register(providerSetupRoutes({ config, orgs }));
 }
 
 /** What the personal and the organization executor routes share: the deployment mode, its exempt orgs and the runner classes. */

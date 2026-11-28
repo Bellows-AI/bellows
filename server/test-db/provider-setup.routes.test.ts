@@ -412,7 +412,10 @@ describe.skipIf(!enabled)('the provider setup routes', () => {
             })
         );
         expect(bad.status).toBe(400);
-        expect((await call(admin, 'GET', '/api/workspace')).json.defaultExecutor).toEqual({ scope: 'org', name: 'Claude' });
+        expect((await call(admin, 'GET', '/api/workspace')).json.defaultExecutor).toEqual({
+            scope: 'org',
+            name: 'Claude',
+        });
         expect(first.json.executorId).toEqual(expect.any(String));
         expect((await sql`select 1 from provider_connection where org_id = ${org}`).length).toBe(1);
     });

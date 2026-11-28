@@ -196,7 +196,11 @@ describe('POST /api/provider-connections/setup', () => {
         expect((await post(b, b.memberCookie, withConnection(litellm))).statusCode).toBe(HTTP_BAD_REQUEST);
         expect(b.setup.commands).toEqual([]);
 
-        const saved = await post(b, b.memberCookie, withConnection({ ...litellm, baseUrl: 'https://llm.example.test' }));
+        const saved = await post(
+            b,
+            b.memberCookie,
+            withConnection({ ...litellm, baseUrl: 'https://llm.example.test' })
+        );
         expect(saved.statusCode).toBe(HTTP_OK);
         expect(b.setup.commands[0]?.connection).toMatchObject({ baseUrl: 'https://llm.example.test' });
     });
@@ -279,7 +283,6 @@ describe('POST /api/provider-connections/setup', () => {
         expect(response.body).not.toContain(ANTHROPIC_KEY);
     });
 });
-
 
 describe('the model setup routes are gone', () => {
     it.each([

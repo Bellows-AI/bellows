@@ -68,7 +68,9 @@ describe.runIf(enabled)('173: the provider setup operation', () => {
             select request_id, executor_id from provider_setup_operation where org_id = ${org}
         `;
         expect(kept).toEqual({ request_id: 'request-1', executor_id: executor!.id });
-        const [old] = await pool<{ found: string | null }[]>`select to_regclass('model_setup_operation')::text as found`;
+        const [old] = await pool<
+            { found: string | null }[]
+        >`select to_regclass('model_setup_operation')::text as found`;
         expect(old!.found).toBeNull();
         await expect(
             pool`

@@ -139,11 +139,9 @@ function parseConnection(
     return parseCreate(fields, agentType, subscriptionAllowed);
 }
 
-function parseExecutor(raw: unknown): SetupCommand['executor'] | Refusal {
-    const fields = jsonBody(raw);
-    const extra = Object.keys(fields).find((name) => !EXECUTOR_FIELDS.has(name));
-    if (extra !== undefined) return refusal(`unknown executor field ${extra}`);
-    const { id, name, agentType, expectedUpdatedAt } = fields;
+/** The executor's agent and model: a listed agent, a model name of the bound the job route applies. */
+function parseAgentModel(fields: Record<string, unknown>): { agentType: ExecutorType; model: string } | Refusal {
+    const { agentType } = fields;
     if (!(EXECUTOR_TYPES as readonly unknown[]).includes(agentType)) {
         return refusal(`executor.agentType must be one of ${EXECUTOR_TYPES.join(', ')}`, ERROR_CODES.BAD_EXECUTOR_TYPE);
     }
@@ -151,6 +149,16 @@ function parseExecutor(raw: unknown): SetupCommand['executor'] | Refusal {
     if (!model || model.length > MAX_AGENT_MODEL_LENGTH) {
         return refusal(`executor.model must be a name of 1 to ${MAX_AGENT_MODEL_LENGTH} characters`);
     }
+    return { agentType: agentType as ExecutorType, model };
+}
+
+function parseExecutor(raw: unknown): SetupCommand['executor'] | Refusal {
+    const fields = jsonBody(raw);
+    const extra = Object.keys(fields).find((name) => !EXECUTOR_FIELDS.has(name));
+    if (extra !== undefined) return refusal(`unknown executor field ${extra}`);
+    const { id, name, expectedUpdatedAt } = fields;
+    const agent = parseAgentModel(fields);
+    if ('error' in agent) return agent;
     if (id !== undefined && !isId(id)) return refusal('executor.id must be the executor id');
     if (name !== undefined || id === undefined) {
         const reason = badConnectionName(name);
@@ -163,8 +171,7 @@ function parseExecutor(raw: unknown): SetupCommand['executor'] | Refusal {
         return refusal('executor.expectedUpdatedAt must be the updatedAt the executor was read with');
     }
     return {
-        agentType: agentType as ExecutorType,
-        model,
+        ...agent,
         ...(id === undefined ? {} : { id: id as string }),
         ...(name === undefined ? {} : { name: name as string }),
         ...(expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt: expectedUpdatedAt as string }),
@@ -290,7 +297,7 @@ async function handleSetup(
 
 const refuseUnparsed = refuseUnparsedBody('The provider setup body could not be read');
 
-/** `POST /api/provider-connections/setup`, registered by the provider connection routes. */
+/** `POST /api/provider-connections/setup`, registered beside the provider connection routes. */
 export const providerSetupRoutes =
     (deps: {
         config: Pick<AppConfig, 'deploymentMode' | 'cloudSubscriptionOrgIds'>;

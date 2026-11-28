@@ -21,7 +21,6 @@ import { createRateLimiter } from '../oauth/rate-limit.js';
 import type { OrgRegistry } from '../orgs.js';
 import type { ProviderKeys, VerifyAnswer } from '../provider-keys/verify.js';
 import type { AppConfig } from '../config.js';
-import { providerSetupRoutes } from './provider-setup.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
 import { refuseUnparsedBody, validBase, validKey } from './provider-connections-verify.js';
 
@@ -421,7 +420,6 @@ export function providerConnectionRoutes(deps: ProviderConnectionRoutesDeps): Fa
     // the parser's message, which may quote it.
     const refuseUnparsed = refuseUnparsedBody('The connection body could not be read');
     return async (app) => {
-        await app.register(providerSetupRoutes({ config: deps, orgs: deps.orgs }));
         app.get(PATH, { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) => handleList(deps.orgs, request, reply));
         app.post(PATH, { bodyLimit: BODY_LIMIT, errorHandler: refuseUnparsed }, (request, reply) =>
             handleCreate(deps, request, reply)
