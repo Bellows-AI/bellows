@@ -1,3 +1,4 @@
+import { InstallAppLink } from '../components/InstallAppLink.js';
 import type { Session } from '../api/useSession.js';
 
 /**
@@ -33,6 +34,7 @@ export function TrackedOrgsPanel({ session }: { session: Session }) {
             <a className="login-button" href="/api/auth/github?returnTo=%2Faccount&reselect=1">
                 Change what you track
             </a>
+            <InstallAppLink returnTo="/account" />
         </section>
     );
 }

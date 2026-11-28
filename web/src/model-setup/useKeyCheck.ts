@@ -1,6 +1,6 @@
 import { type ModelProvider, providerRequiresBaseUrl } from '@factory-ai/core';
 import { useEffect, useState } from 'react';
-import { verifyKey } from '../api/useModelSetup.js';
+import { verifyKey } from '../api/providerConnections.js';
 import { type CheckKind, checkLine, keyRefusal, PROVIDER_META } from './providers.js';
 
 /** How long typing must pause before the key is checked: one call per pasted or settled key. */
@@ -19,7 +19,7 @@ interface Tagged extends KeyCheck {
 }
 
 /**
- * The live key check (`POST /api/model-setup/verify`): debounced, one request at a time. Every new input — and
+ * The live key check (`POST /api/provider-connections/verify`): debounced, one request at a time. Every new input — and
  * unmounting — aborts the request in flight, and an answer is shown only for the input it was asked for. The server
  * bounds the check; the client waits for it, and retries only when the member asks (`retry`).
  */

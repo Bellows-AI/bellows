@@ -212,7 +212,7 @@ export interface AppConfig {
     readonly cloudSubscriptionOrgIds: ReadonlySet<string>;
     /**
      * PLATFORM_MODEL_PROVIDED: the operator supplies the model credential in the runner env, so a member may run on
-     * it without bringing a key (`PUT /api/model-setup` with `provider: 'platform'`). Off by default. It only
+     * it without bringing a key (a setup on no connection). Off by default. It only
      * describes the runner env; the driver's passthrough does not change.
      */
     readonly platformModelProvided: boolean;

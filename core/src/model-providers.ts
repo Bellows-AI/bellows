@@ -11,7 +11,7 @@ import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
 import { CUSTOM_PROVIDER_ID, customModelEntry, OPENAI_COMPATIBLE_NPM } from './openai-compatible.js';
 
 /**
- * The model providers a member can bring a key for (docs/api.md, `POST /api/model-setup/verify`). `subscription` is a
+ * The model providers a member can bring a key for (docs/api.md, `POST /api/provider-connections/verify`). `subscription` is a
  * Claude subscription token, which Bellows Cloud refuses.
  */
 export const MODEL_PROVIDERS = [

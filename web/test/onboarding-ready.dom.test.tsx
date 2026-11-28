@@ -2,11 +2,12 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ConnectionView } from '../src/api/connections.js';
-import type { ModelSetupView } from '../src/api/useModelSetup.js';
+import type { ModelSetupView, SelectedExecutorView } from '../src/api/useModelSetup.js';
 import type { Session } from '../src/api/useSession.js';
 import type { WorkspacePayload } from '../src/api/useWorkspace.js';
 import { type FetchCall, type FetchReply, renderApp, stubFetch } from './dom.js';
 import { memberSession } from './fixtures.js';
+import { modelSetupReads, NO_SETUP } from './model-setup-reads.js';
 
 /**
  * Setup's closing page, Ready: what was set up as a summary with lamps and a Change link per row, and
@@ -27,8 +28,24 @@ const repo = (name: string) => ({ owner: 'acme', name, private: true, defaultBra
 const personalModel: ModelSetupView = {
     platform: false,
     org: null,
-    personal: { provider: 'anthropic', agentType: 'claude-code', model: 'claude-test-model', keyNames: ['K'] },
-    effective: 'personal',
+    personal: null,
+    effective: 'executor',
+    selected: {
+        scope: 'personal',
+        executorId: 'executor-personal',
+        name: 'Mine',
+        agentType: 'claude-code',
+        model: 'claude-test-model',
+        suspended: false,
+        updatedAt: CREATED,
+        connection: {
+            id: 'connection-personal',
+            name: 'Mine',
+            provider: 'anthropic',
+            scope: 'personal',
+            baseUrl: null,
+        },
+    } satisfies SelectedExecutorView,
 };
 
 const workspace: WorkspacePayload = {
@@ -63,7 +80,7 @@ interface Replies {
 
 /** Ready's board: an unfinished member with both steps answered, the summary's reads and the two writes. */
 function board({
-    model = personalModel,
+    model = NO_SETUP,
     connections = [],
     launch,
     complete,
@@ -76,8 +93,8 @@ function board({
     const calls = stubFetch((call: FetchCall) => {
         const { method, url } = call;
         if (url === '/api/auth/me') return memberSession({ setup: { ...setup }, deploymentMode: mode });
-        if (url === '/api/model-setup') return model;
-        if (url === '/api/workspace') return space;
+        const read = modelSetupReads(model, call, space);
+        if (read !== undefined) return read;
         if (url === '/api/repos') {
             if (repos) return repos();
             return {
@@ -104,7 +121,7 @@ const prompt = () => screen.findByLabelText('What should the agent do?');
 
 describe('the Ready step', () => {
     it("says You're set over a summary row per part, each Change going back to its step", async () => {
-        board({ connections: [jiraConnection] });
+        board({ model: personalModel, connections: [jiraConnection] });
         renderApp('/onboarding/ready');
 
         expect(await screen.findByRole('heading', { level: 1, name: "You're set" })).toBeTruthy();
@@ -117,27 +134,13 @@ describe('the Ready step', () => {
         );
 
         const model = await row('Model');
-        expect(await model.findByText('Claude Code · Anthropic · claude-test-model · only you')).toBeTruthy();
+        expect(await model.findByText('Mine · Claude Code · Anthropic · claude-test-model · only you')).toBeTruthy();
         expect(model.getByRole('link', { name: /Change/ }).getAttribute('href')).toMatch(/^\/onboarding\/model\b/);
 
         const tracker = await row('Issue tracker');
         expect(await tracker.findByText('Jira · acme-example.atlassian.net')).toBeTruthy();
         expect(tracker.getByRole('link', { name: /Change/ }).getAttribute('href')).toMatch(/^\/onboarding\/tools\b/);
         expect(document.querySelectorAll('.ready-lamp[data-state="ok"]').length).toBe(4);
-    });
-
-    it('says the model is provided by this deployment, with the chosen agent and model', async () => {
-        board({
-            model: {
-                platform: true,
-                org: null,
-                personal: { provider: 'platform', agentType: 'opencode', model: 'platform-model', keyNames: [] },
-                effective: 'platform',
-            },
-        });
-        renderApp('/onboarding/ready');
-        const model = await row('Model');
-        expect(await model.findByText('OpenCode · platform-model · provided by this deployment')).toBeTruthy();
     });
 
     it('a tracker never connected is optional, and a failed model read never says Not connected', async () => {
@@ -318,7 +321,7 @@ describe('the Ready step', () => {
         expect(calls.some((c) => c.method === 'POST' && c.url === '/api/jobs')).toBe(false);
     });
 
-    const NO_KEY: ModelSetupView = { platform: false, org: null, personal: null, effective: null };
+    const NO_KEY = NO_SETUP;
     const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null, agentDefault: null };
 
     it("self-hosted with no key but an agent default: You're set, the default in the Model row, Start live", async () => {

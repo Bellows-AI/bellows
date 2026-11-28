@@ -87,6 +87,13 @@ test('the selection screen tracks only the chosen organizations (issue 125)', as
     expect(reported).toHaveLength(2);
     const orgs = screen(page).locator('.onboarding-org');
     await expect(orgs).toHaveCount(2);
+    // An organization the App is not installed on is never listed, so the screen says so and links
+    // the install page; the server route signs the state that brings the browser back here.
+    await expect(screen(page).getByRole('link', { name: 'Install the App on another organization' })).toHaveAttribute(
+        'href',
+        '/api/auth/github/install?returnTo=%2F'
+    );
+    await expect(screen(page).getByText('Only organizations with the App installed are listed.')).toBeVisible();
     // Whatever a previous test stored arrives pre-checked; normalize to every reported
     // installation checked, so what this test confirms is what this test chose.
     for (const install of reported) {

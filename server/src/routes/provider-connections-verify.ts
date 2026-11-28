@@ -7,12 +7,12 @@ import { errorHandler } from './error-handler.js';
 import { bad, body as jsonBody } from './helpers.js';
 
 /**
- * `POST /api/model-setup/verify` (docs/api.md): a member checks a provider key before saving it. The answer is the
+ * `POST /api/provider-connections/verify` (docs/api.md): a member checks a provider key before saving it. The answer is the
  * check's, 200 either way; a refusal here is only for a body the check cannot run on or a member over the limit. The
  * body carries the key, so it is never logged or echoed: a body the parser refuses answers fixed text.
  */
 
-const VERIFY_PATH = '/api/model-setup/verify';
+const VERIFY_PATH = '/api/provider-connections/verify';
 const PER_MEMBER_PER_WINDOW = 10;
 const WINDOW_MS = 60_000;
 const BODY_LIMIT = 8192;
@@ -55,7 +55,7 @@ function parseVerify(raw: unknown): Omit<VerifyInput, 'subscriptionAllowed'> | n
 
 /**
  * A body the parser refused (malformed, too large) answers fixed text: the parser's message may
- * quote the key. The routes that accept a key — this check, the model setup's save and the provider
+ * quote the key. The routes that accept a key — this check, the provider setup and the provider
  * connections — share it.
  */
 export const refuseUnparsedBody =
@@ -67,7 +67,7 @@ export const refuseUnparsedBody =
 
 const refuseUnparsed = refuseUnparsedBody(BAD_BODY_MESSAGE);
 
-export function modelSetupVerifyRoutes({
+export function providerConnectionVerifyRoutes({
     providerKeys,
     deploymentMode,
     cloudSubscriptionOrgIds,
