@@ -51,6 +51,7 @@ let carolRunningJob = '';
 let launchedBatch = '';
 let draftBatch = '';
 let wokenRound = '';
+let createdByRound = '';
 
 const newUser = async (): Promise<string> => {
     const [row] = await pool<{ id: string }[]>`
@@ -196,6 +197,16 @@ beforeAll(async () => {
     await pool`insert into workflow_round (org_id, root_job_id, workflow_node, round, repo, pr_number, command,
                                            parent_job_id, agent_type, agent_model, woken_at, job_id, delivery_count)
                values (${org}, ${wokenRound}, 'review', 1, 'acme/app', 1, 'continue', ${wokenRound}, 'opencode', 'm-10', now(), ${wokenRound}, 1)`;
+
+    // A round whose thread root carries no execution identity: the root's author is the member.
+    createdByRound = randomUUID();
+    await pool`insert into job (org_id, id, command, root_job_id, created_by, status)
+               values (${org}, ${createdByRound}, 'work', ${createdByRound}, ${ids.alice}, 'succeeded')`;
+    await pool`insert into workflow_wait (org_id, root_job_id, reason, repo, pr_number)
+               values (${org}, ${createdByRound}, 'review', 'acme/app', 1)`;
+    await pool`insert into workflow_round (org_id, root_job_id, workflow_node, round, repo, pr_number, command,
+                                           parent_job_id, agent_type, agent_model)
+               values (${org}, ${createdByRound}, 'review', 1, 'acme/app', 1, 'continue', ${createdByRound}, 'opencode', 'm-11')`;
 
     profileJob = randomUUID();
     await pool`insert into job (org_id, id, command, root_job_id, created_by, executor, executor_scope, agent_model)
@@ -352,6 +363,11 @@ describe.runIf(enabled)('172: the agent default is dropped', () => {
         expect(await taskOf(launchedBatch)).toMatchObject({ execution: 'running', executor: 'mine' });
         expect(await taskOf(draftBatch)).toMatchObject({ execution: 'pending', attention: null, executor: null });
         expect(await roundOf(wokenRound)).toEqual({ executor: 'mine', executor_scope: 'user' });
+    });
+
+    it('resolves a round whose root has no execution identity from the root author', async () => {
+        expect(await roundOf(createdByRound)).toEqual({ executor: 'mine', executor_scope: 'user' });
+        expect((await waitOf(createdByRound)).cancelled_at).toBeNull();
     });
 
     it('leaves work that names a profile alone', async () => {

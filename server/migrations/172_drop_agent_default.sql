@@ -81,7 +81,7 @@ create temp table agent_default_round on commit drop as
     select w.org_id, w.root_job_id, w.workflow_node, w.round, w.woken_at, d.name, d.scope
     from workflow_round w
     left join job r on r.org_id = w.org_id and r.id = w.root_job_id
-    left join lateral pg_temp.configured_default(w.org_id, r.execution_user_id) d on true
+    left join lateral pg_temp.configured_default(w.org_id, coalesce(r.execution_user_id, r.created_by)) d on true
     where w.executor is null and w.agent_type is not null;
 
 update workflow_round w set executor = d.name, executor_scope = d.scope
