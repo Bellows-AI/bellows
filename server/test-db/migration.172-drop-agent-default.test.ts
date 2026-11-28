@@ -385,7 +385,7 @@ describe.runIf(enabled)('172: the agent default is dropped', () => {
         expect(await jobOf(followUp.id)).toMatchObject({ executor: 'mine', executor_scope: 'user' });
         const claim = await claimOf(followUp.id);
         expect(claim.executorType).toBe('claude-code');
-        expect(claim.noExecutor).toBeUndefined();
+        expect(claim.executorRefusal).toBeNull();
     });
 
     it('a takeover of a running pre-172 agent-default job claims with the stamped executor', async () => {
