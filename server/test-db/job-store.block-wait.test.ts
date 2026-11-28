@@ -7,9 +7,7 @@ import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
-import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { testSecretDeps } from './env-secrets-harness.js';
 import { expireLease, mustCreate, testOrg, testUser } from './fixtures.js';
 
 /**
@@ -62,13 +60,13 @@ beforeAll(async () => {
     store = createJobStore({ sql, orgId: ORG, prs });
 });
 
-/** The agent default a task may be frozen with at create; none by default. */
-type FrozenAgent = { agentType?: 'claude-code' | 'opencode'; agentModel?: string };
+/** The model a task may be created with; none by default. */
+type ChosenModel = { agentModel?: string };
 
 async function queueWaitingThread(
     name: string,
     createdBy: string | null = null,
-    agent: FrozenAgent = {}
+    agent: ChosenModel = {}
 ): Promise<string> {
     // The job's own repo label must match a completion's reported publication.repo — completeJob's
     // maybeRecordPublication cross-checks it (a payload may not claim a repo the board never gave
@@ -91,7 +89,7 @@ async function publishAndTransition(
     name: string,
     prNumber: number,
     createdBy: string | null = null,
-    agent: FrozenAgent = {}
+    agent: ChosenModel = {}
 ): Promise<string> {
     const root = await queueWaitingThread(name, createdBy, agent);
     const claim = (await store.claim(WORKER, 60)) as Claim;
@@ -818,31 +816,24 @@ describe.skipIf(!enabled)('durable block waits — user control (issue #328)', (
 });
 
 /**
- * The agent default frozen on a workflow thread rides every successor: the parked round stores it and the
- * woken continuation carries it back, read off the round only — an agent default changed while the thread waited
- * never reaches the continuation, and a successor never lands as a null/null job the driver would fail.
+ * The model chosen for a workflow thread rides every successor: the parked round stores it and the woken continuation
+ * carries it back, read off the round only.
  */
-describe.skipIf(!enabled)('durable block waits — the frozen agent default', () => {
-    const frozen = { agentType: 'opencode', agentModel: 'frozen-model' } as const;
+describe.skipIf(!enabled)('durable block waits — the chosen model', () => {
+    const chosen = { agentModel: 'chosen-model' } as const;
 
-    it('a parked round keeps the frozen agent and model, and the woken continuation runs them', async () => {
-        const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
-        await executors.setAgentDefault(ALICE.id, { agentType: 'opencode', model: 'frozen-model' });
-        const root = await publishAndTransition('agent-frozen', 40, ALICE.id, frozen);
-        const [parked] = await sql<{ agent_type: string | null; agent_model: string | null }[]>`
-            select agent_type, agent_model from workflow_round where org_id = ${ORG} and root_job_id = ${root}
+    it('a parked round keeps the chosen model, and the woken continuation runs it', async () => {
+        const root = await publishAndTransition('model-chosen', 40, ALICE.id, chosen);
+        const [parked] = await sql<{ agent_model: string | null }[]>`
+            select agent_model from workflow_round where org_id = ${ORG} and root_job_id = ${root}
         `;
-        expect(parked).toEqual({ agent_type: 'opencode', agent_model: 'frozen-model' });
-        // The default moves on while the thread waits on its PR.
-        await executors.setAgentDefault(ALICE.id, { agentType: 'claude-code', model: 'moved-on' });
+        expect(parked).toEqual({ agent_model: 'chosen-model' });
 
-        const [woken] = await deliverAndSweep(root, 'd-agent', 40);
+        const [woken] = await deliverAndSweep(root, 'd-model', 40);
         const claim = (await store.claim(WORKER, 60)) as Claim;
 
         expect(claim.id).toBe(woken!.id);
-        expect(await store.get(claim.id)).toMatchObject({ executor: null, ...frozen });
-        expect(claim.executorType).toBe('opencode');
-        expect(JSON.parse(claim.env?.OPENCODE_CONFIG_CONTENT ?? 'null')).toEqual({ model: 'frozen-model' });
+        expect(await store.get(claim.id)).toMatchObject(chosen);
     });
 
     it('an ordinary successor (no wait boundary) copies them from the completed run', async () => {
@@ -859,7 +850,7 @@ describe.skipIf(!enabled)('durable block waits — the frozen agent default', ()
             store.create('go', ALICE.id, {
                 repo: null,
                 executor: null,
-                ...frozen,
+                ...chosen,
                 workflow: { id: randomUUID(), name: 'two-step', node: twoStep.entry, snapshot: twoStep, params: {} },
             })
         );
@@ -869,7 +860,6 @@ describe.skipIf(!enabled)('durable block waits — the frozen agent default', ()
         const successor = (await store.claim(WORKER, 60)) as Claim;
 
         expect(successor.command).toBe('check');
-        expect(await store.get(successor.id)).toMatchObject({ executor: null, ...frozen });
-        expect(successor.executorType).toBe('opencode');
+        expect(await store.get(successor.id)).toMatchObject(chosen);
     });
 });

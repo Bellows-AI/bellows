@@ -717,7 +717,6 @@ function transitionContextOf(
         repo: string | null;
         executor: string | null;
         executor_scope: string | null;
-        agent_type: string | null;
         agent_model: string | null;
     }[],
     verdict: Pick<WorkflowTransitionInput, 'completedId' | 'status' | 'output' | 'failureKind'>
@@ -742,11 +741,8 @@ function transitionContextOf(
     return { completed, completedRun, halted };
 }
 
-/** The completed run's frozen agent default, for its successor; none when the run is not in the thread read. */
-const frozenAgentOf = (row: { agent_type: string | null; agent_model: string | null } | undefined) => ({
-    agentType: row?.agent_type ?? null,
-    agentModel: row?.agent_model ?? null,
-});
+/** The completed run's chosen model, for its successor; none when the run is not in the thread read. */
+const chosenModelOf = (row: { agent_model: string | null } | undefined) => ({ agentModel: row?.agent_model ?? null });
 
 export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowTransitionInput): Promise<void> {
     const { orgId, rootJobId, root, completedId, prs } = input;
@@ -790,11 +786,10 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
             repo: string | null;
             executor: string | null;
             executor_scope: string | null;
-            agent_type: string | null;
             agent_model: string | null;
         }[]
     >`
-        select id, workflow_node, status, output, gates, session_id, repo, executor, executor_scope, agent_type, agent_model
+        select id, workflow_node, status, output, gates, session_id, repo, executor, executor_scope, agent_model
         from job
         where org_id = ${orgId} and root_job_id = ${rootJobId}
         order by created_at, id
@@ -853,7 +848,7 @@ export async function runWorkflowTransition(tx: TransactionSql, input: WorkflowT
         executor: completed?.executor ?? null,
         executorScope: (completed?.executor_scope ?? USER_SCOPE) as ExecutorScope,
         // The agent default frozen on the thread rides with the label, never re-resolved.
-        ...frozenAgentOf(completed),
+        ...chosenModelOf(completed),
         parentJobId: completedId,
         sessionId: session,
         rootJobId,

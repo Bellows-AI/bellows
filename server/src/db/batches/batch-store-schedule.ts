@@ -324,7 +324,7 @@ async function loadSnapshot({ tx, orgId, id }: Tx): Promise<Snapshot> {
               )
         `,
         tx<StateTask[]>`
-            select t.key, t.stage_key, t.target_key, t.executor, t.executor_scope, t.agent_type, t.agent_model, t.objective,
+            select t.key, t.stage_key, t.target_key, t.executor, t.executor_scope, t.objective,
                    t.acceptance, t.verification, t.required, t.root_job_id, t.execution, t.gate, t.recovery, t.not_before,
                    t.attention, t.pr, t.completion_kind, s.policy, ${boardMergeColumns(tx)}
             from batch_task t

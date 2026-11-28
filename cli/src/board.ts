@@ -317,7 +317,7 @@ export interface BoardClient extends BatchRoutes, OperatorRoutes {
         baseBranch?: string | undefined;
         /** The task's own title, sent verbatim: the board normalizes it. Absent leaves the derived title. */
         title?: string | undefined;
-        /** The model the agent runs, over the profile's or the agent default's; absent sends none. */
+        /** The model the agent runs, over the executor's; absent sends none. */
         model?: string | undefined;
         /** The skills the task selects; absent selects none. */
         skills?: string[] | undefined;

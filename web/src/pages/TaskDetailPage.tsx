@@ -297,23 +297,21 @@ function useTaskRename(id: string | null, tasks: UseTasks, root: Job | null, ref
  * only one that is finished and not yet closed — so the page reads it off the polled chain
  * rather than off the URL.
  */
-/**
- * The agent a thread runs, which a follow-up never changes: its frozen agent default, else its profile's type off the
- * workspace poll (suspended rows too); null while unknown.
- */
-function threadAgentOf(latest: Job | null, workspace: WorkspacePayload | null): string | null {
+/** The thread's executor row off the workspace poll (suspended rows too); null while unknown. */
+function threadExecutorOf(latest: Job | null, workspace: WorkspacePayload | null) {
     if (latest === null) return null;
-    if (latest.agentType !== null) return latest.agentType;
     const rows = latest.executorScope === ORG_SCOPE ? workspace?.orgExecutors : workspace?.executors;
-    return rows?.find((row) => row.name === latest.executor)?.type ?? null;
+    return rows?.find((row) => row.name === latest.executor) ?? null;
 }
 
-/** The connection the thread's executor selects, read off the workspace poll when the caller may see it; null for a frozen agent default. */
+/** The agent a thread runs, which a follow-up never changes: its executor's type; null while unknown. */
+const threadAgentOf = (latest: Job | null, workspace: WorkspacePayload | null): string | null =>
+    threadExecutorOf(latest, workspace)?.type ?? null;
+
+/** The connection the thread's executor selects, read off the workspace poll when the caller may see it. */
 function threadConnectionOf(latest: Job | null, workspace: WorkspacePayload | null): ChipConnection | null {
-    if (latest === null || latest.agentType !== null) return null;
-    const rows = latest.executorScope === ORG_SCOPE ? workspace?.orgExecutors : workspace?.executors;
-    const row = rows?.find((candidate) => candidate.name === latest.executor);
-    return row === undefined ? null : chipConnectionOf(row);
+    const row = threadExecutorOf(latest, workspace);
+    return row === null ? null : chipConnectionOf(row);
 }
 
 export function TaskDetailPage() {

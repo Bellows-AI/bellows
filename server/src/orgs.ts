@@ -252,7 +252,6 @@ function buildOrgStores({
         batches: config.batches.enabled,
         deploymentMode: config.deploymentMode,
         cloudSubscriptionOrgIds: config.cloudSubscriptionOrgIds,
-        platformModelProvided: config.platformModelProvided,
         ...(claimMetrics ? { metrics: claimMetrics } : {}),
         ...(orgKey ? { orgKey } : {}),
     });
@@ -327,7 +326,7 @@ function buildOrgStores({
         jobs,
         workflows,
         commerce: config.commerce.enabled ? createCommerceStore({ sql, orgId, ready }) : undefined,
-        modelRequired: modelKeyRequired(config.deploymentMode, config.platformModelProvided),
+        modelRequired: modelKeyRequired(config.deploymentMode),
     };
 }
 

@@ -5,9 +5,9 @@ import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-se
 import { createProviderConnectionStore } from '../src/db/provider-connection-store.js';
 import {
     createUserExecutorStore,
+    ConfiguredDefaultUnusableError,
     ExecutorDefaultProtectedError,
     ExecutorIdentityError,
-    type ExecutorDefault,
     type ResolvedDefault,
     type UserExecutorStore,
 } from '../src/db/user-executor-store.js';
@@ -418,168 +418,66 @@ describe.skipIf(!enabled)('removing and suspending profiles by id (issue 440)', 
     });
 });
 
-/** Legacy rows are only read now: a fixture writes the old name-keyed preference the way 047 left it. */
-const legacyDefault = (userId: string, def: ExecutorDefault) =>
-    sql`
-        insert into user_executor_default (org_id, user_id, scope, name)
-        values (${ORG}, ${userId}, ${def.scope}, ${def.name})
-        on conflict (org_id, user_id) do update set scope = excluded.scope, name = excluded.name
-    `;
+describe.skipIf(!enabled)('resolvedDefault: only a configured default resolves', () => {
+    const profile = (scope: ResolvedDefault['scope'], name: string): ResolvedDefault => ({ scope, name });
+    const byName = async (name: string) => (await store.list(ALICE)).find((row) => row.name === name)!;
 
-describe.skipIf(!enabled)('the legacy per-user default preference (read only)', () => {
-    const pref = (scope: ExecutorDefault['scope'], name: string): ExecutorDefault => ({ scope, name });
-    const profile = (scope: ExecutorDefault['scope'], name: string): ResolvedDefault => ({
-        kind: 'profile',
-        scope,
-        name,
-    });
-
-    it('reads one preference per member', async () => {
-        await store.createOrg({ name: 'shared', type: 'claude-code', config: {}, createdBy: ALICE });
-        await legacyDefault(ALICE, pref('org', 'shared'));
-        expect(await store.defaultOf(ALICE)).toEqual(pref('org', 'shared'));
-        // Per-user: Alice's preference never becomes Bob's.
-        expect(await store.defaultOf(BOB)).toBeNull();
-    });
-
-    it('has no write path: the store no longer sets a name-keyed preference', () => {
-        expect('setDefault' in store).toBe(false);
-    });
-
-    it('falls back deterministically: stored preference, first personal row, first org row, null', async () => {
+    it('no configured default is null even with an active personal and org profile', async () => {
         await store.createOrg({ name: 'org-a', type: 'claude-code', config: {}, createdBy: ALICE });
-        await store.createOrg({ name: 'org-b', type: 'claude-code', config: {}, createdBy: ALICE });
-        await store.replace(ALICE, [
-            { name: 'zulu', type: 'claude-code', config: {} },
-            { name: 'alpha', type: 'claude-code', config: {} },
-        ]);
+        await store.replace(ALICE, [{ name: 'zulu', type: 'claude-code', config: {} }]);
 
-        // No preference: first personal row by position, then first org row by position.
+        expect(await store.resolvedDefault(ALICE)).toBeNull();
+        expect(await store.resolvedDefault(BOB)).toBeNull();
+    });
+
+    it('answers the personal configured default over the organization one, and the org one otherwise', async () => {
+        const orgA = await store.createOrg({ name: 'org-a', type: 'claude-code', config: {}, createdBy: ALICE });
+        await store.replace(ALICE, [{ name: 'zulu', type: 'claude-code', config: {} }]);
+        await store.selectDefault(null, orgA.id);
+        expect(await store.resolvedDefault(ALICE)).toEqual(profile('org', 'org-a'));
+        expect(await store.resolvedDefault(BOB)).toEqual(profile('org', 'org-a'));
+
+        await store.selectDefault(ALICE, (await byName('zulu')).id);
         expect(await store.resolvedDefault(ALICE)).toEqual(profile('user', 'zulu'));
         expect(await store.resolvedDefault(BOB)).toEqual(profile('org', 'org-a'));
 
-        // A stored preference wins while it still resolves — either scope.
-        await legacyDefault(ALICE, pref('org', 'org-b'));
-        expect(await store.resolvedDefault(ALICE)).toEqual(profile('org', 'org-b'));
-
-        // The preferred profile is removed: the chain answers from what remains.
-        const orgB = (await store.listOrg()).find((row) => row.name === 'org-b')!;
-        await store.deleteOrg(orgB.id);
-        expect(await store.resolvedDefault(ALICE)).toEqual(profile('user', 'zulu'));
-
-        await store.replace(ALICE, []);
+        await store.clearDefault(ALICE);
         expect(await store.resolvedDefault(ALICE)).toEqual(profile('org', 'org-a'));
-
-        const orgA = (await store.listOrg()).find((row) => row.name === 'org-a')!;
-        await store.deleteOrg(orgA.id);
-        expect(await store.resolvedDefault(ALICE)).toBeNull();
     });
 
-    it('skips suspended rows in the chain but keeps the stored preference, so resuming restores it (issue 440)', async () => {
-        await store.createOrg({ name: 'org-a', type: 'claude-code', config: {}, createdBy: ALICE });
+    it('refuses a suspended configured default instead of falling through to another profile', async () => {
+        const orgA = await store.createOrg({ name: 'org-a', type: 'claude-code', config: {}, createdBy: ALICE });
         await store.replace(ALICE, [
             { name: 'first', type: 'claude-code', config: {} },
             { name: 'second', type: 'claude-code', config: {} },
         ]);
-        await legacyDefault(ALICE, pref('user', 'second'));
-        const byName = async (name: string) => (await store.list(ALICE)).find((row) => row.name === name)!;
+        await store.selectDefault(null, orgA.id);
+        await store.selectDefault(ALICE, (await byName('first')).id);
 
-        await store.setPersonalSuspended(ALICE, (await byName('second')).id, true);
-        expect(await store.resolvedDefault(ALICE)).toEqual(profile('user', 'first'));
         await store.setPersonalSuspended(ALICE, (await byName('first')).id, true);
-        expect(await store.resolvedDefault(ALICE)).toEqual(profile('org', 'org-a'));
-        const orgA = (await store.listOrg())[0]!;
-        await store.setOrgSuspended(orgA.id, true);
-        expect(await store.resolvedDefault(ALICE)).toBeNull();
+        await expect(store.resolvedDefault(ALICE)).rejects.toBeInstanceOf(ConfiguredDefaultUnusableError);
+        // Another member never inherits Alice's refusal.
+        expect(await store.resolvedDefault(BOB)).toEqual(profile('org', 'org-a'));
 
-        // The stored preference never moved; resuming restores it.
-        expect(await store.defaultOf(ALICE)).toEqual(pref('user', 'second'));
-        await store.setPersonalSuspended(ALICE, (await byName('second')).id, false);
-        expect(await store.resolvedDefault(ALICE)).toEqual(profile('user', 'second'));
+        await store.setPersonalSuspended(ALICE, (await byName('first')).id, false);
+        expect(await store.resolvedDefault(ALICE)).toEqual(profile('user', 'first'));
     });
 
-    it('keeps the old personal default shape working: replace() no longer takes a flag', async () => {
-        // 040's is_default column is gone; the preference is the whole mechanism now.
-        const columns = await sql<{ column_name: string }[]>`
-            select column_name from information_schema.columns
-            where table_name = 'executor_profile'
+    it('has no stored preference, agent default or agent-default methods', async () => {
+        for (const method of [
+            'defaultOf',
+            'agentDefaults',
+            'setAgentDefault',
+            'setAgentDefaultInTx',
+            'deleteAgentDefault',
+        ]) {
+            expect(method in store).toBe(false);
+        }
+        const tables = await sql<{ table_name: string }[]>`
+            select table_name from information_schema.tables
+            where table_schema = current_schema() and table_name in ('agent_default', 'user_executor_default')
         `;
-        expect(columns.map((c) => c.column_name)).not.toContain('is_default');
-    });
-});
-
-describe.skipIf(!enabled)('the agent default', () => {
-    const claude = { agentType: 'claude-code', model: 'claude-sonnet-4-5' } as const;
-    const opencode = { agentType: 'opencode', model: 'anthropic/claude-sonnet-4-5' } as const;
-
-    it('stores one org row and one row per member, overwrites in place and deletes by owner', async () => {
-        expect(await store.agentDefaults(ALICE)).toEqual({ org: null, personal: null });
-
-        await store.setAgentDefault(null, claude);
-        await store.setAgentDefault(ALICE, opencode);
-        expect(await store.agentDefaults(ALICE)).toEqual({ org: claude, personal: opencode });
-        // Per member: Alice's personal default is never Bob's; the org row is everyone's.
-        expect(await store.agentDefaults(BOB)).toEqual({ org: claude, personal: null });
-
-        await store.setAgentDefault(ALICE, { agentType: 'claude-code', model: 'claude-opus-4-5' });
-        expect((await store.agentDefaults(ALICE)).personal).toEqual({
-            agentType: 'claude-code',
-            model: 'claude-opus-4-5',
-        });
-
-        expect(await store.deleteAgentDefault(ALICE)).toBe(true);
-        expect(await store.deleteAgentDefault(ALICE)).toBe(false);
-        expect(await store.deleteAgentDefault(null)).toBe(true);
-        expect(await store.agentDefaults(ALICE)).toEqual({ org: null, personal: null });
-    });
-
-    it('writes inside the caller’s transaction, and a rolled-back transaction writes nothing', async () => {
-        await sql.begin((tx) => store.setAgentDefaultInTx(tx, ALICE, claude));
-        expect((await store.agentDefaults(ALICE)).personal).toEqual(claude);
-
-        await expect(
-            sql.begin(async (tx) => {
-                await store.setAgentDefaultInTx(tx, null, opencode);
-                throw new Error('roll back');
-            })
-        ).rejects.toThrow('roll back');
-        expect((await store.agentDefaults(ALICE)).org).toBeNull();
-    });
-
-    it('resolves in order: active preference, personal agent default, org agent default, first personal profile, first org profile, null', async () => {
-        await store.createOrg({ name: 'org-a', type: 'claude-code', config: {}, createdBy: ALICE });
-        await store.createOrg({ name: 'org-b', type: 'opencode', config: {}, createdBy: ALICE });
-        await store.replace(ALICE, [{ name: 'zulu', type: 'claude-code', config: {} }]);
-        await legacyDefault(ALICE, { scope: 'org', name: 'org-b' });
-        await store.setAgentDefault(ALICE, opencode);
-        await store.setAgentDefault(null, claude);
-
-        // 1. The stored preference wins over both agent defaults and every profile.
-        expect(await store.resolvedDefault(ALICE)).toEqual({ kind: 'profile', scope: 'org', name: 'org-b' });
-
-        // A suspended preference is skipped to the personal agent default, not to a profile.
-        const orgB = (await store.listOrg()).find((row) => row.name === 'org-b')!;
-        await store.setOrgSuspended(orgB.id, true);
-        // 2. The personal agent default wins over the org one and every profile.
-        expect(await store.resolvedDefault(ALICE)).toEqual({ kind: 'agent', ...opencode, from: 'personal' });
-
-        // 3. The org agent default wins over every profile; another member without a personal one gets it too.
-        await store.deleteAgentDefault(ALICE);
-        expect(await store.resolvedDefault(ALICE)).toEqual({ kind: 'agent', ...claude, from: 'org' });
-        expect(await store.resolvedDefault(BOB)).toEqual({ kind: 'agent', ...claude, from: 'org' });
-
-        // 4. The first active personal profile wins over the org profiles.
-        await store.deleteAgentDefault(null);
-        expect(await store.resolvedDefault(ALICE)).toEqual({ kind: 'profile', scope: 'user', name: 'zulu' });
-
-        // 5. The first active org profile.
-        await store.replace(ALICE, []);
-        expect(await store.resolvedDefault(ALICE)).toEqual({ kind: 'profile', scope: 'org', name: 'org-a' });
-
-        // 6. Nothing usable resolves to null.
-        const orgA = (await store.listOrg()).find((row) => row.name === 'org-a')!;
-        await store.setOrgSuspended(orgA.id, true);
-        expect(await store.resolvedDefault(ALICE)).toBeNull();
+        expect(tables).toEqual([]);
     });
 });
 
@@ -787,7 +685,7 @@ describe.skipIf(!enabled)('stable personal executor identities', () => {
         const [renamed] = await store.list(ALICE);
         expect(renamed).toMatchObject({ id: row!.id, name: 'renamed', providerConnectionId: connection.id });
         expect(await store.selectedDefault(ALICE)).toMatchObject({ executorId: row!.id, name: 'renamed' });
-        expect(await store.resolvedDefault(ALICE)).toMatchObject({ kind: 'profile', scope: 'user', name: 'renamed' });
+        expect(await store.resolvedDefault(ALICE)).toMatchObject({ scope: 'user', name: 'renamed' });
     });
 
     it('swaps two names by ID in one save', async () => {

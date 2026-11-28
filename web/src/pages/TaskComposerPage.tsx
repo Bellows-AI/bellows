@@ -69,7 +69,6 @@ export function TaskComposerPage() {
                         workspace.data?.orgExecutors ?? []
                     )}
                     defaultExecutor={workspace.data?.defaultExecutor ?? null}
-                    agentDefault={workspace.data?.agentDefault ?? null}
                     workflows={null}
                     actionError={actionError}
                     sending={sending}

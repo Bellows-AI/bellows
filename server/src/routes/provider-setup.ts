@@ -26,7 +26,7 @@ import {
 } from '../db/provider-setup-store.js';
 import { ProviderConnectionCapError } from '../db/provider-connection-store.js';
 import type { OrgRegistry } from '../orgs.js';
-import { MAX_AGENT_MODEL_LENGTH } from './agent-default.js';
+import { MAX_AGENT_MODEL_LENGTH } from './jobs/job-limits.js';
 import { HTTP_CONNECTION_REFUSED, isConnectionRefusal, lifecycleRefusal, UUID } from './executor-fields.js';
 import { bad, body as jsonBody, guard } from './helpers.js';
 import { refuseUnparsedBody, validBase, validKey } from './provider-connections-verify.js';

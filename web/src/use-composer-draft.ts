@@ -269,8 +269,6 @@ export function useComposerDraft(input: {
      * in on — null when nothing is selectable.
      */
     defaultExecutor: ExecutorChoice | null;
-    /** Whether an agent default runs a task naming no executor: then no selection is still launchable. */
-    agentDefault: boolean;
     workflows: Workflows;
     onRepoChange: ((repo: string | null) => void) | undefined;
     sending: boolean;
@@ -285,7 +283,6 @@ export function useComposerDraft(input: {
         executors,
         executorsLoaded,
         defaultExecutor,
-        agentDefault,
         workflows,
         onRepoChange,
         sending,
@@ -379,7 +376,7 @@ export function useComposerDraft(input: {
             sending ||
             workflowPending ||
             !paramsReady ||
-            (executor === '' && !agentDefault)
+            executor === ''
         ) {
             return;
         }

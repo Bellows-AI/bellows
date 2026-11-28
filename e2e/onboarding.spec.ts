@@ -142,12 +142,8 @@ test('a first sign-in connects a provider, starts its first task from Ready and 
     // The first task runs on the executor the provider step created and selected, by name.
     expect(launches.bodies[0]).toMatchObject({ executor: 'Claude Code · Sonnet' });
     const id = new URL(page.url()).pathname.split('/').pop();
-    const job = (await (await page.request.get(`/api/jobs/${id}`)).json()) as {
-        executor: string | null;
-        agentType: string | null;
-    };
+    const job = (await (await page.request.get(`/api/jobs/${id}`)).json()) as { executor: string | null };
     expect(job.executor).toBe('Claude Code · Sonnet');
-    expect(job.agentType).toBeNull();
     const workspace = (await (await page.request.get('/api/workspace')).json()) as {
         defaultExecutor: { scope: string; name: string } | null;
         executors: { name: string; providerConnectionProvider: string | null }[];

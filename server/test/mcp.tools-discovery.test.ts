@@ -149,6 +149,7 @@ async function boot(scenario: Scenario = {}) {
             ...(connectionId ? { providerConnectionId: connectionId } : {}),
         },
     ]);
+    await executors.selectDefault(people.alice.user.id, (await executors.list(people.alice.user.id))[0]!.id);
     await executors.createOrg({
         name: 'shared',
         type: 'claude-code',

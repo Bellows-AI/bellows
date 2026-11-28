@@ -425,8 +425,6 @@ export const authRoutes =
                 // Whether this org may configure a Claude subscription token: a boolean for the session's
                 // org only, never the operator's allowlist itself.
                 subscriptionToken: subscriptionTokenAllowed(config, caller.org.id),
-                // Whether the operator supplies the model: onboarding offers running on it without a key.
-                platformModel: config.platformModelProvided,
             });
         });
 

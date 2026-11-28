@@ -7,7 +7,7 @@ description: "Quick answers to common questions, and a symptom-to-fix guide for 
 
 <AccordionGroup>
   <Accordion title="Which model does the agent use?">
-    The model of the [executor profile](/guides/executors) you pick or, with none picked, your default executor (the one **Connect a provider** creates) or an older agent default. You can override it per task with the **Model** chip in the composer (see [Choosing the model for one task](/guides/executors#choosing-the-model-for-one-task)). **Claude Code** takes a Claude model id or alias such as `sonnet`. **OpenCode** takes `provider/model`. If you leave the model on **Use runner default**, the runner's default applies.
+    The model of the [executor profile](/guides/executors) you pick or, with none picked, your default executor (the one **Connect a provider** creates). You can override it per task with the **Model** chip in the composer (see [Choosing the model for one task](/guides/executors#choosing-the-model-for-one-task)). **Claude Code** takes a Claude model id or alias such as `sonnet`. **OpenCode** takes `provider/model`. If you leave the model on **Use runner default**, the runner's default applies.
   </Accordion>
   <Accordion title="Does the agent push to my main branch?">
     Not by design. The agent works on a task branch and opens or updates a pull request; it is instructed never to push to your default branch, merge or close a pull request. That is an instruction, not a lock: the run's GitHub token is limited to the one repository, not to one branch. For a hard guarantee, turn on branch protection for your default branch in GitHub. See [Task lifecycle](/guides/task-lifecycle).
