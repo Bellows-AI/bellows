@@ -1,0 +1,4 @@
+
+> typecheck
+> tsc -b && tsc -p driver/tsconfig.scripts.json
+
