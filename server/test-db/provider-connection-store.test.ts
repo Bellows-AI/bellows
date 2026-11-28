@@ -94,6 +94,16 @@ describe.skipIf(!enabled)('the provider connection store', () => {
         expect((await store.credentialFor(ALICE, made.id))!.key).toBe(KEY);
     });
 
+    it('holds an openai-compatible connection with its endpoint, and the table refuses one without', async () => {
+        const baseUrl = 'https://models.example.test/v1';
+        const made = await store.create(create({ provider: 'openai-compatible', name: 'custom', baseUrl }));
+        expect(made).toMatchObject({ provider: 'openai-compatible', baseUrl, hasKey: true });
+        expect((await store.credentialFor(ALICE, made.id))!.connection).toMatchObject({ baseUrl });
+        await expect(
+            store.create(create({ provider: 'openai-compatible', name: 'no-endpoint', baseUrl: null }))
+        ).rejects.toThrow(/provider_connection_compatible_base_url_ck/);
+    });
+
     it('a reference copied to another connection reads as identity-mismatch, never the key', async () => {
         const made = await store.create(create({ name: 'origin' }));
         const copied = randomUUID();

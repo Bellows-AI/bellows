@@ -1,10 +1,20 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ModelSetupView, SelectedExecutorView } from '../src/api/useModelSetup.js';
 import type { Session } from '../src/api/useSession.js';
 import { ModelSetup } from '../src/model-setup/ModelSetupForm.js';
 import { renderApp, renderAt, stubFetch, type FetchCall, type FetchReply } from './dom.js';
 import { memberSession } from './fixtures.js';
+import {
+    modelSetupReads,
+    NO_SETUP,
+    setupCalls,
+    setupReads,
+    SETUP_URL,
+    VERIFY_URL,
+    verifyCalls,
+} from './model-setup-reads.js';
 
 /**
  * Connect a model (the onboarding step and Settings → Model share `ModelSetup`): the provider cards, the live key
@@ -16,9 +26,8 @@ afterEach(() => {
     window.history.replaceState(null, '', '/');
 });
 
-const NOTHING = { org: null, personal: null, effective: null };
+const NOTHING = NO_SETUP;
 const SAVED = {
-    saved: true,
     scope: 'personal',
     executorId: 'executor-1',
     executorName: 'Anthropic',
@@ -26,17 +35,18 @@ const SAVED = {
     connectionName: 'Anthropic',
     replayed: false,
 };
-type Setup = Record<string, unknown>;
+type Setup = ModelSetupView;
 
-/** Answers the setup read with `setup`, the key check with `verify(call)`; the PUT answers saved. */
+/** Answers the setup reads with `setup`, the key check with `verify(call)`; the setup command answers saved. */
 function board(
     setup: Setup | { status: number } = NOTHING,
     verify: (call: FetchCall) => FetchReply = () => ({ ok: true })
 ) {
     return stubFetch((call) => {
-        if (call.url === '/api/model-setup' && call.method === 'GET') return setup;
-        if (call.url === '/api/model-setup' && call.method === 'PUT') return SAVED;
-        if (call.url === '/api/model-setup/verify') return verify(call);
+        const read = modelSetupReads(setup, call);
+        if (read !== undefined) return read;
+        if (call.method === 'POST' && call.url === SETUP_URL) return SAVED;
+        if (call.url === VERIFY_URL) return verify(call);
     });
 }
 
@@ -55,8 +65,8 @@ function mount(session: Partial<Session> = {}, onSaved = vi.fn(), saveExisting =
 
 const keyInput = () => screen.findByLabelText('API key');
 const saveButton = () => screen.getByRole('button', { name: /^(Save and continue|Continue)$/ });
-const verifies = (calls: FetchCall[]) => calls.filter((c) => c.url === '/api/model-setup/verify');
-const puts = (calls: FetchCall[]) => calls.filter((c) => c.method === 'PUT');
+const verifies = verifyCalls;
+const puts = setupCalls;
 const status = () => screen.getByRole('status', { name: 'Key check' });
 
 describe('provider cards', () => {
@@ -98,7 +108,7 @@ describe('provider cards', () => {
     it('locks OpenAI to OpenCode with the Codex note, and a subscription to Claude Code', async () => {
         board();
         mount();
-        await userEvent.setup().click(await screen.findByRole('radio', { name: /^OpenAI/ }));
+        await userEvent.setup().click(await screen.findByRole('radio', { name: /^OpenAI(?!-compatible)/ }));
         const agent = screen.getByLabelText('Agent') as HTMLSelectElement;
         expect([...agent.options].map((o) => o.value)).toEqual(['opencode']);
         expect(screen.getByText(/OpenAI keys run on OpenCode/).textContent).toContain('Codex');
@@ -254,13 +264,12 @@ describe('Save', () => {
         expect(puts(calls)[0]?.body).toEqual({
             scope: 'personal',
             requestId: expect.any(String),
-            agentType: 'claude-code',
-            model: 'claude-sonnet-5-5',
             connection: { intent: 'create', provider: 'anthropic', key: 'sk-ant-api03-abc', name: 'Anthropic' },
-            executor: { name: 'Anthropic' },
+            executor: { name: 'Anthropic', agentType: 'claude-code', model: 'claude-sonnet-5-5' },
+            makeDefault: true,
         });
-        const put = calls.findIndex((c) => c.method === 'PUT');
-        expect(calls.slice(put).some((c) => c.url === '/api/model-setup' && c.method === 'GET')).toBe(true);
+        const put = calls.findIndex((c) => c.url === SETUP_URL);
+        expect(calls.slice(put).some((c) => c.url === '/api/workspace' && c.method === 'GET')).toBe(true);
     });
 
     it('names the connection and executor by the Name field, and waits while it is empty', async () => {
@@ -283,9 +292,10 @@ describe('Save', () => {
     it('a name already in use is refused with its sentence, nothing handed over, and the same body retries with one request id', async () => {
         const bodies: { requestId: string }[] = [];
         stubFetch((call) => {
-            if (call.url === '/api/model-setup' && call.method === 'GET') return NOTHING;
-            if (call.url === '/api/model-setup/verify') return { ok: true, models: ['claude-sonnet-5-5'] };
-            if (call.url === '/api/model-setup' && call.method === 'PUT') {
+            const read = modelSetupReads(NOTHING, call);
+            if (read !== undefined) return read;
+            if (call.url === VERIFY_URL) return { ok: true, models: ['claude-sonnet-5-5'] };
+            if (call.url === SETUP_URL) {
                 bodies.push(call.body as { requestId: string });
                 return {
                     status: 409,
@@ -323,27 +333,14 @@ describe('Save', () => {
         expect(await screen.findByRole('alert')).toBeTruthy();
         expect(screen.queryByRole('radiogroup', { name: 'Provider' })).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-        await waitFor(() => expect(calls.filter((c) => c.url === '/api/model-setup').length).toBe(2));
-    });
-});
-
-describe('a key in the environment with no default executor', () => {
-    it('shows the key form, not a banner: nothing is adopted without a connection', async () => {
-        board({
-            org: { provider: 'anthropic', keyNames: ['ANTHROPIC_API_KEY'] },
-            personal: null,
-            effective: 'org',
-        });
-        mount();
-        expect(await screen.findByRole('radiogroup', { name: 'Provider' })).toBeTruthy();
-        expect(screen.queryByText('Bellows AI already has a model.')).toBeNull();
+        await waitFor(() => expect(setupReads(calls)).toBe(2));
     });
 });
 
 const REVISION = '2026-01-02T03:04:05.678Z';
 
 describe('a default executor', () => {
-    const selected = (over: Record<string, unknown> = {}) => ({
+    const selected = (over: Partial<SelectedExecutorView> = {}): SelectedExecutorView => ({
         scope: 'personal',
         executorId: 'executor-1',
         name: 'Anthropic',
@@ -354,7 +351,7 @@ describe('a default executor', () => {
         connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'personal', baseUrl: null },
         ...over,
     });
-    const view = (over: Record<string, unknown> = {}) => ({
+    const view = (over: Partial<SelectedExecutorView> = {}): ModelSetupView => ({
         org: null,
         personal: null,
         selected: selected(over),
@@ -382,10 +379,14 @@ describe('a default executor', () => {
         expect(puts(calls)[0]?.body).toEqual({
             scope: 'personal',
             requestId: expect.any(String),
-            agentType: 'claude-code',
-            model: 'claude-opus-5-5',
             connection: { intent: 'reuse', id: 'connection-1' },
-            executor: { id: 'executor-1', expectedUpdatedAt: REVISION },
+            executor: {
+                id: 'executor-1',
+                agentType: 'claude-code',
+                model: 'claude-opus-5-5',
+                expectedUpdatedAt: REVISION,
+            },
+            makeDefault: true,
         });
         expect(JSON.stringify(puts(calls)[0]?.body)).not.toContain('"key"');
     });
@@ -413,10 +414,14 @@ describe('a default executor', () => {
         expect(puts(calls)[0]?.body).toEqual({
             scope: 'personal',
             requestId: expect.any(String),
-            agentType: 'claude-code',
-            model: 'claude-sonnet-5-5',
             connection: { intent: 'rotate', id: 'connection-1', key: 'sk-ant-api03-new' },
-            executor: { id: 'executor-1', expectedUpdatedAt: REVISION },
+            executor: {
+                id: 'executor-1',
+                agentType: 'claude-code',
+                model: 'claude-sonnet-5-5',
+                expectedUpdatedAt: REVISION,
+            },
+            makeDefault: true,
         });
     });
 
@@ -489,13 +494,13 @@ describe('a default executor', () => {
         await waitFor(() => expect(onSaved).toHaveBeenCalled());
         expect(puts(calls)[0]?.body).toMatchObject({
             connection: { intent: 'create', provider: 'openrouter', name: 'OpenRouter' },
-            executor: { name: 'OpenRouter' },
+            executor: { name: 'OpenRouter', agentType: 'opencode' },
         });
     });
 });
 
 describe('after a save in Settings', () => {
-    const mine = {
+    const mine: SelectedExecutorView = {
         scope: 'personal',
         executorId: 'executor-1',
         name: 'Anthropic',
@@ -505,7 +510,7 @@ describe('after a save in Settings', () => {
         updatedAt: '2026-01-02T03:04:05.678Z',
         connection: { id: 'connection-1', name: 'Anthropic', provider: 'anthropic', scope: 'personal', baseUrl: null },
     };
-    const router = {
+    const router: SelectedExecutorView = {
         ...mine,
         executorId: 'executor-2',
         name: 'OpenRouter',
@@ -519,27 +524,24 @@ describe('after a save in Settings', () => {
             baseUrl: null,
         },
     };
-    const viewOf = (selected: object) => ({
+    const viewOf = (selected: SelectedExecutorView): ModelSetupView => ({
         org: null,
         personal: null,
         selected,
         effective: 'executor',
     });
 
-    /** A board whose read follows the saves: each PUT moves the default to `after`. */
-    function followingBoard(after: object) {
-        let current: object = mine;
+    /** A board whose read follows the saves: each setup command moves the default to `after`. */
+    function followingBoard(after: SelectedExecutorView) {
+        let current = mine;
         return stubFetch((call) => {
-            if (call.url === '/api/model-setup' && call.method === 'GET') return viewOf(current);
-            if (call.url === '/api/model-setup' && call.method === 'PUT') {
+            const read = modelSetupReads(viewOf(current), call);
+            if (read !== undefined) return read;
+            if (call.url === SETUP_URL) {
                 current = after;
-                return {
-                    ...SAVED,
-                    executorId: (after as typeof mine).executorId,
-                    executorName: (after as typeof mine).name,
-                };
+                return { ...SAVED, executorId: after.executorId, executorName: after.name };
             }
-            if (call.url === '/api/model-setup/verify') return { ok: true, models: ['openai/gpt-5.1'] };
+            if (call.url === VERIFY_URL) return { ok: true, models: ['openai/gpt-5.1'] };
         });
     }
 
@@ -594,9 +596,10 @@ describe('the pages', () => {
         let setup: Session['setup'] = { completed: false, done: [], skipped: [] };
         const calls = stubFetch((call) => {
             if (call.url === '/api/auth/me') return memberSession({ setup });
-            if (call.url === '/api/model-setup' && call.method === 'GET') return NOTHING;
-            if (call.url === '/api/model-setup' && call.method === 'PUT') return SAVED;
-            if (call.url === '/api/model-setup/verify') return { ok: true, models: ['claude-sonnet-5-5'] };
+            const read = modelSetupReads(NOTHING, call);
+            if (read !== undefined) return read;
+            if (call.url === SETUP_URL) return SAVED;
+            if (call.url === VERIFY_URL) return { ok: true, models: ['claude-sonnet-5-5'] };
             if (call.url === '/api/onboarding/setup') {
                 setup = { completed: false, done: ['model'], skipped: [] };
                 return { status: 204 };
@@ -608,7 +611,7 @@ describe('the pages', () => {
         await waitFor(() => expect(saveButton().getAttribute('aria-disabled')).toBeNull());
         fireEvent.click(saveButton());
         await waitFor(() => expect(router.state.location.pathname).toBe('/onboarding/tools'));
-        const put = calls.findIndex((c) => c.method === 'PUT');
+        const put = calls.findIndex((c) => c.url === SETUP_URL);
         const post = calls.findIndex((c) => c.url === '/api/onboarding/setup');
         expect(put).toBeGreaterThan(-1);
         expect(post).toBeGreaterThan(put);
@@ -619,7 +622,7 @@ describe('the pages', () => {
     it('Settings → Model renders the same setup under its own heading', async () => {
         stubFetch((call) => {
             if (call.url === '/api/auth/me') return memberSession();
-            if (call.url === '/api/model-setup') return NOTHING;
+            return modelSetupReads(NOTHING, call);
         });
         renderApp('/settings/model');
         expect(await screen.findByRole('heading', { level: 1, name: 'Model' })).toBeTruthy();

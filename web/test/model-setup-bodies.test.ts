@@ -1,20 +1,36 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { EXECUTOR_TYPES, isModelProvider, MODEL_PROVIDERS, PROVIDER_AGENTS, providerAvailable } from '@factory-ai/core';
-import { describe, expect, it } from 'vitest';
-import type { ModelSetupSave, SelectedExecutorView } from '../src/api/useModelSetup.js';
+import { createElement } from 'react';
+import { renderToString } from 'react-dom/server';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ProviderSetupBody } from '../src/api/providerConnections.js';
+import {
+    type ModelSetupSave,
+    type SelectedExecutorView,
+    type UseModelSetup,
+    useModelSetup,
+} from '../src/api/useModelSetup.js';
 import { savedModelChoice } from '../src/model-setup/AgentModelFields.js';
 import { createBody, editBody, rotateBody } from '../src/model-setup/save-body.js';
+import { SETUP_URL } from './model-setup-reads.js';
 
 /**
- * Every `PUT /api/model-setup` body the model setup can build is one the route accepts. Web imports no server code, so
- * the route's rule (`parseSetup` in server/src/routes/model-setup-save.ts) is mirrored here, and the source lines it
- * mirrors are pinned below: a change to the route's fields or its intents fails this file until the mirror follows.
+ * Every `POST /api/provider-connections/setup` body the model setup sends is one the route accepts. The bodies are the
+ * ones the hook actually puts on the wire (`save` maps a `ModelSetupSave` to the route's shape), captured at `fetch`.
+ * Web imports no server code, so the route's rule (`parseSetup` in server/src/routes/provider-setup.ts) is mirrored here,
+ * and the source lines it mirrors are pinned below: a change to the route's fields or its intents fails this file until
+ * the mirror follows.
  */
 
-const ROUTE = fileURLToPath(new URL('../../server/src/routes/model-setup-save.ts', import.meta.url));
-const FIELDS = ['scope', 'requestId', 'agentType', 'model', 'connection', 'executor'];
+const ROUTE = fileURLToPath(new URL('../../server/src/routes/provider-setup.ts', import.meta.url));
+const FIELDS = ['scope', 'requestId', 'connection', 'executor', 'makeDefault'];
+const EXECUTOR_FIELDS = ['id', 'name', 'agentType', 'model', 'expectedUpdatedAt'];
 const KEY_SHAPE = /^[\x21-\x7e]+$/;
+
+afterEach(() => {
+    vi.unstubAllGlobals();
+});
 
 const validBase = (raw: unknown) => {
     if (typeof raw !== 'string') return false;
@@ -62,26 +78,64 @@ function connectionAccepted(
     return provider !== 'subscription' && validBase(baseUrl);
 }
 
-/** The route's acceptance, mirrored: fields, request id, scope, agent, model, the connection intent and the executor. */
-function routeAccepts(body: ModelSetupSave, subscriptionAllowed: boolean): boolean {
-    const sent: Record<string, unknown> = { ...body, requestId: 'a-request-id' };
-    if (!known(sent, FIELDS)) return false;
+/** The route's acceptance, mirrored: fields, request id, scope, the executor's agent and model, the connection intent. */
+function routeAccepts(sent: ProviderSetupBody, subscriptionAllowed: boolean): boolean {
+    if (!known(sent as unknown as Record<string, unknown>, FIELDS)) return false;
     if (sent.scope !== 'org' && sent.scope !== 'personal') return false;
-    if (!(EXECUTOR_TYPES as readonly unknown[]).includes(sent.agentType)) return false;
-    if (typeof sent.model !== 'string' || !sent.model.trim()) return false;
-    if (!connectionAccepted(body.connection as unknown as Record<string, unknown>, sent.agentType, subscriptionAllowed))
-        return false;
-    const { executor } = body;
-    if (!known(executor, ['id', 'name', 'expectedUpdatedAt'])) return false;
-    return executor.id !== undefined ? isId(executor.id) : text(executor.name);
+    if (!text(sent.requestId)) return false;
+    if (sent.makeDefault !== undefined && typeof sent.makeDefault !== 'boolean') return false;
+    const { executor } = sent;
+    if (!known(executor, EXECUTOR_FIELDS)) return false;
+    if (!(EXECUTOR_TYPES as readonly unknown[]).includes(executor.agentType)) return false;
+    if (typeof executor.model !== 'string' || !executor.model.trim()) return false;
+    if (executor.id === undefined ? !text(executor.name) : !isId(executor.id)) return false;
+    return connectionAccepted(
+        sent.connection as unknown as Record<string, unknown>,
+        executor.agentType,
+        subscriptionAllowed
+    );
+}
+
+/** What the hook puts on the wire for `body`: its one setup request, or null when it sent none. */
+async function wire(body: ModelSetupSave): Promise<{ sent: ProviderSetupBody | null; result: unknown }> {
+    let hook: UseModelSetup | undefined;
+    renderToString(
+        createElement(() => {
+            hook = useModelSetup();
+            return null;
+        })
+    );
+    const bodies: ProviderSetupBody[] = [];
+    vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
+        expect(url).toBe(SETUP_URL);
+        bodies.push(JSON.parse(init.body as string) as ProviderSetupBody);
+        const saved = { scope: body.scope, executorId: EXECUTOR_ID, executorName: 'n', connectionId: null };
+        return new Response(JSON.stringify({ ...saved, connectionName: null, replayed: false }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+        });
+    });
+    const result = await hook?.save(body);
+    return { sent: bodies[0] ?? null, result };
+}
+
+/** The wire body of `body`, which must exist. */
+async function sentBody(body: ModelSetupSave): Promise<ProviderSetupBody> {
+    const { sent } = await wire(body);
+    if (sent === null) throw new Error('the hook sent no setup request');
+    return sent;
 }
 
 describe('the route rule this file mirrors', () => {
-    it('still reads the same fields and the same four connection intents', () => {
+    it('still reads the same fields and the same three connection intents', () => {
         const source = readFileSync(ROUTE, 'utf8');
         expect(source).toContain(`const FIELDS = new Set([${FIELDS.map((f) => `'${f}'`).join(', ')}]);`);
+        expect(source).toContain(
+            `const EXECUTOR_FIELDS = new Set([${EXECUTOR_FIELDS.map((f) => `'${f}'`).join(', ')}]);`
+        );
         for (const intent of ['reuse', 'rotate']) expect(source).toContain(`intent === '${intent}'`);
         expect(source).toContain(`intent !== 'create'`);
+        expect(source).not.toContain(`intent === 'none'`);
     });
 });
 
@@ -98,7 +152,7 @@ const selected = (over: Partial<SelectedExecutorView> = {}): SelectedExecutorVie
 });
 
 describe('the bodies the model setup sends', () => {
-    it('every create body is accepted: with a base URL and without one', () => {
+    it('every create body is accepted: with a base URL and without one', async () => {
         for (const provider of MODEL_PROVIDERS) {
             for (const agentType of PROVIDER_AGENTS[provider]) {
                 for (const baseUrl of ['', ' https://gateway.example.test ']) {
@@ -112,9 +166,11 @@ describe('the bodies the model setup sends', () => {
                         agentType,
                         model: 'm',
                     });
-                    expect(routeAccepts(body, true), JSON.stringify(body)).toBe(true);
-                    expect(body.connection).toMatchObject({ intent: 'create', key: 'sk-x', name: 'Mine' });
-                    expect(body.executor).toEqual({ name: 'Mine' });
+                    const sent = await sentBody(body);
+                    expect(routeAccepts(sent, true), JSON.stringify(sent)).toBe(true);
+                    expect(sent.connection).toMatchObject({ intent: 'create', key: 'sk-x', name: 'Mine' });
+                    expect(sent.executor).toEqual({ name: 'Mine', agentType, model: 'm' });
+                    expect(sent.makeDefault).toBe(true);
                 }
             }
         }
@@ -133,25 +189,52 @@ describe('the bodies the model setup sends', () => {
         });
     });
 
-    it('an edit names the executor by id and its connection by id, and carries no key', () => {
-        const body = editBody({ selected: selected(), connectionId: CONNECTION_ID, agentType: 'opencode', model: 'm' });
-        expect(routeAccepts(body, true)).toBe(true);
-        expect(body.connection).toEqual({ intent: 'reuse', id: CONNECTION_ID });
-        expect(body.executor).toEqual({ id: EXECUTOR_ID, expectedUpdatedAt: REVISION });
-        expect(JSON.stringify(body)).not.toContain('key');
+    it('an edit names the executor by id and its connection by id, and carries no key', async () => {
+        const sent = await sentBody(
+            editBody({ selected: selected(), connectionId: CONNECTION_ID, agentType: 'opencode', model: 'm' })
+        );
+        expect(routeAccepts(sent, true)).toBe(true);
+        expect(sent.connection).toEqual({ intent: 'reuse', id: CONNECTION_ID });
+        expect(sent.executor).toEqual({
+            id: EXECUTOR_ID,
+            agentType: 'opencode',
+            model: 'm',
+            expectedUpdatedAt: REVISION,
+        });
+        expect(JSON.stringify(sent)).not.toContain('key');
     });
 
-    it('a rotation names the connection and the executor by id, and sends the key alone', () => {
-        const body = rotateBody({
-            selected: selected(),
-            connectionId: CONNECTION_ID,
-            key: ' sk-new ',
+    it('an edit read without a revision sends none, which the route tolerates', async () => {
+        const sent = await sentBody(
+            editBody({
+                selected: selected({ updatedAt: '' }),
+                connectionId: CONNECTION_ID,
+                agentType: 'claude-code',
+                model: 'm',
+            })
+        );
+        expect(routeAccepts(sent, true)).toBe(true);
+        expect(sent.executor).not.toHaveProperty('expectedUpdatedAt');
+    });
+
+    it('a rotation names the connection and the executor by id, and sends the key alone', async () => {
+        const sent = await sentBody(
+            rotateBody({
+                selected: selected(),
+                connectionId: CONNECTION_ID,
+                key: ' sk-new ',
+                agentType: 'claude-code',
+                model: 'claude-sonnet-5-5',
+            })
+        );
+        expect(routeAccepts(sent, true)).toBe(true);
+        expect(sent.connection).toEqual({ intent: 'rotate', id: CONNECTION_ID, key: 'sk-new' });
+        expect(sent.executor).toEqual({
+            id: EXECUTOR_ID,
             agentType: 'claude-code',
             model: 'claude-sonnet-5-5',
+            expectedUpdatedAt: REVISION,
         });
-        expect(routeAccepts(body, true)).toBe(true);
-        expect(body.connection).toEqual({ intent: 'rotate', id: CONNECTION_ID, key: 'sk-new' });
-        expect(body.executor).toEqual({ id: EXECUTOR_ID, expectedUpdatedAt: REVISION });
     });
 });
 

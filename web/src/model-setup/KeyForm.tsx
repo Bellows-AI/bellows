@@ -1,4 +1,4 @@
-import { ADMIN_ROLE, isModelProvider, type ModelProvider } from '@factory-ai/core';
+import { ADMIN_ROLE, isModelProvider, type ModelProvider, providerRequiresBaseUrl } from '@factory-ai/core';
 import { useState } from 'react';
 import type { ModelScopeView, SetupScope, UseModelSetup } from '../api/useModelSetup.js';
 import type { Session } from '../api/useSession.js';
@@ -16,7 +16,7 @@ const PROXY_MODEL_HELP = 'Read from the proxy after the check. Becomes your defa
 
 /** The base URL a provider sends: LiteLLM's proxy, the Advanced one for a hosted provider, none for a subscription. */
 const baseFor = (provider: ModelProvider, proxy: string, base: string) =>
-    provider === 'litellm' ? proxy : provider === 'subscription' ? '' : base;
+    providerRequiresBaseUrl(provider) ? proxy : provider === 'subscription' ? '' : base;
 
 /** A scope's saved provider, when it is one this deployment offers. */
 const savedProvider = (scopeView: ModelScopeView | null | undefined, choices: readonly ModelProvider[]) => {
@@ -36,11 +36,11 @@ function urlsOf(
     baseEdit: string | null
 ) {
     const saved = scopeView?.provider === provider ? scopeView : null;
-    const hosted = provider !== 'litellm' && provider !== 'subscription';
+    const hosted = !providerRequiresBaseUrl(provider) && provider !== 'subscription';
     return {
-        proxy: proxyEdit ?? (provider === 'litellm' ? saved?.baseUrl : undefined) ?? '',
+        proxy: proxyEdit ?? (providerRequiresBaseUrl(provider) ? saved?.baseUrl : undefined) ?? '',
         base: baseEdit ?? (hosted ? saved?.baseUrl : undefined) ?? '',
-        hiddenProxy: provider === 'litellm' && proxyEdit === null && saved?.baseUrlSet === true,
+        hiddenProxy: providerRequiresBaseUrl(provider) && proxyEdit === null && saved?.baseUrlSet === true,
     };
 }
 
@@ -124,7 +124,7 @@ export type KeyFormState = ReturnType<typeof useKeyForm>;
 /** The key form: provider, key and its live check, agent and model, who it is for, and where the secret goes. */
 export function KeyFormView({ ids, form, orgName }: { ids: string; form: KeyFormState; orgName: string }) {
     const { provider } = form;
-    const hosted = provider !== 'litellm' && provider !== 'subscription';
+    const hosted = !providerRequiresBaseUrl(provider) && provider !== 'subscription';
     return (
         <>
             <ProviderCards
@@ -133,8 +133,14 @@ export function KeyFormView({ ids, form, orgName }: { ids: string; form: KeyForm
                 value={provider}
                 onChange={(id) => form.choose(id as ModelProvider)}
             />
-            {provider === 'litellm' ? (
-                <ProxyField ids={ids} value={form.proxy} hidden={form.hiddenProxy} onChange={form.setProxy} />
+            {providerRequiresBaseUrl(provider) ? (
+                <ProxyField
+                    ids={ids}
+                    provider={provider}
+                    value={form.proxy}
+                    hidden={form.hiddenProxy}
+                    onChange={form.setProxy}
+                />
             ) : null}
             <KeyField
                 ids={ids}
@@ -148,7 +154,7 @@ export function KeyFormView({ ids, form, orgName }: { ids: string; form: KeyForm
                 state={form.choice}
                 help={PROVIDER_META[provider].agentHelp}
                 lock={agentLock(provider)}
-                modelHelp={provider === 'litellm' ? PROXY_MODEL_HELP : MODEL_HELP}
+                modelHelp={providerRequiresBaseUrl(provider) ? PROXY_MODEL_HELP : MODEL_HELP}
             />
             <ScopeControl
                 ids={ids}

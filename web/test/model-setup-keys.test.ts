@@ -46,7 +46,7 @@ describe('provider detection from the key prefix', () => {
     it('offers the subscription card only where the org may use one', () => {
         expect(providerChoices(true)).toContain('subscription');
         expect(providerChoices(false)).not.toContain('subscription');
-        expect(providerChoices(false)).toEqual(['anthropic', 'openrouter', 'openai', 'litellm']);
+        expect(providerChoices(false)).toEqual(['anthropic', 'openrouter', 'openai', 'litellm', 'openai-compatible']);
     });
 });
 
@@ -106,6 +106,9 @@ describe('why Save waits', () => {
         expect(saveReason({ ...base, check: 'bad' })).toBe('Fix the key to continue.');
         expect(saveReason({ ...base, check: 'error' })).toBe('The key could not be checked. Try again.');
         expect(saveReason({ ...base, provider: 'litellm', check: 'idle' })).toBe('Enter the proxy URL to continue.');
+        expect(saveReason({ ...base, provider: 'openai-compatible', check: 'idle' })).toBe(
+            'Enter the endpoint URL to continue.'
+        );
         expect(saveReason({ ...base, model: ' ', check: 'ok' })).toBe('Choose a model to continue.');
         expect(saveReason({ ...base, check: 'ok' })).toBeNull();
         expect(saveReason({ ...base, check: 'warn' })).toBeNull();

@@ -219,11 +219,12 @@ describe('the composer launch triggers', () => {
         expect(screen.queryByText('No repositories tracked')).toBeNull();
         expect(screen.queryByLabelText('What should the agent do?')).toBeNull();
 
+        const workspaceReads = reads('/api/workspace').length;
         answerRepos(reposReply(['web']));
         await user.click(screen.getByRole('button', { name: 'Retry' }));
         expect(await screen.findByLabelText('What should the agent do?')).toBeTruthy();
         expect(reads('/api/repos')).toHaveLength(2);
-        expect(reads('/api/workspace')).toHaveLength(1);
+        expect(reads('/api/workspace')).toHaveLength(workspaceReads);
     });
 
     it('an empty list carrying meta.error is an unreadable list, not a confirmed empty one', async () => {

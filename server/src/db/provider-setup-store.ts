@@ -3,7 +3,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { type ExecutorType, type ModelProvider, normalizeModelId } from '@factory-ai/core';
 import type { SecretDiagnostic, SecretStore } from '../secrets/secret-store.js';
 import { ExecutorConnectionRefusedError } from './executor-connection-selection.js';
-import { selectDefaultInTx } from './executor-default-store.js';
+import { readSelection, selectDefaultInTx } from './executor-default-store.js';
 import { ExecutorRevisionError, writeSetupExecutor } from './executor-setup-rows.js';
 import { connectionSecretDeps, insertConnectionRow, replaceConnectionRow } from './provider-connection-store.js';
 import {
@@ -16,9 +16,9 @@ import {
 import { waitAdvisoryXactLock } from './pool.js';
 
 /**
- * The model setup command (docs/persistence.md): a provider connection, the executor that references it and the default
- * selection commit in ONE organization-scoped transaction, under a per-scope lock, with the request's receipt. The key
- * is sealed in the secret store before the transaction, a failed transaction releases what it sealed (conservatively:
+ * The provider setup command (docs/persistence.md): a provider connection, the executor that references it and, when
+ * asked, the default selection commit in ONE organization-scoped transaction, under a per-scope lock, with the
+ * request's receipt. The key is sealed in the secret store before the transaction, a failed transaction releases what it sealed (conservatively:
  * only what no connection row names), and a superseded key is retired only after the commit. A retry of the same request
  * finds the receipt and answers the same executor and connection. No environment credential and no agent default is
  * written: the connection is the credential's only home.
@@ -26,7 +26,7 @@ import { waitAdvisoryXactLock } from './pool.js';
 
 /** Which connection the executor runs on. */
 export type ConnectionIntent =
-    /** Seals a new connection. A name already taken in the scope refuses (`ModelSetupNameConflict`); nothing is overwritten. */
+    /** Seals a new connection. A name already taken in the scope refuses (`ProviderSetupNameConflict`); nothing is overwritten. */
     | {
           readonly intent: 'create';
           readonly provider: ModelProvider;
@@ -55,6 +55,11 @@ export interface SetupCommand {
         readonly model: string;
         readonly expectedUpdatedAt?: string;
     };
+    /**
+     * Whether the executor becomes the scope's default. Absent: it does when the member has no configured default yet
+     * (their own, else the organization's); a client that means one or the other says so.
+     */
+    readonly makeDefault?: boolean;
 }
 
 /** What a setup answers: stable identities and names only, never a credential or a reference. */
@@ -69,72 +74,49 @@ export interface SetupResult {
 }
 
 /** A name the scope already holds: the connection's or the executor's. The route answers 409 `NAME_TAKEN`. */
-export class ModelSetupNameConflict extends Error {
+export class ProviderSetupNameConflict extends Error {
     constructor(readonly kind: 'connection' | 'executor') {
         super(`A ${kind} with that name already exists in this scope; choose another name`);
-        this.name = 'ModelSetupNameConflict';
+        this.name = 'ProviderSetupNameConflict';
     }
 }
 
 /** The request id was applied before with a different command: a client bug, never a replay. */
-export class ModelSetupRequestConflict extends Error {
+export class ProviderSetupRequestConflict extends Error {
     constructor() {
         super('This setup request id was already used for a different setup');
-        this.name = 'ModelSetupRequestConflict';
+        this.name = 'ProviderSetupRequestConflict';
     }
 }
 
 /** A rotation's endpoint the connection's provider does not take (a subscription has none). The route answers 400. */
-export class ModelSetupEndpointRefusal extends Error {
+export class ProviderSetupEndpointRefusal extends Error {
     constructor() {
         super('a subscription takes no baseUrl');
-        this.name = 'ModelSetupEndpointRefusal';
+        this.name = 'ProviderSetupEndpointRefusal';
     }
 }
 
 /** A create the scope's executor limit refuses, counted under the setup lock. The route answers 400 `TOO_MANY_EXECUTORS`. */
-export class ModelSetupCapError extends Error {
+export class ProviderSetupCapError extends Error {
     constructor(
         readonly scope: 'org' | 'personal',
         readonly limit: number
     ) {
         super(`at most ${limit} ${scope === 'org' ? 'organization ' : ''}executors can be configured at once`);
-        this.name = 'ModelSetupCapError';
+        this.name = 'ProviderSetupCapError';
     }
 }
 
 /** The setup raced a change of the executor it edits (a stale expected revision): retried by the client after a reread. */
-export class ModelSetupConflict extends Error {
+export class ProviderSetupConflict extends Error {
     constructor(message = 'Another model setup save changed this scope; try again') {
         super(message);
-        this.name = 'ModelSetupConflict';
+        this.name = 'ProviderSetupConflict';
     }
 }
 
-/** The default executor a member's tasks run on, as the setup view reads it: names and ids only. */
-export interface SelectedSetup {
-    readonly scope: 'org' | 'personal';
-    readonly executorId: string;
-    readonly executorName: string;
-    readonly agentType: string;
-    readonly model: string | null;
-    readonly suspended: boolean;
-    /** The executor's revision (ISO): an edit or a rotation sends it back as `expectedUpdatedAt`, so an older read cannot overwrite a newer save. */
-    readonly updatedAt: string;
-    /** The connection the executor selects, when the member may see it; null for none. */
-    readonly connection: {
-        readonly id: string;
-        readonly name: string;
-        readonly provider: ModelProvider;
-        readonly scope: 'org' | 'personal';
-        /** The plain endpoint, never a secret (the same rule as the connection list). */
-        readonly baseUrl: string | null;
-    } | null;
-}
-
-export interface ModelSetupStore {
-    /** The member's configured default executor, else the organization's, with its connection; null when none is configured. A failed read throws. */
-    selectedFor(userId: string): Promise<SelectedSetup | null>;
+export interface ProviderSetupStore {
     /** Applies the command atomically, or replays its receipt. Any throw leaves the previous setup and default as they were. */
     apply(command: SetupCommand): Promise<SetupResult>;
 }
@@ -147,7 +129,7 @@ const MISSING_MESSAGE = 'The provider connection does not exist or is not availa
 
 type Superseded = ReturnType<typeof retiredConnectionSecret>;
 
-const setupLockKey = (orgId: string, owner: string | null) => `model-setup:${orgId}:${owner ?? 'org'}`;
+const setupLockKey = (orgId: string, owner: string | null) => `provider-setup:${orgId}:${owner ?? 'org'}`;
 
 /** The command's non-secret fields, hashed: the receipt refuses the same request id carrying a different command. */
 function fingerprintOf(command: SetupCommand): string {
@@ -174,6 +156,7 @@ function fingerprintOf(command: SetupCommand): string {
                     agentType: executor.agentType,
                     model: executor.model,
                 },
+                makeDefault: command.makeDefault ?? null,
             })
         )
         .digest('hex');
@@ -195,7 +178,7 @@ async function readReceipt(
 ): Promise<ReceiptRow | null> {
     const [row] = await (exec as Sql)<ReceiptRow[]>`
         select o.fingerprint, o.executor_id, p.name as executor_name, o.connection_id, c.name as connection_name
-        from model_setup_operation o
+        from provider_setup_operation o
         join executor_profile p on p.org_id = o.org_id and p.id = o.executor_id
         left join provider_connection c on c.org_id = o.org_id and c.id = o.connection_id
         where o.org_id = ${orgId} and o.owner_id is not distinct from ${owner} and o.request_id = ${requestId}
@@ -204,7 +187,7 @@ async function readReceipt(
 }
 
 function replayOf(receipt: ReceiptRow, command: SetupCommand, fingerprint: string): SetupResult {
-    if (receipt.fingerprint !== fingerprint) throw new ModelSetupRequestConflict();
+    if (receipt.fingerprint !== fingerprint) throw new ProviderSetupRequestConflict();
     return {
         scope: command.scope,
         executorId: receipt.executor_id,
@@ -296,6 +279,13 @@ async function connectionStep(tx: TransactionSql, run: Run, sealed: Sealed): Pro
     return { id: connection.id, name: row.name, source: row.provider };
 }
 
+/** The explicit `makeDefault`, else whether the member has no configured default yet: their own, then the organization's. */
+async function shouldSelectDefault(tx: TransactionSql, run: Run): Promise<boolean> {
+    if (run.command.makeDefault !== undefined) return run.command.makeDefault;
+    if ((await readSelection(tx, run.orgId, run.owner)) !== null) return false;
+    return run.owner === null || (await readSelection(tx, run.orgId, null)) === null;
+}
+
 /** Publishes the command inside the transaction: the connection step, the executor, the default and the receipt. */
 async function publish(
     tx: TransactionSql,
@@ -315,7 +305,7 @@ async function publish(
             select count(*)::int as n from executor_profile
             where org_id = ${orgId} and user_id is not distinct from ${owner}
         `;
-        if ((held?.n ?? 0) >= run.limit) throw new ModelSetupCapError(command.scope, run.limit);
+        if ((held?.n ?? 0) >= run.limit) throw new ProviderSetupCapError(command.scope, run.limit);
     }
     // The executor routes lock the profile and then read its connection: the setup takes the same order, so a rotation
     // and an edit of the same executor never wait on each other's second lock.
@@ -337,14 +327,14 @@ async function publish(
         connectionId: connection.id,
         expectedUpdatedAt: executor.expectedUpdatedAt,
     });
-    await selectDefaultInTx(tx, orgId, owner, written.id);
+    if (await shouldSelectDefault(tx, run)) await selectDefaultInTx(tx, orgId, owner, written.id);
     await tx`
-        delete from model_setup_operation
+        delete from provider_setup_operation
         where org_id = ${orgId} and owner_id is not distinct from ${owner}
           and created_at < now() - ${RECEIPT_RETENTION}::interval
     `;
     await tx`
-        insert into model_setup_operation (org_id, owner_id, request_id, fingerprint, executor_id, connection_id, created_by)
+        insert into provider_setup_operation (org_id, owner_id, request_id, fingerprint, executor_id, connection_id, created_by)
         values (${orgId}, ${owner}, ${command.requestId}, ${fingerprint}, ${written.id}, ${connection.id}, ${command.userId})
     `;
     const result: SetupResult = {
@@ -381,49 +371,13 @@ async function sealKey(sql: Sql, run: Run): Promise<Sealed> {
     `;
     if (!owned) throw refuseMissing();
     // The provider is immutable, so this check before the key is sealed is the rule the create and the edit apply.
-    if (connection.baseUrl !== undefined && owned.provider === 'subscription') throw new ModelSetupEndpointRefusal();
+    if (connection.baseUrl !== undefined && owned.provider === 'subscription') throw new ProviderSetupEndpointRefusal();
     const identity = providerConnectionSecretIdentity(orgId, connection.id, owner);
     return { id: connection.id, made: await mintConnectionSecret(deps, identity, connection.key) };
 }
 
-interface SelectedRow {
-    /** The executor's own owner: its scope. The selection's owner may be a member who chose an organization executor. */
-    executor_user_id: string | null;
-    id: string;
-    name: string;
-    type: string;
-    model: string | null;
-    suspended: boolean;
-    updated_at: Date;
-    connection_id: string | null;
-    connection_name: string | null;
-    connection_provider: ModelProvider | null;
-    connection_user_id: string | null;
-    connection_base_url: string | null;
-}
-
-const toSelected = (row: SelectedRow): SelectedSetup => ({
-    scope: row.executor_user_id === null ? 'org' : 'personal',
-    executorId: row.id,
-    executorName: row.name,
-    agentType: row.type,
-    model: row.model,
-    suspended: row.suspended,
-    updatedAt: row.updated_at.toISOString(),
-    connection:
-        row.connection_id === null
-            ? null
-            : {
-                  id: row.connection_id,
-                  name: row.connection_name!,
-                  provider: row.connection_provider!,
-                  scope: row.connection_user_id === null ? 'org' : 'personal',
-                  baseUrl: row.connection_base_url,
-              },
-});
-
 /** The organization is bound at construction: one store serves one organization. */
-export function createModelSetupStore({
+export function createProviderSetupStore({
     sql,
     orgId,
     ready,
@@ -441,29 +395,12 @@ export function createModelSetupStore({
     secretLog: (diagnostic: SecretDiagnostic) => void;
     writeDeadlineMs?: number;
     cleanupDeadlineMs?: number;
-    /** The most executors one organization, and one member, may hold; a create past it is refused (`ModelSetupCapError`). */
+    /** The most executors one organization, and one member, may hold; a create past it is refused (`ProviderSetupCapError`). */
     executorLimits?: { org: number; personal: number };
-}): ModelSetupStore {
+}): ProviderSetupStore {
     const deps = connectionSecretDeps({ sql, orgId, secrets, secretLog, writeDeadlineMs, cleanupDeadlineMs });
 
     return {
-        async selectedFor(userId) {
-            if (ready) await ready;
-            const [row] = await sql<SelectedRow[]>`
-                select p.user_id as executor_user_id, p.id, p.name, p.type, p.config->>'model' as model, p.suspended, p.updated_at,
-                    c.id as connection_id, c.name as connection_name, c.provider as connection_provider,
-                    c.user_id as connection_user_id, c.base_url as connection_base_url
-                from executor_default_selection s
-                join executor_profile p on p.org_id = s.org_id and p.id = s.executor_id
-                left join provider_connection c on c.org_id = p.org_id and c.id = p.provider_connection_id
-                    and (c.user_id is null or c.user_id = ${userId})
-                where s.org_id = ${orgId} and (s.owner_id = ${userId} or s.owner_id is null)
-                order by (s.owner_id is null)
-                limit 1
-            `;
-            return row ? toSelected(row) : null;
-        },
-
         async apply(command) {
             if (ready) await ready;
             const owner = command.scope === 'org' ? null : command.userId;
@@ -503,10 +440,10 @@ async function commit(sql: Sql, run: Run, sealed: Sealed): Promise<SetupResult> 
 
 /** The domain refusal a unique violation or a stale revision stands for; any other error is the caller's to see. */
 function translated(error: unknown): unknown {
-    if (error instanceof ExecutorRevisionError) return new ModelSetupConflict(error.message);
+    if (error instanceof ExecutorRevisionError) return new ProviderSetupConflict(error.message);
     const { code, constraint_name: constraint } = error as { code?: string; constraint_name?: string };
     if (code !== UNIQUE_VIOLATION) return error;
-    if (constraint === CONNECTION_NAME_INDEX) return new ModelSetupNameConflict('connection');
-    if (constraint === EXECUTOR_NAME_INDEX) return new ModelSetupNameConflict('executor');
+    if (constraint === CONNECTION_NAME_INDEX) return new ProviderSetupNameConflict('connection');
+    if (constraint === EXECUTOR_NAME_INDEX) return new ProviderSetupNameConflict('executor');
     return error;
 }

@@ -236,7 +236,7 @@ export async function replaceConnectionRow(
 
 /**
  * The create's one transaction body: under the scope's lock, refuse a scope at the cap, then insert the row holding
- * the minted reference. The setup command (model-setup-store.ts) runs it inside its own transaction beside the executor
+ * the minted reference. The setup command (provider-setup-store.ts) runs it inside its own transaction beside the executor
  * and the default selection, so a connection never commits apart from them.
  */
 export async function insertConnectionRow(

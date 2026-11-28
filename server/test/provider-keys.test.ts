@@ -75,6 +75,30 @@ describe('each provider, when the key is good', () => {
         });
     });
 
+    it('openai-compatible: lists the models at the base URL, a trailing /v1 naming the same API', async () => {
+        fake.reply('/v1/models', modelList('local-a', 'local-b'));
+        for (const baseUrl of [fake.origin, `${fake.origin}/v1`]) {
+            const answer = await keys().verify({
+                subscriptionAllowed: true,
+                provider: 'openai-compatible',
+                key: KEY,
+                baseUrl,
+            });
+            expect(answer).toEqual({ ok: true, models: ['local-a', 'local-b'] });
+        }
+        expect(fake.requests.map((r) => r.path)).toEqual(['/v1/models', '/v1/models']);
+        expect(fake.requests[0]?.headers.authorization).toBe(`Bearer ${KEY}`);
+    });
+
+    it('openai-compatible: a 401 is INVALID_KEY, a 5xx UNREACHABLE, no base URL UNREACHABLE', async () => {
+        const input = { subscriptionAllowed: true, provider: 'openai-compatible', key: KEY } as const;
+        fake.reply('/v1/models', unauthorized);
+        expect(await keys().verify({ ...input, baseUrl: fake.origin })).toMatchObject({ code: 'INVALID_KEY' });
+        fake.reply('/v1/models', serverError);
+        expect(await keys().verify({ ...input, baseUrl: fake.origin })).toMatchObject({ code: 'UNREACHABLE' });
+        expect(await keys().verify(input)).toMatchObject({ ok: false, code: 'UNREACHABLE' });
+    });
+
     it('litellm: lists the models and reads the budget from /key/info', async () => {
         fake.reply('/v1/models', modelList('gpt-4o', 'claude-sonnet'));
         fake.reply('/key/info', liteLlmKeyInfo(100, 12.25));
@@ -288,7 +312,7 @@ describe('baseUrl (F7)', () => {
                 return [address];
             },
         });
-        for (const provider of ['anthropic', 'openrouter', 'openai', 'litellm'] as const) {
+        for (const provider of ['anthropic', 'openrouter', 'openai', 'litellm', 'openai-compatible'] as const) {
             const answer = await cloud.verify({
                 subscriptionAllowed: true,
                 provider,

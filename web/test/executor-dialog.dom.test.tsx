@@ -30,6 +30,7 @@ import {
 } from '../src/workspace/executors.js';
 import { GUIDED_COPY } from '../src/workspace/executor-guided.js';
 import { renderApp, stubFetch } from './dom.js';
+import { VERIFY_URL } from './model-setup-reads.js';
 import { boardHandler, listedModels, personalExecutor, providerConnection, settingsBoard } from './settings-board.js';
 
 /**
@@ -431,7 +432,7 @@ describe('the executor dialog: the guided provider step', () => {
         const checks: string[] = [];
         stubFetch(
             boardHandler(settingsBoard(), ({ method, url }) => {
-                if (method === 'POST' && url === '/api/model-setup/verify') checks.push(url);
+                if (method === 'POST' && url === VERIFY_URL) checks.push(url);
             })
         );
         const user = userEvent.setup({ delay: null });

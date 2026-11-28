@@ -7,6 +7,7 @@ import { useModelSetup } from '../src/api/useModelSetup.js';
 import { NoModelBanner } from '../src/components/NoModelBanner.js';
 import { type FetchCall, renderApp, renderAt, stubFetch } from './dom.js';
 import { memberSession } from './fixtures.js';
+import { modelSetupReads, NO_SETUP, SETUP_URL, setupReads } from './model-setup-reads.js';
 
 /**
  * The shell's "No model yet" banner: shown only on a confirmed `effective: null` where a task could not
@@ -20,11 +21,21 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
-const NONE: ModelSetupView = { org: null, personal: null, effective: null };
+const NONE = NO_SETUP;
 const SAVED: ModelSetupView = {
     org: null,
-    personal: { provider: 'anthropic', keyNames: ['K'] },
-    effective: 'personal',
+    personal: null,
+    effective: 'executor',
+    selected: {
+        scope: 'personal',
+        executorId: 'executor-saved',
+        name: 'Anthropic',
+        agentType: 'claude-code',
+        model: 'claude-test-model',
+        suspended: false,
+        updatedAt: '2026-01-02T03:04:05.678Z',
+        connection: { id: 'c-saved', name: 'Anthropic', provider: 'anthropic', scope: 'personal', baseUrl: null },
+    },
 };
 const TEXT = 'No model yet — tasks will wait until one is connected';
 
@@ -39,14 +50,14 @@ function board(
     const state: { view: ModelSetupView | { status: number } } = { view: first };
     const calls = stubFetch((call: FetchCall) => {
         if (call.url === '/api/auth/me') return memberSession({ deploymentMode: mode });
-        if (call.url === '/api/workspace') return workspace;
-        if (call.url === '/api/model-setup' && call.method === 'GET') return state.view;
-        if (call.url === '/api/model-setup' && call.method === 'PUT') {
+        const read = modelSetupReads(state.view, call, workspace);
+        if (read !== undefined) return read;
+        if (call.method === 'POST' && call.url === SETUP_URL) {
             state.view = SAVED;
             return { status: 200, body: {} };
         }
     });
-    const reads = () => calls.filter((c) => c.method === 'GET' && c.url === '/api/model-setup').length;
+    const reads = () => setupReads(calls);
     return { state, reads };
 }
 
@@ -188,7 +199,7 @@ describe('the shell says when the No model yet decision is made', () => {
         stubFetch((call: FetchCall) => {
             if (call.url === '/api/auth/me') return memberSession({ deploymentMode: 'self-hosted' });
             if (call.url === '/api/workspace') return workspace;
-            if (call.url === '/api/model-setup') return NONE;
+            return modelSetupReads(NONE, call);
         });
         renderApp('/settings');
         await waitFor(() => expect(shellState()).toBe('pending'));

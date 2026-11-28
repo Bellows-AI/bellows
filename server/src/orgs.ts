@@ -23,7 +23,7 @@ import { createJobStore } from './db/jobs/job-store.js';
 import type { ClaimObserver } from './db/jobs/job-store-admission.js';
 import type { JobStore } from './db/jobs/job-store-types.js';
 import { storedRepoNames } from './db/stored-repos.js';
-import { createModelSetupStore, type ModelSetupStore } from './db/model-setup-store.js';
+import { createProviderSetupStore, type ProviderSetupStore } from './db/provider-setup-store.js';
 import { MAX_EXECUTORS_PER_ORG, MAX_EXECUTORS_PER_USER } from './routes/executor-fields.js';
 import { createUserExecutorStore, type UserExecutorStore } from './db/user-executor-store.js';
 import {
@@ -107,8 +107,8 @@ export interface OrgRuntime {
     /** The org's installation mint, behind the runner GitHub credential route; absent offline or uninstalled. */
     githubToken?: InstallationTokenProvider | undefined;
     userExecutors?: UserExecutorStore | undefined;
-    /** The model setup command (170): a connection, its executor and the default in one transaction; present with the other stores. */
-    modelSetup?: ModelSetupStore | undefined;
+    /** The provider setup command (170, 173): a connection, its executor and the default in one transaction; present with the other stores. */
+    providerSetup?: ProviderSetupStore | undefined;
     /** The org's notification subscriptions (103); present with the other stores. */
     notificationSubscriptions?: NotificationSubscriptionStore | undefined;
     /** The org's notification outbox (104); present with the other stores. */
@@ -202,7 +202,7 @@ function buildOrgStores({
     connectionGrants: ConnectionGrants;
     providerConnections: ProviderConnectionStore;
     userExecutors: UserExecutorStore;
-    modelSetup: ModelSetupStore;
+    providerSetup: ProviderSetupStore;
     notificationSubscriptions: NotificationSubscriptionStore;
     notificationOutbox: NotificationOutboxStore;
     prs: PrLifecycleStore;
@@ -216,7 +216,7 @@ function buildOrgStores({
     const connectionGrants = createConnectionGrants({ sql, orgId, ready });
     const providerConnections = createProviderConnectionStore({ sql, orgId, ready, secrets, secretLog });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready, secrets, secretLog });
-    const modelSetup = createModelSetupStore({
+    const providerSetup = createProviderSetupStore({
         sql,
         orgId,
         ready,
@@ -319,7 +319,7 @@ function buildOrgStores({
         connectionGrants,
         providerConnections,
         userExecutors,
-        modelSetup,
+        providerSetup,
         notificationSubscriptions,
         notificationOutbox,
         prs,
@@ -341,7 +341,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.connectionGrants = stores.connectionGrants;
     runtime.providerConnections = stores.providerConnections;
     runtime.userExecutors = stores.userExecutors;
-    runtime.modelSetup = stores.modelSetup;
+    runtime.providerSetup = stores.providerSetup;
     runtime.notificationSubscriptions = stores.notificationSubscriptions;
     runtime.notificationOutbox = stores.notificationOutbox;
     runtime.jobs = stores.jobs;

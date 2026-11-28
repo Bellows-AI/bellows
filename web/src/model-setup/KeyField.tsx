@@ -1,3 +1,4 @@
+import type { ModelProvider } from '@factory-ai/core';
 import { useState } from 'react';
 import type { SetupScope } from '../api/useModelSetup.js';
 import type { ProviderMeta } from './providers.js';
@@ -11,31 +12,36 @@ const MARK: Partial<Record<KeyCheck['kind'], string>> = { ok: '✓ ', warn: '▲
  */
 export function ProxyField({
     ids,
+    provider = 'litellm',
     value,
     hidden,
     onChange,
 }: {
     ids: string;
+    /** LiteLLM's proxy (the default) or a custom OpenAI-compatible endpoint: only the copy differs. */
+    provider?: ModelProvider;
     value: string;
     hidden: boolean;
     onChange: (v: string) => void;
 }) {
+    const custom = provider === 'openai-compatible';
+    const noun = custom ? 'endpoint' : 'proxy';
     return (
         <div className="picker-field">
-            <label htmlFor={`${ids}-proxy`}>Proxy URL</label>
+            <label htmlFor={`${ids}-proxy`}>{custom ? 'Endpoint URL' : 'Proxy URL'}</label>
             <input
                 id={`${ids}-proxy`}
                 className="field"
                 type="url"
                 value={value}
-                placeholder="https://litellm.example.internal"
+                placeholder={custom ? 'https://models.example.internal/v1' : 'https://litellm.example.internal'}
                 aria-describedby={`${ids}-proxy-help`}
                 onChange={(event) => onChange(event.target.value)}
             />
             <p className="picker-help" id={`${ids}-proxy-help`}>
                 Checked from the Bellows server, which reads models from its <span className="mono">/v1/models</span>.
                 Runners must reach it too — a green check here does not prove they can.
-                {hidden ? ' The saved proxy URL is stored as a secret: enter it again to check the key.' : null}
+                {hidden ? ` The saved ${noun} URL is stored as a secret: enter it again to check the key.` : null}
             </p>
         </div>
     );

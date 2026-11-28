@@ -7,6 +7,7 @@ import {
     type ProviderConnectionModels,
     type ProviderConnectionScope,
     providerAvailable,
+    providerRequiresBaseUrl,
     subscriptionTokenAllowed,
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
@@ -22,13 +23,13 @@ import type { OrgRegistry } from '../orgs.js';
 import type { ProviderKeys, VerifyAnswer } from '../provider-keys/verify.js';
 import type { AppConfig } from '../config.js';
 import { bad, badSegment, body as jsonBody, guard } from './helpers.js';
-import { refuseUnparsedBody, validBase, validKey } from './model-setup-verify.js';
+import { refuseUnparsedBody, validBase, validKey } from './provider-connections-verify.js';
 
 /**
  * Provider connections (docs/api.md): the named model-provider credentials a member brings and an
  * executor profile references. The list answers metadata alone — no answer carries a key or a
  * secret reference; a create or edit validates a key's shape but never contacts the provider
- * (verification is the member's explicit `POST /api/model-setup/verify` step), and discovery reads
+ * (verification is the member's explicit `POST /api/provider-connections/verify` step), and discovery reads
  * the SEALED stored key through the real checker, rate-limited.
  */
 
@@ -44,6 +45,12 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_UNAVAILABLE = 503;
 const HTTP_TOO_MANY = 429;
+
+/** What a refusal calls a provider whose connection must carry a base URL. */
+const PROVIDER_LABEL: Readonly<Partial<Record<ModelProvider, string>>> = {
+    litellm: 'LiteLLM',
+    'openai-compatible': 'An OpenAI-compatible endpoint',
+};
 
 const PER_MEMBER_PER_WINDOW = 10;
 const WINDOW_MS = 60_000;
@@ -89,8 +96,8 @@ function parseCreate(raw: unknown, subscriptionAllowed: boolean): ParsedCreate |
     }
     if (!validKey(key)) return refusal('key must be a provider key: printable characters, no spaces');
     if (baseUrl === undefined) {
-        return provider === 'litellm'
-            ? refusal('LiteLLM needs a baseUrl')
+        return providerRequiresBaseUrl(provider)
+            ? refusal(`${PROVIDER_LABEL[provider] ?? provider} needs a baseUrl`)
             : { scope, name: connectionName, provider, key, baseUrl: null };
     }
     if (provider === 'subscription' || typeof baseUrl !== 'string' || !validBase(baseUrl)) {
@@ -135,7 +142,8 @@ function parseEdit(
 function baseUrlRefusal(provider: ModelProvider, patch: { baseUrl?: string | null }): string | null {
     if (patch.baseUrl === undefined) return null;
     if (provider === 'subscription') return 'a subscription takes no baseUrl';
-    if (provider === 'litellm' && patch.baseUrl === null) return 'LiteLLM needs a baseUrl';
+    if (providerRequiresBaseUrl(provider) && patch.baseUrl === null)
+        return `${PROVIDER_LABEL[provider] ?? provider} needs a baseUrl`;
     return null;
 }
 

@@ -3,13 +3,13 @@ import type { Sql } from 'postgres';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import {
-    createModelSetupStore,
-    ModelSetupEndpointRefusal,
-    ModelSetupCapError,
-    ModelSetupNameConflict,
-    ModelSetupRequestConflict,
+    createProviderSetupStore,
+    ProviderSetupEndpointRefusal,
+    ProviderSetupCapError,
+    ProviderSetupNameConflict,
+    ProviderSetupRequestConflict,
     type SetupCommand,
-} from '../src/db/model-setup-store.js';
+} from '../src/db/provider-setup-store.js';
 import { ExecutorConnectionRefusedError } from '../src/db/executor-connection-selection.js';
 import {
     createProviderConnectionStore,
@@ -22,7 +22,7 @@ import { mustCreate, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /**
- * The model setup's atomic command against Postgres (docs/persistence.md): one sealed connection, one executor
+ * The provider setup's atomic command against Postgres (docs/persistence.md): one sealed connection, one executor
  * referencing it and the default selection commit together or not at all, a retried request replays its receipt,
  * and no credential is copied into the environment or an agent default.
  */
@@ -49,7 +49,7 @@ function stores(secrets: SecretStore = healthy, executorLimits?: { org: number; 
     const deps = { sql, orgId: ORG, secrets, secretLog: () => {} };
     const executors = createUserExecutorStore(deps);
     const connections = createProviderConnectionStore(deps);
-    const setup = createModelSetupStore({ ...deps, ...(executorLimits ? { executorLimits } : {}) });
+    const setup = createProviderSetupStore({ ...deps, ...(executorLimits ? { executorLimits } : {}) });
     const jobs = createJobStore({
         sql,
         orgId: ORG,
@@ -73,6 +73,7 @@ const command = (over: Partial<SetupCommand> = {}): SetupCommand => ({
     requestId: requestId(),
     connection: { intent: 'create', provider: 'anthropic', key: 'sk-ant-setup-A', baseUrl: null, name: 'Anthropic' },
     executor: { name: 'Claude', agentType: 'claude-code', model: 'claude-sonnet-4-5' },
+    makeDefault: true,
     ...over,
 });
 
@@ -86,7 +87,7 @@ const selection = async (owner: string | null) =>
         `
     )[0]?.executor_id ?? null;
 
-describe.skipIf(!enabled)('the model setup command', () => {
+describe.skipIf(!enabled)('the provider setup command', () => {
     it('organization setup publishes one sealed connection executor and default atomically', async () => {
         const { setup, connections, executors } = stores();
 
@@ -178,7 +179,7 @@ describe.skipIf(!enabled)('the model setup command', () => {
         await setup.apply(first);
         await expect(
             setup.apply({ ...first, executor: { ...first.executor, model: 'claude-opus-4-5' } })
-        ).rejects.toBeInstanceOf(ModelSetupRequestConflict);
+        ).rejects.toBeInstanceOf(ProviderSetupRequestConflict);
     });
 
     it('same-provider name collision never overwrites another credential', async () => {
@@ -198,7 +199,7 @@ describe.skipIf(!enabled)('the model setup command', () => {
                     executor: { name: 'Other', agentType: 'claude-code', model: 'claude-sonnet-4-5' },
                 })
             )
-        ).rejects.toBeInstanceOf(ModelSetupNameConflict);
+        ).rejects.toBeInstanceOf(ProviderSetupNameConflict);
 
         expect((await connections.credentialFor(ALICE, first.connectionId!))?.key).toBe('sk-ant-setup-A');
         expect(await count('provider_connection')).toBe(1);
@@ -222,7 +223,7 @@ describe.skipIf(!enabled)('the model setup command', () => {
                     executor: { name: 'Claude', agentType: 'opencode', model: 'gpt-5' },
                 })
             )
-        ).rejects.toBeInstanceOf(ModelSetupNameConflict);
+        ).rejects.toBeInstanceOf(ProviderSetupNameConflict);
         expect(await count('provider_connection')).toBe(1);
     });
 
@@ -316,7 +317,7 @@ describe.skipIf(!enabled)('the model setup command', () => {
                     executor: { id: sub.executorId, agentType: 'claude-code', model: 'claude-sonnet-4-5' },
                 })
             )
-        ).rejects.toBeInstanceOf(ModelSetupEndpointRefusal);
+        ).rejects.toBeInstanceOf(ProviderSetupEndpointRefusal);
         expect(spy.calls.creates.length).toBe(sealed);
         const [row] = await sql`select base_url from provider_connection where org_id = ${ORG}`;
         expect(row!.base_url).toBeNull();
@@ -398,7 +399,7 @@ describe.skipIf(!enabled)('the model setup command', () => {
         expect(await selection(null)).toBe(openai.executorId);
     });
 
-    it.each(['provider_connection', 'executor_profile', 'executor_default_selection', 'model_setup_operation'])(
+    it.each(['provider_connection', 'executor_profile', 'executor_default_selection', 'provider_setup_operation'])(
         'failure at the %s publication step preserves the previous usable default',
         async (table) => {
             const spy = spySecrets(healthy);
@@ -494,7 +495,7 @@ describe.skipIf(!enabled)('the model setup command', () => {
         const deps = { sql: failingReads, orgId: ORG, secrets: spy.store, secretLog: () => {} };
         try {
             await expect(
-                createModelSetupStore(deps).apply(
+                createProviderSetupStore(deps).apply(
                     command({
                         connection: {
                             intent: 'create',
@@ -551,25 +552,47 @@ describe.skipIf(!enabled)('the model setup command', () => {
         expect(unchanged!.model).toBe('claude-sonnet-4-5');
     });
 
-    it('the setup view carries the executor revision an edit must send back', async () => {
-        const { setup, executors } = stores();
-        await setup.apply(command());
-        const [row] = await executors.listOrg();
-        const selected = await setup.selectedFor(ALICE);
-        expect(selected?.updatedAt).toBeDefined();
-        expect(Date.parse(selected!.updatedAt)).toBe(Date.parse(row!.updatedAt));
+    it('makeDefault absent selects the executor only while the member has no configured default', async () => {
+        const { setup } = stores();
+        const named = (name: string, scope: 'org' | 'personal', userId: string) =>
+            command({
+                scope,
+                userId,
+                connection: { intent: 'create', provider: 'anthropic', key: `sk-ant-${name}`, baseUrl: null, name },
+                executor: { name, agentType: 'claude-code', model: 'claude-sonnet-4-5' },
+            });
+        const { makeDefault: _, ...unset } = named('first', 'org', ALICE);
+
+        const first = await setup.apply(unset);
+        expect(await selection(null)).toBe(first.executorId);
+
+        const { makeDefault: __, ...second } = named('second', 'org', ALICE);
+        await setup.apply(second);
+        expect(await selection(null)).toBe(first.executorId);
+
+        // A member who already runs on the organization's default keeps it until they ask for their own.
+        const { makeDefault: ___, ...mine } = named('mine', 'personal', BOB);
+        await setup.apply(mine);
+        expect(await selection(BOB)).toBeNull();
+        const asked = await setup.apply(named('asked', 'personal', BOB));
+        expect(await selection(BOB)).toBe(asked.executorId);
     });
 
-    it("an organization executor a member selected as their own default is still the organization's", async () => {
-        const { setup, executors } = stores();
-        const shared = await setup.apply(command());
-        await executors.selectDefault(BOB, shared.executorId);
-        expect(await selection(BOB)).toBe(shared.executorId);
+    it('makeDefault false creates the pair and leaves the default as it was', async () => {
+        const { setup } = stores();
+        const result = await setup.apply(command({ makeDefault: false }));
+        expect(await count('executor_profile')).toBe(1);
+        expect(result.executorId).toBeDefined();
+        expect(await selection(null)).toBeNull();
+    });
 
-        const selected = await setup.selectedFor(BOB);
-
-        expect(selected).toMatchObject({ executorId: shared.executorId, scope: 'org' });
-        expect(selected?.connection).toMatchObject({ id: shared.connectionId, scope: 'org' });
+    it('a different makeDefault under the same request id is a different command', async () => {
+        const { setup } = stores();
+        const original = command({ makeDefault: true });
+        await setup.apply(original);
+        await expect(setup.apply({ ...original, makeDefault: false })).rejects.toBeInstanceOf(
+            ProviderSetupRequestConflict
+        );
     });
 
     it.each([
@@ -593,8 +616,8 @@ describe.skipIf(!enabled)('the model setup command', () => {
         const won = race.findIndex((r) => r.status === 'fulfilled');
         expect(race.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
         const refused = race[1 - won] as PromiseRejectedResult;
-        expect(refused.reason).toBeInstanceOf(ModelSetupCapError);
-        expect((refused.reason as ModelSetupCapError).scope).toBe(scope);
+        expect(refused.reason).toBeInstanceOf(ProviderSetupCapError);
+        expect((refused.reason as ProviderSetupCapError).scope).toBe(scope);
         expect(await count('executor_profile')).toBe(2);
 
         // The winner's retry replays at the cap instead of being refused.

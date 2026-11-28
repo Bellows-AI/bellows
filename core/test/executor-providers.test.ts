@@ -3,11 +3,11 @@ import { CLAUDE_CODE, OPENCODE } from '../src/executors.js';
 import {
     EXECUTOR_PROVIDER_AGENTS,
     EXECUTOR_PROVIDERS,
-    customProviderId,
     guidedExecutorConfig,
     isExecutorProvider,
     type ExecutorProvider,
 } from '../src/executor-providers.js';
+import { customProviderId } from '../src/openai-compatible.js';
 import { missingProviderSecretMessage, resolveProviderReferences } from '../src/model-providers.js';
 
 /**

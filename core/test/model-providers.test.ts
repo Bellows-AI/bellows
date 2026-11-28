@@ -10,10 +10,13 @@ import {
     inferProvider,
     isModelProvider,
     MODEL_PROVIDERS,
+    modelFitsProvider,
     modelKeyRequired,
     NO_MODEL_MESSAGE,
     normalizeModelId,
     OPENROUTER_ANTHROPIC_BASE_URL,
+    connectionOpenCodeProvider,
+    providerSupportsAgent,
     openRouterClaudeWiring,
     PROVIDER_AGENTS,
     PROVIDER_BASE_URL_ENV,
@@ -25,7 +28,14 @@ import {
 
 describe('MODEL_PROVIDERS', () => {
     it('lists the providers a member can bring a key for, in display order', () => {
-        expect(MODEL_PROVIDERS).toEqual(['anthropic', 'openrouter', 'openai', 'litellm', 'subscription']);
+        expect(MODEL_PROVIDERS).toEqual([
+            'anthropic',
+            'openrouter',
+            'openai',
+            'litellm',
+            'openai-compatible',
+            'subscription',
+        ]);
     });
 
     it('recognizes exactly the listed ids', () => {
@@ -41,6 +51,7 @@ describe('provider env, agents and availability', () => {
             openrouter: 'OPENROUTER_API_KEY',
             openai: 'OPENAI_API_KEY',
             litellm: 'ANTHROPIC_API_KEY',
+            'openai-compatible': 'OPENAI_COMPATIBLE_API_KEY',
             subscription: 'CLAUDE_CODE_OAUTH_TOKEN',
         });
     });
@@ -51,6 +62,7 @@ describe('provider env, agents and availability', () => {
             openrouter: 'OPENROUTER_BASE_URL',
             openai: 'OPENAI_BASE_URL',
             litellm: 'ANTHROPIC_BASE_URL',
+            'openai-compatible': null,
             subscription: null,
         });
         expect(providerEnvNames('openrouter')).toEqual(['OPENROUTER_API_KEY', 'OPENROUTER_BASE_URL']);
@@ -63,6 +75,7 @@ describe('provider env, agents and availability', () => {
             openrouter: [OPENCODE, CLAUDE_CODE],
             openai: [OPENCODE],
             litellm: [CLAUDE_CODE, OPENCODE],
+            'openai-compatible': [OPENCODE],
             subscription: [CLAUDE_CODE],
         });
     });
@@ -70,7 +83,7 @@ describe('provider env, agents and availability', () => {
     it('offers a subscription only where the subscription token is allowed', () => {
         expect(providerAvailable('subscription', true)).toBe(true);
         expect(providerAvailable('subscription', false)).toBe(false);
-        for (const provider of ['anthropic', 'openrouter', 'openai', 'litellm'] as const) {
+        for (const provider of ['anthropic', 'openrouter', 'openai', 'litellm', 'openai-compatible'] as const) {
             for (const allowed of [true, false]) expect(providerAvailable(provider, allowed)).toBe(true);
         }
     });
@@ -265,5 +278,54 @@ describe('hasModelKey', () => {
         expect(NO_MODEL_MESSAGE).toBe(
             'Connect a model in Settings → Model, or ask an admin to connect one for the organization.'
         );
+    });
+});
+
+describe('openai-compatible provider', () => {
+    it('is a model provider that only OpenCode can run', () => {
+        expect(isModelProvider('openai-compatible')).toBe(true);
+        expect(providerSupportsAgent('openai-compatible', OPENCODE)).toBe(true);
+        expect(providerSupportsAgent('openai-compatible', CLAUDE_CODE)).toBe(false);
+    });
+
+    it("counts as the OpenCode run's model key when selected", () => {
+        expect(hasModelKey([], {}, OPENCODE, 'openai-compatible')).toBe(true);
+        expect(hasModelKey([], {}, OPENCODE)).toBe(false);
+    });
+
+    it('accepts any model id, a known vendor prefix included', () => {
+        expect(modelFitsProvider('openai-compatible', OPENCODE, 'anthropic/claude-x')).toBe(true);
+    });
+
+    it('renders one fixed `custom` block whatever the host, declaring the executor model, its key a reference', () => {
+        const key = `{env:${PROVIDER_ENV['openai-compatible']}}`;
+        for (const url of ['https://models.example.test/v1', 'https://other.example.test/v1']) {
+            expect(connectionOpenCodeProvider('openai-compatible', url, 'local-a')).toEqual({
+                provider: {
+                    custom: {
+                        npm: '@ai-sdk/openai-compatible',
+                        name: 'custom',
+                        options: { baseURL: url, apiKey: key },
+                        models: {
+                            'local-a': { name: 'local-a', tool_call: true, limit: { context: 200_000, output: 8192 } },
+                        },
+                    },
+                },
+            });
+        }
+    });
+
+    it('declares no model when the executor names none, and strips only the custom prefix', () => {
+        const models = (model?: string) => {
+            const block = connectionOpenCodeProvider('openai-compatible', 'https://models.example.test/v1', model);
+            return (block?.provider.custom as { models?: Record<string, unknown> } | undefined)?.models;
+        };
+        expect(models()).toBeUndefined();
+        expect(Object.keys(models('custom/org/model-x') ?? {})).toEqual(['org/model-x']);
+    });
+
+    it('prefixes a stored OpenCode model id with the fixed custom provider id, once', () => {
+        expect(normalizeModelId('openai-compatible', OPENCODE, 'local-a')).toBe('custom/local-a');
+        expect(normalizeModelId('openai-compatible', OPENCODE, 'custom/local-a')).toBe('custom/local-a');
     });
 });

@@ -43,7 +43,7 @@ In the task picker, personal profiles come first. Organization profiles are labe
   </Step>
   <Step title="Connect a provider — optional">
     Open **Connect a provider** to give the profile its own key, endpoint and model: pick a provider
-    (Anthropic, OpenRouter, OpenAI, LiteLLM — or, for OpenCode, **OpenAI-compatible** for your own
+    (Anthropic, OpenRouter, OpenAI, LiteLLM — or, for OpenCode, **OpenAI-compatible (custom endpoint)** for your own
     endpoint such as vLLM, LiteLLM or a gateway), paste a key, set the base URL where the provider
     takes one, and name the model. The key is stored in the secret store — the configuration keeps
     only a reference to it. Bellows builds the agent configuration from what you pick; it stays
@@ -120,7 +120,7 @@ profiles or the connection itself.
   connections or the organization's. Promoting a personal profile to the organization is refused while
   it selects a personal connection.
 - The connection's provider must be able to run the profile's agent: Anthropic, OpenRouter and LiteLLM
-  run Claude Code and OpenCode, OpenAI runs OpenCode, and a Claude subscription runs Claude Code.
+  run Claude Code and OpenCode, OpenAI and an OpenAI-compatible custom endpoint (which needs its base URL) run OpenCode, and a Claude subscription runs Claude Code.
   A save, a task preflight and the task's start all refuse a pair that does not fit, and a connection
   that was deleted or is no longer yours is refused the same way — a task never falls back to a key from
   the environment.

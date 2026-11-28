@@ -9,13 +9,10 @@ import {
     staticRegistry,
     testConfig,
 } from './helpers.js';
-import type { ModelSetupStore, SetupCommand } from '../src/db/model-setup-store.js';
+import type { ProviderSetupStore, SetupCommand } from '../src/db/provider-setup-store.js';
 import { HTTP_BAD_REQUEST, HTTP_OK, trackApps } from './helpers-http.js';
 
-/**
- * Offline: a scope's base URL in `GET /api/model-setup` — the plain value, never a secret's — and a rotation's base URL
- * on `PUT`: absent leaves the connection's endpoint in place.
- */
+/** Offline: a rotation's base URL on `POST /api/provider-connections/setup`: absent leaves the connection's endpoint in place. */
 const track = trackApps();
 
 async function boot() {
@@ -24,7 +21,7 @@ async function boot() {
     const envVars = memoryEnvVarStore();
     const executors = memoryUserExecutorStore();
     const commands: SetupCommand[] = [];
-    const modelSetup: ModelSetupStore = {
+    const providerSetup: ProviderSetupStore = {
         async apply(command) {
             commands.push(command);
             return {
@@ -36,14 +33,11 @@ async function boot() {
                 replayed: false,
             };
         },
-        async selectedFor() {
-            return null;
-        },
     };
     const config = testConfig({ auth: githubAuth() });
     const app = await buildApp({
         config,
-        orgs: staticRegistry({ config, envVars, userExecutors: executors, modelSetup }),
+        orgs: staticRegistry({ config, envVars, userExecutors: executors, providerSetup }),
         auth,
     });
     track(app);
@@ -51,49 +45,25 @@ async function boot() {
 }
 
 type Booted = Awaited<ReturnType<typeof boot>>;
-const get = (b: Booted) => b.app.inject({ method: 'GET', url: '/api/model-setup', headers: { cookie: b.cookie } });
-const put = (b: Booted, payload: object) =>
-    b.app.inject({ method: 'PUT', url: '/api/model-setup', headers: { cookie: b.cookie }, payload });
+const post = (b: Booted, payload: object) =>
+    b.app.inject({ method: 'POST', url: '/api/provider-connections/setup', headers: { cookie: b.cookie }, payload });
 
 const save = {
     scope: 'personal',
     requestId: 'request-1',
-    agentType: 'claude-code',
-    model: 'm',
     connection: { intent: 'create', provider: 'anthropic', key: 'sk-ant-new', name: 'Anthropic' },
-    executor: { name: 'Claude' },
+    executor: { name: 'Claude', agentType: 'claude-code', model: 'm' },
 };
 
-describe('a scope base URL in the model setup', () => {
-    it('GET returns a plain base URL, and only that one is set for a secret one', async () => {
-        const plain = await boot();
-        await plain.envVars.replaceWorkspace(plain.member.user.id, [
-            { name: 'ANTHROPIC_API_KEY', value: 'sk-ant-x', isSecret: true },
-            { name: 'ANTHROPIC_BASE_URL', value: 'https://gateway.example.test', isSecret: false },
-        ]);
-        const view = (await get(plain)).json().personal;
-        expect(view).toMatchObject({ provider: 'litellm', baseUrl: 'https://gateway.example.test' });
-        expect(view.baseUrlSet).toBeUndefined();
-
-        const secret = await boot();
-        await secret.envVars.replaceWorkspace(secret.member.user.id, [
-            { name: 'OPENAI_API_KEY', value: 'sk-x', isSecret: true },
-            { name: 'OPENAI_BASE_URL', value: 'https://hidden.example.test', isSecret: true },
-        ]);
-        const response = await get(secret);
-        expect(response.json().personal).toMatchObject({ provider: 'openai', baseUrlSet: true });
-        expect(response.json().personal.baseUrl).toBeUndefined();
-        expect(response.body).not.toContain('hidden.example.test');
-    });
-
-    it('PUT rotation without a baseUrl leaves the connection’s endpoint, and a baseUrl replaces it', async () => {
+describe('a rotation base URL in the provider setup', () => {
+    it('rotation without a baseUrl leaves the connection’s endpoint, and a baseUrl replaces it', async () => {
         const b = await boot();
         const rotate = { intent: 'rotate', id: '11111111-1111-4111-8111-111111111111', key: 'sk-ant-new' };
-        expect((await put(b, { ...save, connection: rotate })).statusCode).toBe(HTTP_OK);
+        expect((await post(b, { ...save, connection: rotate })).statusCode).toBe(HTTP_OK);
         expect(b.commands[0]?.connection).toEqual(rotate);
 
         const moved = { ...rotate, baseUrl: 'https://gateway.example.test' };
-        expect((await put(b, { ...save, connection: moved })).statusCode).toBe(HTTP_OK);
+        expect((await post(b, { ...save, connection: moved })).statusCode).toBe(HTTP_OK);
         expect(b.commands[1]?.connection).toEqual(moved);
     });
 
@@ -107,7 +77,7 @@ describe('a scope base URL in the model setup', () => {
             { ...save, keepBaseUrl: true },
         ];
         for (const body of refused)
-            expect((await put(b, body)).statusCode, JSON.stringify(body)).toBe(HTTP_BAD_REQUEST);
+            expect((await post(b, body)).statusCode, JSON.stringify(body)).toBe(HTTP_BAD_REQUEST);
         expect(b.commands).toEqual([]);
     });
 });
