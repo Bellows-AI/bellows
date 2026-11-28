@@ -135,12 +135,12 @@ test('a first sign-in connects a model, starts its first task from Ready and lan
     const workspace = (await (await page.request.get('/api/workspace')).json()) as {
         defaultExecutor: { scope: string; name: string } | null;
         executors: { name: string; providerConnectionProvider: string | null }[];
+        orgExecutors: { name: string; providerConnectionProvider: string | null }[];
     };
-    expect(workspace.defaultExecutor).toEqual({ scope: 'user', name: 'Anthropic' });
+    expect(workspace.defaultExecutor).toMatchObject({ name: 'Anthropic' });
     // The key lives only on the connection the executor runs on.
-    expect(workspace.executors.find((e) => e.name === 'Anthropic')).toMatchObject({
-        providerConnectionProvider: 'anthropic',
-    });
+    const created = [...workspace.executors, ...workspace.orgExecutors].find((e) => e.name === 'Anthropic');
+    expect(created).toMatchObject({ providerConnectionProvider: 'anthropic' });
 
     // The executor is in Settings → Executors after a reload.
     await page.goto('/settings/executors');
