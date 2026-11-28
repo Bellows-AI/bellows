@@ -36,22 +36,23 @@ describe('POST /api/onboarding/setup', () => {
     it('records a skip, then the same step done, for the caller’s own membership', async () => {
         const { otherCookie, setupOf, post } = await boot();
 
-        expect((await post('/api/onboarding/setup', { step: 'model', action: 'skip' })).statusCode).toBe(
+        expect((await post('/api/onboarding/setup', { step: 'provider', action: 'skip' })).statusCode).toBe(
             HTTP_NO_CONTENT
         );
-        expect(await setupOf()).toEqual({ completed: false, done: [], skipped: ['model'] });
+        expect(await setupOf()).toEqual({ completed: false, done: [], skipped: ['provider'] });
 
-        expect((await post('/api/onboarding/setup', { step: 'model', action: 'done' })).statusCode).toBe(
+        expect((await post('/api/onboarding/setup', { step: 'provider', action: 'done' })).statusCode).toBe(
             HTTP_NO_CONTENT
         );
-        expect(await setupOf()).toEqual({ completed: false, done: ['model'], skipped: [] });
+        expect(await setupOf()).toEqual({ completed: false, done: ['provider'], skipped: [] });
         // Another member's row is untouched.
         expect(await setupOf(otherCookie)).toEqual({ completed: false, done: [], skipped: [] });
     });
 
     it.each([
         ['an unknown step', { step: 'repos', action: 'skip' }],
-        ['an unknown action', { step: 'model', action: 'finish' }],
+        ['the step before its rename', { step: 'model', action: 'skip' }],
+        ['an unknown action', { step: 'provider', action: 'finish' }],
         ['a missing step', { action: 'skip' }],
         ['no body', undefined],
     ])('refuses %s with 400 BAD_BODY', async (_name, payload) => {
@@ -64,7 +65,7 @@ describe('POST /api/onboarding/setup', () => {
 
     it('answers 401 without a session', async () => {
         const { post } = await boot();
-        const response = await post('/api/onboarding/setup', { step: 'model', action: 'skip' }, {});
+        const response = await post('/api/onboarding/setup', { step: 'provider', action: 'skip' }, {});
         expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
     });
 });

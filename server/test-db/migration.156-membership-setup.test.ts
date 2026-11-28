@@ -97,7 +97,7 @@ describe.runIf(enabled)('156: setup state per membership', () => {
         expect(await setupOf(org, fresh)).toEqual({ setup_completed_at: null, setup_done: [], setup_skipped: [] });
     });
 
-    it('refuses a step outside model and tools', async () => {
+    it('refuses a step outside the step set', async () => {
         await expect(
             pool`update org_membership set setup_done = array['repos'] where org_id = ${org} and user_id = ${existing}`
         ).rejects.toThrow(/check constraint/);
