@@ -22,7 +22,7 @@ import {
     runningThread,
     sessionAuthor,
 } from './fixtures/threads.js';
-import { FORBIDDEN, shellSettled, watchConsole } from './page-health.js';
+import { FORBIDDEN, watchConsole } from './page-health.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -582,7 +582,6 @@ test.describe('the task detail page', () => {
             await page.goto(`/tasks/${publishedThread[0]!.id}`);
             await expect(page.locator('.task-controls')).toBeVisible();
             // The shell's banner has decided, so no box moves under the measurement below.
-            await shellSettled(page);
             const { overflow, rail, controls, conversation, head, appBar } = await page.evaluate(() => {
                 const box = (selector: string) => {
                     const rect = document.querySelector(selector)?.getBoundingClientRect();
@@ -892,7 +891,6 @@ test.describe('the task title', () => {
         }));
         expect(metrics.height, 'at most two lines').toBeLessThanOrEqual(2 * metrics.lineHeight + 1);
         expect(metrics.title, 'the full display title rides title=').toBe(metrics.text);
-        await shellSettled(page);
         const overflow = await page.evaluate(
             () => document.documentElement.scrollWidth - document.documentElement.clientWidth
         );

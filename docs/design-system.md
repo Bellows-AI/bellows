@@ -18,13 +18,13 @@ never utilities, and every color it renders resolves through a token.
 | Theme preference, `data-theme`, pre-paint bootstrap | `web/src/theme.tsx`, `web/public/theme-bootstrap.js` | `web/test/theme.test.tsx` |
 | Appearance control | `web/src/components/ThemeSelector.tsx` | `e2e/auth.spec.ts` (`e2e/appearance.ts`) |
 | Popover anchoring: downward-only by default, upward (flipping below only for want of room) by side | `web/src/anchor.ts` | `web/test/anchor.test.ts` |
-| The composer chips' one searchable list: chip, search, note, rows, `down`/`up` placement | `web/src/components/SearchSelect.tsx` | `web/test/search-select.dom.test.tsx`, `e2e/composer.spec.ts` |
+| The one searchable list: the composer's chip or, with `variant="form"`, a field-framed full-width trigger (`.select-trigger.in-form`); search, note, rows, `down`/`up` placement | `web/src/components/SearchSelect.tsx` | `web/test/search-select.dom.test.tsx`, `e2e/composer.spec.ts` |
 | Token usage: four figures, breakdowns, info popover, notes (no data fetch) | `web/src/components/usage/` (`TokenFigures.tsx`, `PrecisionBadge.tsx`, `CoverageNote.tsx`, `UsageBreakdown.tsx`, `ModelUsageTable.tsx`, `InfoTip.tsx`, `UsageDiagnostics.tsx`, `UsageStateNote.tsx`, `usage-format.ts`) | `web/test/usage-components.render.test.tsx`, `web/test/usage-breakdown.dom.test.tsx`, `web/test/usage-format.test.ts`, `e2e/specimen.spec.ts` |
 | Icon set and `ICON_NAMES` | `web/src/components/Icon.tsx` | `web/test/icon.test.tsx` |
 | Page content widths: `--page-dense` (`.page`), `--page-standard` (settings), `--page-form` (composer); `--measure-wide`, `--measure-narrow` (task stats, onboarding) | `web/src/styles/tokens.css`, `web/src/styles/primitives.css` | `web/test/styles.test.ts` |
 | One-`h1` page heading contract | `web/src/components/PageHeader.tsx` | `web/test/page-header.test.tsx` |
 | Table sorting, row actions, ≤640px card reflow | `web/src/components/DataTable.tsx`, `RowActions.tsx` | `web/test/data-table.test.tsx`, `web/test/dashboard.dom.test.tsx`, `web/test/row-actions.render.test.tsx` |
-| Shell, sidenav, drawer; the shell's "No model yet" `banner-warn` above the page, only when `showNoModel` says a task could not run, re-read on focus or a save; `.shell[data-no-model]` leaves `pending` once decided (unstyled; e2e `shellSettled`) | `web/src/components/AppShell.tsx`, `SideNav.tsx`, `MobileNavDialog.tsx`, `NoModelBanner.tsx`, `e2e/page-health.ts` | `web/test/shell.test.tsx`, `web/test/navigation.dom.test.tsx`, `web/test/sidenav.test.tsx`, `web/test/no-model-banner.dom.test.tsx`, `web/test/styles.test.ts`, `e2e/navigation.spec.ts` |
+| Shell, sidenav, drawer; no model banner: a task with no executor is refused with `NO_EXECUTOR`, which the composer shows | `web/src/components/AppShell.tsx`, `SideNav.tsx`, `MobileNavDialog.tsx` | `web/test/shell.test.tsx`, `web/test/navigation.dom.test.tsx`, `web/test/sidenav.test.tsx`, `e2e/navigation.spec.ts` |
 | Component interaction under jsdom + Testing Library (the `dom` project) | `web/test/dom.tsx`, `vitest.config.ts` | `web/test/*.dom.test.tsx` |
 | Primitive-state reference sheet | `e2e/specimen/main.tsx`, `e2e/specimen/specimen.css` | `e2e/specimen.spec.ts` (`npm run verify:ui:nightly`) |
 | Specimen sections (Surfaces, Type, Icons, Actions, Data, Forms, States, Tokens), one icon per `ICON_NAMES`, token explorer over `tokens.css` | `e2e/specimen/main.tsx`, `e2e/specimen/tokens.tsx`, `e2e/specimen/matrix.ts` (`GROUPS`, `SECTIONS`) | `e2e/specimen.spec.ts` (`specimen documentation`) |
@@ -68,7 +68,7 @@ Shell and navigation: `shell-main`, `page-header-eyebrow`, `page-header-leading`
 `sidenav-dot-failed`, `sidenav-dot-done`, `sidenav-dot-review`, `mobile-nav-head`,
 `mobile-nav-title`, `mobile-nav-close`, `mobile-nav-count`, `is-active`.
 
-Controls and overlays: `primary`, `tertiary`, `icon-button`, `danger`, `tabs`, `select-trigger`, `popover-option`, `popover-separator`,
+Controls and overlays: `primary`, `tertiary`, `icon-button`, `danger`, `tabs`, `select-trigger`, `in-form`, `popover-option`, `popover-separator`,
 `popover-search-select`, `popover-head`, `popover-search`, `popover-search-input`, `popover-list`, `popover-match`,
 `popover-prefix`, `popover-action`, `popover-error`,
 `theme-field`, `theme-label`, `org-selector`, `org-select-name`, `user-menu-button`, `user-menu-login`,
@@ -92,7 +92,7 @@ Scrollable table or log wells: `ScrollRegion.tsx` (focusable, named); `web/test/
 ## Shared UI units
 
 `AppBar.tsx`, `AppShell.tsx`, `Avatar.tsx`, `ConfirmDialog.tsx`, `DraftReturnBanner.tsx`, `Icon.tsx`, `KeyValues.tsx`,
-`MobileNavDialog.tsx`, `NavItems.tsx`, `NoModelBanner.tsx`, `OrgSelector.tsx`, `PageHeader.tsx`, `RelativeTime.tsx`, `RouteError.tsx`,
+`MobileNavDialog.tsx`, `NavItems.tsx`, `OrgSelector.tsx`, `PageHeader.tsx`, `RelativeTime.tsx`, `RouteError.tsx`,
 `ScrollRegion.tsx`, `SideNav.tsx`, `StateNote.tsx`, `StatusBanner.tsx`, `ThemeSelector.tsx`, `UserMenu.tsx` (all `web/src/components/`);
 `SettingsLayout.tsx`, `TasksLayout.tsx` (`web/src/pages/`).
 

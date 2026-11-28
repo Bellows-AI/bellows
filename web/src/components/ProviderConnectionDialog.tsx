@@ -12,16 +12,16 @@ import {
     updateProviderConnection,
 } from '../api/providerConnections.js';
 import { connectionsChanged } from '../api/useProviderConnections.js';
-import { AdvancedBase, KeyField, ProxyField } from '../model-setup/KeyField.js';
-import { ProviderCards } from '../model-setup/ProviderCards.js';
-import { detectProvider, PROVIDER_META, providerChoices } from '../model-setup/providers.js';
-import { useKeyCheck } from '../model-setup/useKeyCheck.js';
+import { AdvancedBase, KeyField, ProxyField } from '../providers/KeyField.js';
+import { ProviderCards } from '../providers/ProviderCards.js';
+import { detectProvider, PROVIDER_META, providerChoices } from '../providers/providers.js';
+import { useKeyCheck } from '../providers/useKeyCheck.js';
 import { FieldError } from './executor-dialog-parts.js';
 
 /**
  * Create, rename or rotate one provider connection (Settings → Model). Three modes, one dialog:
  *
- * - create: scope, name, provider, key and an optional endpoint. The key is checked with the existing model-setup
+ * - create: scope, name, provider, key and an optional endpoint. The key is checked with the existing provider-step
  *   verify first, the answer's model count shown, and Save waits for a working key.
  * - edit: the name and the endpoint only. No key field exists, and the write carries no `key`: renaming never resends
  *   or touches the stored credential.

@@ -1,4 +1,4 @@
-import type { SetupScope } from '../api/useModelSetup.js';
+import type { ProviderConnectionScope } from '@factory-ai/core';
 
 /**
  * Who a save is for: everyone in the organization (admins only) or only the member. A member gets "Only me" alone,
@@ -16,8 +16,8 @@ export function ScopeControl({
     legend: string;
     orgName: string;
     admin: boolean;
-    value: SetupScope;
-    onChange: (scope: SetupScope) => void;
+    value: ProviderConnectionScope;
+    onChange: (scope: ProviderConnectionScope) => void;
 }) {
     const help = !admin
         ? `Only an admin can add a key for everyone in ${orgName}. This one is yours alone.`

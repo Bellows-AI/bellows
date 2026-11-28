@@ -9,12 +9,12 @@ import {
     guidedExecutorConfig,
     OPENAI_COMPATIBLE_NPM,
 } from '@factory-ai/core';
-import type { ProviderMeta } from '../model-setup/providers.js';
-import { PROVIDER_META } from '../model-setup/providers.js';
+import type { ProviderMeta } from '../providers/providers.js';
+import { PROVIDER_META } from '../providers/providers.js';
 
 /**
  * The guided provider step: the provider, its key and base URL, and the model the
- * generated configuration carries — the same shape onboarding's Connect a model picks, saved into
+ * generated configuration carries — the same shape onboarding's Connect a provider picks, saved into
  * the profile's configuration instead of the environment. The key is whatever the row holds or the
  * member typed, verbatim: a literal the save seals into the secret store, a `stored-credential:`
  * marker kept from the row, or the `{env:NAME}` reference the claim resolves from the member's
@@ -36,9 +36,9 @@ export const guidedProvidersFor = (agent: ExecutorType): ExecutorProvider[] =>
     EXECUTOR_PROVIDERS.filter((provider) => EXECUTOR_PROVIDER_AGENTS[provider].includes(agent));
 
 /**
- * The guided step's provider copy: the model-setup cards' own words for the four shared providers
+ * The guided step's provider copy: the provider step's cards' own words for the four shared providers
  * (one source, no drift), plus the OpenAI-compatible endpoint the guided setup adds. The type is the
- * model-setup's, so KeyField takes either catalog's entry.
+ * provider step's, so KeyField takes either catalog's entry.
  */
 export const EXECUTOR_PROVIDER_META: Record<ExecutorProvider, ProviderMeta> = {
     ...PROVIDER_META,
@@ -174,7 +174,7 @@ export const GUIDED_COPY = {
     /** The collapsed entry a guided pick starts from. */
     PROVIDER_STEP_LABEL: 'Connect a provider',
     PROVIDER_STEP_HELP:
-        'Pick a provider to give this executor its own key, endpoint and model — the same guided setup Connect a model runs. The configuration below is replaced by what you pick; without a provider the key connected in Settings → Model runs the task.',
+        'Pick a provider to give this executor its own key, endpoint and model — the same guided setup onboarding runs. The configuration below is replaced by what you pick; without a provider the key connected in Settings → Model runs the task.',
     REMOVE_PROVIDER_LABEL: 'Remove provider settings',
     KEY_SOURCE_LABEL: 'Key',
     KEY_PASTE_LABEL: 'Paste a key',

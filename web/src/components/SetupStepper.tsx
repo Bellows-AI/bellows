@@ -16,7 +16,7 @@ function markOf(place: SetupPlace, current: SetupPlace, setup: Pick<SetupState, 
     if (place === current) return 'current';
     // Past the selection screen, Repositories is answered: the session exists because of it.
     if (place === 'repositories') return 'done';
-    if (place === 'model' || place === 'tools') {
+    if (place === 'provider' || place === 'tools') {
         if (setup?.done.includes(place)) return 'done';
         if (setup?.skipped.includes(place)) return 'skipped';
     }

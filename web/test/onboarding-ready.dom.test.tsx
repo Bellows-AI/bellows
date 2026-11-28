@@ -2,17 +2,22 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ConnectionView } from '../src/api/connections.js';
-import type { ModelSetupView, SelectedExecutorView } from '../src/api/useModelSetup.js';
 import type { Session } from '../src/api/useSession.js';
 import type { WorkspacePayload } from '../src/api/useWorkspace.js';
 import { type FetchCall, type FetchReply, renderApp, stubFetch } from './dom.js';
 import { memberSession } from './fixtures.js';
-import { modelSetupReads, NO_SETUP } from './model-setup-reads.js';
+import {
+    BARE_WORKSPACE,
+    orgConfigRead,
+    orgDefault,
+    PROVIDER_CONNECTIONS_URL,
+    workspaceReads,
+} from './provider-fixtures.js';
 
 /**
  * Setup's closing page, Ready: what was set up as a summary with lamps and a Change link per row, and
  * the first task started in place from the task composer. Start creates the task, marks setup complete,
- * re-reads `/api/auth/me` and only then opens the task; with no model confirmed, Start stays dark.
+ * re-reads `/api/auth/me` and only then opens the task. A skipped provider step is no warning here.
  */
 
 const TASK_ID = '33333333-3333-4333-8333-333333333333';
@@ -25,48 +30,7 @@ afterEach(() => {
 
 const repo = (name: string) => ({ owner: 'acme', name, private: true, defaultBranch: 'main', pushedAt: null });
 
-const personalModel: ModelSetupView = {
-    org: null,
-    personal: null,
-    effective: 'executor',
-    selected: {
-        scope: 'personal',
-        executorId: 'executor-personal',
-        name: 'Mine',
-        agentType: 'claude-code',
-        model: 'claude-test-model',
-        suspended: false,
-        updatedAt: CREATED,
-        connection: {
-            id: 'connection-personal',
-            name: 'Mine',
-            provider: 'anthropic',
-            scope: 'personal',
-            baseUrl: null,
-        },
-    } satisfies SelectedExecutorView,
-};
-
-/** The organization's default executor, on a connection. */
-const orgExecutor = {
-    id: 'executor-1',
-    name: 'Claude',
-    type: 'claude-code',
-    createdAt: CREATED,
-    suspended: false,
-    runnerClass: null,
-    orgDefault: true,
-    providerConnectionId: 'connection-1',
-    providerConnectionName: 'Anthropic',
-    providerConnectionProvider: 'anthropic' as const,
-    providerConnectionScope: 'org' as const,
-};
-
-const workspace: WorkspacePayload = {
-    executors: [],
-    orgExecutors: [orgExecutor],
-    defaultExecutor: { scope: 'org', name: 'Claude' },
-};
+const set = orgDefault();
 
 const jiraConnection: ConnectionView = {
     id: 'c-1',
@@ -80,11 +44,11 @@ const jiraConnection: ConnectionView = {
 };
 
 interface Replies {
-    model?: ModelSetupView | { status: number };
+    /** The provider reads fail (the connection list answers 500). */
+    providerFails?: true;
     connections?: ConnectionView[];
     launch?: (call: FetchCall) => FetchReply;
     complete?: FetchReply;
-    mode?: Session['deploymentMode'];
     space?: WorkspacePayload;
     /** `/api/repos`, answered afresh on each read. */
     repos?: () => FetchReply;
@@ -93,20 +57,21 @@ interface Replies {
 
 /** Ready's board: an unfinished member with both steps answered, the summary's reads and the two writes. */
 function board({
-    model = NO_SETUP,
+    providerFails,
     connections = [],
     launch,
     complete,
-    mode = 'self-hosted',
-    space = workspace,
+    space = set.workspace,
     repos,
     connectionsReply,
 }: Replies = {}) {
-    const setup: Session['setup'] = { completed: false, done: ['model'], skipped: ['tools'] };
+    const setup: Session['setup'] = { completed: false, done: ['provider'], skipped: ['tools'] };
     const calls = stubFetch((call: FetchCall) => {
         const { method, url } = call;
-        if (url === '/api/auth/me') return memberSession({ setup: { ...setup }, deploymentMode: mode });
-        const read = modelSetupReads(model, call, space);
+        if (url === '/api/auth/me') return memberSession({ setup: { ...setup } });
+        if (url === PROVIDER_CONNECTIONS_URL && providerFails) return { status: 500 };
+        if (url === '/api/org/executors') return orgConfigRead('claude-sonnet-5-5');
+        const read = workspaceReads(call, space, set.connections);
         if (read !== undefined) return read;
         if (url === '/api/repos') {
             if (repos) return repos();
@@ -134,7 +99,7 @@ const prompt = () => screen.findByLabelText('What should the agent do?');
 
 describe('the Ready step', () => {
     it("says You're set over a summary row per part, each Change going back to its step", async () => {
-        board({ model: personalModel, connections: [jiraConnection] });
+        board({ connections: [jiraConnection] });
         renderApp('/onboarding/ready');
 
         expect(await screen.findByRole('heading', { level: 1, name: "You're set" })).toBeTruthy();
@@ -146,24 +111,31 @@ describe('the Ready step', () => {
             '/api/auth/github?reselect=1&returnTo=%2Fonboarding%2Fready'
         );
 
-        const model = await row('Model');
-        expect(await model.findByText('Mine · Claude Code · Anthropic · claude-test-model · only you')).toBeTruthy();
-        expect(model.getByRole('link', { name: /Change/ }).getAttribute('href')).toMatch(/^\/onboarding\/model\b/);
+        const provider = await row('Provider');
+        expect(await provider.findByText('Anthropic · connection Anthropic · everyone in Bellows AI')).toBeTruthy();
+        expect(provider.getByRole('link', { name: /Change/ }).getAttribute('href')).toMatch(
+            /^\/onboarding\/provider\b/
+        );
+        const executor = await row('Default executor');
+        expect(await executor.findByText('Claude Code · Sonnet — claude-sonnet-5-5')).toBeTruthy();
+        expect(executor.getByRole('link', { name: /Change/ }).getAttribute('href')).toMatch(
+            /^\/onboarding\/provider\b/
+        );
 
         const tracker = await row('Issue tracker');
         expect(await tracker.findByText('Jira · acme-example.atlassian.net')).toBeTruthy();
         expect(tracker.getByRole('link', { name: /Change/ }).getAttribute('href')).toMatch(/^\/onboarding\/tools\b/);
-        expect(document.querySelectorAll('.ready-lamp[data-state="ok"]').length).toBe(4);
+        expect(document.querySelectorAll('.ready-lamp[data-state="ok"]').length).toBe(5);
     });
 
-    it('a tracker never connected is optional, and a failed model read never says Not connected', async () => {
-        board({ model: { status: 500 } });
+    it('a tracker never connected is optional, and a failed provider read never says Not connected', async () => {
+        board({ providerFails: true });
         renderApp('/onboarding/ready');
         const tracker = await row('Issue tracker');
         expect(await tracker.findByText('Not connected — optional')).toBeTruthy();
-        const model = await row('Model');
-        expect(await model.findByText('Could not check the model.')).toBeTruthy();
-        expect(model.queryByText('Not connected')).toBeNull();
+        const provider = await row('Provider');
+        expect(await provider.findByText('Could not check the provider.')).toBeTruthy();
+        expect(provider.queryByText('Not connected')).toBeNull();
         expect(screen.getByRole('heading', { level: 1, name: "You're set" })).toBeTruthy();
         // An unconfirmed read never blocks Start: the composer is there.
         expect(await prompt()).toBeTruthy();
@@ -205,7 +177,12 @@ describe('the Ready step', () => {
 
         await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${TASK_ID}`));
         const launch = calls.find((c) => c.method === 'POST' && c.url === '/api/jobs')!;
-        expect(launch.body).toMatchObject({ command: 'fix the login crash', repo: 'acme/web', executor: 'Claude' });
+        expect(launch.body).toMatchObject({
+            command: 'fix the login crash',
+            repo: 'acme/web',
+            executor: 'Claude Code · Sonnet',
+            executorScope: 'org',
+        });
         expect(launch.headers['idempotency-key']).toMatch(/^[\w.:-]{8,128}$/);
         const completeAt = calls.findIndex((c) => c.method === 'POST' && c.url === '/api/onboarding/setup/complete');
         expect(completeAt).toBeGreaterThan(calls.indexOf(launch));
@@ -214,47 +191,21 @@ describe('the Ready step', () => {
 
     it('recovers the persisted default executor on a reload: the summary names it and Start launches on it', async () => {
         const user = userEvent.setup();
-        const calls = board({
-            model: {
-                org: null,
-                personal: null,
-                effective: 'executor',
-                selected: {
-                    scope: 'org',
-                    executorId: 'executor-1',
-                    name: 'Claude',
-                    agentType: 'claude-code',
-                    model: 'claude-sonnet-4-5',
-                    suspended: false,
-                    updatedAt: '2026-01-02T03:04:05.678Z',
-                    connection: {
-                        id: 'connection-1',
-                        name: 'Anthropic',
-                        provider: 'anthropic',
-                        scope: 'org',
-                        baseUrl: null,
-                    },
-                },
-            },
-            space: {
-                executors: [],
-                orgExecutors: [orgExecutor],
-                defaultExecutor: { scope: 'org', name: 'Claude' },
-            },
-        });
+        const calls = board();
         const { router } = renderApp('/onboarding/ready');
 
-        const model = await row('Model');
-        expect(
-            await model.findByText('Claude · Claude Code · Anthropic · claude-sonnet-4-5 · everyone in Bellows AI')
-        ).toBeTruthy();
-        expect(screen.queryByText(/No model yet/)).toBeNull();
+        const executor = await row('Default executor');
+        expect(await executor.findByText('Claude Code · Sonnet — claude-sonnet-5-5')).toBeTruthy();
         await user.type(await prompt(), 'fix the login crash');
         await waitFor(() => expect((startButton() as HTMLButtonElement).disabled).toBe(false));
         await user.click(startButton());
         await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${TASK_ID}`));
         const launch = calls.find((c) => c.method === 'POST' && c.url === '/api/jobs')!;
-        expect(launch.body).toMatchObject({ command: 'fix the login crash', executor: 'Claude', executorScope: 'org' });
+        expect(launch.body).toMatchObject({
+            command: 'fix the login crash',
+            executor: 'Claude Code · Sonnet',
+            executorScope: 'org',
+        });
     });
 
     it('a refused start keeps the draft, leaves setup open, and the retry carries the same key', async () => {
@@ -318,44 +269,18 @@ describe('the Ready step', () => {
         expect(calls.some((c) => c.method === 'POST' && c.url === '/api/jobs')).toBe(false);
     });
 
-    const NO_KEY = NO_SETUP;
-    const BARE: WorkspacePayload = { executors: [], orgExecutors: [], defaultExecutor: null };
-
-    it("self-hosted with no key but a default executor: You're set, the default in the Model row, Start live", async () => {
-        board({ model: NO_KEY });
+    it('a skipped provider step is no warning: You\u2019re set, the rows say none yet, and the composer is there', async () => {
+        board({ space: BARE_WORKSPACE });
         renderApp('/onboarding/ready');
         expect(await screen.findByRole('heading', { level: 1, name: "You're set" })).toBeTruthy();
+        expect(await (await row('Provider')).findByText('Not connected')).toBeTruthy();
         expect(
-            await (await row('Model')).findByText('Claude · Claude Code · Anthropic · everyone in Bellows AI')
+            await (await row('Default executor')).findByText('None yet — tasks need a default executor')
         ).toBeTruthy();
         expect(await prompt()).toBeTruthy();
-        expect(document.querySelector('.ready-no-model')).toBeNull();
+        expect(screen.queryByText(/No model yet/)).toBeNull();
+        expect(screen.queryByRole('heading', { name: 'Almost set' })).toBeNull();
     });
-
-    for (const [where, mode, space] of [['self-hosted with nothing to run on', 'self-hosted', BARE]] as const) {
-        it(`with no model (${where}), says Almost set, and Start is aria-disabled behind a warning that links to the model step`, async () => {
-            const user = userEvent.setup();
-            const calls = board({ model: NO_KEY, mode, space });
-            renderApp('/onboarding/ready');
-
-            expect(await screen.findByRole('heading', { level: 1, name: 'Almost set' })).toBeTruthy();
-            const model = await row('Model');
-            expect(model.getByText('Not connected')).toBeTruthy();
-            const warning = document.querySelector('.ready-no-model')!;
-            expect(warning.textContent).toContain('No model yet — tasks will wait until one is connected');
-            expect(
-                within(warning as HTMLElement)
-                    .getByRole('link', { name: 'Connect a model' })
-                    .getAttribute('href')
-            ).toMatch(/^\/onboarding\/model\b/);
-            const start = startButton();
-            expect(start.getAttribute('aria-disabled')).toBe('true');
-            expect(start.getAttribute('aria-describedby')).toBe(warning.id);
-            await user.click(start);
-            expect(calls.some((c) => c.method === 'POST' && c.url === '/api/jobs')).toBe(false);
-            expect(document.querySelectorAll('button.primary')).toHaveLength(1);
-        });
-    }
 });
 
 describe('the Ready summary on a read it could not confirm', () => {
@@ -383,17 +308,17 @@ describe('the Ready summary on a read it could not confirm', () => {
         expect(calls.filter((c) => c.url === '/api/repos').length).toBeGreaterThanOrEqual(2);
     });
 
-    it('a failed model or tracker read offers Retry, never a verdict', async () => {
+    it('a failed provider or tracker read offers Retry, never a verdict', async () => {
         const user = userEvent.setup();
         let connectionsFail = true;
         board({
-            model: { status: 500 },
+            providerFails: true,
             connectionsReply: () => (connectionsFail ? { status: 503 } : { connections: [] }),
         });
         renderApp('/onboarding/ready');
-        const model = await row('Model');
-        expect(await model.findByText('Could not check the model.')).toBeTruthy();
-        expect(model.getByRole('button', { name: 'Retry model' })).toBeTruthy();
+        const provider = await row('Provider');
+        expect(await provider.findByText('Could not check the provider.')).toBeTruthy();
+        expect(provider.getByRole('button', { name: 'Retry provider' })).toBeTruthy();
         const tracker = await row('Issue tracker');
         expect(await tracker.findByText('Could not check the issue trackers.')).toBeTruthy();
         expect(tracker.queryByText(/Not connected/)).toBeNull();
@@ -415,13 +340,13 @@ describe("the Ready composer's draft", () => {
         expect(await screen.findByRole('button', { name: 'Repository: acme/api' })).toBeTruthy();
     };
 
-    it('survives a Change to the model step and back', async () => {
+    it('survives a Change to the provider step and back', async () => {
         const user = userEvent.setup();
         board();
         const { router } = renderApp('/onboarding/ready');
         await typeDraft(user);
-        await user.click((await row('Model')).getByRole('link', { name: /Change/ }));
-        await waitFor(() => expect(router.state.location.pathname).toBe('/onboarding/model'));
+        await user.click((await row('Provider')).getByRole('link', { name: /Change/ }));
+        await waitFor(() => expect(router.state.location.pathname).toBe('/onboarding/provider'));
         await router.navigate('/onboarding/ready');
         await expectDraft();
     });

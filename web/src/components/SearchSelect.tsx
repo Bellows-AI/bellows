@@ -123,6 +123,9 @@ function SearchOption({
     );
 }
 
+/** The chip's skin: the composer's frameless `chip`, or the `form` field (framed like a text field, full width). */
+export type SearchVariant = 'chip' | 'form';
+
 /** The chip: glyph, value, ▾. Its name is "Field: value"; the value is always its text. */
 function SearchTrigger({
     triggerRef,
@@ -133,6 +136,7 @@ function SearchTrigger({
     open,
     disabled,
     missing,
+    variant,
     onClick,
     onKeyDown,
 }: {
@@ -144,14 +148,20 @@ function SearchTrigger({
     open: boolean;
     disabled: boolean;
     missing: boolean;
+    variant: SearchVariant;
     onClick: () => void;
     onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void;
 }) {
+    const className = [
+        'select-trigger',
+        variant === 'form' ? 'in-form' : null,
+        missing ? 'composer-trigger-missing' : null,
+    ];
     return (
         <button
             ref={triggerRef}
             type="button"
-            className={missing ? 'select-trigger composer-trigger-missing' : 'select-trigger'}
+            className={className.filter(Boolean).join(' ')}
             aria-label={name}
             aria-haspopup="listbox"
             aria-expanded={open}
@@ -330,6 +340,7 @@ export function SearchSelect({
     side = 'down',
     disabled,
     missing,
+    variant = 'chip',
     onChange,
     onOpenChange,
     onQueryChange,
@@ -353,6 +364,8 @@ export function SearchSelect({
     side?: AnchorSide;
     disabled?: boolean;
     missing?: boolean;
+    /** `form` frames the trigger like a text field, for a form; the default is the composer's chip. */
+    variant?: SearchVariant;
     onChange: (value: string) => void;
     onOpenChange?: (open: boolean) => void;
     onQueryChange?: (query: string) => void;
@@ -442,6 +455,7 @@ export function SearchSelect({
                 open={open}
                 disabled={disabled === true}
                 missing={missing === true}
+                variant={variant}
                 onClick={() => (open ? close(false) : setOpen(true))}
                 onKeyDown={onTriggerKey}
             />

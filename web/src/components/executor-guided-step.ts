@@ -1,7 +1,7 @@
 import type { ExecutorProvider } from '@factory-ai/core';
 import type { Dispatch, SetStateAction } from 'react';
-import { useKeyCheck } from '../model-setup/useKeyCheck.js';
-import { modelOptions } from '../model-setup/providers.js';
+import { useKeyCheck } from '../providers/useKeyCheck.js';
+import { modelOptions } from '../providers/providers.js';
 import { applyGuidedChoice, type GuidedChoice } from '../workspace/executor-guided.js';
 import { parseExecutorConfig, readModel, type ExecutorDraft } from '../workspace/executors.js';
 
@@ -21,7 +21,7 @@ export function useGuidedStep(
     const { type } = draft;
     const guided = draft.guided[type];
 
-    // The live key check the model step runs, over the guided choice's provider and key: idle while
+    // The live key check the provider step runs, over the guided choice's provider and key: idle while
     // no provider is picked, no key stands, the key is a stored marker (nothing typed to check), or
     // the endpoint is the member's own (nothing to check against here — a task reaches it when one
     // starts).

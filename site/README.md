@@ -36,7 +36,7 @@ Light theme, captured from the web app with fictional data (org `acme`, repo `ac
 | `images/quickstart/03-new-task.png`      | 1440 × 780 | The You're set page: summary, starters and the composer with the example prompt |
 | `images/quickstart/04-question.png`      | 660 × 360  | An agent question waiting for an answer, cropped to the card  |
 | `images/quickstart/05-task-review.png`   | 1280 × 920 | Task page waiting for review, with the published PR           |
-| `images/quickstart/07-connect-model.png` | 1280 × 980 | Setup step 2, Connect a model, with Anthropic picked and a checked key |
+| `images/quickstart/07-connect-model.png` | 1280 × 980 | Setup step 2, Connect a provider, with Anthropic picked and a checked key |
 | `images/quickstart/08-connect-tracker.png` | 1280 × 800 | Setup step 3, Connect your issue tracker                    |
 | `images/guides/07-members.png`           | 1056 × 849 | Settings → Organization: Members, Removed members, Invite members (fictional members `alex-doe`, `sam-roe`, `kim-lee`, `jo-park`) |
 | `images/guides/06-inbox.png`             | 1440 × 640 | Needs attention with 3–5 tasks in mixed states                |

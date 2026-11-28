@@ -77,7 +77,7 @@
     --brand-github: oklch(0.970 0.010 248);
     --brand-gitlab: oklch(0.702 0.191 43);
     --brand-mcp: oklch(0.869 0.020 253);
-    /* Model providers (the model step's cards). OpenAI and LiteLLM carry no brand hue; they follow the ink. */
+    /* Model providers (the provider step's cards). OpenAI and LiteLLM carry no brand hue; they follow the ink. */
     --brand-anthropic: oklch(0.720 0.120 42);
     --brand-openrouter: oklch(0.720 0.140 278);
     --brand-openai: oklch(0.970 0.010 248);

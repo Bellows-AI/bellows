@@ -9,7 +9,7 @@ import {
     modelCatalogOf,
     normalizedChoices,
 } from '../workspace/model-catalog.js';
-import { type SearchRow, SearchSelect } from './SearchSelect.js';
+import { type SearchRow, SearchSelect, type SearchVariant } from './SearchSelect.js';
 
 const MODEL_HELP = 'The model the agent runs. Pick one the provider offers, or type any model name it serves.';
 
@@ -88,6 +88,7 @@ export function ModelCombobox({
     note,
     disabled,
     side,
+    variant,
     onChange,
 }: {
     value: string;
@@ -97,6 +98,8 @@ export function ModelCombobox({
     note?: string | null;
     disabled?: boolean;
     side?: AnchorSide;
+    /** The chip's skin; `form` inside a form. */
+    variant?: SearchVariant;
     onChange: (model: string) => void;
 }) {
     const options = models.map((model) => ({ value: model, label: model }));
@@ -117,6 +120,7 @@ export function ModelCombobox({
             help={note ? `${MODEL_HELP} ${note}` : MODEL_HELP}
             side={side ?? 'down'}
             disabled={disabled ?? false}
+            variant={variant ?? 'chip'}
             onChange={onChange}
         />
     );

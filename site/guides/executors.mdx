@@ -51,7 +51,7 @@ In the task picker, personal profiles come first. Organization profiles are labe
   </Step>
   <Step title="Or leave the provider out">
     Without a provider, keep **Use runner default** or choose **Custom model identifier** under
-    **Model**. The task then runs on the key connected in [Settings → Model](/guides/env-and-secrets#saving-a-model-key-from-the-model-setup), in
+    **Model**. The task then runs on the key connected in [Settings → Model](/guides/env-and-secrets#saving-a-model-key-when-you-connect-a-provider), in
     your own or the organization's environment.
   </Step>
   <Step title="Save">
@@ -83,11 +83,11 @@ resolves only from your own scopes.
 
 ### Setting up the default executor
 
-**Connect a model**, during setup or under **Settings → Model**, creates the executor for you: it seals the key in a provider connection, creates an executor that runs on it with the agent and model you chose, and makes it the default for you (**Only me**) or for the organization (**Everyone in**, admins only). The executor appears under **Settings → Executors** and survives a reload; the first task you start runs on it, and so does every task that names no executor until you choose another default. Naming an executor yourself always wins.
+**Connect a provider**, during setup, creates the executor for you: it seals the key in a provider connection, creates an executor that runs on it with the agent and default model you chose, and makes it the default for you (**Only me**) or for the organization (**Everyone in**, admins only). The executor appears under **Settings → Executors** and survives a reload; the first task you start runs on it, and so does every task that names no executor until you choose another default. Naming an executor yourself always wins.
 
 - Using an existing connection, or changing only the agent or model, never touches the key. **Replace the key** swaps the key of that executor's own connection; tasks already running keep the key they started with.
-- **Connect another provider** adds a second connection and executor and makes it the default. The first executor, its connection and tasks already queued are unchanged.
-- A save made from an older tab than the latest change to that executor is refused with a message to reload, so it never restores older values; after a **Connect another provider** or a key replacement the form returns to the executor summary with the key cleared. A member who connects another provider always creates a personal connection; only an admin can choose **Everyone in**.
+- **Add another provider** adds a second connection and executor and makes it the default. The first executor, its connection and tasks already queued are unchanged.
+- A save made from an older tab than the latest change to that executor is refused with a message to reload, so it never restores older values; after a key replacement the step moves on with the key cleared. A member who adds another provider always creates a personal connection; only an admin can choose **Everyone in**.
 - Changing the model on a Claude Code executor also updates a model pinned through `ANTHROPIC_MODEL` in its environment, so the model shown is the model that runs.
 - The default executor of an organization is usable by every member without seeing its key. A member cannot create or change it, or use another member's personal connection.
 - Deleting a connection an executor selects, or an executor that is a default, is refused until you choose another default or remove the reference.
