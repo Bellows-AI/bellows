@@ -102,8 +102,9 @@ describe('a saved model the list does not name', () => {
         const onSaved = mount();
         await screen.findByText('Your tasks run on Mine.');
         expect(modelSelect().value).toBe('openai/gpt-5.1');
+        // The listed option the saved id names goes back; the store normalizes it again on save.
         expect((await saveUnchanged(calls, onSaved)) as { model: string }).toMatchObject({
-            model: 'openrouter/openai/gpt-5.1',
+            model: 'openai/gpt-5.1',
         });
     });
 
