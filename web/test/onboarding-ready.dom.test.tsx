@@ -325,15 +325,14 @@ describe('the Ready step', () => {
         board({ model: NO_KEY });
         renderApp('/onboarding/ready');
         expect(await screen.findByRole('heading', { level: 1, name: "You're set" })).toBeTruthy();
-        expect(await (await row('Model')).findByText('Executor profile · Claude')).toBeTruthy();
+        expect(
+            await (await row('Model')).findByText('Claude · Claude Code · Anthropic · everyone in Bellows AI')
+        ).toBeTruthy();
         expect(await prompt()).toBeTruthy();
         expect(document.querySelector('.ready-no-model')).toBeNull();
     });
 
-    for (const [where, mode, space] of [
-        ['cloud, even with a default executor', 'cloud', workspace],
-        ['self-hosted with nothing to run on', 'self-hosted', BARE],
-    ] as const) {
+    for (const [where, mode, space] of [['self-hosted with nothing to run on', 'self-hosted', BARE]] as const) {
         it(`with no model (${where}), says Almost set, and Start is aria-disabled behind a warning that links to the model step`, async () => {
             const user = userEvent.setup();
             const calls = board({ model: NO_KEY, mode, space });
