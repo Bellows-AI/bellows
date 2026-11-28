@@ -17,6 +17,7 @@ import { ADD_LABEL, MODEL_CUSTOM_LABEL, SAVE_LABEL } from '../web/src/workspace/
 
 const SHOTS = 'artifacts/ui';
 const TEAM = 'E2E Team Anthropic';
+const CUSTOM = 'E2E Custom Endpoint';
 const OPENAI = 'E2E Personal OpenAI';
 const EXECUTORS = { claude: 'e2e-conn-claude', open: 'e2e-conn-open', shared: 'e2e-conn-shared' };
 const TEAM_OPTION = `${TEAM} — Anthropic · Organization`;
@@ -42,13 +43,14 @@ const connectionRow = (page: Page, name: string) => section(page).getByRole('row
 
 async function addConnection(
     page: Page,
-    input: { name: string; provider: RegExp; key: string; scope: 'org' | 'personal' }
+    input: { name: string; provider: RegExp; key: string; scope: 'org' | 'personal'; endpoint?: string }
 ) {
     await page.getByRole('button', { name: 'Add connection' }).click();
     const dialog = page.getByRole('dialog', { name: 'Add provider connection' });
     await dialog.getByLabel('Who can use it').selectOption(input.scope);
     await dialog.getByLabel('Name', { exact: true }).fill(input.name);
     await dialog.getByRole('radio', { name: input.provider }).check();
+    if (input.endpoint !== undefined) await dialog.getByLabel('Endpoint URL').fill(input.endpoint);
     await dialog.getByLabel(/^(API key|Setup token|Virtual key)$/).fill(input.key);
     await expect(dialog.getByRole('status', { name: 'Key check' })).toContainText('2 models available', {
         timeout: 10_000,
@@ -114,7 +116,7 @@ async function cleanUp(page: Page) {
     const listed = (await (await page.request.get('/api/provider-connections')).json()) as {
         connections: { id: string; name: string }[];
     };
-    for (const row of listed.connections.filter((candidate) => [TEAM, OPENAI].includes(candidate.name))) {
+    for (const row of listed.connections.filter((candidate) => [TEAM, OPENAI, CUSTOM].includes(candidate.name))) {
         await page.request.delete(`/api/provider-connections/${row.id}`);
     }
 }
@@ -132,7 +134,7 @@ test('two providers, two executors and a shared connection switch independently 
         await addConnection(page, { name: TEAM, provider: /^Anthropic/, key: 'sk-ant-api03-e2e-team', scope: 'org' });
         await addConnection(page, {
             name: OPENAI,
-            provider: /^OpenAI/,
+            provider: /^OpenAI(?!-compatible)/,
             key: 'sk-proj-e2e-personal',
             scope: 'personal',
         });
@@ -192,6 +194,33 @@ test('two providers, two executors and a shared connection switch independently 
         await page.getByRole('dialog').getByRole('button', { name: 'Remove connection' }).click();
         await expect(page.getByText(new RegExp(`“${TEAM}” is still used by .*${EXECUTORS.claude}`))).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/settings-model-connection-in-use.png`, fullPage: true });
+    } finally {
+        await cleanUp(page);
+    }
+});
+
+test('a custom OpenAI-compatible endpoint is a connection that needs its URL and runs OpenCode', async ({ page }) => {
+    await stubProvider(page);
+    await asAdmin(page);
+    await cleanUp(page);
+    try {
+        await page.goto('/settings/model');
+        await page.getByRole('button', { name: 'Add connection' }).click();
+        const dialog = page.getByRole('dialog', { name: 'Add provider connection' });
+        await dialog.getByLabel('Name', { exact: true }).fill(CUSTOM);
+        await dialog.getByRole('radio', { name: /^OpenAI-compatible/ }).check();
+        await dialog.getByLabel(/^API key$/).fill('sk-e2e-custom');
+        await expect(dialog.getByRole('button', { name: 'Save' })).toBeDisabled();
+        await dialog.getByRole('button', { name: 'Cancel' }).click();
+        await addConnection(page, {
+            name: CUSTOM,
+            provider: /^OpenAI-compatible/,
+            key: 'sk-e2e-custom',
+            scope: 'personal',
+            endpoint: 'https://models.example.test/v1',
+        });
+        await expect(connectionRow(page, CUSTOM)).toContainText('OpenAI-compatible');
+        await page.screenshot({ path: `${SHOTS}/settings-model-connection-custom-endpoint.png`, fullPage: true });
     } finally {
         await cleanUp(page);
     }

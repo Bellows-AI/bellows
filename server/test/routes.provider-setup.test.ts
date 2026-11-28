@@ -190,6 +190,24 @@ describe('POST /api/provider-connections/setup', () => {
         expect((await post(other, other.memberCookie, body)).json().code).toBe('CLOUD_CREDENTIAL_REFUSED');
     });
 
+    it.each([undefined, null, ''])('refuses a custom endpoint or LiteLLM with base URL %j', async (baseUrl) => {
+        const b = await boot();
+        for (const provider of ['openai-compatible', 'litellm']) {
+            const intent = { intent: 'create', provider, key: 'sk-custom', name: 'Custom', baseUrl };
+            const res = await post(b, b.memberCookie, withConnection(intent, { agentType: 'opencode' }));
+            expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
+        }
+        expect(b.setup.commands).toEqual([]);
+    });
+
+    it.each([null, ''])('refuses a rotation with base URL %j', async (baseUrl) => {
+        const b = await boot();
+        const rotate = { intent: 'rotate', id: CONNECTION_ID, key: 'sk-custom', baseUrl };
+        const res = await post(b, b.memberCookie, withConnection(rotate));
+        expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(b.setup.commands).toEqual([]);
+    });
+
     it('refuses LiteLLM without a base URL, and passes the base URL on with one', async () => {
         const b = await boot();
         const litellm = { intent: 'create', provider: 'litellm', key: 'sk-litellm', name: 'Proxy' };

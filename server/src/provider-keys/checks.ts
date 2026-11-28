@@ -88,6 +88,7 @@ const litellm: Check = async (base, key, out) => {
     }
 };
 
-export const CHECKS = { anthropic, openrouter, openai, litellm } as const;
+/** A custom OpenAI-wire endpoint answers the OpenAI models list at the member's own base URL. */
+export const CHECKS = { anthropic, openrouter, openai, litellm, 'openai-compatible': openai } as const;
 
 export type HostedProvider = keyof typeof CHECKS;

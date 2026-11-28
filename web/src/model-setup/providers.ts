@@ -7,6 +7,7 @@ import {
     OPENCODE,
     PROVIDER_AGENTS,
     providerAvailable,
+    providerRequiresBaseUrl,
 } from '@factory-ai/core';
 
 /**
@@ -69,6 +70,16 @@ export const PROVIDER_META: Readonly<Record<ModelProvider, ProviderMeta>> = {
         agentHelp: 'Claude Code runs every model the proxy serves, through its Anthropic route.',
         checking: 'Checking with your proxy…',
     },
+    'openai-compatible': {
+        label: 'OpenAI-compatible (custom endpoint)',
+        sub: 'Your own endpoint that speaks the OpenAI wire format: its URL and a key. Any model it serves, via OpenCode.',
+        tag: 'self-hosted',
+        keyLabel: 'API key',
+        placeholder: 'sk-… (the endpoint’s key)',
+        keyLink: { text: 'your endpoint’s admin console → API keys', href: null },
+        agentHelp: 'Custom endpoints run on OpenCode.',
+        checking: 'Checking with your endpoint…',
+    },
     subscription: {
         label: 'Claude subscription',
         sub: 'Pro / Max plan token from claude setup-token. Starts with sk-ant-oat01-',
@@ -113,6 +124,8 @@ export function agentLock(provider: ModelProvider): string | null {
     if (provider === 'openai') {
         return 'Claude Code needs Claude models — OpenAI keys run on OpenCode. Codex is not supported yet.';
     }
+    if (provider === 'openai-compatible')
+        return 'Claude Code needs Claude models — a custom endpoint runs on OpenCode.';
     if (provider === 'subscription') return 'A subscription token works with Claude Code only.';
     return null;
 }
@@ -135,6 +148,7 @@ const CURATED: Readonly<Record<ModelSource, Readonly<Record<ExecutorType, readon
     },
     openai: { [CLAUDE_CODE]: [], [OPENCODE]: ['openai/gpt-5.1', 'openai/gpt-5.1-codex', 'openai/gpt-5-mini'] },
     litellm: { [CLAUDE_CODE]: [], [OPENCODE]: [] },
+    'openai-compatible': { [CLAUDE_CODE]: [], [OPENCODE]: [] },
     subscription: { [CLAUDE_CODE]: ['claude-sonnet-5-5', 'claude-opus-5-5'], [OPENCODE]: [] },
     platform: { [CLAUDE_CODE]: ANTHROPIC_CLAUDE, [OPENCODE]: ['anthropic/claude-sonnet-5-5'] },
 };
@@ -183,7 +197,14 @@ export function checkLine(provider: ModelProvider, answer: VerifyAnswer): { kind
             ? { kind: 'warn', text: `${answer.message} Tasks will fail until you top up.` }
             : { kind: 'bad', text: answer.message };
     }
-    const lead = provider === 'litellm' ? 'Proxy answered' : provider === 'subscription' ? 'Token works' : 'Key works';
+    const lead =
+        provider === 'litellm'
+            ? 'Proxy answered'
+            : provider === 'openai-compatible'
+              ? 'Endpoint answered'
+              : provider === 'subscription'
+                ? 'Token works'
+                : 'Key works';
     return { kind: 'ok', text: [lead, ...okFacts(provider, answer)].join(' · ') };
 }
 
@@ -195,7 +216,11 @@ export function saveReason(input: {
     model: string;
     check: CheckKind;
 }): string | null {
-    if (input.provider === 'litellm' && !input.baseUrl.trim()) return 'Enter the proxy URL to continue.';
+    if (providerRequiresBaseUrl(input.provider) && !input.baseUrl.trim()) {
+        return input.provider === 'litellm'
+            ? 'Enter the proxy URL to continue.'
+            : 'Enter the endpoint URL to continue.';
+    }
     if (!input.key.trim()) return 'Paste a key to continue.';
     const waiting: Partial<Record<CheckKind, string>> = {
         idle: 'Paste a key to continue.',
