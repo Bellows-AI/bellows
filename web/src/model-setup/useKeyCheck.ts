@@ -1,4 +1,4 @@
-import type { ModelProvider } from '@factory-ai/core';
+import { type ModelProvider, providerRequiresBaseUrl } from '@factory-ai/core';
 import { useEffect, useState } from 'react';
 import { verifyKey } from '../api/useModelSetup.js';
 import { type CheckKind, checkLine, keyRefusal, PROVIDER_META } from './providers.js';
@@ -40,7 +40,7 @@ export function useKeyCheck(input: {
     useEffect(() => {
         const own = JSON.stringify([provider, key, baseUrl, subscriptionAllowed, attempt]);
         const refusal = keyRefusal(key, subscriptionAllowed);
-        if (!key || (provider === 'litellm' && !baseUrl)) {
+        if (!key || (providerRequiresBaseUrl(provider) && !baseUrl)) {
             setState({ tag: own, kind: 'idle', text: '' });
             return;
         }

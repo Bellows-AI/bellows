@@ -1,4 +1,9 @@
-import { MODEL_PROVIDERS, type ModelProvider, type ProviderConnectionScope } from '@factory-ai/core';
+import {
+    MODEL_PROVIDERS,
+    type ModelProvider,
+    type ProviderConnectionScope,
+    providerRequiresBaseUrl,
+} from '@factory-ai/core';
 import { Dialog, DialogPanel, DialogTitle } from '@headlessui/react';
 import { useId, useState } from 'react';
 import {
@@ -172,15 +177,21 @@ function EndpointFields({
 }) {
     if (mode === 'rotate' || !takesEndpoint(provider)) return null;
     if (mode === 'create') {
-        return provider === 'litellm' ? (
-            <ProxyField ids={ids} value={baseUrl} hidden={false} onChange={onChange} />
+        return providerRequiresBaseUrl(provider) ? (
+            <ProxyField ids={ids} provider={provider} value={baseUrl} hidden={false} onChange={onChange} />
         ) : (
             <AdvancedBase ids={ids} name="the connection" value={baseUrl} hidden={false} onChange={onChange} />
         );
     }
     return (
         <div className="picker-field">
-            <label htmlFor={`${ids}-endpoint`}>{provider === 'litellm' ? 'Proxy URL' : 'Base URL (optional)'}</label>
+            <label htmlFor={`${ids}-endpoint`}>
+                {provider === 'litellm'
+                    ? 'Proxy URL'
+                    : provider === 'openai-compatible'
+                      ? 'Endpoint URL'
+                      : 'Base URL (optional)'}
+            </label>
             <input
                 id={`${ids}-endpoint`}
                 className="field"
@@ -393,6 +404,10 @@ function savedMessage(kind: ConnectionDialogMode['kind'], name: string): string 
     return kind === 'edit' ? `Saved changes to “${name}”.` : `Added provider connection “${name}”.`;
 }
 
+/** A provider with no default endpoint, saved without one. */
+const missingEndpoint = (provider: ModelProvider, baseUrl: string) =>
+    providerRequiresBaseUrl(provider) && baseUrl.trim() === '';
+
 /** Why Save waits, or null when it may run. */
 function connectionSaveReason(input: {
     mode: ConnectionDialogMode['kind'];
@@ -403,13 +418,10 @@ function connectionSaveReason(input: {
     check: string;
 }): string | null {
     if (input.mode !== 'rotate' && input.name.trim() === '') return 'Give the connection a name.';
-    if (input.mode === 'edit') {
-        if (input.provider === 'litellm' && input.baseUrl.trim() === '') return 'LiteLLM needs a proxy URL.';
-        return null;
+    if (input.mode !== 'rotate' && missingEndpoint(input.provider, input.baseUrl)) {
+        return `Enter the ${input.provider === 'litellm' ? 'proxy' : 'endpoint'} URL to continue.`;
     }
-    if (input.mode === 'create' && input.provider === 'litellm' && input.baseUrl.trim() === '') {
-        return 'Enter the proxy URL to continue.';
-    }
+    if (input.mode === 'edit') return null;
     if (input.checked) return null;
     return input.check === 'wait'
         ? 'Checking the key…'
