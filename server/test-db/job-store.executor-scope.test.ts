@@ -260,6 +260,66 @@ describe.skipIf(!enabled)('the scope rides the thread (issue 391)', () => {
 });
 
 /**
+ * A thread left with no executor (its member had no default when it ran) is not stuck: a follow-up or a retry resolves
+ * the member's configured default at the time it is made, as a new task does.
+ */
+describe.skipIf(!enabled)('a thread with no executor, after its member configures a default', () => {
+    const finishWithNone = async () => {
+        const { id } = await mustCreate(store.create('no home', BOB, { repo: null, executor: null }));
+        const claim = await store.claim('w-none', LEASE_SECONDS);
+        expect(claim?.id).toBe(id);
+        await store.session(id, claim!.leaseToken, randomUUID());
+        await store.complete(id, claim!.leaseToken, { status: 'failed', exitCode: 1, output: 'no executor' });
+        return id;
+    };
+    const configureDefault = async (name: string) => {
+        const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
+        await executors.replace(BOB, [{ name, type: 'opencode', config: { model: 'm' } }]);
+        const [row] = await sql<{ id: string }[]>`
+            select id from executor_profile where org_id = ${ORG} and user_id = ${BOB} and name = ${name}
+        `;
+        await executors.selectDefault(BOB, row!.id);
+    };
+
+    it('a follow-up stamps the configured default and claims on it', async () => {
+        const parent = await finishWithNone();
+        await configureDefault('later');
+
+        const followUp = await store.createFollowUp(parent, 'try again', BOB);
+        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
+
+        expect(await store.get(followUp.id)).toMatchObject({ executor: 'later', executorScope: 'user' });
+        const claim = await store.claim('w-follow', LEASE_SECONDS);
+        expect(claim).toMatchObject({ id: followUp.id, executorType: 'opencode' });
+    });
+
+    it('a retry stamps the configured default and claims on it', async () => {
+        const head = await finishWithNone();
+        await configureDefault('later-retry');
+
+        const retry = await store.createRetry(head, BOB);
+        if (typeof retry === 'string') throw new Error(`createRetry refused: ${retry}`);
+
+        expect(await store.get(retry.id)).toMatchObject({ executor: 'later-retry', executorScope: 'user' });
+        expect(await store.claim('w-retry', LEASE_SECONDS)).toMatchObject({ id: retry.id, executorType: 'opencode' });
+    });
+
+    it('with still no default, the follow-up keeps no executor and the claim refuses it', async () => {
+        const parent = await finishWithNone();
+        await createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) }).clearDefault(BOB);
+
+        const followUp = await store.createFollowUp(parent, 'try again', BOB);
+        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
+
+        expect(await store.get(followUp.id)).toMatchObject({ executor: null });
+        expect(await store.claim('w-still', LEASE_SECONDS)).toMatchObject({
+            executorType: null,
+            executorRefusal: noExecutorMessage,
+        });
+    });
+});
+
+/**
  * A queued job naming no executor has nothing to run on: its claim carries no executor type and says why, so the driver
  * fails it before a runner starts. Nothing is frozen on the row any more; the default is resolved at create, to a profile.
  */

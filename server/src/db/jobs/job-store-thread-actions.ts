@@ -14,6 +14,7 @@ import {
     WORKFLOW_MODE,
 } from '@factory-ai/core';
 import { lockThreadRootInTx } from '../connection-bindings.js';
+import { ConfiguredDefaultUnusableError, resolveConfiguredDefault } from '../executor-default-store.js';
 import { cancelWaitsWithEvent, insertAdminActionEvent } from './job-store-admin-event.js';
 import { addFollowUpBindings, bindOnCreate } from './job-store-connections.js';
 import { bindAttachmentsInTx, revokeThreadAttachmentsInTx } from './job-store-attachments.js';
@@ -281,6 +282,39 @@ async function admitThreadInsert(
     return { rootJobId: label.root_job_id };
 }
 
+/**
+ * The executor a follow-up or retry takes when the job it copies has none (a thread whose member had no default when it
+ * ran): the thread runner's configured default now, personal then organization, as a new task resolves it. Null when the
+ * job names one, or when nothing resolves or the default cannot run: the claim then refuses as it always did. A failed
+ * read throws, so the caller answers an error, never "no default".
+ */
+async function defaultOfExecutorlessJob(
+    tx: TransactionSql,
+    orgId: string,
+    copied: { id: string } | { rootJobId: string },
+    createdBy: string | null
+): Promise<{ name: string; scope: string } | null> {
+    const [row] =
+        'id' in copied
+            ? await tx<{ executor: string | null; root_job_id: string }[]>`
+                  select executor, root_job_id from job where org_id = ${orgId} and id = ${copied.id}`
+            : await tx<{ executor: string | null; root_job_id: string }[]>`
+                  select executor, root_job_id from job where org_id = ${orgId} and root_job_id = ${copied.rootJobId}
+                  order by created_at desc, id desc limit 1`;
+    if (!row || row.executor !== null) return null;
+    const [root] = await tx<{ execution_user_id: string | null }[]>`
+        select execution_user_id from job where org_id = ${orgId} and id = ${row.root_job_id}
+    `;
+    const member = root?.execution_user_id ?? createdBy;
+    if (member === null) return null;
+    try {
+        return await resolveConfiguredDefault(tx, orgId, member);
+    } catch (error) {
+        if (error instanceof ConfiguredDefaultUnusableError) return null;
+        throw error;
+    }
+}
+
 /** createFollowUpRow's body, for a caller that already holds a transaction (the batch scheduler's repair). */
 export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
     const { orgId, parentId, command, createdBy, idempotency: idem, connectionIds = [], attachmentIds = [] } = input;
@@ -288,6 +322,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
     const admitted = await admitThreadInsert(tx, { orgId, parentId, createdBy, admin, idem });
     if ('answer' in admitted) return admitted.answer;
     const { rootJobId } = admitted;
+    const fallback = await defaultOfExecutorlessJob(tx, orgId, { id: parentId }, createdBy);
     const rows = await tx<{ id: string }[]>`
             with parent as (
                 select id, repo, executor, executor_scope, agent_model, session_id, root_job_id, workflow_name, mode
@@ -325,7 +360,8 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                 from parent, root
             )
             insert into job (org_id, command, created_by, repo, executor, executor_scope, agent_model, parent_job_id, session_id, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
-            select ${orgId}, ${command}, ${createdBy}, parent.repo, parent.executor, parent.executor_scope,
+            select ${orgId}, ${command}, ${createdBy}, parent.repo, coalesce(parent.executor, ${fallback?.name ?? null}::text),
+                   case when parent.executor is null then ${fallback?.scope ?? null}::text else parent.executor_scope end,
                    coalesce(${input.model ?? null}::text, parent.agent_model), parent.id,
                    coalesce(primary_session.session_id, parent.session_id),
                    parent.root_job_id, parent.workflow_name, parent.mode, '[]'::jsonb, '[]'::jsonb
@@ -411,6 +447,7 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
     const admin = adminActs(createdBy, input.admin);
     const admitted = await admitThreadInsert(tx, { orgId, parentId: id, createdBy, admin, idem });
     if ('answer' in admitted) return admitted.answer;
+    const fallback = await defaultOfExecutorlessJob(tx, orgId, { rootJobId: admitted.rootJobId }, createdBy);
     const rows = await tx<{ id: string }[]>`
             with named as (
                 select id, root_job_id
@@ -435,7 +472,8 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
             )
             -- The pin is the head's, as the command is: a retry re-runs the head with the versions it was locked to.
             insert into job (org_id, command, created_by, repo, executor, executor_scope, agent_model, root_job_id, workflow_name, mode, skill_pin, skill_hidden)
-            select ${orgId}, head.command, ${createdBy}, head.repo, head.executor, head.executor_scope,
+            select ${orgId}, head.command, ${createdBy}, head.repo, coalesce(head.executor, ${fallback?.name ?? null}::text),
+                   case when head.executor is null then ${fallback?.scope ?? null}::text else head.executor_scope end,
                    head.agent_model, head.root_job_id, head.workflow_name, head.mode, head.skill_pin, head.skill_hidden
             from named, head
             where ${threadIdleFragment(tx, orgId, 'head.root_job_id')}
