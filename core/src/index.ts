@@ -268,19 +268,19 @@ export {
     PROVIDER_ENV,
     providerAvailable,
     providerEnvNames,
+    providerRequiresBaseUrl,
     providerSupportsAgent,
     resolveProviderReferences,
     stackClaudeCodeEnv,
 } from './model-providers.js';
 export type { ExecutorProvider } from './executor-providers.js';
 export {
-    customProviderId,
     EXECUTOR_PROVIDER_AGENTS,
     EXECUTOR_PROVIDERS,
     guidedExecutorConfig,
     isExecutorProvider,
-    OPENAI_COMPATIBLE_NPM,
 } from './executor-providers.js';
+export { customProviderId, OPENAI_COMPATIBLE_NPM } from './openai-compatible.js';
 export type {
     ConnectionRefusalReason,
     ConnectionSelectionRefusal,

@@ -1,5 +1,6 @@
 import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
 import { PROVIDER_AGENTS } from './model-providers.js';
+import { customModelEntry, customProviderId, OPENAI_COMPATIBLE_NPM } from './openai-compatible.js';
 
 /**
  * The providers an executor profile's guided setup offers : the model-setup's key providers
@@ -34,9 +35,6 @@ const OPENCODE_PROVIDER_ID: Readonly<Record<ExecutorProvider, string>> = {
     'openai-compatible': 'custom',
 };
 
-/** The npm package an OpenAI-compatible endpoint's block loads: the generic OpenAI-wire SDK. */
-export const OPENAI_COMPATIBLE_NPM = '@ai-sdk/openai-compatible';
-
 /** The OpenCode model prefix each provider's model id carries; the custom endpoint takes its own id. */
 const OPENCODE_PROVIDER_PREFIX: Readonly<Record<ExecutorProvider, string | null>> = {
     anthropic: 'anthropic',
@@ -62,28 +60,6 @@ const CLAUDE_BASE_ENV: Readonly<Record<ExecutorProvider, string | null>> = {
     openai: 'OPENAI_BASE_URL',
     litellm: 'ANTHROPIC_BASE_URL',
     'openai-compatible': null,
-};
-
-/** The opencode provider id a custom endpoint's block is keyed under: its host, slugified, else `custom`. */
-export function customProviderId(baseUrl: string): string {
-    let host = '';
-    try {
-        host = new URL(baseUrl).hostname;
-    } catch {
-        return 'custom';
-    }
-    const slug = host
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '');
-    return slug || 'custom';
-}
-
-/** The declared model entry opencode needs for an id no catalog carries (the lane's own shape). */
-const customModelEntry = {
-    name: '',
-    tool_call: true,
-    limit: { context: 200_000, output: 8192 },
 };
 
 export interface GuidedExecutorInput {

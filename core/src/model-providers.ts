@@ -8,12 +8,20 @@ import {
     PROVIDER_BASE_URL,
 } from './deployment-mode.js';
 import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
+import { customProviderId, OPENAI_COMPATIBLE_NPM } from './openai-compatible.js';
 
 /**
  * The model providers a member can bring a key for (docs/api.md, `POST /api/model-setup/verify`). `subscription` is a
  * Claude subscription token, which Bellows Cloud refuses.
  */
-export const MODEL_PROVIDERS = ['anthropic', 'openrouter', 'openai', 'litellm', 'subscription'] as const;
+export const MODEL_PROVIDERS = [
+    'anthropic',
+    'openrouter',
+    'openai',
+    'litellm',
+    'openai-compatible',
+    'subscription',
+] as const;
 export type ModelProvider = (typeof MODEL_PROVIDERS)[number];
 
 export const isModelProvider = (value: unknown): value is ModelProvider =>
@@ -35,6 +43,7 @@ export const PROVIDER_ENV: Readonly<Record<ModelProvider, string>> = {
     openrouter: 'OPENROUTER_API_KEY',
     openai: 'OPENAI_API_KEY',
     litellm: 'ANTHROPIC_API_KEY',
+    'openai-compatible': 'OPENAI_COMPATIBLE_API_KEY',
     subscription: CLAUDE_CODE_OAUTH_TOKEN,
 };
 
@@ -44,6 +53,7 @@ export const PROVIDER_BASE_URL_ENV: Readonly<Record<ModelProvider, string | null
     openrouter: 'OPENROUTER_BASE_URL',
     openai: 'OPENAI_BASE_URL',
     litellm: 'ANTHROPIC_BASE_URL',
+    'openai-compatible': null,
     subscription: null,
 };
 
@@ -53,12 +63,17 @@ export const PROVIDER_AGENTS: Readonly<Record<ModelProvider, readonly ExecutorTy
     openrouter: [OPENCODE, CLAUDE_CODE],
     openai: [OPENCODE],
     litellm: [CLAUDE_CODE, OPENCODE],
+    'openai-compatible': [OPENCODE],
     subscription: [CLAUDE_CODE],
 };
 
 /** Whether a provider's key can run an executor type: the one capability matrix (`PROVIDER_AGENTS`) every save, preflight and claim reads. */
 export const providerSupportsAgent = (provider: ModelProvider, agent: ExecutorType): boolean =>
     PROVIDER_AGENTS[provider].includes(agent);
+
+/** Whether a provider has no default endpoint, so its connection must carry a base URL: a LiteLLM proxy, a custom OpenAI-wire endpoint. */
+export const providerRequiresBaseUrl = (provider: ModelProvider): boolean =>
+    provider === 'litellm' || provider === 'openai-compatible';
 
 /** Every name a provider's setup writes: its key, then its base URL where it has one. */
 export const providerEnvNames = (provider: ModelProvider): string[] => {
@@ -145,6 +160,7 @@ const OPENCODE_PREFIX: Readonly<Record<ModelProvider, string | null>> = {
     openrouter: 'openrouter',
     openai: 'openai',
     litellm: 'anthropic',
+    'openai-compatible': null,
     subscription: null,
 };
 
@@ -295,6 +311,22 @@ export function connectionOpenCodeProvider(
     provider: ModelProvider,
     baseUrl: string | null
 ): { provider: Record<string, unknown> } | null {
+    if (provider === 'openai-compatible') {
+        if (baseUrl === null) return null;
+        const id = customProviderId(baseUrl);
+        return {
+            provider: {
+                [id]: {
+                    npm: OPENAI_COMPATIBLE_NPM,
+                    name: id,
+                    options: {
+                        [PROVIDER_BASE_URL]: baseUrl,
+                        [PROVIDER_API_KEY]: `{env:${PROVIDER_ENV[provider]}}`,
+                    },
+                },
+            },
+        };
+    }
     const id = OPENCODE_PREFIX[provider];
     if (id === null || baseUrl === null) return null;
     return {
@@ -315,7 +347,7 @@ export const modelKeyRequired = (mode: DeploymentMode, platformModelProvided: bo
 /** The env names each agent can run its model on. Claude Code's OpenRouter key works through its claim wiring. */
 const MODEL_KEYS: Readonly<Record<ExecutorType, readonly string[]>> = {
     [CLAUDE_CODE]: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', CLAUDE_CODE_OAUTH_TOKEN, 'OPENROUTER_API_KEY'],
-    [OPENCODE]: ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY'],
+    [OPENCODE]: ['ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_API_KEY', PROVIDER_ENV['openai-compatible']],
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

@@ -11,6 +11,7 @@ import {
     PROVIDER_AGENTS,
     PROVIDER_ENV,
     providerAvailable,
+    providerRequiresBaseUrl,
 } from '@factory-ai/core';
 import type { ConnectionIntent, SetupCommand } from '../db/model-setup-store.js';
 import type { EnvVarStore } from '../db/env-var-store.js';
@@ -46,10 +47,12 @@ export interface ParsedSetup {
     readonly executor: SetupCommand['executor'];
 }
 
-/** A header-safe key and the base URL rules a provider has: LiteLLM needs one, a subscription takes none. */
+/** A header-safe key and the base URL rules a provider has: LiteLLM and a custom endpoint need one, a subscription takes none. */
 function endpointRefusal(provider: ModelProvider, baseUrl: unknown): Refusal | null {
     if (baseUrl === undefined || baseUrl === null) {
-        return provider === 'litellm' && baseUrl === undefined ? refusal('LiteLLM needs a baseUrl') : null;
+        return providerRequiresBaseUrl(provider) && baseUrl === undefined
+            ? refusal(`${provider === 'litellm' ? 'LiteLLM' : 'An OpenAI-compatible endpoint'} needs a baseUrl`)
+            : null;
     }
     if (provider === 'subscription' || typeof baseUrl !== 'string' || !validBase(baseUrl)) {
         return refusal('baseUrl must be an http(s) URL without credentials, and a subscription takes none');

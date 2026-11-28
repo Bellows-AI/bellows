@@ -314,6 +314,28 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
         });
     });
 
+    it('an OpenCode executor on an openai-compatible connection claims with the key resolved', async () => {
+        const { executors, connections, jobs } = stores();
+        const url = 'https://models.example.test/v1';
+        const conn = await connect(connections, { provider: 'openai-compatible', key: 'sk-compat-key', baseUrl: url });
+        await executors.replace(ALICE, [
+            {
+                name: 'oc',
+                type: 'opencode',
+                config: { model: 'models-example-test/m1' },
+                providerConnectionId: conn.id,
+            },
+        ]);
+        await queue(jobs, 'oc');
+
+        const claim = await jobs.claim('w1', LEASE_SECONDS);
+
+        expect(claim?.executorRefusal ?? null).toBeNull();
+        const config = JSON.parse(claim?.env?.OPENCODE_CONFIG_CONTENT ?? '{}');
+        expect(config.provider['models-example-test'].options).toEqual({ baseURL: url, apiKey: 'sk-compat-key' });
+        expect(claim?.env?.OPENCODE_CONFIG_CONTENT).not.toContain('{env:');
+    });
+
     it('secret read failure rolls back the claim', async () => {
         const healthy = stores();
         const conn = await connect(healthy.connections);
