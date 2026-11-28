@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { noExecutorMessage } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
-import type { Claim, JobStore, ReviewerSpec } from '../src/db/jobs/job-store-types.js';
-import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
+import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
 import { expireLease, mustCreate, testOrg, testUser } from './fixtures.js';
@@ -260,139 +260,84 @@ describe.skipIf(!enabled)('the scope rides the thread (issue 391)', () => {
 });
 
 /**
- * The agent default: a task naming no profile is frozen at create with the agent and model that won, and the
- * claim runs exactly that — never the agent default as it reads at claim time. Kubernetes is the primary executor and
- * docker the development one; both consume this same claim payload (`executorType` + the config env), so each agent
- * type is pinned once here and the driver needs nothing new.
+ * A thread left with no executor (its member had no default when it ran) is not stuck: a follow-up or a retry resolves
+ * the member's configured default at the time it is made, as a new task does.
  */
-describe.skipIf(!enabled)('a task frozen with an agent default', () => {
-    const CONFIG_ENV = { 'claude-code': 'CLAUDE_CODE_CONFIG_CONTENT', opencode: 'OPENCODE_CONFIG_CONTENT' } as const;
-    const executors = () => createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
-
-    /** What create stamps: the agent default that wins for Alice right now, read through the chain. */
-    const frozenTask = async (agentType: 'claude-code' | 'opencode', model: string, repo: string | null = null) => {
-        await executors().setAgentDefault(ALICE, { agentType, model });
-        const won = await executors().resolvedDefault(ALICE);
-        if (won?.kind !== 'agent') throw new Error('the agent default did not win');
-        return mustCreate(
-            store.create('drive me', ALICE, {
-                repo,
-                executor: null,
-                agentType: won.agentType,
-                agentModel: won.model,
-            })
-        );
+describe.skipIf(!enabled)('a thread with no executor, after its member configures a default', () => {
+    const finishWithNone = async () => {
+        const { id } = await mustCreate(store.create('no home', BOB, { repo: null, executor: null }));
+        const claim = await store.claim('w-none', LEASE_SECONDS);
+        expect(claim?.id).toBe(id);
+        await store.session(id, claim!.leaseToken, randomUUID());
+        await store.complete(id, claim!.leaseToken, { status: 'failed', exitCode: 1, output: 'no executor' });
+        return id;
     };
-    /** The agent default moves on after create; nothing frozen may follow it. */
-    const changeDefault = () => executors().setAgentDefault(ALICE, { agentType: 'opencode', model: 'moved-on' });
-    const expectFrozen = (claim: Claim | null, type: 'claude-code' | 'opencode', model: string) => {
-        expect(claim?.executorType).toBe(type);
-        expect(claim?.executorRefusal).toBeNull();
-        expect(JSON.parse(claim?.env?.[CONFIG_ENV[type]] ?? 'null')).toEqual({ model });
+    const configureDefault = async (name: string) => {
+        const executors = createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) });
+        await executors.replace(BOB, [{ name, type: 'opencode', config: { model: 'm' } }]);
+        const [row] = await sql<{ id: string }[]>`
+            select id from executor_profile where org_id = ${ORG} and user_id = ${BOB} and name = ${name}
+        `;
+        await executors.selectDefault(BOB, row!.id);
     };
 
-    for (const agentType of ['claude-code', 'opencode'] as const) {
-        it(`claims a null-executor task as its frozen ${agentType}, the model in that CLI's config env`, async () => {
-            const { id } = await mustCreate(
-                store.create('echo hi', ALICE, { repo: null, executor: null, agentType, agentModel: 'm-1' })
-            );
+    it('a follow-up stamps the configured default and claims on it', async () => {
+        const parent = await finishWithNone();
+        await configureDefault('later');
 
-            const claim = await store.claim('w1', LEASE_SECONDS);
+        const followUp = await store.createFollowUp(parent, 'try again', BOB);
+        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
 
-            expect(claim?.id).toBe(id);
-            expectFrozen(claim, agentType, 'm-1');
-            expect(await store.get(id)).toMatchObject({ executor: null, agentType, agentModel: 'm-1' });
+        expect(await store.get(followUp.id)).toMatchObject({ executor: 'later', executorScope: 'user' });
+        const claim = await store.claim('w-follow', LEASE_SECONDS);
+        expect(claim).toMatchObject({ id: followUp.id, executorType: 'opencode' });
+    });
+
+    it('a retry stamps the configured default and claims on it', async () => {
+        const head = await finishWithNone();
+        await configureDefault('later-retry');
+
+        const retry = await store.createRetry(head, BOB);
+        if (typeof retry === 'string') throw new Error(`createRetry refused: ${retry}`);
+
+        expect(await store.get(retry.id)).toMatchObject({ executor: 'later-retry', executorScope: 'user' });
+        expect(await store.claim('w-retry', LEASE_SECONDS)).toMatchObject({ id: retry.id, executorType: 'opencode' });
+    });
+
+    it('with still no default, the follow-up keeps no executor and the claim refuses it', async () => {
+        const parent = await finishWithNone();
+        await createUserExecutorStore({ sql, orgId: ORG, ...testSecretDeps(sql) }).clearDefault(BOB);
+
+        const followUp = await store.createFollowUp(parent, 'try again', BOB);
+        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
+
+        expect(await store.get(followUp.id)).toMatchObject({ executor: null });
+        expect(await store.claim('w-still', LEASE_SECONDS)).toMatchObject({
+            executorType: null,
+            executorRefusal: noExecutorMessage,
         });
-    }
+    });
+});
 
-    it('the queued task keeps its values after the agent default changes', async () => {
-        const { id } = await frozenTask('claude-code', 'frozen');
-        await changeDefault();
+/**
+ * A queued job naming no executor has nothing to run on: its claim carries no executor type and says why, so the driver
+ * fails it before a runner starts. Nothing is frozen on the row any more; the default is resolved at create, to a profile.
+ */
+describe.skipIf(!enabled)('a queued job naming no executor', () => {
+    it('claims with executorType null and an explicit no-executor refusal', async () => {
+        const { id } = await mustCreate(store.create('echo hi', ALICE, { repo: null, executor: null }));
 
         const claim = await store.claim('w1', LEASE_SECONDS);
 
         expect(claim?.id).toBe(id);
-        expectFrozen(claim, 'claude-code', 'frozen');
-    });
-
-    it('a takeover re-claim after a lost lease keeps them', async () => {
-        const { id } = await frozenTask('claude-code', 'frozen');
-        await store.claim('w1', LEASE_SECONDS);
-        await changeDefault();
-        await expireLease(sql, id);
-
-        const takeover = await store.claim('w2', LEASE_SECONDS);
-
-        expect(takeover?.id).toBe(id);
-        expectFrozen(takeover, 'claude-code', 'frozen');
-    });
-
-    it('a retry copies them from the thread head', async () => {
-        const { id } = await frozenTask('claude-code', 'frozen');
-        const first = await store.claim('w1', LEASE_SECONDS);
-        await store.complete(id, first!.leaseToken, { status: 'failed', exitCode: 1, output: 'no' });
-        await changeDefault();
-
-        const retry = await store.createRetry(id, ALICE);
-        if (typeof retry === 'string') throw new Error(`createRetry refused: ${retry}`);
-
-        expect(await store.get(retry.id)).toMatchObject({ agentType: 'claude-code', agentModel: 'frozen' });
-        expectFrozen(await store.claim('w2', LEASE_SECONDS), 'claude-code', 'frozen');
-    });
-
-    it('a follow-up copies them from its parent', async () => {
-        const { id } = await frozenTask('claude-code', 'frozen');
-        const first = await store.claim('w1', LEASE_SECONDS);
-        await store.session(id, first!.leaseToken, FOLLOW_UP_SESSION);
-        await store.complete(id, first!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
-        await changeDefault();
-
-        const followUp = await store.createFollowUp(id, 'adjust', ALICE);
-        if (typeof followUp === 'string') throw new Error(`createFollowUp refused: ${followUp}`);
-
-        expect(await store.get(followUp.id)).toMatchObject({ agentType: 'claude-code', agentModel: 'frozen' });
-        expectFrozen(await store.claim('w2', LEASE_SECONDS), 'claude-code', 'frozen');
-    });
-
-    it('a reviewer inserted for the task runs them too', async () => {
-        const reviewer: ReviewerSpec = { name: 'sec', instructions: 'Look.', timeoutMinutes: 7, connections: [] };
-        const reviewing = createJobStore({
-            sql,
-            orgId: ORG,
-            executorConfig: executors(),
-            githubApp: true,
-            plan: {
-                readFor: async () => ({
-                    config: null,
-                    error: null,
-                    services: [],
-                    revision: null,
-                    reviewers: [reviewer],
-                }),
-            },
-        });
-        // A review is asked for a task on a repo: its profile list is that repo's plan.
-        await frozenTask('claude-code', 'frozen', 'acme/api');
-        const caller = await reviewing.claim('w1', LEASE_SECONDS);
-        await changeDefault();
-
-        const review = await reviewing.requestReview(caller!.id, caller!.leaseToken, {
-            key: 'sec-1',
-            profile: 'sec',
-            revision: 'h:1',
-            ref: reviewRefOf(caller!.id, 'sec-1'),
-        });
-
-        expect(review.result).toBe('created');
-        expectFrozen('claim' in review ? review.claim : null, 'claude-code', 'frozen');
-        const reviewId = 'claim' in review ? review.claim.id : '';
-        expect(await reviewing.get(reviewId)).toMatchObject({ agentModel: 'frozen', resolvedModel: 'frozen' });
+        expect(claim?.executorType).toBeNull();
+        expect(claim?.executorRefusal).toBe(noExecutorMessage);
     });
 });
 
 /**
  * A model chosen at task start or on a follow-up: `agent_model` on the row overrides the profile's `config.model`
- * (after the runner fence) or the agent default's model, and every claim records what the runner got as
+ * (after the runner fence), and every claim records what the runner got as
  * `run_model`, read back as `resolvedModel` beside the requested `agentModel`.
  */
 describe.skipIf(!enabled)('a model chosen for the task', () => {
@@ -443,7 +388,7 @@ describe.skipIf(!enabled)('a model chosen for the task', () => {
 
             expect(claim?.executorType).toBe(type);
             expect(configOf(claim, type)).toEqual({ model: 'B', provider: { p: 1 } });
-            expect(await store.get(id)).toMatchObject({ agentType: null, agentModel: 'B', resolvedModel: 'B' });
+            expect(await store.get(id)).toMatchObject({ agentModel: 'B', resolvedModel: 'B' });
         });
     }
 
@@ -458,20 +403,6 @@ describe.skipIf(!enabled)('a model chosen for the task', () => {
 
         expect(configOf(await store.claim('w3', LEASE_SECONDS), 'opencode')).toEqual({ model: 'C' });
         expect(await store.get(third)).toMatchObject({ agentModel: 'C', resolvedModel: 'C' });
-    });
-
-    it('a follow-up of an agent-default task changes the model, never the agent', async () => {
-        const { id } = await mustCreate(
-            store.create('drive me', ALICE, { repo: null, executor: null, agentType: 'claude-code', agentModel: 'm-1' })
-        );
-        await finish(id, 'w1');
-
-        const next = await followUp(id, 'm-2');
-        const claim = await store.claim('w2', LEASE_SECONDS);
-
-        expect(claim?.executorType).toBe('claude-code');
-        expect(configOf(claim, 'claude-code')).toEqual({ model: 'm-2' });
-        expect(await store.get(next)).toMatchObject({ agentType: 'claude-code', agentModel: 'm-2' });
     });
 
     it('a takeover and a retry keep the chosen model', async () => {
@@ -490,20 +421,16 @@ describe.skipIf(!enabled)('a model chosen for the task', () => {
         expect(await store.get(retry.id)).toMatchObject({ agentModel: 'B', resolvedModel: 'B' });
     });
 
-    it('records the model each claim handed out: override, else agent default, else profile, else null', async () => {
+    it('records the model each claim handed out: the task override, else the profile config.model, else null', async () => {
         await saveProfile('claude-code', { model: 'A' });
         const profileOnly = (await profileTask()).id;
         expect(await store.get(profileOnly)).toMatchObject({ agentModel: null, resolvedModel: null });
         await store.claim('w1', LEASE_SECONDS);
         expect(await store.get(profileOnly)).toMatchObject({ agentModel: null, resolvedModel: 'A' });
 
-        const agent = (
-            await mustCreate(
-                store.create('echo hi', ALICE, { repo: null, executor: null, agentType: 'opencode', agentModel: 'm-1' })
-            )
-        ).id;
+        const overridden = (await profileTask('m-1')).id;
         await store.claim('w2', LEASE_SECONDS);
-        expect(await store.get(agent)).toMatchObject({ resolvedModel: 'm-1' });
+        expect(await store.get(overridden)).toMatchObject({ agentModel: 'm-1', resolvedModel: 'm-1' });
 
         await saveProfile('claude-code', { permissions: { allow: [] } });
         const none = (await profileTask()).id;
@@ -545,14 +472,15 @@ describe.skipIf(!enabled)('Claude Code on an OpenRouter key alone', () => {
             Object.entries(vars).map(([name, value]) => ({ name, value, isSecret: true }))
         );
 
-    it('a task frozen with Claude Code claims the key wired as an Anthropic bearer to OpenRouter', async () => {
-        const { env, jobs } = withEnv();
+    it('a Claude Code task with a chosen model claims the key wired as an Anthropic bearer to OpenRouter', async () => {
+        const { executors, env, jobs } = withEnv();
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
         await saveEnv(env, { OPENROUTER_API_KEY: OPENROUTER_KEY });
         await mustCreate(
             jobs.create('echo hi', ALICE, {
                 repo: null,
-                executor: null,
-                agentType: 'claude-code',
+                executor: 'main',
+                executorScope: 'user',
                 agentModel: 'anthropic/claude-sonnet-4',
             })
         );
@@ -573,18 +501,20 @@ describe.skipIf(!enabled)('Claude Code on an OpenRouter key alone', () => {
     });
 
     it('an opencode task, or a member Anthropic key beside it, claims the env unchanged', async () => {
-        const { env, jobs } = withEnv();
+        const { executors, env, jobs } = withEnv();
+        await executors.replace(ALICE, [{ name: 'main', type: 'opencode', config: {} }]);
         await saveEnv(env, { OPENROUTER_API_KEY: OPENROUTER_KEY });
         await mustCreate(
-            jobs.create('echo hi', ALICE, { repo: null, executor: null, agentType: 'opencode', agentModel: 'm' })
+            jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user', agentModel: 'm' })
         );
         const opencode = await jobs.claim('w1', LEASE_SECONDS);
         expect(opencode?.env?.OPENROUTER_API_KEY).toBe(OPENROUTER_KEY);
         for (const name of Object.keys(WIRED)) expect(opencode?.env).not.toHaveProperty(name);
 
         await saveEnv(env, { OPENROUTER_API_KEY: OPENROUTER_KEY, ANTHROPIC_API_KEY: 'sk-ant-member' });
+        await executors.replace(ALICE, [{ name: 'main', type: 'claude-code', config: {} }]);
         await mustCreate(
-            jobs.create('echo hi', ALICE, { repo: null, executor: null, agentType: 'claude-code', agentModel: 'm' })
+            jobs.create('echo hi', ALICE, { repo: null, executor: 'main', executorScope: 'user', agentModel: 'm' })
         );
         const keyed = await jobs.claim('w2', LEASE_SECONDS);
         expect(keyed?.env?.ANTHROPIC_API_KEY).toBe('sk-ant-member');

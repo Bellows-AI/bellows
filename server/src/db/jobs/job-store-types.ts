@@ -308,13 +308,8 @@ export interface Job {
      */
     executorScope: ExecutorScope;
     /**
-     * The agent default frozen on a task naming no profile: the agent the claim runs. Null on a profile task. Copied
-     * wherever `executor` is, and never re-resolved after create.
-     */
-    agentType: ExecutorType | null;
-    /**
-     * The model requested for the task: one chosen at create or on a follow-up (on a profile task too, where it
-     * overrides the profile's), else the agent default's. Null when none was requested. Copied like `agentType`.
+     * The model requested for the task: one chosen at create or on a follow-up, over the profile's `config.model`.
+     * Null when none was requested. Copied wherever `executor` is.
      */
     agentModel: string | null;
     /**
@@ -1151,8 +1146,6 @@ export interface CreateJobStoreDeps {
     deploymentMode?: DeploymentMode;
     /** `config.cloudSubscriptionOrgIds`, default none: the cloud orgs whose claims may carry that token. */
     cloudSubscriptionOrgIds?: ReadonlySet<string>;
-    /** `config.platformModelProvided`, default false. Cloud without it refuses a claim with no model credential. */
-    platformModelProvided?: boolean;
     ready?: Promise<unknown>;
     /**
      * The env-var store's resolver, when the deployment stores runner environment. Present in
@@ -1318,8 +1311,6 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     deploymentMode: DeploymentMode;
     /** `CreateJobStoreDeps.cloudSubscriptionOrgIds`, defaulted. */
     cloudSubscriptionOrgIds: ReadonlySet<string>;
-    /** `CreateJobStoreDeps.platformModelProvided`, defaulted. */
-    platformModelProvided: boolean;
     env: CreateJobStoreDeps['env'];
     githubApp: boolean;
     planReader: CreateJobStoreDeps['plan'];

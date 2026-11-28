@@ -1,7 +1,7 @@
-import { type ExecutorType, normalizeModelId } from '@factory-ai/core';
+import { type ExecutorType, type ModelProvider, normalizeModelId } from '@factory-ai/core';
 import { useState } from 'react';
 import { executorTypeLabel } from '../workspace/executors.js';
-import { type ModelSource, modelOptions } from './providers.js';
+import { modelOptions } from './providers.js';
 
 /** The model select's "Other…" choice: its value is empty, so it is never a model id. */
 const OTHER = '';
@@ -27,7 +27,7 @@ export interface AgentModel {
  * (`normalizeModelId`), else "Other…" with the saved id as its free text. Never the first option in its place.
  */
 export function savedModelChoice(
-    source: ModelSource,
+    source: ModelProvider,
     agent: ExecutorType,
     options: readonly string[],
     saved: string
@@ -57,7 +57,7 @@ function pickedModel(options: readonly string[], pick: string | null, other: boo
  * change the member makes (`reset`, a new agent) may drop it.
  */
 export function useAgentModel(
-    source: ModelSource,
+    source: ModelProvider,
     agents: readonly ExecutorType[],
     checked: readonly string[] | undefined,
     saved?: { agent: ExecutorType | null; model: string | null }

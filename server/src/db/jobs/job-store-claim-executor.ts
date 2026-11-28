@@ -24,6 +24,7 @@ import {
     missingProviderSecretMessage,
     modelKeyRequired,
     NO_MODEL_MESSAGE,
+    noExecutorMessage,
     executorSuspendedMessage,
     USER_SCOPE,
     type ExecutorScope,
@@ -211,8 +212,6 @@ export async function resolveClaimExecutor(
         orgId: string;
         deploymentMode: DeploymentMode;
         cloudSubscriptionOrgIds: ReadonlySet<string>;
-        /** The operator supplies the model: cloud claims need no member model credential. */
-        platformModelProvided?: boolean;
         /**
          * Set for a reviewer's claim: ONLY these member env names reach it. The
          * executor config (the agent's own runtime settings) still travels — a reviewer needs to
@@ -222,7 +221,7 @@ export async function resolveClaimExecutor(
     },
     row: ClaimExecutorRow
 ): Promise<ResolvedClaimExecutor> {
-    const { env, executorConfig, providerConnections, deploymentMode, platformModelProvided = false, grant } = deps;
+    const { env, executorConfig, providerConnections, deploymentMode, grant } = deps;
     const subscriptionAllowed = subscriptionTokenAllowed(deps, deps.orgId);
     const claimExecutor = await claimExecutorOf(tx, executorConfig, row);
     let { source } = claimExecutor;
@@ -278,13 +277,11 @@ export async function resolveClaimExecutor(
     // Cloud checks the EFFECTIVE env — member env, a reviewer's grant and the profile merged — so a
     // token (unless the operator lists the org), or a redirect of the deployment's model credential with no member key, saved before
     // cloud mode or split across scopes and profile, never travels; nor does a run with no model key
-    // (`NO_MODEL`, unless the operator supplies the model). The driver fails the task with the
+    // (`NO_MODEL`). The driver fails the task with the
     // sentence before anything spawns; a throw here would roll the claim back and re-claim it forever.
     const refusal =
         (deploymentMode === CLOUD ? cloudRefusal(claimEnv, profileConfig, executorType, subscriptionAllowed) : null) ??
-        (modelKeyRequired(deploymentMode, platformModelProvided)
-            ? noModelRefusal(claimEnv, profileConfig, executorType)
-            : null);
+        (modelKeyRequired(deploymentMode) ? missingModelKeyRefusal(claimEnv, profileConfig, executorType) : null);
     if (refusal !== null)
         return {
             claimEnv: undefined,
@@ -338,7 +335,7 @@ export async function recordRunModel(tx: TransactionSql, orgId: string, jobId: s
 }
 
 /**
- * The executor a claim runs: the profile the task names, or the agent default frozen on it.
+ * The executor a claim runs: the profile the task names. A task naming none has nothing to run on and is refused.
  *
  * The executor label a task was queued with names a row in the STAMPED SCOPE's list (issue
  * 391): the author's own rows when the stamp is 'user' — null reads as 'user', the pre-391
@@ -358,7 +355,7 @@ async function claimExecutorOf(
     executorRefusal: string | null;
     source: { type: string; config: Record<string, unknown> } | null;
     runnerClass: string | null;
-    /** The connection the profile selects; always null for a frozen agent default, which never acquires one. */
+    /** The connection the profile selects; null when the task names no profile. */
     providerConnectionId: string | null;
     /** The profile's owner for the connection's visibility rule: the author for a personal row, null for an org row. */
     owner: string | null;
@@ -368,14 +365,11 @@ async function claimExecutorOf(
         providerConnectionId: null,
         owner: null,
     };
-    const agent = frozenAgentOf(row);
-    if (agent !== null)
-        return {
-            ...none,
-            executorType: agent.type,
-            source: agent,
-            runnerClass: null,
-        };
+    if (executorConfig && row.executor === null) {
+        // The default is resolved at create, to a profile label. A row without one (a task queued before that, or by a
+        // caller with no default) is refused here, so the driver fails it with a reason before any runner starts.
+        return { ...none, executorType: null, executorRefusal: noExecutorMessage, source: null, runnerClass: null };
+    }
     if (!executorConfig || row.executor === null || row.run_as === null) {
         return { ...none, executorType: null, source: null, runnerClass: null };
     }
@@ -427,33 +421,13 @@ function withChosenModel<T extends { type: string; config: Record<string, unknow
     return { ...configured, config };
 }
 
-/** The agent default frozen on a job row. */
-export interface FrozenAgentColumns {
-    agent_type: string | null;
-    agent_model: string | null;
-}
-
 /** The job row columns the claim's executor resolution reads. */
-export interface ClaimExecutorRow extends FrozenAgentColumns {
+export interface ClaimExecutorRow {
+    agent_model: string | null;
     run_as: string | null;
     repo: string | null;
     executor: string | null;
     executor_scope: string | null;
-}
-
-/**
- * The agent default frozen on a task naming no profile: its agent is the runner type and its model (the chosen one when
- * the task picked one, which create and a follow-up write over the default's) the whole config, merged exactly as a
- * profile's would be. Read off the row only — the agent default as it reads now is never
- * consulted, so a retry, a follow-up or a takeover runs what the task was created with. Null for a profile task.
- */
-function frozenAgentOf(row: ClaimExecutorRow): { type: ExecutorType; config: Record<string, unknown> } | null {
-    if (row.executor !== null || row.agent_type === null) return null;
-    if (!EXECUTOR_TYPES.includes(row.agent_type as ExecutorType)) return null;
-    return {
-        type: row.agent_type as ExecutorType,
-        config: row.agent_model === null ? {} : { model: row.agent_model },
-    };
 }
 
 /**
@@ -488,7 +462,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * so a Claude Code `env` value of "" clears a key; null otherwise. An agent the claim does not know is not judged: the
  * driver fails it on its own. The create's verdict is never trusted here: the env is read at claim.
  */
-function noModelRefusal(env: Record<string, string> | undefined, config: unknown, type: ExecutorType | null) {
+function missingModelKeyRefusal(env: Record<string, string> | undefined, config: unknown, type: ExecutorType | null) {
     if (type === null) return null;
     const names = Object.entries(env ?? {}).flatMap(([name, value]) => (value === '' ? [] : [name]));
     return hasModelKey(names, config, type) ? null : NO_MODEL_MESSAGE;

@@ -32,7 +32,6 @@ import type { UserExecutorStore } from '../db/user-executor-store.js';
 import type { ProviderConnectionStore } from '../db/provider-connection-store.js';
 import type { RunnerClassOption } from '../config-runner-classes.js';
 import type { OrgRegistry } from '../orgs.js';
-import { agentDefaultRoutes } from './agent-default.js';
 
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
@@ -269,20 +268,15 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
             providerConnectionId: row.providerConnectionId,
             ...connectionFields(row, visible),
         })),
-        // The member's resolved default: their stored preference while it still resolves, else the
-        // deterministic fallback the store computes — what a new task draft autoselects. When an agent default wins,
-        // no profile is the default: `agentDefault` names the agent, the model and whose row it is.
+        // The member's resolved default: their configured default, else the organization's, else none — what a new
+        // task draft autoselects.
         // A configured default that cannot run now (suspended) is still named, with the reason: the poll never invents
         // another default in its place.
         defaultExecutor: unusable
             ? { scope: unusable.scope, name: unusable.executorName, unusable: unusable.reason }
-            : resolved?.kind === 'profile'
+            : resolved
               ? { scope: resolved.scope, name: resolved.name }
               : null,
-        agentDefault:
-            resolved?.kind === 'agent'
-                ? { agentType: resolved.agentType, model: resolved.model, from: resolved.from }
-                : null,
         // False where this board has no executor store: the empty lists above are then "nothing was read",
         // which a client that must not report a confirmed "none" (the MCP list_executors tool) can tell apart.
         executorsAvailable: executors !== undefined,
@@ -500,6 +494,4 @@ export const workspaceRoutes =
         app.post('/api/workspace/executors/:id/suspension', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleSuspendExecutor(deps, request, reply)
         );
-        // The agent default sits beside the executor profiles it is resolved with.
-        await app.register(agentDefaultRoutes({ orgs }));
     };

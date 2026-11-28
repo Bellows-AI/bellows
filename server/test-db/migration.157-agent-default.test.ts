@@ -13,6 +13,8 @@ const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);
 
+/** 172 drops what 157 made, so this suite applies the schema only up to the migration before it. */
+const LAST = '171_connection_revocation.sql';
 const DIR = new URL('../migrations/', import.meta.url);
 let admin: Sql;
 let pool: Sql;
@@ -26,7 +28,7 @@ beforeAll(async () => {
     pool = postgres(url as string, { max: 2, onnotice: () => {}, connection: { search_path: schema } });
     await pool`create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now())`;
     const names = readdirSync(DIR)
-        .filter((name) => name.endsWith('.sql') && !name.endsWith('.repeatable.sql'))
+        .filter((name) => name.endsWith('.sql') && !name.endsWith('.repeatable.sql') && name <= LAST)
         .sort();
     for (const name of names) {
         await pool.unsafe(readFileSync(new URL(name, DIR), 'utf8'));

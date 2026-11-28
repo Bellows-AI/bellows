@@ -15,7 +15,6 @@ import {
 } from '@factory-ai/core';
 import type { FastifyBaseLogger, FastifyReply, FastifyRequest } from 'fastify';
 import {
-    type AgentDefault,
     ConfiguredDefaultUnusableError,
     type ResolvedDefault,
     type UserExecutorStore,
@@ -48,8 +47,6 @@ export async function readExecutorType(
         if (name === null) {
             const fallback = await executors.resolvedDefault(userId);
             if (fallback === null) return { state: 'unconfirmed', error: noExecutorMessage };
-            // An agent default names the agent itself: there is no profile row to read.
-            if (fallback.kind === 'agent') return executorTypeOf(fallback.agentType);
             ({ name, scope: at } = fallback);
         }
         const row = await executors.configFor(userId, name, at);
@@ -127,10 +124,8 @@ export async function refusedAsUnusable(
 
 /**
  * What a selection naming no executor runs on: the caller's resolved default (their configured default, else the
- * organization's — a suspended one refuses with 409 `EXECUTOR_SUSPENDED`, never falling through — else their stored
- * preference, their own agent default, else the organization's, else the first active personal profile, else the first active org one). A
- * profile is stamped as the label; an agent default is frozen on the task as its agent and model. The claim
- * reads only what was stamped, so a task queued with neither would fail there. Null when there is nothing to resolve
+ * organization's — a suspended one refuses with 409 `EXECUTOR_SUSPENDED`, never falling through). It is stamped as the
+ * label; the claim reads only what was stamped, so a task queued without one would fail there. Null when there is nothing to resolve
  * against (no executor store, no caller); `refused` once the refusal is on `reply`: 409 `NO_EXECUTOR` for a caller with
  * nothing resolved, or a failed read.
  */
@@ -171,8 +166,7 @@ export async function defaultExecutorOf(
 
 /**
  * What `POST /api/jobs` runs on: the named profile, or the caller's default when none is named, checked usable either
- * way, with the executor type its CLI runs. An agent default that wins leaves `executor` null and comes back as `agent`,
- * frozen on the task at create. Null once a refusal is on `reply`. A board with no executor store or no caller keeps a
+ * way, with the executor type its CLI runs. Null once a refusal is on `reply`. A board with no executor store or no caller keeps a
  * null executor and a `known` null type.
  */
 export async function usableSelection(
@@ -190,28 +184,16 @@ export async function usableSelection(
     type: ExecutorTypeRead;
     config: Record<string, unknown> | null;
     connection: SelectedProfileConnection | null;
-    agent: AgentDefault | null;
 } | null> {
     let { executor, scope } = opts;
     if (executor === null) {
         const fallback = await defaultExecutorOf(request, reply, opts);
         if (fallback === 'refused') return null;
-        if (fallback?.kind === 'agent') {
-            const agent = { agentType: fallback.agentType, model: fallback.model };
-            return {
-                executor: null,
-                scope,
-                type: executorTypeOf(agent.agentType),
-                config: null,
-                connection: null,
-                agent,
-            };
-        }
         if (fallback !== null) ({ name: executor, scope } = fallback);
     }
     const usable = await refusedAsUnusable(request, reply, { ...opts, executor, scope });
     if (usable === 'refused') return null;
-    return { executor, scope, ...usable, agent: null };
+    return { executor, scope, ...usable };
 }
 
 /** What a task's model credential is judged on: whose env and which repository's, the agent, its profile config and its connection. */
@@ -280,7 +262,7 @@ export async function modelStanding(
  * be read. True once a refusal is on `reply`. An agent the board does not know passes, as create lets it through; the
  * claim judges it again on the env that travels.
  */
-export async function refusedAsNoModel(
+export async function refusedAsMissingModelKey(
     request: FastifyRequest,
     reply: FastifyReply,
     rt: Pick<OrgRuntime, 'envVars' | 'modelRequired' | 'providerConnections'> | null,

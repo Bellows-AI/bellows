@@ -130,14 +130,11 @@ export function agentLock(provider: ModelProvider): string | null {
     return null;
 }
 
-/** The source a model is chosen for: a key provider, or the deployment's own model. */
-export type ModelSource = ModelProvider | 'platform';
-
 const ANTHROPIC_CLAUDE = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'];
 const OPENROUTER_CLAUDE = ['anthropic/claude-sonnet-5.5', 'anthropic/claude-opus-5.5'];
 
 /** The suggestions offered before a check lists the key's own models; the first is preselected. */
-const CURATED: Readonly<Record<ModelSource, Readonly<Record<ExecutorType, readonly string[]>>>> = {
+const CURATED: Readonly<Record<ModelProvider, Readonly<Record<ExecutorType, readonly string[]>>>> = {
     anthropic: {
         [CLAUDE_CODE]: ANTHROPIC_CLAUDE,
         [OPENCODE]: ['anthropic/claude-sonnet-5-5', 'anthropic/claude-opus-5-5'],
@@ -150,14 +147,13 @@ const CURATED: Readonly<Record<ModelSource, Readonly<Record<ExecutorType, readon
     litellm: { [CLAUDE_CODE]: [], [OPENCODE]: [] },
     'openai-compatible': { [CLAUDE_CODE]: [], [OPENCODE]: [] },
     subscription: { [CLAUDE_CODE]: ['claude-sonnet-5-5', 'claude-opus-5-5'], [OPENCODE]: [] },
-    platform: { [CLAUDE_CODE]: ANTHROPIC_CLAUDE, [OPENCODE]: ['anthropic/claude-sonnet-5-5'] },
 };
 
 /**
  * The models offered for a source and agent: the ones the key check returned, else the curated list. Claude Code on
  * OpenRouter runs Anthropic models only, so the check's list is cut to those.
  */
-export function modelOptions(source: ModelSource, agent: ExecutorType, checked: readonly string[] | undefined) {
+export function modelOptions(source: ModelProvider, agent: ExecutorType, checked: readonly string[] | undefined) {
     const fromCheck = (checked ?? []).filter(
         (id) => source !== 'openrouter' || agent !== CLAUDE_CODE || id.startsWith('anthropic/')
     );

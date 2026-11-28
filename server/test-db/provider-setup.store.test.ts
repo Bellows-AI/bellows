@@ -527,7 +527,6 @@ describe.skipIf(!enabled)('the provider setup command', () => {
             })
         );
         expect(await count('env_var')).toBe(0);
-        expect(await count('agent_default')).toBe(0);
     });
 
     it('a stale expected revision is refused and writes nothing', async () => {

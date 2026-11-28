@@ -41,7 +41,7 @@ const executorView = (
         updatedAt: '2026-01-02T03:04:05.678Z',
         connection: { id: 'connection-1', name: 'Mine', provider, scope: 'personal', baseUrl: null },
     };
-    return { platform: false, org: null, personal: null, selected, effective: 'executor' };
+    return { org: null, personal: null, selected, effective: 'executor' };
 };
 
 function board(setup: ModelSetupView) {

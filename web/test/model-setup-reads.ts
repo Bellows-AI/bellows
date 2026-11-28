@@ -15,14 +15,13 @@ export const PROVIDER_CONNECTIONS_URL = '/api/provider-connections';
 export const SETUP_URL = '/api/provider-connections/setup';
 export const VERIFY_URL = '/api/provider-connections/verify';
 
-export const NO_SETUP: ModelSetupView = { platform: false, org: null, personal: null, effective: null };
+export const NO_SETUP: ModelSetupView = { org: null, personal: null, effective: null };
 
 /** What the hook answers when nothing is configured: no default executor, no rows. */
 export const BARE_WORKSPACE: WorkspacePayload = {
     executors: [],
     orgExecutors: [],
     defaultExecutor: null,
-    agentDefault: null,
 };
 
 /** `POST /api/provider-connections/setup` calls, in order. */

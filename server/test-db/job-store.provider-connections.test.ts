@@ -395,23 +395,6 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
         expect(JSON.stringify(claims)).not.toContain('sk-ant-connection-key');
     });
 
-    it('frozen legacy agent tasks retain their original configuration', async () => {
-        const { executors, connections, env, jobs } = stores();
-        await env.replaceOrg('admin', [{ name: 'ANTHROPIC_API_KEY', value: 'sk-ant-ambient', isSecret: true }]);
-        const conn = await connect(connections);
-        await executors.replace(ALICE, [
-            { name: 'cc', type: 'claude-code', config: {}, providerConnectionId: conn.id },
-        ]);
-        await mustCreate(
-            jobs.create('echo hi', ALICE, { repo: null, executor: null, agentType: 'claude-code', agentModel: 'm-1' })
-        );
-
-        const claim = await jobs.claim('w1', LEASE_SECONDS);
-
-        expect(claim?.env?.ANTHROPIC_API_KEY).toBe('sk-ant-ambient');
-        expect(JSON.parse(claim?.env?.CLAUDE_CODE_CONFIG_CONTENT ?? '{}')).toEqual({ model: 'm-1' });
-    });
-
     it('an OpenRouter connection with a custom endpoint routes Claude Code to that endpoint, for every deployment mode', async () => {
         for (const mode of ['self-hosted', 'cloud'] as const) {
             const { executors, connections, jobs } = stores({ mode });

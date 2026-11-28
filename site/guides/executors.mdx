@@ -89,7 +89,6 @@ resolves only from your own scopes.
 - **Connect another provider** adds a second connection and executor and makes it the default. The first executor, its connection and tasks already queued are unchanged.
 - A save made from an older tab than the latest change to that executor is refused with a message to reload, so it never restores older values; after a **Connect another provider** or a key replacement the form returns to the executor summary with the key cleared. A member who connects another provider always creates a personal connection; only an admin can choose **Everyone in**.
 - Changing the model on a Claude Code executor also updates a model pinned through `ANTHROPIC_MODEL` in its environment, so the model shown is the model that runs.
-- A setup that came before this step, with a key in **Settings → Environment** or an agent default, keeps running as it was. **Continue** on it creates a real executor that runs on those same credentials and leaves them in place; nothing is moved or deleted for you. On a deployment that provides the model, the executor uses no connection.
 - The default executor of an organization is usable by every member without seeing its key. A member cannot create or change it, or use another member's personal connection.
 - Deleting a connection an executor selects, or an executor that is a default, is refused until you choose another default or remove the reference.
 
@@ -198,21 +197,16 @@ If you don't pick one, Bellows uses the first of these that exists:
 
 1. Your default executor, if you chose one with **Make default** or by connecting a model (see [Setting up the default executor](#setting-up-the-default-executor)).
 2. Your organization's default executor, if an admin chose one.
-3. Your older name-based default preference, if you still have one and its profile is usable. It is only read; **Make default** replaces it.
-4. Your agent default: an agent and a model, with no profile. Only boards set up before the model step created executors have one; it keeps working until you choose a default executor.
-5. Your organization's agent default, which an admin sets.
-6. Your first usable personal profile.
-7. Your organization's first usable profile.
 
 A default executor that is suspended is not skipped: Bellows refuses a task that names no executor until you resume it or choose another default. Naming an executor yourself always works.
 
-With none of these, Bellows refuses the task and links to **Add an executor in Settings**. A task on an agent default keeps that agent and model: changing the default later doesn't change a queued task, its retry or its follow-up.
+With none of these, Bellows refuses the task and links to **Add an executor in Settings**. A task keeps the executor it started on: changing the default later doesn't change a queued task, its retry or its follow-up.
 
 ### Choosing the model for one task
 
-You can pick the model when you start a task, and again on a follow-up. It replaces the model of the profile or the agent default for that task only; the agent stays the same. Leave it empty to use the default. A follow-up without a model keeps the one the task last ran with, and so do a retry and a run that resumes after an interruption. Each run records the model it actually got.
+You can pick the model when you start a task, and again on a follow-up. It replaces the model of the executor for that task only; the agent stays the same. Leave it empty to use the default. A follow-up without a model keeps the one the task last ran with, and so do a retry and a run that resumes after an interruption. Each run records the model it actually got.
 
-In the composer, the **Model** chip sits next to the executor. It reads **Default**, or **Default (model)** when your agent default runs the task; leave it there to send no model. Open it to pick one of your provider's models, or type any model name and press Enter. The follow-up composer has the same chip, starting at the model the task is using; change it only to switch. The task page's **Execution** facts show the **Model** the latest run got, or **profile default** when the profile chose it.
+In the composer, the **Model** chip sits next to the executor. It reads **Default**; leave it there to send no model. Open it to pick one of your provider's models, or type any model name and press Enter. The follow-up composer has the same chip, starting at the model the task is using; change it only to switch. The task page's **Execution** facts show the **Model** the latest run got, or **profile default** when the profile chose it.
 
 From the CLI, pass `--model <name>` to `bellows job create` or `bellows job follow-up`. From an assistant, pass `model` to `create_task` or `follow_up_task`. A model name is 1 to 200 characters.
 

@@ -78,7 +78,7 @@ export function staticRegistry(
         workflows: parts.workflows,
         prs: parts.prs,
         envVars: parts.envVars,
-        modelRequired: modelKeyRequired(config.deploymentMode, config.platformModelProvided),
+        modelRequired: modelKeyRequired(config.deploymentMode),
         batches: parts.batches,
         batchObserver: parts.batchObserver,
         batchMerger: parts.batchMerger,

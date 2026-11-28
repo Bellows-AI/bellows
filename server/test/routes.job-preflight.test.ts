@@ -96,6 +96,8 @@ async function boot(scenario: Scenario = {}) {
             ...(scenario.connection ? { providerConnectionId: scenario.connection.id } : {}),
         },
     ]);
+    // A task naming no executor needs a configured default: the member's `main` is theirs.
+    await executors.selectDefault(member.user.id, (await executors.list(member.user.id))[0]!.id);
     const asked: { userId: string; explicit: string[] }[] = [];
     const allowed = new Set(scenario.allowed ?? []);
     const connections = {
@@ -341,6 +343,7 @@ describe('POST /api/jobs/preflight executor', () => {
             config: {},
             createdBy: booted.member.user.id,
         });
+        await booted.executors.clearDefault(booted.member.user.id);
         await booted.executors.selectDefault(null, org.id);
         const ok = (await verdict(booted, { repo: 'acme/web' }, 'executor')).check;
         expect(ok).toMatchObject({ name: 'shared', status: 'ok' });
@@ -351,35 +354,13 @@ describe('POST /api/jobs/preflight executor', () => {
         expect(check?.detail).toContain('suspended');
     });
 
-    it('is blocked when nothing is selected and the caller has no usable profile, saying where to configure one', async () => {
+    it('is blocked when nothing is selected and no default is configured, saying where to configure one', async () => {
         const booted = await boot();
-        const [row] = booted.executors.rows();
-        await booted.executors.setPersonalSuspended(booted.member.user.id, row!.id, true);
+        await booted.executors.clearDefault(booted.member.user.id);
         const { check } = await verdict(booted, { repo: 'acme/web' }, 'executor');
         expect(check).toMatchObject({ name: null, status: 'blocked' });
         expect(check?.detail).toBe(noExecutorMessage);
     });
-
-    it.each([
-        { owner: 'personal', detail: 'your agent default' },
-        { owner: 'org', detail: "the organization's agent default" },
-    ] as const)(
-        'is ok when nothing is selected and the $owner agent default wins, naming it',
-        async ({ owner, detail }) => {
-            const booted = await boot();
-            const userId = booted.member.user.id;
-            // The agent default comes before the member's first profile, which they never chose.
-            await booted.executors.setAgentDefault(owner === 'org' ? null : userId, {
-                agentType: 'opencode',
-                model: 'anthropic/claude-sonnet-4-5',
-            });
-            const { check } = await verdict(booted, { repo: 'acme/web' }, 'executor');
-            expect(check).toMatchObject({ name: null, status: 'ok' });
-            expect(check?.detail).toContain(detail);
-            expect(check?.detail).toContain('opencode');
-            expect(check?.detail).toContain('anthropic/claude-sonnet-4-5');
-        }
-    );
 
     it('is blocked when the profile is suspended', async () => {
         const booted = await boot();
@@ -864,7 +845,8 @@ describe('POST /api/jobs/preflight repo skills follow the executor', () => {
     it("the repo read receives the default profile's dirs when no executor is named", async () => {
         const seen: (readonly string[])[] = [];
         const booted = await bootWithOpencode({ repoSkills: dirAware(seen) });
-        booted.executors.seedLegacyDefault(booted.member.user.id, { scope: 'user', name: 'oc' });
+        const oc = (await booted.executors.list(booted.member.user.id)).find((p) => p.name === 'oc')!;
+        await booted.executors.selectDefault(booted.member.user.id, oc.id);
         const { check } = await verdict(booted, base, 'skill');
         expect(seen).toEqual([OPENCODE_DIRS]);
         expect(check).toMatchObject({ name: 'oc-only', status: 'ok' });

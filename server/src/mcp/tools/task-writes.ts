@@ -32,7 +32,7 @@ const attachmentIds = z
         'Ids of completed, already-uploaded files you own to bind to the task. A client-local path is not readable by the board. Every id must be valid or the whole request is refused.'
     );
 
-/** 157_agent_default.sql's model bound; the board trims and refuses an empty or over-long name. */
+/** The per-task model bound; the board trims and refuses an empty or over-long name. */
 const MAX_MODEL_CHARS = 200;
 
 const model = (what: string) => z.string().min(1).max(MAX_MODEL_CHARS).optional().describe(what);
@@ -64,12 +64,10 @@ export const createTask = defineTool({
             .max(MAX_NAME_CHARS)
             .optional()
             .describe(
-                'An executor profile name (list_executors). Omit to run on your default: your stored preference (marked `default` there), else your agent default, else the organization agent default, else your first usable profile. With none of those the board refuses NO_EXECUTOR: tell the person to add a profile in Settings → Executors or set an agent default.'
+                'An executor profile name (list_executors). Omit to run on your default executor (marked `default` in list_executors): your configured default, else the organization default. With neither the board refuses NO_EXECUTOR: tell the person to add a profile in Settings → Executors and make it the default.'
             ),
         executorScope: z.enum(['user', 'org']).optional().describe('Which profile list `executor` names.'),
-        model: model(
-            "The model the agent runs, overriding the profile's or the agent default's model; omit to use the default."
-        ),
+        model: model("The model the agent runs, overriding the profile's model; omit to use the profile's."),
         skills: z
             .array(z.string().max(MAX_NAME_CHARS))
             .max(MAX_SELECTED)

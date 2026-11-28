@@ -56,18 +56,17 @@ async function boot(repoSkills?: RepoSkills, overrides: Parameters<typeof testCo
         command: string;
         executor: string | null;
         scope: string | undefined;
-        agentType?: string | null | undefined;
         agentModel?: string | null | undefined;
     }[] = [];
     const jobs = jobStoreSlice<JobActionStore>({
         async create(command: string, _by: string | null, target: Parameters<JobActionStore['create']>[2]) {
-            const { agentType, agentModel } = target;
+            const { agentModel } = target;
             queued.push({
                 command,
                 executor: target.executor ?? null,
                 scope: target.executorScope,
-                // Recorded only when create stamps an agent default, so the profile cases keep their exact shape.
-                ...(agentType || agentModel ? { agentType, agentModel } : {}),
+                // Recorded only when the task carries a model, so the plain cases keep their exact shape.
+                ...(agentModel ? { agentModel } : {}),
             });
             return { id: '11111111-1111-4111-8111-111111111111' };
         },
@@ -290,24 +289,25 @@ describe('defaults and the fallback chain', () => {
         expect(await b.executors.selectedDefault(b.memberId)).toBeNull();
     });
 
-    it('falls back past suspended rows, personal before org, and restores a legacy preference on resume', async () => {
+    it('resolves personal before org, flags a suspended default as unusable instead of falling back, and answers it again on resume', async () => {
         const b = await boot();
         const orgId = await createOrg(b, 'shared');
         await putPersonal(b, b.memberCookie, [entry('first'), entry('second')]);
-        b.executors.seedLegacyDefault(b.memberId, { scope: 'user', name: 'second' });
         const secondId = await personalId(b, 'second', b.memberCookie);
-        const firstId = await personalId(b, 'first', b.memberCookie);
-
-        await suspend(b, `/api/workspace/executors/${secondId}/suspension`, b.memberCookie, true);
-        expect((await poll(b, b.memberCookie)).defaultExecutor).toEqual({ scope: 'user', name: 'first' });
-
-        await suspend(b, `/api/workspace/executors/${firstId}/suspension`, b.memberCookie, true);
-        expect((await poll(b, b.memberCookie)).defaultExecutor).toEqual({ scope: 'org', name: 'shared' });
-
-        await suspend(b, `/api/org/executors/${orgId}/suspension`, b.adminCookie, true);
         expect((await poll(b, b.memberCookie)).defaultExecutor).toBeNull();
 
-        // The stored preference was never rewritten, so resuming restores it.
+        await b.executors.selectDefault(null, orgId);
+        expect((await poll(b, b.memberCookie)).defaultExecutor).toEqual({ scope: 'org', name: 'shared' });
+        await b.executors.selectDefault(b.memberId, secondId);
+        expect((await poll(b, b.memberCookie)).defaultExecutor).toEqual({ scope: 'user', name: 'second' });
+
+        // A suspended default is never swapped for another row; resuming restores it.
+        await suspend(b, `/api/workspace/executors/${secondId}/suspension`, b.memberCookie, true);
+        expect((await poll(b, b.memberCookie)).defaultExecutor).toEqual({
+            scope: 'user',
+            name: 'second',
+            unusable: 'suspended',
+        });
         await suspend(b, `/api/workspace/executors/${secondId}/suspension`, b.memberCookie, false);
         expect((await poll(b, b.memberCookie)).defaultExecutor).toEqual({ scope: 'user', name: 'second' });
     });
@@ -367,92 +367,45 @@ describe('POST /api/jobs naming no executor', () => {
             payload: { command: 'echo hi', repo: `${READY_REPO.owner}/${READY_REPO.name}`, ...extra },
         });
 
-    it("stamps the caller's resolved default, so the claim has a profile to run", async () => {
+    const selectOrgDefault = async (b: Booted, name: string) =>
+        b.executors.selectDefault(null, await createOrg(b, name));
+
+    const selectPersonalDefault = async (b: Booted, name: string) =>
+        b.executors.selectDefault(b.memberId, await personalId(b, name, b.memberCookie));
+
+    it("stamps the caller's configured default, so the claim has a profile to run", async () => {
         const b = await boot();
-        await createOrg(b, 'Main');
+        await selectOrgDefault(b, 'Main');
         const response = await queueBare(b, b.memberCookie);
         expect(response.statusCode).toBe(HTTP_CREATED);
         expect(b.queued).toEqual([{ command: 'echo hi', executor: 'Main', scope: 'org' }]);
     });
 
-    it('prefers a personal profile over the org one, as the fallback chain does', async () => {
+    it('prefers the personal default over the org one', async () => {
         const b = await boot();
-        await createOrg(b, 'Main');
+        await selectOrgDefault(b, 'Main');
         await putPersonal(b, b.memberCookie, [entry('mine')]);
+        await selectPersonalDefault(b, 'mine');
         expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
         expect(b.queued).toEqual([{ command: 'echo hi', executor: 'mine', scope: 'user' }]);
     });
 
-    const putAgentDefault = (b: Booted, cookie: string, owner: 'personal' | 'org', model: string) =>
-        b.instance.inject({
-            method: 'PUT',
-            url: `/api/agent-default/${owner}`,
-            headers: { cookie },
-            payload: { agentType: 'opencode', model },
-        });
-
-    it("freezes the caller's agent default on the task when no profile exists: no executor, the agent and its model", async () => {
+    it('refuses with 409 NO_EXECUTOR when profiles exist but none is the configured default', async () => {
         const b = await boot();
-        expect((await putAgentDefault(b, b.memberCookie, 'personal', 'mine-model')).statusCode).toBe(200);
-
+        await createOrg(b, 'Main');
+        await putPersonal(b, b.memberCookie, [entry('mine')]);
         const response = await queueBare(b, b.memberCookie);
-
-        expect(response.statusCode).toBe(HTTP_CREATED);
-        expect(b.queued).toEqual([
-            { command: 'echo hi', executor: null, scope: 'user', agentType: 'opencode', agentModel: 'mine-model' },
-        ]);
+        expect(response.statusCode).toBe(HTTP_CONFLICT);
+        expect(response.json().code).toBe('NO_EXECUTOR');
+        expect(b.queued).toEqual([]);
     });
 
-    it("a chosen model wins over the agent default's model and keeps its agent", async () => {
+    it('a chosen model rides a default-profile task: the profile is stamped and the model kept', async () => {
         const b = await boot();
-        expect((await putAgentDefault(b, b.memberCookie, 'personal', 'mine-model')).statusCode).toBe(200);
+        await selectOrgDefault(b, 'Main');
 
         expect((await queueBare(b, b.memberCookie, { model: 'picked' })).statusCode).toBe(HTTP_CREATED);
-        expect(b.queued).toEqual([
-            { command: 'echo hi', executor: null, scope: 'user', agentType: 'opencode', agentModel: 'picked' },
-        ]);
-    });
-
-    it('a chosen model rides a profile task alone: the profile stays, no agent is frozen', async () => {
-        const b = await boot();
-        await createOrg(b, 'Main');
-
-        expect((await queueBare(b, b.memberCookie, { model: 'picked' })).statusCode).toBe(HTTP_CREATED);
-        expect(b.queued).toStrictEqual([
-            { command: 'echo hi', executor: 'Main', scope: 'org', agentType: undefined, agentModel: 'picked' },
-        ]);
-    });
-
-    it("the organization's agent default outranks a profile, as the resolution order says", async () => {
-        const b = await boot();
-        await createOrg(b, 'Main');
-        expect((await putAgentDefault(b, b.adminCookie, 'org', 'team-model')).statusCode).toBe(200);
-
-        expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
-        expect(b.queued).toEqual([
-            { command: 'echo hi', executor: null, scope: 'user', agentType: 'opencode', agentModel: 'team-model' },
-        ]);
-    });
-
-    it('runs on the platform model once an agent default is saved on it: no profile, no key, no NO_EXECUTOR', async () => {
-        const b = await boot(undefined, { platformModelProvided: true });
-        // The setup no longer writes an agent default (it creates an executor); a saved legacy one keeps resolving.
-        await b.executors.setAgentDefault(b.memberId, {
-            agentType: 'claude-code',
-            model: 'claude-sonnet-4-5',
-            provider: 'platform',
-        });
-
-        expect((await queueBare(b, b.memberCookie)).statusCode).toBe(HTTP_CREATED);
-        expect(b.queued).toEqual([
-            {
-                command: 'echo hi',
-                executor: null,
-                scope: 'user',
-                agentType: 'claude-code',
-                agentModel: 'claude-sonnet-4-5',
-            },
-        ]);
+        expect(b.queued).toStrictEqual([{ command: 'echo hi', executor: 'Main', scope: 'org', agentModel: 'picked' }]);
     });
 
     it('refuses with 409 NO_EXECUTOR, naming where to configure one, when the caller has no usable profile', async () => {

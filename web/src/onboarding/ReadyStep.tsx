@@ -160,7 +160,6 @@ function FirstTaskComposer({
             onRetryWorkspace={workspace.refresh}
             executors={executors}
             defaultExecutor={defaultExecutor}
-            agentDefault={workspace.data?.agentDefault ?? null}
             workflows={null}
             actionError={first.error}
             sending={first.sending}

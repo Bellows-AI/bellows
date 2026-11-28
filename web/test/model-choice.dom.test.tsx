@@ -48,13 +48,6 @@ const profileWorkspace: WorkspacePayload = {
     defaultExecutor: { scope: 'user', name: 'e2e-executor' },
 };
 
-const agentDefaultWorkspace: WorkspacePayload = {
-    executors: [],
-    orgExecutors: [],
-    defaultExecutor: null,
-    agentDefault: { agentType: 'claude-code', model: 'claude-sonnet-5-5', from: 'personal' },
-};
-
 /** A default executor of the member's on a connection of `provider`: what the model setup read derives the curated models from. */
 const executorOn = (
     provider: 'anthropic' | 'openrouter',
@@ -71,7 +64,7 @@ const executorOn = (
         updatedAt: CREATED,
         connection: { id: `${provider}-connection`, name: provider, provider, scope: 'personal', baseUrl: null },
     };
-    return { platform: false, org: null, personal: null, selected, effective: 'executor' };
+    return { org: null, personal: null, selected, effective: 'executor' };
 };
 const setup = executorOn('anthropic', 'claude-code', 'claude-sonnet-5-5');
 
@@ -116,21 +109,6 @@ describe('the new-task Model control', () => {
         await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${LAUNCHED_ID}`));
         expect(launched()).toHaveLength(1);
         expect(launched()[0]).not.toHaveProperty('model');
-    });
-
-    it("is prefilled from the agent default's model and takes a typed name", async () => {
-        const user = userEvent.setup();
-        const { launched } = openComposer(agentDefaultWorkspace);
-        await screen.findByLabelText('What should the agent do?');
-        await waitFor(() =>
-            expect(modelPicker().getAttribute('aria-label')).toBe('Model: Default (claude-sonnet-5-5)')
-        );
-        await user.click(modelPicker());
-        await user.type(await screen.findByRole('combobox', { name: 'Search model' }), 'claude-opus-5-5{Enter}');
-        expect(modelPicker().getAttribute('aria-label')).toBe('Model: claude-opus-5-5');
-        await launch(user, 'fix the login crash');
-        await waitFor(() => expect(launched()).toHaveLength(1));
-        expect((launched()[0] as { model?: string }).model).toBe('claude-opus-5-5');
     });
 
     it('takes a typed model name the list does not offer', async () => {
@@ -218,7 +196,7 @@ describe('the follow-up Model control', () => {
 
     it('offers no curated models on a thread without a connection', async () => {
         const user = userEvent.setup();
-        thread({ executor: null, agentType: 'claude-code', agentModel: 'claude-sonnet-5-5' });
+        thread({ executor: null, agentModel: 'claude-sonnet-5-5' });
         await screen.findByLabelText('Ask for a follow-up');
         await user.click(modelPicker());
         const options = within(await screen.findByRole('listbox')).queryAllByRole('option');

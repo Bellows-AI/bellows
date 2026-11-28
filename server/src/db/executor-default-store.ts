@@ -167,8 +167,8 @@ export async function clearSelection(exec: Exec, orgId: string, owner: string | 
 }
 
 /**
- * What a task naming no executor resolves to before the legacy chain: the member's configured default, else the
- * organization's, else null. A configured default whose profile is suspended refuses (`ConfiguredDefaultUnusableError`)
+ * What a task naming no executor resolves to: the member's configured default, else the organization's, else null
+ * (there is no fallback to a profile nobody chose). A configured default whose profile is suspended refuses (`ConfiguredDefaultUnusableError`)
  * instead of falling through, and so does a selection naming a profile the member can no longer reach.
  */
 export async function resolveConfiguredDefault(
