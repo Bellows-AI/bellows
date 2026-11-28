@@ -189,6 +189,13 @@ describe('POST /api/provider-connections', () => {
             { scope: 'personal', name: 'x', provider: 'litellm', key: KEY, baseUrl: 'https://u:p@proxy.example.test' },
         ],
         ['litellm without a base URL', { scope: 'personal', name: 'x', provider: 'litellm', key: KEY }],
+        ...[undefined, null, ''].map(
+            (baseUrl) =>
+                [
+                    `openai-compatible with base URL ${JSON.stringify(baseUrl) ?? 'absent'}`,
+                    { scope: 'personal', name: 'x', provider: 'openai-compatible', key: KEY, baseUrl },
+                ] as [string, object]
+        ),
         [
             'a base URL for a subscription',
             {
@@ -299,6 +306,21 @@ describe('PUT and DELETE /api/provider-connections/:id', () => {
                 hasKey: true,
             },
         ]);
+    });
+
+    it('an openai-compatible connection cannot lose its base URL on edit', async () => {
+        const { member, inject } = await boot();
+        const made = await inject(member, 'POST', BASE, {
+            scope: 'personal',
+            name: 'custom',
+            provider: 'openai-compatible',
+            key: KEY,
+            baseUrl: 'https://models.example.test/v1',
+        });
+        const id = (made.json() as { id: string }).id;
+        for (const baseUrl of [null, '']) {
+            expect((await inject(member, 'PUT', `${BASE}/${id}`, { baseUrl })).statusCode).toBe(HTTP_BAD_REQUEST);
+        }
     });
 
     it('the create over the per-scope cap answers the cap refusal, not an internal error', async () => {

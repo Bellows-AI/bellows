@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { NO_MODEL_MESSAGE, OPENROUTER_ANTHROPIC_BASE_URL } from '@factory-ai/core';
+import { NO_MODEL_MESSAGE, normalizeModelId, OPENROUTER_ANTHROPIC_BASE_URL } from '@factory-ai/core';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import { createProviderConnectionStore, type ProviderConnectionStore } from '../src/db/provider-connection-store.js';
@@ -314,26 +314,34 @@ describe.skipIf(!enabled)('a profile provider connection at claim', () => {
         });
     });
 
-    it('an OpenCode executor on an openai-compatible connection claims with the key resolved', async () => {
+    it('an OpenCode executor on an openai-compatible connection resolves its stored model, and keeps resolving after an endpoint edit', async () => {
         const { executors, connections, jobs } = stores();
         const url = 'https://models.example.test/v1';
         const conn = await connect(connections, { provider: 'openai-compatible', key: 'sk-compat-key', baseUrl: url });
+        // The id the endpoint listed, stored through the real normalize path.
+        const model = normalizeModelId('openai-compatible', 'opencode', 'local-a');
         await executors.replace(ALICE, [
-            {
-                name: 'oc',
-                type: 'opencode',
-                config: { model: 'models-example-test/m1' },
-                providerConnectionId: conn.id,
-            },
+            { name: 'oc', type: 'opencode', config: { model }, providerConnectionId: conn.id },
         ]);
-        await queue(jobs, 'oc');
 
-        const claim = await jobs.claim('w1', LEASE_SECONDS);
+        const claimed = async (worker: string) => {
+            await queue(jobs, 'oc');
+            const claim = await jobs.claim(worker, LEASE_SECONDS);
+            expect(claim?.executorRefusal ?? null).toBeNull();
+            expect(claim?.env?.OPENCODE_CONFIG_CONTENT).not.toContain('{env:');
+            return JSON.parse(claim?.env?.OPENCODE_CONFIG_CONTENT ?? '{}');
+        };
+        const config = await claimed('w1');
+        expect(config.model).toBe('custom/local-a');
+        expect(config.provider.custom.options).toEqual({ baseURL: url, apiKey: 'sk-compat-key' });
+        expect(Object.keys(config.provider.custom.models)).toEqual(['local-a']);
 
-        expect(claim?.executorRefusal ?? null).toBeNull();
-        const config = JSON.parse(claim?.env?.OPENCODE_CONFIG_CONTENT ?? '{}');
-        expect(config.provider['models-example-test'].options).toEqual({ baseURL: url, apiKey: 'sk-compat-key' });
-        expect(claim?.env?.OPENCODE_CONFIG_CONTENT).not.toContain('{env:');
+        const moved = 'https://other.example.test/v1';
+        await connections.update(ALICE, conn.id, { baseUrl: moved });
+        const after = await claimed('w2');
+        expect(after.model).toBe('custom/local-a');
+        expect(after.provider.custom.options.baseURL).toBe(moved);
+        expect(Object.keys(after.provider.custom.models)).toEqual(['local-a']);
     });
 
     it('secret read failure rolls back the claim', async () => {

@@ -316,19 +316,35 @@ describe('openai-compatible provider', () => {
         expect(modelFitsProvider('openai-compatible', OPENCODE, 'anthropic/claude-x')).toBe(true);
     });
 
-    it('renders an OpenCode block under the endpoint host, its key a reference', () => {
-        const block = connectionOpenCodeProvider('openai-compatible', 'https://models.example.test/v1');
-        expect(block).toEqual({
-            provider: {
-                'models-example-test': {
-                    npm: '@ai-sdk/openai-compatible',
-                    name: 'models-example-test',
-                    options: {
-                        baseURL: 'https://models.example.test/v1',
-                        apiKey: `{env:${PROVIDER_ENV['openai-compatible']}}`,
+    it('renders one fixed `custom` block whatever the host, declaring the executor model, its key a reference', () => {
+        const key = `{env:${PROVIDER_ENV['openai-compatible']}}`;
+        for (const url of ['https://models.example.test/v1', 'https://other.example.test/v1']) {
+            expect(connectionOpenCodeProvider('openai-compatible', url, 'local-a')).toEqual({
+                provider: {
+                    custom: {
+                        npm: '@ai-sdk/openai-compatible',
+                        name: 'custom',
+                        options: { baseURL: url, apiKey: key },
+                        models: {
+                            'local-a': { name: 'local-a', tool_call: true, limit: { context: 200_000, output: 8192 } },
+                        },
                     },
                 },
-            },
-        });
+            });
+        }
+    });
+
+    it('declares no model when the executor names none, and strips only the custom prefix', () => {
+        const models = (model?: string) => {
+            const block = connectionOpenCodeProvider('openai-compatible', 'https://models.example.test/v1', model);
+            return (block?.provider.custom as { models?: Record<string, unknown> } | undefined)?.models;
+        };
+        expect(models()).toBeUndefined();
+        expect(Object.keys(models('custom/org/model-x') ?? {})).toEqual(['org/model-x']);
+    });
+
+    it('prefixes a stored OpenCode model id with the fixed custom provider id, once', () => {
+        expect(normalizeModelId('openai-compatible', OPENCODE, 'local-a')).toBe('custom/local-a');
+        expect(normalizeModelId('openai-compatible', OPENCODE, 'custom/local-a')).toBe('custom/local-a');
     });
 });

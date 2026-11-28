@@ -50,7 +50,7 @@ export interface ParsedSetup {
 /** A header-safe key and the base URL rules a provider has: LiteLLM and a custom endpoint need one, a subscription takes none. */
 function endpointRefusal(provider: ModelProvider, baseUrl: unknown): Refusal | null {
     if (baseUrl === undefined || baseUrl === null) {
-        return providerRequiresBaseUrl(provider) && baseUrl === undefined
+        return providerRequiresBaseUrl(provider)
             ? refusal(`${provider === 'litellm' ? 'LiteLLM' : 'An OpenAI-compatible endpoint'} needs a baseUrl`)
             : null;
     }

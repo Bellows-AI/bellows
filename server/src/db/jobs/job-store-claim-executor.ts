@@ -167,7 +167,13 @@ async function layerConnection(
     const { credential } = selected;
     const layered = applyConnectionLayer(input.claimEnv, executorType, credential);
     const block =
-        executorType === OPENCODE ? connectionOpenCodeProvider(credential.provider, credential.baseUrl) : null;
+        executorType === OPENCODE
+            ? connectionOpenCodeProvider(
+                  credential.provider,
+                  credential.baseUrl,
+                  typeof source?.config.model === 'string' ? source.config.model : undefined
+              )
+            : null;
     return {
         claimEnv: layered.env,
         blanks: layered.blanks,

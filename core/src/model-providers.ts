@@ -8,7 +8,7 @@ import {
     PROVIDER_BASE_URL,
 } from './deployment-mode.js';
 import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
-import { customProviderId, OPENAI_COMPATIBLE_NPM } from './openai-compatible.js';
+import { CUSTOM_PROVIDER_ID, customModelEntry, OPENAI_COMPATIBLE_NPM } from './openai-compatible.js';
 
 /**
  * The model providers a member can bring a key for (docs/api.md, `POST /api/model-setup/verify`). `subscription` is a
@@ -160,7 +160,7 @@ const OPENCODE_PREFIX: Readonly<Record<ModelProvider, string | null>> = {
     openrouter: 'openrouter',
     openai: 'openai',
     litellm: 'anthropic',
-    'openai-compatible': null,
+    'openai-compatible': CUSTOM_PROVIDER_ID,
     subscription: null,
 };
 
@@ -307,33 +307,28 @@ export function applyConnectionLayer(
 /**
  * The OpenCode provider block a connection with a custom endpoint adds beneath the pasted config: `baseURL` and the
  * key by `{env:NAME}`, which the claim resolves from the connection's own key (`resolveProviderReferences`). Null for
- * a provider's default endpoint, which the key's env name already reaches.
+ * a provider's default endpoint, which the key's env name already reaches. An OpenAI-compatible endpoint is ONE fixed
+ * provider id (`CUSTOM_PROVIDER_ID`, the prefix `normalizeModelId` stores), whatever its host, and declares the
+ * executor's `model` (its id with that prefix off) since no catalog carries it.
  */
 export function connectionOpenCodeProvider(
     provider: ModelProvider,
-    baseUrl: string | null
+    baseUrl: string | null,
+    model?: string
 ): { provider: Record<string, unknown> } | null {
-    if (provider === 'openai-compatible') {
-        if (baseUrl === null) return null;
-        const id = customProviderId(baseUrl);
-        return {
-            provider: {
-                [id]: {
-                    npm: OPENAI_COMPATIBLE_NPM,
-                    name: id,
-                    options: {
-                        [PROVIDER_BASE_URL]: baseUrl,
-                        [PROVIDER_API_KEY]: `{env:${PROVIDER_ENV[provider]}}`,
-                    },
-                },
-            },
-        };
-    }
     const id = OPENCODE_PREFIX[provider];
     if (id === null || baseUrl === null) return null;
+    const options = { [PROVIDER_BASE_URL]: baseUrl, [PROVIDER_API_KEY]: `{env:${PROVIDER_ENV[provider]}}` };
+    if (provider !== 'openai-compatible') return { provider: { [id]: { options } } };
+    const name = model?.startsWith(`${id}/`) ? model.slice(id.length + 1) : model;
     return {
         provider: {
-            [id]: { options: { [PROVIDER_BASE_URL]: baseUrl, [PROVIDER_API_KEY]: `{env:${PROVIDER_ENV[provider]}}` } },
+            [id]: {
+                npm: OPENAI_COMPATIBLE_NPM,
+                name: id,
+                options,
+                ...(name ? { models: { [name]: { ...customModelEntry, name } } } : {}),
+            },
         },
     };
 }

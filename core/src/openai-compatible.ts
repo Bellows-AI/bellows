@@ -1,5 +1,8 @@
 /** The OpenAI-compatible custom endpoint's OpenCode block: shared by the guided executor config and the connection provider. */
 
+/** The one OpenCode provider id a connection's OpenAI-compatible endpoint is rendered under, whatever its host. */
+export const CUSTOM_PROVIDER_ID = 'custom';
+
 /** The npm package an OpenAI-compatible endpoint's block loads: the generic OpenAI-wire SDK. */
 export const OPENAI_COMPATIBLE_NPM = '@ai-sdk/openai-compatible';
 

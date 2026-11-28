@@ -343,6 +343,16 @@ describe('PUT /api/model-setup', () => {
         expect(b.setup.commands[0]?.connection).toMatchObject({ baseUrl: 'https://llm.example.test' });
     });
 
+    it.each([null, ''])('refuses an openai-compatible or LiteLLM connection with base URL %j', async (baseUrl) => {
+        const b = await boot();
+        for (const provider of ['openai-compatible', 'litellm']) {
+            const intent = { intent: 'create', provider, key: 'sk-custom', name: 'Custom', baseUrl };
+            const res = await put(b, b.memberCookie, withConnection(intent, { agentType: 'opencode' }));
+            expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
+        }
+        expect(b.setup.commands).toEqual([]);
+    });
+
     it('refuses a malformed body: unknown fields, intents, request ids and keys', async () => {
         const b = await boot();
         const refused = [
